@@ -238,6 +238,34 @@ class TestBootstrapAndDiscovery:
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
+    def test_bootstrap_reuses_its_entry_point_snapshot(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        entry_point = object()
+        scans: list[int] = []
+        received: list[object] = []
+        companion = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
+
+        def _entry_points():
+            scans.append(1)
+            return [entry_point]
+
+        def _discover(profile, discovered_cfg, *, entry_points, **_kwargs):
+            assert profile == PROFILE_ENTERPRISE
+            assert discovered_cfg is cfg
+            received.extend(entry_points)
+            return companion
+
+        monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", _entry_points)
+        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", _discover)
+
+        assert bootstrap_mod.bootstrap_context(cfg) is companion
+        assert scans == [1]
+        assert received == [entry_point]
+
     def test_contract_version_mismatch_rejected(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         import dataclasses
 
@@ -249,7 +277,9 @@ class TestBootstrapAndDiscovery:
         )
         monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
-        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: bad)
+        monkeypatch.setattr(
+            bootstrap_mod, "discover_companion_context", lambda profile, cfg, **_kwargs: bad
+        )
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
@@ -263,7 +293,9 @@ class TestBootstrapAndDiscovery:
 
         monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
-        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: None)
+        monkeypatch.setattr(
+            bootstrap_mod, "discover_companion_context", lambda profile, cfg, **_kwargs: None
+        )
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
@@ -440,6 +472,11 @@ class TestRedactLogViaContext:
         "task_planner.py",
         "name_grant.py",
     )
+    #: A converged site split into owner modules is judged with them: the facade keeps
+    #: the call, and no owner may reach the baseline components either.
+    CONVERGED_SITE_OWNERS = {
+        "name_grant.py": ("name_grant_refusals.py", "name_grant_tables.py", "name_grant_lookup.py"),
+    }
 
     def test_converged_log_sites_do_not_drift_back_to_the_baseline(self) -> None:
         """Each converged site must CALL the helper and not the raw components.
@@ -461,7 +498,10 @@ class TestRedactLogViaContext:
 
         root = pathlib.Path(kiro_crew.__file__).parent
         for rel in self.CONVERGED_LOG_SITES:
-            lines = (root / rel).read_text(encoding="utf-8").splitlines()
+            files = (rel, *self.CONVERGED_SITE_OWNERS.get(rel, ()))
+            lines = [
+                ln for f in files for ln in (root / f).read_text(encoding="utf-8").splitlines()
+            ]
             body = [ln for ln in lines if not ln.lstrip().startswith(("import ", "from "))]
             calls = sum(1 for ln in body if "redact_log_via_context(" in ln)
             assert calls >= 1, (

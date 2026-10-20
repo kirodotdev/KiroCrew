@@ -41,7 +41,7 @@ import ChatSidebar from '../pages/ChatSidebar'
 
 const SLOT_KEY = 'chat-fork-1'
 
-function renderSidebar() {
+function renderSidebar(onSelectSlot?: (key: string) => void) {
   const slots = [{ key: SLOT_KEY, title: 'Fork me', running: false, created: '', last_ts: '' }]
   const store = createTestStore({
     dashboard: {
@@ -61,6 +61,7 @@ function renderSidebar() {
             <ChatSidebar
               slots={slots} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+              onSelectSlot={onSelectSlot}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -86,5 +87,28 @@ describe('session row "Fork chat" action', () => {
     expect(btn!.querySelector('svg.lucide-copy')).toBeNull()
     fireEvent.click(btn!)
     await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalledWith(SLOT_KEY))
+  })
+
+  // #21935 sibling: the fork becomes the active session, so the host must hear
+  // about it the way it hears about a row click, or Split View keeps drawing the
+  // old panes over it.
+  it('reports the fork through onSelectSlot once it opens', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'chat-forked' })
+    const onSelectSlot = vi.fn()
+    renderSidebar(onSelectSlot)
+    const row = document.querySelector(`[data-session-row="${SLOT_KEY}"]`) as HTMLElement
+    const btn = Array.from(row.querySelectorAll('button')).find(b => b.getAttribute('aria-label') === 'Fork chat')!
+    fireEvent.click(btn)
+    await waitFor(() => expect(onSelectSlot).toHaveBeenCalledWith('chat-forked'))
+  })
+
+  it('reports nothing when the fork is refused', async () => {
+    mocks.forkChatSlot.mockResolvedValue({ ok: false })
+    const onSelectSlot = vi.fn()
+    renderSidebar(onSelectSlot)
+    const row = document.querySelector(`[data-session-row="${SLOT_KEY}"]`) as HTMLElement
+    fireEvent.click(Array.from(row.querySelectorAll('button')).find(b => b.getAttribute('aria-label') === 'Fork chat')!)
+    await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalledTimes(1))
+    expect(onSelectSlot).not.toHaveBeenCalled()
   })
 })

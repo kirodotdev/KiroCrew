@@ -30,9 +30,16 @@ from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 logger = logging.getLogger(__name__)
 
+# The one 503 ``code`` every "Kiro CLI must be signed in" refusal carries, so a
+# client can tell a sign-in wall from any other degraded answer. Public because a
+# SECOND spawn site reaches the same verdict a different way: ``GET /api/models``
+# detects an EXPIRED mid-session login from ``--list-models`` auth stderr (the
+# readiness latch is stale-true there, so this gate's own refusal never fires) and
+# must answer with the identical code so the dashboard shows one sign-in message.
+KIRO_PREREQUISITE_REQUIRED_CODE = "kiro_prerequisite_required"
 _KIRO_NOT_READY_RESPONSE = {
     "error": "Kiro CLI setup or sign-in is required before starting a session.",
-    "code": "kiro_prerequisite_required",
+    "code": KIRO_PREREQUISITE_REQUIRED_CODE,
 }
 _KIRO_NOT_READY_CODE = _KIRO_NOT_READY_RESPONSE["code"]
 
@@ -187,7 +194,7 @@ def _warn_refused_once(path: str) -> None:
     and are never reached in that state, so one line per refused request is
     not "the same order of magnitude as its siblings" — it is 570 lines/hour against
     their none. The dashboard log ring is ``deque(maxlen=1000)``
-    (``handlers/updates.py:1381``), which that rate churns end to end every ~1.8
+    (``handlers/updates_streams.py::_log_ring``), which that rate churns end to end every ~1.8
     hours, evicting the genuine diagnostics an operator came to read. A line meant to
     make the log trustworthy must not be the thing that empties it.
 

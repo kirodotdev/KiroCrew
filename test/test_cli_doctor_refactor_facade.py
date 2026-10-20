@@ -449,11 +449,22 @@ def _bare_loads(source: str) -> list[tuple[int, str]]:
     ]
 
 
+def _facade_and_parts() -> list[Path]:
+    """The facade's file and its ``cli_doctor_parts`` owners, whose functions run on the
+    facade's namespace and so resolve a bare global exactly as the facade's own do."""
+    from kiro_crew import cli_doctor_parts
+
+    parts = sorted(Path(cli_doctor_parts.__file__).resolve().parent.glob("*.py"))
+    assert len(parts) > 1, "the cli_doctor_parts owners were not found"
+    return [Path(cli_doctor.__file__), *parts]
+
+
 def test_the_facade_reads_no_reexported_name_as_a_bare_global() -> None:
     """A function defined here resolves a bare global through this module's own
     namespace, which ``__getattr__`` never sees; such a read would ``NameError``."""
-    source = Path(cli_doctor.__file__).read_text(encoding="utf-8")
-    assert _bare_loads(source) == []
+    for path in _facade_and_parts():
+        source = path.read_text(encoding="utf-8")
+        assert _bare_loads(source) == []
 
 
 def test_the_bare_global_scan_can_fail() -> None:
@@ -503,7 +514,8 @@ def test_the_facade_imports_no_family_at_module_scope() -> None:
     tree = ast.parse(Path(cli_doctor.__file__).read_text(encoding="utf-8"))
     runtime = [
         node.module
-        for node in tree.body
+        for path in _facade_and_parts()
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
         if isinstance(node, ast.ImportFrom)
         and (node.module or "").startswith(doctor_checks.__name__)
     ]

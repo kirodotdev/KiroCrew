@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { Plug, Zap } from 'lucide-react'
 import { api } from '../../api/client'
@@ -71,7 +71,7 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
   return (
     <>
       <button ref={btnRef} onClick={() => setOpen(o => !o)} onMouseEnter={handleEnter} onMouseLeave={handleLeave} className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-muted hover:text-text hover:bg-bg-hover transition-all" title={i18nT('pages.chat.mcpInfoButton.session_mcp_servers')} aria-label={i18nT('pages.chat.mcpInfoButton.session_mcp_servers')}><Plug size={15} /></button>
-      {open && btnRef.current && createPortal(
+      {open && btnRef.current && <OverlayPortal>{
         // The mouse handlers only keep this hover popover open while the pointer
         // is over it; the popover is presentational (its trigger button owns all
         // interaction), so it is not a keyboard/interactive target itself.
@@ -110,9 +110,8 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
               ? i18nT('pages.chat.mcpInfoButton.agent_loads_only_its_own_mcp_servers', { name: agent })
               : 'kirocrew loads all configured MCP servers — manage from Overview → MCP tab.'}
           </div>
-        </div>,
-        document.body
-      )}
+        </div>
+      }</OverlayPortal>}
     </>
   )
 }

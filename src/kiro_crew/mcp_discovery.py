@@ -92,6 +92,34 @@ PROBE_MAX_CONCURRENCY = 5
 #: let one pass flood the pool the other is protecting.
 
 
+def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
+    """The process a local probe of *server* starts, as a key; None when it starts none.
+
+    One server is often configured under several names (an IDE entry, an
+    ``mcp.json`` entry, a renamed copy), and each name is its own row. Probing
+    every name at once starts the same heavy process several times in the same
+    instant, and those copies compete for CPU until each misses the probe
+    timeout -- which the quarantine then counts against a server that works.
+    ``probe_all`` therefore runs probes that share this key one after another.
+
+    The key is command plus args, the process that gets started. Env is left out
+    on purpose: two names that differ only in a token still start the same
+    package, and that cost is what this key groups. Each name is still probed
+    with its own env and gets its own verdict; only the timing changes. A
+    remote server opens a connection rather than a process, so it gets no key.
+    """
+    if server.is_remote or not isinstance(server.command, str) or not server.command:
+        return None
+    # ``args`` is unvalidated config JSON, and this runs outside the per-server
+    # ``gather``, so it must not raise: a non-iterable value keys by its repr.
+    raw_args = server.args or []
+    try:
+        args = tuple(str(a) for a in raw_args)
+    except TypeError:
+        args = (repr(raw_args),)
+    return (server.command, *args)
+
+
 async def probe_all() -> list[McpServerInfo]:
     """Discover and probe all configured MCP servers (bounded concurrency).
 
@@ -138,6 +166,15 @@ async def probe_all() -> list[McpServerInfo]:
     # Per-call semaphore: bounds the fan-out within this discovery pass while
     # binding to the currently-running loop (avoids import-time loop capture).
     sem = asyncio.Semaphore(PROBE_MAX_CONCURRENCY)
+    # One lock per started process (see ``_spawn_fingerprint``), so names that
+    # start the same command and args are probed one at a time while other
+    # servers still run in parallel. Taken BEFORE the semaphore: an alias waiting
+    # on its sibling must not hold one of the shared slots while it waits.
+    same_process: dict[tuple[str, ...], asyncio.Lock] = {}
+    for s in servers:
+        key = _spawn_fingerprint(s)
+        if key is not None:
+            same_process.setdefault(key, asyncio.Lock())
     excluded = await asyncio.to_thread(_spawn_excluded)
 
     async def _guarded(s: McpServerInfo) -> McpServerInfo:
@@ -159,7 +196,11 @@ async def probe_all() -> list[McpServerInfo]:
             s.error = ""
             _drop_temp_refusals(s)
             return s
-        async with sem:
+        key = _spawn_fingerprint(s)
+        if key is None:
+            async with sem:
+                return await probe_server(s)
+        async with same_process[key], sem:
             return await probe_server(s)
 
     results = await asyncio.gather(

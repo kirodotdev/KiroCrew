@@ -802,7 +802,9 @@ async def api_file_grep(request: web.Request) -> web.Response:
         return results + doc_hits, truncated or doc_truncated, engine, skipped
 
     try:
-        results, truncated, engine, skipped_docs = await _run_path_probe(_search, transfer=True)
+        results, truncated, engine, skipped_docs = await _run_path_probe(
+            _search, transfer=True, stall_path=root
+        )
     except _PathProbeBusy:
         return _probe_busy_response(
             resource=f"q={logged_query} root={root}", operation="file_grep", caller=caller

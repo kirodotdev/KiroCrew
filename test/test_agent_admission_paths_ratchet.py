@@ -66,8 +66,8 @@ ADMISSION_SITES: dict[Site, frozenset[str]] = {
     ("acp/client_start.py", "_spawn"): frozenset({FORK, FRESH}),
     ("acp/harness/kas.py", "KasHarness.session_extras._build"): frozenset({FORK, FRESH}),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): frozenset({FORK}),
-    ("acp/runtime.py", "AcpRuntime._resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/runtime.py", "AcpRuntime._activate_mode_bracketed"): frozenset({FRESH}),
+    ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): frozenset({FRESH}),
 }
 
@@ -78,17 +78,17 @@ KNOWN_GAPS: dict[Site, tuple[frozenset[str], str]] = {
         "covered: AcpRuntime._resolve_spawn_plan runs the freshness gate after this "
         "method returns, as the last check before the process is created",
     ),
-    ("acp/runtime.py", "AcpRuntime._resolve_spawn_plan"): (
-        frozenset({FORK}),
-        "covered for the kiro host only, by KiroHarness.resolve_spawn; every other "
-        "harness this runtime drives reaches no fork-governance check",
-    ),
     ("acp/runtime.py", "AcpRuntime._activate_mode_bracketed"): (
         frozenset({FORK}),
         "UNCOVERED: a shared runtime spawned as one agent and switched to another "
         "here passes no fork-governance check for the agent it switched to; a "
         "project copy of a managed name is refused at the spawn, whichever agent "
         "the spawn names",
+    ),
+    ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"): (
+        frozenset({FORK}),
+        "covered for the kiro host only, by KiroHarness.resolve_spawn; every other "
+        "harness this runtime drives reaches no fork-governance check",
     ),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): (
         frozenset({FORK}),
@@ -103,12 +103,12 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
     ("acp/client_start.py", "_spawn"): (("acp/client_start.py", "_spawn"),),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): (
         ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"),
-        ("acp/runtime.py", "AcpRuntime._resolve_spawn_plan"),
+        ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"),
     ),
     # Rewrites the agent in the argv of the plan ``_resolve_spawn_plan`` returned.
-    ("acp/runtime.py", "AcpRuntime._spawn_admitted"): (
+    ("acp/runtime_spawn_launch.py", "_spawn_admitted"): (
         ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"),
-        ("acp/runtime.py", "AcpRuntime._resolve_spawn_plan"),
+        ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"),
     ),
     ("dashboard/handlers/sessions_parts/usage_scrape.py", "_usage_scrape_argv"): (
         "UNGATED: a one-shot `/usage` read on the fixed kirocrew-lite service agent, "

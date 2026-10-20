@@ -282,7 +282,7 @@ write `slot.tags` at HEAD `6581a04ee`:
 |---|---|---|---|
 | `api_chat_slot_tags` | `chat_tags.py` | user set-tags API | **yes** |
 | `api_chat_slot_drop` | `chat_tags.py` | user drag-to-lane API | **yes** |
-| folder inheritance | `_read_folder_tags` (`slot.tags.append`), ids from `validate_folder_tag_ids` (`chat_tags.py`) | a new slot inherits a folder's tags | **yes** |
+| folder inheritance | `_read_folder_tags` (`slot.tags.append`), ids from `validate_folder_tag_ids` (`chat_tags_store.py`) | a new slot inherits a folder's tags | **yes** |
 | channel first-file / restore | both `slot.tags.append` sites in `surface_channel_session` | channel slot filing | **yes** |
 | slot restore (bulk) | `chat_handlers.py` (`slot.tags = ...`) | reconstruct from stored value | **no** (load-time) |
 | fork | `chat_fork.py` (`new_slot.tags = list(slot.tags)`) | fork inherits parent tags | see below |
@@ -290,7 +290,7 @@ write `slot.tags` at HEAD `6581a04ee`:
 | auto-tag | `chat_auto_tag.py` | never writes status tags | **n/a**, no status delta ever |
 
 The folder-inherited path is the one the issue's two-handler framing misses:
-`validate_folder_tag_ids` (`chat_tags.py`) screens a folder tag id's **shape**
+`validate_folder_tag_ids` (`chat_tags_store.py`) screens a folder tag id's **shape**
 (must be a list of strings) and **vocabulary** (intersected with the live
 `state._tags` when authoritative) but **not** `status: true`. So an inherited
 folder status tag can put a session into a lane through

@@ -1008,7 +1008,7 @@ directly. The keystone is read ONLY from itself; a test pins the policy path ont
 
 **The ceiling and provider-config writers are owner-only.** `PUT /settings`,
 `PUT /providers/{id}/config`, and `PUT` / `DELETE /providers/{id}/secret` call
-`require_owner_dashboard_request` (`dashboard/handlers/_shared.py`) after the app's enable gate
+`require_owner_dashboard_request` (`dashboard/handlers/_shared_access.py`) after the app's enable gate
 and before reading the body. A non-owner subject, and every app token including this app's own,
 gets `403` `owner_only` (a stale pre-owner bootstrap session gets the 401 re-auth answer); the
 denial is SEL-audited. The agent-facing routes are not owner-gated. Pinned by

@@ -934,7 +934,7 @@ def effective_request_app(state: object, request: web.Request) -> str:
 
 
 #: Request key under which the chat folder/tag gate
-#: (``handlers/_shared.py``'s ``private_chat_route_refusal``) stamps the VERIFIED
+#: (``handlers/_shared_route_guards.py``'s ``private_chat_route_refusal``) stamps the VERIFIED
 #: member principal (``member:<store>``) when it admits a member caller. The
 #: constant lives HERE, the lowest layer, so the gate that writes it and
 #: :func:`folder_principal` that reads it share one key and cannot drift.

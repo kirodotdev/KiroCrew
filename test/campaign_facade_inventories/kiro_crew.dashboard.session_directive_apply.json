@@ -1,0 +1,35 @@
+{
+ "base_public_names": [
+  "APPROVAL_STALL_REASON",
+  "ARM_REFUSAL_NOTICE_KIND",
+  "ARM_REFUSAL_NOTICE_PREFIX",
+  "ARM_SUCCESS_NOTICE_PREFIX",
+  "AUTONUDGE_STOP_REASON",
+  "CONSECUTIVE_FAILURE_REASON",
+  "DirectiveOutcome",
+  "MONITOR_TERMINAL_REASON",
+  "QUIET_END_OUTCOME_PREFIX",
+  "QUIET_END_REFUSED_USER_TURN",
+  "REFUSAL_SELF_WAKE_META_KEY",
+  "REFUSAL_WAKE_LOOP_ID_META_KEY",
+  "REVISION_REFUSAL_NOTICE_PREFIX",
+  "STOP_REFUSAL_NOTICE_PREFIX",
+  "STOP_SENTINEL_REASON",
+  "TERMINAL_DIRECTIVES",
+  "apply_session_directive",
+  "apply_session_directive_outcome",
+  "has_dashboard_surface",
+  "is_channel_key",
+  "is_channel_session_key",
+  "is_owned_research_slot",
+  "logger",
+  "screen_phrase"
+ ],
+ "note": "Frozen at the split of src/kiro_crew/dashboard/session_directive_apply.py (S30): the facade keeps the dispatcher and its audit; the outcome vocabulary and notices, the monitor directives and the slot-targeted directives moved verbatim into the session_directive_apply_outcome, _monitor and _slot owners, served through the facade's _facade_mirror. Rebound names are the BASE project imports the facade still binds and the owner-defined names its kept code imports.",
+ "rebound": {
+  "DirectiveOutcome": "kiro_crew.dashboard.session_directive_apply_outcome",
+  "REVISION_REFUSAL_NOTICE_PREFIX": "kiro_crew.dashboard.session_directive_apply_outcome",
+  "STOP_REFUSAL_NOTICE_PREFIX": "kiro_crew.dashboard.session_directive_apply_outcome",
+  "has_dashboard_surface": "kiro_crew.session_surface"
+ }
+}

@@ -38,7 +38,6 @@
 1 src/kiro_crew/dashboard/chat_summary.py
 1 src/kiro_crew/dashboard/chat_utils.py
 1 src/kiro_crew/dashboard/handlers/agents.py
-2 src/kiro_crew/dashboard/handlers/core.py
 1 src/kiro_crew/dashboard/handlers/hooks.py
 1 src/kiro_crew/dashboard/handlers/optimizer.py
 2 src/kiro_crew/dashboard/handlers/sessions.py
@@ -53,7 +52,6 @@
 1 src/kiro_crew/eval/judge.py
 2 src/kiro_crew/eval/runner.py
 1 src/kiro_crew/knowledge/llm_pool.py
-5 src/kiro_crew/llm_helpers.py
 1 src/kiro_crew/messaging/auto_title.py
 1 src/kiro_crew/messaging/dispatch.py
 1 src/kiro_crew/messaging/driver.py

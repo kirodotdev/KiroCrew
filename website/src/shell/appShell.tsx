@@ -47,6 +47,9 @@ import { useTerminalPoppedOut } from '../utils/terminalPopout'
 import { getBuiltinIcon } from '../apps/builtinIcons'
 import { useRequestFeature } from './topbar/requestFeature'
 import { useShellKeyboard } from './shortcuts/shellKeyboard'
+import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
+import { shortcutEntry } from '../lib/shortcutRegistry'
+import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
 import { useStartupVideo } from './boot/startupVideo'
 import { i18nT } from '../i18n/t'
@@ -159,6 +162,58 @@ export function useAppShell() {
   // before App mounted (e.g. a 403 fired during the very first /api/status
   // before React hydrated).
   const [authRequired, setAuthRequired] = useState<boolean>(isAuthBannerShown)
+  // The capsule's announced cause, computed here rather than in the header
+  // because two places speak it: the capsule inside the header, and the
+  // stand-in live region App mounts while focus mode has made the header inert.
+  // Auth takes precedence over transport: `authRequired` (a 403 auth flag) and
+  // `connected` (Redux transport state) are independently sourced, so the
+  // session can expire while the socket is still up, and "Gateway connected"
+  // would then be a reassuring lie nothing else corrects.
+  const gatewayStatusMsg = authRequired
+    ? i18nT('app.gateway_offline_session_expired_see_banner_above')
+    : connected
+      ? i18nT('app.gateway_connected')
+      : i18nT('app.gateway_offline_reconnecting')
+  // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
+  // focus mode the top bar (and its toggle) is inert, so this chord is the only
+  // keyboard route back; it is spoken when focus mode turns on and declared on
+  // the toggle as `aria-keyshortcuts`. Read from the live bindings, not the
+  // registry default: a rebound shortcut announced as its default would send the
+  // user to a key that no longer does anything. `null` when the user unbound it.
+  // The ARIA spelling (Alt+Shift+M) rather than the display glyphs (⌥⇧M): the
+  // glyphs are for the eye and a screen reader has no names for them.
+  //
+  // `null` = unbound. Nothing in the product can produce that today: the only
+  // writer of the overrides store is the Settings > Keyboard UI, which does not
+  // exist yet (shortcutRegistry.ts, "No writer here on purpose"). What unbinding
+  // the one chord that leaves a mode with no reachable controls should mean is
+  // that writer's decision; until it exists the carriers simply say nothing
+  // about a chord, rather than naming a page the inert chrome cannot reach.
+  //
+  // Shortcuts switched off globally (Settings > Shortcuts) is the same as
+  // unbound: the keydown handler gives up before it reaches the chord, so it
+  // must not be advertised.
+  const shortcutBindings = useShortcutBindings()
+  const shortcutsEnabled = useShortcutsEnabled()
+  const focusModeChordDef = (() => {
+    if (!shortcutsEnabled) return null
+    const entry = shortcutEntry('toggle-focus-mode')
+    const chord = shortcutBindings['toggle-focus-mode']?.primary
+    return entry && chord ? shortcutDefFromChord(entry, chord) : null
+  })()
+  const focusModeChord = focusModeChordDef ? ariaKeyshortcutsFor(focusModeChordDef) : null
+  const focusModeExitMsg = focusModeChord ? i18nT('app.focus_mode_on_announce', { chord: focusModeChord }) : ''
+  // The same sentence for the EYE, in the product's display spelling
+  // (formatShortcut: ⌥⇧M on a Mac, Alt + Shift + M elsewhere) -- a Mac user shown
+  // "Alt" has to work out which key that is, and this is their way out.
+  const focusModeExitMsgVisible = focusModeChordDef
+    ? i18nT('app.focus_mode_on_announce', { chord: formatShortcut(focusModeChordDef) })
+    : ''
+  // Hidden chrome turns inert only while that chord can bring it back. With no
+  // live chord (shortcuts off, or the chord unbound) an inert header would leave
+  // a keyboard user no way out of focus mode at all, so the chrome keeps main's
+  // behaviour: reachable by Tab, which reveals it (useHoverIntent's onFocus).
+  const focusChromeInert = focusModeChordDef !== null
   useEffect(() => {
     const onRequired = () => setAuthRequired(true)
     const onCleared = () => setAuthRequired(false)
@@ -199,7 +254,7 @@ export function useAppShell() {
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline
-  // session links, "Ask agent to address", …). Popout and embed windows never
+  // session links, "Draft a prompt in chat", …). Popout and embed windows never
   // register — only handler-registered windows answer nav-requests, which is
   // what keeps a second popout from claiming another popout's navigation.
   // A forwarded intent replaces the page on screen HERE, so that page's leave
@@ -359,7 +414,8 @@ export function useAppShell() {
    * the panel, and the listener is on an element neither is inside.
    *
    * Widening the root does not widen what arms: dialogs render through a portal
-   * to `document.body`, so they are outside this element entirely, and a page
+   * to the body level (components/overlayRoot), so they are outside this
+   * element entirely, and a page
    * with its own drawer claims its sides with `data-owns-swipe`.
    */
   const shellRef = useRef<HTMLDivElement | null>(null)
@@ -618,7 +674,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry } = useKiroUsageReadout()
   // Both forms use the side groups' container-query ladders. On desktop the
   // measured ladder (`.topbar.tb-measured`, index.css) adds folds when those
   // rungs still leave a group's contents overflowing; its level classes can
@@ -801,6 +857,7 @@ export function useAppShell() {
 
   return {
     isEmbed, isPopout, initialPopoutPath, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
+    gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
@@ -812,7 +869,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroCreditSurface, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, devMode, devPageSeen,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, startupVideo, reportProblemOpen,

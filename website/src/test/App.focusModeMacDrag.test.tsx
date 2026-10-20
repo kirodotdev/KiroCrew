@@ -138,7 +138,7 @@ describe('focus mode — macOS window drag strip', () => {
     const toggle = await screen.findByTestId('focus-mode-toggle')
     await act(async () => { fireEvent.click(toggle) })
 
-    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
     const header = document.querySelector('header.topbar') as HTMLElement
     expect(rail.style.transform).toBe('translateX(calc(-100% - 12px))')
 

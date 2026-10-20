@@ -139,7 +139,10 @@ async def test_api_models_still_reaches_spawn_path_when_ready() -> None:
     # binary unresolved, whose 503 body differs from the gate's.
     resolve.assert_awaited_once()
     assert resp.status == 503
-    assert json.loads(resp.body) == {"error": "kiro binary not resolved"}
+    assert json.loads(resp.body) == {
+        "error": "kiro binary not resolved",
+        "code": "model_list_unavailable",
+    }
 
 
 @pytest.mark.asyncio

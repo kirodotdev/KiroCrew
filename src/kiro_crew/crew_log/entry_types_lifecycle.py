@@ -268,6 +268,39 @@ TYPES: tuple[EntryType, ...] = (
                 ),
             ),
             Field(
+                "depth",
+                JSON_INT,
+                note=(
+                    "How many creators stand above this session in the session tree, as "
+                    "the writer could establish it at the moment the log was opened. "
+                    "``0`` is a session nobody created -- a person's own tab, a fork, a "
+                    "channel conversation -- and a child is its creator's depth plus "
+                    "one.\n\n"
+                    "Recorded rather than derived because the reader this serves counts "
+                    "a DISTRIBUTION over many sessions and may hold nothing but a few "
+                    "integers: a fold that derived depth instead would have to join "
+                    "this log to its creator's, which means keeping slot names and so "
+                    "keeping identity out of a counter that has no business holding "
+                    "any. One number written once by the side that can see the whole "
+                    "chain is what keeps that reader additive.\n\n"
+                    "ABSENT means not established, never zero. Three cases produce it "
+                    "and a reader must not separate them: a log opened before this "
+                    "field existed, a writer that states no depth at all, and a session "
+                    "whose creator is known to exist while the tree could not place it "
+                    "-- an unseeded fold, a fold reported incomplete, a cited creator "
+                    "with no log of its own, a slot on a cycle. Reading an absent depth "
+                    "as a root would count each of those as its own tree, so a counting "
+                    "reader leaves them out of the count entirely rather than "
+                    "defaulting them.\n\n"
+                    "A WRITE-TIME reading, like ``parent`` beside it and for the same "
+                    "reason: this entry states what the session was created as, and "
+                    "nothing rewrites it. A later ``session/adopted`` or "
+                    "``session/released`` moves the session and so changes its true "
+                    "depth; this number does not follow, and a reader that needs the "
+                    "CURRENT depth reads the tree rather than this field."
+                ),
+            ),
+            Field(
                 "class",
                 JSON_OBJECT,
                 fields=_SESSION_CLASS_FIELDS,

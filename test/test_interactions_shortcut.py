@@ -1,4 +1,4 @@
-"""Tests for the Forward to Agent message shortcut in interactions.py."""
+"""Tests for the Forward to Agent message shortcut in interactions_modals.py."""
 
 from __future__ import annotations
 

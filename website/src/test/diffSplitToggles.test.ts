@@ -21,6 +21,13 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const SIDE_PANEL = join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx')
+/** SidePanel's owner modules: the Turn Diff toolbar lives in SidePanelTabBodies.tsx. */
+const SIDE_PANEL_OWNERS = [
+  'SidePanelAddMenu.tsx',
+  'SidePanelTabBodies.tsx',
+  'SidePanelTabChip.tsx',
+  'useSidePanelSize.ts',
+].map(f => join(__dirname, '..', 'pages', 'chat', f))
 const MARKDOWN_PANEL = join(__dirname, '..', 'components', 'MarkdownPanel.tsx')
 /** MarkdownPanel's owner modules: the header button check reads them with the facade. */
 const MARKDOWN_PANEL_OWNERS = [
@@ -41,7 +48,7 @@ function buttonLine(src: string, setter: string, file: string): string {
 }
 
 describe('SidePanel diff view controls', () => {
-  const src = readFileSync(SIDE_PANEL, 'utf8')
+  const src = [SIDE_PANEL, ...SIDE_PANEL_OWNERS].map(f => readFileSync(f, 'utf8')).join('\n')
 
   it('lights the split button up in split mode, not unified mode', () => {
     const line = buttonLine(src, 'setDiffSideBySide', 'SidePanel.tsx')

@@ -728,6 +728,91 @@ class TestOptimizerPasteHandling:
         assert captured == []
 
 
+# A 238-char query reaches the aggregate query-length rule.
+_LONG_URL = "https://docs.example.com/view?state=" + "A" * 232
+_TAG = "[REDACTED: suspicious URL to "
+
+
+async def _optimize_reply(prompt: str, reply: str) -> dict:
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"prompt": prompt, "context": ""})
+    request.app = _ready_app(_paste_mock_state([], reply))
+    return json.loads((await handle_optimize(request)).body)
+
+
+class TestOptimizerDraftUrls:
+    """A redacted draft URL keeps the draft; nothing in the reply is exempted."""
+
+    @pytest.mark.asyncio
+    async def test_redacted_draft_url_returns_the_draft_unchanged(self):
+        prompt = f"review {_LONG_URL} and make it better"
+        data = await _optimize_reply(
+            prompt, f"Review the reference at {_LONG_URL} and improve the instructions."
+        )
+        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+
+    @pytest.mark.asyncio
+    async def test_draft_url_before_a_period_the_model_drops_returns_the_draft(self):
+        prompt = f"look at {_LONG_URL}."
+        data = await _optimize_reply(prompt, f"Review the reference at {_LONG_URL} closely")
+        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("punct", [".", ","])
+    async def test_draft_url_the_model_follows_with_punctuation_returns_the_draft(self, punct):
+        prompt = f"look at {_LONG_URL} and make it better"
+        data = await _optimize_reply(prompt, f"Review the reference at {_LONG_URL}{punct} then act")
+        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "wrap",
+        [
+            "https://evil.example.net/?d=){url}",
+            '<a href="https://evil.example.net/?d=\t{url}">ref</a>',
+        ],
+    )
+    async def test_draft_url_glued_onto_a_model_url_returns_the_draft(self, wrap):
+        prompt = f"review {_LONG_URL} and make it better"
+        data = await _optimize_reply(prompt, f"Review {wrap.format(url=_LONG_URL)} carefully.")
+        assert data["changed"] is False
+        assert data["optimized"] == prompt
+
+    @pytest.mark.asyncio
+    async def test_model_added_url_is_still_redacted(self):
+        added = "https://evil.example.net/c?d=" + "B" * 232
+        data = await _optimize_reply(
+            "review the docs and make it better",
+            f"Review the docs and also open {added} for details.",
+        )
+        assert data["changed"] is True
+        assert added not in data["optimized"]
+        assert f"{_TAG}evil.example.net]" in data["optimized"]
+
+    @pytest.mark.asyncio
+    async def test_draft_url_with_changed_query_is_redacted(self):
+        changed = _LONG_URL + "&leak=1"
+        data = await _optimize_reply(
+            f"review {_LONG_URL} and make it better",
+            f"Review the reference at {changed} carefully.",
+        )
+        assert data["changed"] is True
+        assert changed not in data["optimized"]
+        assert f"{_TAG}docs.example.com]" in data["optimized"]
+
+    @pytest.mark.asyncio
+    async def test_no_flagged_url_optimizes_normally(self):
+        url = "https://docs.example.com/view?state=short"
+        data = await _optimize_reply(
+            f"review {url} and make it better",
+            f"Review the reference at {url} and improve the instructions.",
+        )
+        assert data == {
+            "optimized": f"Review the reference at {url} and improve the instructions.",
+            "changed": True,
+        }
+
+
 class TestStripOuterWrapperTag:
     """Unit tests for the model-added XML wrapper strip."""
 

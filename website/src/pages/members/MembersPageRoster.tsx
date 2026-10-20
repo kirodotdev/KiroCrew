@@ -460,6 +460,7 @@ export function MembersPageRosterColumn({
   } = rosterView
   const {
     isUnread, patrol, automationOf, isNeedsYou, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
+    hiddenCount, hiddenNames,
   } = rosterSignals
   const { reduceMotion } = profileFlight
   const { openMember, pickFromRosterDrawer } = navigation
@@ -932,6 +933,22 @@ export function MembersPageRosterColumn({
                   </Fragment>
                 )
               })}
+              {/* The crewmates the listing rule hides, counted at the list's end
+                  (#21852): the count above covers the listed rows only, so
+                  without this a crew of three read as "2 crewmates". */}
+              {rowsReady && hiddenCount > 0 && (
+                <li className="px-4 py-3 text-xs text-muted" data-testid="member-hidden-hint">
+                  {hiddenCount <= hiddenNames.length
+                    ? t('pages.membersPage.hidden_named_hint', {
+                        count: hiddenNames.length,
+                        names: fmtList(hiddenNames),
+                      })
+                    : t('pages.membersPage.hidden_more_hint', {
+                        count: hiddenCount - hiddenNames.length,
+                        names: fmtList(hiddenNames, { type: 'unit', style: 'short' }),
+                      })}
+                </li>
+              )}
             </ul>
             </ListDock>
             {/* Window-splitter between roster and thread: the same component as the

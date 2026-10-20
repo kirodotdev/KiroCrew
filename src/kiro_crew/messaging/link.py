@@ -101,8 +101,7 @@ def channel_namespace_of(key: str) -> str:
 #:
 #: ADDING A NAMESPACE: this tuple bounds telemetry label cardinality and nothing more,
 #: so being absent from it is not a bug on its own — ``wf-unpooled`` and ``wf-worker``
-#: are live session keys that are not listed here, and ``wf-scope`` needs no entry
-#: because it names a workflow run's memory anchor, never a session. But a namespace whose
+#: are live session keys that are not listed here. But a namespace whose
 #: transcripts reach disk also needs classifying at
 #: ``dashboard/handlers/sessions_parts/history_reads.py::_MACHINE_NAMESPACES``, which
 #: decides whether the Older-sessions pane presents it as a conversation. Unclassified

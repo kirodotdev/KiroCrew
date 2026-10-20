@@ -29,6 +29,10 @@
  *    discard, and dragging back down disarms it again, so the gesture is
  *    reversible right up to the release. This is the WeChat/Doubao contract and
  *    the only reason a hold gesture is safe on a surface with no Esc key.
+ *    When a plain release sends (`draftZone`), dragging sideways past
+ *    {@link DRAFT_THRESHOLD_PX} arms "keep as draft" the same way: armed, not
+ *    acted on, so moving back disarms it, and only the release decides. A
+ *    thumb cannot hold Shift, so this is touch's Shift.
  * 2. **`pointercancel` is touch's keyup-that-never-arrives.** iOS fires it
  *    whenever the system takes the gesture (a call, the app switcher, an edge
  *    swipe that wins). It is a DISCARD, not a commit: the user did not choose to
@@ -49,6 +53,7 @@ import {
   createPttSession,
   type PttPhase,
   type PttSession,
+  type StopIntent,
   type VoiceControls,
 } from '../lib/pttSession'
 
@@ -62,6 +67,28 @@ import {
  * never arms it, close enough to reach without repositioning the hand.
  */
 export const CANCEL_THRESHOLD_PX = 56
+
+/**
+ * Sideways travel, in CSS px, that arms "keep as draft" when the release would
+ * otherwise send (`draftZone`).
+ *
+ * The same dead zone as the cancel gesture, for the same reason: holding still
+ * must never arm it. Either direction counts, because the hold bar spans the
+ * composer and a thumb at either edge only has room to move one way.
+ */
+export const DRAFT_THRESHOLD_PX = 56
+
+/**
+ * Which completion the finger is in right now, read from how far it has moved
+ * from where the press began. Cancel wins when both distances are crossed: it
+ * is the existing contract, and a discard is the one outcome that has to be
+ * reachable from anywhere.
+ */
+export function holdZone(dx: number, dy: number, draftZone: boolean): 'cancel' | 'draft' | null {
+  if (-dy >= CANCEL_THRESHOLD_PX) return 'cancel'
+  if (draftZone && Math.abs(dx) >= DRAFT_THRESHOLD_PX) return 'draft'
+  return null
+}
 
 type Phase = PttPhase
 
@@ -79,6 +106,12 @@ export interface UseTouchPushToTalkOpts {
   target: HTMLElement | null
   /** Disable entirely (STT off, composer disabled, a modal owns the surface). */
   disabled?: boolean
+  /**
+   * Offer the sideways "keep as draft" zone. Only meaningful when a plain
+   * release sends (`stt.submit_on_release`); with it off a release already
+   * keeps the draft, so a second gesture for the same outcome would be noise.
+   */
+  draftZone?: boolean
 }
 
 /**
@@ -89,7 +122,7 @@ export interface UseTouchPushToTalkOpts {
  * opened on the press, so something WAS dropped, and dropping it silently on the
  * most likely first gesture teaches nothing.
  */
-export type HoldBarState = 'idle' | 'holding' | 'armed-cancel' | 'settling' | 'tap-too-short'
+export type HoldBarState = 'idle' | 'holding' | 'armed-cancel' | 'armed-draft' | 'settling' | 'tap-too-short'
 
 /** How long the discarded-tap cue stays up. Long enough to read, short enough
  *  that it cannot be mistaken for a state the next press has to clear. */
@@ -130,11 +163,14 @@ export interface TouchPushToTalkState {
    * and has not yet promised anything.
    */
   bar: HoldBarState
+  /** True while the finger is in the "keep as draft" zone — release will stop
+   *  and keep the transcript unsent. Never true without `draftZone`. */
+  armedDraft: boolean
 }
 
 export function useTouchPushToTalk(
   voice: VoiceControls,
-  { target, disabled }: UseTouchPushToTalkOpts,
+  { target, disabled, draftZone = false }: UseTouchPushToTalkOpts,
 ): TouchPushToTalkState {
   const [cfg, setCfg] = useState<PttConfig>(() => loadPttConfig())
   const phaseRef = useRef<Phase>('idle')
@@ -150,6 +186,15 @@ export function useTouchPushToTalk(
     armedRef.current = v
     setArmedCancelState(v)
   }, [])
+  const [armedDraft, setArmedDraftState] = useState(false)
+  const armedDraftRef = useRef(false)
+  const setArmedDraft = useCallback((v: boolean) => {
+    if (armedDraftRef.current === v) return
+    armedDraftRef.current = v
+    setArmedDraftState(v)
+  }, [])
+  const draftZoneRef = useRef(draftZone)
+  draftZoneRef.current = draftZone
 
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
@@ -187,8 +232,11 @@ export function useTouchPushToTalk(
     setTapCue(true)
     cueTimerRef.current = setTimeout(() => { cueTimerRef.current = null; setTapCue(false) }, TAP_CUE_MS)
   }, [])
-  /** Y where the press began, in client coords — the origin the drag measures from. */
+  /** Where the press began, in client coords — the origin the drag measures from. */
   const originYRef = useRef(0)
+  const originXRef = useRef(0)
+  /** The zone of the latest move, so the hold can arm its cue on arrival. */
+  const lastZoneRef = useRef<'cancel' | 'draft' | null>(null)
   /** The pointer this gesture owns. A second finger must not steer it. */
   const pointerIdRef = useRef<number | null>(null)
 
@@ -271,8 +319,9 @@ export function useTouchPushToTalk(
     session.bumpGeneration()
     setPhase('idle')
     setArmedCancel(false)
+    setArmedDraft(false)
     pointerIdRef.current = null
-  }, [clearTimers, session, setPhase, setArmedCancel])
+  }, [clearTimers, session, setPhase, setArmedCancel, setArmedDraft])
   coreSeamsRef.current.resetToIdle = toIdle
 
   /**
@@ -283,8 +332,11 @@ export function useTouchPushToTalk(
    * session whose capture never began is a no-op that leaves the startup to go
    * live afterwards with nobody watching it — so only `cancel()` can end that
    * window. See `usePushToTalk.disarm` for the full argument.
+   *
+   * `intent` comes only from a release the person chose; the cap timer and a
+   * hidden page commit without one, so they never send.
    */
-  const disarm = useCallback((commit: boolean) => {
+  const disarm = useCallback((commit: boolean, intent?: StopIntent) => {
     const was = phaseRef.current
     toIdle()
     if (was === 'idle') return
@@ -302,7 +354,7 @@ export function useTouchPushToTalk(
        * been thrown away.
        */
       setDraining(true)
-      voiceRef.current.stop()
+      voiceRef.current.stop(intent)
     } else voiceRef.current.cancel()
   }, [toIdle, session])
   coreSeamsRef.current.disarm = disarm
@@ -349,7 +401,8 @@ export function useTouchPushToTalk(
       if (voiceRef.current.recording || (session.startPending() && session.owner() !== null)) {
         toIdle()
         session.setOwner(null)
-        if (voiceRef.current.recording) voiceRef.current.stop()
+        // Pressing the bar to end a running capture is a deliberate stop.
+        if (voiceRef.current.recording) voiceRef.current.stop('finish')
         else voiceRef.current.cancel()
         return
       }
@@ -362,24 +415,37 @@ export function useTouchPushToTalk(
       setDraining(false)
       pointerIdRef.current = e.pointerId
       originYRef.current = e.clientY
+      originXRef.current = e.clientX
       // Keeps moves and the release coming to US after the finger leaves the
       // button — which is precisely what dragging into the cancel zone does.
       if (typeof el.setPointerCapture === 'function') {
         try { el.setPointerCapture(e.pointerId) } catch { /* not captured; window listeners still cover it */ }
       }
       setArmedCancel(false)
+      setArmedDraft(false)
       setPhase('arming')
       session.launch('gesture')
       const gen = session.generation()
+      lastZoneRef.current = null
       armTimerRef.current = setTimeout(() => {
-        if (session.generation() === gen && phaseRef.current === 'arming') session.beginHold()
+        if (session.generation() !== gen || phaseRef.current !== 'arming') return
+        session.beginHold()
+        // A finger already in the draft zone when the press becomes a hold
+        // stays there with no further move, so arm the cue now rather than
+        // waiting for one.
+        setArmedDraft(lastZoneRef.current === 'draft')
       }, cfgRef.current.holdMs)
     }
 
     const onPointerMove = (e: PointerEvent) => {
       if (pointerIdRef.current !== e.pointerId) return
       if (phaseRef.current === 'idle') return
-      setArmedCancel(originYRef.current - e.clientY >= CANCEL_THRESHOLD_PX)
+      const zone = holdZone(e.clientX - originXRef.current, e.clientY - originYRef.current, !!draftZoneRef.current)
+      lastZoneRef.current = zone
+      setArmedCancel(zone === 'cancel')
+      // Only a hold can keep a draft: a release while still arming is a tap,
+      // which discards, so the bar must not promise a draft before then.
+      setArmedDraft(zone === 'draft' && phaseRef.current === 'holding')
     }
 
     const onPointerUp = (e: PointerEvent) => {
@@ -395,8 +461,10 @@ export function useTouchPushToTalk(
        * that cannot be dropped. `armedRef` remains what the bar renders — it can
        * lag the finger by a frame, but it no longer decides anything.
        */
-      if (originYRef.current - e.clientY >= CANCEL_THRESHOLD_PX) { disarm(false); return }
-      if (phase === 'holding') { disarm(true); return }
+      // The draft zone is read the same way, from the release position.
+      const zone = holdZone(e.clientX - originXRef.current, e.clientY - originYRef.current, !!draftZoneRef.current)
+      if (zone === 'cancel') { disarm(false); return }
+      if (phase === 'holding') { disarm(true, zone === 'draft' ? undefined : 'finish'); return }
       /*
        * A sub-threshold tap DISCARDS. Capture opened on the pointerdown so the
        * opening word is never clipped, but a press that never became a hold is
@@ -450,7 +518,7 @@ export function useTouchPushToTalk(
     // Rebinds whenever the target appears, changes, or unmounts — which is the
     // whole reason this takes an element rather than a ref. Everything else is
     // read through refs, so a parent re-render does not re-bind.
-  }, [target, session, disarm, toIdle, abandon, setPhase, setArmedCancel, showTapCue, clearTapCue])
+  }, [target, session, disarm, toIdle, abandon, setPhase, setArmedCancel, setArmedDraft, showTapCue, clearTapCue])
 
   /*
    * Close the drain the moment capture actually ends.
@@ -476,13 +544,15 @@ export function useTouchPushToTalk(
   // a drain that is still finishing is the more important thing to say.
   const bar: HoldBarState = armedCancel
     ? 'armed-cancel'
-    : phase === 'holding'
-      ? 'holding'
-      : phase === 'idle' && draining && voice.recording
-        ? 'settling'
-        : tapCue
-          ? 'tap-too-short'
-          : 'idle'
+    : armedDraft
+      ? 'armed-draft'
+      : phase === 'holding'
+        ? 'holding'
+        : phase === 'idle' && draining && voice.recording
+          ? 'settling'
+          : tapCue
+            ? 'tap-too-short'
+            : 'idle'
 
-  return { phase, holding: phase === 'holding', armedCancel, owns, bar }
+  return { phase, holding: phase === 'holding', armedCancel, armedDraft, owns, bar }
 }

@@ -25,6 +25,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -476,32 +477,77 @@ class TestSemanticRecallWiring(_Env):
             store.close()
         return store, literal, semantic
 
-    def test_production_dispatch_uses_a_bounded_query_vector(self) -> None:
-        """Different wording wins semantically without an unbounded queue wait."""
+    def _dispatch_with_bounded_query_vector(
+        self, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        """Run production dispatch once and check the query vector's deadline.
+
+        The checks run AFTER dispatch, never inside the fake embedder:
+        ``_attach_similar_safely`` treats any embedder exception as "no vector" and
+        falls back to keyword recall, so a failed check raised inside the fake would
+        surface only as the literal match ranking first.
+        """
         from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
         from kiro_crew.embeddings import PRIORITY_INTERACTIVE, embedding_work
 
         store, _literal, semantic = self._real_store_with_semantic_pair()
-        self.assertEqual(dispatch._SIMILAR_QUERY_TIMEOUT_SECS, 5.0)
+        timeout = dispatch._SIMILAR_QUERY_TIMEOUT_SECS
+        self.assertEqual(timeout, 5.0)
+        calls: list[tuple[str, int, float | None, float]] = []
 
         def _query_vector(text: str, priority: int) -> list[float]:
             work = embedding_work.get()
-            self.assertIsNotNone(work, "dispatch must carry an explicit embedding deadline")
-            assert work is not None
-            remaining = work.deadline - time.monotonic()
-            self.assertGreater(remaining, 0.0)
-            self.assertLessEqual(remaining, dispatch._SIMILAR_QUERY_TIMEOUT_SECS)
-            self.assertEqual(priority, PRIORITY_INTERACTIVE)
-            self.assertEqual(text, "database outage")
+            calls.append(
+                (text, priority, None if work is None else work.deadline, clock())
+            )
             return [1.0, 0.0]
 
+        before = clock()
         with mock.patch.object(store, "_try_embed", side_effect=_query_vector):
             with mock.patch("kiro_crew.vector_memory.VectorMemoryStore", return_value=store):
                 claimed = self._claimed(title="database outage", resource="")
                 dispatch._attach_similar_safely(claimed)
 
+        self.assertEqual(len(calls), 1, "the query is embedded exactly once")
+        text, priority, deadline, called_at = calls[0]
+        self.assertEqual(text, "database outage")
+        self.assertEqual(priority, PRIORITY_INTERACTIVE)
+        self.assertIsNotNone(deadline, "dispatch must carry an explicit embedding deadline")
+        assert deadline is not None
+        self.assertGreater(deadline, called_at, "the deadline is still ahead at the call")
+        # Compare the deadline with the same `clock + timeout` sum dispatch computes,
+        # not `deadline - now` with `timeout`: that subtraction can come out a few ulps
+        # above 5.0 when the clock has not ticked (Windows) near a power of two.
+        self.assertGreaterEqual(deadline, before + timeout)
+        self.assertLessEqual(deadline, called_at + timeout)
+
         self.assertTrue(claimed.similar)
         self.assertEqual(claimed.similar[0].entry_id, semantic.entry_id)
+
+    def test_production_dispatch_uses_a_bounded_query_vector(self) -> None:
+        """Different wording wins semantically without an unbounded queue wait."""
+        self._dispatch_with_bounded_query_vector()
+
+    def test_bounded_query_vector_check_holds_on_a_still_clock(self) -> None:
+        """A clock that does not tick, at a float edge, still passes the deadline checks.
+
+        Python 3.12 on Windows reads ``time.monotonic`` from a ~15.6 ms tick, so
+        dispatch and the check often read the same value. At 1019.003 s,
+        ``(t + 5.0) - t`` is 5.000000000000114, so a ``deadline - now <= 5.0``
+        check fails there even though dispatch set the deadline exactly 5 s out.
+        """
+        import pytest
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+        from kiro_crew.testing.clock import ManualClock
+
+        clock = ManualClock(monotonic_start=1019.003)
+        still = clock.monotonic()
+        self.assertEqual(clock.monotonic(), still, "probe: the clock does not tick")
+        self.assertGreater((still + 5.0) - still, 5.0, "probe: this value is an edge")
+        with pytest.MonkeyPatch.context() as mp:
+            clock.install(mp, dispatch)
+            self._dispatch_with_bounded_query_vector(clock.monotonic)
 
     def test_cold_embedder_keeps_keyword_fallback(self) -> None:
         """No query vector is an ordinary bounded fallback, not a failed claim."""

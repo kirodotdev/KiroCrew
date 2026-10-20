@@ -59,8 +59,8 @@ extension point `McpToolingProvider.extra_mcp_scopes()`
   Kiro global only.
 - `mcp_discovery._extra_scope_sources()` yields no extra scopes, so discovery
   scans the two core files only.
-- `dashboard/handlers/mcp.py`'s apply and uninstall paths write the Kiro scope
-  only.
+- `dashboard/handlers/mcp.py`'s apply and uninstall paths (with
+  `mcp_config_purge.py`) write the Kiro scope only.
 
 The three stay symmetric on purpose. If discovery scanned a file that apply and
 uninstall could not manage, a server would show up in the dashboard that the
@@ -520,6 +520,22 @@ Probes run from `POST /api/mcp/probe`:
 - **Disabled servers are never spawned.** `probe_all()` returns a muted row as
   an unprobed `status: "disabled"` placeholder with no error text, keeping the
   tools of its last real probe, and writes nothing to the probe cache.
+- **Names that start the same process are probed one at a time.** One server is
+  often configured under several names, and probing them together starts the
+  same heavy process several times at once; the copies can each miss the probe
+  timeout and build a quarantine streak against a server that works.
+  `probe_all()` keys every local row by `_spawn_fingerprint` (command plus args;
+  env is left out, because a different token still starts the same package) and
+  holds one lock per key, taken before the shared `PROBE_MAX_CONCURRENCY` slot,
+  so rows with different keys still run in parallel. Remote rows get no key.
+  Each name still gets its own probe, env and verdict, and the quarantine rule
+  is unchanged. The cost: a pass with *n* names of one slow server takes up to
+  *n* full probe durations for that server instead of one, and one probe of a
+  stdio server can last nearly two timeouts (`initialize` and `tools/list`
+  each get a fresh one) plus teardown. The boot gate in
+  `service_boot.py` waits `mcp_probe_timeout_secs + 15` for the first pass and
+  then starts sessions anyway, so a large alias group of a slow server can
+  outlast it; the pass still finishes in the background and fills the cache.
 - **Both calls must succeed for `ok`.** An initialize that answers and a
   `tools/list` that does not (no response, an error reply, a non-200) is a
   server no session can get a tool out of — the badge certifies "tools usable",
@@ -1703,7 +1719,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 
 | Server | Process | Tools |
 |--------|---------|-------|
-| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
+| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
 | `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
@@ -2528,6 +2544,19 @@ to the owner of its responsibility:
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
 | `radar_crew` | the Issue Radar crew tools' identity, ledger view and write scrubbing |
 
+`mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
+caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the
+stdio entry point — and is a mirror facade over four sibling owners, so every name
+still reads and patches as `mcp_cron.<name>`. New cron-server code goes to the owner of
+its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `mcp_cron_shell_scan` | the lexical scanners the cron shell gate runs: the protected-path and secret-environment matchers, quote states, `$` expansions, extglob and brace expansion, and whether a glob can reach a credential directory |
+| `mcp_cron_vet` | the cron gate: the governance, command and script vets, the fire-time re-vet `vet_job_at_fire_time`, the storage-time denial audit, and the folder `cron_add` names |
+| `mcp_cron_tool_list` | the tool catalogue `tools/list` returns |
+| `mcp_cron_list_render` | `cron_list`'s full, compact and JSON renderings and the run-history fold |
+
 The remaining upward dependency is known: the plumbing could move to a module the
 handlers own, which would make `mcp_tools` a leaf. That is a separate change —
 it has to retarget every patch site, which is mechanical but touches far more
@@ -2636,6 +2665,17 @@ stay in `lang` and every result carries
 A placement in the app shell (the top bar's Search Everywhere trigger) has no
 route or parent path: find_ui returns `on_every_page: true` for it and keeps it
 under any `surface` filter.
+
+`kiro_crew/ui_index.py` keeps the tool's surface -- `find_ui`, `browse_ui` and its
+areas, the guide bindings `authoritative_find` and `planned_find`, and
+`setting_labels` -- and is a mirror facade (`kiro_crew._facade_mirror`) over three
+sibling owners, so every other name still reads and patches as `ui_index.<name>`.
+New work goes to the owner of its responsibility: `ui_index_match.py` (the shared
+constants, the question vocabulary and the matcher), `ui_index_load.py` (reading,
+validating, merging and caching the packaged index) and `ui_index_records.py` (one
+location's answer record: labels, requirements, guide and find references). The
+owners sit beside the facade because `INDEX_PATH` and `AUTO_INDEX_PATH` resolve from
+their module's own directory.
 
 The index is generated by `website/scripts/gen-ui-index.mjs`
 (`npm run gen:ui`) from registries the dashboard already renders, never a
@@ -3126,7 +3166,7 @@ The artifact (`buildAutoArtifact` in `scripts/lib/ui-index.mjs`) holds only the
 auto locations and the labels they use, plus `base_input_digest`, the
 `input_digest` of the committed index it hangs off, and the build-time core
 coverage numbers. The committed index's digest no longer carries anything the
-auto tier derived. `ui_index.py` merges the artifact at load only after checking
+auto tier derived. `ui_index_load.py` merges the artifact at load only after checking
 all of it: schema, `artifact: "auto"`, `base_input_digest` equal to the
 committed index's, the same locales, only `tier: auto` entries (each validated
 like any location, `conditions_unknown: true` and no terms), new ids whose paths
@@ -4009,7 +4049,7 @@ cannot arrive inside one whose grant was never meant to cover it.
 
 Per-agent scoping composes on top and needs no new mechanism: an agent spec's own
 `mcpServers` map decides which agents see a server at all
-(`agent_discovery.py`), so a server can be handed to an orchestrator-class agent
+(`agent_discovery_parts/agent_roster.py`), so a server can be handed to an orchestrator-class agent
 without every agent inheriting it.
 
 Adding a managed server is a **parity tax** — the name must appear in
@@ -4508,7 +4548,7 @@ is what `nothing_to_do`, `monitor_start`, `monitor_watch`, `monitor_update`,
 `monitor_stop`, `autonudge_stop`, `set_project`, `suggest_followup`,
 `reset_conversation` and `chat_tag` do (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
-payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
+payload and **no session key**. `_on_tool_result` (`dashboard/chat_turn/tool_results.py`)
 decodes the marker, applies the effect against **its own** `slot.key`, then
 strips the marker from the stored transcript. Sub-agent isolation is therefore
 structural rather than cryptographic: a sub-agent's tool result flows through the

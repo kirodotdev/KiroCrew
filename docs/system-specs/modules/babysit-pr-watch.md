@@ -123,12 +123,18 @@ retry the allowance exists for IS the debt's own fire.
 
 The judged baseline (`judge_pr_seen`) is committed only after the judge returns a
 verdict (`autonudge_service/gate.py` `_commit_judge_pr_seen`), so a turn spent without
-a verdict cannot move it. With no judge, a quiet tick delivers, except when the reading
-is whole and byte-identical to the previous one: no criterion about the subject can have
-become true while the subject did not change. PR bodies the judge compares are stashed in
-memory only, capped at `MAX_BODY_STASHES` (64) in `autonudge_judge.py`; a dropped stash
-makes the next reading partial, and a partial reading fires. Merged and closed map to a
-terminal outcome in the auto-nudge core, not in the fetcher.
+a verdict cannot move it. A reading that is whole and byte-identical to the previous one
+means no criterion about the subject can have become true while the subject did not
+change. With no judge, that tick is quiet and every other quiet tick delivers. With a
+judge, the same tick asks no judge when every target the judge would read is the watched
+pull request and no judge wake or terminal turn is owed (`gate.py`
+`_unchanged_reading_skips_judge`), so a judge that cannot answer (a timeout is a
+fallback, and a fallback fires) does not spend a turn on an unchanged board. The quiet
+floor still delivers, and a `decisions.nudge_wake.quiet_streak_floor` set below it keeps
+every tick judged, so that shorter bound holds. PR bodies the judge compares are stashed
+in memory only, capped at `MAX_BODY_STASHES` (64) in `autonudge_judge.py`; a dropped
+stash makes the next reading partial, and a partial reading fires. Merged and closed map
+to a terminal outcome in the auto-nudge core, not in the fetcher.
 
 A partial reading is never screened quiet on the half that arrived, but a REPEAT of one
 does not buy a turn every interval either. `MonitorState.short_reading_digest` holds the

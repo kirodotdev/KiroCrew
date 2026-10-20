@@ -52,6 +52,15 @@ from ._logger import set_verbose
 from ._utils import suppress_stdout_stderr
 
 
+# kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: helper for the bounded
+# decode in `Llama.embed` (see the comment there). A pointer `start` elements
+# into one of `llama_batch`'s per-token arrays, the C idiom `batch.token + start`
+# that llama.cpp's own examples use to decode a view of a larger batch.
+def _kiro_crew_batch_offset(ptr, start: int):
+    address = ctypes.addressof(ptr.contents) + start * ctypes.sizeof(ptr._type_)
+    return ctypes.cast(address, type(ptr))
+
+
 class Llama:
     """High-level Python wrapper for a llama.cpp model."""
 
@@ -1126,8 +1135,69 @@ class Llama:
         # decode and fetch embeddings
         data: Union[List[List[float]], List[List[List[float]]]] = []
 
+        # kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: bounded decode for
+        # last-token pooling. In embedding mode llama.cpp makes every token of a
+        # batch an output and reserves n_vocab + n_embd floats per output (the
+        # logits are reserved and computed even though nothing reads them), in a
+        # buffer that grows to the largest batch ever decoded and never shrinks:
+        # 1.19 GB after one 2,048-token input for Qwen3-Embedding-0.6B. When the
+        # host sets `kiro_crew_max_decode_tokens`, a packed batch longer than that
+        # is decoded as consecutive slices of at most that many tokens, and each
+        # sequence's vector is read right after the slice holding its last token.
+        # Only for LAST pooling on a model the host knows to be causal with a KV
+        # cache: the cache carries every earlier slice, so each token's state is
+        # what llama.cpp computes when it walks the same tokens as consecutive
+        # micro-batches inside one call. A unified-cache decode splits a batch into
+        # consecutive n_ubatch slices in batch order, so with the bound set to
+        # n_ubatch (as the host does) each call is exactly one of those
+        # micro-batches. Unset (upstream's default), a MEAN/CLS/NONE pooling, or a
+        # batch within the bound keeps upstream's single decode.
+        max_decode_tokens = getattr(self, "kiro_crew_max_decode_tokens", None)
+        bounded_decode = (
+            isinstance(max_decode_tokens, int)
+            and max_decode_tokens > 0
+            and pooling_type == llama_cpp.LLAMA_POOLING_TYPE_LAST
+        )
+
+        def decode_batch_in_slices(seq_sizes: List[int]):
+            batch = self._batch.batch
+            n_total = batch.n_tokens
+            seq_ends: List[int] = []
+            end = 0
+            for size in seq_sizes:
+                end += size
+                seq_ends.append(end)
+            seq = 0
+            start = 0
+            while start < n_total:
+                n_slice = min(max_decode_tokens, n_total - start)
+                view = llama_cpp.llama_batch(
+                    n_tokens=n_slice,
+                    token=_kiro_crew_batch_offset(batch.token, start),
+                    embd=batch.embd,
+                    pos=_kiro_crew_batch_offset(batch.pos, start),
+                    n_seq_id=_kiro_crew_batch_offset(batch.n_seq_id, start),
+                    seq_id=_kiro_crew_batch_offset(batch.seq_id, start),
+                    logits=_kiro_crew_batch_offset(batch.logits, start),
+                )
+                return_code = llama_cpp.llama_decode(self._ctx.ctx, view)
+                if return_code != 0:
+                    raise RuntimeError(f"llama_decode returned {return_code}")
+                start += n_slice
+                while seq < len(seq_ends) and seq_ends[seq] <= start:
+                    ptr = llama_cpp.llama_get_embeddings_seq(self._ctx.ctx, seq)
+                    embedding: List[float] = ptr[:n_embd]
+                    if normalize:
+                        embedding = internals.normalize_embedding(embedding)
+                    data.append(embedding)
+                    seq += 1
+            self._batch.reset()
+
         def decode_batch(seq_sizes: List[int]):
             self._ctx.kv_cache_clear()
+            if bounded_decode and self._batch.n_tokens() > max_decode_tokens:
+                decode_batch_in_slices(seq_sizes)
+                return
             self._ctx.decode(self._batch)
             self._batch.reset()
 

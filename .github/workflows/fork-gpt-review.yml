@@ -1244,28 +1244,48 @@ jobs:
           sudo rm -f /tmp/bedrock-signer.env 2>/dev/null || true
           echo "signer stopped; credential file removed."
 
+      # The outbound scrub is `scripts/scope_redact.py`, staged from the BASE
+      # commit. A redactor taken from the change under review could
+      # rewrite the scrub of its own published output. Every model step after
+      # this one is read-only, so nothing can rewrite the staged copy.
+      - name: Stage the base-owned redactor
+        id: redactor
+        if: always() && steps.pr.outputs.obsolete != 'true'
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a symlink at this path would redirect the write.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA). Refusing to publish text no base-owned scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
       - name: Redact credential shapes
         if: always() && steps.pr.outputs.obsolete != 'true'
+        env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
         run: |
           if [ -f codex-review-output.md ]; then
-            perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
-            # Then redact the ACTUAL inherited credential VALUES, not just their
-            # shapes. An AWS secret access key is 40 characters of [A-Za-z0-9/+=]
-            # with no distinctive prefix, so a BARE value (no `name=` beside it)
-            # survives every shape rule above: it is not AKIA/ASIA, it is not a
-            # named key=value, and it is far short of the 200+ char base64 run the
-            # withhold filter looks for. Matching the value itself cannot be
-            # evaded by how the model chooses to print it. This runs before the
-            # comment step, so it protects the blocked, clear and unstamped paths
-            # alike rather than only the branch that surfaces an unstamped body.
-            for cred in AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID; do
-              val="$(printenv "$cred" 2>/dev/null || true)"
-              # Length guard, not just an emptiness guard: `\Q\E` on an empty
-              # string is an empty pattern that matches at EVERY position and
-              # would carpet the file with the marker.
-              [ "${#val}" -ge 16 ] || continue
-              CRED_VALUE="$val" perl -i -pe 's/\Q$ENV{CRED_VALUE}\E/[REDACTED-CREDENTIAL]/g' codex-review-output.md
-            done
+            # `--redact-env` also replaces the ACTUAL inherited credential VALUES. A bare
+            # AWS secret access key has no prefix and no `name=` beside it, so it survives
+            # every shape rule and is far short of the 200+ char run the withhold filter
+            # looks for. Matching the value cannot be evaded by how the model prints it,
+            # and the redactor reads it from the environment, never from a command line.
+            # No redactor, or a scrub that fails, is a refusal: the file is removed so
+            # no later `always()` step can publish it raw.
+            if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+              || ! python3 "$REDACTOR" --mode text --redact-env AWS_SECRET_ACCESS_KEY --redact-env AWS_SESSION_TOKEN --redact-env AWS_ACCESS_KEY_ID codex-review-output.md; then
+              echo "::error::the base-owned redactor could not scrub codex-review-output.md. Refusing to publish it raw."
+              rm -f codex-review-output.md
+              exit 1
+            fi
           fi
 
       # ── ADJUDICATION ────────────────────────────────────────────────────────
@@ -1523,7 +1543,7 @@ jobs:
           || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
           )
-        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
+        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -1587,6 +1607,7 @@ jobs:
           always() && steps.pr.outputs.obsolete != 'true' &&
           steps.gpt_pass2.outputs.blocking == 'true'
         env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
           EXEC_FILE: ${{ steps.adjudicate.outputs.execution_file }}
           COUNT: ${{ steps.adj_input.outputs.count }}
@@ -1614,7 +1635,14 @@ jobs:
             fi
             printf '%s\n' "$out" > codex-adjudication.md
           fi
-          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-adjudication.md
+          # No redactor, or a scrub that fails, is a refusal: the file is removed so
+          # no later `always()` step can publish it raw.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+            || ! python3 "$REDACTOR" --mode text codex-adjudication.md; then
+            echo "::error::the base-owned redactor could not scrub codex-adjudication.md. Refusing to publish it raw."
+            rm -f codex-adjudication.md
+            exit 1
+          fi
 
           parse="$RUNNER_TEMP/adj-parse.md"
           sed -E 's/^[[:space:]]*//; s/^[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"

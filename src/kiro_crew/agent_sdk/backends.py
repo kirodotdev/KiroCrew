@@ -168,6 +168,9 @@ with no row here.
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
+   * - ``ACP_BACKENDS_EFFORT_OVERLAY``
+     - driver-internal (whether the workspace ``cli.json`` effort keys are written,
+       read back at construction and cleared)
    * - ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` Tool Search keys are written)
    * - ``ACP_BACKENDS_CLIENT_META_SETTINGS``
@@ -799,6 +802,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
 )
 from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_CLIENT_META_SETTINGS,
+    ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,

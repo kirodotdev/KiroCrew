@@ -1,4 +1,4 @@
-"""Tests for _sync_mcp_to_agent and _sync_mcp_to_agent_batch in mcp.py."""
+"""Tests for _sync_mcp_to_agent and _sync_mcp_to_agent_batch in mcp_agent_sync.py."""
 
 from __future__ import annotations
 
@@ -1448,9 +1448,18 @@ class TestOffloadedSyncHoldsTheConfigLock:
 
     def test_every_offloaded_sync_is_under_the_config_lock(self) -> None:
 
-        lines = (
-            (_REPO_ROOT / "src/kiro_crew/dashboard/handlers/mcp.py").read_text(encoding="utf-8").splitlines()
-        )
+        import importlib
+
+        from kiro_crew.dashboard.handlers import mcp
+
+        # The handler facade and its owners, each file's lines in turn.
+        lines = [
+            line
+            for m in (mcp.__name__, *mcp._OWNERS)
+            for line in Path(importlib.import_module(m).__file__)
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
         offenders: list[str] = []
         for i, ln in enumerate(lines):
             if "asyncio.to_thread(" in ln and "_sync_mcp_to_agent" in ln:

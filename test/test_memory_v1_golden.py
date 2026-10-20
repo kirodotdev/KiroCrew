@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,11 +43,13 @@ from kiro_crew import embeddings, resource_status, session_surface, vector_memor
 from kiro_crew.config import paths as config_paths
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import config_dir
+from kiro_crew.context_assembly import budget as budget_mod
 from kiro_crew.embeddings import PRIORITY_NORMAL
 from kiro_crew.hooks import HookManager
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.vector_memory import VectorMemoryStore
 
 # ``context._memory_stores`` / ``context._lesson_stores`` are module globals behind
@@ -838,3 +842,172 @@ def test_default_store_resolves_to_config_dir_memory_db(seeded: Seeded) -> None:
     assert expected.is_file()
     # And it is the store the assembled payload actually read from.
     assert ctx._memory_stores["default"].vector_store is seeded.vectors
+
+
+# ── 8. The first message embedded before the build ───────────────────────────
+#
+# ``embed_startup_query`` runs the build's one inference early (the dashboard starts
+# it beside ``session/new``). It may only move WHEN that inference happens: what the
+# first turn carries must not change, and nothing but the query's vector is kept.
+
+#: A fixed query set: all three topic axes, one of them, and none of them.
+_EARLY_EMBED_QUERIES = (QUERY, "tabs", "unrelated words only")
+
+
+def _early_embed(seeded: Seeded, query: str) -> bool:
+    return ctx.embed_startup_query(seeded.builder, query, workspace=None, memory_store=None)
+
+
+def _first_turn(seeded: Seeded, query: str = QUERY) -> str:
+    return seeded.normalize(seeded.builder.build_message(query, True, session_key=SESSION_KEY)[0])
+
+
+def _set_memory_config(seeded: Seeded, **memory: object) -> None:
+    config_file = seeded.home / "config.json"
+    data = json.loads(config_file.read_text(encoding="utf-8"))
+    data["memory"] = memory
+    config_file.write_text(json.dumps(data), encoding="utf-8")
+    loaded = KiroCrewConfig.load().memory
+    assert {key: getattr(loaded, key) for key in memory} == memory
+
+
+@pytest.mark.parametrize("query", _EARLY_EMBED_QUERIES)
+def test_an_early_embed_leaves_the_first_turn_byte_identical(
+    seeded: Seeded, monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    """Same blocks and the same ranked rows, and the build runs no inference of its own."""
+    cold = _first_turn(seeded, query)
+    # A new backend instance empties the shared embed cache on its first use, so the
+    # second build cannot be served by the first build's inference.
+    monkeypatch.setattr(embeddings, "_shared_embedder", None, raising=False)
+    seeded.inference_calls.clear()
+
+    assert _early_embed(seeded, query) is True
+    assert seeded.inference_calls == [query]
+    assert _first_turn(seeded, query) == cold
+    assert seeded.inference_calls == [query]
+
+
+def test_memory_written_after_an_early_embed_reaches_the_first_turn(seeded: Seeded) -> None:
+    """Only the query's vector is kept: the store is read when the build runs."""
+    assert _early_embed(seeded, QUERY) is True
+    late_lesson = "Tag every deploy review with the release train."
+    late_episode = "We deploy after the review once tabs are fixed."
+    assert seeded.vectors.write_lesson(late_lesson).outcome.value == "inserted"
+    assert seeded.vectors.write_episodic(late_episode, importance=0.5, source="consolidation")
+
+    message = _first_turn(seeded)
+    assert late_lesson in message
+    assert late_episode in message
+    assert seeded.inference_calls.count(QUERY) == 1
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [
+        pytest.param({"inject_activity": False}, id="activity-off"),
+        pytest.param({"inject_memory": False}, id="memory-off"),
+        pytest.param({"persistence_enabled": False}, id="persistence-off"),
+    ],
+)
+def test_an_early_embed_runs_only_where_the_build_embeds(
+    seeded: Seeded, memory: dict[str, object]
+) -> None:
+    """Declined where the build itself would run no inference, so none is wasted."""
+    _set_memory_config(seeded, **memory)
+    assert _early_embed(seeded, QUERY) is False
+    _first_turn(seeded)
+    assert seeded.inference_calls == []
+
+
+def test_a_zero_wait_turns_the_early_embed_off_and_the_build_embeds_itself(
+    seeded: Seeded,
+) -> None:
+    _set_memory_config(seeded, startup_recall_timeout_secs=0.0)
+    assert _early_embed(seeded, QUERY) is False
+    assert seeded.inference_calls == []
+    _first_turn(seeded)
+    assert seeded.inference_calls == [QUERY]
+
+
+def test_an_early_embed_skips_a_blank_message_and_a_store_without_vectors(
+    seeded: Seeded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _early_embed(seeded, "") is False
+    monkeypatch.setattr(seeded.memory, "vector_store", None)
+    assert _early_embed(seeded, QUERY) is False
+    assert seeded.inference_calls == []
+
+
+class _HeldTopicBackend(_TopicBackend):
+    """Holds each inference until the test releases it, and reports a waiter joining.
+
+    ``promote_pending`` is what a caller that found the same text already in flight
+    calls before it waits, so it is the signal that the build is waiting on the
+    early embed rather than running its own.
+    """
+
+    def __init__(
+        self, calls: list[str], release: threading.Event, running: threading.Event
+    ) -> None:
+        super().__init__(calls)
+        self._release = release
+        self._running = running
+        self.waiter_joined = threading.Event()
+
+    def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float]:
+        self._running.set()
+        assert self._release.wait(60), "the test never released the held inference"
+        return super().embed(text, priority=priority)
+
+    def promote_pending(self, work: object, priority: int) -> None:
+        self.waiter_joined.set()
+
+
+def test_a_build_ranks_by_keyword_once_its_wait_runs_out(
+    seeded: Seeded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build that joins the running early embed waits only the configured wait.
+
+    The keyword-ranked first turn is the one a build with no time left produces.
+    One manual clock then drives the deadline (``budget``) and the wait
+    (``embeddings_settings``), and the build is let go by moving it by the configured wait
+    -- one second, not the five a build that embeds for itself keeps -- once the
+    build has joined the held inference. Nothing races a window.
+    """
+    with monkeypatch.context() as no_time_left:
+        no_time_left.setattr(ctx, "_PROMPT_BUILD_EMBED_TIMEOUT_SECS", 0.0)
+        keyword_ranked = _first_turn(seeded)
+    assert seeded.inference_calls == []
+    wait = KiroCrewConfig.load().memory.startup_recall_timeout_secs
+    assert wait == 1.0 < ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS
+
+    clock = ManualClock()
+    clock.install(monkeypatch, budget_mod)
+    # The facade binds no clock: a joined wait ends when ``EmbeddingWork.expired``,
+    # in the owner below, reads the deadline as passed.
+    clock.install(monkeypatch, sys.modules["kiro_crew.embeddings_settings"])
+    release, running = threading.Event(), threading.Event()
+    backend = _HeldTopicBackend(seeded.inference_calls, release, running)
+    monkeypatch.setattr(embeddings, "_backend_factory", lambda: backend, raising=False)
+    monkeypatch.setattr(embeddings, "_shared_embedder", None, raising=False)
+
+    early = threading.Thread(target=_early_embed, args=(seeded, QUERY), daemon=True)
+    built: list[str] = []
+    build = threading.Thread(target=lambda: built.append(_first_turn(seeded)), daemon=True)
+    try:
+        early.start()
+        assert running.wait(30), "the early embed never reached the backend"
+        build.start()
+        assert backend.waiter_joined.wait(30), "the build did not join the early embed"
+        clock.advance(wait)
+        build.join(30)
+        assert not build.is_alive(), "the build kept waiting past its deadline"
+        assert not release.is_set()
+        assert built == [keyword_ranked]
+    finally:
+        release.set()
+        early.join(30)
+    assert not early.is_alive()
+    # The held inference still finished, and its vector is cached for the next read.
+    assert seeded.inference_calls == [QUERY]

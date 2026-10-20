@@ -30,7 +30,13 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool handler and its `HANDLERS` row |
 | `src/kiro_crew/mcp_tools/control_parts/schemas.py` | The `select_crew` tool declaration |
 | `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
-| `src/kiro_crew/members.py` | Per-crew member space: activity log, DM-thread binding, permanent rules, self-maintained briefing, the member turn chokepoint |
+| `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
+| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
+| `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
+| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `trust/` and the identity it answers for a session |
+| `src/kiro_crew/members_parts/self_edit.py` | What a crewmate may change on its own record: cleaning, the update, its undo, the rename |
+| `src/kiro_crew/members_parts/prompt_layers.py` | The permanent rules and the self-maintained briefing |
+| `src/kiro_crew/members_parts/member_activity.py` | The activity log |
 | `src/kiro_crew/subagent_parts/agent_policy.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` (both read and patched through `kiro_crew.subagent`) |
 | `src/kiro_crew/dashboard/handlers/agents.py` | The agents handlers' import and patch surface: `GET /api/agents`, the model picker reads and the crew model-pin checks, composed with the `agent_admin` owners below |
 | `src/kiro_crew/dashboard/agent_admin/` | Crew CRUD on `/api/agents` (`crew_records.py`, `crew_update.py`, `crew_removal.py`), the roster row serializer (`roster.py`), the Custom agents tab's detail, fork, publish and reset (`agent_detail.py`, `fork_publish.py`, `template_lineage.py`) and the default-agent write (`default_agent.py`) |
@@ -102,19 +108,12 @@ name-only consumers (cron `agent_id`, channel and project bindings, the cycle
 shortcuts). The pop-up draws the group headers and the custom-agents hint only when it
 lists more than one kind: a header that separates nothing is chrome, and the hint
 contrasts a template against a crewmate the list must then be showing. The folded
-rows keep their `selection_kind`, and `AgentSelector` (the shared roster picker)
-groups by it under the same two headers when a caller passes `groupByKind`, in its
-own order and with its own hint: the schedule job form does, so a cron's agent field
-offers **Crewmates** then **Custom agents** in one dropdown, the custom-agents
-group there keeping the longer hint (`group_templates_hint_default_workspace`: the
-job runs the template on the default workspace with shared memory and enrols no
-crewmate, which is the fact an unattended job needs), and a template pick stores
-the bare template name -- the backend's name-first resolution runs an unaliased
-template on `default_workspace` and Global memory, so no cron contract changes.
-The chrome follows the same one-kind rule, decided on the unfiltered roster so a
-filter that narrows to one group keeps its header; the `role="group"` label stays
-for assistive technology either way. Callers that do not opt in, and any name-only
-roster, render flat as before. Unless the config key
+rows keep their `selection_kind`. `AgentSelector` (the shared roster picker) always
+renders its rows flat; the schedule job form splits the kinds itself with a **Runs
+as** switch (Custom agent / Crewmate) and hands the selector one kind at a time
+(#18772). A template pick stores the bare template name -- the backend's name-first
+resolution runs an unaliased template on `default_workspace` and Global memory, so
+no cron contract changes. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
 `/api/config/kirocrew` query), `useAgents.ts` withholds from `choices` every member
 row a listed template already COVERS (`withoutCoveredCrewmates`): the member has no
@@ -1496,7 +1495,16 @@ itself a choice to use it -- and a team whose crewmates are all hidden keeps its
 (empty) roster header. Where nothing auto-opens (below md) and every row is
 hidden, the roster says so and names the search. A row from an older gateway
 that carries no `has_dm_message` is listed. The header count and the filter
-tallies count the listed rows plus any hidden row the search reaches.
+tallies count the listed rows plus any hidden row the search reaches. So that
+count is not read as the whole crew (#21852), the list ends with one muted line
+naming the crewmates the rule hides by the label their row shows, the ones the
+user made first (origin Mine, or created on the dashboard) and then in roster
+order: all of them when there are up to three (`hidden_named_hint`), else the
+first three and a count of the rest (`hidden_more_hint`), saying that the count
+above leaves them out (`member-hidden-hint`); the form that names every hidden
+crewmate also says the search finds them. The line is drawn only
+while no search is typed, no filter narrows the list, and at least one row is
+listed (the every-row-hidden case already has its own line).
 Before any of the landing rules, a bare visit with the Crewmates preview on
 opens Mate while no message has been exchanged with it (`resolveMateLanding`:
 Mate's row has neither `has_dm_message` nor a live `last_message`), ahead of a

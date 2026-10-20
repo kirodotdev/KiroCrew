@@ -17,6 +17,8 @@ export interface InlineComment {
   column?: number
   /** Character offset of the anchor in the rendered text (textContent space). Used to disambiguate repeated occurrences of the same anchor text. */
   startOffset?: number
+  /** The anchor was selected inside a code block, whose text is not in that space: no offset exists and the first match elsewhere would be the wrong passage. */
+  inCode?: boolean
 }
 
 /** Single comment row with inline edit support. */

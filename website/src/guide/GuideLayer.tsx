@@ -21,7 +21,7 @@
  * takes focus on its own.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../components/overlayRoot'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -282,8 +282,9 @@ export function keepClearBoxes(viewport: Viewport, root: Document = document): B
 
 /** A page dialog that is modal right now (never the guide's own layer). */
 export function openModalDialog(root: Document = document): Element | null {
-  // The topmost one: dialogs portal to the end of the body, so a confirm
-  // opened from inside another dialog comes after it and covers it.
+  // The topmost one: a confirm opened from inside another dialog portals
+  // after it in document order (into the same root), so it comes later and
+  // covers it.
   const open = Array.from(root.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'))
   for (let i = open.length - 1; i >= 0; i--) {
     if (!open[i].closest(GUIDE_LAYER_SELECTOR)) return open[i]
@@ -592,7 +593,7 @@ function GuidePanel({ rect, obstacles, reserved, label, reduceMotion, panelRef, 
     }
   }
   style.maxHeight = Math.max(0, viewport.height - 2 * PANEL_MARGIN)
-  return createPortal(
+  return <OverlayPortal>
     <motion.div
       ref={ref}
       role="region"
@@ -609,9 +610,8 @@ function GuidePanel({ rect, obstacles, reserved, label, reduceMotion, panelRef, 
       style={style}
     >
       {children}
-    </motion.div>,
-    document.body,
-  )
+    </motion.div>
+  </OverlayPortal>
 }
 
 const ARROW_ICONS = { up: ArrowUp, down: ArrowDown, left: ArrowLeft, right: ArrowRight } as const
@@ -1460,8 +1460,8 @@ export default function GuideLayer() {
       {/* One status region for the whole life of the layer, so the end of a
           guide is announced into a region that already exists. Silent on the
           slot's own chat, whose result line announces it instead. */}
-      {createPortal(<div role="status" aria-live="polite" className="sr-only" data-testid="guide-finished-status">{announced}</div>, document.body)}
-      {body && anchor && createPortal(<GuideArrow rect={anchor} also={view?.step ? pickAlternativeRects(view.step, { width: window.innerWidth, height: window.innerHeight }) : []} obstacles={obstacles} reduceMotion={reduceMotion} />, document.body)}
+      <OverlayPortal><div role="status" aria-live="polite" className="sr-only" data-testid="guide-finished-status">{announced}</div></OverlayPortal>
+      {body && anchor && <OverlayPortal><GuideArrow rect={anchor} also={view?.step ? pickAlternativeRects(view.step, { width: window.innerWidth, height: window.innerHeight }) : []} obstacles={obstacles} reduceMotion={reduceMotion} /></OverlayPortal>}
       {body && (
         <GuidePanel rect={anchor} obstacles={obstacles} reserved={reserved} label={label} reduceMotion={reduceMotion} panelRef={panelEl} onFocus={onPanelFocus} onBlur={onPanelBlur} wide={!!announced}>
           {body}

@@ -1,0 +1,39 @@
+# Nightly: the Crewmates roster's search box, beside the DM that
+# `members-dm-hello` sends. Same preview switch as the DM scenario (the Feature
+# Previews card whose title starts with "Crewmates"). The search matches the
+# crewmate's name and row label (rosterFilter.ts, `matchesSearch`), so "nova"
+# keeps the seeded `nova-sky` row and a needle that matches nothing empties the
+# list. The seed may list more than one crewmate (seed_home.py writes a default
+# agent beside `nova-sky`), so the expectations never pin a roster count.
+#
+# The harness keeps only the newest three screenshots (harness.KEEP_IMAGES), so
+# the search part is three actions -- click the box, type "nova", type "zzz"
+# onto the end -- and both readings survive to the judge. Typing "zzz" onto
+# "nova" (rather than clearing first) saves the clear action that would drop
+# the "nova" screenshot. The crewmate's side panel is covered by
+# `crewmate-panel-tabs` and opening the conversation by `members-dm-hello`.
+name: members-roster-filter
+tier: nightly
+feature: members
+user_story: >-
+  As a crew operator, I want to search my crewmate roster by name, so that I
+  can find one crewmate without scrolling the whole crew.
+docs_url: docs/system-specs/modules/crew-mode.md
+summary: Enable the Crewmates preview and search the roster for nova, then for a name that matches nothing
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crewmates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
+  - Open the Crewmates page. After the preview is on, a "Crewmates" item appears in the left rail, directly under Sessions; click it.
+  - Click into the roster's search box (placeholder "Search crewmates…").
+  - Type exactly "nova" and look at the roster.
+  - Without clearing the box, type exactly "zzz" so the box reads "novazzz", and look at the roster again. Do not click anything else.
+expectations:
+  - In the screenshot taken right after typing "nova", the roster listed the Nova Sky row (its label reads "Nova Sky" or "nova-sky"; that is the same member).
+  - The search box now reads "novazzz" and the roster lists no crewmate rows.
+  - No red error message is visible.
+max_steps: 16
+max_seconds: 420

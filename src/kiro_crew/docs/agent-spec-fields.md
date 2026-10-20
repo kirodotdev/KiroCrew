@@ -123,7 +123,7 @@ shared translation in `acp/session_mcp.py` (`session_mcp_projection`):
 
 | Seam | Entry point | What it does |
 |---|---|---|
-| the runtime | `acp/runtime.py`, `AcpRuntime._mirrored_session_mcp` | called only when `has_mirror` says so — a synchronous registry read at the call site, not an await that returns nothing, so kiro-cli's own construction gains no step. Runs the projection off the event loop and hands the pooled broker stubs down as `stub_elements` |
+| the runtime | `acp/runtime_session_setup.py`, `AcpRuntime._mirrored_session_mcp` | called only when `has_mirror` says so — a synchronous registry read at the call site, not an await that returns nothing, so kiro-cli's own construction gains no step. Runs the projection off the event loop and hands the pooled broker stubs down as `stub_elements` |
 | the client | `acp/client_mcp_array.py`, `AcpClient._resolve_session_mcp_servers` | the same projection, resolved on the spawn path because it blocks on the spec read, then cached; `_session_mcp_servers` serves the shared `session/new` call site from that cache |
 
 Both call `AgentConfigMirror.session_projection` rather than `session_params`,
@@ -879,8 +879,9 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | Field | Reader |
 |---|---|
 | both on-disk forms, the parser | `src/kiro_crew/agent_spec_format.py` |
-| `name`, `description`, `model`, `welcomeMessage`, the roster | `src/kiro_crew/agent_discovery.py` |
-| `resources` `skill://` | `src/kiro_crew/agent_discovery.py` (`skill_resource_uris`, `expand_skill_uri`, `skill_uri_for_path`, `agent_skill_globs`); a generated spec's own mapping: `src/kiro_crew/agent_materialization/skill_resources.py` |
+| reading a spec file at all: the agents directory, the fenced read, project-scope discovery, the caches and the directory revision | `src/kiro_crew/agent_discovery.py`, the facade the discovery readers in the next two rows are reached through too, over the owners in `src/kiro_crew/agent_discovery_parts/`: `spec_reads.py`, `project_agents.py`, `spec_snapshot.py`, `dir_revision.py`; new discovery code goes to the owner whose responsibility it is, listed in `agent_discovery_parts/__init__.py` |
+| `name`, `description`, `model`, `welcomeMessage`, the roster | `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`AgentInfo`, `spec_str`, `spec_model`, `spec_welcome_message`), `src/kiro_crew/agent_discovery_parts/agent_roster.py` (`list_agents`, `agent_model_map`, `agent_welcome_message`) |
+| `resources` `skill://` | `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`skill_resource_uris`, `expand_skill_uri`, `skill_uri_for_path`), `src/kiro_crew/agent_discovery_parts/skill_scope.py` (`agent_skill_globs`); a generated spec's own mapping: `src/kiro_crew/agent_materialization/skill_resources.py` |
 | `resources` `file://`, the injection decision | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`), `src/kiro_crew/context.py` (`_skills_injection_plan`) |
 | `tools`, `allowedTools`, `excludedTools`, `mcpServers`, `hooks`, `toolsSettings` — the default spec's composition and the rebuild order | `src/kiro_crew/agent.py` (`build_agent_config`, `_refresh_dynamic_fields`, `rebuild_agent_config`), the facade every writer below is reached through |
 | `hooks` — normalization and the kiro-cli object form | `src/kiro_crew/agent_materialization/kiro_hooks.py` |
@@ -897,7 +898,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |
 | the KAS wire projection | `src/kiro_crew/acp/kas_agents.py` |
 | the per-harness field rulings, and which backend has a mirror at all | `src/kiro_crew/providers/mirrors/` (`base.py`, `registry.py`, `identity.py`, `claude_code.py`, `codex.py`, `opencode.py`, `goose.py`) |
-| where a mirror runs at session establishment | `src/kiro_crew/acp/runtime.py` (`AcpRuntime._mirrored_session_mcp`), `src/kiro_crew/acp/client_mcp_array.py` (`AcpClient._resolve_session_mcp_servers`) |
+| where a mirror runs at session establishment | `src/kiro_crew/acp/runtime_session_setup.py` (`AcpRuntime._mirrored_session_mcp`), `src/kiro_crew/acp/client_mcp_array.py` (`AcpClient._resolve_session_mcp_servers`) |
 | `allowedTools` → `permissions` | `src/kiro_crew/acp/kas_permissions.py` |
 | `--agent` on the spawn argv, the freshness gate | `src/kiro_crew/acp/client_start.py`, `src/kiro_crew/acp/client_spawn_env.py` |
 | `excludedTools` for Tool Search | `src/kiro_crew/agent_sdk/tool_search.py` |

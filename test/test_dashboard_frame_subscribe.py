@@ -593,3 +593,34 @@ def test_the_refetch_type_matches_the_tab_that_answers_it() -> None:
 def test_the_bootstrap_posts_the_type_the_constant_names() -> None:
     """The literal inside the script and the exported name, pinned to each other."""
     assert f'"{dashboard_frame.REFETCH_MESSAGE_TYPE}"' in dashboard_frame._BOOTSTRAP_JS
+
+
+class TestSubscribeCountsAsAPageThatRefills:
+    """A page that draws through ``subscribe`` is one a refill reaches.
+
+    The beacon's ``refill`` flag is what lets the host post new values into the open
+    document instead of loading a new one. The probe only watched ``addEventListener``,
+    and ``subscribe`` never touches it, so every such page was re-minted on every read
+    and the frame was swapped each time the data moved.
+    """
+
+    #: The bootstrap and then the probe, in the order the composed document runs them.
+    _SCRIPTS = "\n".join((dashboard_frame._BOOTSTRAP_JS, dashboard_frame._REFILL_PROBE_JS))
+    _FLAG = f"window[{dashboard_frame._REFILL_FLAG!r}]"
+
+    def _flag_after(self, page_js: str) -> Any:
+        calls = _run(self._SCRIPTS, _read(), f"{page_js}\n__calls.push({self._FLAG});")
+        return calls[-1]
+
+    def test_a_page_that_subscribes_reports_that_it_refills(self) -> None:
+        assert self._flag_after("window.kirocrew.subscribe('boards', () => {});") is True
+
+    def test_a_page_that_never_listens_still_reports_that_it_does_not(self) -> None:
+        """The flag must stay false for a page that draws once, or the host would post
+        values into a document that cannot show them."""
+        assert self._flag_after("") is False
+
+    def test_a_call_that_registers_nothing_does_not_count(self) -> None:
+        """``subscribe`` returns early for a bad name or callback, so no subscriber
+        exists and nothing on the page would redraw."""
+        assert self._flag_after("window.kirocrew.subscribe('boards', 'not a function');") is False

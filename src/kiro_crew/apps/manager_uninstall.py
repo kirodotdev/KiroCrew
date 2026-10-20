@@ -23,7 +23,13 @@ from kiro_crew.apps.manager_builtins import (
     invalidate_orphan_cache,
     migrated_builtin_cleanup_applies,
 )
-from kiro_crew.apps.manager_records import AppResult, InstalledApp, _read_installed, app_dir
+from kiro_crew.apps.manager_records import (
+    AppResult,
+    InstalledApp,
+    _read_installed,
+    app_dir,
+    refresh_app_config_keys,
+)
 from kiro_crew.apps.manager_tree import (
     _DEPS_STAGING_SWEEP_RE,
     _check_path_safety,
@@ -392,6 +398,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
             )
         return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}")
 
+    refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
     # Withdraw the grant a SECOND time, now that the files are actually gone.

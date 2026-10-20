@@ -158,7 +158,11 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         binary="opencode",
         acp_args=("acp",),
         bin_env_var="OPENCODE_BIN",
-        install_command="npm i -g opencode-ai",
+        # Pinned to the tested major: the unpinned name installs the latest
+        # release, which an operator following this advice after a 2.x release
+        # would then have every launch refuse (the version gate in
+        # acp/harness/opencode.py names the line it measured).
+        install_command="npm i -g opencode-ai@1",
         protocol_version=1,
         missing_hint="No adapter package is needed: this harness serves ACP itself.",
     ),

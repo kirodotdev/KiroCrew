@@ -41,6 +41,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel, withMemorySource } from '../../utils/agentLabel'
 import { sessionMemoryTag } from '../../lib/agentMemorySource'
 import { sameRowView, type SessionRowView } from './rows'
+import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
@@ -303,6 +304,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // same reason: this sidebar does not own the slot's lifecycle. They differ only
   // in what a click does (open a window vs. navigate), which the handlers below decide.
   const foreignRow = !!peerId || onOpenElsewhere != null
+  // A crewmate's own DM thread is named after the crewmate, never after a generated
+  // topic (`memberThreadTitle`). Local rows only: a peer's roster is not ours.
+  const memberTitle = peerId ? null : memberThreadTitle(s, installedAgents)
+  const shownTitle = memberTitle ?? (s.title && s.title !== s.key ? s.title : s.key)
+  // The tooltip keeps a topic stored before the thread was named after the crewmate.
+  const tooltipTitle = memberTitle !== null && s.title && s.title !== s.key && s.title !== memberTitle
+    ? `${memberTitle}: ${s.title}`
+    : shownTitle
   // Inside a crew group the header already names the machine, so the row
   // drops its own crew chip.
   const inCrewGroup = scope.startsWith('crew:')
@@ -474,7 +483,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const memoryTag = agentName && !peerId && !crewOf(s)
       ? sessionMemoryTag(s.agent, s.agent_kind, defaultAgent, memoryRows)
       : null
-    const agentDisplay = agentName ? withMemorySource(agentOrDefaultLabel(s.agent, defaultAgent), memoryTag) : ''
+    // A crewmate's own thread is named by the title below, so the chip does not
+    // print the same name a second time; the line keeps its height and the
+    // Members-page chip.
+    const agentDisplay = agentName && memberTitle === null ? withMemorySource(agentOrDefaultLabel(s.agent, defaultAgent), memoryTag) : ''
     // A DIVERGENCE, not a status: the row is advertising `agentName` while a
     // different agent answers the session — usually an app agent that was
     // removed, or one whose registration has not landed yet. Shown because the
@@ -1346,7 +1358,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  every sidebar commit for a crossfade that fires only on the
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
-              <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              {/* A crewmate's own thread has no agent chip (its title is the name), so the
+                *  line starts at the Members-page chip with no placeholder gap before it. */}
+              {memberTitle === null && (
+                <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              )}
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
                 *  The accent bar down its left edge groups the card with the
@@ -1559,7 +1575,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <div
               data-session-title
               className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
-              title={s.title && s.title !== s.key ? s.title : s.key}
+              title={tooltipTitle}
             >
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
@@ -1583,7 +1599,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {titleGenerating && (
                     <Loader size={ROW_ICON_PX} className="lucide-inline mr-1 shrink-0 text-accent animate-spin" role="img" aria-label={i18nT('pages.chatPage.regenerating_title')} data-testid="row-title-generating" />
                   )}
-                  {s.title && s.title !== s.key ? s.title : s.key}
+                  {shownTitle}
                 </>
               )}
             </div>

@@ -1,5 +1,6 @@
 // Screen snip capture helpers. Pure, browser-API-free units live here so the
 // crop geometry and File synthesis are unit-testable without getDisplayMedia.
+import { isEmbeddedPane } from '../lib/embedded'
 
 type NavLike = { mediaDevices?: { getDisplayMedia?: unknown } }
 
@@ -80,9 +81,24 @@ export function currentTabCaptureDeps(): CaptureDeps {
 }
 
 /**
+ * getDisplayMedia was refused inside an embedded instance pane for a reason
+ * other than the user dismissing a picker. The packaged app's trust gate
+ * (electron/display-media.js) refuses every pane request; Chromium reports that
+ * as `AbortError`, while a dismissed picker is `NotAllowedError`. Callers show a
+ * notice for this one instead of treating it as a cancel.
+ */
+export class ScreenSnipRefusedError extends Error {
+  constructor(reason: unknown) {
+    super(`screen capture refused in an embedded pane (${(reason as { name?: string } | null)?.name ?? 'unknown'})`)
+    this.name = 'ScreenSnipRefusedError'
+  }
+}
+
+/**
  * Prompt the screen-share picker, grab a single frame into a canvas, and stop
  * the stream so no "sharing" indicator lingers. Returns null if the user
- * cancels/denies the picker. Deps are injectable for testing.
+ * cancels/denies the picker. Inside an embedded instance pane, any other
+ * rejection throws ScreenSnipRefusedError. Deps are injectable for testing.
  */
 export async function captureScreen(
   deps: CaptureDeps = defaultCaptureDeps(),
@@ -90,7 +106,9 @@ export async function captureScreen(
   let stream: MediaStream
   try {
     stream = await deps.getDisplayMedia()
-  } catch {
+  } catch (err) {
+    const cancelled = (err as { name?: string } | null)?.name === 'NotAllowedError'
+    if (!cancelled && isEmbeddedPane()) throw new ScreenSnipRefusedError(err)
     return null // user cancelled or denied the share prompt
   }
   try {

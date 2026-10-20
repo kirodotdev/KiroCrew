@@ -424,7 +424,25 @@ over. A clear hold's `reason` says what the next exec step waits for: the
 ceiling, the idle clock ("idle; restoring toward 32 in 25s"), demand at the cap,
 or the completions still owed; when only host-only evidence (loop lag, memory)
 fired, the gate's hold is named instead. Cap decreases, pauses and resumes are logged at
-WARNING (growth at INFO) so `gateway.log` keeps them.
+WARNING (growth at INFO) so `gateway.log` keeps them. So that a throttled period's
+end, and its length, are in that log too, the first cut or pause opens a period and
+one WARNING closes it, `adaptive concurrency restored: exec_cap=N gate_cap=M after
+Ss (before the cut: exec_cap=N gate_cap=M)`, when the policy's caps are back at the
+values held just before that cut (a ceiling lowered meanwhile lowers the target; a
+switch to fixed mode also closes it; with no demand left, a return to the policy's
+start caps closes it too, since idle recovery restores only that far). A decrease or pause that loop lag caused ends
+with `busy=<module.qualname>[ via <module.qualname>]`: what the loop thread was
+running while the controller's timer was late. `adaptive/busy.py`'s
+`LoopBusySampler` is one daemon thread, armed before each sample's sleep for the
+sleep plus `lag_decrease_ms`; if the controller has not woken by then it reads the
+loop thread's frame once, and the controller disarms it on waking. It names code
+only (the innermost frame, and the innermost `kiro_crew` frame below a library
+frame, each at most 120 characters), never a file path, argument or local value.
+The walk stops at asyncio's `Handle._run`; with no `kiro_crew` frame inside the
+callback the handle is running, it names that callback (the watchdog's
+`stall_enrichment._callable_name`, attributes only), which is the only name a
+native callback has.
+A punctual tick reads no frame.
 Session health publishes the same state (`slack/gateway_runtime/admission.py`):
 the exec cap (`subagents`) and the spawn gate cap (`spawn_gate`) as cap sources,
 and a degrade reason of `adaptive_pause`, `adaptive_probe` or `adaptive_decrease`

@@ -113,6 +113,7 @@ class _GateMixin(ManagerComponent):
         target_member: str | None = None,
         delegation: dict[str, str] | None = None,
         backend: str | None = None,
+        label: str = "",
         _execution_context: dict | None = None,
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
@@ -517,6 +518,8 @@ class _GateMixin(ManagerComponent):
             # The drain re-enters ``spawn`` from this dict alone: a run that hit
             # the concurrency gate would otherwise start on the default backend.
             "backend": backend,
+            # Same reason: a queued row would otherwise start under its task text.
+            "label": label,
             "allowed_tools": allowed_tools,
             "bare": bare,
             "cwd": resolved_cwd,
@@ -663,6 +666,7 @@ class _GateMixin(ManagerComponent):
                 task=_redacted_task,
                 memory_mode=admitted_memory_mode,
                 agent=agent,
+                label=label,
                 app=app,
                 parent_session_key=parent_session_key,
                 queued=True,
@@ -1293,6 +1297,7 @@ class _GateMixin(ManagerComponent):
                 id=agent_id,
                 task=_redacted_task,
                 agent=agent,
+                label=label,
                 app=app,
                 parent_session_key=parent_session_key,
                 queued=True,
@@ -1374,6 +1379,7 @@ class _GateMixin(ManagerComponent):
                 task=_redacted_task,
                 memory_mode=_memory_mode,
                 agent=agent,
+                label=label,
                 app=app,
                 parent_session_key=parent_session_key,
                 queued=True,
@@ -1410,6 +1416,7 @@ class _GateMixin(ManagerComponent):
         info = SubagentInfo(
             task=_redacted_task,
             agent=agent,
+            label=label,
             app=app,
             approval_mode=approval_mode or "",
             silent=silent,

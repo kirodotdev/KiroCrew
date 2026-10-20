@@ -102,7 +102,7 @@ async def api_reveal_path(request: web.Request) -> web.Response:
             return (True, platform_compat.open_with_default_app(path))
 
         try:
-            is_regular_file, launched = await _run_path_probe(_stat_then_launch)
+            is_regular_file, launched = await _run_path_probe(_stat_then_launch, stall_path=path)
         except _PathProbeBusy:
             return _probe_busy_response(
                 resource=path, tool_name="reveal_path", session_key="api", source="api"

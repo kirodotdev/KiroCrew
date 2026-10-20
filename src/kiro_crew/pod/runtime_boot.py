@@ -635,7 +635,7 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
         # `pod up` constrains the flag, but this file is hand-editable, so an
         # unknown value can still reach here. Do NOT merely drop it: omitting
         # --approval does not mean "interactive". The gateway leaves
-        # ``approval_mode`` unset, and slack/events.py falls through to
+        # ``approval_mode`` unset, and slack/events_queue.py falls through to
         # ``cfg.agent.approval_mode``, which config/loader_builders.py defaults to
         # "auto" -- auto-approve every tool. Dropping would therefore be the
         # LEAST restrictive outcome. Pin interactive explicitly instead.

@@ -840,7 +840,7 @@ _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 # Every name here maps to a read scope in ``governance.BUILTIN_TOOL_SCOPES``
 # (``filesystem.read`` / ``network.egress``) and never to ``filesystem.write``
 # or ``commands`` — ``test_host_read_only_builtins_map_only_to_read_scopes``
-# (``test/test_hooks.py``) pins that, so a write-capable built-in (``code``,
+# (``test/test_hooks_trusted_identity.py``) pins that, so a write-capable built-in (``code``,
 # ``fs_write``) cannot join by mistake. Add conservatively: an entry here runs
 # unattended on a surface with no approver.
 _HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(

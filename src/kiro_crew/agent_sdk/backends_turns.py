@@ -98,7 +98,9 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # ``{outcome: "startedNewTurn"}`` and the adapter runs a turn of its own that no
 # ``session/prompt`` owns; ``session/cancel`` stops that turn and the next
 # ``session/prompt`` runs normally. There is no ``steering_consumed`` echo, so the
-# request's own answer is the delivery evidence.
+# request's own answer is the delivery evidence. This membership is not
+# re-measured on the Real Adapter Contract lane's pin
+# (``test/real_adapters/package.json``).
 #
 # The session handle therefore AWAITS the answer (the kiro verb is
 # fire-and-forget), until it arrives or the aimed-at turn ends: ``injected``
@@ -169,7 +171,7 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset(
 # codex.
 #
 # The live measurement is on 1.19.0, quoted here. The Real Adapter Contract lane
-# pins opencode 1.18.30 (``test/real_adapters/package.json``), and
+# pins opencode in ``test/real_adapters/package.json``, and
 # ``test/test_opencode_concurrent_prompt_steer.py`` drives a scripted stdout, so no
 # lane re-measures this membership against a real opencode.
 #
@@ -199,7 +201,9 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # The single-turn slice of that drive is committed as evidence rather than quoted:
 # ``test/fixtures/acp_frames/opencode/compact-live.jsonl`` carries the ordinary
 # turn, the ``/compact`` turn's ``used: 514``, and the ``end_turn`` with nothing
-# after it -- which is the ABSENCE this membership rests on.
+# after it -- which is the ABSENCE this membership rests on. This capture is not
+# retaken on the Real Adapter Contract lane's pin
+# (``test/real_adapters/package.json``).
 #
 # codex is a member on a capture rather than on its documentation. codex-acp 1.11.0
 # driven over stdio advertises ``compact`` in its ``available_commands_update``
@@ -216,7 +220,8 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # set it fires on its own and emits the same pair (measured on 1.11.0), and with the limit absent a
 # session held at 50k tokens across three turns compacted not once. So the old
 # "manages compaction automatically" promise was true only for an operator who had
-# configured it.
+# configured it. That capture is on 1.11.0 and is not re-measured on the Real
+# Adapter Contract lane's pin (``test/real_adapters/package.json``).
 #
 # goose is a member on a LIVE capture against goose 1.50.1. Driven over three turns,
 # its ``usage_update.used`` climbed 1529 -> 1991 -> 2453. A ``/compact`` prompt then
@@ -265,9 +270,12 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # ``contextUsagePercentage`` read 21.99 -> 30.40 -> 38.82, and the next ordinary
 # turn read 30.47. The one metadata frame right after ``completed`` read 81.03.
 #
-# claude is a member with no committed compaction capture: the one claude capture
-# (``test/fixtures/acp_frames/claude/session.jsonl``) is a single turn with no
-# ``/compact`` in it.
+# claude is a member on a LIVE capture against claude-agent-acp 0.93.0:
+# ``test/fixtures/acp_frames/claude/compact-live.jsonl``. After two ordinary turns
+# (``used`` 31164), the ``/compact`` turn is one ``tool_call`` stamped
+# ``_meta.claudeCode.toolName: compact``, completed inside the same
+# ``session/prompt`` with ``rawOutput`` ``preTokens`` 31164 -> ``postTokens`` 4257,
+# then ``end_turn`` with no status frame. The next ordinary turn read 25931.
 #
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
@@ -428,11 +436,10 @@ ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
 # slash commands go through ``session/prompt`` and are interpreted by the adapter
 # (or degrade to prompt text) instead of returning -32601 for the whole call.
 #
-# The same membership decides who reads the workspace ``cli.json`` overlay for
-# EFFORT: the kiro-family harnesses take ``chat.modelDefaults`` from that file at
-# spawn, and writing it for a harness that never reads it leaves a stale file in
-# the user's workspace that no later clear can reach. Tool Search has its own,
-# narrower set, ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``: the two hosts read it from different places.
+# This membership does NOT decide who reads the workspace ``cli.json`` overlay: KAS
+# speaks this dialect but never opens that file, so its effort keys and its Tool
+# Search keys each have their own, narrower sets, ``ACP_BACKENDS_EFFORT_OVERLAY``
+# and ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``.
 # opencode is not a member: it has no ``_kiro.dev`` verb, and it publishes its own
 # command list as an ``available_commands_update`` on ``session/update`` instead.
 # pi is not a member for the same reason: pi-acp publishes its built-ins the same

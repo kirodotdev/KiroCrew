@@ -245,8 +245,8 @@ class IngestionGate:
 # ``.github/sync-io-in-async-baseline.txt`` is now empty, and a marker is an
 # exemption, not an offload).
 #
-# ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
-# take of its OWN, endpoints and background tasks alike. ``artifact_ingest.py``'s
+# The ``dashboard/handlers/knowledge_*.py`` owners take the store through a worker
+# for every take of their OWN, endpoints and background tasks alike. ``artifact_ingest.py``'s
 # job-status reads run on a worker too: ``ingest_artifact`` reads inside its
 # ``_settle`` unit under ``run_to_completion``, and ``reconcile_artifacts``
 # reads through ``asyncio.to_thread``.

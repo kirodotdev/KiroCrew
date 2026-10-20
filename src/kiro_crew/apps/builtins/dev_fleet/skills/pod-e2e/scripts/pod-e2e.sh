@@ -600,7 +600,7 @@ fi
 
 # There is deliberately NO test-suite phase here, and adding one is a
 # regression. A `python -m pytest -q` from the checkout root is the wrong tool
-# in the wrong place: ~62k tests that need no pod at all, that CI runs on the
+# in the wrong place: the whole suite, none of it needing a pod, that CI runs on the
 # merge ref anyway, and whose fan-out on a shared dev box costs more than the
 # browser check this harness exists for. Scoped, change-relevant tests belong
 # to the dev agent in its own worktree (see the kirocrew-worktree-dev skill);

@@ -14,6 +14,7 @@ paths call it after the sessions close and before the exec, that the instances
 startup hook registers the manager's teardown and its cleanup hook drops it,
 that the sleep inhibitor registers its release the same way (the stop cancels
 the poll and releases the block, and a restart reaches the exec released),
+that the skill-usage ledger's debounced hits reach disk before either exec,
 that a real child is reaped through the seam on each path and left running when
 the path skips it, that an SSM forwarder's tree kill never blocks the loop, and
 that a fresh manager over the same registry (the new image) reconnects on the
@@ -312,6 +313,81 @@ class TestTheUpdateRestart:
 
         assert cancelled.is_set()
         assert seen == ["close_all", "broker", "exec"]
+
+
+# ── the skill-usage ledger flushes before the exec ───────────────────────
+
+
+class TestTheSkillUsageLedgerJoinsTheSeam:
+    """``os.execv`` kills the ledger's daemon flush thread, like ``os._exit``.
+
+    A hit ``record()`` accepted inside the 60 s debounce window must be on disk
+    before either in-place restart replaces the process image.
+    """
+
+    @staticmethod
+    def _debounced_ledger(monkeypatch, tmp_path):
+        import weakref
+
+        from kiro_crew import skill_usage
+
+        monkeypatch.setattr(skill_usage, "_live_ledgers", weakref.WeakSet())
+        path = tmp_path / "skill-usage.json"
+        ledger = skill_usage.SkillUsageLedger(path)
+        ledger._last_flush = time.time() + 3600  # inside the window: no write yet
+        ledger.record("alpha")
+        assert not path.exists(), "precondition: the hit is only in memory"
+        register_pre_exec_stop("Skill-usage ledger", skill_usage.flush_all_before_exec)
+        return skill_usage, path, ledger  # held, as the loader holds it
+
+    @pytest.mark.asyncio
+    async def test_the_dashboard_restart_persists_the_window(self, monkeypatch, tmp_path):
+        seen: list[str] = []
+        _dashboard_exec_seams(monkeypatch, seen)
+        skill_usage, path, ledger = self._debounced_ledger(monkeypatch, tmp_path)
+
+        restarted = await updates._restart_gateway(
+            _dashboard_state(seen), resolver=lambda: _executable(tmp_path)
+        )
+
+        assert restarted is True
+        assert seen[-1] == "exec"
+        assert skill_usage.SkillUsageLedger(path).score("alpha")[0] == 1.0
+        assert not ledger.dirty
+
+    @pytest.mark.asyncio
+    async def test_the_update_restart_persists_the_window(self, monkeypatch, tmp_path):
+        seen: list[str] = []
+        _update_exec_seams(monkeypatch, seen)
+        skill_usage, path, ledger = self._debounced_ledger(monkeypatch, tmp_path)
+
+        await GatewayOrchestrator._restart_after_update(
+            _orchestrator(seen), lambda: _executable(tmp_path)
+        )
+
+        assert seen[-1] == "exec"
+        assert skill_usage.SkillUsageLedger(path).score("alpha")[0] == 1.0
+        assert not ledger.dirty
+
+    @pytest.mark.asyncio
+    async def test_a_failed_flush_is_logged_and_the_exec_still_runs(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        from kiro_crew import skill_usage
+
+        seen: list[str] = []
+        _dashboard_exec_seams(monkeypatch, seen)
+        monkeypatch.setattr(skill_usage, "flush_all_for_shutdown", lambda: False)
+        register_pre_exec_stop("Skill-usage ledger", skill_usage.flush_all_before_exec)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.skill_usage"):
+            restarted = await updates._restart_gateway(
+                _dashboard_state(seen), resolver=lambda: _executable(tmp_path)
+            )
+
+        assert restarted is True
+        assert seen[-1] == "exec"
+        assert "did not fully flush before restart" in caplog.text
 
 
 # ── the restart claim covers every moment a connect could slip in ────────

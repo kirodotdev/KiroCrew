@@ -24,6 +24,13 @@ The dependency runs one way: **the companion depends on the core; the core never
 depends on the companion.** Because the core ships a default for every
 interface, the public edition is complete standalone.
 
+Every extension point is imported from `platform/interfaces.py`, its one import
+path. The boot-layer points are defined there; the install / structural points
+and the feature apps are defined in `platform/interfaces_structural.py`, and the
+runtime-service / frontend points in `platform/interfaces_runtime.py`, both
+re-exported by `interfaces.py`. A new extension point goes to the module of its
+kind.
+
 The execution catalog reads `ProviderRegistry.agent_runtime_policy(engine_identity)`
 through `current_context()` and `safe_context_call` for owner-visible member rows.
 The lookup key is the agent the member runs: its `kiro_agent` through
@@ -131,7 +138,7 @@ omit the policy.
 > Both decisions take the concrete target as well as a label, because a name is
 > self-chosen while the URL or target determines where bytes go; an allowlist pinned
 > to the target stops admitting a provider that repoints at a different host.
-> `_shared.py::admits_registry` / `admits_cloud_deployment` are the single call
+> `_shared_access.py::admits_registry` / `admits_cloud_deployment` are the single call
 > points: they deny on a composed-adapter error (reaching that fallback means an
 > operator intended to restrict something), let `PlatformCompositionError`
 > propagate, and SEL-audit **both** outcomes — a log carrying only denials cannot
@@ -305,9 +312,15 @@ Defense in depth, evaluated by `evaluate_admission(ep, policy)`:
 3. **Verify-before-run signature** (`require_signature`) — the plugin ships a
    signed `kirocrew_plugin.json` manifest; admission verifies the signature
    against a trust key the **policy** carries (R-11 / M-12 supply chain). POC
-   uses HMAC; production uses an asymmetric publisher key. The signature covers
-   a canonical payload (name/publisher/version/capabilities), so tampering with
-   declared capabilities invalidates it.
+   uses HMAC. Production uses an asymmetric publisher key. The signature covers
+   a canonical payload (name/publisher/version/capabilities and non-empty
+   `config_keys`), so tampering with declared capabilities or config ownership
+   invalidates it. A plugin may declare at most 200 non-empty config keys, each at
+   most 200 characters long. A malformed or over-limit declaration owns no keys.
+   An absent or empty declaration stays outside the payload, which preserves
+   signatures generated before `config_keys` existed. After admission succeeds,
+   config validation receives the declaration from the same manifest snapshot
+   without importing plugin code or reading the manifest again.
 4. **Capability ceiling** (`capability_ceiling`) — the manifest declares
    requested capabilities (tools, egress, credential paths); admission rejects a
    plugin whose declared capabilities exceed the fleet ceiling, or that requests
@@ -445,7 +458,8 @@ numbers. Two readers deliberately do not change: the anonymous usage beacon
 build sends the same value as its base), and the About page's changelog, where
 `changelog.running_release` folds the stamp back onto its three-segment release
 so the build marks the `0.6.0` row rather than opening an empty `0.6.0.12` row. Import time is the only point that works:
-`dashboard/handlers/updates.py`, `dashboard/ws.py`, `config/loader_document.py` and
+`dashboard/handlers/updates_verdict.py`, `dashboard/handlers/updates_check.py`,
+`dashboard/ws.py`, `config/loader_document.py` and
 `cli_server.py` bind `from kiro_crew import __version__` copies that nothing
 later can reach, so this is deliberately not a `PlatformContext` field — a
 context is composed after those imports.
@@ -636,8 +650,8 @@ Wired sites:
 - Credential redaction — all egress scrubs route through the single
   `kiro_crew.platform.redact_via_context` shim (the one canonical
   fail-closed-aware shim; modules import it as `redact`). Covers: `agent.py`
-  SEL-audit callers, `mcp_core_parts/` chat-history/crew output, `mcp_cron.py`
-  deny-reason + script-vet + timezone messages, and the file-content egress the
+  SEL-audit callers, `mcp_core_parts/` chat-history/crew output, `mcp_cron_vet.py`
+  deny-reason + script-vet and `mcp_cron.py` timezone messages, and the file-content egress the
   `dashboard/handlers/files.py` facade serves (the outbox's slot append in
   `dashboard/file_api/outbox.py`, file_read in `dashboard/file_api/editor.py`,
   file-watch and the download gate in `dashboard/file_api/transfer.py`) as well as
@@ -962,7 +976,7 @@ Wired sites:
   fallback is passed as a lazy `fallback_factory` so the happy path builds the
   factory exactly once (no eager double-build) and a failure inside the fallback
   is still caught by the shim.
-- `dashboard/handlers/knowledge.py` — the `SyncScheduler` connector map merges
+- `dashboard/handlers/knowledge_lifecycle.py` — the `SyncScheduler` connector map merges
   `current_context().knowledge.extra_connectors(cfg)` after the built-ins
   (`local_folder`/`obsidian_vault`); Default returns `{}` so standalone is
   unchanged.
@@ -1364,7 +1378,8 @@ catalogs, prompt sources and capability management each own a dedicated Protocol
 layer keeps its "one adapter per concern" shape; every edition hook lands on its
 own interface rather than accreting onto the nearest existing one.
 
-**Agent discovery.** `agent_discovery.py` owns it, and `AgentInfo` is the record
+**Agent discovery.** `agent_discovery.py`, the facade of the `agent_discovery_parts/` owners,
+owns it, and `AgentInfo` is the record
 it yields. The `source` classification is generic — no product-specific hardcode:
 `"kirocrew"` for `kirocrew.json` / `kirocrew-lite.json`, `"package"` for a
 package-installed agent, `"builtin"` for the rest. It has many consumers —

@@ -478,170 +478,98 @@ class TestBoundedRecordReaders:
         A chunk full of such records is the cheap way to trigger it on an
         agent-writable file, so this pins the COST, not just the output.
 
-        Asserted on the reader's SCAN TRACE, not on a clock, and that choice is
-        the third correction in this test's history. The first version asserted
-        an absolute ceiling (1.0s for 200,000 records) and went red on a slower
-        CI machine. The second asserted a wall-clock ratio between two sizes,
-        which cancels machine speed -- and still flaked twice: once on Windows
-        clock quantisation (one scheduler tick against three reads as exactly
-        3.00x), and once on a shared runner where a single noisy doubled sample
-        (0.319s against a 0.101s base) read as 3.15x with no quadratic work in
-        sight. Best-of-3 `process_time` sampling and a measured-quantum
-        floor were already in place for that second flake; a clock on a shared
-        runner is noise all the way down. Per the AGENTS.md testing convention
-        (assert shape, not duration; pin the linear path deterministically
-        where the code has structure to observe), this now observes the work
-        itself.
+        Asserted on the reader's SCAN TRACE, not on a clock. Two earlier versions
+        asserted wall-clock ceilings and ratios and flaked on slow and shared
+        runners (Windows clock quantisation, one noisy doubled sample); per the
+        AGENTS.md testing convention this observes the work itself.
 
-        The structure observed: `_frames` walks each buffered chunk by OFFSET,
-        issuing exactly one `_BOUNDARY_RE.search(buf, start)` per record with a
-        strictly advancing `start`, and slices the remainder once per chunk.
-        Both quadratic forms this test exists to catch break that trace shape
-        deterministically through this seam:
+        The structure observed: the walk searches each buffered chunk with the
+        module's ``_find`` (``bytes.find``), once per needle, from a start that
+        only advances, and caches each needle's next position. So every byte of a
+        buffer is scanned AT MOST ONCE PER NEEDLE, and the bytes scanned over the
+        whole file are bounded by twice its size. Both quadratic forms this test
+        exists to catch break that bound deterministically:
 
-        - Re-slicing the buffer per record hands every search a FRESH object
-          with `start` 0, so its per-buffer traces are single-call and the
-          start-at-0 count -- constant for the offset walk -- goes per-record,
-          which the zero-start bound catches.
-        - Replacing the single regex scan with one `bytes.find` per terminator
-          (quadratic on a file with no `\\n` until the end) abandons this seam
-          entirely, so the trace goes empty and the hits-per-record assertion
-          fails.
+        - Re-slicing the buffer per record hands every search a fresh object
+          starting at 0, so the remaining tail is scanned again per record.
+        - Searching ``\\n`` afresh per record without the cache walks to the end
+          of a file that holds no ``\\n`` until its last byte, once per record.
 
         Cost added OFF the seam -- say, copying the tail once per record while
-        still searching the original buffer by offset -- is invisible to any
-        trace, so a generous absolute `process_time` budget at the small
-        doubled size backstops a catastrophic blowup, per the testing
-        convention's "keep a small-n absolute assertion alongside". Unlike the
-        ratio it replaces, the budget carries two orders of magnitude of
-        headroom, so neither a slow shared runner nor coverage tracing can
-        cross it.
-
-        The doubling assertion is exact, not a ratio with headroom: doubling
-        the record count must exactly double the number of boundary searches
-        (the cap here is far above the chunk size, so per-record search counts
-        cannot depend on where chunk boundaries fall). Integer counts have no
-        noise to leave headroom for.
+        still searching by offset -- is invisible to any trace, so a generous
+        absolute ``process_time`` budget backstops a catastrophic blowup, per the
+        testing convention's "keep a small-n absolute assertion alongside".
         """
 
-        class _TraceBoundaryRe:
-            """Counting shim over the module's boundary regex.
+        class _TraceFind:
+            """Counting shim over ``_find`` that records what each search scanned.
 
-            Records ``(buf, start, found)`` per search so the offset-walk shape
-            is assertable, and delegates the actual match unchanged -- the
-            reader under test still does its real work on its real data. The
+            Delegates unchanged, so the reader still does its real work. The
             buffer OBJECT is kept, not just its ``id()``: a freed chunk's id can
-            be reused by the next one, which would let two different buffers
-            alias one walk in the analysis below.
+            be reused by the next one, which would alias two buffers' walks.
             """
 
-            def __init__(self, real: re.Pattern[bytes]) -> None:
+            def __init__(self, real) -> None:
                 self._real = real
-                self.calls: list[tuple[bytes, int, bool]] = []
-                self.dropped = 0
+                self.calls: list[tuple[bytes, bytes, int, int]] = []
 
-            def search(self, buf: bytes, start: int = 0) -> re.Match[bytes] | None:
-                match = self._real.search(buf, start)
-                self.calls.append((buf, start, match is not None))
-                return match
+            def __call__(self, buf: bytes, needle: bytes, start: int) -> int:
+                found = self._real(buf, needle, start)
+                self.calls.append((buf, needle, start, found))
+                return found
 
-        def scan_trace(count: int) -> _TraceBoundaryRe:
+        def scan_trace(count: int) -> tuple[list[tuple[bytes, bytes, int, int]], int]:
             path = tmp_path / f"dense{count}.jsonl"
             path.write_bytes(b'{"a":1}\r' * count + b"\n")
-            trace = _TraceBoundaryRe(jsonl_util._BOUNDARY_RE)
-            monkeypatch.setattr(jsonl_util, "_BOUNDARY_RE", trace)
+            trace = _TraceFind(jsonl_util._find)
+            monkeypatch.setattr(jsonl_util, "_find", trace)
             try:
                 with open(path, "rb") as fh:
                     got = sum(1 for _ in bounded_raw_records(fh, path, cap=64 * 1024 * 1024))
             finally:
-                monkeypatch.setattr(jsonl_util, "_BOUNDARY_RE", trace._real)
+                monkeypatch.setattr(jsonl_util, "_find", trace._real)
             # `count`, not count + 1: the final record's own carriage return
             # plus the trailing newline form one CRLF terminator.
             assert got == count, got
-            # Keep only searches over THIS file's buffers. The shim patches a
-            # module global, and this repo's test floor warns that singleton
-            # daemon threads outlive their tests; a stray in-process reader on
-            # some other file during the window would otherwise tip the exact
-            # counts below. Every buffer of ours starts with our record bytes
-            # under the one-chunk read this test relies on; the dropped count
-            # is carried into the failure message so that if chunking ever
-            # changes (a later chunk starts with a carried b"\\r"), a failure
-            # here names the filter, not the production walk.
+            # Keep only searches over THIS file's buffers: the shim patches a
+            # module global, and a stray in-process reader on another file during
+            # the window would otherwise tip the exact counts below.
             kept = [c for c in trace.calls if c[0].startswith(b'{"a":1}\r')]
-            trace.dropped = len(trace.calls) - len(kept)
-            trace.calls = kept
-            return trace
+            return kept, path.stat().st_size
 
-        def assert_linear_walk(trace: _TraceBoundaryRe, count: int) -> tuple[int, int]:
-            """Pin the one-search-per-record shape; return (hits, misses)."""
-            hits = sum(1 for _, _, found in trace.calls if found)
-            misses = len(trace.calls) - hits
-            # Exactly one successful boundary scan per record. Zero means the
-            # walk bypassed this seam (the per-terminator `bytes.find` form
-            # lives off it); more means some record's bytes were scanned to a
-            # match twice, which is where quadratic cost starts.
-            assert hits == count, (
-                f"{hits} boundary hits for {count} records ({trace.dropped} "
-                "calls filtered as foreign): the walk is not finding each "
-                "terminator exactly once through the shared regex"
+        def assert_linear_walk(calls, size: int, count: int) -> None:
+            last: dict[tuple[int, bytes], int] = {}
+            scanned = 0
+            for buf, needle, start, found in calls:
+                key = (id(buf), needle)
+                prev = last.get(key)
+                assert prev is None or start > prev, (
+                    f"{needle!r} search restarted at {start} after {prev} within one "
+                    "buffer: the walk is re-scanning instead of advancing"
+                )
+                last[key] = start
+                scanned += (found + 1 - start) if found != -1 else (len(buf) - start)
+            assert scanned <= 2 * size, (
+                f"{scanned} bytes scanned for a {size}-byte file of {count} records: "
+                "some bytes were searched more than once per needle"
             )
-            # A miss is the search that ends one chunk's walk, so misses count
-            # chunks, and chunks must stay constant-ish, never per-record. The
-            # cap is far above the file size here, so the whole file is one
-            # buffered chunk; 2 leaves room for an EOF-shaped final probe
-            # without letting a per-record re-scan (misses == count) through.
-            assert misses <= 2, (
-                f"{misses} missed boundary searches for {count} records: "
-                "the walk is re-scanning the buffer instead of advancing"
-            )
-            # The offset walk itself: within one buffer object every search
-            # starts strictly past the previous one. Re-slicing the buffer per
-            # record (the 6.9x quadratic form) restarts every search at 0 on a
-            # fresh object, so its per-buffer traces are single-call and its
-            # start-0 count is per-record -- both checked here.
-            per_buf: dict[int, int] = {}
-            for buf, start, _ in trace.calls:
-                prev = per_buf.get(id(buf))
-                if prev is not None:
-                    assert start > prev, (
-                        f"search restarted at {start} after {prev} within one "
-                        "buffer: the walk is re-scanning instead of advancing"
-                    )
-                per_buf[id(buf)] = start
-            zero_starts = sum(1 for _, start, _ in trace.calls if start == 0)
-            assert zero_starts <= 2, (
-                f"{zero_starts} searches started at offset 0 for {count} "
-                "records: the buffer is being re-sliced per record"
-            )
-            return hits, misses
+            # One \r search per record plus a constant: a per-record \n search
+            # (the uncached form) would double this.
+            assert (
+                len(calls) <= count + 2
+            ), f"{len(calls)} searches for {count} records: more than one per record"
 
-        count = 10_000
-        base = scan_trace(count)
-        base_hits, base_misses = assert_linear_walk(base, count)
+        count = 20_000
+        base, base_size = scan_trace(count)
+        assert_linear_walk(base, base_size, count)
+        doubled, doubled_size = scan_trace(count * 2)
+        assert_linear_walk(doubled, doubled_size, count * 2)
+        # Doubling the records exactly doubles the per-record searches and adds
+        # nothing to the constant per-buffer overhead.
+        assert len(doubled) - len(base) == count, (len(base), len(doubled))
 
-        # Doubling the records exactly doubles the boundary searches that do
-        # per-record work, and adds nothing to the constant chunk overhead.
-        # Both sides are measured off the traces; integers carry no noise, so
-        # the comparison is exact where the wall-clock ratio needed headroom.
-        doubled = scan_trace(count * 2)
-        doubled_hits, doubled_misses = assert_linear_walk(doubled, count * 2)
-        assert doubled_hits == 2 * base_hits, (
-            f"doubling {count} records took {doubled_hits} boundary hits "
-            f"against a base of {base_hits}, which suggests superlinear scanning"
-        )
-        assert doubled_misses == base_misses, (
-            f"chunk overhead grew from {base_misses} to {doubled_misses} on "
-            "doubling, which suggests the walk's overhead scales with input"
-        )
-
-        # Catastrophic-blowup backstop, per the testing convention's "keep a
-        # small-n absolute assertion alongside": cost added off the regex seam
-        # (copying bytes while still searching by offset) is invisible to the
-        # trace above, and this is the coarse net under it. The bound is
-        # deliberately generous -- this read measures in tens of milliseconds,
-        # so 5s is two orders of magnitude of headroom that neither a loaded
-        # shared runner nor coverage tracing crosses, unlike a strict ratio
-        # assertion would impose.
+        # Catastrophic-blowup backstop: two orders of magnitude of headroom that
+        # neither a loaded shared runner nor coverage tracing crosses.
         budget_path = tmp_path / f"dense{count * 2}.jsonl"
         begin = time.process_time()
         with open(budget_path, "rb") as fh:
@@ -835,3 +763,145 @@ def test_a_file_of_exactly_the_ceiling_still_reads_to_the_end(tmp_path):
     with open_regular_nofollow(path, max_bytes=64) as handle:
         assert handle.read() == payload
         assert handle.read() == b""
+
+
+_REFERENCE_BOUNDARY_RE = re.compile(rb"[\r\n]")
+
+
+def _reference_boundary_end(buf: bytes, start: int = 0) -> int | None:
+    """The regex boundary search the memchr walk replaced, frozen as the oracle."""
+    match = _REFERENCE_BOUNDARY_RE.search(buf, start)
+    if match is None:
+        return None
+    at = match.start()
+    if buf[at : at + 1] != b"\r":
+        return at + 1
+    if at + 1 == len(buf):
+        return None
+    return at + 2 if buf[at + 1 : at + 2] == b"\n" else at + 1
+
+
+def _reference_frames_with_offsets(handle, cap):
+    """The framing walk as it stood before the memchr change, kept verbatim."""
+    buf = b""
+    try:
+        buf_offset = handle.tell()
+    except (AttributeError, OSError):
+        buf_offset = 0
+    consumed = buf_offset
+    dropping = False
+    while True:
+        chunk = handle.readline(max(2, cap + 2 - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+        consumed += len(chunk)
+        start = 0
+        while (idx := _reference_boundary_end(buf, start)) is not None:
+            piece_start = start
+            piece, start = buf[start:idx], idx
+            absolute_start = buf_offset + piece_start
+            absolute_end = buf_offset + idx
+            if dropping:
+                dropping = False
+                continue
+            if jsonl_util._body_len(piece) > cap:
+                yield absolute_start, absolute_end, jsonl_util._OVERSIZED
+                continue
+            yield absolute_start, absolute_end, piece
+        buf_offset += start
+        buf = buf[start:]
+        pending_cr = buf.endswith(b"\r")
+        if len(buf) - pending_cr > cap:
+            if not dropping:
+                yield buf_offset, buf_offset + len(buf), jsonl_util._OVERSIZED
+                dropping = True
+            if pending_cr:
+                buf_offset = consumed - 1
+                buf = b"\r"
+            else:
+                buf_offset = consumed
+                buf = b""
+    if buf and not dropping:
+        yield buf_offset, buf_offset + len(buf), buf
+
+
+class _ReadlineOnly:
+    """A handle with ``readline`` and nothing else, as some callers pass."""
+
+    def __init__(self, data: bytes) -> None:
+        import io
+
+        self._inner = io.BytesIO(data)
+
+    def readline(self, limit: int = -1) -> bytes:
+        return self._inner.readline(limit)
+
+
+class TestFramingMatchesTheRegexWalk:
+    """The memchr walk frames byte-for-byte and offset-for-offset like the regex one.
+
+    The oracle is the previous implementation kept verbatim above, so any
+    divergence -- a boundary, an offset, an over-cap marker, a held carriage
+    return -- shows up as an unequal list rather than as a downstream parse.
+    """
+
+    @staticmethod
+    def _both(tmp_path: Path, data: bytes, cap: int, seek: int = 0):
+        path = tmp_path / "frames.jsonl"
+        path.write_bytes(data)
+        with open(path, "rb") as fh:
+            fh.seek(seek)
+            new = list(jsonl_util._frames_with_offsets(fh, cap))
+        with open(path, "rb") as fh:
+            fh.seek(seek)
+            old = list(_reference_frames_with_offsets(fh, cap))
+        return new, old
+
+    @pytest.mark.parametrize(
+        "data,cap",
+        [
+            (b"", 8),
+            (b"\n", 8),
+            (b"\r", 8),
+            (b"\r\n", 8),
+            (b"\n\n\r\r\r\n\n", 8),
+            (b"a\nb\rc\r\nd", 8),
+            (b"12345678\r\n", 8),  # exactly at cap, CRLF
+            (b"12345678\r", 8),  # at cap, bare CR at EOF
+            (b"123456789\r\nok\n", 8),  # over cap, CRLF
+            (b"\r" + b"X" * 8 + b"A\rz\n", 8),  # carried CR into an over-cap record
+            (b"X" * 30 + b"\r", 8),  # over cap, pending CR at the read edge
+            (b"X" * 9 + b"\r" + b"\n" * 3, 8),
+            (b"no terminator at all", 64),
+            (b'{"a":1}\r' * 500 + b"\n", 64),  # CR-dense, LF only at the very end
+            (b'{"a":1}\n' * 500, 64),
+        ],
+    )
+    def test_targeted_shapes(self, tmp_path, data, cap):
+        new, old = self._both(tmp_path, data, cap)
+        assert new == old
+
+    def test_a_seeded_random_corpus(self, tmp_path):
+        import random
+
+        rng = random.Random(22213)
+        tokens = [b"\n", b"\r", b"\r\n", b"\r\r", b"\n\r", b"{}", b"x", b"\xe4\xb8\xad"]
+        for case in range(400):
+            cap = rng.choice([1, 2, 3, 5, 8, 16, 64])
+            parts = []
+            for _ in range(rng.randrange(0, 40)):
+                if rng.random() < 0.3:
+                    parts.append(b"y" * rng.randrange(0, cap + 4))
+                else:
+                    parts.append(rng.choice(tokens))
+            data = b"".join(parts)
+            seek = rng.randrange(0, len(data) + 1) if data and rng.random() < 0.2 else 0
+            new, old = self._both(tmp_path, data, cap, seek)
+            assert new == old, (case, cap, seek, data)
+
+    def test_a_readline_only_handle_frames_identically(self):
+        data = b"a\r\nb\rc\n" + b"Z" * 20 + b"\r\nd"
+        new = list(jsonl_util._frames_with_offsets(_ReadlineOnly(data), 8))
+        old = list(_reference_frames_with_offsets(_ReadlineOnly(data), 8))
+        assert new == old

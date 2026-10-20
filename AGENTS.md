@@ -45,7 +45,7 @@ in the **same commit** when you change what it documents.
 | `acp/`, kiro-cli transport, providers | [acp-client](docs/system-specs/modules/acp-client.md) + [providers](docs/system-specs/modules/providers.md) |
 | picking or defaulting a model anywhere | [model-selection](docs/system-specs/common/model-selection.md) + [model-fallback](docs/system-specs/modules/model-fallback.md) |
 | adding or adapting an agent harness (BYO, KAS, claude) | [harness-parity](docs/system-specs/modules/harness-parity.md) (invariants) + [harness-parity-gate](docs/ci/harness-parity-gate.md) (CI) |
-| an agent spec: `agent_discovery.py`, `agent_spec_format.py`, `agent.py`'s spec writers and `agent_materialization/`, `acp/kas_agents.py`, or any field a spec carries | [agent-spec-fields](src/kiro_crew/docs/agent-spec-fields.md) (what each field does, per backend) + [agent-host-contract](docs/system-specs/modules/agent-host-contract.md) (the per-harness table) |
+| an agent spec: `agent_discovery.py` and its `agent_discovery_parts/` owners, `agent_spec_format.py`, `agent.py`'s spec writers and `agent_materialization/`, `acp/kas_agents.py`, or any field a spec carries | [agent-spec-fields](src/kiro_crew/docs/agent-spec-fields.md) (what each field does, per backend) + [agent-host-contract](docs/system-specs/modules/agent-host-contract.md) (the per-harness table) |
 | the publicly selectable Claude backend | [claude-code-provider](docs/system-specs/modules/claude-code-provider.md) |
 | sessions, slots, session keys, PIDs | [session](docs/system-specs/modules/session.md) + [history](docs/system-specs/modules/history.md) |
 | killing a runtime, leases and tenancies, sweeps and reapers, `runtime_ownership.py`, `runtime_reconcile.py`, the kill paths of `session_pid.py` and its `session_pid_*.py` owners | [runtime-ownership](docs/system-specs/modules/runtime-ownership.md) |
@@ -297,12 +297,15 @@ human passes `--full`. See
   --max-worker-restart=2`; a bare override silently drops `--dist loadgroup` and
   scatters `@pytest.mark.xdist_group` tests into flaky races.
 
-**No hand-written file over 2,000 lines; put new code in a new module.** When a
-file nears the cap, move whole definitions into a sibling module and keep the
+**No hand-written file over 2,000 lines; put new code in a new module.** A new
+responsibility gets a new module, never a new section in a large file, and a change
+that takes a code file past 1,600 lines splits it in the same PR or in one before it.
+Split by responsibility, moving whole definitions into a sibling module, and keep the
 original path as the import path callers use. `scripts/check_file_line_cap.py`
-enforces it in CI's lint jobs; run it before you push. The files already over are
-listed in `.github/file-line-cap-baseline.txt`, which only shrinks, so never add a
-row. Details: [code-style](docs/system-specs/common/code-style.md).
+enforces the cap in CI's lint jobs; run it before you push. The files already over
+are listed in `.github/file-line-cap-baseline.txt`, which only shrinks, so never add
+a row. How to split without losing a patch seam:
+[code-style § Splitting a file](docs/system-specs/common/code-style.md#splitting-a-file).
 
 Gates, the seven flake classes, the conftest isolation floor and the traps that are
 invisible when reading a test: [code-style](docs/system-specs/common/code-style.md) +

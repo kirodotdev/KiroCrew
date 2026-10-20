@@ -52,8 +52,6 @@ work on a daemon thread, and the ``no-blocking-call-on-event-loop`` rule.
 from __future__ import annotations
 
 import contextlib
-import hashlib
-import http.client
 import logging
 import os
 import platform
@@ -64,9 +62,7 @@ import tarfile
 import tempfile
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -637,54 +633,6 @@ def _open_inside(candidate: Path, root_real: str) -> int | None:
 # ── download ────────────────────────────────────────────────────────────────
 
 
-class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse a redirect that leaves ``https``.
-
-    The release URL 302s to a CDN host, which is normal and expected. A redirect
-    to ``http://`` would be a silent transport downgrade. The sha256 pin means
-    such a hop could not change WHICH bytes are accepted, so this is defence in
-    depth rather than the integrity control — but a plaintext fetch of a 22MB
-    binary is worth refusing on its own.
-    """
-
-    def redirect_request(  # type: ignore[override]
-        self,
-        req: urllib.request.Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: object,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        if urllib.parse.urlsplit(newurl).scheme.lower() != _HTTPS_SCHEME:
-            raise urllib.error.URLError(f"refusing non-https redirect to {redact_url(newurl)}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)  # type: ignore[arg-type]
-
-
-def redact_url(url: str) -> str:
-    """Return *url* safe for logs: scheme + host only.
-
-    A mirror override can carry a credential in ANY of three places — userinfo, a signed
-    query string, or a PATH SEGMENT (`/artifactory/api/npm/tok-9f3b2c/…`, a
-    presigned-style `/AKIA…/…`). The first two were dropped and the path was kept, so a
-    path-tokenised mirror had its token written to the log and shown on the dashboard.
-
-    The path is now dropped too. It cost the one diagnostic it carried — the artifact's
-    filename — and that is already known from :data:`_ASSETS`, so nothing is lost that
-    is not recoverable from the code. Host-only is also what makes this safe by
-    CONSTRUCTION rather than by enumerating token shapes: there is no fourth place left
-    for a secret to hide.
-    """
-    try:
-        parts = urllib.parse.urlsplit(url)
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return urllib.parse.urlunsplit((parts.scheme, host, "", "", ""))
-    except ValueError:
-        return "<unparseable-url>"
-
-
 def resolve_url(asset: TectonicAsset) -> str:
     """Resolve the download URL: env override, else the pinned release URL.
 
@@ -705,82 +653,45 @@ def resolve_url(asset: TectonicAsset) -> str:
     return asset.url
 
 
-def _download_to(asset: TectonicAsset, staging: Path) -> tuple[bool, str]:
-    """Stream the artifact to *staging*, hashing as it goes. Verify before install.
+def _download_to(asset: TectonicAsset, archive: Path) -> tuple[bool, str]:
+    """Fetch the artifact to *archive* through the shared verified downloader.
 
-    Returns ``(ok, error)``. The digest is computed over the stream rather than
-    by re-reading the file, so a file swapped between write and check cannot be
-    what gets verified.
+    Returns ``(ok, error)``. :func:`asset_downloader.download_to` streams the
+    bytes into a staging file beside *archive*, hashes them as they arrive, and
+    renames them onto *archive* only once the digest matches ``asset.sha256``. So
+    a mismatch leaves nothing at *archive*, and :func:`_extract` never sees
+    unverified bytes.
+
+    The shared function never raises. Its error string carries the exception
+    TYPE and a host-only url, never the exception text: ``InvalidURL`` and
+    ``HTTPError`` embed the url verbatim, and a mirror override may hold a
+    credential. That string lands in the persisted install state and on the
+    dashboard, so it must stay redacted.
+
+    Cross-host redirects are allowed, but only to https. The pinned release url
+    is a constant in this file and 302s to GitHub's asset host; the override is
+    the operator's own environment. Both are shapes the shared module accepts
+    for ``allow_cross_host_redirects``, and the sha256 pin still decides.
     """
     url = resolve_url(asset)
-    # The SSL context rides on an HTTPSHandler, not on `open()`: OpenerDirector.open
-    # takes no `context=` (only the module-level urlopen does), so passing one there
-    # would be silently dropped along with the CA-discovery fallback it carries.
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=asset_downloader.make_ssl_context()),
-        _HttpsOnlyRedirectHandler,
+    _set_progress(0, 0)
+    ok, error = asset_downloader.download_to(
+        archive,
+        url,
+        sha256=asset.sha256,
+        timeout_secs=_HTTP_TIMEOUT_SECS,
+        chunk_bytes=_HTTP_CHUNK_BYTES,
+        progress_every_bytes=_PROGRESS_EVERY_BYTES,
+        on_progress=_set_progress,
+        on_verifying=lambda: _set_state(STATE_VERIFYING),
+        allow_cross_host_redirects=True,
+        label=f"Tectonic {asset.name}",
     )
-    request = urllib.request.Request(url, method="GET")
-    digest = hashlib.sha256()
-    downloaded = 0
-    try:
-        logger.info("papyrus: downloading Tectonic from %s", redact_url(url))
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- resolve_url enforces https:// and the payload is sha256-pinned
-        with opener.open(request, timeout=_HTTP_TIMEOUT_SECS) as resp:
-            total = int(resp.headers.get("Content-Length", 0) or 0)
-            _set_progress(0, total)
-            with staging.open("wb") as out:
-                while True:
-                    chunk = resp.read(_HTTP_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-                    if downloaded % _PROGRESS_EVERY_BYTES < _HTTP_CHUNK_BYTES:
-                        _set_progress(downloaded, total)
-        _set_progress(downloaded, downloaded)
-    # `http.client.HTTPException` is in the tuple deliberately: it is NOT an
-    # `OSError`, a `URLError` or a `ValueError`, so `InvalidURL` (a malformed mirror
-    # override — the credentialed case) would otherwise pass through this handler
-    # entirely and be reported by the outer catch-all as "provisioning crashed".
-    # Handling it here turns an unexplained crash into the accurate "download failed",
-    # and keeps
-    # the redaction and the retry loop that go with it.
-    except (
-        urllib.error.URLError,
-        http.client.HTTPException,
-        OSError,
-        TimeoutError,
-        ValueError,
-    ) as exc:
-        # The exception TEXT is not safe to return. Several of these carry the URL
-        # verbatim — `InvalidURL` and `HTTPError` both do — and a mirror override may
-        # put credentials in userinfo or a signed query string, which is precisely why
-        # `redact_url` exists and why the log line above already uses it. This return
-        # value goes further than a log: it lands in the persisted install state and
-        # is rendered on the dashboard.
-        #
-        # So the message is the exception's TYPE plus a redacted URL, never `{exc}`.
-        # The type is what actually aids diagnosis here (timeout vs. refused vs. DNS),
-        # and it cannot contain a credential.
-        # No `exc_info=True`: a traceback renders the exception's own `str()`, which is
-        # the very text being kept out of the message. The log is a sink too, so
-        # redacting the return value while dumping the traceback beside it would
-        # relocate the leak rather than close it.
-        logger.warning(
-            "papyrus: Tectonic download from %s failed: %s",
-            redact_url(url),
-            type(exc).__name__,
-        )
-        return False, f"download failed ({type(exc).__name__}) from {redact_url(url)}"
-    _set_state(STATE_VERIFYING)
-    actual = digest.hexdigest()
-    if actual != asset.sha256:
-        return False, (
-            f"sha256 mismatch for {asset.name}: got {actual[:16]}…, "
-            f"expected {asset.sha256[:16]}… — the download was refused"
-        )
+    if not ok:
+        logger.warning("papyrus: Tectonic download failed: %s", error)
+        return False, f"Tectonic {asset.name}: {error}"
+    size = archive.stat().st_size
+    _set_progress(size, size)
     return True, ""
 
 
@@ -1000,17 +911,17 @@ def _provision_job(root: Path | None) -> None:
         installed = provision_sync(root)
     except Exception as exc:  # noqa: BLE001 - a background job must report, not crash
         logger.warning("papyrus: Tectonic provisioning crashed", exc_info=True)
-        # TYPE only, not `{exc}`. This is the catch-all, so the URL-bearing
-        # exceptions the download path deliberately redacts arrive here whenever they
-        # are not one of the four types it handles — and `http.client.InvalidURL` is
-        # exactly that case: it derives from `HTTPException`, not from `OSError`,
-        # `URLError` or `ValueError`, so it passes straight through `_download_to`'s
-        # handler and `_install_binary`'s `except OSError` to land here.
+        # TYPE only, not `{exc}`. This is the catch-all: anything the install path
+        # does not handle lands here. The download itself never raises (the shared
+        # downloader reports every failure as a redacted string), but a URL-bearing
+        # exception such as `http.client.InvalidURL` raised anywhere else on this
+        # thread would. It derives from `HTTPException`, not from `OSError`, so it
+        # passes `_install_binary`'s `except OSError` too.
         #
         # Its message embeds the offending URL verbatim ("nonnumeric port:
-        # 'secretpw@…'"), so a credentialed mirror override put the credential into
-        # the persisted install state, the dashboard, AND the SEL audit record. Two
-        # sinks below, both of which needed it.
+        # 'secretpw@…'"), so a credentialed mirror override would put the credential
+        # into the persisted install state, the dashboard, AND the SEL audit record.
+        # Two sinks below, both of which need it.
         _set_state(STATE_ERROR, error=f"provisioning crashed ({type(exc).__name__})")
         _audit("failed", error=type(exc).__name__)
         return

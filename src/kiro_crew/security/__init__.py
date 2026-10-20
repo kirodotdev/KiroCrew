@@ -102,18 +102,18 @@ logger = logging.getLogger(__name__)
 # second copy to keep in step.
 #
 # The table below is grouped by owning submodule, groups in alphabetical order, and a name belongs
-# to the submodule that DEFINES it. Names this module imports for its own use
-# from outside the package -- the standard library, and other ``kiro_crew``
-# modules -- are not in the table: no submodule of this package owns them, so
-# there is no owner to resolve them through, and they stay ordinary attributes of
-# this module. Two outside names are the exception: ``SecurityEventLog`` and
-# ``maintenance_executor`` belong to ``deny_gate``, whose audit emitters are the only
-# readers of the binding this module held, so a patch written here reaches the module
-# those readers run in (``exfil`` imports its own ``SecurityEventLog``).
+# to the submodule that DEFINES it, or, for the mirror facades ``argv_floor``, ``denied_rules``,
+# ``exfil``, ``paths`` and ``redaction``, to the facade that serves it from its owner. Names
+# imported for this module's own use from outside the package -- the standard library and other
+# ``kiro_crew`` modules -- are not in the table: no submodule owns them, so there is no owner to
+# resolve them through, and they stay ordinary attributes of this module. Two outside names are
+# the exception: ``SecurityEventLog`` and ``maintenance_executor`` belong to ``deny_gate``, whose
+# audit emitters are the only readers of the binding this module held, so a patch written here
+# reaches the module those readers run in (``exfil_oauth`` imports its own ``SecurityEventLog``).
 
-#: Re-exported name -> the submodule that DEFINES it, the one place its value
-#: lives. Read from here by ``__getattr__``, so the facade binds none of these
-#: names in its own namespace.
+#: Re-exported name -> the submodule that DEFINES it, or the mirror facade that serves it from
+#: its owner and keeps every binding of it one object. Read from here by ``__getattr__``, so
+#: the facade binds none of these names in its own namespace.
 _EXPORTS: dict[str, str] = {
     # argv_floor
     "_AMBIGUOUS_REFS": "argv_floor",

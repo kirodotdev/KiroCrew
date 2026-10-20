@@ -4,8 +4,9 @@ The dispatch reads (``fetch_dispatchable``, ``fetch_dispatchable_fair``,
 ``pending_lanes``) name the rows a ``claim`` would take now, and ``next_eligible_at``
 says when time alone releases the next one. The listings and counts answer the queue's
 callers: the pending rows of a kind, session or batch, the active rows, the per-state
-counts and the oldest wait. Each read reports a database failure as
-``TaskStoreUnavailable`` (``_typed_read``).
+counts and the oldest wait, and the rows no owner holds long after they fell due
+(``overdue_unleased_rows``, a ``kirocrew doctor`` read). Each read reports a database
+failure as ``TaskStoreUnavailable`` (``_typed_read``).
 
 A function here whose first parameter is ``self`` is a ``TaskStore`` method: the class
 binds it under the same name in ``taskq/store.py``, so it reads the store's fields and
@@ -19,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from .model import ADMITTED, RECOVERING, TaskRecord
-from .store_vocab import _SQL_ACTIVE, _SQL_CLAIMABLE, _SQL_UNSTARTED, _typed_read
+from .store_vocab import _SQL_ACTIVE, _SQL_CLAIMABLE, _SQL_TERMINAL, _SQL_UNSTARTED, _typed_read
 
 if TYPE_CHECKING:
     from . import lanes as _lanes
@@ -429,3 +430,30 @@ def oldest_wait_secs(self: TaskStore, *, kind: str | None = None) -> float:
     if not row or row[0] is None:
         return 0.0
     return max(0.0, self.now() - float(row[0]))
+
+
+@_typed_read
+def overdue_unleased_rows(self: TaskStore, overdue_secs: float) -> list[TaskRecord]:
+    """Rows that are not terminal, hold no lease, and fell due *overdue_secs* ago or more.
+
+    Due means ``next_run_at`` is set and at or before ``now - overdue_secs``; a row
+    with no ``next_run_at`` was never deferred and is not counted. No lease means
+    ``lease_owner`` is empty: no incarnation is running or re-dispatching the row.
+    While a gateway runs, a due claimable row is claimed when a slot frees, so a row
+    still in this shape long after its due time is one nothing is picking up, and a
+    claimable sub-agent row in it keeps its parent's pending count above zero.
+    Oldest due first. A read: nothing is written.
+    """
+    cutoff = self.now() - float(overdue_secs)
+    with self._lock:
+        rows = (
+            self._c()
+            .execute(
+                f"SELECT * FROM tasks WHERE state NOT IN {_SQL_TERMINAL} "
+                "AND lease_owner IS NULL AND next_run_at IS NOT NULL AND next_run_at<=? "
+                "ORDER BY next_run_at, rowid",
+                (cutoff,),
+            )
+            .fetchall()
+        )
+    return [TaskRecord.from_row(r) for r in rows]

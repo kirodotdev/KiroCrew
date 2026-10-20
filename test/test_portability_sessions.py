@@ -1279,3 +1279,164 @@ class TestImportRollback:
         assert not transcript.exists()
         assert not (target / files["attachment"].relative_to(snap)).exists()
         assert not (target / files["rotation"].relative_to(snap)).exists()
+
+
+class TestStreamingExportEquivalence:
+    """The streamed export (plan_export + stream_export_zip) must build the
+    SAME archive the in-memory create_export_zip does, chats included, and the chat
+    selection the stat-only pre-pass made must match the set actually written."""
+
+    def test_streamed_archive_matches_the_in_memory_one(self, home):
+        ref_bytes, ref_manifest = portability.create_export_zip(include_sessions=True)
+
+        plan = portability.plan_export(include_sessions=True)
+        buf = io.BytesIO()
+        stream_manifest = portability.stream_export_zip(buf.write, plan)
+        stream_bytes = buf.getvalue()
+
+        # Same members (the top prefix dir carries only a timestamp, so strip it).
+        assert _members(ref_bytes) == _members(stream_bytes)
+        # Same chat accounting.
+        assert (
+            stream_manifest["contents"]["session_count"]
+            == ref_manifest["contents"]["session_count"]
+        )
+        assert (
+            stream_manifest["contents"]["sessions_withheld"]
+            == ref_manifest["contents"]["sessions_withheld"]
+        )
+        assert (
+            stream_manifest["contents"]["sessions_skipped_size"]
+            == ref_manifest["contents"]["sessions_skipped_size"]
+        )
+        # The streamed byte count the header carries is a lower bound on what the
+        # archive leaves out; nothing changes mid-test here, so they match.
+        assert plan.sessions_skipped <= stream_manifest["contents"]["sessions_skipped_size"]
+        assert plan.sessions_skipped == stream_manifest["contents"]["sessions_skipped_size"]
+        # The streamed bytes are a valid zip.
+        with zipfile.ZipFile(io.BytesIO(stream_bytes)) as zf:
+            assert zf.testzip() is None
+
+    def test_the_plan_order_matches_the_chats_the_writer_wrote(self, home):
+        """session_order lists every candidate; the writer keeps the persistent ones."""
+        plan = portability.plan_export(include_sessions=True)
+        assert plan.session_order is not None
+        candidate_stems = set(plan.session_order)
+
+        buf = io.BytesIO()
+        portability.stream_export_zip(buf.write, plan)
+        with zipfile.ZipFile(buf) as zf:
+            written_stems = {
+                name.split("/", 1)[1][len("sessions/") : -len(".jsonl")]
+                for name in zf.namelist()
+                if name.split("/", 1)[1].startswith("sessions/")
+                and name.endswith(".jsonl")
+                and "/" not in name.split("/", 1)[1][len("sessions/") :]
+            }
+        # Everything written was a candidate; the writer keeps the persistent subset.
+        assert written_stems <= candidate_stems
+        # The one kept persistent chat is in; a withheld/incognito one is not.
+        assert "dashboard_kept" in written_stems
+        assert "dashboard_incog" not in written_stems
+
+
+class TestWriterRechecksPrivacyAndCap:
+    """The writer judges each chat under its own lock, so a chat that turns private
+    or grows past the import cap AFTER the pre-pass is left out of the archive."""
+
+    def test_write_rechecks_privacy_and_cap(self, home, monkeypatch):
+        import io
+        import zipfile
+
+        mc_real = os.path.realpath(os.environ["KIROCREW_HOME"])
+        # The pre-pass sees dashboard_kept as a persistent, exportable chat.
+        order, _skipped = portability._plan_sessions(
+            mc_real,
+            "kirocrew-export-t",
+            base_members=0,
+            base_bytes=0,
+            manifest={"version": 3, "contents": {}},
+        )
+        assert "dashboard_kept" in order
+
+        # Between plan and write, that chat is turned Incognito: the writer reads
+        # the header again under its lock and must withhold the now-private chat.
+        real_verdict = portability._transcript_header_verdict
+
+        def _verdict_flips_kept(first_line):
+            # Any transcript opened during the write pass now reads as restricted.
+            return "incognito"
+
+        monkeypatch.setattr(portability, "_transcript_header_verdict", _verdict_flips_kept)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            exported, withheld, skipped = portability._write_sessions(
+                zf,
+                mc_real,
+                "kirocrew-export-t",
+                {},
+                manifest={"version": 3, "contents": {}},
+                order=order,
+            )
+        with zipfile.ZipFile(buf) as zf:
+            names = {n.split("/", 1)[1] for n in zf.namelist()}
+
+        # The flipped chat and its companions are absent; it counts as withheld.
+        assert not any(n.startswith("sessions/dashboard_kept") for n in names)
+        assert exported == 0
+        assert withheld >= 1
+
+        # Restore and confirm the writer DOES keep it when it stays persistent.
+        monkeypatch.setattr(portability, "_transcript_header_verdict", real_verdict)
+        buf2 = io.BytesIO()
+        with zipfile.ZipFile(buf2, "w", zipfile.ZIP_DEFLATED) as zf:
+            exported2, _withheld2, _skipped2 = portability._write_sessions(
+                zf,
+                mc_real,
+                "kirocrew-export-t",
+                {},
+                manifest={"version": 3, "contents": {}},
+                order=order,
+            )
+        with zipfile.ZipFile(buf2) as zf:
+            names2 = {n.split("/", 1)[1] for n in zf.namelist()}
+        assert "sessions/dashboard_kept.jsonl" in names2
+        assert exported2 >= 1
+
+    def test_write_drops_a_chat_that_no_longer_fits(self, home, monkeypatch):
+        """A chat that grows past the running import cap between plan and write is
+        skipped by the writer, not written over the ceiling."""
+        import io
+        import zipfile
+
+        mc_real = os.path.realpath(os.environ["KIROCREW_HOME"])
+        order, _skipped = portability._plan_sessions(
+            mc_real,
+            "kirocrew-export-t",
+            base_members=0,
+            base_bytes=0,
+            manifest={"version": 3, "contents": {}},
+        )
+        assert order, "need at least one candidate chat"
+
+        # Shrink the import ceiling to just under one transcript so the first chat
+        # the writer sizes exceeds the budget -- the writer must skip it, not write it.
+        monkeypatch.setattr(portability, "_MAX_IMPORT_UNCOMPRESSED", 1)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            exported, _withheld, skipped = portability._write_sessions(
+                zf,
+                mc_real,
+                "kirocrew-export-t",
+                {},
+                manifest={"version": 3, "contents": {}},
+                order=order,
+            )
+        with zipfile.ZipFile(buf) as zf:
+            names = {n.split("/", 1)[1] for n in zf.namelist()}
+
+        assert exported == 0
+        assert skipped >= 1
+        assert not any(n.startswith("sessions/dashboard") for n in names)

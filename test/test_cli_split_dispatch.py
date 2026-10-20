@@ -3,7 +3,7 @@
 The dispatch chain stays in ``cli.main``, where the lazy-import ratchet and the boot-order
 pins read it, while the arguments come from the ``cli_parser_*`` registrars. These tests run
 the real ``main`` -- the parser, the prologue and the chain -- for every command but
-``gateway`` (``test_cli.py``'s lock-refusal and ``--seed`` tests drive that branch
+``gateway`` (``test_cli_main_entry.py``'s lock-refusal and ``--seed`` tests drive that branch
 in-process), with the boot steps and the command's handler replaced by recorders, and pin
 which handler each command reaches and with what.
 """

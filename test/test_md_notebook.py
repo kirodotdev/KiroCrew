@@ -504,7 +504,10 @@ def test_every_spawn_in_this_module_pins_path() -> None:
     """
     from kiro_crew.apps.builtins.md_notebook import server as server_mod
 
-    source = Path(server_mod.__file__).read_text(encoding="utf-8")
+    facade = Path(server_mod.__file__)
+    source = "".join(
+        path.read_text(encoding="utf-8") for path in (facade, *facade.parent.glob("server_*.py"))
+    )
     assert source.count("subprocess.run(") == source.count("env=_trusted_env(),")
 
 

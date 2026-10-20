@@ -23,12 +23,15 @@ interesting cells are the ones where those two disagree.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew.agent_sdk.drivers.acp_turn_vocab import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate, impl_llm
 from kiro_crew.decisions.types import Choice, Noul, Score
+from kiro_crew.testing.wait import await_until
 
 #: The judge's own questions. Every one is a ``Choice``: the RFC's three questions
 #: are a two-option one, a six-option one and an ordered level set. (The wire maps
@@ -420,6 +423,105 @@ def _no_leaked_registration():
     impl_llm.set_runner_factory(None)
 
 
+def _record_oneliner(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Replace ``run_bg_oneliner`` with a recorder that answers well; return its calls."""
+    calls: list[dict] = []
+
+    async def _fake(sessions, prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        return _body()
+
+    monkeypatch.setattr("kiro_crew.llm_helpers.run_bg_oneliner", _fake)
+    return calls
+
+
+class _RuntimeBackend:
+    """A session manager whose background backend has a shared runtime."""
+
+    def _bg_backend_supports_runtime(self) -> bool:
+        return True
+
+
+class _BgSessions(_RuntimeBackend):
+    """A shared-runtime session manager; ``gated`` holds its acquisition."""
+
+    def __init__(self, handle: "_FakeBgHandle", *, gated: bool = False) -> None:
+        self._handle = handle
+        self.open_gate = asyncio.Event() if gated else None
+        self.acquired = 0
+        self.acquire_cancelled = False
+
+    async def get_bg_session(self, start_priority: object = None) -> "_FakeBgHandle":
+        if self.open_gate is not None:
+            try:
+                await self.open_gate.wait()
+            except asyncio.CancelledError:
+                self.acquire_cancelled = True
+                raise
+        self.acquired += 1
+        return self._handle
+
+    async def get_or_create(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("a judge call must not open a session of its own")
+
+
+class _OwnSessionBackend:
+    """A session manager whose backend has none: every call opens its own session."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, object]] = []
+        self.released: list[str] = []
+        self.destroyed: list[str] = []
+
+    def _bg_backend_supports_runtime(self) -> bool:
+        return False
+
+    async def get_bg_session(self, start_priority: object = None) -> None:
+        raise AssertionError("a backend with no shared runtime must not reach _bg")
+
+    async def get_or_create(self, key: str, agent: str = "", model: object = None):
+        self.asked.append((agent, model))
+        return SimpleNamespace(), True, False
+
+    def release(self, key: str) -> None:
+        self.released.append(key)
+
+    async def destroy(self, key: str) -> None:
+        self.destroyed.append(key)
+
+
+def _background_role(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+    """Make the live snapshot's background role resolve to *model*."""
+    agent = SimpleNamespace(resolve_model=lambda role: model if role == "background" else "auto")
+    monkeypatch.setattr("kiro_crew.config.live.snapshot", lambda: SimpleNamespace(agent=agent))
+
+
+class _FakeBgHandle:
+    """A handle on the shared background runtime that streams fixed chunks."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = chunks
+        self.fed: list[int] = []
+        self.prompts: list[str] = []
+        self.destroyed = False
+
+    async def set_model(self, model: str) -> None:
+        return None
+
+    async def prompt(self, text: str, *, allow_image: bool = True):
+        self.prompts.append(text)
+        for chunk in self._chunks:
+            self.fed.append(len(chunk))
+            yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=chunk)
+        yield SimpleNamespace(kind=EVENT_COMPLETE, text="")
+
+    async def reject_tool(self, request_id: object) -> None:
+        return None
+
+    async def destroy(self) -> None:
+        self.destroyed = True
+
+
 class TestRunnerSeam:
     """The lane is inert without a registered runner, and never guesses one."""
 
@@ -457,86 +559,187 @@ class TestRunnerSeam:
             impl_llm.set_runner(None)
         assert answers["needs_owner"].value == "wake"
 
-    def test_session_runner_drops_a_model_id_that_is_not_one(self) -> None:
-        """``llm_model`` is agent-writable, so an unbounded value never reaches the session."""
-        asked: list[object] = []
+    def test_session_runner_drops_a_model_id_that_is_not_one(self, monkeypatch) -> None:
+        """``llm_model`` is agent-writable, so an unbounded value never reaches the session.
 
-        class _Sessions:
-            async def get_or_create(self, key: str, agent: str = "", model: object = None):
-                asked.append(model)
-                raise RuntimeError("stop here; the model argument is what this asserts")
+        What arrives instead is the agent's own model, exactly as for inherit.
+        """
+        calls = _record_oneliner(monkeypatch)
+        _background_role(monkeypatch, "claude-haiku-4.5")
+        runner = impl_llm.build_session_runner(_RuntimeBackend(), model="not a model id; rm -rf /")
+        asyncio.run(runner("prompt"))
+        assert [call["model"] for call in calls] == ["claude-haiku-4.5"]
 
-        runner = impl_llm.build_session_runner(_Sessions(), model="not a model id; rm -rf /")
-        with pytest.raises(RuntimeError):
-            asyncio.run(runner("prompt"))
-        assert asked == [None]
+        async def _fake_collect(provider, prompt, **kwargs):
+            return _body()
 
-    def test_the_inherit_word_is_not_sent_as_a_model(self) -> None:
-        """``auto`` means keep the agent's own model, so no model is passed at all."""
-        asked: list[object] = []
+        monkeypatch.setattr("kiro_crew.llm_helpers.stream_and_collect", _fake_collect)
+        own = _OwnSessionBackend()
+        asyncio.run(impl_llm.build_session_runner(own, model="not a model id; rm -rf /")("p"))
+        assert own.asked == [(impl_llm.JUDGE_AGENT_NAME, None)]
 
-        class _Sessions:
-            async def get_or_create(self, key: str, agent: str = "", model: object = None):
-                asked.append(model)
-                raise RuntimeError("stop here")
+    def test_inherit_asks_for_the_background_role_model(self, monkeypatch) -> None:
+        """``auto`` means the agent's own model: the background role the template carries.
 
-        runner = impl_llm.build_session_runner(_Sessions(), model=impl_llm.JUDGE_MODEL_DEFAULT)
-        with pytest.raises(RuntimeError):
-            asyncio.run(runner("prompt"))
-        assert asked == [None]
+        A session on the shared runtime starts on its backend's default, not on the
+        template's model, so inheriting has to name the role model; with no readable
+        config the call names none and the session default applies.
+        """
+        calls = _record_oneliner(monkeypatch)
+        _background_role(monkeypatch, "claude-haiku-4.5")
+        runner = impl_llm.build_session_runner(
+            _RuntimeBackend(), model=impl_llm.JUDGE_MODEL_DEFAULT
+        )
+        asyncio.run(runner("prompt"))
+        monkeypatch.setattr("kiro_crew.config.live.snapshot", lambda: None)
+        asyncio.run(runner("prompt"))
+        assert [call["model"] for call in calls] == ["claude-haiku-4.5", None]
 
-    def test_the_response_ceiling_refuses_mid_stream(self, monkeypatch) -> None:
+    def test_the_response_ceiling_refuses_mid_stream(self) -> None:
         """The ceiling bounds what is RETAINED, so it fires while chunks arrive.
 
         The parser's own check only sees a response that is already whole, so a
         runaway generation would sit in memory in full before anything refused it.
-        `stream_and_collect` catches only its own transport error, so the raise from
-        this callback leaves the stream rather than being swallowed.
+        Driven through the real ``run_bg_oneliner``, whose bound is the one the runner
+        hands it: ten chunks are well past the ceiling, and the stream must stop
+        before the tenth.
         """
+        chunk = "x" * (16 * 1024)
+        handle = _FakeBgHandle([chunk] * 10)
+        runner = impl_llm.build_session_runner(_BgSessions(handle), model="claude-haiku-4.5")
+        with pytest.raises(ValueError):
+            asyncio.run(runner("prompt"))
+        assert sum(handle.fed) <= impl_llm._MAX_RESPONSE_CHARS + len(chunk)
+        assert handle.destroyed
+
+    def test_session_runner_passes_a_valid_model_id(self, monkeypatch) -> None:
+        calls = _record_oneliner(monkeypatch)
+        runner = impl_llm.build_session_runner(_RuntimeBackend(), model=" claude-haiku-4.5 ")
+        asyncio.run(runner("prompt"))
+        assert len(calls) == 1
+        call = calls[0]
+        assert call["model"] == "claude-haiku-4.5"
+        assert call["prompt"] == "prompt"
+        # Audited and billed under its own feature, bounded per chunk, and never
+        # retried on a fallback model the owner did not pick.
+        assert call["sel_source"] == "wake_judge"
+        assert call["max_output_bytes"] == impl_llm._MAX_RESPONSE_CHARS
+        assert call["retry_rejected_model"] is False
+
+    def test_a_call_runs_on_the_shared_background_runtime(self) -> None:
+        """One judge call is a ``session/new`` on the warm runtime, never a session of its own.
+
+        A session of its own spawns a backend process and then waits out the MCP
+        drain's no-report ceiling for an agent that mounts no MCP server, which on
+        its own overran the lane's whole budget on every call.
+        """
+        handle = _FakeBgHandle([_body()])
+        sessions = _BgSessions(handle)
+        runner = impl_llm.build_session_runner(sessions, model="claude-haiku-4.5")
+        text = asyncio.run(runner("prompt"))
+        assert text == _body()
+        assert sessions.acquired == 1
+        assert handle.prompts == ["prompt"]
+        assert handle.destroyed
+
+    def test_the_gate_budget_ends_the_wait_but_never_the_acquisition(self) -> None:
+        """A budget that expires mid-acquisition stops the caller, not the call.
+
+        Cancelling ``run_bg_oneliner`` while it acquires its session kills a respawn
+        of the shared runtime or leaks a ``session/new`` already sent. So the caller
+        gets its timeout at once, and the call finishes on its own: it acquires,
+        answers, and destroys its handle, and nothing is left holding it.
+        """
+
+        async def scenario() -> tuple[_FakeBgHandle, _BgSessions]:
+            handle = _FakeBgHandle([_body()])
+            sessions = _BgSessions(handle, gated=True)
+            runner = impl_llm.build_session_runner(sessions, model="claude-haiku-4.5")
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(runner("prompt"), timeout=0.01)
+            assert sessions.acquired == 0, "the acquisition must still be in flight"
+            left = list(impl_llm._unawaited_calls)
+            assert len(left) == 1
+            sessions.open_gate.set()
+            await await_until(asyncio.gather(*left), what="the call the gate stopped waiting for")
+            return handle, sessions
+
+        handle, sessions = asyncio.run(scenario())
+        assert sessions.acquire_cancelled is False
+        assert sessions.acquired == 1
+        assert handle.destroyed
+        assert impl_llm._unawaited_calls == set()
+
+    def test_the_runner_bound_never_cuts_a_call_the_gate_waits_for(self) -> None:
+        assert impl_llm._RUN_CEILING_SECS >= gate._LLM_TIMEOUT_MAX_SECS
+
+    def test_a_backend_with_no_shared_runtime_keeps_a_session_of_its_own(self, monkeypatch) -> None:
+        """There ``_bg`` is ONE persistent conversation whose handle cannot set a model.
+
+        A judge call on it would drop a pinned ``llm_model`` and leave third-party
+        evidence in the history titles and summaries read next, so the call opens a
+        tool-less session of its own on the pinned model and tears it down.
+        """
+        asked: list[dict] = []
+
+        async def _fake_collect(provider, prompt, *, approval_policy=None, on_chunk=None, **kw):
+            asked.append({"prompt": prompt, "policy": approval_policy})
+            return _body()
+
+        monkeypatch.setattr("kiro_crew.llm_helpers.stream_and_collect", _fake_collect)
+        from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+        own = _OwnSessionBackend()
+        text = asyncio.run(impl_llm.build_session_runner(own, model="claude-haiku-4.5")("p"))
+        assert text == _body()
+        assert own.asked == [(impl_llm.JUDGE_AGENT_NAME, "claude-haiku-4.5")]
+        assert asked == [{"prompt": "p", "policy": ToolApprovalPolicy.REJECT_ALL}]
+        assert own.released == own.destroyed and len(own.destroyed) == 1
+
+    @pytest.mark.parametrize("backend,shared", [("kas", True), ("codex", True), ("claude", False)])
+    def test_the_real_session_manager_answers_the_probe(self, backend: str, shared: bool) -> None:
+        """The runner reads ``SessionManager._bg_backend_supports_runtime`` by name.
+
+        Read through ``getattr``, so a rename would make every probe read as no and send
+        each judge call back to a per-call session without a word. Asked of the real
+        manager, a rename fails here instead.
+        """
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        cfg = KiroCrewConfig()
+        cfg.agent.acp_backend = backend
+        manager = SessionManager(cfg, provider_factory=lambda *args, **kwargs: object())
+        assert impl_llm._has_shared_runtime(manager) is shared
+
+    def test_an_unreadable_backend_keeps_a_session_of_its_own(self) -> None:
+        """A manager that cannot say keeps the call out of any shared conversation."""
+        assert impl_llm._has_shared_runtime(object()) is False
+
+        class _Broken:
+            def _bg_backend_supports_runtime(self) -> bool:
+                raise RuntimeError("config unreadable")
+
+        assert impl_llm._has_shared_runtime(_Broken()) is False
+
+    def test_the_own_session_ceiling_refuses_mid_stream(self, monkeypatch) -> None:
+        """On a session of its own the bound is counted per chunk, as on the shared runtime."""
         fed: list[int] = []
-
-        class _Provider:
-            pass
-
-        class _Sessions:
-            async def get_or_create(self, key: str, agent: str = "", model: object = None):
-                return _Provider(), True, False
-
-            def release(self, key: str) -> None:
-                return None
-
-            async def destroy(self, key: str) -> None:
-                return None
-
         chunk = "x" * (16 * 1024)
 
         async def _fake_collect(provider, prompt, *, approval_policy=None, on_chunk=None, **kw):
-            # Ten chunks is well past the ceiling; the callback must stop it before
-            # the tenth, which is what makes the bound a bound.
             for _ in range(10):
                 fed.append(len(chunk))
                 on_chunk(chunk)
             return chunk
 
         monkeypatch.setattr("kiro_crew.llm_helpers.stream_and_collect", _fake_collect)
-        runner = impl_llm.build_session_runner(_Sessions(), model="")
+        own = _OwnSessionBackend()
         with pytest.raises(impl_llm.LlmProtocolError) as caught:
-            asyncio.run(runner("prompt"))
+            asyncio.run(impl_llm.build_session_runner(own, model="")("p"))
         assert str(caught.value) == "response exceeded the response ceiling"
         assert sum(fed) <= impl_llm._MAX_RESPONSE_CHARS + len(chunk)
-
-    def test_session_runner_passes_a_valid_model_id(self) -> None:
-        asked: list[object] = []
-
-        class _Sessions:
-            async def get_or_create(self, key: str, agent: str = "", model: object = None):
-                asked.append((agent, model))
-                raise RuntimeError("stop here")
-
-        runner = impl_llm.build_session_runner(_Sessions(), model=" claude-haiku-4.5 ")
-        with pytest.raises(RuntimeError):
-            asyncio.run(runner("prompt"))
-        assert asked == [(impl_llm.JUDGE_AGENT_NAME, "claude-haiku-4.5")]
+        assert len(own.destroyed) == 1
 
 
 class TestTheRunnerIsWiredAtBoot:

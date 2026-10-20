@@ -1,4 +1,4 @@
-"""Tests for STT transcription reaction indicator in slack/events.py."""
+"""Tests for STT transcription reaction indicator in slack/events_voice.py."""
 
 from __future__ import annotations
 

@@ -29,10 +29,24 @@ import { MAX_HOLD_MS } from './pushToTalk'
  * microphone, and read through a getter at call time so a re-render's new
  * callback identities are always the ones invoked.
  */
+/**
+ * Why a capture is being stopped, as far as the person is concerned.
+ *
+ * - `'finish'`: they deliberately said they are done (released the hold, or
+ *   pressed again to stop). With `stt.submit_on_release` on, this sends.
+ * - omitted: every other stop. That covers a deliberate keep-as-draft (Shift,
+ *   the hold bar's sideways zone) and anything they did not choose (the safety
+ *   cap, focus loss, the page hiding, an orphaned startup). Never sends.
+ *
+ * Omitted is the default on purpose, so a stop path nobody updated stays on
+ * the side that cannot send.
+ */
+export type StopIntent = 'finish'
+
 export interface VoiceControls {
   recording: boolean
   start: () => Promise<void> | void
-  stop: () => void
+  stop: (intent?: StopIntent) => void
   /**
    * End capture WITHOUT transcribing, and release whatever was acquired.
    *

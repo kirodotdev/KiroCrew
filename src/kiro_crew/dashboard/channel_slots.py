@@ -955,6 +955,18 @@ def slot_closed_since(state: "DashboardState", slot_name: str, instant: float) -
     return when is not None and when >= instant
 
 
+def slot_close_instant(state: "DashboardState", slot_name: str) -> float | None:
+    """The instant *slot_name*'s tab was last closed in this process, or ``None``.
+
+    It is the value the close save persists as ``closed_at``, so a caller can tell
+    a close whose save has landed (the line's ``closed_at`` equals it) from one
+    still on its way by equality, which holds on a coarse clock and across a
+    clock step, where comparing clock readings does not.
+    """
+    closes = _RECENT_CLOSES.get(state) or {}
+    return closes.get(slot_name)
+
+
 def _tombstone_blocks(state: "DashboardState", session: dict[str, Any]) -> bool:
     """True when an in-memory close tombstone suppresses surfacing *session*.
 

@@ -590,9 +590,6 @@ def _delete_listed_files(
             # anything here unaccounted for" question by PATH; this re-establishes it from
             # the pinned descriptor, so the answer the delete acts on is the one it can
             # bind to.
-            dirs: dict[tuple[str, ...], int] = {}
-            present: dict[tuple[str, ...], int] = {}
-            links: dict[tuple[str, ...], int] = {}
             try:
                 scanned = _scan_tree(batch_fd, device=device)
             except OSError as exc:
@@ -772,9 +769,6 @@ def _delete_listed_files(
             # scan, and nothing may be left but the manifest. This replaces a recursive
             # sweep that answered "is it empty" while also deciding what to delete - two
             # jobs, and the deciding half could be pointed at a directory nobody approved.
-            left_dirs: dict[tuple[str, ...], int] = {}
-            left_files: dict[tuple[str, ...], int] = {}
-            left_links: dict[tuple[str, ...], int] = {}
             try:
                 left = _scan_tree(batch_fd, device=device)
             except OSError as exc:

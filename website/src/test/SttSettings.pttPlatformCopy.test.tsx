@@ -76,6 +76,22 @@ describe('push-to-talk panel copy follows the platform', () => {
     expect(screen.getByText(/Alt \+ Shift \+ Space works out of the box/i)).toBeTruthy()
   })
 
+  it('keeps the stored setting and shows an error when storage refuses the save', async () => {
+    await renderPanel()
+    const toggle = screen.getByRole('switch', { name: /use a key to start dictation/i })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    const realSet = Storage.prototype.setItem
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k, v) {
+      if (k === 'mc-ptt-config') throw new DOMException('full', 'QuotaExceededError')
+      return realSet.call(this, k, v)
+    })
+    fireEvent.click(toggle)
+    spy.mockRestore()
+    expect(await screen.findByTestId('ptt-save-error')).toBeTruthy()
+    expect(screen.getByRole('switch', { name: /use a key to start dictation/i }).getAttribute('aria-checked')).toBe('true')
+    expect(localStorage.getItem('mc-ptt-config')).toBeNull()
+  })
+
   it('does not offer Option as an example key on non-mac', async () => {
     await renderPanel()
     // "a key like Option, Control or Shift" named a key these keyboards lack.

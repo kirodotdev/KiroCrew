@@ -134,10 +134,14 @@ OUTCOME_ERROR = "error"
 OUTCOME_REJECTED_CAPACITY = "rejected_capacity"
 OUTCOME_UNAUTHORIZED = "unauthorized"
 OUTCOME_DISABLED = "disabled"
+#: The turn finished, but without an MCP server the agent spec declares (it
+#: failed, waits for authorization, or never reported). The detail names it.
+OUTCOME_DEGRADED = "degraded"
 
 VALID_OUTCOMES = frozenset(
     {
         OUTCOME_COMPLETED,
+        OUTCOME_DEGRADED,
         OUTCOME_TIMEOUT,
         OUTCOME_ERROR,
         OUTCOME_REJECTED_CAPACITY,
@@ -145,6 +149,148 @@ VALID_OUTCOMES = frozenset(
         OUTCOME_DISABLED,
     }
 )
+
+# ── Request counter outcomes ──
+#
+# ``kirocrew.webhook.requests`` counts every inbound request the endpoint
+# DECIDES, which is a wider population than the runs the ring above stores. The
+# endpoint turns several requests away before any run exists to record: the
+# kill-switch read cannot touch the store when the store is what is unreadable,
+# and the per-source auth throttle exists precisely to stop doing work -- a disk
+# write per rejected request is the opposite of what a flood needs.
+#
+# Those refusals need their own members, because folding them into a recorded
+# outcome is what makes the series lie in the case it is for: a rotated token
+# produces a few ``unauthorized`` runs, the throttle then trips, and with no
+# member of its own every later request is invisible -- the ``unauthorized`` rate
+# falls to zero while the integration is still broken, which an alert reads as
+# recovered.
+
+#: An inbound request refused by the per-source auth-failure throttle. Its own
+#: member rather than ``unauthorized``: the caller never presented a credential
+#: this build judged, so counting it as an auth failure would double-count the
+#: flood that tripped the throttle.
+METRIC_OUTCOME_THROTTLED = "throttled"
+
+#: An inbound request the endpoint could not decide because a store it must read
+#: is unreadable, or a destination could not be verified. Operator-fixable state,
+#: not a caller error, which is why it is not folded into the body members.
+METRIC_OUTCOME_UNAVAILABLE = "unavailable"
+
+#: An inbound request refused on its own content -- too large, unreadable,
+#: unparseable, or a field of the wrong type. One member for the whole class: the
+#: individual response codes are a client contract and already distinguish them,
+#: while a series per field would grow with every new field.
+METRIC_OUTCOME_REJECTED_BODY = "rejected_body"
+
+#: Refusal members, none of which is a recorded run. Disjoint from
+#: :data:`VALID_OUTCOMES` by construction, pinned by a test: a member that was
+#: both would make one request countable twice.
+METRIC_REFUSAL_OUTCOMES = frozenset(
+    {
+        METRIC_OUTCOME_THROTTLED,
+        METRIC_OUTCOME_UNAVAILABLE,
+        METRIC_OUTCOME_REJECTED_BODY,
+    }
+)
+
+#: The remainder member. Reached when a value this build does not recognise is
+#: handed to :func:`metric_outcome`, which keeps the series key bounded instead
+#: of minting one per unknown string.
+METRIC_OUTCOME_OTHER = "other"
+
+#: Every value ``outcome`` can carry on ``kirocrew.webhook.requests``: the
+#: recorded-run outcomes, the refusal outcomes, and the remainder. Pinned by a
+#: test, so widening either half without restating it in the metrics doc fails.
+METRIC_OUTCOMES = frozenset(
+    VALID_OUTCOMES | METRIC_REFUSAL_OUTCOMES | {METRIC_OUTCOME_OTHER}
+)
+
+
+def metric_outcome(outcome: object) -> str:
+    """Fold *outcome* onto :data:`METRIC_OUTCOMES`; never raises.
+
+    An attribute value must come from a closed enum, so anything this build does
+    not recognise -- including a non-string -- becomes
+    :data:`METRIC_OUTCOME_OTHER` rather than minting a series of its own.
+    """
+    if isinstance(outcome, str) and outcome in METRIC_OUTCOMES:
+        return outcome
+    return METRIC_OUTCOME_OTHER
+
+
+def count_request(outcome: str) -> None:
+    """Add 1 to ``kirocrew.webhook.requests`` for *outcome*; never raises.
+
+    THE one emitter for that series, shared by :meth:`WebhookRunStore.record`
+    and by the endpoint's pre-record refusals, so the two halves of the
+    population cannot drift apart in how they label or sanitise an outcome.
+
+    An in-memory add behind the ``telemetry.enabled`` consent gate: no disk
+    write, no network call and no log line, which is what makes it safe on a
+    refusal path whose whole purpose is to stop doing work.
+    """
+    from kiro_crew.metrics.events import WEBHOOK_REQUESTS, emit_counter
+
+    emit_counter(WEBHOOK_REQUESTS, {"outcome": metric_outcome(outcome)})
+
+
+# ── Context registrations (hooks.json) ──
+
+#: The file ``register_hook`` writes a webhook's callback context into. Shared
+#: with ``ScriptHookStore``, which keeps its own script hooks under a ``hooks``
+#: key whose value is a LIST -- which is why every reader here has to confirm the
+#: SHAPE of a value rather than trusting the file to hold only registrations.
+CONTEXT_REGISTRATIONS_FILENAME = "hooks.json"
+
+
+def context_registrations_path() -> Path:
+    """Where :data:`CONTEXT_REGISTRATIONS_FILENAME` lives in the live data home.
+
+    ``data_home`` rather than ``config_dir``: this is asked on request handlers
+    and on the metrics reader thread, and ``config_dir`` additionally ``mkdir``s
+    the home and refreshes the recovery breadcrumb on every call.
+    """
+    from kiro_crew.config.paths import data_home
+
+    return data_home() / CONTEXT_REGISTRATIONS_FILENAME
+
+
+def is_context_registration(value: object) -> bool:
+    """True when a ``hooks.json`` value is a webhook context registration.
+
+    THE single owner of that test. An id-addressed delete has to confirm the
+    shape it is removing or ``DELETE /api/webhooks/contexts/hooks`` would drop
+    every script hook the user has; the registered-hook count published as
+    ``kirocrew.inventory.webhooks.registered`` has to agree with what the
+    dashboard lists, or the gauge reports a number no surface can confirm.
+    """
+    return isinstance(value, dict) and ("context_summary" in value or "summary" in value)
+
+
+def registered_context_count(path: Path | None = None) -> tuple[int, bool]:
+    """``(count, loadable)`` for the webhook context registrations at *path*.
+
+    The pair, rather than a bare count, for the reason ``cron`` draws the same
+    distinction: an ABSENT file is a genuine 0 (a fresh install has registered
+    no hooks), while a file that is present and does not parse is a FAULT whose
+    count is unknown -- and a reader that reported 0 for both would publish a
+    number that is a lie on exactly the install worth looking at.
+
+    Never raises: an unreadable file is ``(0, False)``.
+    """
+    target = path if path is not None else context_registrations_path()
+    try:
+        raw = _read_json(target, {})
+    except WebhookStoreUnreadable:
+        return 0, False
+    if not isinstance(raw, dict):
+        # A top-level non-object is not a registration map. It parses, so it is
+        # not a fault -- ``ScriptHookStore`` is the other writer of this file --
+        # and it holds no registrations.
+        return 0, True
+    return sum(1 for value in raw.values() if is_context_registration(value)), True
+
 
 # ── Context freshness ──
 
@@ -804,6 +950,16 @@ class WebhookRunStore:
             # drop completed turn output on the delivery path. The file is left
             # untouched either way, which is the point of the refusal.
             logger.warning("webhook run history write failed", exc_info=True)
+        # One call to this method is one recorded run, so counting here cannot
+        # double-count a run that is also delivered or also retried. It is NOT
+        # the whole population of the series: the endpoint turns some requests
+        # away before a run exists, and those call :func:`count_request`
+        # directly with a refusal member.
+        #
+        # Outside the try, and deliberately not conditional on the write landing:
+        # the series counts the DECISION, not the history row, and the decision
+        # was made whether or not the ring could persist it.
+        count_request(outcome)
         return record
 
 

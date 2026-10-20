@@ -37,6 +37,7 @@ import { AcceptedBodyUnreadable, ApiError } from '../api/apiError'
 /** The scoped helper's non-2xx throw: the dashboard's `ApiError` with the `API <status>: <body>` message. */
 const apiErr = (status: number, body: string) => new ApiError(status, `API ${status}: ${body}`, body)
 import { SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
+import { i18nT } from '../i18n/t'
 import { resetEmbedRecoveryForTests } from '../app-sdk/embedSendRecovery'
 
 const mockGet = vi.fn()
@@ -270,6 +271,243 @@ describe('ChatEmbed send receipt policy', () => {
     expect(mockPost).not.toHaveBeenCalled()
     expect(errorRows()).toHaveLength(0)
     expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe('hello')
+  })
+
+  it("#21686: a host onSend that rejects AFTER its turn ran swaps the warning for a calm line and keeps the text", async () => {
+    // The reported case: the host's own endpoint answered late or unreadably,
+    // but the message did land and the agent replied. A host send puts no
+    // sendId on the wire, so the id proof can never arrive; without another
+    // proof the notice stood forever beside the delivered row, with the same
+    // text back in the composer one Enter from a duplicate turn.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'hello', cls: '', ts: 't-old' }], running: false, title: '' })
+    let reject!: (e: Error) => void
+    const onSend = vi.fn().mockReturnValue(new Promise((_, rj) => { reject = rj }))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'hello', cls: '', ts: 't-old' },
+        { role: 'user', content: 'hello', cls: '', ts: 't-new' },
+        { role: 'assistant', content: 'done', cls: '' },
+      ],
+      running: false,
+      title: '',
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    await act(async () => { reject(new Error('stream cut')) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    // The warning is gone; one calm line says the message landed and why the
+    // text is still in the composer. Text cannot say which send landed, so
+    // the composer is never touched.
+    expect(noticeRows()).toHaveLength(1)
+    expect(noticeRows()[0].textContent).toBe(i18nT('appSdk.chatEmbed.delivery_seen_text_kept'))
+    expect(noticeRows()[0].textContent).not.toMatch(/Delivery not confirmed/)
+    expect(input().value).toBe('hello')
+  })
+
+  it('#21686: an OLDER same-text row that "Load earlier" brings in is not proof for a host send', async () => {
+    // The page is bounded, so a same-text row from before the page can appear
+    // later without ever having been on it at send time. It sits before the
+    // newest user row the send saw, so it proves nothing.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'ok', cls: '', ts: 't-2' }], running: false, title: '', has_more: true })
+    const onSend = vi.fn().mockRejectedValue(new Error('offline'))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'hello', cls: '', ts: 't-1' },
+        { role: 'user', content: 'ok', cls: '', ts: 't-2' },
+      ],
+      running: false,
+      title: '',
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe('hello')
+  })
+
+  it("#21686: a chip send's own optimistic row with the same text is not proof for an earlier host send", async () => {
+    // Only a server row proves delivery. The chip send's optimistic copy is
+    // this embed's own row, so it must not retire the failed send's notice.
+    mockGet.mockResolvedValue({ messages: [{ role: 'assistant', content: 'Next? [OPTIONS: Run tests | Skip]' }], running: false, title: '' })
+    let reject!: (e: Error) => void
+    const onSend = vi.fn().mockReturnValueOnce(new Promise((_, rj) => { reject = rj })).mockReturnValue(new Promise(() => {}))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('Run tests')
+    // Typed while the send is out, so the restored draft is not the chip's
+    // label and the chip click below is the chip's own send.
+    await act(async () => { fireEvent.change(input(), { target: { value: 'also' } }) })
+    await act(async () => { reject(new Error('offline')) })
+    await settle()
+    expect(noticeRows()).toHaveLength(1)
+    const restored = input().value
+    expect(restored).toContain('Run tests')
+    await act(async () => { fireEvent.click(screen.getByLabelText('Send now: Run tests')) })
+    await settle()
+    expect(onSend).toHaveBeenCalledTimes(2)
+    expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe(restored)
+  })
+
+  it('#21686: a host send made before the first page loads gets no text proof: an old same-text row in that read keeps the notice', async () => {
+    // With no page there is no baseline, and an empty fallback would read an
+    // OLD "hello" in the first read as this send landing.
+    let firstRead!: (v: unknown) => void
+    mockGet.mockReturnValueOnce(new Promise(r => { firstRead = r }))
+    const onSend = vi.fn().mockRejectedValue(new Error('offline'))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await typeAndSend('hello')
+    await settle()
+    expect(noticeRows()).toHaveLength(1)
+    const old = { messages: [{ role: 'user', content: 'hello', cls: '', ts: '2026-01-01T00:00:00+00:00' }], running: false, title: '' }
+    mockGet.mockResolvedValue(old)
+    await act(async () => { firstRead(old) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe('hello')
+  })
+
+  it('#21686: once the anchor row is off the page, nothing proves a host send: the notice keeps its text', async () => {
+    // Newer rows or a rewind can remove the anchor. Without it there is no
+    // safe "after" to read, so the notice stays -- the same as with no proof.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'earlier', cls: '', ts: '2026-01-01T00:00:01+00:00' }], running: false, title: '' })
+    let reject!: (e: Error) => void
+    const onSend = vi.fn().mockReturnValue(new Promise((_, rj) => { reject = rj }))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'hello', cls: '', ts: '2026-01-01T00:00:02+00:00' },
+        { role: 'assistant', content: 'long reply', cls: '', ts: '2026-01-01T00:00:03+00:00' },
+      ],
+      running: false,
+      title: '',
+      has_more: true,
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    await act(async () => { reject(new Error('stream cut')) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe('hello')
+  })
+
+  it('#21686: a host send whose restored text the user cleared gets no calm line once its text shows up', async () => {
+    // The calm line says the text is still in the composer. After the user
+    // cleared it, that would be false, so the notice simply goes away.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'earlier', cls: '', ts: 't-e' }], running: false, title: '' })
+    let reject!: (e: Error) => void
+    const onSend = vi.fn().mockReturnValue(new Promise((_, rj) => { reject = rj }))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    await act(async () => { reject(new Error('offline')) })
+    await settle()
+    expect(noticeRows()[0].textContent).toMatch(/^Delivery not confirmed/)
+    await act(async () => { fireEvent.change(input(), { target: { value: '' } }) })
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'earlier', cls: '', ts: 't-e' },
+        { role: 'user', content: 'hello', cls: '', ts: 't-1' },
+      ],
+      running: false,
+      title: '',
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(0)
+    expect(input().value).toBe('')
+  })
+
+  it('#21686: the calm line goes away when the user clears the kept text after it appeared', async () => {
+    // It says the text is still in the composer; once it is not, the line
+    // must not stay behind claiming it is.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'earlier', cls: '', ts: 't-e' }], running: false, title: '' })
+    let reject!: (e: Error) => void
+    const onSend = vi.fn().mockReturnValue(new Promise((_, rj) => { reject = rj }))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    await act(async () => { reject(new Error('offline')) })
+    await settle()
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'earlier', cls: '', ts: 't-e' },
+        { role: 'user', content: 'hello', cls: '', ts: 't-1' },
+      ],
+      running: false,
+      title: '',
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()[0].textContent).toBe(i18nT('appSdk.chatEmbed.delivery_seen_text_kept'))
+    await act(async () => { fireEvent.change(input(), { target: { value: '' } }) })
+    expect(noticeRows()).toHaveLength(0)
+  })
+
+  it('#21686: a repeated "continue" whose second send fails keeps its text even when the first one matches', async () => {
+    // Both sends share an anchor, so the FIRST delivery's row matches the
+    // second's text. Text cannot tell them apart: the notice may clear, but
+    // the second send's text must stay in the composer.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'earlier', cls: '', ts: 't-e' }], running: false, title: '' })
+    let reject!: (e: Error) => void
+    const onSend = vi.fn().mockResolvedValueOnce(undefined).mockReturnValueOnce(new Promise((_, rj) => { reject = rj }))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('continue')
+    await settle()
+    await typeAndSend('continue')
+    await settle()
+    await act(async () => { reject(new Error('offline')) })
+    await settle()
+    expect(onSend).toHaveBeenCalledTimes(2)
+    expect(input().value).toBe('continue')
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'earlier', cls: '', ts: 't-e' },
+        { role: 'user', content: 'continue', cls: '', ts: 't-1' },
+      ],
+      running: false,
+      title: '',
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(input().value).toBe('continue')
+  })
+
+  it("#21686: another slot's rows never prove a host send made to the first slot", async () => {
+    // The embed can be re-propped to another slot without remounting, and the
+    // notice and the restored text go with it. A same-text row in the new
+    // slot says nothing about the send.
+    mockGet.mockResolvedValue({ messages: [], running: false, title: '' })
+    const onSend = vi.fn().mockRejectedValue(new Error('offline'))
+    let view!: ReturnType<typeof renderEmbed>
+    await act(async () => { view = renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('yes')
+    await settle()
+    expect(noticeRows()).toHaveLength(1)
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'yes', cls: '', ts: 't-b' }], running: false, title: '' })
+    await act(async () => {
+      view.rerender(React.createElement(QueryClientProvider, { client: queryClient }, <ChatEmbed slotKey="slot-2" onSend={onSend} />))
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe('yes')
+  })
+
+  it('#21686: a host onSend that rejects and never lands keeps the notice and the text', async () => {
+    // A real non-delivery: only the OLD same-text row is on screen, and it
+    // was there before the send, so it proves nothing about this one.
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'hello', cls: '', ts: 't-old' }], running: false, title: '' })
+    const onSend = vi.fn().mockRejectedValue(new Error('offline'))
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(1)
+    expect(noticeRows()[0].textContent).toMatch(/^Delivery not confirmed/)
     expect(input().value).toBe('hello')
   })
 

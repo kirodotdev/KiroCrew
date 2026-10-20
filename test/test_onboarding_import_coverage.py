@@ -1,7 +1,7 @@
 """Branch coverage for :mod:`kiro_crew.onboarding_import` helpers.
 
 Focuses on the malformed-input, partial-import and refusal paths that the
-behavioural suite in ``test_onboarding_import.py`` does not reach: config
+behavioural suite in ``test_onboarding_import.py`` and its topic files does not reach: config
 parsers fed garbage, schedule records with contradictory triggers, file readers
 and tree walks, and the plan parser. Every writer's conflict / rollback branch is
 covered in ``test_onboarding_import_coverage_writers.py``; SQLite sidecars and the

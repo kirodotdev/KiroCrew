@@ -236,7 +236,7 @@ Two deterministic steps run in the Python module **before** assets are uploaded:
 
 **b) Pre-publish content scan (Q4)** — deploying makes content world-readable, so before
 upload the module runs the rendered output through Kiro Crew's **existing
-`redaction.py`/`security.py` secret regexes** + internal-data heuristics (employee aliases,
+`redaction_patterns.py`/`security.py` secret regexes** + internal-data heuristics (employee aliases,
 `*.internal-corp` hosts, AWS account ids/ARNs). On a match: **block-and-warn** — show what
 was flagged and where, require an explicit "publish anyway"; **never silently redact**.
 Always show a content summary in the approval. Best-effort detection, not a guarantee.

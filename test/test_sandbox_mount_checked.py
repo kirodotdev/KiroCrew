@@ -232,6 +232,11 @@ def test_a_failed_mount_refuses_to_exec(
     THERE and readable, and only the remount that withholds write did not land.
     Proceeding would hand the child exactly the write access the pair exists to
     deny, with nothing observably wrong.
+
+    The windowless masked-directory seal added for the cron data-loss fix is not
+    one of these six: it fires only for CALLER-supplied masks
+    (``seal_windowless_masks``), and this tree's one sensitive dir is tier-origin.
+    `test_sandbox_masked_dir_readonly.py` covers that seal's own refusal.
     """
     libc, message, _ = _run(tmp_path, fail_at=fail_at)
     assert message is not None, f"site {fail_at} let the spawn proceed"
@@ -452,11 +457,12 @@ _CHECKED_RAW_MOUNTS = {
 }
 
 #: The call sites of ``_mount_or_die``: propagation, the read-only bind and its sealing
-#: remount, credential dirs, the private window's two -- staging its real contents out
-#: before the parent is masked, then binding them onto the placeholder inside the
-#: stand-in -- the nested re-mask that re-hides a masked leaf sitting INSIDE such a
-#: window, sensitive files and the read-only seal on an unreadable mask, and ~/.ssh.
-_GUARDED_SITES = 10
+#: remount, credential dirs, the read-only seal on a windowless masked directory, the
+#: private window's two -- staging its real contents out before the parent is masked,
+#: then binding them onto the placeholder inside the stand-in -- the nested re-mask that
+#: re-hides a masked leaf sitting INSIDE such a window, sensitive files and the read-only
+#: seal on an unreadable mask, and ~/.ssh.
+_GUARDED_SITES = 11
 
 _EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 

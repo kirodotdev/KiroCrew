@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import chat, chat_threads, handlers, session_export, session_transfer
+from kiro_crew.dashboard import (
+    chat,
+    chat_follow_default,
+    chat_threads,
+    handlers,
+    session_export,
+    session_transfer,
+)
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
@@ -76,6 +83,14 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)
     app.router.add_post("/api/chat/slots/model", chat.api_chat_slots_model)
+    # Settings > Chat > Models: count, then clear, the chats that keep a model of
+    # their own. Static segment, so it sits before the ``{slot}`` routes below.
+    app.router.add_get(
+        "/api/chat/slots/follow-default", chat_follow_default.api_chat_slots_follow_default
+    )
+    app.router.add_post(
+        "/api/chat/slots/follow-default", chat_follow_default.api_chat_slots_follow_default
+    )
     # Static segment BEFORE the ``/api/chat/slots/{slot}`` GET below, for the reason
     # the import route's own note gives: aiohttp resolves in registration order, so a
     # later wildcard would shadow this path and answer it as a slot detail read.

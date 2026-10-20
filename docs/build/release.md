@@ -107,7 +107,7 @@ mechanism:
   The contract:
 
   - *Fold rule*: `_display_version()` in
-    `src/kiro_crew/dashboard/handlers/updates.py` folds a version to its bare
+    `src/kiro_crew/dashboard/handlers/updates_verdict.py` folds a version to its bare
     `X.Y.Z` on the **stable** channel only (insider/nightly keep the full
     stamp, where the prerelease number is meaningful information). The SPA
     mirror for desktop-reported versions that never cross the gateway is
@@ -191,7 +191,9 @@ code.
      `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
      bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
      hatch still depend on the display contract.
-   - *Bundled kiro-cli pin*: compare `packaging/kiro-cli-version` with the
+   - *kiro-cli pin (read only by a `BUNDLE_KIRO_CLI=1` desktop build; a
+     default release has no reader, so this step is skipped unless such a
+     build is planned)*: compare `packaging/kiro-cli-version` with the
      version the release manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
@@ -204,7 +206,8 @@ code.
      Linux pin bump must also measure each staged binary's highest `GLIBC_*`
      requirement as described in [desktop-app](desktop-app.md); neither arch
      may exceed the desktop app's documented `GLIBC_2.34` compatibility floor.
-     A version bump without its sha lines FAILS the desktop build lane with that
+     A version bump without its sha lines FAILS a `BUNDLE_KIRO_CLI=1` desktop
+     build with that
      procedure in the error, never by shipping unverified bytes. A stale pin is
      not a build failure: the pinned artifact stays downloadable under its own
      version prefix, which is also why a hotfix rebuild of an older tag keeps

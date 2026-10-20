@@ -13,18 +13,25 @@ directory, change `bound_to`, change what it binds, then `dashboard_save` it and
 | package | the question its reader asks |
 |---|---|
 | `gallery/dispatch-tree/package.json` | how does one goal branch into the sessions doing it |
+| `gallery/approvals/package.json` | what waits on me now, and what just arrived |
 
-One entry today, and it is an example on the same footing as everything below:
+Two entries today, and each is an example on the same footing as everything below:
 never the default page, never assumed by a prompt or a test, never required for
 a dashboard to be complete. A page that shows no tree at all is a correct page.
 
-Read that package for three things any page you write will need. Where it binds
+Read the dispatch tree for three things any page you write will need. Where it binds
 a cell it uses `data-dashboard-field="roots"`; where it draws the tree it uses
 `window.kirocrew.subscribe('boards', draw)`. It builds every row by creating
 elements and setting `textContent`, because a board's goal is whatever a
 conductor wrote in the crew log, so a template string assigned to `innerHTML`
 is how a recorded value becomes markup on your page. And every name its markup
 binds appears in its `model`, which is also the list the controller pushes.
+
+Read the approvals page for motion on a dashboard, done with the `living-ui`
+toolkit: on a change, a count follows to its new value and a newly arrived
+approval's row rises and fades once; then the page is still, with no idle tour.
+Its counts are bound cells, so they are right before its script runs, and under
+reduced motion every change is a jump.
 
 ## Pages that shipped
 

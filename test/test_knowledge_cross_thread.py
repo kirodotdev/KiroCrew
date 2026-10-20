@@ -1,7 +1,7 @@
 """Regression tests for KnowledgeStore sqlite access from worker threads.
 
 KnowledgeStore is created on one thread, but HybridRetriever.search()
-runs on mc-embed executor threads (dashboard/handlers/knowledge.py
+runs on mc-embed executor threads (dashboard/handlers/knowledge_agent_context.py
 search_for_context via run_in_embed_pool). A shared sqlite3 connection carries
 creating-thread affinity (check_same_thread=True default), so every
 worker-thread query would raise sqlite3.ProgrammingError -> HTTP 500 on

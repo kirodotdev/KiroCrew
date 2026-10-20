@@ -14,7 +14,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "templates"
-HANDLERS = REPO / "src" / "kiro_crew" / "deploy" / "handlers.py"
+HANDLERS = REPO / "src" / "kiro_crew" / "deploy" / "handlers_content.py"
 
 
 class TestF1NolinkRead:

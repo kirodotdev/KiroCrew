@@ -1,5 +1,6 @@
 import { isMac } from '../utils/platform'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem } from '../utils/safeStorage'
+import { savePrefExplicitly } from './uiPrefs'
 import {
   chordMatchesEvent,
   isValidChord,
@@ -166,7 +167,7 @@ export function setPanelToggleBinding(id: PanelToggleId, chord: Chord | null): b
   if (chord !== null && !isValidChord(chord)) return false
   const overrides = loadPanelToggleOverrides()
   overrides[id] = chord === null ? null : normalizeChord(chord)
-  const ok = safeSetItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify(overrides))
+  const ok = savePrefExplicitly(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify(overrides))
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(PANEL_TOGGLE_SHORTCUTS_EVENT))
   }

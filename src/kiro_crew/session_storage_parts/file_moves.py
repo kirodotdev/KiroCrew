@@ -331,7 +331,7 @@ def _move_file(src: Path, dst: Path) -> None:
         os.rename(src, dst)
         return
     except OSError as exc:
-        if getattr(exc, "errno", None) != getattr(os, "EXDEV", 18):
+        if exc.errno != errno.EXDEV:
             raise
     _copy_across_filesystems(src, dst)
 

@@ -10,8 +10,8 @@ Why a pin rather than ``latest.json``: the engine speaks a wire protocol Kiro
 Crew adapts to (``acp/kas_wire.py``, ``acp/harness/kas.py``), and an engine
 newer than the adapter was tested against is a silent behavior change on the
 operator's next install. Pinning makes the engine version a property of the Kiro
-Crew version, the same contract ``packaging/kiro-cli-version`` holds for the
-bundled kiro-cli: an update of Kiro Crew is what moves the engine, and a
+Crew version, the same contract ``packaging/kiro-cli-version`` holds for a
+``BUNDLE_KIRO_CLI=1`` desktop build: an update of Kiro Crew is what moves the engine, and a
 rollback of Kiro Crew moves it back (each version is its own directory under
 ``engines/kas/``, so both stay installed).
 

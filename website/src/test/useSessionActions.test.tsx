@@ -521,6 +521,28 @@ describe('useSessionActions', () => {
     dispatchSpy.mockRestore()
   })
 
+  it('close names why it asks: live work, or the setting when nothing is running', () => {
+    const BUSY = 'chat-actions-reason-busy'
+    const IDLE = 'chat-actions-reason-idle'
+    store.dispatch(sseSlots([
+      { key: BUSY, title: BUSY, messages: 1, running: true, folder_id: '' },
+      { key: IDLE, title: IDLE, messages: 1, running: false, folder_id: '' },
+    ]))
+    cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: true })
+    const decline = vi.fn((_msg?: string) => false)
+    vi.stubGlobal('confirm', decline)
+    const a = renderActions()
+
+    act(() => a.current.close(BUSY))
+    expect(decline.mock.calls[0][0]).toContain('It is still working on a reply. Closing stops that reply.')
+    expect(decline.mock.calls[0][0]).not.toContain('Confirm Before Closing Session')
+
+    act(() => a.current.close(IDLE))
+    expect(decline.mock.calls[1][0]).toContain('Nothing is running in it.')
+    expect(decline.mock.calls[1][0]).toContain('Confirm Before Closing Session')
+    expect(decline.mock.calls[1][0]).toContain('Chat › Confirm Before Closing Session')
+  })
+
   it('close stays instant for a session waiting on the user (options card, question, interrupted turn)', () => {
     // These read as the Waiting lane, but nothing is running in them: a close
     // retires no work. Asking here is a prompt the setting cannot turn off.

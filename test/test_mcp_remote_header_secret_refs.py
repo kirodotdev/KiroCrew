@@ -194,6 +194,7 @@ class TestTheCallSites:
         client._guard_unresolved_mcp_refs([])  # must not raise
 
     def test_the_runtime_guard_calls_it_too(self):
-        source = inspect.getsource(AcpRuntime)
+        # The guard's body lives in the owner module AcpRuntime binds it from.
+        source = inspect.getsource(AcpRuntime._guard_unresolved_mcp_refs)
         assert "warn_remote_header_secret_refs(" in source
         assert "record_header_secret_refs(" in source

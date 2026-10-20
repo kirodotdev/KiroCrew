@@ -2530,8 +2530,16 @@ def run_script_sandboxed(
         # secret_env grant, which runs ``strict`` and injects the one approved
         # secret instead of exposing a store.
         sandbox_mode = "strict" if stdin_payload is not None else "cc"
+        # ``seal_hidden_dirs=hidden``: a granted script has no business WRITING into
+        # the crons dir or its own parent -- they are hidden so it cannot read a mutable
+        # sibling, and on Linux a hidden dir's stand-in is a writable empty tmpfs, so a
+        # write there would silently vanish on teardown. These masks carry no
+        # writable window and the strict tier re-exposes no file into them (expose_files
+        # is cc-only), so sealing their stand-in read-only is safe: a stray write now
+        # fails loudly with EROFS instead of being lost. The seal is opt-in per mask, so
+        # nothing else this spawn hides is affected.
         sandboxed_argv, sandbox_cleanup = wrap_argv(
-            argv, mode=sandbox_mode, extra_hidden_dirs=hidden
+            argv, mode=sandbox_mode, extra_hidden_dirs=hidden, seal_hidden_dirs=True
         )
         if stdin_payload is not None and sandboxed_argv == argv:
             # On a host with no OS sandbox backend, the unsandboxed-exec

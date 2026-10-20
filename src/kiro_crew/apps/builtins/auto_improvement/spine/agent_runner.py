@@ -25,21 +25,24 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib as _importlib
 import json
 import logging
 import os
-import shlex
+import shlex  # noqa: F401
 import shutil
 import signal
 import subprocess
+import sys as _sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from types import SimpleNamespace  # noqa: F401
+from typing import TYPE_CHECKING, Any  # noqa: F401
 
+from kiro_crew import _facade_mirror
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.constants import (
     DENY_CAUSE_AUDIT_UNAVAILABLE,
@@ -47,7 +50,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
-from kiro_crew.hooks import (
+from kiro_crew.hooks import (  # noqa: F401
     TOOL_DENY,
     HookManager,
     hook_gate_kwargs,
@@ -62,33 +65,27 @@ from kiro_crew.permission_floor import (
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import SIGKILL, kill_process_tree
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.subprocess_utf8 import UTF8_TEXT  # noqa: F401
 
-from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
+from .agent_runner_authoring import _UNFINISHED_TURN_ERROR
+from .agent_runner_feed import (
+    _detail_is_richer,
+    _LineBuffer,
+    _summarize_stream_event,
+    _tool_detail,
+)
+from .agent_runner_gate import (
+    _allowlist_deny_reason,
+    _bare_event,
+    _governance_denial,
+    _GovernanceDeny,
+    _requested_command,
+    _tool_permitted,
+    shell_command_refusal,
+)
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-
-class _GovernanceDeny(str):
-    """A deny reason from ``_governance_denial`` that also names WHY it is a deny.
-
-    The gate reaches two different verdicts that both DENY: a hook judged the
-    call and said no (``DENY_CAUSE_POLICY``), or the hook layer itself raised
-    and the gate failed closed without judging anything
-    (``DENY_CAUSE_HOOK_ERROR``). The in-band deny notice must say which -- a
-    retry is reasonable after a fault and pointless after a verdict -- so the
-    gate carries its ``cause`` on the reason instead of leaving the reject
-    funnel to infer it from the reason's wording. A ``str`` subclass rather than
-    a pair because every caller reads the gate as a string: truthiness is the
-    deny/allow answer, and the text is what gets logged and steered.
-    """
-
-    cause: str
-
-    def __new__(cls, reason: str, *, cause: str) -> "_GovernanceDeny":
-        self = super().__new__(cls, reason)
-        self.cause = cause
-        return self
 
 
 #: What the model is told when the unattended run refuses a call because its
@@ -103,23 +100,10 @@ _AUDIT_UNAVAILABLE_REASON = (
 # The headless Claude Code binary. Overridable for tests / alternate installs.
 CLAUDE_BIN = os.environ.get("AUTO_IMPROVEMENT_CLAUDE_BIN", "claude")
 
-#: Trusted git config for host-side git run over the agent-writable worktree — identical to the
-#: driver/gate/commit `_GIT_SAFE_CONFIG`. The POST-AGENT presence checks below run `git status`
-#: on the HOST as the gateway user, in the tree the sandboxed agent just wrote to. `git status`
-#: consults `core.fsmonitor` and can SPAWN it, so an agent that set `core.fsmonitor` to a program
-#: (or planted a hook via `core.hooksPath`) would get host-side, out-of-sandbox execution on the
-#: next status. `-c` overrides on OUR argv beat the repo config. Raised by the GPT review.
-_GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
-
 #: The stop reason on the ``EVENT_COMPLETE`` the ACP session handle yields when a prompt
 #: times out before the backend finished the turn (``acp/session_handle_dispatch.py``). It has no
 #: constant in ``acp.types``.
 _STOP_REASON_PROMPT_TIMEOUT = "timeout"
-
-#: How the error of a turn the backend ended unfinished begins (see ``_run_async``). Bug and
-#: perf authoring read it as a bounded exit, like ``timeout after Ns``: the run was cut off,
-#: so an edit already on disk still goes to the deterministic gate.
-_UNFINISHED_TURN_ERROR = "the backend did not finish the turn"
 
 
 @dataclass
@@ -130,114 +114,6 @@ class AgentResult:
     cost_usd: float = 0.0
     duration_s: float = 0.0
     raw: dict = field(default_factory=dict)
-
-
-# Longest single buffered line we'll let accumulate before force-flushing — so a wall of
-# prose with no newline still emits readable chunks instead of one giant blob.
-_LINE_FLUSH_LEN = 200
-
-
-class _LineBuffer:
-    """Coalesce a stream of tiny text chunks into COHERENT lines for the activity feed.
-
-    The Kiro Crew provider streams assistant text as many sub-word fragments ("ismatched-",
-    "ncation would"). Emitting one feed event per fragment makes the live log unreadable
-    (the exact symptom the user reported). This buffers fragments and flushes a line only
-    on a real boundary — a newline, a sentence end (``. ``/``! ``/``? ``), or when the
-    buffer exceeds :data:`_LINE_FLUSH_LEN` — so each emitted ``💭`` line is a whole thought.
-
-    ``emit(line)`` is the sink (called with each completed, stripped, non-empty line)."""
-
-    def __init__(self, emit) -> None:
-        self._emit = emit
-        self._buf = ""
-
-    def feed(self, chunk: str) -> None:
-        self._buf += chunk
-        # Flush every complete newline-terminated line.
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            self._send(line)
-        # No newline yet, but a long buffer: flush at the last sentence boundary so we don't
-        # sit on a paragraph that never contains a newline.
-        if len(self._buf) >= _LINE_FLUSH_LEN:
-            cut = max(self._buf.rfind(". "), self._buf.rfind("! "), self._buf.rfind("? "))
-            if cut >= 40:  # only split on a boundary that yields a substantial line
-                self._send(self._buf[: cut + 1])
-                self._buf = self._buf[cut + 2 :]
-            else:  # no good boundary — emit the whole overlong buffer as one line
-                self._send(self._buf)
-                self._buf = ""
-
-    def flush(self) -> None:
-        """Emit whatever's left as a final line (call at a tool boundary / turn end)."""
-        if self._buf.strip():
-            self._send(self._buf)
-        self._buf = ""
-
-    def _send(self, line: str) -> None:
-        line = line.strip()
-        if line:
-            self._emit(line[:_LINE_FLUSH_LEN])
-
-
-# Common rawInput keys that name a tool's TARGET (the thing the operator wants to see in the
-# feed: which file was read/edited, which command ran). Checked in order; the first present,
-# non-empty value wins. Mirrors how the dashboard derives a tool pill's subtitle.
-_TOOL_TARGET_KEYS = (
-    "path",
-    "file_path",
-    "filePath",
-    "abs_path",
-    "command",
-    "cmd",
-    "pattern",
-    "query",
-    "url",
-)
-
-
-def _tool_detail(ev: object) -> str:
-    """A human-readable detail for a tool-call feed line — preferring the TARGET (file path /
-    command) over a generic label. The initial ``EVENT_TOOL_CALL`` from claude-agent-acp
-    often carries only a generic ``title`` ("Read File") with empty ``tool_input``; the real
-    path arrives in the ``EVENT_TOOL_CALL_UPDATE`` refinement (``raw_tool_params`` populated).
-    This pulls the target from ``raw_tool_params`` first, then falls back to a non-generic
-    ``title``, then the raw ``tool_input`` — so the feed shows "Read File · src/.../ruler.py"
-    instead of a bare "Read File"."""
-    raw = getattr(ev, "raw_tool_params", None)
-    target = ""
-    if isinstance(raw, dict):
-        for k in _TOOL_TARGET_KEYS:
-            v = raw.get(k)
-            if isinstance(v, str) and v.strip():
-                target = v.strip()
-                break
-    title = (getattr(ev, "title", "") or "").strip()
-    if target:
-        # Combine the label + target when the title is a generic label (no path in it);
-        # if the title already contains the target, just use the title.
-        if title and target not in title:
-            return f"{title} · {target}"[:160]
-        return (title or target)[:160]
-    # No structured target — fall back to the title, else the raw tool_input snippet.
-    if title:
-        return title[:160]
-    return (getattr(ev, "tool_input", "") or "")[:80]
-
-
-def _detail_is_richer(refined: str, prior: str) -> bool:
-    """True if ``refined`` is a more informative tool detail than ``prior`` — i.e. it is
-    LONGER or contains a path-like segment the prior line lacked. Guards the refinement
-    re-emit so a tool_call_update that adds nothing (same generic label) does not double the
-    feed, but one that adds the file path DOES upgrade the line."""
-    if not refined:
-        return False
-    if not prior:
-        return True
-    if "/" in refined and "/" not in prior:
-        return True
-    return len(refined) > len(prior) + 3
 
 
 # Shared with the gate — see ``push_policy.strip_credential_env``.
@@ -286,433 +162,6 @@ def _unlink_quietly(path: object) -> None:
         Path(str(path)).unlink(missing_ok=True)
     except OSError:
         logger.debug("could not remove sandbox launcher temp file", exc_info=True)
-
-
-#: Forbidden ``(binary, subcommand-path)`` pairs. Structured rather than flat strings
-#: because a substring match is trivially evaded by a GLOBAL OPTION between the two:
-#: ``gh --repo o/r pr ready 123`` and ``git -C /tmp/x push`` both slipped past a
-#: ``"gh pr ready"``/``"git push"`` check. Measured before fixing. Raised by review.
-#: GLOBAL options that consume the following word, per binary — the only ones for which the
-#: subcommand scan may skip ahead. Everything else is treated as valueless.
-#:
-#: Enumerated rather than guessed. The previous rule assumed any option without `=` took a
-#: value, which let a VALUELESS option swallow the subcommand: `git --no-pager push` was
-#: ALLOWED while bare `git push` was REFUSED. Getting this list wrong in the other direction
-#: is safe for a denylist — an unlisted value-taking option means its value is read as a
-#: subcommand, which can only over-refuse.
-#:
-#: Only GLOBAL (pre-subcommand) options matter here; per-subcommand flags appear after the
-#: verb the denylist has already matched.
-_VALUE_TAKING_OPTIONS: dict[str, frozenset[str]] = {
-    # `git -c k=v`, `-C <path>`, `--git-dir=<p>`, `--work-tree=<p>`, `--namespace=<n>`,
-    # `--config-env=<name>=<var>`, `--super-prefix=<p>`.
-    #
-    # `--exec-path` is deliberately ABSENT: its value is OPTIONAL (`--exec-path[=<path>]`), so
-    # listing it here made `git --exec-path push` swallow `push` — the same class of bug this
-    # table fixes, just inverted. Measured while writing the test matrix. An option whose value
-    # is optional must be treated as valueless; the `=<value>` form still parses correctly
-    # because `--opt=value` never consumes the next word.
-    "git": frozenset(
-        {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
-    ),
-    # `gh --repo o/r`, `gh --hostname h`.
-    "gh": frozenset({"-R", "--repo", "--hostname"}),
-    "glab": frozenset({"-R", "--repo", "--hostname"}),
-}
-
-_FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
-    "gh": (
-        ("pr", "merge"),
-        ("pr", "ready"),
-        ("pr", "close"),
-        # PUBLISHING verbs. A watcher's whole job is to READ review comments and PR
-        # bodies — attacker-controlled text — so any verb that writes back to GitHub
-        # converts "the agent read a malicious comment" into "the agent posted
-        # attacker-directed content under the operator's identity". `pr comment` was
-        # the one review found; the rest are the same capability under other names, and
-        # naming only the reported instance is how this denylist got evaded three times
-        # already. The app's own draft PR comes from `pr_recipe.py`, which builds its
-        # argv directly and never passes through here, so nothing legitimate is lost.
-        ("pr", "comment"),
-        ("pr", "review"),
-        ("pr", "edit"),
-        ("pr", "create"),
-        ("issue", "comment"),
-        ("issue", "create"),
-        ("issue", "edit"),
-        ("issue", "close"),
-        ("release",),
-        ("auth",),
-        ("api",),  # can PATCH/POST anything the token reaches
-        ("secret",),
-        ("workflow", "run"),
-    ),
-    "git": (
-        ("push",),
-        ("remote", "set-url"),
-    ),
-}
-
-#: Binaries a loop/watcher agent must never invoke at all — network fetch and remote shell.
-#: No subcommand analysis needed: the binary itself is the capability.
-_FORBIDDEN_BINARIES = ("curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "telnet")
-
-
-def _shell_words(command: str) -> list[str]:
-    """Tokenize a command for inspection, tolerating quoting.
-
-    ``shlex`` raises on unbalanced quotes; an unparseable command is treated as a single
-    opaque word so the caller falls back to refusing anything suspicious rather than
-    accidentally passing it.
-    """
-    try:
-        return shlex.split(command, posix=True)
-    except ValueError:
-        return command.split()
-
-
-#: Binaries that RUN ANOTHER COMMAND given as their arguments. Checking only ``words[0]``
-#: made every one of these a bypass: measured, ``sudo git push``, ``env git push``,
-#: ``timeout 5 git push``, ``nohup git push`` and ``xargs git push`` were all ALLOWED while
-#: the bare ``git push`` was refused. The wrapper is stripped and the real command behind it
-#: is checked instead.
-#:
-#: NOT a "forbid these binaries" list — `env` and `timeout` are legitimate on their own.
-#: The value is the count of leading NON-OPTION words to drop after the binary (0 for the
-#: common case where the very next word is the command).
-_COMMAND_WRAPPERS: dict[str, int] = {
-    "sudo": 0,
-    "doas": 0,
-    "env": 0,
-    "nohup": 0,
-    "setsid": 0,
-    "stdbuf": 0,
-    "nice": 0,
-    "ionice": 0,
-    "time": 0,
-    "timeout": 1,  # `timeout <duration> <cmd>` — the duration is not the command
-    "xargs": 0,
-    "watch": 0,
-    "script": 0,
-    # SHELL BUILTIN wrappers. These are not on PATH, so they only appear inside a shell —
-    # but a nested `sh -c "..."` argument is re-analyzed from the top by this same table, so
-    # omitting them leaves a hole: bare `git push` is REFUSED while `command git push` and
-    # `exec git push` would both be ALLOWED. `exec` and `builtin` are the same class as
-    # `command`, so all three are listed.
-    "command": 0,
-    "exec": 0,
-    "builtin": 0,
-}
-
-#: Wrapper LONG options that consume the FOLLOWING word as a separate value. Short options
-#: are already handled by the general "a short option without `=` takes a value" rule, but a
-#: long option was assumed valueless — so ``env --unset FOO curl …`` left ``FOO`` as the
-#: apparent command and the real ``curl`` behind it sailed through unexamined (measured). The
-#: value is the count of following words the option consumes. ``env``'s value-taking long
-#: options are the concrete case; kept as an explicit set rather than "every ``--x`` takes a
-#: value" because most wrapper long options are flags (``env --ignore-environment``,
-#: ``timeout --preserve-status``) and over-consuming there would drop the real command from
-#: view and UNDER-refuse — the wrong direction for a denylist. A ``--opt=value`` form carries
-#: its value inline and is not listed. Raised by the GPT review.
-_WRAPPER_VALUE_TAKING_LONG_OPTIONS: dict[str, int] = {
-    "--unset": 1,  # `env --unset NAME cmd` — NAME is a variable name, not the command
-    "--chdir": 1,  # `env --chdir=DIR` is inline, but `env --chdir DIR cmd` is separate
-    "--block-signal": 1,  # `env --block-signal=SIG` / separate form
-    "--default-signal": 1,
-    "--ignore-signal": 1,
-}
-
-#: Shells whose ``-c`` argument is a NESTED SCRIPT. `sh -c "git push"` needs the argument
-#: re-analyzed from the top (separators, wrappers and all), not just its first word —
-#: otherwise `sh -c "sudo git push"` walks straight back out through the same hole.
-_SHELL_BINARIES = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "csh", "tcsh"})
-
-#: How deep the unwrapping recurses. `sh -c "sh -c \"…\""` is nesting, not a new trick, so
-#: it must be followed — but a bounded number of times, so a crafted value cannot spin.
-_MAX_UNWRAP_DEPTH = 6
-
-
-def shell_command_refusal(command: object) -> str:
-    """A reason string when ``command`` must be refused, else ``""``.
-
-    TOKENIZED, not substring-matched. Global options are skipped so the SUBCOMMAND is what
-    gets checked: ``gh --repo o/r pr ready`` is refused exactly like ``gh pr ready``. Also
-    splits on shell separators, so a forbidden verb cannot hide behind ``&&``/``;``/``|``.
-
-    Errs toward refusal — for a denylist that is the safe direction — but the read-only
-    diagnostics the watcher's own prompt asks for (``gh pr checks``,
-    ``gh pr view --comments``, ``gh run view --log-failed``) are pinned by test.
-    """
-    return _refusal(str(command or ""), depth=0)
-
-
-def _refusal(text: str, *, depth: int) -> str:
-    """``shell_command_refusal`` proper, with the unwrap recursion depth threaded."""
-    if not text.strip():
-        return ""
-    if depth > _MAX_UNWRAP_DEPTH:
-        # Deeper than any legitimate command nests. Refuse rather than give up: this is a
-        # denylist, so exhausting the budget must not become a way through it.
-        return "command nests shells too deeply to analyze"
-
-    # Each shell-separated segment is its own command; check them all.
-    normalized = text.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
-    normalized = normalized.replace("|", "\n").replace("$(", "\n").replace("`", "\n")
-    # A BARE `&` backgrounds its left side and starts a new command, exactly like `;` —
-    # but is NOT caught by the `&&` replace above (that consumed the doubled form). Without
-    # this, `true & gh pr comment --body X` tokenizes to `binary='true'` (harmless) and the
-    # `gh pr comment`/`curl` behind the `&` slips past the denylist the watcher's
-    # outsider-writable prompt exists to enforce. Ordered AFTER `&&` so only the single-`&`
-    # separator remains to split on. Same lesson as the wrapper-option fix: a parser that
-    # inspects fixed positions is evaded by adding a position. Raised by the Opus review.
-    normalized = normalized.replace("&", "\n")
-    # Split on the subshell / command-substitution PARENTHESES too. `$(` and backtick above
-    # open a substitution, but the CLOSING `)` stayed attached to the last inner token, so
-    # `echo $(gh pr ready)` tokenized the verb as `ready)` (≠ `ready`) and slipped past the
-    # `("pr","ready")` denylist; a bare subshell `(gh pr ready)` has the same shape. A `(` or
-    # `)` is never part of a legitimate command word here, so splitting on both isolates the
-    # inner command with no trailing bracket — over-checking at worst, the safe direction for a
-    # denylist. Raised by the GPT review.
-    normalized = normalized.replace("(", "\n").replace(")", "\n")
-    for segment in normalized.splitlines():
-        words = _shell_words(segment)
-        # Drop leading VAR=value assignments (`GH_TOKEN=x gh api …`).
-        while words and "=" in words[0] and not words[0].startswith("-"):
-            words = words[1:]
-        if not words:
-            continue
-        binary = words[0].rsplit("/", 1)[-1].lower()
-
-        # A shell's `-c` argument is a nested script: re-analyze it from the top so
-        # separators and further wrappers inside it are seen too.
-        if binary in _SHELL_BINARIES:
-            for i, word in enumerate(words[1:], start=1):
-                # Any bundled short-option group containing `c` (`-c`, `-lc`, `-euxc`).
-                if word.startswith("-") and not word.startswith("--") and "c" in word:
-                    inner = " ".join(words[i + 1 :])
-                    reason = _refusal(inner, depth=depth + 1)
-                    if reason:
-                        return reason
-                    break
-            # Fall through: a shell invoked WITHOUT -c still gets its own args checked below.
-
-        # A wrapper runs the command that follows it, so check that command instead.
-        if binary in _COMMAND_WRAPPERS:
-            wrapped = list(words[1:])
-            # Drop the wrapper's own options and any fixed positional it consumes
-            # (`timeout <duration> cmd`), plus VAR=value pairs after `env`.
-            #
-            # An option's VALUE goes too when it is a separate word: `nice -n 5 git push`
-            # otherwise leaves `5` as the apparent command and the push sails through
-            # (measured). Assume a value follows any short option without `=`, which
-            # over-skips at worst — and over-skipping can only make this refuse more,
-            # never less, which is the safe direction for a denylist.
-            while wrapped and wrapped[0].startswith("-"):
-                opt = wrapped[0]
-                # A short option without `=` is assumed to take a value (`nice -n 5`); a long
-                # option takes one only if it is a KNOWN value-taking wrapper option
-                # (`env --unset FOO`). Treating every long option as valueless would let
-                # `env --unset FOO curl …` leave `FOO` as the command and pass the `curl`
-                # behind it — the bypass this table closes. An inline `--opt=value`
-                # carries its own value, so it consumes nothing extra.
-                if "=" in opt:
-                    takes_value = 0
-                elif opt.startswith("--"):
-                    takes_value = _WRAPPER_VALUE_TAKING_LONG_OPTIONS.get(opt, 0)
-                else:
-                    takes_value = 1
-                wrapped = wrapped[1:]
-                for _ in range(takes_value):
-                    if wrapped and not wrapped[0].startswith("-"):
-                        # Only consume it if it is not itself a command we know — otherwise a
-                        # crafted `env --unset curl git push` would eat the very binary we must
-                        # inspect. A recognized command is left in place to be checked.
-                        nxt = wrapped[0].rsplit("/", 1)[-1].lower()
-                        if nxt in _FORBIDDEN_SUBCOMMANDS or nxt in _FORBIDDEN_BINARIES:
-                            break
-                        wrapped = wrapped[1:]
-            for _ in range(_COMMAND_WRAPPERS[binary]):
-                if wrapped:
-                    wrapped = wrapped[1:]
-            while wrapped and "=" in wrapped[0] and not wrapped[0].startswith("-"):
-                wrapped = wrapped[1:]
-            if wrapped:
-                reason = _refusal(" ".join(wrapped), depth=depth + 1)
-                if reason:
-                    return reason
-            continue
-        if binary in _FORBIDDEN_BINARIES:
-            return f"{binary!r} cannot be run here"
-        forbidden = _FORBIDDEN_SUBCOMMANDS.get(binary)
-        if not forbidden:
-            continue
-        # Skip global options (and their values) to reach the real subcommand path.
-        rest: list[str] = []
-        skip_next = False
-        value_taking = _VALUE_TAKING_OPTIONS.get(binary, frozenset())
-        for word in words[1:]:
-            if skip_next:
-                skip_next = False
-                continue
-            if word.startswith("-"):
-                # Only skip the NEXT word for options actually known to take a value. The
-                # previous rule — "assume a value follows any option without `=`" — claimed it
-                # "cannot under-skip", and that was exactly backwards: `git --no-pager push`
-                # consumed `push` as `--no-pager`'s value, so the denylist matched
-                # `['origin','main']` and found nothing. Measured: bare `git push` REFUSED
-                # while `git --no-pager push`, `--paginate`, `--bare`, `--literal-pathspecs`
-                # and `--no-replace-objects` were all ALLOWED. An UNKNOWN option is treated as
-                # valueless, which over-matches at worst (a stray value could be read as a
-                # subcommand and refuse a benign command) — the safe direction for a denylist.
-                # `--opt=value` never consumes the next word. Raised by the GPT review.
-                skip_next = "=" not in word and word.split("=", 1)[0] in value_taking
-                continue
-            rest.append(word.lower())
-        for path in forbidden:
-            if tuple(rest[: len(path)]) == path:
-                return f"{binary} {' '.join(path)} cannot mutate state here"
-    return ""
-
-
-def _requested_command(ev: object) -> str:
-    """The shell command a permission request is asking to run, if any."""
-    raw = getattr(ev, "raw_tool_params", None)
-    if isinstance(raw, dict):
-        for key in ("command", "cmd"):
-            value = raw.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    return ""
-
-
-def _governance_denial(
-    ev: object, *, session_key: str, agent: str, tool_kind: str | None = None
-) -> str:
-    """A deny reason from the PLATFORM's governance chokepoint, or "" to allow.
-
-    The unattended runner had its OWN approval gate (the allowlist + shell denylist
-    below) and never consulted ``hooks.on_tool_call`` — so the enterprise governance
-    PROFILE ceiling, the builtin denied-command rules, and the ``~/.aws``/``~/.ssh``
-    sensitive-path blocks were all silently INERT on this path. That matters because this
-    agent is UNATTENDED and its prompt embeds outsider-writable PR-comment text, so an
-    injected instruction could drive an auto-approved call the central gate would deny.
-    Routing every request through the same ``HookManager`` the dashboard/Slack paths use
-    closes that gap; the app-local allowlist/denylist stays as an ADDITIONAL restriction
-    on top (defense in depth). Raised by the Arbiter's long-term review of this branch.
-
-    Fail-CLOSED on an unavailable/broken hook layer: this gate catches cases the app-local
-    allowlist/denylist does NOT (sensitive-path reads of ~/.aws/~/.ssh, the enterprise
-    governance ceiling), so silently skipping it on a hook error would drop those
-    protections for an UNATTENDED agent. A hook-layer failure therefore DENIES with a
-    reason; the operator fixes the hooks config and re-runs. Raised by the GPT review of
-    this branch (the earlier fail-open let a broken hook authorize the tool).
-    """
-    try:
-        cfg = KiroCrewConfig.load()
-        # `hooks_config_from_config_dict`, NOT `HooksConfig.from_dict`: the latter reads only
-        # the config.json `hooks` section, while the operator's denied-command state lives in
-        # the keystone `denied_commands.json` — "the sole source, so an agent that edits
-        # config.json cannot affect the deny ceiling". Measured with an operator rule in the
-        # keystone file: `from_dict` yielded [] where the helper yielded ['^curl\s'], so a
-        # custom denied command was silently unenforced for the UNATTENDED agent — the one
-        # caller that most needs it. Raised by the GPT review.
-        manager = HookManager(hooks_config_from_config_dict(getattr(cfg, "hooks", {}) or {}))
-        if tool_kind is None:
-            # ``tool_purpose`` is the agent's own prose about the call (display text
-            # only), so it never stands in for the tool's identity.
-            tool_kind = getattr(ev, "tool_kind", "") or ""
-        command = _requested_command(ev)
-        result = manager.on_tool_call(
-            (getattr(ev, "title", "") or tool_kind or "").strip(),
-            session_key=session_key,
-            agent=agent,
-            app="auto-improvement",
-            # The shared extraction threads every enforcement-relevant event field
-            # (params, diff path, trusted MCP identity, and whatever comes next); the
-            # three overrides are this runner's provider-agnostic readings of a stream
-            # that may not be an ``AcpEvent``: ``tool_kind`` shares the allowlist's
-            # resolved kind (direct callers retain the event fallback),
-            # ``command`` is recovered by ``_requested_command`` from
-            # the raw params rather than ``AcpEvent.shell_command``, and ``is_shell`` is
-            # taken from the EVENT, not derived from the command. `HookManager.on_tool_call`
-            # denies when `is_shell and not command` — a shell tool whose command could
-            # not be recovered must not be judged on its LLM-authored title
-            # (`acp/types.py` states that contract). Computing it as `bool(command)`
-            # inverted exactly that case: no command meant is_shell=False, so the request
-            # was treated as a non-shell tool and skipped the branch written for it.
-            **hook_gate_kwargs(
-                ev,
-                tool_kind=tool_kind,
-                command=command or None,
-                is_shell=bool(getattr(ev, "is_shell", False)) or bool(command),
-            ),
-        )
-        if getattr(result, "action", "") == TOOL_DENY:
-            return _GovernanceDeny(
-                (getattr(result, "reason", "") or "denied by governance policy").strip(),
-                cause=DENY_CAUSE_POLICY,
-            )
-    except Exception as exc:  # noqa: BLE001 - a broken gate must DENY, not authorize
-        logger.warning("governance hook unavailable; denying (fail-closed)", exc_info=True)
-        return _GovernanceDeny(f"governance hook unavailable: {exc}", cause=DENY_CAUSE_HOOK_ERROR)
-    return ""
-
-
-def _tool_permitted(tool: object, allowed: list[str] | None) -> bool:
-    """Whether ``tool`` is inside the caller's allowlist.
-
-    ``None`` means "the caller did not restrict tools" and everything is permitted — that
-    is the pre-existing behavior for callers that never passed a list, and narrowing it
-    here would silently break them.
-
-    An EMPTY LIST is not the same thing: ``agent_discovery`` passes ``allowed_tools=[]``
-    to mean "no tools at all — you must answer from what you already have". Treating empty
-    as unrestricted would invert that call site into granting everything, which is the
-    opposite of what it asks for. Empty therefore denies every tool.
-
-    Matching is case-insensitive and tolerant of the provider's naming: the event carries a
-    ``tool_kind`` like ``"bash"`` or ``"execute_bash"`` while callers write ``"Bash"``, so a
-    prefix/substring match in either direction counts. Deliberately generous on MATCHING
-    and strict on MEMBERSHIP — a near-miss name must not become an accidental denial of a
-    legitimate tool, but an absent name is still refused.
-    """
-    if allowed is None:
-        return True  # unset: caller imposed no restriction
-    names = [str(a).strip().lower() for a in allowed if str(a).strip()]
-    if not names:
-        return False  # explicitly empty: deny every tool
-    got = str(tool or "").strip().lower()
-    if not got:
-        # An unnamed request cannot be checked against the allowlist. Refuse: an
-        # unidentifiable tool is exactly what a crafted request would look like.
-        return False
-    return any(got == n or got.startswith(n) or n.startswith(got) or n in got for n in names)
-
-
-def _bare_event(rid: str, tool: str) -> Any:
-    """The event shape ``_steer_host_deny`` reads when a caller has no permission event."""
-    return SimpleNamespace(request_id=rid, title=tool or "")
-
-
-def _allowlist_deny_reason(allowed: list[str] | None) -> str:
-    """What the model is told when ``_tool_permitted`` refuses: what this SURFACE permits.
-
-    The caller's allowlist is a property of the run, not a verdict on the call --
-    nothing about the action was judged -- so the reason names what can run here
-    (the surface-policy notice tells the model to read exactly that) rather than a
-    sanctioned alternative. The names are caller-authored, never agent text.
-    """
-    names = [str(a).strip() for a in (allowed or []) if str(a).strip()]
-    if not names:
-        return (
-            "this unattended auto-improvement run permits no tools at all: answer "
-            "from what you already have"
-        )
-    return (
-        "this unattended auto-improvement run permits only the tools its caller "
-        f"listed -- {', '.join(names)} -- and a request that names none of them "
-        "(or names no tool) is refused"
-    )
 
 
 def _audit_unattended_agent(*, cwd: str | None, model: str | None, max_turns: int) -> bool:
@@ -1212,46 +661,6 @@ def _audit_fallback_tool(*, tool: str, detail: str, cwd: str | None) -> None:
         )
     except Exception:  # noqa: BLE001 — the tool already ran; a log failure must not fail it
         logger.debug("SEL audit failed for fallback tool %r", tool, exc_info=True)
-
-
-def _summarize_stream_event(obj: dict) -> dict | None:
-    """Turn one ``stream-json`` line into a concise activity event for the UI feed, or
-    None to skip. We surface the human-meaningful turns: assistant text (truncated), a
-    tool invocation (which tool + a short target), and the final result line. We avoid
-    dumping raw tool *output* (can be huge / noisy) — the UI feed wants "what is the
-    agent doing", not full payloads."""
-    t = obj.get("type")
-    # Assistant turn: may carry text and/or tool_use blocks.
-    if t == "assistant":
-        msg = obj.get("message", {}) or {}
-        content = msg.get("content", []) or []
-        for block in content if isinstance(content, list) else []:
-            if not isinstance(block, dict):
-                continue
-            bt = block.get("type")
-            if bt == "tool_use":
-                name = block.get("name", "tool")
-                inp = block.get("input", {}) or {}
-                # a short, safe target hint per common tool
-                hint = (
-                    inp.get("file_path")
-                    or inp.get("path")
-                    or inp.get("pattern")
-                    or inp.get("command")
-                    or inp.get("description")
-                    or ""
-                )
-                if isinstance(hint, str) and len(hint) > 80:
-                    hint = hint[:77] + "…"
-                return {"kind": "tool", "tool": name, "detail": str(hint)}
-            if bt == "text":
-                txt = (block.get("text") or "").strip()
-                if txt:
-                    return {"kind": "text", "detail": txt[:200]}
-        return None
-    if t == "result":
-        return {"kind": "result", "detail": ("done" if not obj.get("is_error") else "error")}
-    return None
 
 
 class SessionAgentRunner:
@@ -1917,343 +1326,58 @@ class SessionAgentRunner:
             pass
 
 
-def _repro_test_dir(worktree: Path) -> str:
-    """The directory this repo actually keeps tests in — ``tests`` or ``test``.
-
-    Hard-coding ``test/`` in the prompt breaks a repo that keeps its tests in ``tests/``
-    (plural): the reproducing test lands in a directory that does not exist, so T2 cannot
-    collect it and EVERY candidate fails ``test_invalid`` regardless of fix quality.
-
-    The edit fence permits both (``_ADDABLE_TEST_GLOBS``), so the directory only has to be
-    named correctly here. Prefers an EXISTING directory; falls back to ``test``.
-    """
-    counts = {
-        name: len(list((Path(worktree) / name).glob("test_*.py")))
-        for name in ("test", "tests")
-        if (Path(worktree) / name).is_dir()
-    }
-    if not counts:
-        return "test"
-    # By file count, not alphabetical: a repo can have BOTH, and the minor one is
-    # outside the suite the gate runs. Deterministic tie-break on (count, name).
-    return max(counts, key=lambda n: (counts[n], n))
-
-
-def author_bug_fix(
-    # ``Any``, not ``AgentRunner``: the runner is DUCK-TYPED — anything exposing
-    # ``run(prompt, ...) -> AgentResult`` qualifies, and the in-process
-    # ``SessionAgentRunner`` (the default path) is deliberately NOT a subclass. The
-    # narrower annotation was simply wrong about what the spine passes.
-    runner: Any,
-    *,
-    candidate,
-    worktree: Path,
-    test_cmd_hint: str | None = None,
-) -> bool:
-    """Drive the agent to author a bug fix (reproducing test + minimal source edit) in
-    ``worktree``. Returns True iff the agent left a real diff. Mirrors the original
-    framework's ``implement()`` prompt shape (05_*.md §1.3: the agent writes the RED
-    test + the fix; the spine's RED→GREEN gate then verifies the boolean transition).
-
-    SAFETY: the agent edits inside the throwaway worktree only; the spine's edit
-    allowlist + RED→GREEN gate + push-disabled clone contain the blast radius. We do
-    NOT trust the agent's word that it fixed anything — the deterministic gate decides.
-
-    ``test_cmd_hint`` is the exact, ready-to-run test command the gate itself uses
-    (same interpreter + flags + PYTHONPATH). Handing it to the agent removes the
-    ~20-minute environment hunt seen in practice — the agent should NOT rediscover
-    which interpreter has the deps / why a plugin won't load; the gate already knows.
-    """
-    tdir = _repro_test_dir(worktree)
-    rt = getattr(candidate, "reproducing_test", None)
-    test_hint = ""
-    if rt is not None:
-        test_hint = (
-            f"\n  suggested reproducing test id: {getattr(rt, 'test_id', '')}"
-            f"\n  it must FAIL on the current (buggy) code and PASS after your fix."
-        )
-    # The known-good test invocation. Without this the agent burns ~20 min per candidate
-    # hunting for a working interpreter; with it, it runs tests in seconds.
-    run_block = ""
-    if test_cmd_hint:
-        run_block = (
-            "\nHOW TO RUN TESTS (use EXACTLY this — do not hunt for another interpreter, "
-            "do not install plugins, do not switch Python; this command already has every "
-            "dependency the suite needs):\n"
-            f"  {test_cmd_hint}\n"
-            "Replace <test_path> with the test file (or file::case) you are running.\n"
-        )
-    prompt = (
-        "You are the implementation step of an autonomous Kiro Crew BUG-fix loop.\n"
-        f"Working dir is an isolated git worktree: {worktree}\n"
-        "Investigate this candidate defect surface and, ONLY IF a real defect exists, "
-        "fix it:\n"
-        f"  defect surface: {candidate.target}\n"
-        f"  signature: {candidate.signature}\n"
-        f"  hypothesis: {candidate.hypothesis}{test_hint}\n"
-        f"{run_block}\n"
-        "Procedure (keep it BOUNDED — do not exceed a few investigation steps):\n"
-        "  1. Read the named surface and write a MINIMAL deterministic test that would "
-        "reproduce the hypothesised defect.\n"
-        f"     NAME THE TEST FILE ``{tdir}/test_bug_<short_slug>.py`` (it MUST start with "
-        f"``{tdir}/test_bug_`` — e.g. ``{tdir}/test_bug_format_schedule_tz.py``). This "
-        "exact naming is REQUIRED: the edit fence permits a NEW reproducing test only "
-        f"under ``{tdir}/test_bug_*.py``, and ``{tdir}`` is the directory THIS repo "
-        "actually keeps its tests in — writing to any other directory means the gate "
-        "cannot collect your test and the whole fix is rejected unmeasured. Any other "
-        "path is treated as editing the existing suite. Do NOT add to or modify an "
-        "existing test file — create this new one.\n"
-        "  2. RUN that test against the CURRENT (unmodified) code FIRST, BEFORE editing "
-        "any source.\n"
-        "     - If it FAILS (defect confirmed): apply the smallest source fix that makes "
-        "it pass, preserving all other behavior, then re-run to confirm GREEN.\n"
-        "     - If it PASSES on the current code (the hypothesis does NOT reproduce — the "
-        "code already handles this case): the surface has NO real defect. STOP "
-        "IMMEDIATELY. Make NO source or test edits, revert anything you wrote, and reply "
-        "with exactly: NO DEFECT FOUND — <one-line reason>.\n"
-        "CRITICAL — the reproducing test is re-run by a downstream gate against the "
-        "ORIGINAL un-fixed code, where it MUST COLLECT and FAIL (this is what proves the "
-        "bug is real). So the test must NOT depend on ANYTHING your fix introduces:\n"
-        "  • do not import, reference, monkeypatch, or attribute-access any name/symbol/"
-        "import that only EXISTS after your fix (e.g. patching ``module.datetime`` when "
-        "the buggy code has no ``datetime`` import yet — that is a COLLECTION error on the "
-        "original code, not a failure, and the gate will reject your fix as 'cannot be "
-        "RED').\n"
-        "  • patch/observe only symbols ALREADY present in the unmodified module; assert "
-        "on OUTPUT/behavior, not on the fix's internal helpers.\n"
-        "  • if you used ``monkeypatch.setattr(mod, 'X', ...)`` make sure ``mod.X`` exists "
-        "BEFORE your edit (use ``raising=True``, the default — if it errors on the base "
-        "tree your test is collection-coupled to the fix and is INVALID).\n"
-        "  After writing the test, VERIFY this yourself: it must import/collect and FAIL "
-        "on the current code with NO edits applied.\n"
-        "Do NOT fabricate a fix or a passing test for a defect you could not reproduce — "
-        "an honest 'NO DEFECT FOUND' is a correct, valued outcome and costs nothing "
-        "downstream (the candidate is simply skipped). A made-up fix wastes a human "
-        "reviewer's time and is worse than no fix.\n"
-        "Constraints: edit only what a confirmed fix + its test require; keep it minimal "
-        "and reviewable; do NOT touch build config or auth/security code.\n"
-        "BEFORE YOU FINISH — the T1 gate rejects the whole candidate if your diff adds ANY "
-        "new lint finding, INCLUDING one in the test you just wrote. This is the single "
-        "most common way a correct, fully-verified fix gets thrown away (observed live: a "
-        "real fix lost to one unused ``import pytest``). So lint what you changed and "
-        "clean it up:\n"
-        "  • run ``ruff check --output-format=concise <files you touched>`` if ruff is "
-        "available, else ``python -m pyflakes <files>``;\n"
-        "  • remove unused imports and unused local variables — do NOT silence them with "
-        "``# noqa``, which reads as gaming the gate;\n"
-        "  • only findings YOUR diff introduced matter; the repo's pre-existing ones are "
-        "not yours to fix and must be left alone.\n"
-        "When you DO fix, reply with a one-line summary of the edit."
+# This module is the facade of the spine agent runner and the path every caller imports.
+# ``AgentRunner``, ``SessionAgentRunner`` and the helpers only they call stay here; the rest
+# lives in owner modules beside it, and new work goes to the owner of its responsibility:
+#
+#   ``agent_runner_gate`` -- whether a tool request is refused: the governance chokepoint,
+#   the shell-command denylist and the caller's allowlist
+#   ``agent_runner_feed`` -- the activity feed's whole lines and tool-call details
+#   ``agent_runner_authoring`` -- authoring a bug or perf fix in a candidate worktree
+#
+# A name this module binds is read here, and a moved name it does not read is served from
+# its owner. A write or delete through this module -- ``monkeypatch.setattr``,
+# ``mock.patch`` -- reaches every owner that binds the same object
+# (``kiro_crew._facade_mirror``), so a patch of ``agent_runner.HookManager`` or
+# ``agent_runner.require_pinned`` reaches the moved code as it did when this was one
+# module. The imports at the top stay bound even where this module's own code does not
+# read them (``# noqa: F401``): they are its surface, which callers read and tests patch.
+# Owners never import this module at run time. ``test/test_agent_runner_owner_bindings.py``
+# pins the owners, the mirror and that direction.
+#: The owner modules, lowest layer first: the first holder of a name answers its reads.
+#: Named from this module's own package, so the family also loads under the app loader's name.
+_OWNERS = (
+    f"{__package__}.agent_runner_gate",
+    f"{__package__}.agent_runner_feed",
+    f"{__package__}.agent_runner_authoring",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name this module serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner_authoring import (  # noqa: F401
+        _GIT_SAFE_CONFIG,
+        _adopt_authored_test,
+        _repro_test_dir,
+        author_bug_fix,
+        author_perf_fix,
     )
-    role_runner = runner.for_role("implementation") if hasattr(runner, "for_role") else runner
-    res = role_runner.run(
-        prompt,
-        cwd=str(worktree),
-        allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
-        # 10-min cap (was 1800s/30min). In practice the agent finishes the real work —
-        # write reproducing test, apply minimal fix, confirm GREEN — in well under 10
-        # minutes, then tends to OVER-iterate (re-verifying a fix that is already GREEN)
-        # instead of returning. The worktree already holds the finished fix when the cap
-        # fires, so the deterministic RED→GREEN gate (which is the real verdict) still
-        # evaluates the completed work — a shorter cap just stops paying for the agent's
-        # redundant self-checking and keeps cycle throughput up.
-        max_turns=40,
-        timeout_s=600,
+    from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner_feed import (  # noqa: F401
+        _LINE_FLUSH_LEN,
+        _TOOL_TARGET_KEYS,
     )
-    # The worktree git state — NOT res.ok — is the source of truth. A TIMEOUT or a
-    # MAX_TURNS cap is expected here (the agent often finishes the fix, then over-iterates
-    # until the cap fires): the completed fix is already on disk, so we still harvest it and
-    # let the deterministic RED→GREEN gate decide. Both are the runner's bounded "expected"
-    # exits — the session path returns ``max_turns (N) reached`` for the ACP turn cap, the
-    # subprocess path returns ``timeout after Ns`` — so they are treated identically. A turn
-    # the backend ended unfinished (its own prompt timeout, a stale_recover, a stream that
-    # ended first) is cut off the same way, so it is harvested too. Only a
-    # genuine failure (provider died, agent binary missing, explicit stop) means there's
-    # nothing trustworthy to harvest — bail so we don't gate a half-written tree.
-    err = (res.error or "").lower()
-    is_bounded_exit = (
-        "timeout after" in err or "max_turns" in err or err.startswith(_UNFINISHED_TURN_ERROR)
+    from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner_gate import (  # noqa: F401
+        _COMMAND_WRAPPERS,
+        _FORBIDDEN_BINARIES,
+        _FORBIDDEN_SUBCOMMANDS,
+        _MAX_UNWRAP_DEPTH,
+        _SHELL_BINARIES,
+        _VALUE_TAKING_OPTIONS,
+        _WRAPPER_VALUE_TAKING_LONG_OPTIONS,
+        _refusal,
+        _shell_words,
     )
-    if not res.ok and not is_bounded_exit:
-        return False
-    # Require an ACTUAL change — the agent's prose is not trusted; the worktree state is.
-    # A "NO DEFECT FOUND" exit leaves the tree clean → no change → candidate skipped.
-    #
-    # We must detect ALL of: modified tracked files, NEW untracked files (the reproducing
-    # test is always a new file), AND staged changes (the agent may ``git add`` its work
-    # while running base-relative verification — observed live: an agent stashed/staged
-    # during its own STAYGREEN check, leaving the fix staged). A bare ``git diff --stat``
-    # sees ONLY unstaged tracked modifications and silently MISSED both the new test and
-    # any staged fix → a real fix was dropped as "no diff produced". ``git status
-    # --porcelain`` reports every change kind (modified, added, staged, untracked), so it
-    # is the correct presence check.
-    require_pinned(worktree)
-    where = str(Path(worktree).absolute())
-    st = subprocess.run(
-        ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), "status", "--porcelain"],
-        capture_output=True,
-        cwd=where,
-        **UTF8_TEXT,
-    )
-    if not st.stdout.strip():
-        return False
-    # RECONCILE the candidate's reproducing-test path to the file the agent ACTUALLY
-    # wrote. The candidate arrives carrying a path the spine INVENTED from the target
-    # slug (profile._candidate_from), but the prompt tells the agent to choose its own
-    # ``test/test_bug_<short_slug>.py``. Those names almost never match, and the invented
-    # one also COLLIDES: the slug is the target path lowercased and truncated to 40 chars,
-    # so two loci sharing a long directory prefix produce the SAME filename. The gate then
-    # ran ``pytest --collect-only`` on a path that does not exist, so T2 failed
-    # ("reproducing test does not collect") for every candidate no matter how good the fix
-    # — observed live: two independent, verified RED→GREEN fixes both rejected. Point the
-    # candidate at the real file so the gate verifies the test that was actually authored.
-    _adopt_authored_test(candidate, worktree, st.stdout)
-    return True
-
-
-def _adopt_authored_test(candidate, worktree: Path, porcelain: str) -> None:
-    """Retarget ``candidate.reproducing_test`` at the repro test the agent added.
-
-    Best-effort and non-fatal: if no added ``test_bug_*.py`` is found we leave the
-    candidate untouched and let the gate judge what is there. Never raises — a
-    reconciliation failure must not lose an otherwise-good fix.
-    """
-    rt = getattr(candidate, "reproducing_test", None)
-    if rt is None:
-        return
-    try:
-        # Porcelain fields: XY <path>, with '-> ' for renames and quoting when needed.
-        added: list[str] = []
-        for line in porcelain.splitlines():
-            if len(line) < 4:
-                continue
-            path = line[3:].strip()
-            if " -> " in path:  # rename/copy: take the destination
-                path = path.split(" -> ", 1)[1].strip()
-            path = path.strip('"')
-            name = Path(path).name
-            if name.startswith("test_bug_") and name.endswith(".py"):
-                added.append(path)
-        if not added:
-            return
-        # Deterministic pick when the agent wrote more than one: the shortest path,
-        # then lexicographic — stable across runs so a re-run gates the same file.
-        chosen = sorted(added, key=lambda p: (len(p), p))[0]
-        if not (worktree / chosen).is_file():
-            return
-        current = str(getattr(rt, "test_path", "") or "")
-        if current == chosen:
-            return
-        # test_id doubles as the pytest nodeid for the RED/GREEN runs; keep any
-        # ``::case`` selector the spine already had only if it named THIS file.
-        for attr, value in (("test_path", chosen), ("test_id", chosen)):
-            try:
-                setattr(rt, attr, value)
-            except Exception:  # noqa: BLE001 — frozen/slotted dataclass: nothing to do
-                return
-        logger.info(
-            "author_bug_fix: adopted authored repro test %s (was %s)", chosen, current or "<unset>"
-        )
-    except Exception:  # noqa: BLE001 — never lose a fix over path reconciliation
-        logger.warning("author_bug_fix: could not reconcile repro test path", exc_info=True)
-
-
-def author_perf_fix(
-    runner: Any,
-    *,
-    candidate,
-    worktree: Path,
-    test_cmd_hint: str | None = None,
-) -> bool:
-    """Drive the agent to author a BEHAVIOR-PRESERVING speedup in ``worktree``.
-
-    The perf-track counterpart of :func:`author_bug_fix`, and the reason the track was
-    dead: :meth:`GitHubRepoProfile.propose` returns False for every candidate ("no
-    mechanical seed"), and the proposer only escalated to an agent for ``TRACK_BUG`` —
-    so a perf candidate produced no diff, was recorded ``no_defect``, and the loop could
-    never keep, measure, or file a perf win. Upstream had 24 hand-written mechanical
-    seeds per target; a target-agnostic profile cannot ship those, so the agent authors
-    the edit and the spine's A/B measurement decides — the same division of labour the
-    bug track already uses (the model proposes, the deterministic gate disposes).
-
-    Returns True iff the agent left a real diff. Never trusts the agent's claim of a
-    speedup: the keeper requires the measured delta to clear the calibrated noise band,
-    reproduced by a SECOND independent A/B, with the suite-still-passes guardrail and the
-    test-count reward-hack guard both holding. So an imagined win costs one bounded
-    cycle, never a fabricated keep.
-
-    SAFETY: edits land only in the throwaway worktree; the edit allowlist forbids the
-    tests-of-record (the ruler's own measurement subject) and the build/CI config, and
-    the clone cannot push.
-    """
-    run_block = ""
-    if test_cmd_hint:
-        run_block = (
-            "\nHOW TO RUN TESTS (use EXACTLY this — it already has every dependency; do "
-            "not hunt for another interpreter):\n"
-            f"  {test_cmd_hint}\n"
-        )
-    prompt = (
-        "You are the implementation step of an autonomous PERFORMANCE loop.\n"
-        f"Working dir is an isolated git worktree: {worktree}\n"
-        "Make ONE behavior-preserving change that makes this locus measurably faster:\n"
-        f"  target: {candidate.target}\n"
-        f"  observation: {candidate.signature}\n"
-        f"  hypothesis: {candidate.hypothesis}\n"
-        f"{run_block}\n"
-        "WHAT COUNTS as behavior-preserving: identical observable outputs, return "
-        "shapes, exceptions, and side effects for every input the code already handles. "
-        "Good moves: hoist repeated work out of a loop, avoid re-reading/re-parsing the "
-        "same data, replace an O(n^2) scan with a dict/set lookup, cache a pure "
-        "computation, drop a redundant copy, avoid building a large intermediate list. "
-        "Do NOT change an algorithm's RESULT, relax a check, or trade correctness for "
-        "speed.\n\n"
-        "HARD CONSTRAINTS — a violation wastes the whole cycle because the gate rejects "
-        "it mechanically:\n"
-        "  • Do NOT touch any test file, conftest, or the build/CI/dependency config. "
-        "The test suite is the RULER that measures you; editing it is metric gaming and "
-        "is auto-rejected. A test-count change trips the reward-hack guard.\n"
-        "  • Do NOT delete, skip, or weaken tests to go faster.\n"
-        "  • Keep the diff MINIMAL and reviewable — one locus, not a refactor.\n"
-        "  • Run the suite before you finish; it MUST still pass (that is a guardrail).\n"
-        "  • LINT what you changed before finishing: the T1 gate rejects the candidate for ANY new lint finding your diff adds (``ruff check --output-format=concise <files>``, else ``python -m pyflakes``). Remove unused imports/variables rather than silencing them with ``# noqa``; the repo's pre-existing findings are not yours to fix.\n\n"
-        "You do NOT decide whether this is kept. The spine measures your edit A/B against "
-        "the unmodified base, requires the win to clear a calibrated noise band, and "
-        "reproduces it independently. So do NOT report an estimated speedup as a fact — "
-        "state what you changed and why it should be faster; the measurement is not "
-        "yours to make.\n"
-        "If, after reading the code, there is NO behavior-preserving win here, make NO "
-        "edits and reply with exactly: NO WIN FOUND — <one-line reason>. That is a "
-        "correct, valued outcome and costs nothing downstream; a fabricated 'optimization' "
-        "wastes a reviewer's time and pollutes the measurement record.\n"
-        "When you DO change something, reply with a one-line summary of the edit."
-    )
-    role_runner = runner.for_role("implementation") if hasattr(runner, "for_role") else runner
-    res = role_runner.run(
-        prompt,
-        cwd=str(worktree),
-        allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
-        max_turns=40,
-        timeout_s=600,
-    )
-    # Same harvest rule as the bug track: the WORKTREE, not the agent's prose, is the
-    # source of truth, and a bounded exit (timeout / max_turns / a turn the backend ended
-    # unfinished) is an EXPECTED outcome whose finished work is already on disk. Only a
-    # genuine runner failure means there is nothing trustworthy to measure.
-    err = (res.error or "").lower()
-    is_bounded_exit = (
-        "timeout after" in err or "max_turns" in err or err.startswith(_UNFINISHED_TURN_ERROR)
-    )
-    if not res.ok and not is_bounded_exit:
-        return False
-    require_pinned(worktree)
-    # ``cwd=`` beside ``-C``, the same absolute path for both: the child's working
-    # directory must be the worktree, not whatever the gateway inherited.
-    where = str(Path(worktree).absolute())
-    st = subprocess.run(
-        ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), "status", "--porcelain"],
-        capture_output=True,
-        cwd=where,
-        **UTF8_TEXT,
-    )
-    return bool(st.stdout.strip())

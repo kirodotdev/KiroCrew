@@ -1342,7 +1342,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.show-full-titles-while-scrolling",
     "label": "Show Full Titles While Scrolling",
     "labelKey": "pages.settings.chatPanel.full_titles_on_scroll",
-    "hint": "While you scroll the session list, titles cut off by the sidebar show in full over it; they hide when the pointer leaves or shortly after scrolling stops",
+    "hint": "While you scroll the session list, titles the sidebar cuts off show in full",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -2720,6 +2720,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "select",
     "occurrence": 2,
     "settingId": "voice.provider-2"
+  },
+  {
+    "id": "voice.send-when-i-stop-recording",
+    "label": "Send when I stop recording",
+    "labelKey": "pages.settings.sttSettings.submit_on_release",
+    "hint": "Stopping sends the message. Shift-click the mic, or slide sideways on the phone, to keep a draft.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.submit_on_release"
   },
   {
     "id": "voice.shortcut-key",

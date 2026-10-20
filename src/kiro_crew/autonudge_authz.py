@@ -82,7 +82,7 @@ def is_self_arm(slot_key: str, initiator_slot_key: str) -> bool:
 
     ``initiator_slot_key`` is the binding key of the session whose TURN issued
     the request, as established by the caller that owns that identity -- the
-    session-directive consumer (``dashboard/session_directive_apply.py``)
+    session-directive consumer (``dashboard/session_directive_apply_monitor.py``)
     applies a directive to the exact session that produced it, so it passes
     that session's binding. Surfaces with no such provenance (REST, workflow
     ``ctx.nudge``, app handlers) pass nothing, and nothing never matches: the

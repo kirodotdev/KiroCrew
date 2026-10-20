@@ -82,7 +82,7 @@ def test_f1_all_template_roles_carry_boundary():
 
 
 def test_f2_all_staging_rejections_convert_to_409():
-    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text(encoding="utf-8")
+    src = (_ROOT / "src/kiro_crew/deploy/handlers_sites.py").read_text(encoding="utf-8")
     assert '"hardlink-in-tree"' in src
     assert '"staging-read-blocked"' in src
     # Cleanup wrapper guards everything after mkdtemp.

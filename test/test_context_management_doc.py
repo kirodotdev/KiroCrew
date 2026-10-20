@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import context as ctx
-from kiro_crew.config.sections import SkillsConfig
+from kiro_crew.config.sections import MemoryConfig, SkillsConfig
 from kiro_crew.members import MEMBER_BRIEFING_MAX_CHARS, MEMBER_RULES_MAX_CHARS
 from kiro_crew.session_ledger import _SNAPSHOT_MAX_CHARS
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP
@@ -175,6 +175,10 @@ def test_embedding_deadline_named(doc_text: str) -> None:
     assert (
         ctx._PROMPT_BUILD_EMBED_TIMEOUT_SECS == 5.0
     ), "the deadline changed; the doc says five seconds"
+    assert "`memory.startup_recall_timeout_secs` (one second)" in doc_text
+    assert (
+        MemoryConfig().startup_recall_timeout_secs == 1.0
+    ), "the joined wait changed; the doc says one second"
 
 
 def test_activity_index_cap_is_named_not_quoted(doc_text: str) -> None:

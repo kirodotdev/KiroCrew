@@ -10,9 +10,9 @@ dashboard:
 * Expansion happens inside :meth:`kiro_crew.context.ContextBuilder.build_message`,
   the one function every inbound surface funnels through, so one row reaches every
   surface at once instead of needing a branch per dispatcher. The dashboard-only
-  text rewrites (``$skill`` append, ``@prompt`` replacement, both in
-  ``dashboard/chat_runner.py``) are deliberately NOT the model copied here — each
-  of them buys one surface.
+  text rewrites (``$skill`` append in ``dashboard/chat_turn/turn_dispatch_gates.py``,
+  ``@prompt`` replacement in ``dashboard/chat_turn/turn_admission.py``) are deliberately
+  NOT the model copied here — each of them buys one surface.
 * The expansion is what the MODEL sees, not what is stored. The row persisted to
   history and echoed back into the transcript is still the ``/plain`` the user
   typed, so the scrollback stays readable and a replay does not re-run a wall of

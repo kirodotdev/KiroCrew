@@ -180,7 +180,10 @@ def test_slow_cold_start_503s_once_then_serves_the_cache(tmp_path):
             with patch.object(agents, "_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS", 0.05):
                 first = await agents.api_models(_kiro_request(tmp_path))
             assert first.status == 503
-            assert _body(first) == {"error": "model list timed out"}
+            assert _body(first) == {
+                "error": "model list timed out",
+                "code": "model_list_unavailable",
+            }
 
             # The shared fetch kept running. Release the spawn and let it land.
             task = agents._catalog_cache.task
@@ -222,7 +225,7 @@ def test_concurrent_polls_share_one_spawn(tmp_path):
             # The spawn is gated, so all three are the request-bound 503, not a
             # fetch that already failed, and the shared fetch is still in flight.
             assert [(r.status, _body(r)) for r in (a, b, c2)] == [
-                (503, {"error": "model list timed out"})
+                (503, {"error": "model list timed out", "code": "model_list_unavailable"})
             ] * 3
             task = agents._catalog_cache.task
             assert task is not None, "the shared fetch ended with the requests"

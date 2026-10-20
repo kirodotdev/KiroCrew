@@ -83,7 +83,9 @@ def _no_eager_prune(_floor_monkeypatch):
     them. It is switched off by default and pinned by its own tests, which put
     the real one back (:data:`_REAL_EAGER_PRUNE`).
     """
-    _floor_monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
+    _floor_monkeypatch.setattr(
+        projection, "_eager_prune", lambda directory, crew_home_id, *, force=False: None
+    )
 
 
 @pytest.fixture

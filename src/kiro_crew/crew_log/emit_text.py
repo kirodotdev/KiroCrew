@@ -267,7 +267,7 @@ def _entry_line_fits(entry_type: str, data: dict[str, Any], *, src: str) -> bool
         # as an attribute worked only after some earlier import had loaded it --
         # and a module-scope import here would load the schema on every flag-off
         # launch, which
-        # ``test_crew_log_emit.py::test_a_flag_off_launch_does_not_load_the_storage_subsystem``
+        # ``test_crew_log_emit_redaction_and_flag.py::test_a_flag_off_launch_does_not_load_the_storage_subsystem``
         # pins against ("the store, schema and lease stay unloaded until a call
         # reaches storage"). The ``top-level-imports`` convention is advisory;
         # that boot-path invariant is enforced, so the invariant wins.

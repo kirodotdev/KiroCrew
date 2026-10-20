@@ -16,7 +16,7 @@ play, and they are loaded by two different mechanisms:
 These endpoints back the Steering tab under Agent Capabilities, surfacing which
 steering documents are in effect.
 
-Path handling mirrors the skills browser (``handlers/_shared.py``): traversal,
+Path handling mirrors the skills browser (``handlers/_shared_skill_roots.py``): traversal,
 absolute paths, ``~`` expansion, non-``.md`` suffixes, symlinked intermediate
 directories and sensitive locations are all rejected before any read or write.
 A LEAF symlink is listed and readable — read-only — when its resolved target

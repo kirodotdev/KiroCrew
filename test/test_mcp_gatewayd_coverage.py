@@ -2089,6 +2089,25 @@ class TestWriteDiagnostic:
         lines = path.read_text(encoding="utf-8").strip().splitlines()
         assert [json.loads(line)["n"] for line in lines] == [1, 2]
 
+    def test_rotates_once_past_the_size_cap(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gw, "_ZOMBIE_DIAGNOSTIC_MAX_BYTES", 40)
+        path = tmp_path / "diag.jsonl"
+        for n in range(1, 7):
+            gw._write_diagnostic(path, {"tag": "probe", "n": n})
+        previous = tmp_path / "diag.jsonl.1"
+        # Each line is 22 bytes: a file holds two, so every third append rotates.
+        assert [json.loads(x)["n"] for x in path.read_text(encoding="utf-8").splitlines()] == [5, 6]
+        assert [json.loads(x)["n"] for x in previous.read_text(encoding="utf-8").splitlines()] == [
+            3,
+            4,
+        ]
+        # One previous generation only (``.lock`` is the rotation try-lock).
+        assert sorted(p.name for p in tmp_path.glob("diag.jsonl*")) == [
+            "diag.jsonl",
+            "diag.jsonl.1",
+            "diag.jsonl.lock",
+        ]
+
     def test_multiple_records_share_a_single_open(self, monkeypatch, tmp_path):
         # Records passed in one call MUST go through one open-append-close
         # cycle: a second append that lands while the first writer's handle is

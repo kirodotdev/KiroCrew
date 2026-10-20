@@ -1416,7 +1416,7 @@ def test_the_reclaim_placement_check_reads_the_delete_handler(
 
 def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     """The baseline's per-file rows for the facade and its owners are each one's
-    measured count and sum to the one-module file's 46, and the scan counts a
+    measured count and sum to the one-module file's 43, and the scan counts a
     response planted in an owner against that owner."""
     import test_error_code_contract as guard
 
@@ -1428,7 +1428,7 @@ def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     }
     live = guard.tally(guard.scan())
     assert rows == {path: live[path] for path in rows}
-    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 46
+    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 43
     assert {path for path in live if path.startswith("dashboard/agent_admin/")} <= set(rows)
     root = _mirror(tmp_path) / "kiro_crew"
     owner = root / "dashboard/agent_admin/roster.py"

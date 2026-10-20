@@ -57,7 +57,7 @@ describe('terminal surface parity', () => {
     // Docked bottom panel and chat side-panel tab. Both render the shared host,
     // so both get path completion AND the command tier with no per-surface wiring.
     expect(read('components/BottomTerminalPanel.tsx')).toMatch(/CliPanel/)
-    expect(read('pages/chat/SidePanel.tsx')).toMatch(/<CliPanel\b/)
+    expect(read('pages/chat/SidePanelTabBodies.tsx')).toMatch(/<CliPanel\b/)
   })
 
   it('passes the session id and visibility through to the completion menu', () => {

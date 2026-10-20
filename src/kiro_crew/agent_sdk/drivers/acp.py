@@ -45,11 +45,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from kiro_crew.agent_sdk.context import ContextPromptProvider
+    from kiro_crew.providers.acp import AcpProvider
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "EntitlementRevalidating",
+    "build_acp_provider",
     "catalog_row_would_drop",
     "context_provider_of",
     "projected_session_mcp_servers",
@@ -62,6 +64,7 @@ __all__ = [
     "derived_agent_permissions",
     "finish_suspended_spawn",
     "forget_cached_resolution",
+    "is_auth_failure_output",
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
     "kiro_cli_resolves",
@@ -171,6 +174,91 @@ def resolve_usable_model(preferred: str, advertised: object, *, backend: str = "
     return _impl(preferred, advertised, backend=backend)  # type: ignore[arg-type]
 
 
+def build_acp_provider(
+    *,
+    work_dir: "str | Path | None" = None,
+    model: str | None = None,
+    agent: str | None = None,
+    sandbox_mode: str = "auto",
+    session_key: str | None = None,
+    channel_id: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    acp_backend: str = "",
+    effort_per_model: dict[str, str] | None = None,
+    unbound_effort: str = "",
+    effort_defaults: object = None,
+    tool_search: bool | None = None,
+    tool_search_min_pct: object = None,
+    tool_search_min_tokens: object = None,
+    mcp_gateway_overlay: "str | Path | None" = None,
+    mcp_gateway_socket: "str | Path | None" = None,
+    permission_mode: str | None = None,
+    crew_agent: str | None = None,
+    member_context: bool = False,
+    memory_mode: str = "persistent",
+    shared_scratch: "Path | None" = None,
+    on_gate_acquired: "Callable[..., None] | None" = None,
+    on_gate_queued: "Callable[..., None] | None" = None,
+    disposable_work_dir: bool = False,
+    side_read_only: bool = False,
+) -> "AcpProvider":
+    """Construct an ``AcpProvider`` from already-resolved session parameters.
+
+    This is the ACP layer's half of ``config``'s provider factory: the config
+    package owns the policy (model, backend, effort and gateway resolution) and
+    hands the resolved values here; this driver owns the one construction that
+    touches :mod:`kiro_crew.providers.acp`. ``config`` reaches it through the SDK
+    surface so no config module imports the ACP layer itself, which is the line
+    ``scripts/check_agent_sdk_boundary.py`` holds application code to.
+
+    The signature mirrors ``AcpProvider.__init__`` by design, not by accident:
+    the driver is the one tree the boundary gate lets name ``AcpProvider``, so
+    spelling the keywords here is what keeps ``mypy`` checking the construction
+    on config's behalf. When config read the class directly (through the old
+    ``acp_provider_class`` accessor) ``mypy`` saw the ``AcpProvider(...)`` call
+    and verified every keyword; routing an untyped ``**kwargs`` through here
+    would have silently dropped that check, so a renamed constructor parameter
+    would fail only at the first session start. Keeping the keywords named means
+    a parameter drift breaks here, in CI, instead.
+
+    The class is read at CALL time, not module scope, for two reasons:
+    ``providers.acp`` imports ``acp.client``, whose import chain reaches
+    ``session`` and then ``config.loader``, so a module-scope import here would
+    close that cycle; and reading it per call means a patch of
+    ``kiro_crew.providers.acp.AcpProvider`` reaches this factory, which the
+    config layer's tests rely on.
+    """
+    from kiro_crew.providers.acp import AcpProvider
+
+    return AcpProvider(
+        work_dir=work_dir,
+        model=model,
+        agent=agent,
+        sandbox_mode=sandbox_mode,
+        session_key=session_key,
+        channel_id=channel_id,
+        extra_env=extra_env,
+        acp_backend=acp_backend,
+        effort_per_model=effort_per_model,
+        unbound_effort=unbound_effort,
+        effort_defaults=effort_defaults,
+        tool_search=tool_search,
+        tool_search_min_pct=tool_search_min_pct,
+        tool_search_min_tokens=tool_search_min_tokens,
+        mcp_gateway_overlay=mcp_gateway_overlay,
+        mcp_gateway_socket=mcp_gateway_socket,
+        permission_mode=permission_mode,
+        crew_agent=crew_agent,
+        member_context=member_context,
+        memory_mode=memory_mode,
+        shared_scratch=shared_scratch,
+        on_gate_acquired=on_gate_acquired,
+        on_gate_queued=on_gate_queued,
+        disposable_work_dir=disposable_work_dir,
+        side_read_only=side_read_only,
+    )
+
+
 def provider_label(provider: object) -> str:
     """The backend identity key a session or run persists for *provider*.
 
@@ -197,6 +285,36 @@ def catalog_row_would_drop(model_id: str, advertised: object) -> bool:
     the same reason as :func:`resolve_pin_spelling`.
     """
     from kiro_crew.acp.client import catalog_row_would_drop as _impl
+
+    return _impl(model_id, advertised)  # type: ignore[arg-type]
+
+
+def advertised_model_ids(entries: object) -> list[str]:
+    """The model ids out of an ``availableModels``-shaped list, or ``[]``.
+
+    Thin delegation to :func:`kiro_crew.acp.client.advertised_model_ids`, the shared
+    shape parser of a live session's advertised list, so the dashboard's model-pin
+    validator (``dashboard/handlers/core_config_models.py``) reads a session's
+    evidence through the SDK surface instead of importing the ACP layer (the
+    agent-sdk-boundary gate refuses a new edge). Plain data in, a list of strings
+    out. Function-local import for the same reason as :func:`resolve_pin_spelling`,
+    which also keeps a patch of the client's name visible to the caller.
+    """
+    from kiro_crew.acp.client import advertised_model_ids as _impl
+
+    return _impl(entries)
+
+
+def model_is_unusable(model_id: str, advertised: object) -> bool:
+    """Whether *advertised* is known and excludes *model_id*.
+
+    Thin delegation to :func:`kiro_crew.acp.client.model_is_unusable`, the one
+    entitlement predicate the session-start withhold also applies, so the
+    dashboard's model-pin validator (``dashboard/handlers/core_config_models.py``)
+    and the wire cannot disagree. Plain data in, a bool out. Function-local import
+    for the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.client import model_is_unusable as _impl
 
     return _impl(model_id, advertised)  # type: ignore[arg-type]
 
@@ -229,6 +347,20 @@ def resolve_ssh_auth_sock(env: dict[str, str]) -> None:
     from kiro_crew.acp.client import _resolve_ssh_auth_sock as _impl
 
     _impl(env)
+
+
+def is_auth_failure_output(text: str) -> bool:
+    """Whether free-form kiro-cli output reports an auth failure (expired / signed out).
+
+    Thin delegation to :func:`kiro_crew.acp.client.is_auth_failure_output` so the
+    model-list endpoint reaches the shared auth classifier through the SDK surface
+    instead of importing the ACP layer (the agent-sdk-boundary gate refuses a new
+    edge). A plain string in, a plain bool out — no ACP type crosses the boundary.
+    Function-local import for the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.client import is_auth_failure_output as _impl
+
+    return _impl(text)
 
 
 def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dict:

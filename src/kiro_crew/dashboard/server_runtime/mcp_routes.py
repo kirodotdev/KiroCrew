@@ -497,6 +497,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     # dashboard-less state simply has no owner sockets to deliver to.
     app.router.add_post("/api/computer-use/frame", handlers.api_computer_use_frame)
     app.router.add_post("/api/session-keepalive", handlers.api_session_keepalive)
+    # Chinese dictionary words for an mcp-core session search: the gateway holds
+    # the host's one copy of the dictionary. In _STRICT_INTERNAL_API_PATHS, and the
+    # handler re-checks loopback and the secret itself. Deferred so the boot path
+    # never imports the segmenter.
+    app.router.add_post("/api/search/segment", _deferred("search_segment", "api_search_segment"))
     app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)

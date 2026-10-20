@@ -4,7 +4,7 @@ Two halves, deliberately:
 
 **Platform-independent.** Rendering, the pid record's start-time binding, the
 ``unit_state`` result mapping, the runtime dispatch and the teardown contract all
-run on EVERY platform — like ``test_pod.py`` fakes ``systemctl`` and
+run on EVERY platform — like ``test_pod_systemd.py`` fakes ``systemctl`` and
 ``test_pod_launchd.py`` fakes ``launchctl``, these fake ``schtasks`` at the module
 boundary and pin the argv. That is what gives the backend coverage on the Linux
 matrix, where the bulk of CI lives.

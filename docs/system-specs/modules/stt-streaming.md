@@ -26,7 +26,7 @@ notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 The batch endpoint's response contract: a decode that heard nothing
 (`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
 (`transcribe_audio` returns `None`) or an unexpected error is `500` with
-`code: "stt_transcription_failed"` (`handlers/core.py:_CODE_STT_FAILED`). The
+`code: "stt_transcription_failed"` (`handlers/core_stt_access.py:_CODE_STT_FAILED`). The
 meetings audio import folds both into one failure: any falsy transcript, including
 `""` and a segmented over-cap import where a segment failed or was silent, is a
 `502` with `code: "transcription_failed"`
@@ -318,7 +318,7 @@ The third is positive membership in a named tuple, never an inequality or a
 negation against one provider. Adding a name to that tuple grants it the
 endpointer, the caps and the `stt_stream_*` audit identity in one step, so the
 grant has to be an explicit edit to the set rather than a side effect of not
-matching some other provider. `handlers/core.py` serves the same tuple to the
+matching some other provider. `handlers/core_stt_settings.py` serves the same tuple to the
 settings page as `streaming_providers`, so the UI gates its streaming controls on
 that capability instead of on a hardcoded name.
 
@@ -928,6 +928,38 @@ module and their stdout *is* their protocol. Neither argument may be removed.
 stderr is not quiet, so no test may assert it empty.
 
 `redirect_whispercpp_logs_to` stays at its `False` default. Its binding governs stderr rather than the log callback, and `None` redirects process-wide fd 2 during model loading, silencing unrelated threads while leaving stdout behavior unchanged.
+
+## Sending on a deliberate stop
+
+`stt.submit_on_release`, off by default, sends the message when the person
+deliberately stops dictating. It is a browser-side behaviour: the gateway only
+stores the flag and serves it with the STT config, so a change applies to the
+next recording without a restart. It is independent of `stt.endpointing` and
+works on every provider, streaming or batch.
+
+A stop may carry the `StopIntent` `'finish'` (`website/src/lib/pttSession.ts`),
+and only a `'finish'` stop can send. The push-to-talk key's release, a press
+that ends a running capture (the key, the mic, or the hold bar pressed to end a
+capture started elsewhere), the hold bar's release, and a mic click are
+`'finish'`. Keeping a draft is a stop with no intent: Shift still down at the
+key's release, pressed during a hold, or added to the press that stops a
+running capture (setting on only), and Shift-click on the mic. Shift is ignored
+for a binding that already uses it. On the touch hold bar, sliding sideways
+past `DRAFT_THRESHOLD_PX` arms keep-as-draft and sliding up still arms cancel,
+which wins when both are crossed. Both are armed until the release and read
+from the release position. The hard cap, blur, a hidden page, `pointercancel`,
+an orphaned startup and unmount also stop with no intent, and Esc and slide-up
+cancel discard, so none of them send.
+
+`useComposerVoice` arms one pending release at a `'finish'` stop over a live
+capture that no send has already ended. It sends once, through the host's
+auto-submit, after capture, drain, transcription and any polish have settled.
+It keeps the draft instead when the transcript is empty or failed, when the
+composer no longer holds exactly what the dictation last wrote (the person
+typed), when the chat changed or the transcript was delivered off screen, or
+when a new capture started. Any send, including an endpoint verdict before the
+release, clears the pending release, and endpoint verdicts are already ignored
+after a manual stop, so the two routes cannot both send.
 
 ## Tidying a finished transcript
 

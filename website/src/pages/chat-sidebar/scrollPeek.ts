@@ -25,10 +25,13 @@ import { loadChatConfig } from '../chat/ChatSettings'
  * - while it is on, every lane scroll and every change to the lane's rows
  *   (a live re-sort, a mount, a rename) re-measures, so the layer follows the
  *   virtualized rows as they mount, unmount and move;
- * - the row under the pointer shows no chip, so its hover actions stay visible;
+ * - the row under the pointer, and the row whose hover toolbar is showing,
+ *   show no chip, so their hover actions stay visible;
+ * - a chip stops at the left edge of a surface marked data-scroll-peek-stop
+ *   (the composer dock), so it never overlaps the composer;
  * - a title behind a stuck folder header shows no chip;
- * - pointer over the sidebar -> stays on, up to PEEK_IDLE_MAX_MS after the
- *   last scroll input;
+ * - pointer over the sidebar (pointerenter, or any wheel or mouse move over it)
+ *   -> stays on, up to PEEK_IDLE_MAX_MS after the last scroll input;
  * - any press on the page, any key that does not scroll the lane, or the
  *   window losing focus -> off at once (the layer paints above the shell, so
  *   nothing may open beneath it);
@@ -81,6 +84,8 @@ export function measureClippedTitles(lane: HTMLElement, windowWidth: number, hov
   // overlap one another in flow, so a title intersecting a header is hidden
   // behind it.
   const headers = Array.from(lane.querySelectorAll<HTMLElement>('.folder-row-sticky'), h => h.getBoundingClientRect())
+  const stops = Array.from(document.querySelectorAll<HTMLElement>('[data-scroll-peek-stop]'), s => s.getBoundingClientRect())
+    .filter(s => s.width > 0 && s.height > 0)
   const out: PeekTitle[] = []
   for (const el of lane.querySelectorAll<HTMLElement>('[data-session-title]')) {
     if (el.scrollWidth - el.clientWidth < PEEK_MIN_OVERFLOW) continue
@@ -98,6 +103,19 @@ export function measureClippedTitles(lane: HTMLElement, windowWidth: number, hov
     if (hit && hit !== document.body && hit !== document.documentElement && !lane.contains(hit)) continue
     const row = el.closest<HTMLElement>('[data-session-row]')
     if (hoveredRow && row === hoveredRow) continue
+    // The row whose hover toolbar is showing. A browser keeps `:hover` on the
+    // row the pointer last crossed while the wheel scrolls others under it, so
+    // that row can differ from the one rowAtPoint resolves.
+    if (row?.matches(':hover')) continue
+    let maxWidth = Math.max(0, windowWidth - r.left - WINDOW_MARGIN_PX)
+    // A surface marked data-scroll-peek-stop (the composer dock) beside the
+    // row stops the chip at its left edge, so the chip never sits over text
+    // the user is typing.
+    for (const s of stops) {
+      if (s.left > r.left && r.top < s.bottom && r.bottom > s.top) maxWidth = Math.min(maxWidth, s.left - r.left)
+    }
+    // Stopped before it shows anything the row does not: no chip.
+    if (maxWidth < el.clientWidth + PEEK_MIN_OVERFLOW) continue
     out.push({
       key: `${row?.dataset.sessionScope ?? ''}:${row?.dataset.sessionRow ?? out.length}`,
       text: el.textContent ?? '',
@@ -105,7 +123,7 @@ export function measureClippedTitles(lane: HTMLElement, windowWidth: number, hov
       top: r.top,
       height: r.height,
       width: el.scrollWidth,
-      maxWidth: Math.max(0, windowWidth - r.left - WINDOW_MARGIN_PX),
+      maxWidth,
     })
   }
   return out.length === 0 ? NONE : out
@@ -224,6 +242,14 @@ export function useSidebarScrollPeek({ enabled, rootRef, laneRef }: Options): Pe
     // and following it keeps each chip on its row until the slide settles.
     const rowObserver = new MutationObserver(() => { if (activeRef.current) remeasure() })
     rowObserverRef.current = rowObserver
+    // A wheel or a mouse move over the sidebar proves the pointer is on it,
+    // even when it was already there before these listeners attached and so
+    // never fired pointerenter.
+    const markPointer = (x: number, y: number) => {
+      pointRef.current = { x, y }
+      pointerInsideRef.current = true
+      clearCollapse()
+    }
     const observeLane = () => {
       const lane = laneRef.current
       if (lane) rowObserver.observe(lane, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['style'] })
@@ -235,7 +261,7 @@ export function useSidebarScrollPeek({ enabled, rootRef, laneRef }: Options): Pe
       if (e instanceof WheelEvent && (e.deltaY === 0 || e.ctrlKey || e.metaKey)) return
       if (e instanceof KeyboardEvent && (!isScrollKey(e.key) || e.altKey || e.ctrlKey || e.metaKey || isTextEntry(e.target))) return
       if (lane.scrollHeight <= lane.clientHeight) return
-      if (e instanceof WheelEvent) pointRef.current = { x: e.clientX, y: e.clientY }
+      if (e instanceof WheelEvent) markPointer(e.clientX, e.clientY)
       if (!activeRef.current) observeLane()
       activeRef.current = true
       touchIdle()
@@ -274,7 +300,7 @@ export function useSidebarScrollPeek({ enabled, rootRef, laneRef }: Options): Pe
     // Every measure re-resolves that row from the pointer position.
     const onMove = (e: PointerEvent) => {
       if (e.pointerType === 'touch') return
-      pointRef.current = { x: e.clientX, y: e.clientY }
+      markPointer(e.clientX, e.clientY)
       if (activeRef.current) remeasure()
     }
     const onWindowResize = () => { if (activeRef.current) remeasure() }

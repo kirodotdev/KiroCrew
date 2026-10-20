@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils'
 import { useCloseOnFileDrag } from '../../hooks/useCloseOnFileDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { PhoneSubContentDiv, PhoneSubTriggerDiv, usePhoneSubState } from './phoneSubmenu'
+import { MountAfterCommit, useCloseWhenCrewHidden, useOverlayRoot } from '../overlayRoot'
 
 /**
  * A context menu opens on a right-click, so no caller drives it: `open` is
@@ -30,12 +31,21 @@ function ContextMenu({ onOpenChange, modal = true, ...rest }: ContextMenuProps) 
   const close = React.useCallback(() => handleOpenChange(false), [handleOpenChange])
 
   useCloseOnFileDrag(open && modal, close)
+  useCloseWhenCrewHidden(open, close)
 
   return <ContextMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
 }
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger
 const ContextMenuGroup = ContextMenuPrimitive.Group
-const ContextMenuPortal = ContextMenuPrimitive.Portal
+// Portals into the owning pane's overlay root, so content opened in the local
+// dashboard hides with it behind a remote Crew (see components/overlayRoot).
+function ContextMenuPortal(props: React.ComponentProps<typeof ContextMenuPrimitive.Portal>) {
+  return (
+    <MountAfterCommit>
+      <ContextMenuPrimitive.Portal container={useOverlayRoot()} {...props} />
+    </MountAfterCommit>
+  )
+}
 const ContextMenuRadioGroup = ContextMenuPrimitive.RadioGroup
 
 type ContextSubPhoneContextValue = { isPhone: boolean; expanded: boolean; toggle: () => void }
@@ -65,7 +75,7 @@ const ContextMenuContent = React.forwardRef<
 >(({ className, ...props }, ref) => {
   const trustRoot = useGuideTrustRootAttrs()
   return (
-  <ContextMenuPrimitive.Portal>
+  <ContextMenuPortal>
     <ContextMenuPrimitive.Content
       ref={ref}
       {...trustRoot}
@@ -88,7 +98,7 @@ const ContextMenuContent = React.forwardRef<
       )}
       {...props}
     />
-  </ContextMenuPrimitive.Portal>
+  </ContextMenuPortal>
   )
 })
 ContextMenuContent.displayName = ContextMenuPrimitive.Content.displayName
@@ -230,7 +240,7 @@ const ContextMenuSubContent = React.forwardRef<
     )
   }
   return (
-    <ContextMenuPrimitive.Portal>
+    <ContextMenuPortal>
       <ContextMenuPrimitive.SubContent
         ref={ref}
         {...trustRoot}
@@ -243,7 +253,7 @@ const ContextMenuSubContent = React.forwardRef<
       >
         {children}
       </ContextMenuPrimitive.SubContent>
-    </ContextMenuPrimitive.Portal>
+    </ContextMenuPortal>
   )
 })
 ContextMenuSubContent.displayName = ContextMenuPrimitive.SubContent.displayName

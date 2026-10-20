@@ -104,8 +104,12 @@ legacy metadata do not override a canonical execution.
 | `slack/transport_dispatch.py` | `handle_message_transport()` — full new-path dispatch wiring the three layers together |
 | `telegram/transport_dispatch.py` + `telegram/dispatch/` | `TelegramDispatcher` and the owners it is composed from — see [Telegram's dispatcher composition](#telegrams-dispatcher-composition) |
 | `discord/transport_dispatch.py` + `discord/transport_dispatch_*.py` | `DiscordDispatcher` and the owners it is composed from — see [Discord's dispatcher composition](#discords-dispatcher-composition) |
+| `webex/transport_dispatch.py` + `webex/transport_dispatch_*.py` | `WebexDispatcher` and the owners it is composed from — see [Webex's dispatcher composition](#webexs-dispatcher-composition) |
+| `discord/renderer.py` + `discord/renderer_*.py` | `DiscordRenderer`, `DiscordApprovalDecider` and the owners the renderer is composed from — see [Discord's renderer and client composition](#discords-renderer-and-client-composition) |
+| `discord/client.py` + `discord/client_*.py` | `DiscordClient` (Gateway WebSocket and REST v10 over aiohttp) and the owners it is composed from — see [Discord's renderer and client composition](#discords-renderer-and-client-composition) |
 | `telegram/renderer.py` + `telegram/renderer_*.py` | `TelegramRenderer`, `TelegramApprovalDecider` and the owners the renderer is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
 | `telegram/client.py` + `telegram/client_*.py` | `TelegramClient` (Bot API over aiohttp, long polling) and the owners it is composed from — see [Telegram's renderer and client composition](#telegrams-renderer-and-client-composition) |
+| `tool_call_title.py` + `tool_call_title_shell_*.py` | The tool-call titles a channel renderer shows (`derive_tool_call_title`), the Python mirror of `website/src/utils/toolCallTitle.ts` and `shellCommandParse.ts`, pinned to both by `test/fixtures/tool_call_titles.json`. `tool_call_title.py` keeps the tool-call types, the native and MCP classifiers, the English templates and the derivation, and is the import path for every name; the shell rules live in `tool_call_title_shell_parse.py` (the tokenizer, operands and the read-only grammars) and `tool_call_title_shell_classify.py` (the per-tool tables and classifiers, the whole-script pass), and a new shell rule goes to the one that holds the grammar or tool it touches |
 
 ## Layer 1 — `MessagingTransport` (`transport.py`)
 
@@ -433,6 +437,15 @@ kind-based grant with its own (weaker) trust model, unlike the dashboard's
 trust-reads tier, which classifies the command by program name via
 `is_read_only_bash` and is therefore name-grant verified there.
 
+`kiro_crew.name_grant` keeps the verdicts, the tokenizer, the pin store and the entry
+points, and re-exports every name of its three owners, lowest layer first:
+`name_grant_refusals.py` (the refusal codes, `Refusal` and the decline-log dedupe; a new
+refusal code goes there), `name_grant_tables.py` (the fixed name tables a program is judged
+against; a new table entry goes there) and `name_grant_lookup.py` (how the modelled shell
+looks a name up and which file answers it; new lookup work goes there). It is a plain
+facade, so a patch of `name_grant.<name>` reaches only the facade's own readers, and every
+reader of a name the tests patch stays in it: `test/test_name_grant_facade.py` pins that.
+
 **Teams has a decider AND the shared predicate, and that combination is the
 pattern.** It renders Adaptive Card approvals, so it passes a real `decider`; it
 also passes the same `() -> safety_override().is_active()` the buttonless channels
@@ -726,7 +739,7 @@ Its contract:
 
 Discord owns no fence grammar of its own: `discord/renderer.py::_rotate_on_length` consumes the streaming contract through `split_markdown_safe_with_tier` (seal every chunk but the last, retain the last as the live buffer), its platform-cap fallback goes through `bounded_for_delivery`, and `discord/session_resume.py::_replay_preview` takes the FIRST chunk, split with `_default_redactor`, as a bounded preview of a replayed transcript message, which is sealed and therefore closes any block the shortening opened. Both async call sites await `asyncio.to_thread(...)`: the splitter terminates on pathological delimiter input, but its CPU work must not pause Discord heartbeats or unrelated turns on the event-loop thread. `test/test_messaging_split.py` pins each contract item above and `test/test_discord.py::TestRotationSplitting` pins the integration.
 
-**A caller owes the bounded-overlimit case an answer.** The whole-line placement above can hand back a chunk over `limit` by its fence scaffolding, so a channel whose transport truncates silently must bound it again against the platform's own cap. Discord does: `_limit()` is its declared 1900 minus 100 (1800), 200 characters below the 2000-char hard cap, which absorbs ordinary scaffolding, and `renderer._fit_platform_cap` slices anything still over the cap at the single seal chokepoint. Blind fixed-width slicing is the right last resort there — it keeps every authored character at the price of a boundary Markdown may render badly, where `client.send_message`'s own truncation would drop the tail including the synthetic closer and give the user no signal. Session replay has a different tradeoff because it is only a preview: `_replay_preview` passes at most twice the delivery limit of redacted text to the prefix-stable splitter, uses the full redacted length to retain the truncation marker, and emits that marker alone when one pathological fence cannot fit with its closer. The canonical transcript remains untouched.
+**A caller owes the bounded-overlimit case an answer.** The whole-line placement above can hand back a chunk over `limit` by its fence scaffolding, so a channel whose transport truncates silently must bound it again against the platform's own cap. Discord does: `_limit()` is its declared 1900 minus 100 (1800), 200 characters below the 2000-char hard cap, which absorbs ordinary scaffolding, and `renderer_text._fit_platform_cap` slices anything still over the cap at the single seal chokepoint. Blind fixed-width slicing is the right last resort there — it keeps every authored character at the price of a boundary Markdown may render badly, where `client.send_message`'s own truncation would drop the tail including the synthetic closer and give the user no signal. Session replay has a different tradeoff because it is only a preview: `_replay_preview` passes at most twice the delivery limit of redacted text to the prefix-stable splitter, uses the full redacted length to retain the truncation marker, and emits that marker alone when one pathological fence cannot fit with its closer. The canonical transcript remains untouched.
 
 `iter_fence_spans(text) -> Iterator[tuple[int, int]]` is the same machine viewed over a whole message instead of one chunk's line fragments: it yields the character spans that lie inside a fenced block, opener line through closer line, with an unclosed fence running to the end. Both it and `split_markdown_safe` drive the module's single `_advance` state machine, so the open/close rule — which run length closes which fence character — exists once. A consumer that needs "is this offset inside code?" uses it rather than re-deriving the rule; the fence regexes stay private.
 
@@ -899,7 +912,7 @@ entirely when the
 caller could not read a usage figure: absent means unknown, which is not 0% and
 must not render as a reassuring green.
 
-Discord is the first channel on the shared ladder: `discord/renderer.py` owns
+Discord is the first channel on the shared ladder: `discord/renderer_status.py` owns
 `DISCORD_PHASE_EMOJIS` (unicode rather than shortcodes, one code point each,
 because the reaction route carries the emoji as a percent-encoded path segment),
 `DISCORD_STALL_EMOJIS`, and a
@@ -2139,7 +2152,7 @@ grouping on sender and place ALONE:
   messages would split one person's burst.
 - Discord (`discord/transport_dispatch_origin.py`, `_QueuedOrigin`) records user, channel
   and thread, and excludes nothing -- none of those names an individual message.
-- Webex (`webex/transport_dispatch.py`, `_QueuedPlace`) records room, thread, the
+- Webex (`webex/transport_dispatch_origin.py`, `_QueuedPlace`) records room, thread, the
   sender's email and the room type, and groups on sender email, room and thread root
   (`sender_key`): a GROUP space routes as `space:{room_id}`, so every allow-listed
   member of one space shares one session key and one queue under any `dm_scope`, and
@@ -3076,7 +3089,7 @@ write, so the combined predicate would take memory away from a mode meant to kee
 it, and it would do so silently.
 
 The dashboard's `_is_restricted_session` / `_blocks_reads_session`
-(`dashboard/handlers/_shared.py`) reach this through `is_channel_session_key(sk)`,
+(`dashboard/handlers/_shared_session_memory.py`) reach this through `is_channel_session_key(sk)`,
 not `sk.startswith("slack:")`. The narrow test made that branch structurally
 unreachable for every other channel, so a Telegram session the user marked
 incognito could never enter it and the ~30 dashboard mutations gated on the
@@ -3542,7 +3555,7 @@ runtime enforces owner-only access.
 ## Discord channel
 
 **Transport (`kiro_crew/discord/`).** A concrete `MessagingTransport` over a
-pure-aiohttp Discord Gateway WebSocket client (`client.py`): identify with
+pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify with
 `DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
 also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
 the server interval with jitter,
@@ -3854,6 +3867,59 @@ facade only under `TYPE_CHECKING`, and the facade imports every owner when it lo
 names the owners read, and these placement rules; `test/test_facade_mirror_guards.py`
 holds the facade to the mirror's contract (every name the tests patch through it reaches
 every owner binding it, and no owner imports it at run time).
+
+### Discord's renderer and client composition
+
+`DiscordRenderer` and `DiscordClient` are each one class composed from owners, the same
+way `DiscordDispatcher` is. `discord/renderer.py` and `discord/client.py` stay the only
+import path and patch surface: each binds the names its own code reads and
+`kiro_crew._facade_mirror` serves the rest from the owners and carries a patch of any of
+its names (`_APPROVAL_TIMEOUT_S`, `PhaseReactionLadder`, `time`, `asyncio`,
+`channel_outbound_permitted`, `sel`, ...) to every owner that reads it, so moved code runs
+byte for byte as it did in one module. New work of an owner's kind goes to that owner:
+
+| Owner | Holds |
+|---|---|
+| `renderer_text.py` | the text transforms applied to model output: the `[OPTIONS:]` and steering-marker strips, the delivered form a cut is graded through, the buried-image-reference check, subtext, the steer-chip neutralizer and the platform-cap slicer |
+| `renderer_components.py` | Discord message components: the button styles and layout limits, `build_option_components` and `build_model_components` (the dispatcher's model picker and spawn-approval prompt build from here too) |
+| `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends |
+| `renderer_status.py` | the typing indicator, the phase ladder's emoji vocabulary and `_MessageReactionSink`, the reasoning gate, the tool footer and the turn footer |
+| `renderer_live.py` | chunk intake: steer-marker detection (each complete marker is handed to `on_steer_consumed`), the steer chip, table conversion for delivery, the canonical `[OPTIONS:]` take and the segment text |
+| `client_rest.py` | the REST request ladder (`_api_request`): bucket pre-emption, the GLOBAL hold, the 429 and 5xx back-offs, the invalid-request breaker, the route key, `DiscordApiResult` and the shared session |
+| `client_recheck.py` | the mid-send destination re-check after every ladder wait (`_destination_still_permitted`, `_wait_then_revalidate`), `SendPermission` and `_guarded_destination` |
+| `client_gateway.py` | the Gateway WebSocket: the connection loop, hello, identify or resume, the op-1 heartbeat, and dispatch normalization into `DiscordInbound` and `DiscordInteraction` |
+
+`renderer.py` keeps the renderer's state and construction, the display-form redaction
+pass (`_redact_all`, `_redact_transformed`) and outbound image extraction (the "Discord
+transformed image text" sink names this file), the throttled live frame (`_stream_live`),
+the seam grade (`_seam_safe`), `_seal_current` and the reasoning note
+(`_flush_thinking`), because repository guards read them in that file: the security
+posture's sink row, `test_split_credential_boundary.py`'s delivery walk and its
+rotation-and-tally part, and the agent-sdk boundary baseline (the `LLMProvider`
+annotation of `__init__` and `bind_context_source`). Rotation, the seam record, the
+other sealing paths, the approval prompt and finalization stay beside them because they
+share that state and send through those sinks; the rotation-and-tally part's universal
+pins (one seam-record writer, every standalone send answers the seam question) read the
+facade and its owners as one module. `client.py` keeps the client's state and lifecycle,
+the REST verbs, the bodies they send (the JSON message payload and the multipart upload
+form, whose description redaction is the "Discord attachment description" sink) with
+the `api_json` / `api_files` entry points, the attachment download, the DM pairing cache
+and the thread check.
+
+An owner's function whose first parameter is `self` (annotated with the class under
+`TYPE_CHECKING`) is bound as the class attribute of the same name, so instance and
+class patches, `inspect.getsource` and every `self.<name>(...)` call reach it as they
+reach a method defined in the class body. Such a function's `__qualname__` is its bare
+name and its `__module__` the owner's, as in the dispatcher; `DiscordApprovalDecider`,
+`_MessageReactionSink`, `DiscordApiResult`, `SendPermission`, `DiscordInbound` and
+`DiscordInteraction` moved whole and their `__module__` names their owner. Nothing keys
+behaviour on either. A bound function needs nothing only a class body gives (`super()`,
+`__class__`, a mangled `__name`), and an owner never imports its facade except under
+`TYPE_CHECKING`. Owners log under their facade's logger name (`kiro_crew.discord.renderer`
+or `kiro_crew.discord.client`), which the facade itself binds by that literal name.
+`test/test_renderer_discord_composition_contract.py` and
+`test/test_client_discord_composition_contract.py` pin the owner sets, the bindings,
+the placement rules and the logger names.
 
 ### Resume-binding expectations (`messaging/resume_expectation.py`)
 
@@ -4492,12 +4558,13 @@ after one connect. An empty value is what means "discover", so no caller may
 default it.
 
 **Dispatch + rendering.** Turns ride the shared `drive_turn` / `TurnDriver`
-pipeline. `transport_dispatch.py` intercepts the command surface (`/new`,
-`/compact`, `/help`, `/stop` + `/cancel`, `/link`, `/unlink`, `/yolo`,
+pipeline. `transport_dispatch.py` and the owners it is composed from (see
+[Webex's dispatcher composition](#webexs-dispatcher-composition)) intercept the command
+surface (`/new`, `/compact`, `/help`, `/stop` + `/cancel`, `/link`, `/unlink`, `/yolo`,
 `/kirocrew dashboard`, `/model`, `/agent`, `/sessions`, plus the `/queue` and `/steer`
 per-message overrides),
-queues or steers mid-turn messages, drains the queue after the turn, runs
-`/compact` under atomic `try_acquire`, and posts soft/hard context-threshold
+queue or steer mid-turn messages, drain the queue after the turn, run
+`/compact` under atomic `try_acquire`, and post soft/hard context-threshold
 notices as separate proactive messages. `COMMAND_SPEC` in `commands.py` generates
 the `/help` card, so the card cannot drift from the parser; an unrecognised
 `/token` answers with the card rather than spending a turn having the model
@@ -4561,6 +4628,58 @@ this renderer buffers a whole turn and sends once, so by `on_done` such a tail i
 the assistant's own prose and cutting it is permanent loss — the same trade
 `render_options_as_text` makes for the other non-streaming channels. `on_done` delivers the WHOLE answer before uploads and the card, so
 neither interrupts a chunked reply.
+
+### Webex's dispatcher composition
+
+`WebexDispatcher` is one class composed from owners beside its facade.
+`webex/transport_dispatch.py` keeps the dispatcher's state and live config (`__init__`,
+`_live_cfg`, `_thresholds`, `_sender_allowed`, `_bot_name`), its own send path
+(`_reply_parent`, `_reply`), the inbound front door
+(`handle_message`: governance, admission, the card-press, mention and approval intercepts,
+the command ladder, the busy check, rotation and the hand-off to `drive_turn`), the
+mid-turn steer-or-queue arm (`_handle_busy`), the queue receipt and drain
+(`_receipt_surface`, `_enqueue_with_receipt`, `_drain_queue`, `_pump_queue`), `/stop`
+(`_handle_stop`), `/link` and `/unlink` (`_origin_mirror_link`, `_handle_link`,
+`_handle_unlink`), `/compact` beside the context-length notice whose forced compaction it
+shares (`_compact_provider`, `_handle_compact`, `_maybe_notice`), the transcript write
+(`_persist_turn`) and the conversation-identity helpers (`_resolve_agent`,
+`current_session_key`, `_approval_key`, `_session_key`, `_seed_gen`). Of those, repository
+guards read these in this file by path or by its text: `handle_message`, with its
+admission before the command parse, its `resolve_pre_turn` call and its one `ChannelTurn`
+start priority; `_drain_queue`; `_receipt_surface`, and the `ReceiptQueue` beside
+`_enqueue_with_receipt`; `/stop`'s owner; `/link`'s mirror admission; and the
+context-usage read beside the `drive_turn` hand-off.
+
+Every other responsibility is an owner beside the facade, and new work of that kind goes
+to it:
+
+| Owner | Holds |
+|---|---|
+| `webex/transport_dispatch_origin.py` | `_CHANNEL`, `_ORIGIN_PREFIX`, `_QueuedPlace` and its sender key, the entry owner token, the entry read and the replay envelope (`_entry_owner`, `_queued_place`, `_reply_envelope`), and the route spellings (`_route_of`, `_chat_type_of`, `_SPACE_ROUTE_PREFIX`, `_ROOT_THREAD`) |
+| `webex/transport_dispatch_interactions.py` | the typed approval reply (`_maybe_answer_approval`), Adaptive Card presses (`_handle_card_press`, `_resolve_card_approval`), the `_APPROVALS` registry and the typed answers a prompt accepts |
+| `webex/transport_dispatch_commands.py` | `/model` (`_model_choices`, `_handle_model`, `_apply_model`, `_model_label`), `/sessions` (`_bucket_stem`, `_handle_sessions`), `/yolo` (`_handle_yolo`) and `/kirocrew dashboard` (`_handle_dashboard`, `_ttl_spec`, `_format_ttl`) |
+
+A new command's handler goes to `webex/transport_dispatch_commands.py`; its dispatch stays
+in `handle_message`. An owner's function whose first parameter is `self` is bound as the
+`WebexDispatcher` attribute of the same name (`_model_label` through `staticmethod`), so
+instance and class patches, `inspect.getsource` and every `self.<name>(...)` call reach it
+as they reach a method defined in the class body; the state stays on the dispatcher. Such
+a function's `__module__` names its owner and its `__qualname__` is its bare name, which
+is what a repr shows; `_QueuedPlace`'s `__module__` names its owner. No caller reads any
+of them. `typing.get_type_hints` on one of the ten moved methods raises `NameError`,
+because its `self: WebexDispatcher` annotation names a class its owner imports only under
+`TYPE_CHECKING`; nothing resolves those hints, and the kept `__init__` and `_live_cfg`
+raised the same way at the base. The facade keeps every name it bound, holds the base
+imports its own code does not read in `_BOUND_FOR_IMPORTERS`, and installs
+`_facade_mirror`: a name tests rebind on
+the facade (`sel`, `safety_override`, ...) reaches every owner holding the same object, so
+the moved code reads it unchanged, and the moved names the facade does not read itself are
+served from their owner. Owners log under the
+facade's logger name, import each other in one direction and the facade only under
+`TYPE_CHECKING`, and the facade imports every owner when it loads.
+`test/test_transport_dispatch_webex_composition.py` pins the surface, the patch reach of
+the names the tests rebind there, and these placement rules; `test/test_facade_mirror_guards.py`
+holds the facade to the mirror's contract.
 
 ## Webex settings API
 

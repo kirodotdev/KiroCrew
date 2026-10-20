@@ -100,10 +100,13 @@ def test_the_runtime_closes_the_bracket_after_the_handshake():
     the process, since a session that may have loaded an unverified spec must not
     survive."""
     import inspect
+    import sys
 
     from kiro_crew.acp import runtime
 
-    src = inspect.getsource(runtime.AcpRuntime)
+    # The spawn, its handshake and its failed-start cleanup live in the owner that binds
+    # _spawn_admitted, in the order the class held them.
+    src = inspect.getsource(sys.modules[runtime.AcpRuntime._spawn_admitted.__module__])
     assert "require_unchanged_derived_spec" in src
     before, after = src.split("require_unchanged_derived_spec", 1)
     # The handshake precedes it.
@@ -346,6 +349,7 @@ def test_every_handshake_driving_spawner_closes_the_bracket():
         "client.py",
         "client_start.py",
         "runtime.py",
+        "runtime_spawn_launch.py",
     ], f"the set of handshake-driving spawn paths changed: {spawners}"
     assert sorted(closed) == sorted(spawners), (
         f"spawn path(s) capture the snapshot but never close the bracket: "
@@ -501,9 +505,15 @@ def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
     # transport's own method-name table (a dict literal mapping the constant to a
     # log label) names it too, so the walk counts CALLS that carry the constant as an
     # argument, not every mention.
-    module_tree = ast.parse(inspect.getsource(runtime_mod))
+    import sys
+
+    # runtime.py's owner modules (runtime_*.py) hold code that was its own.
+    module_trees = [
+        ast.parse(inspect.getsource(sys.modules[name]))
+        for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+    ]
     senders = []
-    for node in ast.walk(module_tree):
+    for node in [n for module_tree in module_trees for n in ast.walk(module_tree)]:
         if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
             continue
         for stmt in node.body:

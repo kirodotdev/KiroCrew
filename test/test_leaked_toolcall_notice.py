@@ -568,7 +568,8 @@ class TestTheBoundaryScanRunsBeforeTheReset:
         The turn's code is ``_run_chat`` and every function that takes its turn as
         the first argument: the owner functions cut from its one-module body. A bare
         ``assistant_text = ""`` is allowed in two places only: the
-        initialiser (the first binding in ``_run_chat``) and the statement
+        initialiser (the first binding in the turn's opening, ``_turn_open``, or in
+        ``_run_chat`` itself) and the statement
         directly after a ``_flush_segment(...)`` call, whose
         ``_redact_segment`` consumes and clears the raw copy. Every other
         reset goes through ``_cleared_segment_text``, so the raw copy never
@@ -583,7 +584,10 @@ class TestTheBoundaryScanRunsBeforeTheReset:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             and (n.name == "_run_chat" or (n.args.args and n.args.args[0].arg == "turn"))
         ]
-        opening = next(n for n in units if n.name == "_run_chat")
+        opening = next(
+            (n for n in units if n.name == "_turn_open"),
+            next(n for n in units if n.name == "_run_chat"),
+        )
 
         def is_the_reply_text(target: ast.expr) -> bool:
             # The reply text is a local of `_run_chat`, or the turn object's attribute.

@@ -170,9 +170,9 @@ prompt for the sidebar's `last_turn_ts`, making a session look freshly asked-of
 every time a break was drawn.
 
 A new role is cheap on the wire: `ChatMessage.role` is an open `string`
-(`website/src/types/index.ts`), and the transcript read path has no role
+(`website/src/types/index.chat.ts`), and the transcript read path has no role
 allowlist — `_read_messages_locked` skips only the `_type: "metadata"` header and
-appends every other JSON line verbatim (`history_projection.py`,
+appends every other JSON line verbatim (`history_projection_reads.py`,
 `TranscriptReadProjection`).
 
 One thing to *not* do: leave the new role out of `_QUESTION_RETIRING_ROLES`
@@ -291,8 +291,8 @@ own result string, and the turn loop decodes and applies it in-process.
 - Registry: `DIRECTIVE_TOOLS` (`session_directive.py`) — add `section_marker`.
 - Tool side: return `session_directive.encode(kind, validated_args, human)`
   (`session_directive.py`); see `mcp_tools/control_parts/directive.py` for the pattern.
-- Consumer side: `chat_runner.py` decodes at the tool-result event and
-  calls `apply_session_directive`.
+- Consumer side: `_on_tool_result` (`dashboard/chat_turn/tool_results.py`) decodes at the
+  tool-result event and calls `apply_session_directive`.
 - Applier: a new branch in `dashboard/session_directive_apply.py` alongside
   `_suggest_followup`, dashboard-gated via `_DASHBOARD_ONLY_DIRECTIVES`.
 
@@ -516,7 +516,7 @@ absent.
 `_recall_rows` — an old session resumed by a new gateway, or the
 reverse, sees no prompt change.
 
-**Read path.** No role allowlist (`history_projection.py`,
+**Read path.** No role allowlist (`history_projection_reads.py`,
 `TranscriptReadProjection`), so an older gateway
 reading a transcript containing markers parses them as ordinary rows.
 

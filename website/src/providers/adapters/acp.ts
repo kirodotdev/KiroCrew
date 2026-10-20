@@ -1,6 +1,7 @@
 import { api } from '../../api/client'
+import { apiErrorCode } from '../../api/apiError'
 import modelTokensRaw from '../../model_tokens.json'
-import { markModelsDegraded } from '../modelListHealth'
+import { markModelsDegraded, markModelsAuthRequired } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -469,11 +470,17 @@ export class AcpAdapter implements ProviderAdapter {
       writeCachedModels(result) // remember this good live list for next hiccup
       markModelsDegraded(this.id, false) // live success → self-heal can stop polling
       return result
-    } catch {
+    } catch (err) {
       // Transient backend failure (503 / network): NOT live — keep polling.
       // Serve the last-good live list if we have one, else auto-only. Never
       // surface canonical registry keys — the ACP CLI rejects them (-32603).
+      // Read the refusal code HERE, where the error is formed, so an expired /
+      // signed-out kiro-cli login (503 `kiro_prerequisite_required`) can raise
+      // the one actionable sign-in banner instead of the generic config-load
+      // failure. Any other cause clears the auth flag — only this code means a
+      // sign-in wall.
       markModelsDegraded(this.id, true)
+      markModelsAuthRequired(this.id, apiErrorCode(err) === 'kiro_prerequisite_required')
       return readCachedModels() ?? this._defaultModels()
     }
   }

@@ -67,6 +67,19 @@ validated, then runs the shadow apply itself and
 restarts. The full drain lease (§5) and hash-pinned dependency constraints
 remain open. pipx installs keep the installer re-run.
 
+`platform/wheel_engine.py` is the engine's import path and patch surface, a
+mirror facade (`_facade_mirror`) that keeps the offline trust root and the
+manifest signature check that reads it, `download_verified_wheel`, the shadow
+build and promotion, pruning, the update lease and the apply. Four owners hold
+the rest, and new work of each kind goes to its owner:
+`platform/wheel_engine_contract.py` (the bounds, the manifest grammar, the
+error family and the cancel flag), `platform/wheel_engine_layout.py` (the
+layout, the trees' names and the restart interpreter),
+`platform/wheel_engine_build_child.py` (one child process of the apply) and
+`platform/wheel_engine_transfer.py` (the bounded download of a release's
+bytes, where `_download_to_file` compares the wheel's SHA-256 to the signed
+digest; `download_verified_wheel` in the facade is its one caller).
+
 **Landed in [#16202](https://github.com/kirodotdev/KiroCrew/pull/16202)** (with
 [#15838](https://github.com/kirodotdev/KiroCrew/pull/15838) stopping an in-flight
 installer gracefully): the engine hardening, and the gateway's unattended apply
@@ -212,8 +225,8 @@ All three backend entry points to the git path guard on roughly the same two
 conditions — `KIROCREW_PROJECT_DIR` set, and a `.git` present — and, as of
 `8861f89e`, with the **same** semantics:
 
-- `dashboard/handlers/updates.py` (`_do_update_check`) — `os.path.exists`
-- `dashboard/handlers/updates.py` (`api_update_apply`) — `os.path.exists`
+- `dashboard/handlers/updates_check.py` (`_do_update_check`) — `os.path.exists`
+- `dashboard/handlers/updates_apply.py` (`api_update_apply`) — `os.path.exists`
 - `cli_server.py` (the CLI update command) — `(proj_path / ".git").exists()`
 
 **Correction to the original draft.** This section previously said the third site
@@ -798,7 +811,7 @@ go in the same phase, or Phase 1 ships a switch over a key that governs nothing:
 
 - the raw-config toggle in `KiroCrewCfgTab.tsx`;
 - the AboutPanel toggle (`AboutPanel.tsx`);
-- `POST /api/update/auto` (`api_update_auto` in `dashboard/handlers/updates.py`), which
+- `POST /api/update/auto` (`api_update_auto` in `dashboard/handlers/updates_channel.py`), which
   writes it into `config.json`.
 
 The endpoint stays routed but becomes a no-op returning the contract's `mode`,

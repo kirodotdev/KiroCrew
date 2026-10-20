@@ -65,13 +65,13 @@ _REJECTED_MODEL_SENTINEL = ".rejected-custom-model.invalid"
 
 # ── Runtime constants ──
 
-# Qwen3-Embedding requires last-token pooling (LLAMA_POOLING_TYPE_LAST). Every
-# model, custom encoders included, is loaded with this value passed explicitly,
-# so the runtime never reads a GGUF's own pooling_type key; honouring a declared
-# key is tracked separately. On BERT-family files measured last-token vectors
-# rank paraphrases above unrelated pairs as well as mean-pooled ones do (see the
-# embedding section of docs/system-specs/modules/memory-skills-hooks.md).
+# Qwen3-Embedding requires last-token pooling (LLAMA_POOLING_TYPE_LAST), and it
+# stays the pooling of every model whose id names no other (see
+# model_pooling_type): the bundled model, and a custom model recorded before its
+# file's declared pooling was honoured. The value is always passed explicitly.
 _POOLING_TYPE_LAST = 3
+# llama.cpp's `enum llama_pooling_type` values for the poolings a model can ask for.
+_POOLING_TYPES = {"mean": 1, "cls": 2, "last": _POOLING_TYPE_LAST}
 # Architectures the vendored llama.cpp runs WITHOUT a KV cache (the `res =
 # nullptr` cases of llama_model::create_memory in src/llama-model.cpp, plus the
 # t5encoder encoder-only path). llama_decode() routes them through encode(),
@@ -85,7 +85,7 @@ _POOLING_TYPE_LAST = 3
 # satisfies the check), while an ADDED cache-less architecture is invisible to it
 # and must be re-mirrored by hand (see the bump procedure in _vendor/README.md).
 # Membership decides only the micro-batch shape (see _model_context_policy);
-# pooling is _POOLING_TYPE_LAST for every file.
+# pooling comes from the model's id (see model_pooling_type).
 # Non-causal models that DO keep a KV cache (llama-embed, or any decoder family
 # re-tagged bidirectional) are not named here: they declare
 # `<architecture>.attention.causal = false` and _model_context_policy() reads

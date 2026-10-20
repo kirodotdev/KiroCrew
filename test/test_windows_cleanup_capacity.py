@@ -399,6 +399,9 @@ def test_both_physical_spawn_expressions_obey_admission(kernel, module_name, man
         if module is sys.modules["kiro_crew.acp.client"]:
             # client.py's owner modules hold code that was its own.
             modules += [sys.modules[owner] for owner in module._CLIENT_OWNERS]
+        if module is sys.modules["kiro_crew.acp.runtime"]:
+            # runtime.py's owner modules hold code that was its own.
+            modules += [sys.modules[owner] for owner in module._RUNTIME_OWNERS]
         found = []
         for function in (
             node for source in modules for node in ast.walk(ast.parse(inspect.getsource(source)))

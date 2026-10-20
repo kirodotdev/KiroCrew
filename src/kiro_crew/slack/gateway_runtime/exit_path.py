@@ -496,6 +496,20 @@ async def _shutdown_and_exit(
     # session by this point, so the sweep is not racing a mapping publisher --
     # the same position the sweep already held here before this change.
     await asyncio.to_thread(cleanup_orphaned_sessions)
+    # The skill-usage ledgers debounce their writes to one per 60 s, and their
+    # flush thread is a daemon: a hit accepted inside that window lives only in
+    # memory, and os._exit below kills it. Flush them here, off-loop and
+    # bounded, so a restart or upgrade keeps the ranking signal it just earned.
+    try:
+        from kiro_crew import skill_usage
+
+        if not await asyncio.wait_for(
+            asyncio.to_thread(skill_usage.flush_all_for_shutdown),
+            timeout=skill_usage.SHUTDOWN_FLUSH_SECS,
+        ):
+            logger.warning("the skill-usage ledger did not fully flush before exit")
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        logger.debug("the skill-usage ledger flush failed during shutdown", exc_info=True)
     # The session's log's buffered appends, for EVERY gateway mode. The
     # dashboard registers its own cleanup hook, but a mode that builds no
     # dashboard app -- slack-only is the plain case -- never runs one, and
@@ -535,7 +549,7 @@ async def _shutdown_and_exit(
     # actually needs. Bounded and off-loop so a wedged disk cannot delay
     # the exit (see drain_log_queue_before_hard_exit).
     #
-    # Flush SEL BEFORE the gateway.log tail (the order slack/events.py uses):
+    # Flush SEL BEFORE the gateway.log tail (the order slack/events_slash.py uses):
     # draining gateway.log first stops its listener, and a SEL write failure
     # then logs its "dropped N events" line into a dead queue, so the audit
     # loss would leave no trace.

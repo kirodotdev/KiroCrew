@@ -875,6 +875,10 @@ _GATE_HELPER_MODULES = (
     "kiro_crew.platform.update_governance",
     "kiro_crew.platform.update_layout",
     "kiro_crew.platform.wheel_engine",
+    "kiro_crew.platform.wheel_engine_contract",
+    "kiro_crew.platform.wheel_engine_layout",
+    "kiro_crew.platform.wheel_engine_build_child",
+    "kiro_crew.platform.wheel_engine_transfer",
 )
 
 #: Helpers an apply path calls that the STATIC derivation cannot read, with why.

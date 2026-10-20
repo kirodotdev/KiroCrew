@@ -1336,13 +1336,25 @@ def _lock_is_held(fd: int, path: Path) -> bool:
     caller's no-follow descriptor (see the module docstring), so the inode
     probed is the one classified, and the caller closes it.
 
+    POSIX takes the lock shared, which only an exclusive hold refuses: the
+    gateway holds ``gateway.lock`` exclusive for its whole life, so a held lock
+    still reads as held, while two readers probing an idle home at once (a
+    ``stop`` beside a ``cli_perf`` probe) both get it and neither reads the
+    other as a holder. ``msvcrt`` has no shared lock, so Windows still probes
+    exclusive. There two colliding readers can still see each other: the
+    second reads held and, with no owner surface, falls to the stamp. An
+    unreadable or empty stamp (the first reader's lock hides it) is
+    :class:`LockProbeError` with ``held=True``, which that reader's release
+    ends two syscalls later; a stamp is believed only for a live pid, the
+    same trust a held lock already gives it. Nothing is retried for this.
+
     The probe window itself is the one this process could win a race against a
     gateway acquiring at the same instant; it is microseconds wide and the
     gateway's own refusal names this pid, which is the same exposure the
     ``cli_perf`` probe carries.
     """
     try:
-        if platform_compat.try_acquire_lock(fd, exclusive=True):
+        if platform_compat.try_acquire_lock(fd, exclusive=False):
             platform_compat.release_lock(fd)
             return False
         return True
@@ -1358,15 +1370,16 @@ _WRITE_DENIED_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
 def _open_probe_descriptor(path: Path) -> int:
     """Open the existing lock file for :func:`lock_holder`'s probe, never through a link.
 
-    POSIX opens read-write with ``O_NOFOLLOW``: some filesystems emulate
-    ``flock`` with record locks (Linux NFS without ``local_lock``), and an
-    exclusive record lock needs a descriptor open for writing, so a read-only
-    probe would read every free lock as held. No ``O_NONBLOCK``, as for every
-    read-write open of the lock (a lease break is waited out), and no
-    ``O_CREAT``: the probe never makes the file. A file this user cannot open
-    for writing (``EACCES``, ``EPERM`` or ``EROFS``: a ``0400`` lock left by
-    another account, a read-only filesystem) is probed through a read-only
-    descriptor instead. Windows opens read-only through
+    POSIX opens read-write with ``O_NOFOLLOW``. The lock does not need it: the
+    probe is shared, and where ``flock`` is emulated with record locks (Linux
+    NFS without ``local_lock``) a shared record lock needs only a descriptor
+    open for reading. The open does: a FIFO swapped in after the ``lstat``
+    never blocks a read-write open, so it needs no ``O_NONBLOCK``, which would
+    fail a lease break at once instead of waiting it out. No ``O_CREAT``: the
+    probe never makes the file. A file this user cannot open for writing
+    (``EACCES``, ``EPERM`` or ``EROFS``: a ``0400`` lock left by another
+    account, a read-only filesystem) is probed through a non-blocking
+    read-only descriptor instead, which the shared probe locks as well. Windows opens read-only through
     ``open_file_no_reparse(links_only=True)``, refusing only a reparse point
     that is a link. The caller still classifies the descriptor with ``fstat``.
     """

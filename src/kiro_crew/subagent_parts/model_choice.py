@@ -205,20 +205,20 @@ def _spawn_effective_model(
 def _effort_channel(backend: str | None) -> str | None:
     """How *backend* receives a reasoning-effort level, or ``None`` if it takes none.
 
-    ``"cli_json"`` for the Kiro family (kiro-cli reads the level from its
-    workspace ``cli.json`` at spawn), ``"config_option"`` for a harness that takes
-    it as a live ``set_config_option`` push. Both answers are opt-in MEMBERSHIP in
-    the sets the provider itself gates on, never "not one of the others": a
-    harness in neither set never receives the level. ``None`` (no per-spawn
-    backend) is the gateway default, which the verdict has always described as
-    the Kiro family.
+    ``"cli_json"`` for a harness that reads the level from its workspace
+    ``cli.json`` at spawn (kiro-cli), ``"config_option"`` for a harness that takes
+    it as a live ``set_config_option`` push (KAS among them). Both answers are
+    opt-in MEMBERSHIP in the sets the provider itself gates on, never "not one of
+    the others": a harness in neither set never receives the level. ``None`` (no
+    per-spawn backend) is the gateway default, which the verdict has always
+    described as the Kiro family.
     """
     from kiro_crew.acp_backends import (
+        ACP_BACKENDS_EFFORT_OVERLAY,
         ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
-        ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     )
 
-    if backend is None or backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+    if backend is None or backend in ACP_BACKENDS_EFFORT_OVERLAY:
         return "cli_json"
     if backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
         return "config_option"

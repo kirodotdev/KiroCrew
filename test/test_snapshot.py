@@ -137,6 +137,8 @@ SNAPSHOT_FAMILY = (
     "snapshot_archive.py",
     "snapshot_restore.py",
     "snapshot_merge.py",
+    "snapshot_build.py",
+    "snapshot_merge_driver.py",
 )
 
 

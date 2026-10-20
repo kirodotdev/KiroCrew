@@ -15,6 +15,7 @@ DEPLOY_SKILL = ROOT / "src/kiro_crew/deploy/skills/artifact-deploy/SKILL.md"
 DEPLOY_WEB_SKILL = ROOT / "src/kiro_crew/deploy/skills/deploy-web/SKILL.md"
 DETACH = ROOT / "src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py"
 HANDLERS = ROOT / "src/kiro_crew/deploy/handlers.py"
+HANDLERS_SITES = ROOT / "src/kiro_crew/deploy/handlers_sites.py"
 WIDGETS_SKILL = ROOT / "src/kiro_crew/builtin_skills/widgets/SKILL.md"
 WIDGET_SRCDOC = ROOT / "website/src/lib/widgetSrcdoc.ts"
 
@@ -54,7 +55,7 @@ def test_verify_is_denied_to_agents_and_skill_does_not_tell_them_to_call_it():
 
 
 def test_webapp_slug_refusal_code_matches_both_skills():
-    assert '"webapp_root_unavailable"' in HANDLERS.read_text(encoding="utf-8")
+    assert '"webapp_root_unavailable"' in HANDLERS_SITES.read_text(encoding="utf-8")
     for skill in (DEPLOY_SKILL, DEPLOY_WEB_SKILL):
         text = skill.read_text(encoding="utf-8")
         assert "webapp_root_unavailable" in text, skill

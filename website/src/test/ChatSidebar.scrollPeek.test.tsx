@@ -75,7 +75,7 @@ const SLOTS = Array.from({ length: 12 }, (_, i) => ({
   last_ts: new Date(Date.now() - (i + 1) * 60_000).toISOString(), folder_id: null,
 }))
 
-function renderSidebar() {
+function renderSidebar({ fillsHost = false }: { fillsHost?: boolean } = {}) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots: SLOTS, approvalMode: 'normal',
@@ -96,7 +96,7 @@ function renderSidebar() {
             <ChatSidebar
               slots={SLOTS} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
-              scrollPeek
+              fillsHost={fillsHost}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -112,14 +112,9 @@ beforeEach(() => { localStorage.clear() })
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
 
 describe('chat sidebar scroll peek', () => {
-  it('shows clipped titles in the floating layer while every row keeps the stored width', async () => {
-    const { container } = renderSidebar()
-    await waitFor(() => expect(container.querySelectorAll('[data-session-title]').length).toBeGreaterThan(0))
-    vi.useFakeTimers()
-    const panel = container.querySelector('.sidebar-inner') as HTMLElement
+  function stubLayout(container: HTMLElement) {
     const lane = container.querySelector<HTMLElement>('[data-testid$="-view-lane"]')
     expect(lane).toBeTruthy()
-    const rowWidthsBefore = Array.from(container.querySelectorAll<HTMLElement>('[data-session-row]'), r => r.style.width)
     // Layout the test DOM cannot compute: a lane that scrolls, titles the rows clip.
     Object.defineProperty(lane, 'scrollHeight', { configurable: true, value: 2000 })
     Object.defineProperty(lane, 'clientHeight', { configurable: true, value: 600 })
@@ -129,10 +124,32 @@ describe('chat sidebar scroll peek', () => {
       Object.defineProperty(t, 'scrollWidth', { configurable: true, value: 480 })
       t.getBoundingClientRect = () => rect(20 + i * 48, 40 + i * 48, 20, 220)
     })
+    return lane!
+  }
+
+  it('stays off in a host it fills, which has no chat beside it', async () => {
+    const { container } = renderSidebar({ fillsHost: true })
+    await waitFor(() => expect(container.querySelectorAll('[data-session-title]').length).toBeGreaterThan(0))
+    vi.useFakeTimers()
+    const lane = stubLayout(container)
+    act(() => {
+      lane.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true }))
+      vi.advanceTimersByTime(20)
+    })
+    expect(document.querySelector('[data-testid="scroll-peek-layer"]')).toBeNull()
+  })
+
+  it('shows clipped titles in the floating layer while every row keeps the stored width', async () => {
+    const { container } = renderSidebar()
+    await waitFor(() => expect(container.querySelectorAll('[data-session-title]').length).toBeGreaterThan(0))
+    vi.useFakeTimers()
+    const panel = container.querySelector('.sidebar-inner') as HTMLElement
+    const rowWidthsBefore = Array.from(container.querySelectorAll<HTMLElement>('[data-session-row]'), r => r.style.width)
+    const lane = stubLayout(container)
 
     act(() => {
       panel.dispatchEvent(new Event('pointerenter'))
-      lane!.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true }))
+      lane.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true }))
       vi.advanceTimersByTime(20)
     })
 

@@ -11,6 +11,7 @@ lost under the conversation and failed writes is in
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -28,10 +29,12 @@ from discord_sessions_helpers import (
     _picker_button,
 )
 
+from kiro_crew import history_search
 from kiro_crew.discord import session_resume
 from kiro_crew.discord.client import DISCORD_CHUNK_LIMIT
 from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.history import transcript_stem
+from kiro_crew.messaging import session_resume as resume_core
 from kiro_crew.messaging.link import ChannelLink
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
@@ -99,6 +102,55 @@ async def test_sessions_cjk_query_reaches_title_fallback() -> None:
     # The fake shared search misses (no literal phrase anywhere), so only the
     # title fallback — running the REAL parse + gate — can produce this row.
     assert _picker_labels(client) == ["1. 内存的泄漏问题排查"]
+
+
+class _OutsideTheWindowLog(_ConversationLog):
+    """A shared search that finds nothing, as for a session older than its scan window."""
+
+    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+        self.search_calls.append((query, limit))
+        return []
+
+
+@pytest.mark.asyncio
+async def test_a_one_word_chinese_query_keeps_the_title_fallback() -> None:
+    """With the dictionary, "内存" is ONE required word, so the needles equal the phrase.
+
+    Its characters always made it multi-word, which is what opens the title fallback
+    for a session past the shared search's window; the split must not close it.
+    """
+    history_search.register_cjk_segmenter(lambda runs: [["内存"] for _ in runs])
+    log = _OutsideTheWindowLog(
+        [{"key": "dashboard_chat-0", "title": "内存占用排查", "memory_mode": "persistent"}],
+        {"dashboard:chat-0": []},
+    )
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!session 内存"))
+
+    assert log.search_calls, "the shared search ran first"
+    assert _picker_labels(client) == ["1. 内存占用排查"]
+
+
+@pytest.mark.asyncio
+async def test_the_resume_parse_runs_off_the_event_loop(monkeypatch) -> None:
+    """The parse may load the Chinese dictionary on first use; the loop must not pay for it."""
+    seen: list[bool] = []
+    real = resume_core.parse_search_query
+
+    def parse(query: str):
+        seen.append(threading.current_thread() is threading.main_thread())
+        return real(query)
+
+    monkeypatch.setattr(resume_core, "parse_search_query", parse)
+    log = _OutsideTheWindowLog(
+        [{"key": "dashboard_chat-0", "title": "内存占用排查", "memory_mode": "persistent"}],
+        {"dashboard:chat-0": []},
+    )
+
+    await resume_core.resolve_session_choices(log, "内存", lambda text, _limit: text)
+
+    assert seen == [False]
 
 
 @pytest.mark.asyncio

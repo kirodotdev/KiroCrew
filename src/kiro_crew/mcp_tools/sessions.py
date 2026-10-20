@@ -155,6 +155,26 @@ def schemas() -> list[dict[str, Any]]:
     ]
 
 
+#: Seconds a search waits for the gateway to split its Chinese runs. The first
+#: Chinese query on a host also loads the dictionary there (about 0.15 s).
+_SEGMENT_TIMEOUT_SECS = 2.0
+
+
+def gateway_cjk_words(runs: list[str]) -> list[Any] | None:
+    """The gateway's dictionary split of *runs*, or ``None`` on any failure.
+
+    :func:`kiro_crew.mcp_core.run_mcp_core_server` registers this as the process's
+    segmenter, so a core process never loads the dictionary itself (about 45 MB
+    each). Every answer is validated by the search parse before it becomes a
+    needle, and ``None`` keeps today's character path for the query.
+    """
+    answer = mcp_core._post("/api/search/segment", {"runs": runs}, timeout=_SEGMENT_TIMEOUT_SECS)
+    if not isinstance(answer, dict) or answer.get("ok") is not True:
+        return None
+    words = answer.get("words")
+    return words if isinstance(words, list) else None
+
+
 def search_chat_history(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SEARCH_CHAT_HISTORY_SCHEMA)
     session_key, refusal = mcp_core.require_strict_session_key(

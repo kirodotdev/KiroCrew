@@ -1121,6 +1121,20 @@ describe('chat sidebar — conductor lane', () => {
       expect(mocks.navigate).toHaveBeenCalledWith('/members?member=kirocrew-pipeline-conductor')
     })
 
+    it("shows the crewmate's name as the anchor title, not the stored generated one", () => {
+      // The member's own DM thread is one long conversation with one crewmate; a stored
+      // topic title ('Pipeline Work Focus On Issues') must not name its row.
+      localStorage.setItem('mc-sidebar-lane', 'conductor')
+      const { getByTestId } = renderSidebar(listed, [], null, {}, [], inStore)
+      const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
+      const title = anchor.querySelector('[data-session-title]') as HTMLElement
+      expect(title.textContent).toBe('kirocrew-pipeline-conductor')
+      expect(title.getAttribute('title')).toBe('kirocrew-pipeline-conductor: Pipeline Work Focus On Issues')
+      // A listed worker beside it keeps its own title.
+      const worker = getByTestId('conductor-view-lane').querySelector('[data-session-row="k-fix-1"] [data-session-title]') as HTMLElement
+      expect(worker.textContent).toBe('issue-fix: #1')
+    })
+
     it('withholds the local-only affordances from the anchor, as it does for a peer row', () => {
       // Rename, close, fork, drag: the slot's lifecycle belongs to the Members page. A
       // control that looks live and does nothing (or worse, closes a member's thread

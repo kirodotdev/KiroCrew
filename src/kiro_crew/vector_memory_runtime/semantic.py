@@ -1116,7 +1116,7 @@ def get_semantic_context(
         # query path above.
         rows = store._fetch_all_locked(
             "SELECT key, value_json FROM semantic_memory WHERE is_deleted = 0 "
-            "AND key NOT LIKE 'lesson.%' ORDER BY updated_at DESC LIMIT ?",
+            "AND key NOT LIKE 'lesson.%' ORDER BY updated_at DESC, key LIMIT ?",
             (max_rows,),
         )
     if facts_only:

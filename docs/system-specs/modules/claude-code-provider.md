@@ -611,15 +611,15 @@ is **not implemented here** — see the known gap below.
 A Side Chat or thread-reply session (`side_read_only`) runs under `READ_ONLY`, which
 has no approver behind it, so it cannot inherit the gap below. It is started with
 only the read built-ins (`tools`: Read, Grep, Glob, WebFetch, WebSearch), an empty
-`mcpServers` array and `strictMcpConfig`, inline settings that add `permissions.ask`
-rules for the two web tools, deny the read tools every host sensitive path
+`mcpServers` array and `strictMcpConfig`, inline settings that add a `permissions.ask`
+rule for each of those five tools (so an in-work-dir read asks too), deny the read tools every host sensitive path
 (`security.sandbox_credential_targets()`, as `Read(//<target>)` and
 `Read(//<target>/**)`) and set `disableAllHooks`, and bypass off; it is pinned
 like the exclusion path above, and refused below the same version floor. Its setting
 sources are not narrowed, because the user tier carries the provider routing and
-model ids the session needs: an allow rule or `additionalDirectories` entry there can
-now pre-approve only a read, and never one of a sensitive path, since a deny rule
-outranks an allow rule from any source. A launch that cannot build the deny rules
+model ids the session needs: an allow rule or `additionalDirectories` entry there
+cannot pre-approve a read, since an ask rule outranks an allow rule, and never
+opens a sensitive path, since a deny rule outranks both from any source. A launch that cannot build the deny rules
 does not start the session.
 Detail: [side.md](side.md), "On claude the confinement is the session's own options".
 

@@ -174,7 +174,14 @@ MAX_APP_NAME_CHARS = 120
 # Source hook events that have a same-meaning event on the agent hook surface
 # (``agent.kiro_hooks``). The surface is operator configuration and not an app
 # contribution, so even a mapped event is NOT emitted into the app manifest --
-# it is reported. See mapping doc diffs D1 and D2.
+# it is reported. See the ``hooks`` rows in
+# docs/system-specs/modules/harness-plugin-mapping.md.
+#
+# This is one row short of kiro_hooks._KAS_TRIGGER_TO_EVENT on purpose: that map
+# also sends ``SessionStart`` to ``agentSpawn``. Here ``SessionStart`` is reported
+# as having no counterpart, as the mapping spec lists ``Session*``. Whether plugin
+# import should pair them is an open maintainer question.
+# test_plugin_import pins that the two maps differ by exactly that row.
 AGENT_HOOK_EVENT_EQUIVALENT = {
     "PreToolUse": "preToolUse",
     "PostToolUse": "postToolUse",

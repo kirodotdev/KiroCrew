@@ -56,15 +56,23 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
         # (``ensure_seeded`` and the two it calls), the maintenance pool's debounced write
         # (``_save_checkpoint``), or ``store.remove_unit`` (the two retention doors), none
         # of which hold a handle.
-        ("session_tree_projection.py", "_load_checkpoint"),
-        ("session_tree_projection.py", "_replay_tail"),
-        ("session_tree_projection.py", "_save_checkpoint"),
-        ("session_tree_projection.py", "ensure_seeded"),
         ("session_tree_projection.py", "forget_unit"),
         ("session_tree_projection.py", "reconcile_unit_edge"),
         ("session_tree_projection.py", "retract_unit_parent"),
+        ("session_tree_projection_checkpoint.py", "_load_checkpoint"),
+        ("session_tree_projection_checkpoint.py", "_save_checkpoint"),
+        ("session_tree_projection_seed.py", "_replay_tail"),
+        ("session_tree_projection_seed.py", "ensure_seeded"),
         ("store_removal.py", "remove_unit"),
         ("store_retention.py", "sweep_expired"),
+        # The OTel roots gauge's collect-time read, run on the SDK's own collection
+        # thread -- never the emitter's writer frame. It names no handle, opens none,
+        # and takes none: it reads only the in-memory session-tree projection (a pure
+        # fold over records another writer committed), so no frame of its own holds a
+        # handle and no caller of its own does either. Its ``exc_info`` log pins no
+        # lease, which is why it joins the list with the same standing as the
+        # projection's own in-memory reads above.
+        ("otel_session_tree_roots.py", "read_roots_with_children"),
     }
 )
 

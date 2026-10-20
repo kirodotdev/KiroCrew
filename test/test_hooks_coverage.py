@@ -607,7 +607,7 @@ class TestValidateFilePath:
 
     def test_a_benign_leaf_link_still_resolves_on_windows(self, tmp_path, monkeypatch):
         """The documented contract resolves benign leaf symlinks (CI pins it
-        end-to-end with a real link in test_hooks.py test_allows_benign_symlink);
+        end-to-end with a real link in test_hooks_shell_command.py test_allows_benign_symlink);
         the Windows leaf screen must not blanket-refuse them -- only an
         untrusted-UNC target refuses. Under this simulation no real link
         exists, so the pin is that validation SUCCEEDS (reaches realpath)

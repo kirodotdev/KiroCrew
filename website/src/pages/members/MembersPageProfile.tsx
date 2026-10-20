@@ -24,6 +24,7 @@ import { api, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { useQuery } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
 import CrewGoalsPane, { useMemberGoals } from './CrewGoals'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
@@ -58,7 +59,7 @@ const PROJECT_SEPARATOR = ' \u00b7 '
  *  rounded `overflow-hidden` shell, its scrolling body and the width-revealing
  *  aside until it is already inside them, and the pill's face is painted under
  *  the thread and the closing card, both later siblings of the header (#18236).
- *  So the flight is its own copy, portaled to `document.body` above every
+ *  So the flight is its own copy, portaled to the body-level overlay root above every
  *  surface, while both real faces hold their place unpainted. `from` is the
  *  departing face measured before it went; `to` is read live each frame because
  *  the landing face moves while the card's column reveals or folds. */
@@ -585,7 +586,7 @@ export function MembersPageProfileCard({
             const status = DRIVING_STATUS[kind]
             const label = t(status.label)
             const activityTs = lastActivityEpoch(s)
-            const title = s.title || s.key
+            const title = sessionDisplayTitle(s)
             return (
               <li key={s.key} className="border-t border-border first:border-t-0">
                 <button

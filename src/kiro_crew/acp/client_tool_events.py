@@ -669,9 +669,9 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     (e.g. `"ls <workspace>/notes"`).
 
     We yield an EVENT_TOOL_CALL_UPDATE so the dashboard can patch the
-    existing pill / persisted message in place — see the matching
-    handler in `chat_runner.py`. Returns None when the update only
-    carries output (handled separately by `_extract_tool_call_update`).
+    existing pill / persisted message in place — see the matching handler,
+    `_on_tool_call_update` in `dashboard/chat_turn/tool_rows.py`. Returns None when the
+    update only carries output (handled separately by `_extract_tool_call_update`).
     """
     params = msg.params or {}
     update = params.get("update", {})

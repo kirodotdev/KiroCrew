@@ -967,6 +967,13 @@ class TestReconcilePass:
         assert "ancient" not in channel_slots._RECENT_CLOSES[dashboard_state]
         assert "fresh" in channel_slots._RECENT_CLOSES[dashboard_state]
 
+    def test_the_close_instant_is_the_stamp_the_close_returned(self, dashboard_state: Any) -> None:
+        """What a close save persists as ``closed_at``, readable by value per tab."""
+        assert channel_slots.slot_close_instant(dashboard_state, "slack_1.1") is None
+        stamped = channel_slots.note_slot_closed(dashboard_state, "slack_1.1")
+        assert channel_slots.slot_close_instant(dashboard_state, "slack_1.1") == stamped
+        assert channel_slots.slot_close_instant(dashboard_state, "slack_2.2") is None
+
     def test_surfacing_an_open_session_never_clears_a_flag(self, dashboard_state: Any) -> None:
         """The clear path only runs for sessions that were closed — an ordinary
         first surface must not invoke it at all, not even to spare a flag."""

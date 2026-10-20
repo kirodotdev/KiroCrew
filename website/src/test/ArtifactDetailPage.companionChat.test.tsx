@@ -9,7 +9,7 @@
  *   critical path) + background context injection; resume without create
  * - session activation: the panel embeds ChatPage in single-session chrome with
  *   URL sync off, so it can never navigate the host /artifacts route away
- * - "Ask agent to address" staging via the writePrefill sessionStorage channel
+ * - "Draft a prompt in chat" staging via the writePrefill sessionStorage channel
  *   (bound vs fresh sessions)
  * - "New chat" archive-then-create ordering + optimistic prune
  * - red-X prune (bound slot vanishing resets the panel to its empty state)
@@ -485,7 +485,7 @@ describe('ArtifactDetailPage companion chat', () => {
     expect(screen.getByText(/no active session for this artifact/i)).toBeInTheDocument()
   })
 
-  // ── "Ask agent to address" staging ──────────────────────────────────────────
+  // ── "Draft a prompt in chat" staging ──────────────────────────────────────────
 
   it('stages (never auto-sends) the address message into a bound session', async () => {
     const store = createTestStore()
@@ -500,8 +500,8 @@ describe('ArtifactDetailPage companion chat', () => {
     })
     renderPage(false, store)
     await waitForLoaded()
-    // Comments auto-reveal, exposing the sidebar's "Ask agent" action.
-    const ask = await screen.findByRole('button', { name: /ask agent/i })
+    // Comments auto-reveal, exposing the sidebar's "Draft a prompt in chat" action.
+    const ask = await screen.findByRole('button', { name: /draft a prompt in chat/i })
     fireEvent.click(ask)
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
     const staged = sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? ''

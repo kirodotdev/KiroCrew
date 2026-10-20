@@ -816,6 +816,12 @@ def build_permission_event(
         _harness_builtin_tool = CLAUDE_READ_ONLY_BUILTINS.get(
             harness_tool_name_cache.get(_ck, ""), ""
         )
+        # claude states ``search`` for Grep and Glob (captured live, 0.93.0),
+        # a kind the READ_ONLY gate does not take. The stamped name proves the
+        # call is that search, so the kind is read as ``read`` for those two
+        # alone; every other kind is kept as stated.
+        if _harness_builtin_tool in ("grep", "glob") and tool_kind == "search":
+            tool_kind = "read"
     # goose states its tool on the tool_call frame as an (extension, tool) pair.
     # The pair is read as goose wrote it: the extension from the trusted identity
     # cache and the tool name before any prefix is stripped, so a server named

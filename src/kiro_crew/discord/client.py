@@ -24,36 +24,60 @@ the plain forms answer only "what is the id / did it land".
 No external Discord library dependency — pure aiohttp against the public
 Gateway + REST API. This keeps the module lightweight, OSS-clean, and easy to
 audit (mirrors the Telegram client's design).
+
+``DiscordClient`` is composed from owners: the REST request ladder and its rate-limit
+accounting (``client_rest``), the mid-send destination re-check (``client_recheck``) and
+the Gateway connection and dispatch normalization (``client_gateway``). An owner
+function whose first parameter is ``self`` is bound as the class attribute of the same
+name. This module keeps the client's state and lifecycle, the REST verbs, the bodies
+they send (the JSON message payload and the multipart upload form) with the
+``api_json`` / ``api_files`` entry points, the attachment download, the DM pairing cache
+and the thread check, and stays the only import path and patch surface:
+:mod:`kiro_crew._facade_mirror` carries a patch of one of its names to every owner that
+reads it. Which owner takes new work is recorded in
+``docs/system-specs/modules/messaging.md`` (Discord's renderer and client composition).
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib as _importlib
 import json
 import logging
 import math
 import os
 import random
 import re
+import sys as _sys
 import time
 import urllib.parse
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 import aiohttp
 
+from kiro_crew import _facade_mirror
+from kiro_crew.discord import client_gateway as _client_gateway
+from kiro_crew.discord import client_recheck as _client_recheck
+from kiro_crew.discord import client_rest as _client_rest
+from kiro_crew.discord.client_gateway import DiscordInbound, DiscordInteraction
+from kiro_crew.discord.client_recheck import SendPermission
+from kiro_crew.discord.client_rest import (
+    _INVALID_LIMIT,
+    DiscordApiResult,
+    _classify_edit,
+    _remember,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import channel_outbound_permitted
 from kiro_crew.messaging.outbound_files import OutboundFile, upload_filename
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
-_T = TypeVar("_T")
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("kiro_crew.discord.client")
 
 # Discord message content limit (chars).
 DISCORD_MAX_TEXT = 2000
@@ -64,28 +88,6 @@ DISCORD_CHUNK_LIMIT = 1900
 DISCORD_MAX_FILE_BYTES = 10 * 1024 * 1024
 DISCORD_MAX_FILES_PER_MESSAGE = 10
 DISCORD_MAX_TOTAL_UPLOAD_BYTES = 25 * 1024 * 1024
-
-# Sniffed MIME determines the canonical inline-rendering extension.
-_API_BASE = "https://discord.com/api/v10"
-_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
-
-# Transport-level WS ping interval (seconds). Deliberately a SECOND liveness
-# layer under Discord's op-1 application heartbeat, because the two have
-# different failure domains: op-1 runs in a cancellable user task and proves
-# the Discord session is alive, while the aiohttp ping runs inside the
-# library's read loop and proves the TCP path (host -> NAT -> edge) is alive.
-# Without it, a NAT-evicted half-open connection blocks the dispatch loop
-# forever with no error while outbound REST keeps working. 60s is longer than
-# Discord's ~41s heartbeat so healthy traffic keeps the path warm anyway, and
-# generous enough that a briefly stalled event loop does not flap the
-# connection with false-positive pong timeouts.
-_WS_HEARTBEAT_SECS = 60.0
-
-# A Gateway connection must live at least this long for its close to count as
-# "healthy" and reset the reconnect backoff; a shorter one stays on the backoff
-# curve so a repeating clean close cannot hot-loop. Mirrors WebexClient and
-# WeComClient, which carry the same guard for the same reason.
-_MIN_HEALTHY_CONN_SECS = 5.0
 
 # Every message body Kiro Crew sends is LLM- or tool-derived text, so no send
 # may be allowed to notify anyone. ``parse: []`` is Discord's own suppression:
@@ -163,31 +165,8 @@ _THREAD_INTENTS = _INTENT_GUILD_MESSAGES | _INTENT_MESSAGE_CONTENT
 
 # Discord channel types: announcement thread, public thread, private thread.
 _THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})
-
-# Gateway opcodes.
-_OP_DISPATCH = 0
-_OP_HEARTBEAT = 1
-_OP_IDENTIFY = 2
-_OP_RESUME = 6
-_OP_RECONNECT = 7
-_OP_INVALID_SESSION = 9
-_OP_HELLO = 10
-_OP_HEARTBEAT_ACK = 11
-
-# Interaction types / callback types.
-_INTERACTION_APPLICATION_COMMAND = 2
-_INTERACTION_MESSAGE_COMPONENT = 3
 _CALLBACK_CHANNEL_MESSAGE_WITH_SOURCE = 4
 _CALLBACK_DEFERRED_UPDATE_MESSAGE = 6
-
-#: Interaction types this client normalizes and forwards. Anything else is
-#: dropped at the dispatch boundary rather than handed on as a half-filled
-#: record — an autocomplete or modal submit needs its own response shape within
-#: Discord's 3-second callback deadline, and a handler that received one without
-#: knowing how to answer it would leave the user's client spinning.
-_HANDLED_INTERACTIONS = frozenset(
-    {_INTERACTION_APPLICATION_COMMAND, _INTERACTION_MESSAGE_COMPONENT}
-)
 
 #: Message flag EPHEMERAL (``1 << 6``): the reply is visible only to the user
 #: who invoked the interaction and Discord does not persist it. Every command
@@ -201,79 +180,6 @@ _FLAG_EPHEMERAL = 1 << 6
 #: before it is sent rather than discovered by a 400.
 _APP_COMMAND_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 _APP_COMMAND_DESC_LIMIT = 100
-
-
-# ── REST rate-limit accounting ─────────────────────────────────────────────
-#
-# Discord answers every REST call with the state of the bucket it charged, and
-# punishes an app that ignores it: 10,000 responses of status 401, 403 or 429
-# within 10 minutes gets the IP temporarily blocked, which costs every channel
-# on the host rather than the one route that misbehaved. So the ladder spends
-# the accounting it is handed (wait out a bucket that has nothing left, hold
-# every route while a GLOBAL limit is in force) and stops itself far short of
-# that ceiling instead of discovering it.
-
-#: Bucket state, present on every response. ``Reset-After`` is FRACTIONAL
-#: seconds; ``Bucket`` is the opaque id of the limit the route was charged to,
-#: and several routes share one, so it is what state is keyed by.
-_HDR_BUCKET = "X-RateLimit-Bucket"
-_HDR_REMAINING = "X-RateLimit-Remaining"
-_HDR_RESET_AFTER = "X-RateLimit-Reset-After"
-#: 429 only: ``user`` | ``global`` | ``shared``.
-_HDR_SCOPE = "X-RateLimit-Scope"
-#: Whole seconds, which is why the 429 body's fractional ``retry_after`` wins
-#: when both are present.
-_HDR_RETRY_AFTER = "Retry-After"
-_SCOPE_GLOBAL = "global"
-#: A 429 on a limit Discord shares between apps is not attributed to us and is
-#: excluded from the invalid-request ban count, so it must not trip the breaker.
-_SCOPE_SHARED = "shared"
-
-#: Back-off floor, so a ``retry_after`` of 0 cannot become a hot loop.
-_MIN_HOLD_SECS = 0.5
-#: Ceiling on the back-off served INSIDE a call after a route-scoped 429. A
-#: route's allowance resets in seconds; past this, returning a transient
-#: failure the caller can re-drive beats parking the turn in the transport.
-_MAX_RETRY_AFTER_SECS = 5.0
-#: Ceiling on a wait taken BEFORE issuing a call, which may run longer than the
-#: one above because waiting is strictly cheaper than the 429 it prevents: the
-#: 429 spends ban budget shared with every other route, the wait spends nothing.
-_MAX_PREEMPT_SECS = 10.0
-#: Ceiling on a GLOBAL hold. Highest of the three because the app's whole
-#: 50 requests/second allowance is what ran out: continuing to send through it
-#: is precisely what earns the IP block, so waiting is the cheaper failure.
-_MAX_GLOBAL_HOLD_SECS = 30.0
-#: Back-off used when a 429 names no usable delay.
-_DEFAULT_RETRY_AFTER_SECS = 1.0
-
-#: Retries per failure class, deliberately different. A 429 already told us how
-#: long to wait, so one honoured retry either lands or the route is genuinely
-#: saturated, and every further 429 spends ban budget. A 5xx or a connector
-#: blip spends none and is far likelier to clear, so it gets the same
-#: three-attempt budget as the Slack DM path in ``slack/retry.py``.
-_RATE_LIMIT_RETRIES = 1
-_TRANSIENT_RETRIES = 2
-#: Linear back-off step for the transient class (1s, then 2s), matching that
-#: same path so the two cannot drift for opposite reasons.
-_TRANSIENT_BACKOFF_SECS = 1.0
-
-#: Statuses that spend Discord's invalid-request budget.
-_INVALID_STATUSES = frozenset({401, 403, 429})
-#: Discord's own ceiling, named so the breaker's margin is legible.
-_DISCORD_INVALID_BAN_LIMIT = 10_000
-#: Discord counts invalid responses over 10 minutes, so the breaker uses the
-#: same window and trips at 5% of the ceiling: a runaway loop is stopped with
-#: the budget almost untouched, and no realistic legitimate burst reaches it.
-_INVALID_WINDOW_SECS = 600.0
-_INVALID_LIMIT = 500
-#: How long the breaker refuses to issue anything once tripped. Long enough
-#: that the window drains meaningfully, short enough that a channel recovers
-#: without an operator.
-_BREAKER_COOLOFF_SECS = 120.0
-
-#: Upper bound on tracked routes and buckets. The route space is small but open
-#: (one entry per verb per channel), so the maps are capped least-recently-used.
-_MAX_TRACKED_ROUTES = 256
 
 #: Upper bound on remembered ``DM channel id -> user id`` pairings. One entry per
 #: distinct peer this process has opened a DM with, so an operator-sized roster
@@ -293,366 +199,6 @@ _MAX_EVICTED_DM_CHANNELS = 128
 #: digits, so 20 characters is the real ceiling; the slack absorbs a future
 #: widening without retaining an unbounded string.
 _MAX_SNOWFLAKE_LEN = 32
-
-#: ``DiscordApiResult.detail`` when authorization ended while the ladder was
-#: suspended in one of its own waits. Distinct from every other blocked reason so
-#: a caller, and an operator reading the log, can tell a withdrawn destination
-#: from a tripped breaker.
-_REVOKED_DETAIL = "destination authorization withdrawn mid-send"
-
-#: ``DiscordApiResult.detail`` when nothing available here can ATTRIBUTE the
-#: destination: no current roster places it and no DM pairing names its peer. The
-#: send still stops, because at an egress boundary "cannot tell" reads as no, but
-#: the two grounds are different events and an operator debugging a dropped
-#: notification is owed the one that happened. Saying a destination cannot be
-#: placed is not the claim that someone withdrew it.
-_UNATTRIBUTABLE_DETAIL = "destination unattributable mid-send: no roster entry, no DM pairing"
-
-#: ``DiscordApiResult.detail`` when the re-check ITSELF failed: the installed
-#: predicate raised, so no authority answered about this destination at all. The
-#: send still stops, and that is the whole point of failing closed, but this is a
-#: third event again -- a roster that refused, a destination nothing could place,
-#: and a check that could not run are three different things to go and fix.
-_UNANSWERABLE_DETAIL = "destination unanswerable mid-send: the authorization check failed"
-
-
-@dataclass(frozen=True)
-class SendPermission:
-    """One mid-send answer about one destination, carrying its own ground.
-
-    The transport's rosters are the only thing that knows WHY a destination is
-    refused, and the ladder is the only thing that reports it, so the reason
-    travels with the decision rather than being guessed at the other end. A
-    refusal's ``detail`` reaches the caller as ``DiscordApiResult.detail``.
-
-    ``permitted`` is the whole decision; ``detail`` is empty when permitted. The
-    four named constructors are the only grounds a destination re-check has, and
-    they exist so the refusal wording lives here once instead of in every module
-    that answers.
-    """
-
-    permitted: bool
-    detail: str = ""
-
-    @classmethod
-    def allow(cls) -> SendPermission:
-        """This destination may still be written to."""
-        return cls(True)
-
-    @classmethod
-    def revoked(cls) -> SendPermission:
-        """An authority that CAN place this destination refuses to admit it."""
-        return cls(False, _REVOKED_DETAIL)
-
-    @classmethod
-    def unattributable(cls) -> SendPermission:
-        """Nothing available can place this destination, so it cannot be judged."""
-        return cls(False, _UNATTRIBUTABLE_DETAIL)
-
-    @classmethod
-    def unanswerable(cls) -> SendPermission:
-        """The check itself failed, so no authority answered about this at all."""
-        return cls(False, _UNANSWERABLE_DETAIL)
-
-
-#: Path segments whose FOLLOWING id is one of Discord's "major parameters":
-#: those buckets are per-id, everything else shares one bucket across ids, so
-#: the route key keeps the majors and collapses the rest.
-_MAJOR_PARAM_PARENTS = frozenset({"channels", "guilds", "webhooks"})
-_ID_SEGMENT_RE = re.compile(r"^\d{5,}$")
-#: Parents whose next path segment is a CREDENTIAL, not an id: an interaction
-#: token and a webhook token both authorize the call that carries them. They are
-#: collapsed structurally rather than by the length rule below, because the route
-#: key is what gets logged and a length threshold is the wrong thing to rest a
-#: credential on: a short or changed token would print verbatim into the log ring
-#: and into `kirocrew logs`.
-_TOKEN_SEGMENT_PARENTS = frozenset({"interactions", "webhooks"})
-#: An interaction token rides in the path and is unique per interaction, so a
-#: verbatim route key would grow one entry per button press. No literal segment
-#: in Discord's API is anywhere near this long.
-_MAX_LITERAL_SEGMENT = 24
-
-#: ``DiscordApiResult.outcome``: the request was delivered.
-DISCORD_OK = "ok"
-#: A 4xx other than 429. The same request will fail identically forever (a
-#: missing permission, a deleted message, a malformed payload), so retrying it
-#: only spends ban budget. This is ``slack/retry.py``'s classification rule,
-#: kept identical here so the two channels cannot drift.
-DISCORD_PERMANENT = "permanent"
-#: A 429, a 5xx, a timeout or a connector error whose retry budget is spent.
-#: The same request may well succeed later.
-DISCORD_TRANSIENT = "transient"
-#: Refused locally by the invalid-request breaker, without touching the
-#: network. Transient in nature, but distinct because nothing was sent.
-DISCORD_BLOCKED = "blocked"
-
-#: Classified outcomes of an in-place message edit, for the seam grader.
-EDIT_OK = "ok"
-#: The message is gone (a moderator/automod deletion -> 404). A fresh
-#: POST replacing it lands below the message that was ABOVE the deleted bubble.
-EDIT_GONE = "gone"
-#: A transient edit failure (429/5xx/timeout); the bubble is still on screen, so
-#: a fresh POST lands below THAT frame.
-EDIT_FAILED = "failed"
-
-
-def _rate_limit_headers(resp: Any) -> Mapping[str, str]:
-    """Response headers as a mapping, empty when there are none to read.
-
-    Discord sends the bucket headers on every REST response, but an
-    intercepting proxy's error page need not: a response without them simply
-    carries no accounting information, and must not turn a delivered request
-    into a failed one.
-    """
-    headers = getattr(resp, "headers", None)
-    return headers if isinstance(headers, Mapping) else {}
-
-
-def _coerce_float(raw: Any) -> float | None:
-    """A numeric field as a FINITE float, or None when it is absent or not one.
-
-    Every rate-limit number Discord sends, in a header or a 429 body, reaches a
-    sleep duration through here, so the finiteness check belongs at this one
-    chokepoint rather than at each clamp. ``float("nan")`` and ``float("inf")``
-    both parse, and NaN then survives every guard downstream: ``nan <= 0`` is
-    False so the "no hold needed" branch does not take it, and
-    ``min(max(nan, floor), ceiling)`` is still NaN, so a single malformed or
-    hostile header would become ``asyncio.sleep(nan)`` and wedge the client for
-    the life of the process. Treating a non-finite value as absent falls back to
-    the documented default instead.
-    """
-    if isinstance(raw, bool) or raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
-
-
-def _header_float(headers: Mapping[str, str], name: str) -> float | None:
-    return _coerce_float(headers.get(name))
-
-
-def _header_int(headers: Mapping[str, str], name: str) -> int | None:
-    value = _coerce_float(headers.get(name))
-    return None if value is None else int(value)
-
-
-def _remember(
-    store: dict[str, _T], key: str, value: _T, cap: int = _MAX_TRACKED_ROUTES
-) -> list[str]:
-    """Insert into a bounded most-recently-used map. Returns the keys it dropped.
-
-    Dropping the least recently touched entry costs only the pre-emption it
-    carried: the next call on that route earns a 429 and re-learns its bucket,
-    which is exactly the behaviour with no accounting at all. An unbounded map
-    in a process that runs for weeks is the worse failure.
-
-    ``cap`` lets a caller retaining something other than routes name its own
-    bound, so every store that grows has one. The dropped keys are returned
-    because for some stores the eviction changes what a later refusal MEANS, and
-    a caller that must say so cannot see it otherwise; a caller that does not
-    care ignores the value, as the route store does.
-    """
-    store.pop(key, None)
-    store[key] = value
-    dropped: list[str] = []
-    while len(store) > cap:
-        oldest = next(iter(store))
-        del store[oldest]
-        dropped.append(oldest)
-    return dropped
-
-
-#: URL path separator for a Discord REST route. Fixed by the URL grammar, so
-#: it is deliberately NOT a filesystem path join.
-_ROUTE_SEP = "/"
-
-
-def _route_key(method: str, path: str) -> str:
-    """Collapse a concrete path onto the rate-limit route it belongs to.
-
-    Discord buckets a route per "major parameter" (the channel, guild or
-    webhook id) and shares one bucket across every other id, so
-    ``/channels/A/messages/1`` and ``/channels/A/messages/2`` are one route
-    while channel ``B`` is another.
-
-    ``path`` is a REST route, not a filesystem path, so the separator is fixed by
-    the URL grammar and named here rather than spelled inline: `os.path.join` /
-    `pathlib` would emit a backslash on Windows and silently stop matching any
-    bucket. The portability gate cannot tell the two apart from a line regex.
-    """
-    segments = path.split(_ROUTE_SEP)
-    out: list[str] = []
-    for index, segment in enumerate(segments):
-        parent = segments[index - 1] if index else ""
-        if _ID_SEGMENT_RE.match(segment):
-            out.append(segment if parent in _MAJOR_PARAM_PARENTS else "{id}")
-        elif index >= 2 and segments[index - 2] in _TOKEN_SEGMENT_PARENTS:
-            # `/interactions/{id}/{token}/callback` and
-            # `/webhooks/{id}/{token}` put the credential two segments after the
-            # parent, so the grandparent is what identifies it.
-            out.append("{token}")
-        elif len(segment) > _MAX_LITERAL_SEGMENT:
-            out.append("{token}")
-        else:
-            out.append(segment)
-    return f"{method} {_ROUTE_SEP.join(out)}"
-
-
-def _is_global_limit_exempt(path: str) -> bool:
-    """True for the routes Discord exempts from the app's global allowance.
-
-    Interaction callbacks and their followups are exempt, and they answer a
-    ~3 second deadline: holding one behind a global limit it does not consume
-    would leave the user's client spinning for nothing.
-    """
-    return path.startswith("/interactions/") or path.startswith("/webhooks/")
-
-
-def _guarded_destination(path: str) -> str:
-    """The channel id whose authorization a re-check must re-read, or ``""``.
-
-    A route is guarded when it names a channel as its major parameter, because
-    that channel IS the disclosure boundary: a message, an edit, an upload, a
-    reaction and a thread creation all become visible to whoever can read it.
-    The id is the segment after ``channels``, matched with the same rule the
-    rate-limit route key uses so the two cannot drift.
-
-    Two families answer ``""``, because the PATH names no channel. That is not the
-    same as being unguarded:
-
-    * ``/interactions/`` and ``/webhooks/`` -- a button press's own reply. Its
-      destination rides inside an opaque token, so the path cannot yield one, but
-      the dispatcher holds it and passes it down, and the mid-send re-check then
-      reads BOTH authorities against it: the ``channels`` ceiling first, then the
-      live rosters. Two of those replies pass no destination on purpose -- the ones
-      that announce a refusal, which must not be gated by the authority they are
-      announcing -- and those are the only genuinely unguarded interaction routes;
-    * every route that names no channel at all (the gateway URL, ``/users/@me``
-      and its DM-channel creation) and whose caller supplies none either. Creating
-      a DM channel discloses nothing to anybody; the send INTO it is a
-      ``/channels/`` route and is guarded.
-    """
-    segments = path.split(_ROUTE_SEP)
-    for index, segment in enumerate(segments):
-        if index and segments[index - 1] == "channels" and _ID_SEGMENT_RE.match(segment):
-            return segment
-    return ""
-
-
-@dataclass(frozen=True)
-class DiscordApiResult:
-    """One REST call's outcome.
-
-    A bare ``None`` could only say "something went wrong", which is how a turn
-    whose entire output failed to send gets recorded as a delivered turn. This
-    record says WHICH kind of wrong, so a caller can distinguish a refusal that
-    will repeat forever (``DISCORD_PERMANENT``: report it, do not re-send) from
-    one worth another attempt later (``DISCORD_TRANSIENT`` / ``DISCORD_BLOCKED``).
-
-    ``data`` is the parsed JSON body (``{}`` for a 204 or an undecodable 2xx)
-    and is ``None`` on every failure, so both historical body tests
-    (``if body:`` and ``body is not None``) keep meaning "did it land".
-    """
-
-    outcome: str
-    data: Any = None
-    #: HTTP status, ``0`` when no response was received (timeout, connector
-    #: error, or a request the breaker refused to issue).
-    status: int = 0
-    #: Discord's own JSON error code, ``0`` when the body carried none.
-    code: int = 0
-    #: Short operator-facing reason. Never carries the bot token.
-    detail: str = ""
-
-    def __bool__(self) -> bool:
-        """True only for a delivered request."""
-        return self.outcome == DISCORD_OK
-
-    @property
-    def retryable(self) -> bool:
-        """True when the identical request could succeed on a later attempt."""
-        return self.outcome in (DISCORD_TRANSIENT, DISCORD_BLOCKED)
-
-    @property
-    def message_id(self) -> str:
-        """The created/edited message's snowflake, empty when none was returned."""
-        return str(self.data.get("id", "")) if isinstance(self.data, dict) else ""
-
-
-def _failed(outcome: str, *, status: int = 0, code: int = 0, detail: str = "") -> DiscordApiResult:
-    """A failure result. ``data`` stays None so body checks read as "no send"."""
-    return DiscordApiResult(outcome=outcome, status=status, code=code, detail=detail)
-
-
-def _classify_edit(result: DiscordApiResult) -> str:
-    """``EDIT_OK`` / ``EDIT_GONE`` / ``EDIT_FAILED`` for an in-place edit result.
-
-    GONE is a 404 -- Discord maps a deleted message to a non-retryable permanent
-    result (``retry cannot undelete a message``), so the bubble is off screen and
-    a replacement send lands below the message ABOVE it. Every other failure is
-    treated as still-on-screen (a transient 429/5xx, a local breaker block, a
-    timeout): fail-safe, because grading a fresh send against the still-visible
-    bubble's own frame is the same no-op the successful-edit path already relies
-    on, whereas mistaking a transient failure for GONE would drop a real seam.
-    """
-    if bool(result):
-        return EDIT_OK
-    if result.status == 404:
-        return EDIT_GONE
-    return EDIT_FAILED
-
-
-@dataclass
-class DiscordInbound:
-    """Normalized inbound message from a MESSAGE_CREATE dispatch."""
-
-    channel_id: str
-    user_id: str
-    username: str = ""
-    text: str = ""
-    message_id: str = ""
-    guild_id: str = ""  # empty string == DM channel
-    is_bot: bool = False
-    attachments: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class DiscordInteraction:
-    """Normalized INTERACTION_CREATE dispatch — a button press or a command.
-
-    One record covers both because everything the dispatcher needs first
-    (identity, channel, guild, and the ack it owes Discord within ~3s) is shared;
-    ``kind`` selects which of the two payload halves is populated.
-    """
-
-    interaction_id: str
-    interaction_token: str
-    channel_id: str
-    user_id: str
-    message_id: str
-    custom_id: str = ""
-    label: str = ""  # button text, recovered from the message's components
-    guild_id: str = ""  # empty string == DM channel
-    username: str = ""
-    #: Discord interaction type — ``2`` application command, ``3`` message
-    #: component. Defaults to the component type so the pre-existing button
-    #: call sites (and the tests that construct this directly) keep their
-    #: meaning without naming it.
-    kind: int = _INTERACTION_MESSAGE_COMPONENT
-    #: Application-command name (``kind == 2`` only), without a leading slash.
-    command_name: str = ""
-    #: Top-level command options as ``{name: value}``, values stringified.
-    #: Discord types them, but every command here takes free text or nothing,
-    #: and one shape keeps the parser shared with the ``!`` text commands.
-    options: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def is_command(self) -> bool:
-        """True for an application (slash) command invocation."""
-        return self.kind == _INTERACTION_APPLICATION_COMMAND
 
 
 class DiscordClient:
@@ -772,6 +318,35 @@ class DiscordClient:
         """Launch the background Gateway connection loop."""
         self._closed = False
         self._task = asyncio.create_task(self._gateway_loop())
+
+    # Bound from client_rest: the REST request ladder.
+    _ensure_session = _client_rest._ensure_session
+    _hold_key = _client_rest._hold_key
+    _set_hold = _client_rest._set_hold
+    _note_headers = _client_rest._note_headers
+    _await_capacity = _client_rest._await_capacity
+    _note_rate_limit = _client_rest._note_rate_limit
+    _breaker_allows = _client_rest._breaker_allows
+    _note_invalid = _client_rest._note_invalid
+    _api_request = _client_rest._api_request
+
+    # Bound from client_recheck: the mid-send destination re-check.
+    _destination_still_permitted = _client_recheck._destination_still_permitted
+    _roster_still_permits = _client_recheck._roster_still_permits
+    _audit_mid_send_decision = _client_recheck._audit_mid_send_decision
+    _wait_then_revalidate = _client_recheck._wait_then_revalidate
+
+    # Bound from client_gateway: the Gateway connection.
+    _gateway_loop = _client_gateway._gateway_loop
+    _run_connection = _client_gateway._run_connection
+    _handle_frame = _client_gateway._handle_frame
+    _identify = _client_gateway._identify
+    _start_heartbeat = _client_gateway._start_heartbeat
+    _stop_heartbeat = _client_gateway._stop_heartbeat
+    _heartbeat_loop = _client_gateway._heartbeat_loop
+    _on_dispatch = _client_gateway._on_dispatch
+    _invoke_message = _client_gateway._invoke_message
+    _invoke_interaction = _client_gateway._invoke_interaction
 
     async def close(self) -> None:
         """Gracefully shut down.
@@ -1305,559 +880,6 @@ class DiscordClient:
         )
         return result is not None
 
-    # ── Gateway connection loop ──
-
-    async def _gateway_loop(self) -> None:
-        """Persistent Gateway connection with resume + exponential backoff."""
-        attempt = 0
-        while not self._closed:
-            started = time.monotonic()
-            reason: str | None = None
-            try:
-                await self._run_connection()
-            except asyncio.CancelledError:
-                break
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
-                if self._closed:
-                    break
-                # Log only the exception type — never the token.
-                reason = type(exc).__name__
-            except Exception:
-                if self._closed:
-                    break
-                logger.exception("Discord gateway unexpected error")
-                # Flat, not on the curve: an unexpected exception is a code
-                # fault rather than a network condition, and its retry cadence
-                # is pinned separately.
-                await asyncio.sleep(5.0)
-                continue
-            finally:
-                self._stop_heartbeat()
-            if self._closed:
-                break
-            if reason is None:
-                # A clean close reconnects promptly — that is what an op-7
-                # RECONNECT asks for — but only when the connection actually
-                # lived a while. A connect->immediate-clean-close (a proxy
-                # terminating the upgrade, a server-side condition that
-                # persists) would otherwise spin with ZERO delay: `attempt`
-                # reset on every pass, so the backoff curve was unreachable
-                # from this path and nothing bounded the rate. Discord bans an
-                # identity for 10 minutes after 10,000 invalid requests, so an
-                # unbounded loop costs the channel, not just CPU.
-                if time.monotonic() - started >= _MIN_HEALTHY_CONN_SECS:
-                    attempt = 0
-                    continue
-                reason = "gateway closed the connection immediately"
-            attempt += 1
-            delay = min(1.0 * (2 ** (attempt - 1)), 60.0) + random.random()
-            logger.warning("Discord gateway disconnected (%s), reconnect in %.1fs", reason, delay)
-            await asyncio.sleep(delay)
-
-    async def _run_connection(self) -> None:
-        """One Gateway connection: hello -> identify/resume -> dispatch loop."""
-        session = await self._ensure_session()
-        url = self._resume_url if (self._session_id and self._resume_url) else _GATEWAY_URL
-        ws: Any = None
-        try:
-            async with session.ws_connect(
-                url, proxy=self._proxy, heartbeat=_WS_HEARTBEAT_SECS, max_msg_size=0
-            ) as ws:
-                self._ws = ws
-                try:
-                    async for raw in ws:
-                        if raw.type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_frame(ws, json.loads(raw.data))
-                        elif raw.type in (
-                            aiohttp.WSMsgType.CLOSED,
-                            aiohttp.WSMsgType.CLOSE,
-                            aiohttp.WSMsgType.ERROR,
-                        ):
-                            break
-                finally:
-                    self._ws = None
-            # Clean close only: classify the close code (4004 etc. surfaces
-            # via ws.close_code). An exception path skips this block and gets
-            # its log line from the gateway loop's reconnect handler instead.
-            code = ws.close_code or 0
-            if code in (4004, 4010, 4011, 4012, 4013, 4014):
-                # Non-recoverable (bad token / bad intents). Stop rather than
-                # hammering the gateway forever; the failure is already logged.
-                logger.error(
-                    "Discord gateway closed with non-recoverable code %s — "
-                    "check the bot token and intents. Channel stopped.",
-                    code,
-                )
-                self._closed = True
-                self.fatal_error = f"gateway close {code} (check bot token/intents)"
-                self._notify_state(False, self.fatal_error)
-            elif code in (4007, 4009):
-                # Invalid seq / session timed out — must re-identify from scratch.
-                self._session_id = ""
-                self._seq = None
-            if not self._closed:
-                # Every connection end is WARNING-visible: the default log
-                # level hides INFO, and an unlogged silent reconnect loop is
-                # indistinguishable from a dead channel when diagnosing
-                # "Discord stopped responding".
-                logger.warning(
-                    "Discord gateway connection ended (close code %s) — reconnecting",
-                    code or "none",
-                )
-        finally:
-            # Runs on clean closes AND exception escapes (a send raising
-            # mid-dispatch would otherwise skip this): the READY flag and the
-            # dashboard badge must never keep asserting a connection that no
-            # longer exists. The 4004 branch sets _closed before its own
-            # fatal notify, so this cannot overwrite that reason; deliberate
-            # close() also sets _closed and is skipped the same way.
-            self.ready.clear()
-            if not self._closed:
-                close_code = ws.close_code if ws is not None else None
-                self._notify_state(False, f"reconnecting (close {close_code or 'none'})")
-
-    async def _handle_frame(self, ws: Any, frame: dict) -> None:
-        op = frame.get("op")
-        if frame.get("s") is not None:
-            self._seq = frame["s"]
-        if op == _OP_HELLO:
-            interval = float(frame["d"]["heartbeat_interval"]) / 1000.0
-            self._start_heartbeat(ws, interval)
-            if self._session_id and self._resume_url:
-                await ws.send_json(
-                    {
-                        "op": _OP_RESUME,
-                        "d": {
-                            "token": self._token,
-                            "session_id": self._session_id,
-                            "seq": self._seq or 0,
-                        },
-                    }
-                )
-            else:
-                await self._identify(ws)
-        elif op == _OP_HEARTBEAT:
-            await ws.send_json({"op": _OP_HEARTBEAT, "d": self._seq})
-        elif op == _OP_HEARTBEAT_ACK:
-            self._hb_acked = True
-        elif op == _OP_RECONNECT:
-            await ws.close()
-        elif op == _OP_INVALID_SESSION:
-            if not frame.get("d"):
-                self._session_id = ""
-                self._seq = None
-            await asyncio.sleep(1.0 + random.random() * 4.0)  # per docs
-            await ws.close()
-        elif op == _OP_DISPATCH:
-            self._on_dispatch(frame.get("t") or "", frame.get("d") or {})
-
-    async def _identify(self, ws: Any) -> None:
-        await ws.send_json(
-            {
-                "op": _OP_IDENTIFY,
-                "d": {
-                    "token": self._token,
-                    "intents": self._intents,
-                    "properties": {
-                        "os": "linux",
-                        "browser": "kirocrew",
-                        "device": "kirocrew",
-                    },
-                },
-            }
-        )
-
-    def _start_heartbeat(self, ws: Any, interval: float) -> None:
-        self._stop_heartbeat()
-        self._hb_acked = True
-        self._hb_task = asyncio.create_task(self._heartbeat_loop(ws, interval))
-
-    def _stop_heartbeat(self) -> None:
-        task, self._hb_task = self._hb_task, None
-        if task is not None and not task.done():
-            task.cancel()
-
-    async def _heartbeat_loop(self, ws: Any, interval: float) -> None:
-        """Heartbeat at the server's interval; a missed ack forces a reconnect
-        (close -> the gateway loop resumes the session)."""
-        try:
-            await asyncio.sleep(interval * random.random())  # jitter per docs
-            while not self._closed and not ws.closed:
-                if not self._hb_acked:
-                    logger.warning("Discord gateway heartbeat not acked — reconnecting")
-                    await ws.close()
-                    return
-                self._hb_acked = False
-                await ws.send_json({"op": _OP_HEARTBEAT, "d": self._seq})
-                await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            # This task is the only sender of Discord's mandatory op-1
-            # heartbeat: if it dies and the connection stays up, the server
-            # eventually drops the session and — behind NAT, where the close
-            # frame can be lost — the dispatch loop blocks on a half-open
-            # socket with heartbeats gone. Close the socket so the gateway
-            # loop reconnects instead of carrying a heartbeat-less connection.
-            logger.warning("Discord heartbeat loop failed — recycling connection", exc_info=True)
-            try:
-                await ws.close()
-            except Exception:
-                logger.debug("Discord heartbeat close failed", exc_info=True)
-
-    # ── Dispatch normalization ──
-
-    def _on_dispatch(self, event: str, d: dict) -> None:
-        if event == "READY":
-            self._session_id = d.get("session_id", "")
-            self._resume_url = d.get("resume_gateway_url", "")
-            if self._resume_url and "?" not in self._resume_url:
-                self._resume_url += "/?v=10&encoding=json"
-            self.bot_user_id = str((d.get("user") or {}).get("id", ""))
-            # READY carries the application object, so the id needed to register
-            # application commands arrives without a second REST call — and it
-            # is kept as a STRING because a snowflake exceeds 2^53 and would
-            # lose precision as a float on any round-trip through JSON.
-            self.application_id = str((d.get("application") or {}).get("id", "") or "")
-            logger.info("Discord gateway READY (bot user %s)", self.bot_user_id)
-            self.ready.set()
-            self._notify_state(True, "")
-            return
-        if event == "RESUMED":
-            logger.info("Discord gateway session resumed")
-            self.ready.set()
-            self._notify_state(True, "")
-            return
-        if event == "MESSAGE_CREATE":
-            author = d.get("author") or {}
-            inbound = DiscordInbound(
-                channel_id=str(d.get("channel_id", "")),
-                user_id=str(author.get("id", "")),
-                username=author.get("username", ""),
-                text=d.get("content", ""),
-                message_id=str(d.get("id", "")),
-                guild_id=str(d.get("guild_id", "") or ""),
-                is_bot=bool(author.get("bot", False)),
-                attachments=[
-                    attachment
-                    for attachment in (d.get("attachments") or [])
-                    if isinstance(attachment, dict)
-                ],
-            )
-            if inbound.is_bot or inbound.user_id == self.bot_user_id:
-                return  # never respond to bots (incl. ourselves) — loop guard
-            task = asyncio.create_task(self._invoke_message(inbound))
-            self._handler_tasks.add(task)
-            task.add_done_callback(self._handler_tasks.discard)
-            return
-        if event == "INTERACTION_CREATE":
-            kind = d.get("type")
-            if kind not in _HANDLED_INTERACTIONS:
-                return
-            data = d.get("data") or {}
-            msg = d.get("message") or {}
-            user = d.get("user") or (d.get("member") or {}).get("user") or {}
-            custom_id = data.get("custom_id", "")
-            interaction = DiscordInteraction(
-                interaction_id=str(d.get("id", "")),
-                interaction_token=d.get("token", ""),
-                channel_id=str(d.get("channel_id", "")),
-                user_id=str(user.get("id", "")),
-                message_id=str(msg.get("id", "")),
-                custom_id=custom_id,
-                label=_find_button_label(msg.get("components") or [], custom_id),
-                guild_id=str(d.get("guild_id", "") or ""),
-                username=user.get("username", ""),
-                kind=int(kind),
-                command_name=str(data.get("name", "") or "").lower(),
-                options=_command_options(data.get("options")),
-            )
-            task = asyncio.create_task(self._invoke_interaction(interaction))
-            self._handler_tasks.add(task)
-            task.add_done_callback(self._handler_tasks.discard)
-
-    async def _invoke_message(self, inbound: DiscordInbound) -> None:
-        if self._on_message is None:
-            return
-        try:
-            await self._on_message(inbound)
-        except Exception:
-            logger.exception("Discord on_message handler raised for user=%s", inbound.user_id)
-
-    async def _invoke_interaction(self, interaction: DiscordInteraction) -> None:
-        if self._on_interaction:
-            try:
-                await self._on_interaction(interaction)
-            except Exception:
-                logger.exception("Discord on_interaction handler raised")
-
-    # ── HTTP transport ──
-
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Return the shared ClientSession, creating it once on demand
-        (double-checked under a lock — REST calls run concurrently with the
-        gateway loop)."""
-        if self._session is None or self._session.closed:
-            async with self._session_lock:
-                if self._session is None or self._session.closed:
-                    self._session = aiohttp.ClientSession()
-        return self._session
-
-    # -- Rate-limit accounting ---------------------------------------------
-
-    def _hold_key(self, route: str) -> str:
-        """State key for ``route``: Discord's bucket id once a response has
-        named one, so routes SHARING a bucket pre-empt each other, and the
-        route itself until then."""
-        return self._route_buckets.get(route) or route
-
-    def _set_hold(self, key: str, delay: float) -> None:
-        """Hold ``key`` for at least ``delay`` seconds, never shortening an
-        existing hold: two responses can disagree, and the later deadline is
-        the one that keeps us out of a 429."""
-        deadline = time.monotonic() + delay
-        _remember(self._holds, key, max(self._holds.get(key, 0.0), deadline))
-
-    def _note_headers(self, route: str, headers: Mapping[str, str]) -> None:
-        """Learn the route's bucket, and pre-empt when the bucket is spent.
-
-        A response saying ``Remaining: 0`` is Discord telling us the next call
-        on this bucket will be a 429. Recording the reset here is what turns
-        that into a wait instead of a refusal.
-        """
-        bucket = str(headers.get(_HDR_BUCKET, "") or "")
-        if bucket:
-            _remember(self._route_buckets, route, bucket)
-        remaining = _header_int(headers, _HDR_REMAINING)
-        reset_after = _header_float(headers, _HDR_RESET_AFTER)
-        if remaining is None or remaining > 0 or reset_after is None or reset_after <= 0:
-            return
-        self._set_hold(bucket or route, min(reset_after, _MAX_PREEMPT_SECS))
-
-    async def _await_capacity(self, route: str, *, exempt: bool) -> float:
-        """Wait out a known-spent bucket, and any global hold, before sending.
-
-        Returns the seconds actually slept, ``0.0`` when nothing was due, so the
-        caller can tell a suspended attempt from an immediate one and re-read
-        authorization only for the former.
-
-        ``exempt`` routes skip the GLOBAL hold only: Discord does not charge
-        interaction callbacks to the app's 50 requests/second allowance, so
-        holding them there would blow their ~3 second deadline for a limit they
-        never consumed. Their own bucket still applies.
-        """
-        deadlines = [self._holds.get(self._hold_key(route), 0.0)]
-        if not exempt:
-            deadlines.append(self._global_ready_at)
-        wait = max(deadlines) - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-            return wait
-        return 0.0
-
-    async def _destination_still_permitted(
-        self, path: str, destination_hint: str = ""
-    ) -> SendPermission:
-        """May this route still reach its destination RIGHT NOW? Fails closed.
-
-        Asked again after each of the ladder's own waits, because a wait is time
-        during which an operator can withdraw the destination: the allow-list edit
-        and the ``channels`` governance flip both take effect on the next read, and
-        without this the next read is after the message has already landed.
-
-        Two authorities, both consulted, neither sufficient alone:
-
-        * the operator's ``channels`` ceiling for Discord, which the messaging seam
-          owns for every channel, read through the OUTBOUND entry point so the row
-          it leaves names the direction it decided. Global to the channel, so it is
-          answerable from the client alone and is read even with no predicate wired;
-        * the transport's live rosters via :attr:`still_permitted`, which is where
-          the per-destination decision lives. The client holds no roster of its
-          own on purpose -- duplicating one here is how outbound and inbound drift
-          apart.
-
-        The route is classified FIRST, but only to settle WHICH id names the
-        destination: a route naming a channel in its path uses that, a route naming
-        none uses the ``destination_hint`` its caller supplied, and a route naming
-        neither reads nothing. Both authorities then apply to whichever id was
-        settled on, in that order, with the ROSTER LAST -- the governance read is an
-        await, so a roster reading taken before it describes a destination that may
-        already have been withdrawn.
-
-        Neither authority is read on the happy path either: this runs solely after a
-        wait was served, so a send that never waits pays nothing for it.
-
-        Every outcome is audited, allow as well as refusal. This is a network egress
-        decision taken on an already-composed, user-visible message, and the ladder's
-        own result carries it no further than the caller, so the SEL row is the record
-        it leaves. Only a route that actually waited reaches here, so the rows are
-        paced by rate limits and back-offs rather than by traffic.
-        """
-        # The path names the destination when it can; otherwise the caller does.
-        # An interaction or webhook reply carries its destination inside an opaque
-        # token, so its path cannot yield one while the dispatcher holds it.
-        destination = _guarded_destination(path) or destination_hint
-        if not destination:
-            return SendPermission.allow()
-        if not await channel_outbound_permitted("discord"):
-            self._audit_mid_send_decision(destination, "channels_ceiling", "denied")
-            return SendPermission.revoked()
-        if self.still_permitted is None:
-            # The ceiling is the whole decision when no roster is installed, so it
-            # is the allow that gets recorded.
-            self._audit_mid_send_decision(destination, "channels_ceiling", "allowed")
-            return SendPermission.allow()
-        # The governance read above is itself an await, so any roster reading taken
-        # before it describes a destination that could have been withdrawn since.
-        # This read is the LAST thing that happens before the caller writes, which
-        # is the whole contract of this predicate: a cheaper ordering that answers
-        # from a reading taken before a suspension reintroduces the defect one
-        # layer up.
-        return self._roster_still_permits(destination)
-
-    def _roster_still_permits(self, destination: str) -> SendPermission:
-        """Ask the transport's live rosters about one destination. Fails closed.
-
-        Synchronous and in-memory by contract, so it is the half of the re-check a
-        deadline-bound route can afford. A predicate that cannot answer is read as
-        a refusal: this is a network egress boundary.
-
-        The predicate's own answer carries the refusal's ground, because the rosters
-        are the only thing that can tell a destination an operator withdrew from one
-        that nothing there can place.
-        """
-        if self.still_permitted is None:
-            return SendPermission.allow()
-        try:
-            permission = self.still_permitted(destination)
-            if permission.permitted:
-                self._audit_mid_send_decision(destination, "roster", "allowed")
-                return permission
-            # A destination whose pairing THIS process dropped to honour the cap is
-            # refused for want of a peer, which is not the same event as an operator
-            # withdrawing it. Reading them as one sends whoever is debugging it after
-            # a policy change that never happened.
-            authority = (
-                "pairing_truncated" if destination in self._evicted_dm_channels else "roster"
-            )
-            self._audit_mid_send_decision(destination, authority, "denied")
-            return permission
-        except Exception:
-            logger.warning(
-                "Discord REST: the destination predicate raised while re-checking a "
-                "route after a wait; refusing the send, and reporting that the check "
-                "itself could not answer",
-                exc_info=True,
-            )
-            self._audit_mid_send_decision(destination, "predicate_raised", "denied")
-            return SendPermission.unanswerable()
-
-    def _audit_mid_send_decision(self, destination: str, authority: str, outcome: str) -> None:
-        """Record one mid-send egress decision, naming which authority decided.
-
-        Best-effort on purpose: the decision itself already stands, and letting an
-        unwritable audit store raise here would turn every throttled send on a
-        governed install into an exception instead of a clean answer.
-        """
-        try:
-            sel().log_api_access(
-                caller=destination,
-                operation=f"discord_client.mid_send_revocation.{authority}",
-                outcome=outcome,
-                source="discord",
-            )
-        except Exception:
-            logger.warning(
-                "Discord REST: could not record the mid-send decision audit event",
-                exc_info=True,
-            )
-
-    async def _wait_then_revalidate(
-        self, path: str, delay: float, destination_hint: str = ""
-    ) -> SendPermission:
-        """Serve one of the ladder's back-offs, then re-ask authorization.
-
-        The two belong together: a back-off served without the re-check after it
-        is exactly the window this guards, so pairing them in one helper keeps a
-        new wait site from being added with only half of the pair.
-        """
-        await asyncio.sleep(delay)
-        return await self._destination_still_permitted(path, destination_hint)
-
-    def _note_rate_limit(self, route: str, data: Any, headers: Mapping[str, str]) -> float:
-        """Record a 429 and return the back-off this attempt must serve.
-
-        The body's ``retry_after`` is fractional seconds while the
-        ``Retry-After`` header is rounded to whole seconds, so the body wins
-        when both are present. A GLOBAL 429 is the app's entire allowance, not
-        this route's, so it holds EVERY non-exempt route: letting the other
-        routes keep firing is how one rate limit becomes an IP block.
-        """
-        body = data if isinstance(data, dict) else {}
-        retry_after = _coerce_float(body.get("retry_after"))
-        if retry_after is None:
-            retry_after = _header_float(headers, _HDR_RETRY_AFTER)
-        if retry_after is None:
-            retry_after = _DEFAULT_RETRY_AFTER_SECS
-        if bool(body.get("global")) or headers.get(_HDR_SCOPE, "") == _SCOPE_GLOBAL:
-            hold = min(max(retry_after, _MIN_HOLD_SECS), _MAX_GLOBAL_HOLD_SECS)
-            self._global_ready_at = max(self._global_ready_at, time.monotonic() + hold)
-            logger.warning("Discord REST: GLOBAL rate limit, holding every route for %.2fs", hold)
-            return hold
-        delay = min(max(retry_after, _MIN_HOLD_SECS), _MAX_RETRY_AFTER_SECS)
-        self._set_hold(self._hold_key(route), delay)
-        return delay
-
-    def _breaker_allows(self) -> bool:
-        """False while the invalid-request breaker is OPEN.
-
-        Closes lazily when the cool-off has elapsed, clearing the window so the
-        next runaway sequence starts from a clean slate.
-        """
-        if not self._breaker_until:
-            return True
-        if time.monotonic() < self._breaker_until:
-            return False
-        self._breaker_until = 0.0
-        self._invalid_hits.clear()
-        logger.info("Discord REST: invalid-request breaker closed, resuming requests")
-        return True
-
-    def _note_invalid(self, status: int, headers: Mapping[str, str]) -> None:
-        """Count a response that spent Discord's invalid-request budget, and
-        trip the breaker before that budget can run out.
-
-        The breaker fails toward NOT sending on purpose: a turn that goes
-        undelivered costs one conversation, while the IP block it is avoiding
-        costs every channel on the host for ten minutes.
-        """
-        if status not in _INVALID_STATUSES:
-            return
-        if status == 429 and headers.get(_HDR_SCOPE, "") == _SCOPE_SHARED:
-            # A shared-scope 429 is another app's traffic on a limit we merely
-            # share, and Discord excludes it from the ban count. Counting it
-            # would stop this channel sending over something it did not cause.
-            return
-        now = time.monotonic()
-        cutoff = now - _INVALID_WINDOW_SECS
-        while self._invalid_hits and self._invalid_hits[0] < cutoff:
-            self._invalid_hits.popleft()
-        self._invalid_hits.append(now)
-        if self._breaker_until or len(self._invalid_hits) < _INVALID_LIMIT:
-            return
-        self._breaker_until = now + _BREAKER_COOLOFF_SECS
-        logger.warning(
-            "Discord REST: %d invalid responses (401/403/429) within %.0fs: pausing all "
-            "outbound requests for %.0fs to stay clear of Discord's %d-per-10min IP block. "
-            "Check the bot token, its channel permissions, and any send loop.",
-            len(self._invalid_hits),
-            _INVALID_WINDOW_SECS,
-            _BREAKER_COOLOFF_SECS,
-            _DISCORD_INVALID_BAN_LIMIT,
-        )
-
-    # -- Request ladder -----------------------------------------------------
-
     async def api_json(
         self,
         method: str,
@@ -1934,151 +956,6 @@ class DiscordClient:
             await self.api_files(method, path, payload, files, timeout=timeout, filenames=filenames)
         ).data
 
-    async def _api_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        timeout: int,
-        build: Callable[[], dict[str, Any]],
-        destination: str = "",
-    ) -> DiscordApiResult:
-        """Shared REST ladder. ``build`` supplies the per-ATTEMPT body kwargs.
-
-        One pass: wait for capacity, send, account for what came back, then
-        either answer or retry within the failure class's own budget. Every
-        wait is an ``await`` so the event loop keeps running the turn's other
-        work while a bucket refills.
-
-        Every one of those waits is also a window in which the destination can be
-        withdrawn, so each is paired with a re-read of authorization before the
-        attempt that follows it (:meth:`_destination_still_permitted`). An attempt
-        that waits nothing is unaffected: the caller's own pre-send check is still
-        the most recent reading when no time has passed.
-        """
-        session = await self._ensure_session()
-        url = _API_BASE + path
-        auth = {"Authorization": f"Bot {self._token}"}
-        route = _route_key(method, path)
-        exempt = _is_global_limit_exempt(path)
-        rate_limited = 0
-        transient = 0
-        # The attempt that follows a 429 has already served that back-off, so it
-        # sends immediately; re-checking the hold it just waited out would
-        # charge it twice.
-        served_backoff = False
-        while True:
-            if not self._breaker_allows():
-                return _failed(DISCORD_BLOCKED, detail="invalid-request breaker open")
-            if not served_backoff:
-                if await self._await_capacity(route, exempt=exempt) > 0:
-                    permission = await self._destination_still_permitted(path, destination)
-                    if not permission.permitted:
-                        return _failed(DISCORD_BLOCKED, detail=permission.detail)
-            served_backoff = False
-            try:
-                async with session.request(
-                    method,
-                    url,
-                    headers=auth,
-                    proxy=self._proxy,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                    **build(),
-                ) as resp:
-                    headers = _rate_limit_headers(resp)
-                    self._note_headers(route, headers)
-                    if resp.status == 204:
-                        return DiscordApiResult(DISCORD_OK, data={}, status=204)
-                    # A proxy or Discord error page can return non-JSON; a
-                    # decode failure must degrade to an error result, never
-                    # propagate into the renderer/dispatcher.
-                    try:
-                        data = await resp.json(content_type=None)
-                    except Exception:
-                        data = None
-                    if 200 <= resp.status < 300:
-                        # Malformed 2xx body: succeed with an empty result so
-                        # callers treat the operation as done (it was).
-                        return DiscordApiResult(
-                            DISCORD_OK,
-                            data=data if data is not None else {},
-                            status=resp.status,
-                        )
-                    self._note_invalid(resp.status, headers)
-                    body = data if isinstance(data, dict) else {}
-                    if resp.status == 429:
-                        delay = self._note_rate_limit(route, data, headers)
-                        rate_limited += 1
-                        if rate_limited > _RATE_LIMIT_RETRIES:
-                            logger.warning(
-                                "Discord API %s rate limited again (retry_after %.2fs), "
-                                "giving up; the route is held for the next caller",
-                                route,
-                                delay,
-                            )
-                            return _failed(DISCORD_TRANSIENT, status=429, detail="rate limited")
-                        permission = await self._wait_then_revalidate(path, delay, destination)
-                        if not permission.permitted:
-                            return _failed(DISCORD_BLOCKED, detail=permission.detail)
-                        served_backoff = True
-                        continue
-                    if resp.status >= 500:
-                        transient += 1
-                        if transient > _TRANSIENT_RETRIES:
-                            logger.warning(
-                                "Discord API %s failed: status=%s (retries exhausted)",
-                                route,
-                                resp.status,
-                            )
-                            return _failed(
-                                DISCORD_TRANSIENT,
-                                status=resp.status,
-                                detail="server error",
-                            )
-                        backoff = _TRANSIENT_BACKOFF_SECS * transient
-                        logger.warning(
-                            "Discord API %s failed: status=%s, retrying in %.1fs",
-                            route,
-                            resp.status,
-                            backoff,
-                        )
-                        permission = await self._wait_then_revalidate(path, backoff, destination)
-                        if not permission.permitted:
-                            return _failed(DISCORD_BLOCKED, detail=permission.detail)
-                        continue
-                    # Anything else below 500 will fail identically forever: a
-                    # retry cannot grant a permission or undelete a message, it
-                    # only spends invalid-request budget.
-                    logger.warning(
-                        "Discord API %s failed: status=%s code=%s message=%s",
-                        route,
-                        resp.status,
-                        body.get("code"),
-                        body.get("message"),
-                    )
-                    code = _coerce_float(body.get("code"))
-                    return _failed(
-                        DISCORD_PERMANENT,
-                        status=resp.status,
-                        code=int(code) if code is not None else 0,
-                        detail=str(body.get("message", "") or "")[:200],
-                    )
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                transient += 1
-                # Log only the exception type — never anything token-adjacent.
-                logger.warning(
-                    "Discord API %s transport error: %s",
-                    route,
-                    type(exc).__name__,
-                )
-                if transient > _TRANSIENT_RETRIES:
-                    return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
-                permission = await self._wait_then_revalidate(
-                    path, _TRANSIENT_BACKOFF_SECS * transient, destination
-                )
-                if not permission.permitted:
-                    return _failed(DISCORD_BLOCKED, detail=permission.detail)
-
 
 def _safe_description(alt: str) -> str:
     """Redact the unescaped description before truncation can split a secret."""
@@ -2129,38 +1006,6 @@ def _build_upload_form(
     return form
 
 
-def _command_options(raw: Any) -> dict[str, str]:
-    """Flatten an application command's top-level options to ``{name: value}``.
-
-    Only the top level is read: every command registered here is flat, so a
-    nested SUB_COMMAND row (option type 1 or 2, which carries its own
-    ``options`` list instead of a ``value``) has no name to bind and is skipped
-    rather than recorded with an empty value that a handler would then treat as
-    "the user passed nothing".
-    """
-    out: dict[str, str] = {}
-    if not isinstance(raw, list):
-        return out
-    for opt in raw:
-        if not isinstance(opt, dict):
-            continue
-        name = str(opt.get("name", "") or "")
-        if not name or "value" not in opt:
-            continue
-        out[name] = str(opt["value"])
-    return out
-
-
-def _find_button_label(components: list[dict], custom_id: str) -> str:
-    """Recover the pressed button's display text from the message's components
-    (custom_id carries only our compact routing data)."""
-    for row in components:
-        for btn in row.get("components", []):
-            if btn.get("custom_id") == custom_id:
-                return btn.get("label", "")
-    return ""
-
-
 def _resolve_proxy() -> str | None:
     """Resolve outbound proxy from environment."""
     for var in (
@@ -2175,3 +1020,107 @@ def _resolve_proxy() -> str | None:
         if val:
             return val
     return None
+
+
+#: BASE imports this module binds for its importers and for the patches the mirror
+#: routes through it, though its own code does not read them.
+_BOUND_FOR_IMPORTERS = (
+    Mapping,
+    TypeVar,
+    channel_outbound_permitted,
+    dataclass,
+    field,
+    math,
+    random,
+    sel,
+    time,
+)
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.discord.client_rest",
+    "kiro_crew.discord.client_recheck",
+    "kiro_crew.discord.client_gateway",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name this module serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+#: The unsplit module's names: everything the family binds except the methods the class
+#: binds from its owners, which were never module names.
+_SURFACE = frozenset().union(globals(), *(vars(_sys.modules[o]) for o in _OWNERS)) - {
+    n for n, m in vars(DiscordClient).items() if getattr(m, "__module__", "") in _OWNERS
+}
+_EXPORTS.update(
+    _facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=(), surface=_SURFACE).served
+)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name of the unsplit module's namespace.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.discord.client_gateway import (  # noqa: F401
+        _GATEWAY_URL,
+        _HANDLED_INTERACTIONS,
+        _INTERACTION_APPLICATION_COMMAND,
+        _INTERACTION_MESSAGE_COMPONENT,
+        _MIN_HEALTHY_CONN_SECS,
+        _OP_DISPATCH,
+        _OP_HEARTBEAT,
+        _OP_HEARTBEAT_ACK,
+        _OP_HELLO,
+        _OP_IDENTIFY,
+        _OP_INVALID_SESSION,
+        _OP_RECONNECT,
+        _OP_RESUME,
+        _WS_HEARTBEAT_SECS,
+        _command_options,
+        _find_button_label,
+    )
+    from kiro_crew.discord.client_recheck import (  # noqa: F401
+        _REVOKED_DETAIL,
+        _UNANSWERABLE_DETAIL,
+        _UNATTRIBUTABLE_DETAIL,
+        _guarded_destination,
+    )
+    from kiro_crew.discord.client_rest import (  # noqa: F401
+        _API_BASE,
+        _BREAKER_COOLOFF_SECS,
+        _DEFAULT_RETRY_AFTER_SECS,
+        _DISCORD_INVALID_BAN_LIMIT,
+        _HDR_BUCKET,
+        _HDR_REMAINING,
+        _HDR_RESET_AFTER,
+        _HDR_RETRY_AFTER,
+        _HDR_SCOPE,
+        _ID_SEGMENT_RE,
+        _INVALID_STATUSES,
+        _INVALID_WINDOW_SECS,
+        _MAJOR_PARAM_PARENTS,
+        _MAX_GLOBAL_HOLD_SECS,
+        _MAX_LITERAL_SEGMENT,
+        _MAX_PREEMPT_SECS,
+        _MAX_RETRY_AFTER_SECS,
+        _MAX_TRACKED_ROUTES,
+        _MIN_HOLD_SECS,
+        _RATE_LIMIT_RETRIES,
+        _ROUTE_SEP,
+        _SCOPE_GLOBAL,
+        _SCOPE_SHARED,
+        _T,
+        _TOKEN_SEGMENT_PARENTS,
+        _TRANSIENT_BACKOFF_SECS,
+        _TRANSIENT_RETRIES,
+        DISCORD_BLOCKED,
+        DISCORD_OK,
+        DISCORD_PERMANENT,
+        DISCORD_TRANSIENT,
+        EDIT_FAILED,
+        EDIT_GONE,
+        EDIT_OK,
+        _coerce_float,
+        _failed,
+        _header_float,
+        _header_int,
+        _is_global_limit_exempt,
+        _rate_limit_headers,
+        _route_key,
+    )

@@ -42,7 +42,10 @@ and the crewmate's values win over the global defaults.
 ## The roster
 
 The member list on the left is ordered by most recent activity, or by name. It
-carries:
+lists the crewmates whose thread holds a message, the ones you starred, and Mate;
+every other crewmate stays one search away, and the list ends by naming the ones
+it hides (up to three, the ones you made first, then how many more), which the
+count above leaves out. It carries:
 
 - **Search** by name.
 - **Starred** — your own favourites. Install a few capability packages and the

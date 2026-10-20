@@ -1024,6 +1024,7 @@ custom-rules:
       - ".github/black-baseline.txt"
       - ".github/subprocess-encoding-baseline.txt"
       - ".github/sync-io-in-async-baseline.txt"
+      - ".github/sync-io-in-async-fs-baseline.txt"
       - ".github/agent-sdk-boundary-baseline.txt"
       - ".github/docs-lint-baseline.txt"
       - "website/src/i18n/untranslated-baseline.json"
@@ -1344,3 +1345,61 @@ custom-rules:
       FLAG a changed help/spec sentence naming a threshold, a default equality or
       a cap relationship with no test that measures it. Do NOT flag ordinary
       descriptive copy that states no consequence.
+
+  - id: keep-modules-small
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+      - "test/**/*.py"
+      - "scripts/**"
+      - "packages/**/*.py"
+      - ".github/scripts/**/*.py"
+      - "conftest.py"
+      - "xdist_budget.py"
+      - "**/*.sh"
+      - "**/*.ps1"
+      - "**/*.swift"
+    rule: |
+      A hand-written code file holds at most 2,000 lines:
+      `scripts/check_file_line_cap.py` fails the lint jobs when a change leaves a
+      file it touches past the cap and `.github/file-line-cap-baseline.txt` does
+      not list it. The working target is 1,600, so the next change has room. How
+      to split safely is `docs/system-specs/common/code-style.md` § Splitting a
+      file.
+
+      FLAG, each with what to ask for instead:
+      - A change that takes a hand-written code file past 1,600 lines, or that
+        adds a new responsibility (a class with its own job, a handler family, a
+        group of related functions) to a file already over 1,600. Ask for a new
+        module named for that responsibility, or for the split in this PR or one
+        before it.
+      - A split that reaches moved code through a plain re-export of a name
+        tests patch: `from kiro_crew.<owner> import name` in the original module
+        with nothing that carries the patch to the moved code (no
+        `kiro_crew._facade_mirror` install, no `kiro_crew._facade_compose.compose`
+        call running that owner on the facade's globals, no facade-class
+        `__setattr__` fan-out like `apps/backend.py`'s). The patch then rebinds
+        the facade alone and silently stops reaching the owners that read the
+        name. Ask for the mirror facade plus a patch-reach test over the names
+        the test trees patch.
+      - A new facade or binding test that freezes an exact namespace or member
+        list (`set(vars(module)) - BASE_NAMES == {...}`, `set(dir(module)) ==
+        {...}`, a symmetric difference against a frozen member set). It fails the
+        next unrelated change that adds a name, and two such changes that each
+        passed can merge into a red main. Ask for "every public name bound before
+        the split still resolves to the same object" plus a subset check for the
+        names the split adds (`added <= names`).
+      - A split that moves a sink's redactor calls out of the module its
+        `security_posture._REDACTION_SINKS` row names and leaves the row on the
+        facade. `test_every_named_sink_module_actually_redacts` also counts calls
+        in the facade's declared owners, so the row can stay green while it no
+        longer says where the sink is redacted. Ask for the row to be re-keyed to
+        the owner that now redacts, and for every module the omission test's
+        text scan matches to be a sink row or listed in
+        `NON_EGRESS_REDACTION_MODULES`. Facade rows older splits left behind
+        (`dashboard/handlers/files.py`) are not precedent.
+
+      Allowed (do NOT flag): files the script's `EXEMPTIONS` table names; a
+      baselined file that shrinks; a re-export of a name no test patches; owners
+      that look a patched name up on the facade at call time; code a facade
+      keeps because a gate pins it to that path.

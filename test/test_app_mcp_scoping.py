@@ -501,6 +501,25 @@ class TestCeilingProbesFailClosed:
         assert gmod.may_skip_gate("web_fetch", None) is True
 
 
+def _doctor_source() -> str:
+    """``cli_doctor``'s text joined with its ``cli_doctor_parts`` owners, whose functions
+    run on the facade's globals: the doctor's MCP repair lives in one of them."""
+    import importlib
+    import inspect
+    import pkgutil
+
+    from kiro_crew import cli_doctor, cli_doctor_parts
+
+    return "\n".join(
+        inspect.getsource(mod)
+        for mod in [cli_doctor]
+        + [
+            importlib.import_module(f"{cli_doctor_parts.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(cli_doctor_parts.__path__)
+        ]
+    )
+
+
 class TestBothWritePointsConsultTheCeiling:
     """`allowedTools` is written in TWO places; one predicate governs both.
 
@@ -537,8 +556,15 @@ class TestBothWritePointsConsultTheCeiling:
         bridges_src = "\n".join(
             inspect.getsource(m) for m in (bridges, *map(importlib.import_module, bridges._OWNERS))
         )
+        # So does the MCP handler facade's.
+        mcp_src = "\n".join(
+            inspect.getsource(m)
+            for m in (mcp_handler, *map(importlib.import_module, mcp_handler._OWNERS))
+        )
         for mod in (bridges, mcp_handler, cli_doctor):
             src = bridges_src if mod is bridges else inspect.getsource(mod)
+            src = mcp_src if mod is mcp_handler else src
+            src = _doctor_source() if mod is cli_doctor else src
             assert "may_skip_gate" in src, f"{mod.__name__} must use the shared predicate"
             assert "_BUILTIN_TOOL_SCOPES" not in src, (
                 f"{mod.__name__} re-declares the builtin tool→scope map; it belongs to "
@@ -1143,11 +1169,7 @@ class TestEveryWriterRevokesAStaleGrant:
     """
 
     def test_doctor_removes_a_grant_the_ceiling_now_denies(self) -> None:
-        import inspect
-
-        from kiro_crew import cli_doctor
-
-        src = inspect.getsource(cli_doctor)
+        src = _doctor_source()
         assert "allowed[:] = without_mcp_refs(allowed, (name,))" in src, "doctor must revoke, not merely decline to add"
 
     def test_no_writer_only_declines(self) -> None:
@@ -1178,9 +1200,14 @@ class TestEveryWriterRevokesAStaleGrant:
         bridges_src = "\n".join(
             inspect.getsource(m) for m in (bridges, *map(importlib.import_module, bridges._OWNERS))
         )
-        sources = [(agent.__name__, agent_src)] + [
-            (mod.__name__, bridges_src if mod is bridges else inspect.getsource(mod))
-            for mod in (cli_doctor, bridges, mcp_handler)
+        # So does the MCP handler facade's.
+        mcp_src = "\n".join(
+            inspect.getsource(m)
+            for m in (mcp_handler, *map(importlib.import_module, mcp_handler._OWNERS))
+        )
+        sources = [(agent.__name__, agent_src), (cli_doctor.__name__, _doctor_source())] + [
+            (mod.__name__, bridges_src if mod is bridges else mcp_src)
+            for mod in (bridges, mcp_handler)
         ]
         for name, src in sources:
             assert "may_skip_gate" in src, f"{name} must consult the ceiling"
@@ -1529,11 +1556,7 @@ class TestDoctorAuditsItsRevocation:
     same SEL trail every other writer does, not revoke silently."""
 
     def test_doctor_emits_the_withheld_event_on_revoke(self) -> None:
-        import inspect
-
-        from kiro_crew import cli_doctor
-
-        src = inspect.getsource(cli_doctor)
+        src = _doctor_source()
         assert 'operation="mcp_auto_approve_withheld"' in src
         assert "allowed[:] = without_mcp_refs(allowed, (name,))" in src
 

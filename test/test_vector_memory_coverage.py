@@ -1,10 +1,10 @@
 """Coverage-focused tests for the less-travelled paths of ``vector_memory``.
 
-The store's happy paths are already covered by ``test_vector_memory.py``. This
-module targets the branches that only fire on legacy/degraded input: the legacy
-markdown migration, the export/import round trip, episodic promotion, the
-keyword fallback, the embedding backfill sweeps, and the many "value on disk is
-not what the writer promised" recovery paths.
+The store's happy paths are already covered by ``test_vector_memory.py`` and the
+topic files its docstring names. This module targets the branches that only fire
+on legacy/degraded input: the legacy markdown migration, the export/import round
+trip, episodic promotion, the keyword fallback, the embedding backfill sweeps,
+and the many "value on disk is not what the writer promised" recovery paths.
 
 Everything runs against a fresh SQLite file under ``tmp_path`` with a
 deterministic in-process embedder — no network, no model download, no FAISS

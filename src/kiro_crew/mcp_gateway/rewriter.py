@@ -111,7 +111,10 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # the spec files cannot see -- it moves on every upgrade and on a relocated
 # install -- so it is fingerprinted as ``managed_control_plane`` below, and the
 # bump regenerates every kept overlay whose stub still hashes the spec's command.
-_FINGERPRINT_SCHEMA = 9
+# 10: an agent whose spec sets ``includeMcpJson: false`` gets no injected
+# settings stubs. Its inputs are unchanged, so a kept overlay would keep
+# mounting the excluded servers at ``session/new``.
+_FINGERPRINT_SCHEMA = 10
 
 
 def _rewrite_inputs_fingerprint(
@@ -711,6 +714,8 @@ def rewrite_agents(
     # every agent's own overlay, wrapped with THAT agent's name, and the stub is
     # injected at ACP ``session/new``, where it takes precedence over the raw
     # same-named global entry kiro-cli merges (see ``session_servers.py``).
+    # An agent whose spec sets ``includeMcpJson: false`` is skipped, since
+    # kiro-cli merges nothing into it (see ``_rewrite_single_spec``).
     # Empty-``mcpServers`` agents get pooled coverage with the right identity,
     # and the duplicate / empty-``--agent`` collision never arises. The real
     # settings file is never modified, and no settings overlay is written:

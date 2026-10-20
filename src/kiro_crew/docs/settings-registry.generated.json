@@ -753,7 +753,7 @@
       "label": "Show Full Titles While Scrolling",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.show-full-titles-while-scrolling",
-      "hint": "While you scroll the session list, titles cut off by the sidebar show in full over it; they hide when the pointer leaves or shortly after scrolling stops"
+      "hint": "While you scroll the session list, titles the sidebar cuts off show in full"
     },
     {
       "id": "chat.show-pasted-text-in-full",
@@ -1661,6 +1661,14 @@
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.provider-2",
       "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network"
+    },
+    {
+      "id": "voice.send-when-i-stop-recording",
+      "label": "Send when I stop recording",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.submit_on_release",
+      "hint": "Stopping sends the message. Shift-click the mic, or slide sideways on the phone, to keep a draft.",
+      "configKey": "stt.submit_on_release"
     },
     {
       "id": "voice.shortcut-key",

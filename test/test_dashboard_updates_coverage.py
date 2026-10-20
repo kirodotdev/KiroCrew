@@ -2008,7 +2008,7 @@ def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
     """Both delivery doors must route through the shared serialiser.
 
     `_broadcast()` feeds ONE note to two doors — the WS arm in `state_parts/slots_push.py` and
-    the SSE arm in `handlers/updates.py`. While each built the frame by hand
+    the SSE arm in `handlers/updates_streams.py`. While each built the frame by hand
     they could disagree silently, which is exactly how `meta` can go missing on
     the SSE side while the WS side carries it.
 
@@ -2038,7 +2038,7 @@ def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
         return rest[: min(ends)] if ends else rest
 
     root = Path(kiro_crew.__file__).parent
-    for rel in ("dashboard/state_parts/slots_push.py", "dashboard/handlers/updates.py"):
+    for rel in ("dashboard/state_parts/slots_push.py", "dashboard/handlers/updates_streams.py"):
         branch = _branch((root / rel).read_text(encoding="utf-8"))
         assert "chat_message_frame(" in branch, (
             f"{rel}'s chat_message arm no longer calls chat_message_frame — a "

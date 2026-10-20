@@ -33,6 +33,7 @@ export const ROUND_TRIP = new Map([
   ['lib/kiroGhostAvatar.ts', 'CSS animation durations/keyframes inside the generated SVG <style>, parsed by the browser stylesheet parser, not read as text'],
   ['components/ui/liquid-glass.tsx', 'CSS color-mix() percentage inside an inline style value, parsed by the browser stylesheet parser, not read as text'],
   ['dev/scrollInspector.ts', 'Developer overlay whose every string is a fixed-format diagnostic compared against an earlier frame -- the format IS the interface, so a localised copy would destroy the only property that makes it useful. Assigns its own textContent, which no callee or CSS rule can see. Inert unless a developer turns the overlay on; renders no product copy'],
+  ['lib/dashboardTiming.ts', 'Dashboard-tab load step timers (#20952): every string is a fixed-format diagnostic written to console.debug and the User Timing panel for whoever is profiling -- the ms/B format IS the interface, so a localised copy would destroy its only use, exactly as for a console.log. Renders no product copy; the module draws nothing'],
 ])
 
 /** Measurement units this UI renders. Symbols only. */

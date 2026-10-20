@@ -34,8 +34,8 @@ from .repository import (
     _DUPLICATE_RECOVERY_STATE,
     APP_NAME,
     _DuplicateRecoveryState,
-    _ensure_duplicate_recovery,
 )
+from .repository_duplicate import _ensure_duplicate_recovery
 
 logger = logging.getLogger("kirocrew.app.spec-builder")
 

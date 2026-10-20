@@ -13,10 +13,14 @@
  *    (`errors-use-error-notice`).
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const src = readFileSync(join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx'), 'utf-8')
+// SidePanel.tsx composes sibling owners (the tab bodies live in SidePanelTabBodies.tsx),
+// so these pins read the facade with every owner.
+const CHAT = join(__dirname, '..', 'pages', 'chat')
+const src = readdirSync(CHAT).filter(f => /^(use)?SidePanel\w*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+  .map(f => readFileSync(join(CHAT, f), 'utf-8')).join('\n')
 
 describe('contributed panel tab body', () => {
   it('hands AppHost the owning slot as its session key', () => {

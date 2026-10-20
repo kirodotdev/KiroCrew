@@ -255,7 +255,8 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: project-tree walk replaced the ``project_tree`` helpers.
 #: Recaptured with the ``path_probe``, ``outbox``, ``channel_upload``, ``desktop`` and
 #: ``editor`` owners, from the base file, where each of their names had the same shape.
-_BASE_SHAPE_DIGEST = "65c4f9e11ec674f56489bb76f0c456811a262047983e711248ab01ad828beeca"
+#: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
+_BASE_SHAPE_DIGEST = "00b01a4e5eb247df7c73163e04a56f9bf00495f64187cd93a253fc958c3a9d8e"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -381,10 +382,10 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 33
+    assert len({id(h) for h in served}) == 34
     assert [h.__name__ for h in served if getattr(files, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 35
+    assert len(reexports) == 36
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 

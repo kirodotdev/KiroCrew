@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback, useRef, type HTMLAttributes } from 'react'
 import { createPortal } from 'react-dom'
+import { OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from '../../components/overlayRoot'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useMotionValue } from 'framer-motion'
 import { AlertTriangle } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
+import { setActiveId } from '../../store/instancesSlice'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { animateDrawer, registerDrawerTargets, takeOverDrawer } from '../../hooks/useDrawerSwipe'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
@@ -189,6 +191,9 @@ export function useNotificationSheet() {
     })
   }, [sheetX, parkedOffset])
 
+  // A Crew switch closes the sheet the way a click outside does (components/overlayRoot).
+  useCloseWhenCrewHidden(phase === 'open', closePanel)
+
   const openPanel = useCallback(() => {
     if (phaseRef.current === 'open') return
     // Seat the parked offset BEFORE the phase flips: the render below serializes
@@ -207,10 +212,16 @@ export function useNotificationSheet() {
   // The banner's "open on this note" path: the same open as the bell, then
   // the selection — one state owner, so the popover's auto-ack effect and its
   // detail panel work for a banner tap exactly as for a row tap.
+  //
+  // The banner stays on screen over a remote Crew, but this sheet belongs to the
+  // local one and hides with it, so a tap there brings the local Crew forward:
+  // opening the sheet out of sight would retire the banner and ack the note.
+  const crewHidden = useLocalCrewHidden()
   const openPanelOn = useCallback((ts: string) => {
+    if (crewHidden) dispatch(setActiveId(null))
     openPanel()
     setSelectedTs(ts)
-  }, [openPanel])
+  }, [openPanel, crewHidden, dispatch])
 
   // See NC_CLOSE_BACKSTOP_MS: `animateDrawer`'s arrival callback owns the
   // unmount, and this only rescues a phase that never heard back at all.
@@ -339,7 +350,8 @@ export function useNotificationSheet() {
   }
 }
 
-/** The sheet and the live-arrival banner, both portalled to `<body>`. */
+/** The sheet, portalled into the owning pane's overlay root, and the
+ *  live-arrival banner, portalled to `<body>` so it shows over every Crew. */
 export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotificationSheet> }) {
   const navigate = useNavigate()
   // Every in-app jump out of this popover runs inside the gate — the inbox
@@ -355,7 +367,7 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
   } = sheet
   return (
     <>
-    {(open || closing) && createPortal(
+    {(open || closing) && <OverlayPortal>
       <div
         ref={popoverRef}
         // Anchored 48px below the viewport top, which the shell has pushed
@@ -484,13 +496,17 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
           </div>
         )}
         </ErrorBoundary>
-      </div>,
-      document.body
-    )}
-    {/* Live-arrival banner. Portalled like the sheet so a transformed
-        ancestor in the top bar cannot capture its `fixed` positioning; it
-        borrows the bell for its exit vector and this component's open/select
-        mechanics rather than holding any selection of its own. */}
+      </div>
+    </OverlayPortal>}
+    {/* Live-arrival banner. Portalled so a transformed ancestor in the top
+        bar cannot capture its `fixed` positioning; it borrows the bell for its
+        exit vector and this component's open/select mechanics rather than
+        holding any selection of its own. Unlike the sheet it goes to
+        document.body, not the overlay root: a notification is worth seeing from
+        any Crew. Its subtree still reads the local Crew's context (its actions
+        use that to bring the local Crew forward), so a layer added inside it
+        would land in the hidden root; wrap one in GlobalOverlayScope. */}
+    {/* eslint-disable-next-line no-restricted-syntax */}
     {createPortal(
       <NotificationBanner
         bellRef={bellRef}

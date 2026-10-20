@@ -62,6 +62,9 @@ describe('useHoverIntent', () => {
     // land inside it while closed — the focus ring would be invisible. Focused
     // chrome must be visible chrome. Contrast (4): focus on the TRIGGER still
     // never opens; only focus already inside the surface does.
+    // Focus mode's own top bar and nav rail do NOT take this path: they are
+    // `inert` while hidden (App.focusMode.test.tsx), so Tab never lands in
+    // them. This pins the hook's contract for a surface that is not inert.
     const { result } = renderHook(() => useHoverIntent())
     act(() => { result.current.surfaceProps.onFocus() })
     expect(result.current.open).toBe(true)

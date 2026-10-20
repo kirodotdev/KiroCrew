@@ -1231,6 +1231,25 @@ def test_run_step_is_portable_to_dash() -> None:
     assert re.search(r"command -v setsid .*\n\s+setsid \"\$@\"", code)
 
 
+def test_run_step_runs_no_command_substitution_while_it_owns_sigint() -> None:
+    """bash drops a trapped SIGINT that lands while it is expanding a `$(...)`.
+
+    The trap never runs, so a Ctrl-C there stops nothing and the step goes on
+    to its end, which is how the interrupt test above times out. Under
+    load a plain loop of `x=$(date +%s)` loses about 1 SIGINT in 40, and the
+    same loop through a file and `read` loses none. From the trap takeover to
+    the restore, every value goes through a file instead.
+    """
+    body = _cli_sh_function("_run_step")
+    start = body.index("trap '_rs_interrupt INT' INT")
+    end = body.index('. "$_rs_traps"')
+    span = "\n".join(
+        line for line in body[start:end].splitlines() if not line.lstrip().startswith("#")
+    )
+    assert not re.search(r"\$\((?!\()", span), "a command substitution runs while the step owns INT"
+    assert "`" not in span, "a backquote substitution runs while the step owns INT"
+
+
 def test_run_step_redrawn_line_fits_the_terminal_width(tmp_path: Path) -> None:
     """Every `\\r`-redrawn frame must be shorter than the terminal.
 

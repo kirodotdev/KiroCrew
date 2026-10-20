@@ -22,6 +22,7 @@ from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.execution_context import read_session_execution
+from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
 from kiro_crew.subagent import (
     agent_matches_allowlist,
     is_internal_agent_spec,
@@ -268,6 +269,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                                 "model": {"type": "string"},
                                 "reasoning_effort": {"type": "string"},
                                 "backend": {"type": "string"},
+                                "label": {"type": "string"},
                             },
                             "required": ["task"],
                             "additionalProperties": False,
@@ -275,9 +277,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "description": (
                             "Multiple tasks to run in parallel as one wave. Each entry is a "
                             "prompt string, or an object {task, model?, "
-                            "reasoning_effort?, backend?} whose fields override the call's "
-                            "batch-wide value for that task only, e.g. the same review prompt "
-                            "on two models or two backends, delivered together."
+                            "reasoning_effort?, backend?, label?} whose fields override the "
+                            "call's batch-wide value for that task only, e.g. the same review "
+                            "prompt on two models or two backends, delivered together."
                         ),
                     },
                     "agent": {
@@ -373,6 +375,16 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "so weigh it on a wide fan-out. Models that do not "
                             "support effort ignore the level, but the process cost "
                             "is still paid."
+                        ),
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": (
+                            "Optional short name for the task, shown in the dashboard's "
+                            "task box and in this tool's result instead of the task text "
+                            f"(one line, at most {SPAWN_LABEL_MAX_CHARS} characters; longer "
+                            "is cut). Display only: the subagent still receives the task "
+                            "text. Batch-wide; a tasks[] object can set its own."
                         ),
                     },
                     "keep": {

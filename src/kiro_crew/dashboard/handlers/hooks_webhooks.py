@@ -180,18 +180,6 @@ def _public_runs(runs: list[dict]) -> list[dict]:
     return scrubbed
 
 
-def _is_context_registration(value: object) -> bool:
-    """True when a hooks.json value is a webhook context registration.
-
-    Mirrors the filter in :func:`_read_hook_registrations`. ``hooks.json`` is
-    shared with ``ScriptHookStore``, whose ``hooks`` key holds a LIST of script
-    hooks, so an id-addressed delete must confirm the shape it is removing —
-    otherwise ``DELETE /api/webhooks/contexts/hooks`` would drop every script
-    hook the user has.
-    """
-    return isinstance(value, dict) and ("context_summary" in value or "summary" in value)
-
-
 def _delete_hook_context(hook_id: str) -> bool:
     """Drop *hook_id* from hooks.json. False when it is not registered.
 
@@ -211,14 +199,15 @@ def _delete_hook_context(hook_id: str) -> bool:
             matches = [
                 k
                 for k in raw
-                if _is_context_registration(raw[k]) and _redact_hook_identifier(k) == hook_id
+                if webhooks.is_context_registration(raw[k])
+                and _redact_hook_identifier(k) == hook_id
             ]
             if len(matches) != 1:
                 return False
             target = matches[0]
         # Only ever remove a context registration, never a sibling key that
         # happens to share the requested name.
-        if not _is_context_registration(raw[target]):
+        if not webhooks.is_context_registration(raw[target]):
             return False
         del raw[target]
         webhooks.write_json_atomic(path, raw)

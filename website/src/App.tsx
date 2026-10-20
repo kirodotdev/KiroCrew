@@ -44,6 +44,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { ChangelogModal } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
+import { LocalOverlayRoot } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
@@ -302,6 +303,7 @@ export default function App() {
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
+    gatewayStatusMsg, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
@@ -517,9 +519,11 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
-    {/* Above the layout branch, so every layout that can host the import row
-        also hosts its outcome: the row's menu has closed by the time it lands. */}
-    <ImportSessionOutcomeNotice />
+    {/* The import row's outcome lands after its menu has closed, so every layout
+        that can host the row hosts the notice: the popout and embed frames here,
+        the dashboard inside the local pane (below), where it hides with the
+        local Crew. */}
+    {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
@@ -565,6 +569,9 @@ export default function App() {
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
+      {/* Floating layers this pane opens portal into a container hidden with it
+          (see components/overlayRoot). */}
+      <LocalOverlayRoot hidden={activeInstanceId !== null}>
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
@@ -624,6 +631,16 @@ export default function App() {
 
       {/* Skip to content — visible only on focus for keyboard users */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">{i18nT('app.skip_to_content')}</a>
+      {/* Spoken way out of focus mode. Turning it on makes the header and rail
+          inert and moves focus to main, so a screen-reader user who clicked the
+          toggle has lost every chrome control and hears nothing about how to get
+          them back. This region is mounted permanently and its TEXT changes, so
+          the message is announced (a live region does not speak content it
+          mounts with). Outside the header on purpose: that is the element that
+          turns aria-hidden. Empty while focus mode is off. */}
+      <span role="status" className="sr-only" data-testid="focus-mode-announce">
+        {focusActive ? focusModeExitMsg : ''}
+      </span>
 
       {/* Focus mode: edge strips that summon the hidden chrome. Rendered before
           the chrome itself, but BELOW it in z-order (61 vs 62): the chrome covers
@@ -653,6 +670,18 @@ export default function App() {
             style={{ top: FOCUS_INSET }}
             {...railPeek.triggerProps}
           />
+          {/* While the header is hidden it is aria-hidden, which silences the
+              connection capsule's role="status" region -- the only
+              screen-reader carrier of the gateway going offline. This stand-in
+              carries the same message from outside the header for exactly that
+              interval. Mounted only while hidden, so the two regions never
+              announce the same change twice; a live region does not speak the
+              text it mounts with, only later changes, which is the case that
+              matters (the gateway dropping mid focus mode). Only while the
+              header is actually aria-hidden (focusChromeInert). */}
+          {!topChromeShown && focusChromeInert && (
+            <span role="status" className="sr-only" data-testid="focus-gateway-status">{gatewayStatusMsg}</span>
+          )}
         </>
       )}
 
@@ -741,7 +770,11 @@ export default function App() {
           : { gridArea: 'content' }}
       >
         <div className={`flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
-        <main id="main-content" tabIndex={-1} className={`flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        {/* `outline-hidden`: main is a programmatic focus target (the skip
+            link, and focus mode's hand-off when the chrome hides), not a
+            control, so it opts out of the global :focus-visible ring the way
+            the tabIndex={-1} page headings do. */}
+        <main id="main-content" tabIndex={-1} className={`outline-hidden flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands
@@ -847,6 +880,15 @@ export default function App() {
         <ComputerUseLiveView />
       </div>
     </div>{/* /Local dashboard grid */}
+      {/* Opened from the local Crew, so they hide with it (components/overlayRoot).
+          The image viewer and the import notice render in place, fixed layers
+          inside this pane, so the pane's own display:none hides them; the other
+          two portal. The popout and embed frames mount their own copies. */}
+      <MetricsCard metrics={metrics} />
+      <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
+      <Lightbox />
+      <ImportSessionOutcomeNotice />
+      </LocalOverlayRoot>
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
@@ -866,8 +908,6 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    <MetricsCard metrics={metrics} />
-    <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}
@@ -884,7 +924,7 @@ export default function App() {
         <Overlay />
       </ErrorBoundary>
     ))}
-    <Lightbox />
+    {(isPopout || isEmbed) && <Lightbox />}
     </ZoomProvider>
   )
 }

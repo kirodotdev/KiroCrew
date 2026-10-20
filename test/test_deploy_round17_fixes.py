@@ -14,7 +14,10 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).parent.parent / "src" / "kiro_crew"
-HANDLERS = (SRC / "deploy" / "handlers.py").read_text(encoding="utf-8")
+HANDLERS = "".join(
+    (SRC / "deploy" / name).read_text(encoding="utf-8")
+    for name in ("handlers_guards.py", "handlers_content.py", "handlers_sites.py", "handlers.py")
+)
 PUBLISHHUB = (
     SRC.parent.parent / "website" / "src" / "components" / "PublishHub.tsx"
 ).read_text(encoding="utf-8")

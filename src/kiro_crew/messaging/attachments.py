@@ -182,7 +182,7 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     ``audio_mimetypes`` lets a channel declare prefixes it treats as audio even
     though they are not ``audio/*``. This is not hypothetical: Slack ships voice
     memos as ``video/webm``, and its transcription path already encodes that
-    (``slack/events.py``). Without the override the same file classifies as
+    (``slack/events_voice.py``). Without the override the same file classifies as
     VIDEO here and a "video is not supported" note lands beside the transcript.
     The knowledge belongs to the channel, so the channel supplies it rather than
     this module accumulating per-channel special cases.

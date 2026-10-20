@@ -535,7 +535,7 @@ def member_admitted_to_scoped_surface(session_key: str, store: str) -> bool:
     The ONE predicate the two surface gates that admit member callers share --
     the session-control HTTP gate (``handlers/session_control.py``'s
     ``_private_caller_refusal``) and the chat folder/tag gate
-    (``handlers/_shared.py``'s ``private_chat_route_refusal``) -- so the two
+    (``handlers/_shared_route_guards.py``'s ``private_chat_route_refusal``) -- so the two
     cannot drift on who a member is or when the surface is reachable for it.
 
     A caller is admitted when BOTH hold:

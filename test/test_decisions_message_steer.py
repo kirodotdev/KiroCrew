@@ -374,7 +374,7 @@ class TestNoSingleRowDecidesHowMuchTextIsScanned:
     def test_a_pem_key_straddling_the_cut_leaves_no_body_line(self):
         """A credential branch that SPANS whitespace: no cut inside one is safe.
 
-        ``redaction.py``'s PEM branch anchors on the ``-----BEGIN … PRIVATE
+        ``redaction_patterns.py``'s PEM branch anchors on the ``-----BEGIN … PRIVATE
         KEY-----`` header and runs across the newline-broken body, so a whitespace
         cut inside that body strips the only anchor and the surviving base64 lines
         match no branch at all. :func:`ms.redacted` cleans such a row instead.

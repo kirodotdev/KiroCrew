@@ -307,6 +307,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/podhome/.aws/credentials",
         "<ROOT>/crew/apps",
     ],
+    "seal_windowless_masks": [],
     "sensitive_dir_ids": {"<ROOT>/crew/apps": [13, 14]},
     "private_dirs": ["<ROOT>/crew/apps/alpha/data"],
     "private_dir_ids": {"<ROOT>/crew/apps/alpha/data": [11, 12]},

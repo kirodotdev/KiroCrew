@@ -46,7 +46,10 @@ POD_RUNTIME_CLIENT = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod
 POD_CONFIG = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/config.py"
 #: ``generate_token`` is defined in the token-auth tokens owner; the token_auth facade serves it.
 TOKEN_AUTH = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/token_auth_tokens.py"
-TOKEN_HANDLER = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/handlers/core.py"
+#: ``api_token_local`` is defined in the local token owner; the core handlers facade serves it.
+TOKEN_HANDLER = (
+    Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/handlers/core_local_token.py"
+)
 #: ``_pod_status`` is defined in the Dev Fleet pods owner; the worktree_ops facade serves it.
 WORKTREE_OPS = (
     Path(__file__).resolve().parent.parent
@@ -291,11 +294,11 @@ def test_usage_text_lists_the_flag(flag):
 def test_the_harness_never_runs_the_worktrees_test_suite():
     """No executable line in the harness may invoke the checkout's test suite.
 
-    A `python -m pytest -q` from the checkout root is ~62k tests that need no
-    pod, that CI runs on the merge ref anyway, and whose fan-out costs far more
-    than the browser check this harness exists for. Only the comment explaining
-    the absence may name pytest, so an executable line that invokes it fails
-    here.
+    A `python -m pytest -q` from the checkout root is the whole suite, none of
+    which needs a pod, that CI runs on the merge ref anyway, and whose fan-out
+    costs far more than the browser check this harness exists for. Only the
+    comment explaining the absence may name pytest, so an executable line that
+    invokes it fails here.
     """
     offenders = [
         ln

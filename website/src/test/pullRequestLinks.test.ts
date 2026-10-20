@@ -9,6 +9,7 @@ import {
   loadRevealedSources,
   loadSeenPullRequestLinks,
   loadSourceSelections,
+  findSourceForUrl,
   MAX_PULL_REQUEST_SOURCES,
   parseSourceLinkUrl,
   persistSeenPullRequestLinks,
@@ -348,6 +349,37 @@ describe('extractPullRequestLinks', () => {
  * the SELECTION pointing at it is already durable. Holding the link in memory
  * only meant a reload remembered the url but could no longer produce it, and the
  * Changes reconciliation then normalised onto a different pull request. */
+describe('GitHub owner and repository case', () => {
+  const LISTED = 'https://github.com/acme/widgets/pull/10'
+  const SHOUTED = 'https://github.com/Acme/Widgets/pull/10'
+
+  it('lists one pull request mentioned in two letter cases, at the latest spelling', () => {
+    expect(extractPullRequestLinks(messages(`Opened ${LISTED}`, `Updated ${SHOUTED}`)).map(link => link.url))
+      .toEqual([SHOUTED])
+  })
+
+  it('keeps pull requests that differ by more than case apart', () => {
+    expect(extractPullRequestLinks(messages(LISTED, 'https://github.com/acme/widgets/pull/11'))).toHaveLength(2)
+  })
+
+  it('maps a url in another case onto the listed source', () => {
+    const listed = [parseSourceLinkUrl(LISTED)!]
+    expect(findSourceForUrl(listed, SHOUTED)?.url).toBe(LISTED)
+    expect(findSourceForUrl(listed, 'https://github.com/Acme/Widgets/pull/11')).toBeUndefined()
+  })
+
+  it('maps a GitHub Enterprise url in another case without its host list', () => {
+    const listed = [parseSourceLinkUrl('https://ghe.acme.example/acme/widgets/pull/3', [], [], ['ghe.acme.example'])!]
+    expect(findSourceForUrl(listed, 'https://ghe.acme.example/ACME/widgets/pull/3')?.url)
+      .toBe('https://ghe.acme.example/acme/widgets/pull/3')
+  })
+
+  it('does not fold GitLab paths, which it does not key by case', () => {
+    const listed = [parseSourceLinkUrl('https://gitlab.com/acme/svc/-/merge_requests/4')!]
+    expect(findSourceForUrl(listed, 'https://gitlab.com/Acme/svc/-/merge_requests/4')).toBeUndefined()
+  })
+})
+
 describe('revealed source persistence', () => {
   const PR = 'https://github.com/acme/widgets/pull/12'
   const ISSUE = 'https://github.com/acme/widgets/issues/9'

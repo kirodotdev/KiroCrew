@@ -54,8 +54,8 @@ def test_downgrade_gate_covers_every_approval_grant_source() -> None:
     """The downgrade condition must name every source the approval branch ORs.
 
     Derived, not hardcoded: the expected sources come from the approval branch in
-    the same file, so a new grant source there fails here instead of silently
-    reopening this hole.
+    ``_on_permission_request`` (chat_turn/tool_approval.py), so a new grant source there fails
+    here instead of silently reopening this hole.
     """
     source = "\n".join(
         turn_file.read_text(encoding="utf-8")

@@ -168,8 +168,8 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/handler_runtime/` | Private owners the handler facade composes, one responsibility each (see [Native handler composition](#native-handler-composition)); nothing else imports them |
 | `slack/gateway.py` | `GatewayOrchestrator` — the composition facade: the class declares the orchestrator's fields and binds the methods its owners define. Entry point: `run_gateway()`, defined in `gateway_runtime/process_entry.py` and importable from here. See [Composition](#composition) |
 | `slack/gateway_runtime/` | Private owners the facade composes, one responsibility each (see [Composition](#composition)); nothing else imports them |
-| `slack/events.py` | Socket Mode event routing — dedup (`SeenCache`), slash commands, `member_joined_channel` tracking, message dispatch |
-| `slack/interactions.py` | Block Kit button routing — tool approval, OPTIONS choices, cron/subagent ack, session resume, track channel approve/deny |
+| `slack/events.py` | Socket Mode event routing — dedup (`SeenCache`), slash commands, `member_joined_channel` tracking, message dispatch. The import path and patch surface of the `events_*` owners beside it; see [Event and interaction owners](#event-and-interaction-owners) |
+| `slack/interactions.py` | Block Kit button routing — tool approval, OPTIONS choices, cron/subagent ack, session resume, track channel approve/deny. The import path and patch surface of the `interactions_*` owners beside it; see [Event and interaction owners](#event-and-interaction-owners) |
 | `slack/blocks.py` | Reusable Block Kit dict builders for slash command UIs (session list). Action IDs: `mc_<command>_<action>[_<id>]` |
 | `slack/allowlist.py` | Tracking-channel allowlist prompts (`prompt_allowlist`, `prompt_track_channel`) + config persistence (`persist_allowed_user`, `persist_tracking_channel`) |
 | `slack/scope_probe.py` | Tracked-channel history-readability probe (`warn_unreadable_tracked_channels`) — warns when the installed token cannot read a tracked channel (e.g. a private channel on an install predating `groups:history`) |
@@ -420,6 +420,44 @@ declared on `_SlackTurn`. New per-turn Slack presentation of the answer is an
 an access predicate or grant in `access.py`; the approval prompt's shape and click
 handling in `approvals.py`; reactions in `reactions.py`; voice in `voice.py`. A construct
 a repository guard reads by path moves only together with that guard.
+
+## Event and interaction owners
+
+`slack/events.py` and `slack/interactions.py` are the import paths and the patch surfaces of
+Socket Mode event routing and of Block Kit interactive payloads. `events.py` keeps
+`init_socket_mode` (the Socket Mode client and its listener) and `_route_message` (the
+message router); everything else lives in the sibling owner modules below, one
+responsibility each. Each facade keeps the import header it had and installs a mirror
+(`kiro_crew._facade_mirror`): a read of
+`kiro_crew.slack.events.<name>` is served by the owner that binds the name, and a write
+through the facade -- `monkeypatch.setattr`, `mock.patch` -- reaches every owner holding it.
+An owner imports only the owners listed before it, never its facade, and logs as its facade
+(`kiro_crew.slack.events`, `kiro_crew.slack.interactions`). The slash-command and
+view-callback registrations run at import, beside their handlers, except the Forward to
+Agent submission, which `init()` registers.
+
+| Owner | Responsibility |
+|---|---|
+| `slack/events_block_text.py` | Text recovered from a message's Block Kit blocks and attachments: rich text, sections, tables, forwarded messages, a trusted bot's attachments |
+| `slack/events_queue.py` | The session queue around a running turn: queue tags, `!stop` holds (`slack_stop_in_flight`), the drain and `_dispatch_queued` |
+| `slack/events_slash.py` | `/kirocrew` and its sub-commands: `SLASH_REGISTRY`, the handlers, `_handle_slash` |
+| `slack/events_home_tab.py` | The App Home tab (`_publish_home_tab`) |
+| `slack/events_voice.py` | Voice memo download, transcription and the no-words note |
+| `slack/events_inbound.py` | The inbound-event checks the listener and the router share: `SeenCache`, the trusted-bot turn ledger, thread-follow admission, the single-session DM check, `message_deleted` handling |
+| `slack/interactions_context.py` | What every handler shares: `_orch`, `VIEW_REGISTRY`, `ack_button` and the cron/subagent acks, the tracked-channel scope probe |
+| `slack/interactions_modals.py` | View submissions, the Forward to Agent shortcut, the config-panel and voice-config modals |
+| `slack/interactions_settings.py` | Channels modal, user and channel pickers, default-agent selector, allowlist and track-channel approvals |
+| `slack/interactions_options.py` | OPTIONS controls, `action::` buttons, the thread-to-dashboard import |
+| `slack/interactions_sessions.py` | Stop, resume, end and new-session buttons |
+| `slack/interactions_approvals.py` | Native tool-approval buttons and review-mode drafts |
+
+`interactions.py` keeps `init`, `dispatch` and `_handle_resume_choice` (with its lock table
+and closed-tab notice): the choice's session-file lookup is a stat inside an `async def`
+that the sync-io gate's fs baseline records against `interactions.py`, and `dispatch`, the
+route from an interactive payload to its handler, is its caller. `init()` writes `_orch`
+through the facade, so the facade and every owner that reads `_orch` hold the same
+orchestrator. New work goes to the owner of its responsibility;
+a construct a repository guard reads by path moves only together with that guard.
 
 ## APIs
 
@@ -1009,7 +1047,7 @@ Each channel can have its own activation mode controlling when the bot responds:
 
 ### Slack Commands
 
-#### Slash Command (`events.py`)
+#### Slash Command (`events_slash.py`)
 
 Command name configurable via `slack.command` in config (default: `kirocrew`).
 
@@ -1132,9 +1170,9 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - When part of a reply could not be delivered to Slack and not restored, the turn appends a "Part of this reply did not reach Slack…" delivery-debt notice
 - The per-turn wire state -- the stream message and its rotation, the rolling redactor, the delivery debt and the task cards -- is one `_AnswerStream` (`slack/handler_runtime/stream.py`) per turn; the delivery verdict that reads its flags is `_deliver_answer` (`slack/handler_runtime/delivery.py`)
 - **The run the native stream's `StreamRedactor` still holds** is settled where its message ends. At the seal (`settle_tail`) it is sent when the final text is clean and dropped when the final copy replaces the message. Before a tool card it stays held. At a `wait` it is carried (`carried`), so the filter sees it joined to the next text. When that joined text comes out of the filter whole and unchanged, `_give_back` reads the closed message back and edits it with `chat.update` on its own blocks (`markdown` or `rich_text`, plus any `plan` / `task_card` / `divider` after it) with the run added, and the next message, its final copy and the saved answer start after the run. Otherwise -- the filter changed the joined text, the blocks are another shape, or the read or edit fails -- the run opens the next message. A closed message is edited only this way
-- **Redaction notice** — when the delivered text (answer or thinking) still carries a `security.CREDENTIAL_REDACTION_TAGS` placeholder or a `security.EXFILTRATION_REDACTION_TAG_PREFIX` (suspicious-URL) placeholder, one `messaging.renderer.redaction_notice` message is posted in the thread after the answer is committed, so the reader knows a command or link they copy will not run as pasted. Worded by kind (credential → re-enter the secret; URL → re-check the link), and byte-identical to the prior `credential_redaction_notice` sentence when only credentials were rewritten. Redaction is NOT relaxed — Slack is an egress path. Counted from the tag in the sent text rather than the redactor's warnings list, which is empty on the streaming path because each chunk was already redacted upstream. **One notice per turn**: answer and thinking share a single tally. Approving a review-mode draft (`interactions.py`) posts the same notice for the same reason, since that publishes to the whole channel. Both posts are best-effort — a failed notice must never turn a delivered answer into a failed turn. The transport-path renderer (`slack/renderer.py`, the default `messaging.use_transport` delivery) posts the same one-per-turn notice: the final display-safe answer body and the posted 💭 reasoning share a single tally, counted with `messaging.renderer.count_redaction_tags` over the form the reader is left with — which can carry placeholders the driver's byte-level stream scan never wrote, because `_display_safe` re-redacts against what Slack renders
+- **Redaction notice** — when the delivered text (answer or thinking) still carries a `security.CREDENTIAL_REDACTION_TAGS` placeholder or a `security.EXFILTRATION_REDACTION_TAG_PREFIX` (suspicious-URL) placeholder, one `messaging.renderer.redaction_notice` message is posted in the thread after the answer is committed, so the reader knows a command or link they copy will not run as pasted. Worded by kind (credential → re-enter the secret; URL → re-check the link), and byte-identical to the prior `credential_redaction_notice` sentence when only credentials were rewritten. Redaction is NOT relaxed — Slack is an egress path. Counted from the tag in the sent text rather than the redactor's warnings list, which is empty on the streaming path because each chunk was already redacted upstream. **One notice per turn**: answer and thinking share a single tally. Approving a review-mode draft (`interactions_approvals.py`) posts the same notice for the same reason, since that publishes to the whole channel. Both posts are best-effort — a failed notice must never turn a delivered answer into a failed turn. The transport-path renderer (`slack/renderer.py`, the default `messaging.use_transport` delivery) posts the same one-per-turn notice: the final display-safe answer body and the posted 💭 reasoning share a single tally, counted with `messaging.renderer.count_redaction_tags` over the form the reader is left with — which can carry placeholders the driver's byte-level stream scan never wrote, because `_display_safe` re-redacts against what Slack renders
 
-## Message Queue (`session_parts/claims.py` + `events.py`)
+## Message Queue (`session_parts/claims.py` + `events.py` + `events_queue.py` + `events_inbound.py`)
 
 When a message arrives while a session is actively processing, it's queued instead of spawning a competing session:
 
@@ -1142,10 +1180,10 @@ When a message arrives while a session is actively processing, it's queued inste
 - **Orchestrator-level queue**: `_pending_queue` dict for the startup race (task running but session object not yet created)
 - **⏳ reaction**: added to queued messages so the user sees visual feedback
 - **FIFO drain**: `_on_done` callback drains both queue levels after each handler completes
-- **Cancellation**: `message_deleted` event removes queued messages or marks in-flight messages as cancelled; a `!stop` sent as a thread message (`_route_message`) clears the CALLER's queued messages only — every enqueue site and the `_pending_queue` stash tag each entry with `queued_owner` (`owner_token("slack", (sender_id, channel))`, via `_queue_tags`). The handler detaches both queues at the press into a per-key hold beside `_session_tasks` (`_stops_in_flight`, read through `_key_busy`) and calls `stop_turn(..., preserve_queue=True)`; a soft or idle outcome records the presser's owner token in the hold's drop set with the index of the snapshot that stop detached, so only entries detached at or before it are dropped (a message sent after one's own `!stop` survives another member's overlapping stop). The hold is released from one `finally` on every path. While any stop on the key is in flight `_key_busy` marks it busy, so neither turn-end drain, `_drain_slack_queue`, nor the busy check starts a message a stop would cancel. When the last overlapping stop settles, `_settle_stop_hold` merges the detached snapshots in press (= arrival) order, drops each stopping member's entries up to their stop's snapshot (`clear_queue(only=...)`, unlinking their temp files) and puts the rest back at the head of their queue, then runs `_drain_slack_queue` (which falls back to `_pending_queue`), so a kept entry is dispatched even when the stopped turn was never registered there. A stop that escalates to a hard reset still drops every member's queued messages (the forced repeat on a compacting session instead carries them all to the successor); the other cooperative Slack stop entry points (the native handler's `!stop` in `handler_runtime/commands.py`, the Stop confirm button and the inline Stop button in `interactions.py`) pass `stop_turn(owned_by=entries_queued_by(_entry_owner(user, channel)))`, so `stop_turn`'s own pre-cancel clear drops only the presser's entries. The two buttons run that call inside `slack_stop_in_flight`, which joins the same `_stops_in_flight` hold, so a turn ending mid-stop cannot start a kept entry that an escalation would then abort; the last release settles the hold and runs `_drain_slack_queue`. The handler's `!stop` needs no hold: it runs as the turn registered on the key. Both `slack_stop_in_flight` and `_drain_slack_queue` reduce a canonical `slack:<ts>` (a button value, the session layer's `register_drain` wake) to the bare ts the router keys its tasks, holds and stash by. Their forced repeat parks the whole queue for the successor, and Kill Now's hard reset drops it for everybody. An untagged entry (a dashboard-linked session's own queue) is nobody's to drop. The owner is the sender in the channel, not the thread: a thread session is one thread, and a single-session DM merges its threads into one key by design. The `message_deleted` drop in `_handle_message_deleted` stays keyed by timestamp — a deleted message is one entry, not one person's.
+- **Cancellation**: `message_deleted` event removes queued messages or marks in-flight messages as cancelled; a `!stop` sent as a thread message (`_route_message`) clears the CALLER's queued messages only — every enqueue site and the `_pending_queue` stash tag each entry with `queued_owner` (`owner_token("slack", (sender_id, channel))`, via `_queue_tags`). The handler detaches both queues at the press into a per-key hold beside `_session_tasks` (`_stops_in_flight`, read through `_key_busy`) and calls `stop_turn(..., preserve_queue=True)`; a soft or idle outcome records the presser's owner token in the hold's drop set with the index of the snapshot that stop detached, so only entries detached at or before it are dropped (a message sent after one's own `!stop` survives another member's overlapping stop). The hold is released from one `finally` on every path. While any stop on the key is in flight `_key_busy` marks it busy, so neither turn-end drain, `_drain_slack_queue`, nor the busy check starts a message a stop would cancel. When the last overlapping stop settles, `_settle_stop_hold` merges the detached snapshots in press (= arrival) order, drops each stopping member's entries up to their stop's snapshot (`clear_queue(only=...)`, unlinking their temp files) and puts the rest back at the head of their queue, then runs `_drain_slack_queue` (which falls back to `_pending_queue`), so a kept entry is dispatched even when the stopped turn was never registered there. A stop that escalates to a hard reset still drops every member's queued messages (the forced repeat on a compacting session instead carries them all to the successor); the other cooperative Slack stop entry points (the native handler's `!stop` in `handler_runtime/commands.py`, the Stop confirm button and the inline Stop button in `interactions_sessions.py`) pass `stop_turn(owned_by=entries_queued_by(_entry_owner(user, channel)))`, so `stop_turn`'s own pre-cancel clear drops only the presser's entries. The two buttons run that call inside `slack_stop_in_flight`, which joins the same `_stops_in_flight` hold, so a turn ending mid-stop cannot start a kept entry that an escalation would then abort; the last release settles the hold and runs `_drain_slack_queue`. The handler's `!stop` needs no hold: it runs as the turn registered on the key. Both `slack_stop_in_flight` and `_drain_slack_queue` reduce a canonical `slack:<ts>` (a button value, the session layer's `register_drain` wake) to the bare ts the router keys its tasks, holds and stash by. Their forced repeat parks the whole queue for the successor, and Kill Now's hard reset drops it for everybody. An untagged entry (a dashboard-linked session's own queue) is nobody's to drop. The owner is the sender in the channel, not the thread: a thread session is one thread, and a single-session DM merges its threads into one key by design. The `message_deleted` drop in `_handle_message_deleted` stays keyed by timestamp — a deleted message is one entry, not one person's.
 - **`is_cancelled()` check**: handler checks before responding and before the LLM call to suppress responses for deleted messages
 
-## Linked Thread Sync (`handler.py` + `interactions.py`)
+## Linked Thread Sync (`handler.py` + `interactions.py` + `interactions_sessions.py` + `interactions_options.py`)
 
 Bidirectional message mirroring between dashboard chat sessions and Slack threads:
 
@@ -1161,7 +1199,7 @@ Bidirectional message mirroring between dashboard chat sessions and Slack thread
 
 Shared data-collection and Block Kit rendering for recent sessions, used by three surfaces:
 
-- **`/<command> sessions` slash command** — `_handle_sessions` in `events.py`
+- **`/<command> sessions` slash command** — `_handle_sessions` in `events_slash.py`
 - **`sessions` keyword in DMs** — `_handle_sessions_command` in `handler_runtime/dispatch.py`
 - **App Home Tab** — 🧵 Sessions section in `_publish_home_tab` (split into "Main chat" and "Task runner" sub-lists)
 
@@ -1175,7 +1213,7 @@ All three surfaces call `await _collect_recent_sessions_off_loop(sessions, *, li
 
 **The marker is an ALLOWLIST, and it has to be.** `role == "user"` does not mean a person typed the row: the gateway drives agent turns through the same shape, and `_ChatSlot.enqueue_or_run_prompt` appends `("user", prompt, "msg msg-u")` for an Issue Radar wake — identical in role AND in presentation class to a typed message. A reader that excluded the machine callers it happened to know about would be broken by the next one, silently, with background sessions displacing human-active ones. So the send paths a person actually reaches set the marker (`chat_handlers` ordinary send, `chat_delivery` steer, `channel_slots` channel turn projection, the `chat_runner` queue drain of a human-origin turn, and the Slack-to-linked-slot mirror in `slack/handler_runtime/finalize.py`) and everything unmarked simply does not count. An app token reaches `api_chat` as well, so the ordinary-send marker is gated on the same empty-`request_app` signal that handler already reads for `user_origin` and `turn_actor` — an app's send is not a human turn and must not advance the stamp. The steer marker is gated on `user_origin`, because the `session_send` peer steer reaches the same path with `user_origin=False`. Under-counting is the safe direction: a session with no marked row keeps ranking by `st_mtime`.
 
-The slash command and keyword (which post via `chat.postMessage`) use the shared `blocks.session_task_card` builder. The Home Tab calls with `for_home_tab=True` and uses `section` blocks instead — Slack's `views.publish` API rejects `task_card` with `unsupported type: task_card`. Both paths keep the canonical `mc_session_resume_{key}` action ID handled by `interactions.py:_handle_session_resume`.
+The slash command and keyword (which post via `chat.postMessage`) use the shared `blocks.session_task_card` builder. The Home Tab calls with `for_home_tab=True` and uses `section` blocks instead — Slack's `views.publish` API rejects `task_card` with `unsupported type: task_card`. Both paths keep the canonical `mc_session_resume_{key}` action ID handled by `interactions_sessions.py:_handle_session_resume`.
 
 The Home Tab requests up to `_HOME_TAB_SESSIONS_PER_KIND = 5` rows per kind so both surfaces stay well under Slack's 100-block view limit. The slash command and keyword each request `slack.sessions_limit` rows, default 10 — the collector's own `_SESSIONS_DEFAULT_LIMIT`. A configured value below 1, or one that is not a number at all, falls back to that default INSIDE the collector: the read loop breaks on `len(rows) >= limit` before it opens a file, so a 0 would render an empty list forever, and an uncomparable value would raise inside each surface's try block and turn a bad number into "Sessions unavailable" plus an error audit. The guard sits at the one chokepoint every surface passes through, so no surface can skip it. The UPPER bound is Slack's own and therefore lives in the Slack module: `chat.postMessage` rejects a payload over 50 blocks, the message layout costs 3 blocks per row less the trailing divider, and 17 rows render exactly 50 (measured against `_build_sessions_blocks`, and pinned by a test that measures it rather than restating the arithmetic). So `_message_surface_limit` clamps the DM keyword and the slash command to `MAX_MESSAGE_SESSION_ROWS`; an over-budget payload is rejected WHOLE, so an unclamped `sessions_limit: 18` would render no list at all, which reads as the feature being broken rather than as one number being too high. The Home Tab is unaffected: it posts through `views.publish`, whose budget is different, and asks for `_HOME_TAB_SESSIONS_PER_KIND` per kind.
 
@@ -1191,7 +1229,7 @@ Sharing the builder also means the `sessions` keyword displays the same 🟢 act
 
 ### Ended rows leave the list
 
-`⏹️ End` (`mc_session_end_{key}`, handled by `interactions.py:_handle_session_end`) records a **dismissal** on the row's transcript: `closed: True` plus a `closed_at` epoch on the metadata line, written through `ConversationLog.update_metadata_if` and therefore mtime-preserving. `messaging/sessions_view._row_is_ended` reads that flag back and the collector leaves such rows out unless the caller passes `include_ended=True`.
+`⏹️ End` (`mc_session_end_{key}`, handled by `interactions_sessions.py:_handle_session_end`) records a **dismissal** on the row's transcript: `closed: True` plus a `closed_at` epoch on the metadata line, written through `ConversationLog.update_metadata_if` and therefore mtime-preserving. `messaging/sessions_view._row_is_ended` reads that flag back and the collector leaves such rows out unless the caller passes `include_ended=True`.
 
 Three details are load-bearing:
 
@@ -1266,12 +1304,12 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 - **`TurnDriver`** (`messaging/driver.py`): channel-neutral turn loop converting provider `AcpEvent`s into abstract `OutputEvent`s. Approval ladder mirrors the native `APPROVAL_*` contract — `APPROVAL_AUTO` / `APPROVAL_TRUST` (approve all), `APPROVAL_TRUST_READS` (approve `tool_kind == "read"`), `APPROVAL_INTERACTIVE` (deny-by-default unless the injected decider approves). Two injected predicates keep the driver channel-neutral: `auto_approve_tool` (the `spawn_run` / `auto_approve_subagent_spawn` hook predicate) and `auto_approve_session` (per-session Trust). Interactive buttons are rendered only when a decider is present — without one, `_approve()` denies by default so posting buttons would leave dead controls.
 - **`SlackRenderer` + `SlackApprovalDecider`** (`slack/renderer.py`): renders abstract output onto a Slack thread and holds the underlying `SlackClientOps` so the dashboard→Slack mirror keeps working. Approval buttons use `mc_tool_approve_` / `mc_tool_trust_` (per-session Trust) / `mc_tool_deny_` action prefixes. `SlackApprovalDecider` maintains a process-global `_REGISTRY` keyed by request id so the module-level interaction handler can `resolve_global()` a click without a direct reference to the per-turn decider; `session_for()` maps a click back to its session for per-session Trust. The decider is **deny-by-default** — it `wait_for`s the button future and returns `False` on timeout.
 - **`handle_message_transport`** (`slack/transport_dispatch.py`): agent resolution order is thread override (`!agent`) → per-channel override (`slack.channels.<id>.agent`) → configured default → canonical `"kirocrew"` (`_DEFAULT_KIROCREW_AGENT`). The final fallback matters: without it an empty `agent.default_agent` makes kiro-cli launch its bare built-in default with no `kirocrew-core` server, so `spawn_run` would be missing. Fires the ack reaction + working status before the (cold-start) session acquisition, matching native ordering. A failed turn posts `_transport_error_text`: a classified backend `AcpError` (one Kiro Crew worded for the user, marked by `user_worded` with a `transient` verdict that is not True, or the `AcpPromptBusy` type, for example a usage limit) is shown as its own reason under the native path's `❌` prefix, decided by `agent_sdk.drivers.acp_vocab.is_user_worded_failure` (so the transport module never names the ACP classes), redacted for local paths and for credentials as Slack displays the text (`_display_safe`, so a key split by `*`, `_` or backticks is caught) and truncated to 1000 characters like the `UnknownMemoryStore` refusal; an unclassified `AcpError` (the formatter's fallback that passes the provider's own text or the raw error dict through, a retryable failure such as throttling, a child exit with its stderr tail, a shutdown notice), timeouts, process deaths and non-ACP faults keep the generic retry text.
-- **`_resolve_approval_mode(orch)`** (`events.py`): the single per-message chokepoint that folds runtime YOLO (owner-toggled `/kirocrew yolo`, TTL-capped `safety_override`) into `APPROVAL_AUTO`, evaluated fresh each message. The transport `TurnDriver` only sees this resolved mode, so both the native and transport paths honor the runtime toggle consistently rather than an unconditional auto-approve. Deny-by-default unless auto-approve is explicitly active.
+- **`_resolve_approval_mode(orch)`** (`events_queue.py`): the single per-message chokepoint that folds runtime YOLO (owner-toggled `/kirocrew yolo`, TTL-capped `safety_override`) into `APPROVAL_AUTO`, evaluated fresh each message. The transport `TurnDriver` only sees this resolved mode, so both the native and transport paths honor the runtime toggle consistently rather than an unconditional auto-approve. Deny-by-default unless auto-approve is explicitly active.
 
 ## Tool Approval Flow
 
 1. ACP sends `permission_request` event during streaming
-2. `events.py:_resolve_approval_mode()` evaluates runtime YOLO, then the CLI `--approval` override, then `agent.approval_mode`; only an explicit auto policy yields `APPROVAL_AUTO`, otherwise it yields `APPROVAL_INTERACTIVE`. Native and transport dispatch both use this chokepoint, preventing an operator policy from being silently bypassed.
+2. `events_queue.py:_resolve_approval_mode()` evaluates runtime YOLO, then the CLI `--approval` override, then `agent.approval_mode`; only an explicit auto policy yields `APPROVAL_AUTO`, otherwise it yields `APPROVAL_INTERACTIVE`. Native and transport dispatch both use this chokepoint, preventing an operator policy from being silently bypassed.
 3. Handler posts a Block Kit message with ✅ Approve / 🤝 Trust session / 🚫 Reject buttons in a DM, and ✅ Approve / 🚫 Reject in a group channel; there is no YOLO button (YOLO is owner-only via `!yolo on`) (`_request_approval` in `slack/handler_runtime/permission_ladder.py`; the blocks are `_build_approval_blocks`, `slack/handler_runtime/approvals.py`)
 4. `events.py` routes `interactive` Socket Mode event to `interactions.dispatch()`
 5. Approval/rejection sent to ACP, streaming resumes or stops
@@ -1318,7 +1356,7 @@ See `session.py` module spec. Each Slack thread_ts maps to a separate AcpClient 
 
 ### Message Queue
 
-Messages arriving while a session is busy are queued with ⏳ reaction and drained FIFO after each handler completes. See [Message Queue](#message-queue-session_partsclaimspy--eventspy) above.
+Messages arriving while a session is busy are queued with ⏳ reaction and drained FIFO after each handler completes. See [Message Queue](#message-queue-session_partsclaimspy--eventspy--events_queuepy--events_inboundpy) above.
 
 ### Startup
 
@@ -1474,7 +1512,7 @@ on every tick.
 
 ## Subagent & Cron Acknowledgment
 
-Subagent completion and cron execution results post to both dashboard (WebSocket) and Slack (DM with ack button). Shared `ack_button()` helper in `interactions.py` handles button replacement:
+Subagent completion and cron execution results post to both dashboard (WebSocket) and Slack (DM with ack button). Shared `ack_button()` helper in `interactions_context.py` handles button replacement:
 
 1. Try `response_url` first (instant, works for 30 min)
 2. Fallback: `chat.update` via Slack API (works indefinitely)
@@ -1586,7 +1624,7 @@ stall cron, heartbeat, task-runner, or AutoNudge turns.
 - When `is_background`, both the Slack `wait_for(pending.future, ...)` and
   `DashboardState.request_approval(..., is_background=True)` use
   `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS` and then **deny** on expiry —
-  letting the turn proceed/fail rather than hang. `test/test_dashboard_approval.py::TestBackgroundApprovalDenyFast` pins the bounded background window and the unchanged interactive window.
+  letting the turn proceed/fail rather than hang. `test/test_dashboard_approval_denials.py::TestBackgroundApprovalDenyFast` pins the bounded background window and the unchanged interactive window.
 - The Slack and dashboard windows reference `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS`
   / `DashboardState._APPROVAL_TIMEOUT` as the single source of truth.
 

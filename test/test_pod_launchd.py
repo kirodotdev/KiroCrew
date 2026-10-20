@@ -1,6 +1,6 @@
 """Tests for the macOS launchd pod backend.
 
-These run on EVERY platform: like ``test_pod.py`` fakes ``systemctl``, they fake
+These run on EVERY platform: like ``test_pod_systemd.py`` fakes ``systemctl``, they fake
 ``launchctl`` at the module boundary, so a Linux CI runner exercises the darwin
 code path without launchd being present. That matters because the repo's macOS CI
 job is deliberately narrow — without these, the backend would ship with no

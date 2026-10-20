@@ -946,7 +946,7 @@ class TestEveryHostDenyCallSiteIsWired:
     # keyword-only ``attribution`` is required (an omission is a mypy error). So
     # this half only has to be textual: no ``.reject_tool(`` outside those four
     # functions, and every ``_reject_attributed`` call states a real value.
-    # chat_runner.py answers the dashboard's ``session/request_permission``;
+    # chat_turn/tool_approval.py and permission_prompt.py answer ``session/request_permission``;
     # other modules answer their own surfaces and are out of this guard's scope.
     # ------------------------------------------------------------------
 

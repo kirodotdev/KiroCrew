@@ -488,16 +488,22 @@ def test_the_spawn_gate_is_called_exactly_once_per_spawn():
     harnesses' spawn seams, which together are one spawn."""
     import ast
     import inspect
+    import sys
     from pathlib import Path as _Path
 
     from kiro_crew.acp import runtime as runtime_mod
     from kiro_crew.acp.harness import base, kas, kiro
 
-    def _gate_calls(module, class_name: str, method: str) -> int:
+    def _gate_calls(module, class_name: str | None, method: str) -> int:
         source = _Path(module.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef) or node.name != class_name:
+        # ``class_name=None`` reads a module-level function: AcpRuntime binds its members
+        # from owner modules that define them at module level.
+        scopes = [tree] if class_name is None else list(ast.walk(tree))
+        for node in scopes:
+            if class_name is not None and (
+                not isinstance(node, ast.ClassDef) or node.name != class_name
+            ):
                 continue
             for child in node.body:
                 if isinstance(child, ast.AsyncFunctionDef) and child.name == method:
@@ -512,8 +518,9 @@ def test_the_spawn_gate_is_called_exactly_once_per_spawn():
                     )
         raise AssertionError(f"{class_name}.{method} not found in {module.__name__}")
 
+    plan_owner = sys.modules[runtime_mod.AcpRuntime._resolve_spawn_plan.__module__]
     assert (
-        _gate_calls(runtime_mod, "AcpRuntime", "_resolve_spawn_plan") == 1
+        _gate_calls(plan_owner, None, "_resolve_spawn_plan") == 1
     ), "the runtime is the single owner of the spawn gate, so it calls it exactly once"
     for module, cls in ((kas, "KasHarness"), (kiro, "KiroHarness"), (base, "AcpHarness")):
         try:
@@ -556,7 +563,7 @@ def test_the_harness_spawn_seam_is_reached_only_through_the_gated_owner():
             invocations.append(f"{path.name}:{lineno}")
     assert sorted(name.split(":")[0] for name in invocations) == [
         "client_start.py",
-        "runtime.py",
+        "runtime_spawn_launch.py",
     ], f"the spawn seam is invoked from an unexpected place: {invocations}"
     assert not any(issubclass(cls, HarnessAdapter) for cls in _PROCESS_ADAPTERS.values())
     for backend in ACP_BACKENDS_ACP_RUNTIME:

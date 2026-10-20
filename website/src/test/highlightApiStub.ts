@@ -8,6 +8,8 @@
 export class HighlightStub extends Set<Range> {
   priority = 0
   type: 'highlight' | 'spelling-error' | 'grammar-error' = 'highlight'
+  /** The real constructor takes its initial ranges as arguments: `new Highlight(a, b)`. */
+  constructor(...ranges: Range[]) { super(ranges) }
 }
 
 export function installHighlightApiStub(): void {

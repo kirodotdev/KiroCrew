@@ -147,6 +147,15 @@ class Launch:
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
         self.alias_credential_ids = plan["alias_credential_ids"]
         self.required_mask_targets = frozenset(plan["required_mask_targets"])
+        #: The masked directories that must be SEALED read-only when they carry no
+        #: writable window: the caller-supplied masks (``extra_hidden_dirs`` -- an app
+        #: bundle's ``data/``, a cron naming another app's tree) where a lost write is
+        #: real data loss. The host vendor credential dirs (``.aws``, ``.docker``,
+        #: ``.config/gcloud`` ...) are deliberately NOT here: their CLIs write ephemeral
+        #: state into the empty stand-in on every run, so sealing them would break the
+        #: tool rather than protect data. Absent in an older payload -> seal nothing,
+        #: which is exactly main's behaviour before this control.
+        self.seal_windowless_masks = frozenset(plan.get("seal_windowless_masks", ()))
         self.mask_occupants = plan["mask_occupants"]
         self.crew_home_aliases = plan["crew_home_aliases"]
         self.expose_files = plan["expose_files"]
@@ -1338,6 +1347,49 @@ def seal_readonly(launch):
             )
 
 
+def _seal_masked_dir_if_windowless(launch, name, has_window):
+    """Remount an opted-in masked directory's stand-in read-only when nothing writes to it.
+
+    The hide this follows is a bind of a fresh empty directory, and on Linux that bind
+    is a WRITABLE empty tmpfs: with no read-only remount a write into the masked path
+    lands in that disposable backing and is lost when the namespace is torn down, so the
+    job reports success while nothing was persisted. For a masked directory the caller
+    explicitly OPTED IN to sealing (``seal_windowless_masks``) and that has no writable
+    window, there is no legitimate in-sandbox writer, so the stand-in is sealed read-only
+    and the write fails loudly with EROFS instead -- the fail-safe side of a data-loss
+    choice.
+
+    SCOPE is the opt-in set alone, and the planner puts a mask there only when its
+    creator asked (``SandboxRequest.seal_hidden_dirs`` -> ``Mask.seal_readonly``). It is
+    NOT inferred from origin, exposure or path. So a tier host-credential directory
+    (``.aws``, ``.docker``, ``.config/gcloud`` ...), a mask that re-exposes a file read-only
+    through ``restore_exposed_files`` (``.aws`` in cc mode), and every other mask that did
+    not opt in keep their writable stand-in -- which is what the launcher's own
+    ``restore_exposed_files`` and the vendor CLIs depend on. A directory absent from the
+    set keeps main's writable-stand-in behaviour.
+
+    A masked directory that DOES carry a window keeps its stand-in writable even when it
+    opted in: the window is the explicit write surface, and the launcher binds it on top
+    of this stand-in. ``has_window`` is the caller's answer to whether any private window
+    sits at or below *name*.
+
+    The remount names the NAME, the same way :func:`mask_sensitive_files` seals its
+    unreadable file masks, and re-asserts the kernel-locked nosuid/nodev/noexec bits via
+    :func:`_locked_mount_flags`. ``_verify_masked_name`` has already confirmed the name
+    reaches this launcher's own stand-in before this runs, so the remount cannot land on
+    a racing writer's substitute.
+    """
+    if has_window or os.fsdecode(name) not in launch.seal_windowless_masks:
+        return
+    _mount_or_die(
+        launch,
+        name,
+        name,
+        _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(name),
+        "sealing masked directory %s read-only" % os.fsdecode(name),
+    )
+
+
 def mask_sensitive(launch):
     """Bind an empty directory over each sensitive dir, re-open its windows, re-hide nested leaves.
 
@@ -1415,6 +1467,11 @@ def mask_sensitive(launch):
                 "opening private window %s" % p,
             )
             launch.bound_windows.add(p.rstrip("/"))
+        # No window inside this mask means no in-sandbox writer should reach it: seal the
+        # empty stand-in read-only so a write fails loudly rather than landing in the
+        # throwaway tmpfs. A windowed mask keeps its stand-in writable (the window IS the
+        # write surface) -- the nested re-hides below land on top either way.
+        _seal_masked_dir_if_windowless(launch, d.encode(), bool(_windows))
         # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the masked
         # ``apps/meetings/data/edits`` -- and the bind above just replaced the empty
         # stand-in that covered it with the real tree. Re-apply those nested masks NOW,

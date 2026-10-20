@@ -2,9 +2,9 @@
 
 Crew member names and memory bindings, config surfaces that still name a
 deprecated agent spec, the optional Claude Code backend, and one sign-in row per
-selectable harness. Names the doctor imports, and the host probes a repository
-gate pins to ``cli_doctor.py``, are read through :mod:`kiro_crew.cli_doctor` at call
-time, so a patch there reaches these sections.
+selectable harness. Names the doctor imports, and the host probes
+``cli_doctor_parts/host_probes.py`` holds, are read through :mod:`kiro_crew.cli_doctor`
+at call time, so a patch there reaches these sections.
 """
 
 from __future__ import annotations

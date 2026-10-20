@@ -26,6 +26,13 @@ _HOISTED_MODULES = (
 _HOISTED_FILES = (
     "kiro_crew/dashboard/handlers/agents.py",
     "kiro_crew/dashboard/handlers/mcp.py",
+    "kiro_crew/dashboard/handlers/mcp_agent_sync.py",
+    "kiro_crew/dashboard/handlers/mcp_config_entries.py",
+    "kiro_crew/dashboard/handlers/mcp_config_files.py",
+    "kiro_crew/dashboard/handlers/mcp_config_purge.py",
+    "kiro_crew/dashboard/handlers/mcp_gateway_routes.py",
+    "kiro_crew/dashboard/handlers/mcp_gateway_stubs.py",
+    "kiro_crew/dashboard/handlers/mcp_probe.py",
     "kiro_crew/dashboard/handlers/hooks.py",
     "kiro_crew/dashboard/handlers/hooks_scripts.py",
     "kiro_crew/dashboard/handlers/hooks_webhook_intake.py",

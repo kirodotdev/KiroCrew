@@ -288,13 +288,21 @@ _run_step() {
   # A signal that landed between the takeover and the fork found no child to
   # stop; stop the one that now exists.
   if [ -n "$_rs_sig" ]; then _rs_interrupt "$_rs_sig"; fi
-  _rs_start="$(date +%s)"
-  _rs_cols="$(tput cols 2>/dev/null || echo "${COLUMNS:-80}")"
+  # No command substitution while the step owns INT: bash drops a trapped
+  # SIGINT that lands while it waits on a `$(...)`, so a Ctrl-C there would
+  # stop nothing. Each value goes through a scratch file and `read` instead.
+  _rs_out="$TMP/.rs_out.$$"
+  date +%s > "$_rs_out" 2>/dev/null || :
+  IFS= read -r _rs_start < "$_rs_out" || :
+  { tput cols 2>/dev/null || echo "${COLUMNS:-80}"; } > "$_rs_out"
+  IFS= read -r _rs_cols < "$_rs_out" || :
   case $_rs_cols in ''|*[!0-9]*) _rs_cols=80 ;; esac
   _rs_i=0
   _rs_beat=0
   while kill -0 "$_rs_pid" 2>/dev/null; do
-    _rs_el=$(( $(date +%s) - _rs_start ))
+    date +%s > "$_rs_out" 2>/dev/null || :
+    IFS= read -r _rs_now < "$_rs_out" || :
+    _rs_el=$(( _rs_now - _rs_start ))
     if [ "$_tty" = 1 ]; then
       case $((_rs_i % 4)) in
         0) _rs_f='|' ;; 1) _rs_f='/' ;; 2) _rs_f='-' ;; *) _rs_f='\' ;;
@@ -304,12 +312,14 @@ _run_step() {
       # per redraw. Width comes from tput, then $COLUMNS, then 80. The
       # prefix is cut to fit first (a very narrow terminal), and the tail
       # gets whatever room the prefix leaves.
-      _rs_head="$(printf "%.$((_rs_cols - 1))s" "$_rs_f $_rs_msg (${_rs_el}s)")"
+      printf "%.$((_rs_cols - 1))s\n" "$_rs_f $_rs_msg (${_rs_el}s)" > "$_rs_out"
+      IFS= read -r _rs_head < "$_rs_out" || :
       _rs_room=$(( _rs_cols - 1 - ${#_rs_head} - 2 ))
       _rs_last=""
       if [ "$_rs_room" -ge 8 ]; then
-        _rs_last="$(tail -n 1 "$_rs_log" 2>/dev/null | tr -d '\r' \
-          | sed 's/^[[:space:]]*//' | cut -c1-"$_rs_room")"
+        tail -n 1 "$_rs_log" 2>/dev/null | tr -d '\r' \
+          | sed 's/^[[:space:]]*//' | cut -c1-"$_rs_room" > "$_rs_out"
+        IFS= read -r _rs_last < "$_rs_out" || :
       fi
       printf '\r\033[K%s%s' "$_rs_head" "${_rs_last:+  $_rs_last}"
       _rs_i=$((_rs_i + 1))
@@ -326,7 +336,7 @@ _run_step() {
   _rs_rc=0
   wait "$_rs_pid" || _rs_rc=$?
   . "$_rs_traps"
-  rm -f "$_rs_traps"
+  rm -f "$_rs_traps" "$_rs_out"
   _rs_el=$(( $(date +%s) - _rs_start ))
   if [ "$_tty" = 1 ]; then printf '\r\033[K'; fi
   if [ -n "$_rs_sig" ]; then

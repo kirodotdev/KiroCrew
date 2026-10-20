@@ -1029,8 +1029,8 @@ def apply_claimed_rows(groups: list[set[str]], rows: list[dict[str, Any]]) -> in
     # clock stamps two rows appended in one tick alike, which the collision check
     # below is what handles -- a ts shared by two restored rows flags NEITHER. So the
     # first-wins here settles which CLAIM owns an identity, not which row a shared
-    # timestamp meant, and `_run_chat` excluding every pre-turn row from the claim it
-    # writes is why two live claims cannot contend for one row in the first place.
+    # timestamp meant, and `_on_tool_result` (chat_turn/tool_results.py) excluding every
+    # pre-turn row from the claim it writes is why two live claims cannot contend for one row.
     group_of: dict[str, int] = {}
     for index, group in enumerate(groups):
         for ts in group:

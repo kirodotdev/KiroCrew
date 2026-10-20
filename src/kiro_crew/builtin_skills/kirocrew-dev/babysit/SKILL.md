@@ -116,7 +116,7 @@ explicit restart action. Never erase that evidence or retry the refusal.
 monitor_start({
   "message": "Watch https://github.com/kirodotdev/KiroCrew/pull/123. On each injected cycle, inspect current review comments and checks. Act only on a real change. Kiro Crew AI repairs MUST follow kirocrew-prepare-pr Review repair routing with model-pinned subagents and parent verification; commit and push only if authorized. If ready, terminal, blocked, stopped by the user or out of budget, report the outcome and any open findings, then call autonudge_stop with a reason.",
   "interval_secs": 300,
-  "max_cycles": 24,
+  "max_cycles": 48,
   "max_runtime_secs": 14400,
   "gate": false
 })

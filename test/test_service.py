@@ -847,7 +847,7 @@ class TestLinuxServiceWritesUtf8:
     Both staging writes went through ``os.fdopen(fd, "w")`` with no
     ``encoding=``, so the bytes handed to ``sudo install`` were locale-dependent
     while the consumer's contract is fixed. The same module already reads its
-    environment file back with ``encoding="utf-8"`` (``linux.py:448``), so the
+    environment file back with ``encoding="utf-8"`` (``_env_file_is_untouched_seed``), so the
     round trip crossed two different encodings.
 
     The same argument applies here as to the drop-in case.
@@ -937,11 +937,13 @@ class TestLinuxServiceWritesUtf8:
         """Ratchet. This is the assertion that goes red on the unfixed tree, and
         it is what stops the seam decaying again -- the two sites here were
         themselves the residue of an earlier pass that fixed a sibling."""
+        import importlib
         from pathlib import Path
 
         from kiro_crew.service import linux as svc_linux
 
-        source = Path(svc_linux.__file__).read_text(encoding="utf-8")
+        family = (svc_linux, *map(importlib.import_module, svc_linux._OWNERS))
+        source = "".join(Path(module.__file__).read_text(encoding="utf-8") for module in family)
         offenders = _text_writes_missing_encoding(source)
 
         assert offenders == [], (

@@ -679,8 +679,8 @@ _STOP_HANDLERS = (
     ("teams", "transport_dispatch.py", "_handle_stop"),
     ("webex", "transport_dispatch.py", "_handle_stop"),
     ("slack", "events.py", "_route_message"),
-    ("slack", "interactions.py", "_handle_stop_confirm"),
-    ("slack", "interactions.py", "_handle_inline_stop"),
+    ("slack", "interactions_sessions.py", "_handle_stop_confirm"),
+    ("slack", "interactions_sessions.py", "_handle_inline_stop"),
     ("slack", "handler_runtime/commands.py", "_bang_stop"),
 )
 

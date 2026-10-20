@@ -2116,6 +2116,20 @@ jobs:
             test/test_per_tool_mcp_deny_single_binary.py \
             test/test_pi_gate_extension_mcp.py
 
+      # A pin bump must re-run the live captures taken against the old release, not
+      # only the handshake assertions above. This reds when a pinned adapter's
+      # fixture under test/fixtures/acp_frames/ records a version other than the
+      # manifest's; the shrink-only stale list in the test is the written-down
+      # exception, and each entry names the pin it was accepted against. It runs
+      # AFTER the contract tests, and whether they passed or not, so a bump PR
+      # still measures the new release before this step reds it.
+      - name: Require pinned adapters' live fixtures to match the pin
+        if: success() || failure()
+        shell: /usr/local/bin/ci-shell {0}
+        run: |
+          echo "::remove-matcher owner=python::"
+          pytest -n0 --no-cov -q test/test_real_adapter_fixture_pins.py
+
       # The second half of the no-silent-skip rule, and the half that does not trust
       # the first. KIROCREW_E2E_REQUIRE turns an absent adapter into a failure; this
       # asserts on the REPORT that the selected cases ran. A variable that never

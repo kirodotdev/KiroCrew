@@ -7,10 +7,12 @@ date parsing, the caller's workspace bucket, and the snippet a match is shown wi
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
 from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
-from kiro_crew.history import is_incognito_transcript, snippet_needles
+from kiro_crew.history import is_incognito_transcript
+from kiro_crew.history_search import snippet_needle_tiers, tiered_first_hit
 from kiro_crew.platform import redact_via_context as redact
 
 # ── Chat-history search helpers (Phase 1: search_chat_history / get_chat_session) ──
@@ -126,10 +128,25 @@ def _casefold_match_span(text: str, needle_cf: str) -> tuple[int, int] | None:
     return start, end
 
 
-def _extract_history_snippet(messages: list[dict], needle: str) -> str:
-    """Return a bounded snippet around the first user/assistant message matching *needle*.
+def _snippet_contents(messages: list[dict]) -> Iterator[str]:
+    """The non-empty user/assistant content strings of *messages*, in order.
 
-    The matched substring is delimited with ``<<<...>>>``. Returns "" when no
+    Only that content is surfaced (mirroring get_chat_session), so the snippet is
+    the human-facing context, not a tool/system trace blob.
+    """
+    for m in messages:
+        if str(m.get("role", "")).lower() not in _HISTORY_SNIPPET_ROLES:
+            continue
+        content = m.get("content")
+        if isinstance(content, str) and content:
+            yield content
+
+
+def _extract_history_snippet(messages: list[dict], needle: str) -> str:
+    """Return a bounded snippet around the best user/assistant match of query *needle*.
+
+    The anchor is picked by :func:`~kiro_crew.history_search.tiered_first_hit`
+    and the matched substring is delimited with ``<<<...>>>``. Returns "" when no
     eligible message content contains the needle (e.g. it only matched the title).
     """
     # Defense-in-depth: an empty/whitespace needle makes str.find return 0 on
@@ -141,47 +158,37 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
     # Same parse as search_sessions: that call decides a session MATCHED on
     # scattered needles, so searching only the whole phrase here would return ""
     # and suppress the row's snippet for exactly the multi-word queries the
-    # needle-wise match enables. Ordered highest-signal first (phrase, whole
-    # terms and CJK bigrams, then lone characters) so the excerpt centers on
-    # the most meaningful hit available.
-    needles_cf = snippet_needles(needle)
-    if not needles_cf:
+    # needle-wise match enables. Tiered highest-signal first (phrase and
+    # verbatim runs, then whole terms, words and CJK bigrams, then lone
+    # characters) so the excerpt centers on the most meaningful hit available.
+    tiers = snippet_needle_tiers(needle)
+    if not tiers:
         return ""
-    for m in messages:
-        # Only surface user/assistant content (mirror get_chat_session) so the
-        # snippet is the human-facing context, not a tool/system trace blob.
-        if str(m.get("role", "")).lower() not in _HISTORY_SNIPPET_ROLES:
-            continue
-        content = m.get("content")
-        if not isinstance(content, str) or not content:
-            continue
-        folded = content.casefold()
-        for needle_cf in needles_cf:
-            idx = folded.find(needle_cf)
-            if idx < 0:
-                continue
-            start = max(0, idx - _SNIPPET_RADIUS)
-            end = min(len(content), idx + len(needle_cf) + _SNIPPET_RADIUS)
-            seg = content[start:end]
-            # Redact BEFORE inserting <<<...>>> markers: marker insertion would
-            # split a credential/URL token and defeat the contiguous-match
-            # redactors, so a query that is a substring of a secret in stored
-            # content could leak it.
-            seg = _redact_history_output(seg)
-            # Locate the match span in the (possibly redacted) original text using
-            # the SAME full casefolding as the selection above — a case-insensitive
-            # regex does only simple per-char mapping and would miss multi-char
-            # folds (ß→ss), leaving a selected-but-unwrapped snippet with no
-            # <<<...>>>.
-            span = _casefold_match_span(seg, needle_cf)
-            if span:
-                s, e = span
-                seg = seg[:s] + "<<<" + seg[s:e] + ">>>" + seg[e:]
-            seg = ("…" if start > 0 else "") + seg + ("…" if end < len(content) else "")
-            result = seg[:_SNIPPET_MAX_LEN]
-            # If the hard cap sliced through the match delimiters (possible with a
-            # long query), re-close so the consumer never sees a dangling "<<<".
-            if "<<<" in result and ">>>" not in result:
-                result = result[: _SNIPPET_MAX_LEN - 3] + ">>>"
-            return result
-    return ""
+    found = tiered_first_hit(_snippet_contents(messages), tiers)
+    if found is None:
+        return ""
+    content, idx, needle_cf = found
+    start = max(0, idx - _SNIPPET_RADIUS)
+    end = min(len(content), idx + len(needle_cf) + _SNIPPET_RADIUS)
+    seg = content[start:end]
+    # Redact BEFORE inserting <<<...>>> markers: marker insertion would
+    # split a credential/URL token and defeat the contiguous-match
+    # redactors, so a query that is a substring of a secret in stored
+    # content could leak it.
+    seg = _redact_history_output(seg)
+    # Locate the match span in the (possibly redacted) original text using
+    # the SAME full casefolding as the selection above — a case-insensitive
+    # regex does only simple per-char mapping and would miss multi-char
+    # folds (ß→ss), leaving a selected-but-unwrapped snippet with no
+    # <<<...>>>.
+    span = _casefold_match_span(seg, needle_cf)
+    if span:
+        s, e = span
+        seg = seg[:s] + "<<<" + seg[s:e] + ">>>" + seg[e:]
+    seg = ("…" if start > 0 else "") + seg + ("…" if end < len(content) else "")
+    result = seg[:_SNIPPET_MAX_LEN]
+    # If the hard cap sliced through the match delimiters (possible with a
+    # long query), re-close so the consumer never sees a dangling "<<<".
+    if "<<<" in result and ">>>" not in result:
+        result = result[: _SNIPPET_MAX_LEN - 3] + ">>>"
+    return result

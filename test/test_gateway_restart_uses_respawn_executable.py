@@ -218,7 +218,12 @@ class TestDashboardResolverIsLoadedBeforeTheApply:
         ],
     )
     def test_import_precedes_every_apply(self, method, apply_names):
-        tree = ast.parse(inspect.getsource(dashboard_updates))
+        tree = ast.parse(
+            "\n".join(
+                inspect.getsource(sys.modules[name])
+                for name in (dashboard_updates.__name__, *dashboard_updates._OWNERS)
+            )
+        )
         fn = next(
             node
             for node in ast.walk(tree)

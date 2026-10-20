@@ -21,9 +21,7 @@ import {
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
 import { sourceTabQualifier } from '../utils/sourceProviderMeta'
-import GithubLogo from './icons/GithubLogo'
-import GitlabLogo from './icons/GitlabLogo'
-import JiraLogo from './icons/JiraLogo'
+import SourceProviderMark from './SourceProviderMark'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
@@ -448,11 +446,7 @@ export default function IssuePanel({
               className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
               title={item.url}
             >
-              {item.provider === 'github'
-                ? <GithubLogo size={13} className="shrink-0" />
-                : item.provider === 'jira'
-                ? <JiraLogo size={13} className="shrink-0" />
-                : <GitlabLogo size={13} className="shrink-0" />}
+              <SourceProviderMark provider={item.provider} size={13} />
               {/* No CSS truncation: the qualifier is already shortened to its
                   minimal unique trailing suffix; the full url is in the title. */}
               {qualifier && <span>{qualifier}</span>}
@@ -563,11 +557,7 @@ export default function IssuePanel({
                 {issueStateLabel(source)}
               </span>
               <span className="inline-flex items-center gap-1 shrink-0">
-                {source.provider === 'github'
-                  ? <GithubLogo size={12} className="shrink-0" />
-                  : source.provider === 'jira'
-                  ? <JiraLogo size={12} className="shrink-0" />
-                  : <GitlabLogo size={12} className="shrink-0" />}
+                <SourceProviderMark provider={source.provider} size={12} />
                 {/* Brand names are proper nouns, not translatable UI copy. The
                     i18n checker exempts them via the existing interpolation at
                     line 413 where they are provider: param values. Here we

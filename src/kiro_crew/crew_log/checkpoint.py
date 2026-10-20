@@ -87,6 +87,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple
@@ -118,6 +119,41 @@ from kiro_crew.projection import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _count_savepoint_write(*, kind: str, written: bool, elapsed_ms: float) -> None:
+    """Count one savepoint write attempt, beside the write. Never raises.
+
+    Called only from a pass that actually offered a payload to the savepoint store, so
+    a call that found no write earned, no witness, a removed unit or a contended lease
+    contributes nothing: those are refusals, and counting them as failures would read
+    as a failing disk.
+
+    Called AFTER the unit's lease is released, never inside it. The first
+    ``get_recorder()`` of a process builds the SDK synchronously, and doing that under
+    a held lease would lengthen the window in which a removal of that unit is refused
+    -- a telemetry call must not change how long anything else has to wait.
+
+    Both callers are on the fold and read path -- a savepoint is written by whoever
+    just folded, roughly once per 256 entries -- never on a crew log write thread,
+    which is why a ``time.monotonic()`` pair around the write is affordable here and is
+    not affordable there.
+
+    IMPORTED at call time, deferred rather than taken at module scope because this
+    module sits under the gateway's boot path and the metrics facade reads config. A
+    plain import, NOT the ``sys.modules`` lookup its sibling in ``crew_log.bus`` uses,
+    and the difference is the whole point of each: a lookup records nothing until
+    something else has built the recorder, which would silently drop the first savepoint
+    of a process whose recorder is not up yet. Being off the write thread, this site can
+    afford the import that closes that window; the bus site cannot, and says so.
+    """
+    try:
+        from kiro_crew.metrics.crew_log_health import savepoint_write
+
+        savepoint_write(kind=kind, written=written, elapsed_ms=elapsed_ms)
+    except Exception:  # pragma: no cover - telemetry must never reach a savepoint
+        pass
+
 
 #: Directory inside a unit's store directory that holds its fold savepoints.
 CHECKPOINT_DIR: Final[str] = "projections"
@@ -591,6 +627,10 @@ def save(
     lease = _hold(handle)
     if lease is None:
         return bundle
+    #: (folds offered, folds written, how long the offer took in ms). Zeroed so every
+    #: exit from the block below -- including one that never reaches the write loop --
+    #: leaves the counter below a value to read.
+    counted: "tuple[int, int, float]" = (0, 0, 0.0)
     try:
         directory = _ensure_dir(handle)
         if directory is None:
@@ -603,21 +643,45 @@ def save(
         # record count before opening the file that states it.
         witness = witness_mapping(prefix)
         written = 0
-        for checkpoint in bundle.checkpoints.values():
-            if checkpoint.last_seq != prefix.seq:
-                # The witness certifies ONE boundary. A fold sitting at another has
-                # no evidence here, and re-reading the file for it is exactly what
-                # this call must not do, so its write waits for a pass whose witness
-                # covers it. The partial-write check below then leaves the bundle
-                # claiming nothing, which costs a cold fold rather than a digest that
-                # may describe bytes nothing folded.
-                continue
-            if _save_one(store, checkpoint, unit=handle.id, identity=block, witness=witness):
-                written += 1
+        attempted = 0
+        started = time.monotonic()
+        try:
+            for checkpoint in bundle.checkpoints.values():
+                if checkpoint.last_seq != prefix.seq:
+                    # The witness certifies ONE boundary. A fold sitting at another has
+                    # no evidence here, and re-reading the file for it is exactly what
+                    # this call must not do, so its write waits for a pass whose witness
+                    # covers it. The partial-write check below then leaves the bundle
+                    # claiming nothing, which costs a cold fold rather than a digest that
+                    # may describe bytes nothing folded.
+                    continue
+                attempted += 1
+                if _save_one(store, checkpoint, unit=handle.id, identity=block, witness=witness):
+                    written += 1
+        finally:
+            # The metric's two numbers, read where they are known and counted after the
+            # lease is released. In a ``finally`` so a raise on the way through is
+            # counted as a failure rather than going unrecorded -- the store does not
+            # raise today, and a counter that assumed so would go quiet on the day it
+            # did.
+            counted = (attempted, written, (time.monotonic() - started) * 1000.0)
         if _discard_if_unit_gone(handle, directory):
             return bundle
     finally:
         release_lease(lease)
+        # One point per PASS, not per fold: the folds are offered as a set and the
+        # question is whether the disk took them. ``written == attempted``, NOT
+        # ``== len(bundle.checkpoints)``: a fold skipped above sat at another boundary
+        # and was never offered, so holding the pass to the whole bundle would report a
+        # refusal as a failing disk. Whether the BUNDLE may claim a savepoint is a
+        # stricter question and is answered below, where it belongs. A pass that offered
+        # nothing is counted as nothing.
+        if counted[0]:
+            _count_savepoint_write(
+                kind="session",
+                written=counted[1] == counted[0],
+                elapsed_ms=counted[2],
+            )
     if written != len(bundle.checkpoints):
         # A partial write leaves a correct set of files -- each names its own fold
         # and seq -- but the bundle must not claim a savepoint the folds that failed
@@ -965,6 +1029,10 @@ def save_slot(
     if lease is None:
         return False
     written = False
+    #: Whether the store was actually asked to write. Set only around that call, so
+    #: every earlier exit from the block below records nothing.
+    offered = False
+    elapsed_ms = 0.0
     try:
         directory = _ensure_dir(handle, SLOT_CHECKPOINT_DIR)
         if directory is None:
@@ -982,21 +1050,35 @@ def save_slot(
                 logger, logging.DEBUG, "crew log slot fold %s has an unserializable state", name
             )
             return False
-        written = store.save(
-            handle.id,
-            Savepoint(
-                key=name,
-                state_version=fold_state_version(name),
-                watermark=watermark,
-                state={_SLOT_STATE_JSON: encoded},
-                identity=block,
-                witness=witness_mapping(prefix),
-            ),
-        )
+        started = time.monotonic()
+        try:
+            written = store.save(
+                handle.id,
+                Savepoint(
+                    key=name,
+                    state_version=fold_state_version(name),
+                    watermark=watermark,
+                    state={_SLOT_STATE_JSON: encoded},
+                    identity=block,
+                    witness=witness_mapping(prefix),
+                ),
+            )
+        finally:
+            # In a ``finally`` for the reason :func:`save` states: a raise through the
+            # store is a failed write and must be counted as one. ``written`` is still
+            # False here on that path, since the assignment never completed.
+            offered = True
+            elapsed_ms = (time.monotonic() - started) * 1000.0
         if _discard_if_unit_gone(handle, directory):
             return False
     finally:
         release_lease(lease)
+        # After the lease, for the reason :func:`_count_savepoint_write` states. Exactly
+        # one point per call that reached the store, and none from a call that returned
+        # before it: an unserializable state, a missing directory and a contended lease
+        # are refusals, not failed writes.
+        if offered:
+            _count_savepoint_write(kind="slot", written=bool(written), elapsed_ms=elapsed_ms)
     return written
 
 

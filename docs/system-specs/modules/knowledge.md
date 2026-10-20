@@ -134,12 +134,23 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/store_parts/bundle_transfer.py` | `.knowledge` export and import, and `KnowledgeBundleError` for malformed input |
 | `knowledge/store_parts/bundle_ownership.py` | which of a bundle's ownership rows an import restores and which items it withholds |
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
-| `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
+| `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
+| `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
+| `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
 | `knowledge/dedup.py` | Cross-source deduplication |
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
 | `mcp_core.py` | Cached `(KnowledgeStore, embedder)` accessor the tool reads |
-| `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search, source-scoped list + `/source-counts`) |
+| `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API: the facade every route below is imported and patched through; it keeps no code of its own |
+| `dashboard/handlers/knowledge_access.py` | the owner gate on mutating routes (`_require_knowledge_owner`), the SEL audit, the app's store, pipeline and task registry |
+| `dashboard/handlers/knowledge_library.py` | namespaces, items, entities and the graph, the source-scoped list and `/source-counts`, statistics |
+| `dashboard/handlers/knowledge_sync.py` | a source's sync status, the sync claim, `POST /api/knowledge/sources/{id}/sync` and the tasks it hands off |
+| `dashboard/handlers/knowledge_sources.py` | listing, adding, renaming, deleting, pausing, confirming and resuming sources; the folder picker; a folder source's file rows; `GET /api/knowledge/config` |
+| `dashboard/handlers/knowledge_ingest.py` | text an agent fetched for a source (`POST /api/knowledge/sources/{id}/ingest-text`), uploaded files and archives, `GET /api/knowledge/jobs/{id}` |
+| `dashboard/handlers/knowledge_bundles.py` | `.knowledge` export and import |
+| `dashboard/handlers/knowledge_embeddings.py` | embedding status, the batch embed that fills missing vectors, the background rebuild job |
+| `dashboard/handlers/knowledge_agent_context.py` | the chat context-injection search (`GET /api/knowledge/search-for-context`) and the agent's `POST /api/knowledge/agent-document` |
+| `dashboard/handlers/knowledge_lifecycle.py` | `setup_knowledge_routes`, the source watcher, artifact auto-ingest, live config reloads, the pools' shutdown |
 | `agent_materialization/service_agents.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
 
 `KnowledgeStore`'s behaviour lives in the `knowledge/store_parts/` owners in the table above,
@@ -165,6 +176,25 @@ logger.
 that patch rule. A new store method goes to the owner whose row names its responsibility, with
 one binding line under that owner's header in the class and a row in that test's member
 inventory.
+
+`dashboard/handlers/knowledge.py` is a mirror facade (`kiro_crew._facade_mirror`) over the
+`knowledge_<role>.py` owners in the table above: the dashboard server, the handler tests and
+every patch of `knowledge.<name>` go through it, a patch reaches every owner that binds the
+name, and no owner imports the facade. Owners import each other lowest layer first, in the
+table's order, and every owner that logs uses the facade's logger name. New handler work goes
+to the owner of its responsibility; `test/test_knowledge_handlers_facade.py` pins the family.
+
+`knowledge/ingestion.py` is a mirror facade (`kiro_crew._facade_mirror`) over
+`ingestion_budget.py` and `ingestion_rebuild.py`, lowest layer first. It keeps
+`IngestionPipeline`, the ingestion gate and `handoff_gate_context`, `EmbedRateLimiter`,
+`run_to_completion` and the redaction and chunking helpers the pipeline reads. A patch of
+`kiro_crew.knowledge.ingestion.<name>` reaches every owner that binds the name, so a patch of
+`bulk_pace_delay` reaches the re-embed sweep. No owner imports the facade, and an owner that
+logs does so under the facade's logger name. `ImportChunkBudgetError` carries
+`kiro_crew.knowledge.ingestion` as its `__module__`, so a traceback names it by its import
+path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row work to
+`ingestion_rebuild.py`, and new pipeline work stays in `ingestion.py`;
+`test/test_ingestion_facade.py` pins the family.
 
 ## Constants
 
@@ -444,7 +474,7 @@ the superseded document stays searchable.
 **Explicit-import chunk ceiling.** Every budget above governs a WATCHER sweep. The
 explicit one-shot import routes reach `IngestionPipeline` directly and no sweep
 counter ever sees them, so they carry their own cross-file ceiling:
-`ImportChunkBudget` in `ingestion.py`, sized by `knowledge.import_chunk_budget`
+`ImportChunkBudget` in `ingestion_budget.py`, sized by `knowledge.import_chunk_budget`
 (0 = disabled, the default) over a rolling `_IMPORT_CHUNK_BUDGET_WINDOW_SECS`
 window. A single file is already capped at `MAX_CHUNKS_PER_FILE`; this bounds the
 cost ACROSS files, which is the shape a run of deliberate adds has.
@@ -546,7 +576,7 @@ Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch
 - **RRF fusion (`_rrf_fuse`, k=60)** — per-leg weights align positionally with `(keyword, graph, vector) = (1.0, 1.0, VECTOR_RRF_WEIGHT=2.0)` so semantically-strong matches dominate when the keyword leg returns literal junk. Results are tie-broken by recency (`updated_at`), and each result's `match_type` records which legs it appeared in (`keyword+graph+vector`).
   - **The keyword leg's rank-1 hit is protected from truncation.** The weight above is what makes a keyword-only document losable: a query carrying an exact error string, a ticket id or a rare technical term can have its one correct document pushed past `limit` by weighted semantic neighbours, and the caller sees related-but-wrong rows with no signal that the right one was found and dropped. When that happens `search` **appends** the keyword winner as one extra trailing row, so a response may carry `limit + 1` rows. Only rank 1 is protected, and nothing already ranked is removed, reordered or demoted — the rescue can only add. The appended row carries its real fused score (the tool caller's `min_score` floor depends on it: a keyword-rank-1-only row scores `1.0 / (60 + 1) = 0.0164`, which clears `0.012`) and its normal `match_type`, and it is appended *before* the citation-enrichment passes below, so it is exactly as citable as a ranked row. A keyword hit whose item no longer resolves (a stale FTS row) adds nothing.
 
-### Embedding vector space (`embedder.py`, `store.py`, `ingestion.py`)
+### Embedding vector space (`embedder.py`, `store.py`, `ingestion.py`, `ingestion_rebuild.py`)
 
 Vectors are comparable only to vectors from the same model at the same width. Three pieces enforce that, and they are deliberately not three independent identities.
 
@@ -589,7 +619,7 @@ This complements `scripts/check_sync_io_in_async.py` rather than duplicating it.
 | auto_research campaigns DB (§7) | `KIROCREW_STRICT_ON_LOOP_PERSIST` (shared default) | yes |
 | knowledge store | `KIROCREW_STRICT_ON_LOOP_STORE` | **no** |
 
-The knowledge store's two narrowings exist for one reason and are both temporary: it still carries on-loop callers. That backlog is **the watcher's self-heal rebuild alone** — its two takes, which finalize the job row inline on the cancellation path where an interrupted `to_thread` could drop the write. They carry inline `# on-loop-io-ok:` markers and `.github/sync-io-in-async-baseline.txt` is empty; a marker is an *exemption*, not an offload, so the finalize still runs on the loop and an empty baseline is NOT the completion signal. `start_rebuild_job` sweeps a stale 'processing' row to 'abandoned', so the single-flight guard recovers either way. `dashboard/handlers/knowledge.py` takes the store through a worker for every take of its own, endpoints and background tasks alike, so the `/api/knowledge/stats` and `/api/knowledge/namespaces` handlers are off the loop. The claim is scoped to that file's own takes on purpose, and `SyncScheduler.sync_source` does not undercut it: every store take on that path runs on a worker thread, and both sync-outcome writers — the success reset and the failure increment — are cancellation-drained `run_to_completion` units whose read-modify-write goes through `KnowledgeStore.revise_source_properties`: one `BEGIN IMMEDIATE` take that reads the row's current blob under the write lock and guards its UPDATE with the blob it read, the shape `merge_source_properties` is the fixed-delta form of. Ingestion's finalize hop stamps its `content_hash` and reader metadata through the same take as a key delta rather than rewriting the row from its ingest-start snapshot, so the three same-row writers on worker threads serialize in the database itself and none can resurrect a stale blob over another's commit. The separate switch is load-bearing because `KIROCREW_STRICT_ON_LOOP_PERSIST` is **already exported** into the e2e gateway by `setup.py`'s `test_e2e` and `.github/workflows/ci.yml`, scoped when written to history's clean surface — on that switch the watcher's finalize would raise inside the e2e run. Excluding the dev-mode arm matters for the same backlog: raising on tracked work reports it as a regression, and the developer's rational response (unsetting `KIROCREW_DEV_MODE`) would silence `history_offload.py`'s guard too. When the watcher's cancel-path finalize genuinely runs off the loop (not merely marker-exempt), both arguments go and this store joins the shared switch — `test_knowledge_store_onloop_db.py::TestSharedSwitchCannotArmThisStore` asserts the CI export against the real workflow file, so that flip has to be deliberate.
+The knowledge store's two narrowings exist for one reason and are both temporary: it still carries on-loop callers. That backlog is **the watcher's self-heal rebuild alone** — its two takes, which finalize the job row inline on the cancellation path where an interrupted `to_thread` could drop the write. They carry inline `# on-loop-io-ok:` markers and `.github/sync-io-in-async-baseline.txt` is empty; a marker is an *exemption*, not an offload, so the finalize still runs on the loop and an empty baseline is NOT the completion signal. `start_rebuild_job` sweeps a stale 'processing' row to 'abandoned', so the single-flight guard recovers either way. The `knowledge_<role>.py` owners of `dashboard/handlers/knowledge.py` take the store through a worker for every take of their own, endpoints and background tasks alike, so the `/api/knowledge/stats` and `/api/knowledge/namespaces` handlers are off the loop. The claim is scoped to those owners' own takes on purpose, and `SyncScheduler.sync_source` does not undercut it: every store take on that path runs on a worker thread, and both sync-outcome writers — the success reset and the failure increment — are cancellation-drained `run_to_completion` units whose read-modify-write goes through `KnowledgeStore.revise_source_properties`: one `BEGIN IMMEDIATE` take that reads the row's current blob under the write lock and guards its UPDATE with the blob it read, the shape `merge_source_properties` is the fixed-delta form of. Ingestion's finalize hop stamps its `content_hash` and reader metadata through the same take as a key delta rather than rewriting the row from its ingest-start snapshot, so the three same-row writers on worker threads serialize in the database itself and none can resurrect a stale blob over another's commit. The separate switch is load-bearing because `KIROCREW_STRICT_ON_LOOP_PERSIST` is **already exported** into the e2e gateway by `setup.py`'s `test_e2e` and `.github/workflows/ci.yml`, scoped when written to history's clean surface — on that switch the watcher's finalize would raise inside the e2e run. Excluding the dev-mode arm matters for the same backlog: raising on tracked work reports it as a regression, and the developer's rational response (unsetting `KIROCREW_DEV_MODE`) would silence `history_offload.py`'s guard too. When the watcher's cancel-path finalize genuinely runs off the loop (not merely marker-exempt), both arguments go and this store joins the shared switch — `test_knowledge_store_onloop_db.py::TestSharedSwitchCannotArmThisStore` asserts the CI export against the real workflow file, so that flip has to be deliberate.
 
 ### `local_knowledge_search` MCP tool (`mcp_tools/knowledge.py`)
 
@@ -605,7 +635,7 @@ The LLM reaches retrieval through the `kirocrew-core` MCP tool `local_knowledge_
 
 The dashboard Knowledge tab uses the same store via a lazily-initialized `KnowledgeStore` on `DashboardState` (`dashboard/state_parts/dashboard_state.py`).
 
-## 5. Source-scoped list API (`dashboard/handlers/knowledge.py`)
+## 5. Source-scoped list API (`dashboard/handlers/knowledge_library.py`)
 
 The dashboard Knowledge list view is **source-first**: it renders one collapsed
 row per source and pages *within* a source, rather than paging all items globally
@@ -767,7 +797,7 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 - **An unattended re-embed runs at `PRIORITY_BULK`** — attendance, not corpus size, picks the scheduling class, or a multi-hour watcher self-heal holds the single shared inference slot against every interactive embed and every paced memory sweep.
 - **Taking `store.db` on the event loop is a diagnosable event, not a silent one** — the accessor is guarded (`on_loop_db.OnLoopDBGuard`): strict raises `OnLoopStoreError`, production logs a throttled WARNING with a stack and proceeds. This is what covers callers the lexical `check_sync_io_in_async` gate cannot see, so the two must both stay — neither alone closes #3057.
 - **The self-heal rebuild path never touches SQLite on the event loop** — `_maybe_reembed_stale`'s stale COUNT, `rebuild_embeddings`' total COUNT / page SELECTs / batch progress commits, and the success-path job finalize all run via `asyncio.to_thread` (`store.db` is a per-thread connection, so each worker thread uses its own connection to the same WAL db). On a large KB (observed: ~1.3GB after an embedder-sig change) an inline COUNT can stall past the 25s loop-watchdog threshold and crash-loop the gateway. The one deliberate exception is the CancelledError finalize in `_run_reembed_job`, which stays inline so cancellation cannot pre-empt the single-flight finalize. When the stale count exceeds `_LARGE_REBUILD_WARN_THRESHOLD` the watcher logs a prominent WARNING before starting the full re-embed.
-- **`__none__` is a shared wire contract** — the no-source sentinel is defined as `_NO_SOURCE` in `dashboard/handlers/knowledge.py` and mirrored as `NO_SOURCE` in `website/src/pages/knowledge/SourceGroup.tsx`. Both sides must change together; it is effectively un-renameable once shipped.
+- **`__none__` is a shared wire contract** — the no-source sentinel is defined as `_NO_SOURCE` in `dashboard/handlers/knowledge_library.py` and mirrored as `NO_SOURCE` in `website/src/pages/knowledge/SourceGroup.tsx`. Both sides must change together; it is effectively un-renameable once shipped.
 - **A source-scoped `total` is scoped, never global** — `/items?source_id=` reports the count for that source alone, because the per-source pager computes its page count from it.
 - **`aggregate_stats` reconciles, and stays read-only** — `per_source` sums to the totals in both columns, which is what makes the numbers auditable and why it counts ownership rather than scope membership. Both the CLI verb and `knowledge_list_sources` render THAT call, so a second copy of the SQL cannot drift; the CLI verb and the MCP tool each open the file `mode=ro` (`KnowledgeStore.open_read_only`), so neither runs the schema DDL or `_migrate()` and neither can write; and no repair verb ships beside it, so a wrong count is a diagnosis and never a self-mutation.
 - **Per-source badge counts are filter-aware** — list-view badges come from `/source-counts` (which honours `type`/`status`/`namespace`), not from `/sources.item_count`, so a badge never disagrees with the group's contents under a filter.
@@ -855,4 +885,5 @@ Writers: `knowledge/store_parts/entity_graph.py` (the `entities`, `entity_relati
 and `mentions` tables, the in-memory `SimpleDiGraph`), `knowledge/store_parts/item_rows.py`
 (`items.embedding`, which the signature-gated re-embed rewrites), `knowledge/extractor.py` (per-chunk entity and relation extraction),
 `knowledge/ingestion.py` (chunking, dedup, the embedding pass),
+`knowledge/ingestion_rebuild.py` (the signature-gated re-embed's vector writes and its job row),
 `knowledge/retrieval.py` (the three search legs and their RRF fusion).

@@ -176,6 +176,32 @@ describe('PullRequestPanel', () => {
     expect(gitlabTab.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
   })
 
+  it('draws a logo-less provider tab with the same neutral mark as its sidebar chip', async () => {
+    // Bitbucket Server ships no logo. Its tab and its session chip
+    // (ChatSidebar.sourceLinkChip.test.tsx) draw one shared neutral glyph, so a
+    // reader can tell they are the same item.
+    const bitbucketUrl = 'https://bitbucket.example.test/projects/PROJ/repos/svc/pull-requests/42'
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: bitbucketUrl, provider: 'bitbucket_server', number: 42, repo: 'svc' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    const tab = await screen.findByRole('tab', { name: /PR #42/i })
+    const mark = tab.querySelector('[data-provider-mark="neutral"]')
+    expect(mark).not.toBeNull()
+    expect(mark!.getAttribute('class')).toContain('lucide-link-2')
+    expect(mark!.getAttribute('width')).toBe('13')
+    expect(tab.querySelector('.lucide-git-pull-request')).toBeNull()
+  })
+
   it('copies the head branch name to the clipboard when the branch chip is clicked', async () => {
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
     const writeText = vi.fn().mockResolvedValue(undefined)
@@ -746,6 +772,32 @@ describe('PullRequestPanel', () => {
     expect(screen.queryByRole('tablist', { name: 'Pull requests' })).not.toBeInTheDocument()
     // The SECTION bar is still there -- only the source picker is suppressed.
     expect(screen.getByRole('tablist', { name: 'Pull request sections' })).toBeInTheDocument()
+  })
+
+  it('lands a GitHub url spelled in another case on the listed tab, with one load', async () => {
+    // A sidebar chip can name the pull request the panel lists in a different
+    // letter case. GitHub treats them as one pull request, so the panel must
+    // select the listed tab and read it once, not fall back to another tab.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const onReconcile = vi.fn()
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service', kind: 'change' },
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets', kind: 'change' },
+          ]}
+          selectedUrl={github.url.replace('acme/widgets', 'Acme/Widgets')}
+          onSelect={vi.fn()}
+          onReconcile={onReconcile}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    expect(screen.getAllByRole('tab', { name: /PR #12/i })).toHaveLength(1)
+    expect(screen.getByRole('tab', { name: /PR #12/i })).toHaveAttribute('aria-selected', 'true')
+    expect(mockApi.pullRequestSource.mock.calls.map(call => call[0])).toEqual([github.url])
+    expect(onReconcile).toHaveBeenCalledWith(github.url)
   })
 
   it('offers the comment composer on a pull request with no comments yet', async () => {

@@ -217,8 +217,8 @@ def test_the_embedding_setup_status_lives_in_one_owner() -> None:
 
 
 def test_the_vector_store_constructor_lives_where_its_plumbing_inventory_names_it() -> None:
-    """``test_vector_memory``'s plumbed-site table keys the dashboard's standalone store
-    construction by ``dashboard/handlers/memory_services.py``."""
+    """``test_vector_memory_config_plumbing``'s plumbed-site table keys the dashboard's
+    standalone store construction by ``dashboard/handlers/memory_services.py``."""
     services = sys.modules[OWNERS[0]]
     assert memory._get_vector_store is vars(services)["_get_vector_store"]
     assert "VectorMemoryStore(" in _owner_path(OWNERS[0]).read_text(encoding="utf-8")

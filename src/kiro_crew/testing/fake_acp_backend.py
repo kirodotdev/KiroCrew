@@ -97,6 +97,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from typing import Any, Callable
 
 PROTOCOL_VERSION = "2025-08-22"
@@ -192,6 +193,76 @@ _SESSIONS: dict[str, tuple[list[dict[str, Any]], str]] = {}
 #: ``_meta.kiro.customAgents`` as each session/new declared them, by session id:
 #: the roster the relay reports readiness for is read from here on set_mode.
 _SESSION_AGENTS: dict[str, list[dict[str, Any]]] = {}
+
+#: Opt-in native-store emulation, OFF unless this names a directory. With it set
+#: the fake behaves like a KAS store: ``session/new`` mints a unique
+#: ``sess_<uuid>`` id and creates ``<dir>/<id>/``, every ``session/prompt``
+#: builds the request a model would see -- the whole conversation so far, not
+#: just the new prompt -- and appends it to ``<dir>/<id>/messages.jsonl`` and to
+#: the append-only ``<dir>/requests.jsonl``, and ``_kiro/session/delete`` removes
+#: ``<dir>/<id>/`` (KAS's delete drops the record; kiro-cli's terminate does not,
+#: so terminate leaves it). Tests read ``requests.jsonl`` to see what each turn
+#: would have sent and the directory to see which records outlived their session.
+NATIVE_STORE_ENV = "KIROCREW_FAKE_ACP_STORE_DIR"
+NATIVE_REQUEST_LOG = "requests.jsonl"
+_NATIVE_SID_RE = re.compile(r"^sess_[0-9a-f-]{36}$")
+#: The conversation each session has had, by session id, for the request above.
+_HISTORY: dict[str, list[str]] = {}
+
+
+def _native_store() -> str:
+    return os.environ.get(NATIVE_STORE_ENV, "")
+
+
+def _native_record(store: str, session_id: str) -> str | None:
+    """``<store>/<session_id>`` when the id has the minted shape, else ``None``."""
+    if not _NATIVE_SID_RE.fullmatch(session_id):
+        return None
+    return os.path.join(store, session_id)
+
+
+def _native_new(store: str, session_id: str, cwd: str) -> None:
+    record = _native_record(store, session_id)
+    if record is None:
+        return
+    os.makedirs(record, exist_ok=True)
+    with open(os.path.join(record, "session.json"), "w", encoding="utf-8") as fh:
+        json.dump({"id": session_id, "pid": os.getpid(), "cwd": cwd}, fh)
+
+
+def _native_prompt(store: str, session_id: str, text: str) -> None:
+    history = _HISTORY.setdefault(session_id, [])
+    history.append(text)
+    request = "\n".join(history)
+    line = json.dumps(
+        {
+            "sid": session_id,
+            "pid": os.getpid(),
+            "turn": len(history),
+            "cwd": (_SESSIONS.get(session_id) or ([], ""))[1],
+            "request_chars": len(request),
+            "request": request,
+        }
+    )
+    record = _native_record(store, session_id)
+    if record is not None and os.path.isdir(record):
+        with open(os.path.join(record, "messages.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    with open(os.path.join(store, NATIVE_REQUEST_LOG), "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def _native_delete(store: str, session_id: str) -> None:
+    """Remove exactly one minted record: a direct child of *store*, never a link."""
+    _HISTORY.pop(session_id, None)
+    record = _native_record(store, session_id)
+    if record is None or os.path.islink(record) or not os.path.isdir(record):
+        return
+    for name in os.listdir(record):
+        os.unlink(os.path.join(record, name))
+    os.rmdir(record)
+
+
 # The KAS relay's engine flag (kas_transport.KAS_RELAY_ENGINE_FLAG; spelled here
 # so this module stays stdlib-only). Its presence in argv is what tells a KAS
 # spawn from a kiro-cli one, and only the KAS spawn reports MCP readiness.
@@ -574,16 +645,25 @@ def _handle(msg: dict[str, Any]) -> None:
     elif method == "session/new":
         # Warm reset creates the new handle before destroying the old one.
         # Reusing an ID makes old.destroy() remove the new runtime event queue.
-        _SESSION_ID = f"fake-{next(_SESSION_IDS)}"
+        store = _native_store()
+        if store:
+            _SESSION_ID = f"sess_{uuid.uuid4()}"
+        else:
+            _SESSION_ID = f"fake-{next(_SESSION_IDS)}"
         params = msg.get("params") or {}
         _SESSIONS[_SESSION_ID] = (params.get("mcpServers") or [], params.get("cwd") or "")
         _SESSION_AGENTS[_SESSION_ID] = _custom_agents(params)
+        if store:
+            _native_new(store, _SESSION_ID, params.get("cwd") or "")
         _result(req_id, {"sessionId": _SESSION_ID})
         _report_mcp_ready(_SESSION_ID)
     elif method in ("_kiro.dev/session/terminate", "_kiro/session/delete"):
         params = msg.get("params") or {}
         _SESSIONS.pop(str(params.get("sessionId", "")), None)
         _SESSION_AGENTS.pop(str(params.get("sessionId", "")), None)
+        store = _native_store()
+        if store and method == "_kiro/session/delete":
+            _native_delete(store, str(params.get("sessionId", "")))
         _result(req_id, {})
     elif method == "session/set_mode":
         # Reported again here, not only after session/new: the host counts every
@@ -605,6 +685,9 @@ def _handle(msg: dict[str, Any]) -> None:
             return
         servers, cwd = session
         text = _prompt_text(params)
+        store = _native_store()
+        if store:
+            _native_prompt(store, session_id, text)
         if "[[WF_E2E:" in text:
             from kiro_crew.testing.workflow_memory_scenario import respond
 

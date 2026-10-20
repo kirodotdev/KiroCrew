@@ -47,6 +47,7 @@ import {
   T0,
 } from '../test/GuideLayerTestUtils'
 import type { Call } from '../test/GuideLayerTestUtils'
+import { readPageFamily } from '../test/pageFamily'
 
 const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.guideLayer.${k}`, v)
 let calls: Call[]
@@ -241,7 +242,7 @@ describe('MCP: navigate to the native add form, never install', () => {
 
   it('the native pages carry the registered anchors and no guide prefill', () => {
     const src = (rel: string) => readFileSync(path.join(__dirname, rel), 'utf-8')
-    const connections = src('../pages/connections/ConnectionsPage.tsx')
+    const connections = readPageFamily('ConnectionsPage', path.join(__dirname, '../pages/connections'))
     const mcpTab = src('../pages/overview/McpTab.tsx')
     const modal = src('../components/McpCustomServerModal.tsx')
     expect(connections).toContain(`guideAnchor('${GUIDE_ANCHORS.mcpServersTab}')`)

@@ -753,7 +753,7 @@ class VectorMemoryStore:
     # API misuse") and DatabaseError ("another row available") — or silently
     # corrupts row iteration. EVERY statement on ``self.db`` must therefore be
     # serialized on ``_db_lock`` (enforced by an AST guard in
-    # test_vector_memory.py). Route plain SELECTs through these helpers; only
+    # test_vector_memory_lock_discipline.py). Route plain SELECTs through these helpers; only
     # read-modify-write sections that must be atomic should take the lock
     # explicitly. Both helpers materialize results before releasing the lock,
     # so callers never iterate a live cursor unlocked — and per the lock's

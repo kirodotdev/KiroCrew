@@ -294,8 +294,22 @@ def _step(workflow_name: str, step_name: str) -> dict:
     raise AssertionError(f"{workflow_name}: no step named {step_name!r}")
 
 
+#: The redactor the reviewer lanes stage from the base commit. A test that
+#: runs a step holding a scrub hands it the REAL script, so the step's scrub and its
+#: refusal branch are exercised against the code that ships, not a stand-in.
+REDACTOR_PATH = str(ROOT / "scripts" / "scope_redact.py")
+
+#: How a reviewer lane calls that redactor, for a test that locates the scrub.
+SCRUB_CALL = 'python3 "$REDACTOR" --mode text'
+
+#: The expression a lane uses to hand its staged redactor to a step.
+_STAGED_REDACTOR = "${{ steps.redactor.outputs.redactor }}"
+
+
 def _step_env(workflow_name: str, step_name: str) -> dict[str, str]:
-    return {k: str(v) for k, v in (_step(workflow_name, step_name).get("env") or {}).items()}
+    """The step's literal env block, with the staged redactor resolved to the real one."""
+    env = {k: str(v) for k, v in (_step(workflow_name, step_name).get("env") or {}).items()}
+    return {k: REDACTOR_PATH if v == _STAGED_REDACTOR else v for k, v in env.items()}
 
 
 def _exec_transcript(runner_temp: Path, review_text: str) -> dict[str, str]:
@@ -456,7 +470,8 @@ _GUARDED_LANES = [
         "marker": "<!-- design-review -->",
         "stamp": "[DESIGN-REVIEWED]",
         "incomplete_text": "could not complete",
-        "needs_perl": True,
+        "needs_perl": False,
+        "needs_redactor": True,
         "env": {"HUMAN_OVERRIDE": "false", "OVERRIDE_ACTOR": "", "ACTOR": "someone"},
         "completed": lambda cwd, rt, head: _exec_transcript(
             rt, f"Design-Verdict: PASS\n\nsolid reasoning\n\n[DESIGN-REVIEWED] {head}\n"
@@ -472,7 +487,8 @@ _GUARDED_LANES = [
         "marker": "<!-- ux-review -->",
         "stamp": "[UX-REVIEWED]",
         "incomplete_text": "could not complete",
-        "needs_perl": True,
+        "needs_perl": False,
+        "needs_redactor": True,
         "env": {
             "HUMAN_OVERRIDE": "false",
             "OVERRIDE_ACTOR": "",
@@ -493,7 +509,8 @@ _GUARDED_LANES = [
         "marker": "<!-- first-principles-review -->",
         "stamp": "[FIRST-PRINCIPLES-REVIEWED]",
         "incomplete_text": "could not complete",
-        "needs_perl": True,
+        "needs_perl": False,
+        "needs_redactor": True,
         "env": {
             "HUMAN_OVERRIDE": "false",
             "OVERRIDE_ACTOR": "",
@@ -536,7 +553,8 @@ _GUARDED_LANES = [
         "marker": "<!-- ux-review -->",
         "stamp": "[UX-REVIEWED]",
         "incomplete_text": "could not complete",
-        "needs_perl": True,
+        "needs_perl": False,
+        "needs_redactor": True,
         "env": {"UI_SCOPE": "true"},
         "completed": lambda cwd, rt, head: _exec_transcript(
             rt, f"UX-Verdict: PASS\n\nsolid reasoning\n\n[UX-REVIEWED] {head}\n"

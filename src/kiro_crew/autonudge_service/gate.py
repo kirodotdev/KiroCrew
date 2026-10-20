@@ -3,8 +3,9 @@
 :func:`_monitor_tick_is_quiet` observes the subject cheaply and answers True only when
 nothing happened; every uncertain path spends the turn. It owns the owed-turn debts
 (``floor_fire_pending``, ``poll_in_flight``, ``terminal_pending``), the quiet-streak
-floor, the typed terminal settlement that retires a finished watch, and the publication
-of each reading before the judge is asked about it.
+floor, the typed terminal settlement that retires a finished watch, the publication of
+each reading before the judge is asked about it, and the skip that asks no judge about
+an unchanged board.
 
 Its functions are :class:`~kiro_crew.autonudge.AutoNudgeService` methods: each is bound
 on the class by name and runs against the service's state through ``self``, and a call
@@ -257,20 +258,30 @@ def _holds_short_reading(loop: NudgeLoop, monitor: MonitorState, digest: str) ->
       the same bound the quiet floor gives every loop;
     * no turn is already owed -- a judge wake an earlier verdict decided is delivered,
       never folded into a hold;
-    * every target the loop's judge would read IS the watched pull request. A brief
-      that also names a session or a second pull request makes the judge count that
-      target as unread or read it on the tick it is asked, and holding the tick would
-      hold that target's news -- or the notice that it could not be read -- too. A
-      loop naming no target at all is not held either: its judge fires every tick.
+    * every target the loop's judge would read IS the watched pull request
+      (:func:`_judge_reads_only_the_watched_pr`).
     """
-    from kiro_crew import autonudge_judge as judge
-
     if not digest or digest != monitor.short_reading_digest:
         return False
     if monitor.short_reading_held + 1 >= _SHORT_READING_HOLD_CEILING:
         return False
     if loop.judge_wake_pending or monitor.terminal_pending:
         return False
+    return _judge_reads_only_the_watched_pr(loop, monitor)
+
+
+def _judge_reads_only_the_watched_pr(loop: NudgeLoop, monitor: MonitorState) -> bool:
+    """Whether every target the loop's judge would read IS the watched pull request.
+
+    Then the published reading is the whole of the judge's evidence, so a tick that
+    skips the judge withholds nothing the reading does not show. A brief that also
+    names a session or a second pull request makes the judge count that target as
+    unread or read it on the tick it is asked, and skipping the tick would skip that
+    target's news -- or the notice that it could not be read -- too. A loop naming no
+    target at all answers ``False`` as well: its judge fires every tick.
+    """
+    from kiro_crew import autonudge_judge as judge
+
     targets = judge.parse_targets(
         judge.spec_of(loop), loop.message, watched=judge.watched_pr_subject(loop)
     )
@@ -283,6 +294,40 @@ def _holds_short_reading(loop: NudgeLoop, monitor: MonitorState, digest: str) ->
         )
         for target in targets
     )
+
+
+def _unchanged_reading_skips_judge(
+    svc: AutoNudgeService, loop: NudgeLoop, monitor: MonitorState, reading_unchanged: bool
+) -> bool:
+    """Whether this quiet tick needs no judge because nothing the judge reads has moved.
+
+    The invariant: a tick whose pull-request reading is WHOLE and byte-identical to
+    the one the last verdict was reached on, on a loop whose judge would read only
+    that pull request, asks no judge and starts no turn. No criterion about the
+    subject can have become true while the subject did not change, which is the
+    argument the judge-less path already rests on. Asking anyway shows the judge
+    nothing new for the price of a model call, and a judge that cannot answer (a
+    timeout is a fallback, and a fallback fires) spends a full turn on every tick.
+    Elapsed time is the one thing a digest cannot see, and the quiet floor still
+    delivers for it.
+
+    *reading_unchanged* is the publish step's own answer, so wholeness is decided in
+    one place: a short reading or one that never reached the subject is never
+    unchanged. An owed judge wake or an owed terminal turn is delivered, never
+    skipped.
+
+    Nothing is skipped while ``decisions.nudge_wake.quiet_streak_floor`` is set below
+    this loop's quiet floor. That knob bounds silence in judge verdicts, which only a
+    judged tick advances, so a skipped tick would stretch the operator's shorter bound
+    to the probe's; with it lowered, every tick is judged.
+    """
+    if not reading_unchanged:
+        return False
+    if loop.judge_wake_pending or monitor.terminal_pending:
+        return False
+    if not _judge_reads_only_the_watched_pr(loop, monitor):
+        return False
+    return svc._judge_quiet_streak_floor() >= _quiet_floor(loop, monitor)
 
 
 def _short_reading_notice(monitor: MonitorState) -> str:
@@ -1174,7 +1219,13 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
                         exc_info=True,
                     )
             return True
-        judged = await self._judge_tick_is_quiet(loop)
+        if _unchanged_reading_skips_judge(self, loop, monitor, reading_unchanged):
+            # An unchanged board asks no judge: everything it would be shown is the
+            # reading the last verdict was reached on. ``None`` takes the judge-less
+            # quiet below, so the quiet counters and the floor apply unchanged.
+            judged = None
+        else:
+            judged = await self._judge_tick_is_quiet(loop)
         # PAST the await, so a verdict exists -- including the ``None`` that says no
         # judge ran, which is itself this tick's answer. Cancellation lands inside
         # the await and nothing here runs, which is what leaves the baseline as it

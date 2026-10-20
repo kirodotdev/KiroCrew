@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError } from '../api/apiError'
@@ -10,7 +10,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { sessionIsBusyForClose } from '../lib/closeBusyGate'
+import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
@@ -119,7 +119,15 @@ export interface SessionActions {
   close: (slotKey: string) => void
 }
 
-export function useSessionActions(mode?: string): SessionActions {
+export function useSessionActions(mode?: string, opts?: {
+  /** The host's "a session was opened from here" callback (ChatSidebar's
+   *  `onSelectSlot`). Duplicate reports the fork through it after switching, the
+   *  way a row click does, so ChatPage leaves Split View instead of keeping the
+   *  old panes over the newly active fork. */
+  onOpened?: (key: string) => void
+}): SessionActions {
+  const onOpenedRef = useRef(opts?.onOpened)
+  onOpenedRef.current = opts?.onOpened
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
@@ -238,6 +246,8 @@ export function useSessionActions(mode?: string): SessionActions {
         setForkError(null)
         queryClient.invalidateQueries({ queryKey: ['slots'] })
         dispatch(switchSlot(data.key))
+        // switchSlot.pending has already made the fork the active slot.
+        onOpenedRef.current?.(data.key)
       }
     },
     // Duplicate goes through this mutation with no per-call handler, so this is
@@ -440,11 +450,12 @@ export function useSessionActions(mode?: string): SessionActions {
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
   // The sidebar row ✕ and every session menu close land here. A busy session
-  // always asks, on the same rule as Cmd+W (`sessionIsBusyForClose`); an idle
-  // one keeps the user's `confirmCloseSession` setting.
+  // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one
+  // keeps the user's `confirmCloseSession` setting. The prompt names which of
+  // the two made it ask (`closeConfirmPrompt`).
   const close = useCallback((slotKey: string) => {
-    const mustConfirm = loadChatConfig().confirmCloseSession || sessionIsBusyForClose(store.getState(), slotKey)
-    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
+    if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }

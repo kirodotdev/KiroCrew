@@ -278,7 +278,7 @@ def _snapshot_recording(
             # ancestor junction planted after any check, reaching a UNC target
             # and firing outbound SMB authentication as a side effect of the
             # open itself (GPT review r31, adjudicator-upheld). No after-open
-            # check can undo that. ``snapshot.py``'s notification copy records
+            # check can undo that. ``snapshot_merge_driver.py``'s notification copy records
             # the repo ruling for this exact shape: on a platform without the
             # race-free primitive, decline the hand-rolled ctypes walk and
             # refuse loudly. The route already answers 501 before any
@@ -488,7 +488,7 @@ async def handle_import_audio(request: web.Request) -> web.Response:
         # swap an ancestor for a junction between any sweep and the open, and on
         # Windows a junction to a UNC path makes ``os.open`` itself fire outbound
         # SMB authentication before any descriptor check can reject it (GPT
-        # review r31). ``snapshot.py``'s notification copy records the repo-wide
+        # review r31). ``snapshot_merge_driver.py``'s notification copy records the repo-wide
         # ruling for exactly this shape: decline the hand-rolled ctypes walk and
         # refuse loudly rather than narrow the window. 501, because the request
         # is well-formed and the capability is what this platform lacks.

@@ -646,6 +646,7 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "release": None,
     "remove": None,
     "reset": True,
+    "resumable_hint": False,
     "resumable_sid": None,
     "set_active_dashboard_slots": None,
     "set_approval_policy": None,

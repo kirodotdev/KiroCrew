@@ -62,6 +62,18 @@ def test_both_acp_transports_send_capabilities() -> None:
         assert "CLIENT_CAPABILITIES" in src.read_text(encoding="utf-8"), rel
 
 
+def _runtime_family_text() -> str:
+    """runtime.py and its owner modules (runtime_*.py), which hold code that was its own."""
+    import sys
+
+    from kiro_crew.acp import runtime
+
+    return "".join(
+        Path(sys.modules[name].__file__).read_text(encoding="utf-8")
+        for name in (runtime.__name__, *runtime._RUNTIME_OWNERS)
+    )
+
+
 def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None:
     """The runtime must not carry a capability literal of its own.
 
@@ -69,8 +81,7 @@ def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None
     actually sent, and the drift is invisible: both spellings compile and only a
     live session shows which set went out.
     """
-    src = Path(__file__).resolve().parents[1] / "src/kiro_crew/acp/runtime.py"
-    text = src.read_text(encoding="utf-8")
+    text = _runtime_family_text()
     # The declaration is read from the harness; the runtime only fills the
     # settings channel a host declares (``client_meta_settings``) before sending.
     assert "base = self._harness.client_capabilities" in text
@@ -94,6 +105,8 @@ def test_both_acp_transports_send_client_info_name() -> None:
         # client.py's owner modules (client_*.py) hold code that was its own.
         paths = [src, *sorted(src.parent.glob("client_*.py"))] if src.name == "client.py" else [src]
         text = "".join(p.read_text(encoding="utf-8") for p in paths)
+        if src.name == "runtime.py":
+            text = _runtime_family_text()
         assert '"clientInfo": {"name": CLIENT_NAME' in text, rel
         # The flat key kiro-cli ignores must not come back.
         assert '"clientName": CLIENT_NAME' not in text, rel
@@ -136,8 +149,6 @@ def test_client_identity_is_declared_once_for_both_transports() -> None:
     assert runtime.CLIENT_NAME is client.CLIENT_NAME
     assert runtime.CLIENT_VERSION is client.CLIENT_VERSION
 
-    text = (Path(__file__).resolve().parents[1] / "src/kiro_crew/acp/runtime.py").read_text(
-        encoding="utf-8"
-    )
+    text = _runtime_family_text()
     assert "CLIENT_NAME = " not in text
     assert "CLIENT_VERSION = " not in text

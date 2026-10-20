@@ -174,7 +174,7 @@ Every lifecycle frame already passes through `DashboardState.broadcast_ws`, and 
 | `approval.required` | `approval` | `approval_id`, `tool` |
 | `approval.resolved` | `approval_resolved` | `approval_id`, `approved`, `expired` |
 
-A source frame can repeat within one step: `chat_runner.py` sends `tool_call` again on `EVENT_TOOL_CALL_UPDATE` for the same `tool_call_id`. The projector emits each `turn.started` and `tool.called` once per turn and per call.
+A source frame can repeat within one step: `_on_tool_call_update` (`dashboard/chat_turn/tool_rows.py`) sends `tool_call` again on `EVENT_TOOL_CALL_UPDATE` for the same `tool_call_id`. The projector emits each `turn.started` and `tool.called` once per turn and per call.
 
 Common fields: `kind`, `ts`, `slot`, `origin` (the slot's origin class). The projector maps only the slot frames in the table; the `subagent_batch_*` frames are not mapped, so a subagent's steps reach the feed only as its parent slot's turn and tool events. An `approval_resolved` frame without `slot` (§2.3) belongs to an empty or `state` session, so there is no slot to fill; the projector drops it, and no app subscriber receives a slotless event. The owner still sees it on the dashboard as today.
 

@@ -22,6 +22,8 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { AppShell } from '../appShell'
+import { hiddenChromeProps } from '../focus/focusChrome'
+import { setAgentSwitchNotice } from '../../store/chatSlice'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -76,8 +78,8 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
 /**
  * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
  * this is its entry point. Click opens an Activity Feed popover
- * (portaled to <body> to escape the topbar's backdrop-filter containing
- * block); clicking an item slides out a detail panel. The full page is
+ * (portaled to the body-level overlay root to escape the topbar's
+ * backdrop-filter containing block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
  */
 function NotificationsBellButton() {
@@ -143,9 +145,9 @@ function NotificationsBellButton() {
  */
 export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
-    connected, updateAvailable, authRequired, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
+    connected, updateAvailable, authRequired, gatewayStatusMsg, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
-    setKiroUsageOpen, kiroUsageState, kiroCreditSurface, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle,
   } = shell
@@ -198,6 +200,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             pointerEvents: topChromeShown ? 'auto' : 'none',
           }
           : { gridArea: 'topbar', zIndex: TOPBAR_Z }}
+        // ...nor stay a Tab stop or be announced while off screen (hiddenChromeProps).
+        {...hiddenChromeProps(focusActive && !topChromeShown && focusChromeInert)}
         {...(focusActive ? topPeek.surfaceProps : {})}
       >
         {/* Left: mobile menu toggle + inline instance selector. The brand now
@@ -346,10 +350,28 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           <button
             type="button"
             data-testid="focus-mode-toggle"
-            onClick={toggleFocusMode}
+            // A sighted keyboard user who activates this with Enter/Space is the
+            // one person the inert chrome leaves stranded: the toggle they just
+            // pressed vanishes, Tab cannot bring it back, and the chord that can
+            // lived only in the hover title. So on a keyboard activation that
+            // turns focus mode ON, the shared shell notice (the agent-switch card)
+            // shows the same sentence the live region speaks, in display
+            // spelling. `detail === 0` is how a keyboard-synthesised click differs
+            // from a pointer click (which counts its clicks). A pointer user can
+            // hover an edge; a chord user just typed the chord; neither gets the
+            // card. The sr-only region is the spoken carrier either way.
+            onClick={e => {
+              const turningOn = !focusMode
+              toggleFocusMode()
+              if (turningOn && e.detail === 0 && focusModeExitMsgVisible) dispatch(setAgentSwitchNotice(focusModeExitMsgVisible))
+            }}
             className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 ${focusMode ? 'text-accent' : 'text-muted hover:text-text'}`}
             aria-label={i18nT('app.focus_mode')}
             aria-pressed={focusMode}
+            // The chord as currently bound (focusModeChord): the `title` below
+            // names the default for sighted hover, this names the live one for
+            // assistive tech. Omitted when the user unbound it.
+            aria-keyshortcuts={focusModeChord ?? undefined}
             {...uiLocation('shell.focus-mode')}
             title={i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title')}
           >
@@ -431,29 +453,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               stays the offline signal there. */}
           {!isMobile && (() => {
             const offline = !connected
-            // The accessible name and the role="status" live region are the
-            // ONLY screen-reader carriers of the offline cause: the
-            // session-expired banner api/client.ts injects is a plain <div>
-            // with no role="alert"/aria-live, so it is never announced. When
-            // auth is the real cause they must therefore say so -- announcing
-            // the generic "Gateway offline" points a screen-reader user at
-            // reconnection when pasting a token is the fix. This mirrors the
-            // branch the button `title` already uses (minus the collapse-toggle
-            // suffix, which is interaction text, not a status cause).
-            // Auth takes precedence over transport for the ANNOUNCED cause:
-            // `authRequired` (a 403 auth flag) and `connected` (Redux transport
-            // state) are independently sourced, so the session can expire while
-            // the socket is still up. In that state a transport-first ternary
-            // announces "Gateway connected" -- a reassuring lie -- and the
-            // session-expired banner api/client.ts injects is a plain <div>
-            // with no role="alert"/aria-live, so nothing else corrects it. The
-            // transport being up does not help a user whose session is dead, so
-            // the auth wording wins whenever auth is the real blocker.
-            const gatewayStatusMsg = authRequired
-              ? i18nT('app.gateway_offline_session_expired_see_banner_above')
-              : connected
-                ? i18nT('app.gateway_connected')
-                : i18nT('app.gateway_offline_reconnecting')
+            // `gatewayStatusMsg` (useAppShell) is the announced cause; see its
+            // comment for why auth wording wins over transport state. It mirrors
+            // the branch the button `title` already uses (minus the
+            // collapse-toggle suffix, which is interaction text, not a status
+            // cause).
             // The connection dot doubles as the capsule collapse toggle, so its
             // accessible name must name that action -- not just the gateway
             // state. title and aria-label share this composed value; the
@@ -515,7 +519,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) segments.push(metricsSegment(metrics, seg))
-            const usage = kiroUsageSegment({ kiroUsageState, kiroCreditSurface, setKiroUsageOpen }, seg, isMobile)
+            const usage = kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
             if (usage) segments.push(usage)
             }
             // Extension slot: downstream-registered capsule segments (e.g. an

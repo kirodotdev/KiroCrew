@@ -12,11 +12,12 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
-        _GIT_ROOT_WALK_LIMIT,
         _HEAD_READ_LIMIT,
         _MACOS_TEMP_PROJECT_PREFIX_RE,
         DashboardState,
+        _git_repo_touches,
         _sel,
+        app_owns_slot_session,
         config_dir,
         is_sensitive_path,
         platform_compat,
@@ -77,6 +78,25 @@ def _slot_project_snapshot(state: DashboardState) -> list[str]:
         proj = getattr(slot, "project", "") or ""
         if proj:
             dirs.append(proj)
+    return dirs
+
+
+def _slot_git_repo_snapshot(state: DashboardState, request_app: str = "") -> list[str]:
+    """Every live slot's project dir plus the git roots its tool calls touched.
+
+    The allow-list for the Git panel routes. The touched roots are derived on
+    the server from each session's own tool calls (``git_repo_touches``), never
+    from a request, so they carry the same trust as a project directory the
+    agent set itself. An app caller (*request_app*) gets only the touched roots
+    of the slots it owns, by the same predicate the slot checkpoint applies
+    (``app_owns_slot_session``): another session's repositories are not its to
+    read. Event loop only, pure in-memory, like :func:`_slot_project_snapshot`.
+    """
+    dirs = _slot_project_snapshot(state)
+    for slot in list(getattr(state, "_slots", {}).values()):
+        if request_app and not app_owns_slot_session(request_app, slot):
+            continue
+        dirs.extend(r for r in (getattr(slot, "_git_repos", None) or []) if r)
     return dirs
 
 
@@ -198,23 +218,17 @@ def _redact_project_path(path: str) -> str:
 def _project_git_branch(base: str) -> dict:
     """Resolve the checked-out branch for ``base``.
 
-    Returns ``{"repo": False}`` when ``base`` is not inside a git repository.
-    For a repository, returns the repo root plus either a ``branch`` name or,
-    on a detached HEAD, ``detached: True`` with the short commit in ``head``.
+    Returns ``{"repo": False}`` when ``base`` is not inside a git repository,
+    by the dashboard's one in-process discovery walk (``find_git_root``: a
+    linked worktree's ``.git`` file counts, ``GIT_CEILING_DIRECTORIES`` stops it
+    as it stops git, and the depth is bounded). For a repository, returns the
+    repo root plus either a ``branch`` name or, on a detached HEAD,
+    ``detached: True`` with the short commit in ``head``.
     """
-    root: str | None = None
-    cur = base
-    for _ in range(_GIT_ROOT_WALK_LIMIT):
-        # A worktree's .git is a FILE (a gitdir pointer), not a directory, so
-        # probe for existence rather than is_dir() — otherwise every Kiro Crew
-        # worktree reports as not-a-repo.
-        if os.path.exists(os.path.join(cur, ".git")):
-            root = cur
-            break
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
+    try:
+        root = _git_repo_touches.find_git_root(base)
+    except _git_repo_touches.RootWalkLimitReached:
+        return {"repo": False}
     if root is None:
         return {"repo": False}
     # ``root`` is derived from an allow-listed project directory, but a directory

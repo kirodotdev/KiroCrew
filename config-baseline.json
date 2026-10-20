@@ -2139,6 +2139,7 @@
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
         "inject_activity": true,
+        "startup_recall_timeout_secs": 1.0,
         "migrated": false
       }
     },
@@ -2608,6 +2609,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.startup_recall_timeout_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session-Start Recall Wait (seconds)",
+      "help": "How long a new dashboard chat's first message waits for its own embedding, which the dashboard starts ahead of the session-start build, beside session startup when the chat has to start its session. The embedding ranks the memory activity and lessons the session starts with by meaning; past the wait they are ranked by keyword. 0 turns the early embedding off, and the build embeds the message itself, as on other surfaces. Clamped to [0, 10].",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1.0
     },
     {
       "path": "memory.migrated",
@@ -3443,6 +3458,7 @@
         "partial_interval_ms": 400,
         "idle_evict_secs": 600,
         "endpointing": false,
+        "submit_on_release": false,
         "dictation_panel": true,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
@@ -3626,6 +3642,20 @@
       "tags": [],
       "label": "Semantic endpointing",
       "help": "While dictating, run a fast background model on each finished phrase to detect when you have asked a complete question, then send it without you pressing anything. Needs streaming; off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "stt.submit_on_release",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Send when I stop recording",
+      "help": "Send the message once the transcript is ready when you deliberately stop dictating: letting go of hold-to-talk, releasing the push-to-talk key, or pressing the mic or the key again. Shift-click the mic, or slide sideways on the phone's hold bar, to keep a draft instead; with a push-to-talk binding that does not use Shift, Shift as you release works too. Cancelling, losing focus and the recording time limit never send. Works with streaming and batch transcription; off by default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

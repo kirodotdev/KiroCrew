@@ -91,9 +91,9 @@ it bound before its owners existed, and serves each owner-defined name from the
 owner that defines it. Its own code is the effective-model resolution
 (`resolve_effective_model`, `resolve_app_spawn_model`, `app_model_pin`, the
 kiro-agent reference check) and `build_provider_factory`, the platform seam in
-front of `KiroCrewConfig.create_provider_factory`. That method reaches
-`AcpProvider` through `agent_sdk.acp_provider_class`, so no config module imports
-the ACP layer. The rest lives in one owner per responsibility, lowest layer first:
+front of `KiroCrewConfig.create_provider_factory`. That method builds
+`AcpProvider` through `agent_sdk.drivers.acp.build_acp_provider`, so no config
+module imports the ACP layer. The rest lives in one owner per responsibility, lowest layer first:
 
 | Owner | Owns |
 |---|---|
@@ -1241,7 +1241,21 @@ Contract:
   interface mode (`mc-ui`), reading width (`mc-reading-width`), the sessions
   sidebar width and the width to give back when leaving board view
   (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), and the board folder
-  collapse overrides described above -- are durable.
+  collapse overrides described above -- are durable, and so are the Settings >
+  Shortcuts choices: the on/off switch (`mc-keyboard-shortcuts`), the macOS
+  digit modifier (`mc-mac-ctrl-digits`), the Search everywhere chord
+  (`mc-quicksearch-shortcut`), and the panel toggle chords
+  (`mc-panel-toggle-shortcuts`), and the push-to-talk key (`mc-ptt-config`)
+  on Settings > Voice. The push-to-talk binding is positional and the
+  platform defaults differ, so a client that inherits another machine's
+  binding (a Mac client's bare right Option does not arm on most Windows and
+  Linux layouts) changes it once; that one change costs less than
+  re-recording the key after every destructive upgrade. Two neighboring keys
+  are deliberately excluded: the microphone choice (`mc-mic-device-id`) is a
+  device id the browser issues for that machine, so a restored one names no
+  device, and the rebound-shortcut overrides (`mc-shortcut-overrides`) have
+  no writer yet, so the change that adds the writer must also add the key to
+  the list.
 - A SETTINGS IMPORT rewrites this file under a profile that has already synced,
   which the cold-profile rule above would never re-read. The client therefore
   pauses the sync before sending the import (`pauseUiPrefsSync`: no flush,
@@ -1319,6 +1333,16 @@ Contract:
     during restore and reconcile; its marker clears only for a child the host
     acknowledged and only once the synced fingerprints persisted; and host adoption
     (`adoptHostUiPrefsOnNextLoad`) removes the key.
+  - PLAIN DIRTY marker: a plain key written only by an explicit user action
+    records the save in `mc-ui-prefs-plain-dirty` (`savePrefExplicitly`, which writes the mark first and rolls it back if the value is refused) at its
+    writer's save seam: the Shortcuts switches (`components/ShortcutsModal.tsx`),
+    the Search everywhere chord, the panel toggle chords and the push-to-talk
+    key. Without it a value saved after a failed restore or reconcile is outside
+    the frozen owned-at-failure snapshot, and the next successful pass puts the
+    host value over the user's choice. A marked key counts as owned on both
+    restore paths and is forced into the next upload; its mark clears once that
+    upload is baselined; host adoption removes the key. Only allowlisted plain
+    keys are accepted.
 - Also excluded: any value that GATES A SAFETY CONFIRMATION. `mc-yolo-ack` is the
   instance — its presence makes the approval-mode picker skip the confirmation
   and enable full auto-approval — and the reason is that this file sits in the
@@ -1458,7 +1482,7 @@ keys`. Three exclusions from that warning are named in code:
   is the point at which this becomes an app-declared registration.
 - `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
   writes and reads but does not model as a field. The settings UI persists it
-  (`slack/interactions.py`, `dashboard/chat_voice.py`) and the gateway reads it
+  (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
   back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
   section, and NOT reported as unrecognized because the product wrote it itself.
@@ -1932,8 +1956,8 @@ recurring gateway stall the loop-stall watchdog blames on chat.
 Async callers therefore **warm the cache before resolving**:
 `agent_discovery.warm_project_agent_names()` runs the scan on
 `executors.discovery_executor()` (the pool `/api/agents/installed` uses), after which
-the on-loop read is a hit. `chat_runner._run_chat` and the side-turn handler both do
-this.
+the on-loop read is a hit. The turn's admission phase (`_turn_admit`, in
+`dashboard/chat_turn/turn_admission.py`) and the side-turn handler both do this.
 
 `subagent._validate_agent` cannot warm — `spawn()` is synchronous and already on the
 loop — so it reads the project scope from `cached_project_agent_names()` only. A
@@ -1969,7 +1993,7 @@ publication. The execution record also persists a unique publication revision to
 distinguish repeated selections during compare-and-set; neither revision grants
 memory access.
 
-#### App-slot cold-snapshot self-heal & fail-loud (`dashboard/chat_runner._run_chat`)
+#### App-slot cold-snapshot self-heal & fail-loud (`dashboard/chat_turn/turn_admission._turn_admit`)
 The one-turn cold fallback above is acceptable for an ordinary session (the next
 turn self-heals), but it is **not** acceptable for an **app-owned** slot
 (`slot._app` truthy — an App-Kit slot bound to an app's own kiro agent, e.g.
@@ -1979,7 +2003,7 @@ turn self-heals), but it is **not** acceptable for an **app-owned** slot
 `requested_resolved=False`. The result is silent: the slot still advertises the
 requested name while the generic default agent answers **with none of the app's
 MCP tools and no error**, leaving the app unusable until a gateway restart happens
-to re-warm the snapshot. `_run_chat` therefore guards the resolve, strictly behind
+to re-warm the snapshot. `_turn_admit` therefore guards the resolve, strictly behind
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
 common hot path — no `_app`, or already resolved):
 
@@ -2659,7 +2683,7 @@ ones whose holder is `DashboardState`, that must rebuild agent artifacts, or tha
 process-wide registry state
 live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
-(→ `handlers/updates.py::apply_log_level_from_config`),
+(→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`), and
 `agent.model_context_tokens` (→ `model_registry.apply_operator_windows`, process state of
 the model registry rather than of any holder, so it is also installed once from the boot
@@ -2838,7 +2862,7 @@ happens to notice — which is the bug class this closes.
 | `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`. A safety net rather than a route: no handler writes `config.json` through it — the per-channel savers (`messaging._LockedSectionWrite`), the STT PUT and the MCP gateway-enable toggle all go through `update_config_locked`, and `TestTheAtomicJsonWriteConfigFamilyIsRatcheted` pins that population to an empty baseline so a new saver cannot reopen it |
 
 A handler that must answer only after the new value is in force calls
-`ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which
+`ConfigWatch.refresh_now()` (`handlers/core_config_view.py::_hot_apply_after_write`), which
 forces one cycle and is a no-op before the watcher is started. The config PUT
 and every per-channel saver (the `*_settings.py` owners in `dashboard/messaging_api/`,
 the WhatsApp saver in `handlers/whatsapp_setup.py`) do, because their writes carry authorization: a
@@ -2966,6 +2990,7 @@ class MemoryConfig:
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
     inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
     inject_activity: bool = True     # inject the budgeted [Memory activity] block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes); requires inject_memory
+    startup_recall_timeout_secs: float = 1.0  # how long a session-start build waits for a first-message embedding already running (the dashboard starts it early); past it, task facts, episodes and lessons rank by keyword. Any other build keeps context._PROMPT_BUILD_EMBED_TIMEOUT_SECS (5.0); 0 turns the early embedding off; clamped to [0, 10]
 
 @dataclass
 class KnowledgeConfig:
@@ -2995,6 +3020,7 @@ class SttConfig:
     partial_interval_ms: int = 400 # live-transcript refresh cadence; same clamp
     idle_evict_secs: int = 600     # release the resident local model after this idle; 0 = at end of recording
     endpointing: bool = False      # semantic auto-submit on a complete utterance; needs streaming
+    submit_on_release: bool = False  # a deliberate stop sends once the transcript settles; any provider
     polish: bool = False           # hand the FINISHED transcript (never the audio) to a fast model; off = nothing leaves the machine
     dictation_panel: bool = True   # animated recording panel; falls back to the status bar
     timeout_secs: int = 300
@@ -3457,7 +3483,7 @@ a prompt-injected agent with file-write access) bypassed that gate entirely. Eac
 knob controls a resource-consumption dimension (concurrent subagent processes,
 per-subagent turn budget, pre-warmed pool processes), so an inflated on-disk value
 could exhaust host memory/CPU/the process table (DoS). The dashboard write gate
-(`dashboard/handlers/core.py`) and the runtime pool cap **import these same
+(`dashboard/handlers/core_config_view.py`) and the runtime pool cap **import these same
 constants**, so write-gate / load-clamp / runtime-cap cannot drift apart —
 closing the direct-config-edit DoS gap.
 
@@ -3933,6 +3959,12 @@ what the session's agent spec mounts, not a preference. `_resolve_prompt_templat
 fills it from `agent._computer_use_spec_gate()`, read when the session's backend
 spawns (session start and resume); see
 [computer-use.md](computer-use.md).
+
+`{{BROWSER_BEGIN}}` and `{{BROWSER_END}}` mark the Browser section in place for
+the same reason: whether a session can browse is a property of the host. The
+section stays while `browser_cli.install.available()` holds or cannot be read,
+and becomes a short pointer while it does not, read at session start; see
+[browser.md](browser.md#capability-model).
 
 ### Foreign-agent import onboarding state
 

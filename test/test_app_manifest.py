@@ -21,7 +21,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from conftest import make_escaping_link
-from kiro_crew.apps.manifest import AppManifest, CapabilityDependencies, Dependencies, SetupConfig
+from kiro_crew.apps.manifest import (
+    _MAX_CONFIG_KEY_CHARS,
+    _MAX_CONFIG_KEYS,
+    AppManifest,
+    CapabilityDependencies,
+    Dependencies,
+    SetupConfig,
+)
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +73,48 @@ class TestValidation:
     def test_valid_minimal(self):
         m = AppManifest.from_dict(_valid_manifest())
         assert m.validate() == []
+
+    def test_config_keys_round_trip(self):
+        m = AppManifest.from_dict(_valid_manifest(config_keys=["secretary"]))
+        assert m.validate() == []
+        assert m.to_dict()["config_keys"] == ["secretary"]
+        assert b'"config_keys":["secretary"]' in m.signing_payload()
+        assert "config_keys" not in m.extra
+
+    @pytest.mark.parametrize("invalid", ["secretary", {"secretary": True}, 1, None])
+    def test_config_keys_rejects_non_list(self, invalid):
+        m = AppManifest.from_dict(_valid_manifest(config_keys=invalid))
+        assert "config_keys must be an array" in m.validate()
+
+    def test_config_keys_rejects_invalid_entries(self):
+        m = AppManifest.from_dict(_valid_manifest(config_keys=["secretary", ""]))
+        assert "config_keys entries must be non-empty strings" in m.validate()
+
+    def test_config_keys_accepts_exact_count_bound(self):
+        keys = [f"key-{index}" for index in range(_MAX_CONFIG_KEYS)]
+        m = AppManifest.from_dict(_valid_manifest(config_keys=keys))
+        assert m.validate() == []
+        assert m.config_keys == keys
+
+    def test_config_keys_rejects_over_count_bound(self):
+        keys = [f"key-{index}" for index in range(_MAX_CONFIG_KEYS + 1)]
+        m = AppManifest.from_dict(_valid_manifest(config_keys=keys))
+        assert m.config_keys == []
+        assert f"config_keys must contain at most {_MAX_CONFIG_KEYS} entries" in m.validate()
+
+    def test_config_keys_accepts_exact_length_bound(self):
+        key = "k" * _MAX_CONFIG_KEY_CHARS
+        m = AppManifest.from_dict(_valid_manifest(config_keys=[key]))
+        assert m.validate() == []
+        assert m.config_keys == [key]
+
+    def test_config_keys_rejects_over_length_bound(self):
+        m = AppManifest.from_dict(_valid_manifest(config_keys=["k" * (_MAX_CONFIG_KEY_CHARS + 1)]))
+        assert m.config_keys == []
+        assert (
+            f"config_keys entries must be at most {_MAX_CONFIG_KEY_CHARS} characters"
+            in m.validate()
+        )
 
     def test_missing_name(self):
         m = AppManifest.from_dict(_valid_manifest(name=""))
@@ -305,9 +354,7 @@ class TestValidation:
     @pytest.mark.parametrize("selector", ["command", "script"])
     def test_cron_execution_selector_non_string_is_rejected(self, selector):
         m = AppManifest.from_dict(
-            _valid_manifest(
-                crons=[{"name": "j1", "every": 300, "message": "go", selector: 7}]
-            )
+            _valid_manifest(crons=[{"name": "j1", "every": 300, "message": "go", selector: 7}])
         )
 
         assert m.crons[0].command == ""
@@ -318,9 +365,7 @@ class TestValidation:
     @pytest.mark.parametrize("selector", ["command", "script"])
     def test_cron_null_execution_selector_remains_absent(self, selector):
         m = AppManifest.from_dict(
-            _valid_manifest(
-                crons=[{"name": "j1", "every": 300, "message": "go", selector: None}]
-            )
+            _valid_manifest(crons=[{"name": "j1", "every": 300, "message": "go", selector: None}])
         )
 
         assert not any(selector in error for error in m.validate())
@@ -467,16 +512,12 @@ class TestRoundTrip:
 
     @pytest.mark.parametrize("raw", ["false", "true", "yes", 1, {}, [], None])
     def test_session_approval_requires_json_true(self, raw):
-        m = AppManifest.from_dict(
-            _valid_manifest(permissions={"sessionApproval": raw})
-        )
+        m = AppManifest.from_dict(_valid_manifest(permissions={"sessionApproval": raw}))
         assert m.permissions.sessionApproval is False
         assert "sessionApproval" not in m.to_dict().get("permissions", {})
 
     def test_session_approval_round_trips_when_true(self):
-        m = AppManifest.from_dict(
-            _valid_manifest(permissions={"sessionApproval": True})
-        )
+        m = AppManifest.from_dict(_valid_manifest(permissions={"sessionApproval": True}))
         assert m.permissions.sessionApproval is True
         assert m.to_dict()["permissions"]["sessionApproval"] is True
 
@@ -761,9 +802,7 @@ class TestDependencies:
         assert deps.to_dict() == {"optionalCommands": ["pdflatex", "tectonic"]}
 
     def test_optional_commands_are_independent_of_required_ones(self):
-        deps = Dependencies.from_dict(
-            {"commands": ["gh"], "optionalCommands": ["glab"]}
-        )
+        deps = Dependencies.from_dict({"commands": ["gh"], "optionalCommands": ["glab"]})
         assert deps.commands == ["gh"]
         assert deps.optionalCommands == ["glab"]
         restored = Dependencies.from_dict(deps.to_dict())
@@ -1130,9 +1169,9 @@ class TestScalarGrantDoesNotBecomeAWildcard:
 
         for field in ("exposeToApps", "events", "api", "mcpTools"):
             perms = Permissions.from_dict({field: "*"})
-            assert getattr(perms, field) == [], (
-                f"{field}: a scalar must not be exploded into a wildcard"
-            )
+            assert (
+                getattr(perms, field) == []
+            ), f"{field}: a scalar must not be exploded into a wildcard"
 
     def test_scalar_path_never_yields_a_match_everything_prefix(self):
         from kiro_crew.apps.manifest import Permissions
@@ -1279,9 +1318,9 @@ def test_command_bar_builtin_is_overlay_only_and_default_on():
     in ``manager._DEFAULT_ON_BUILTINS``; the opt-in policy tests read it from there.
     """
     raw = json.loads(
-        (
-            _REPO_ROOT / "src/kiro_crew/apps/builtins/command_bar/app.json"
-        ).read_text(encoding="utf-8")
+        (_REPO_ROOT / "src/kiro_crew/apps/builtins/command_bar/app.json").read_text(
+            encoding="utf-8"
+        )
     )
     m = AppManifest.from_dict(raw)
     assert m.validate() == []
@@ -1345,7 +1384,7 @@ class TestShippedManifestsAreWellFormedJson:
             raw = manifest.read_text(encoding="utf-8")
             count = raw.count('"platform"')
             assert count <= 1, (
-                f"{manifest.parent.name}/app.json contains {count} \"platform\" keys; "
+                f'{manifest.parent.name}/app.json contains {count} "platform" keys; '
                 "the effective value is whichever comes last, which is not what the "
                 "file appears to say."
             )

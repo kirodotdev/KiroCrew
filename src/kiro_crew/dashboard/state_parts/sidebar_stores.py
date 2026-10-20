@@ -732,9 +732,9 @@ def save_tags(self: DashboardState) -> None:
 def save_tags_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
     """Persist a pre-captured tag snapshot to disk (strict -- raises on failure).
 
-    Used by the serialized tag-write path in chat_tags.py: the snapshot is
+    Used by the serialized tag-write path in chat_tags_store.py: the snapshot is
     captured on the event loop under the tags write lock, then this write
-    runs in a worker thread. Lives here (not in chat_tags.py) so the file
+    runs in a worker thread. Lives here (not in chat_tags_store.py) so the file
     location resolves through this module's ``config_dir`` exactly like
     ``save_tags`` -- keeping tests that patch it working unchanged.
 
@@ -765,9 +765,9 @@ def save_tag_boards(self: DashboardState) -> None:
 def save_tag_boards_snapshot(self: DashboardState, snapshot: list[dict]) -> None:
     """Persist a pre-captured boards snapshot to disk (strict -- raises on failure).
 
-    Used by the tag-delete path in chat_tags.py: the snapshot is captured
+    Used by the tag-delete path in chat_tags_vocabulary.py: the snapshot is captured
     on the event loop under the tags write lock, then this write runs in a
-    worker thread. Lives here (not in chat_tags.py) so the file location
+    worker thread. Lives here (not in chat_tags_vocabulary.py) so the file location
     resolves through this module's ``config_dir`` exactly like
     ``save_tag_boards`` -- keeping tests that patch it working unchanged.
 

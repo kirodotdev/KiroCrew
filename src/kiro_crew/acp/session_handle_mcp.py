@@ -326,6 +326,40 @@ async def wait_mcp_ready(
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
 
+async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple[str, ...]:
+    """Hold until every server the agent spec declares has reported; never raises.
+
+    For an unattended run, before its first prompt. ``drain_init`` stops a
+    second after the first server reports, so a slow server can still be
+    booting when the prompt goes out, and that turn runs without its tools.
+    Nobody is there to notice or retry, so this keeps draining init frames
+    (exactly as ``drain_init`` handles them) until each declared server has
+    reported initialized, failed or awaiting authorization, or *timeout*
+    seconds pass. Returns the declared servers that are not ready, in spec
+    order; empty when all are.
+    """
+    report = self._mcp_report
+    deadline = time.monotonic() + max(0.0, timeout)
+    while report.declared_unreported():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            msg = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
+        if msg is None:
+            # Runtime died: re-poison so the turn that follows sees it.
+            await self._queue.put(None)
+            break
+        try:
+            report.record_frame(msg, owned=self._owns_mcp_frame(msg))
+            self._apply_init_notification(msg, classify_notification(msg))
+        except Exception:
+            logger.debug("declared MCP wait: error processing init frame", exc_info=True)
+    return report.declared_not_ready()
+
+
 def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, offer: bool) -> None:
     """Track which of this session's servers need an OAuth sign-in.
 

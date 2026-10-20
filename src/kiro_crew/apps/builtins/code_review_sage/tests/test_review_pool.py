@@ -6,6 +6,7 @@ and SEL audit are exercised without spawning a real kiro-cli process.
 """
 import asyncio
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -697,3 +698,98 @@ class TestRuntimePreflight(unittest.TestCase):
                 unittest.mock.patch.object(rp, "resolve_kiro_cli", _resolver):
             rp.runtime_preflight()
         self.assertEqual(calls, ["resolve"])
+
+
+class TestReviewBackend(unittest.IsolatedAsyncioTestCase):
+    """The shared review runtime follows ``agent.acp_backend`` when that runtime
+    serves the backend, and otherwise stays on kiro-cli with one warning."""
+
+    def setUp(self):
+        rp._WARNED_FALLBACK_BACKENDS.clear()
+        self.addCleanup(rp._WARNED_FALLBACK_BACKENDS.clear)
+        self.calls: list[dict] = []
+        self.overlays: list[tuple] = []
+
+        def _record(**kwargs):
+            # A recording double, not a MagicMock: it keeps exactly what the
+            # pool passed so the test reads the real constructor kwargs.
+            self.calls.append(kwargs)
+            return FakeRuntime(agent=kwargs.get("agent"), work_dir=kwargs.get("work_dir"))
+
+        patcher = unittest.mock.patch.object(
+            rp, "AcpRuntime", unittest.mock.Mock(side_effect=_record))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        overlay = unittest.mock.patch.object(
+            rp, "_write_effort_overlay", lambda *a, **k: self.overlays.append(a))
+        overlay.start()
+        self.addCleanup(overlay.stop)
+
+    def _configure(self, value):
+        stored = rp._ABSENT_AGENT_KEY if value is None else value
+        patcher = unittest.mock.patch.object(
+            rp, "_stored_agent_value", lambda key: stored if key == "acp_backend" else None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def _spawn(self):
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch()
+        await pool.end_batch()
+        self.assertEqual(len(self.calls), 1)
+        return self.calls[0]
+
+    async def test_kas_reaches_the_runtime_constructor(self):
+        self._configure("kas")
+        kwargs = await self._spawn()
+        self.assertEqual(kwargs["acp_backend"], "kas")
+        self.assertEqual(self.overlays, [])   # kas reads no cli.json overlay
+
+    async def test_unset_backend_stays_on_kiro(self):
+        self._configure(None)
+        with self.assertNoLogs(rp.logger, level="WARNING"):
+            kwargs = await self._spawn()
+        self.assertEqual(kwargs["acp_backend"], rp.ACP_BACKEND_KIRO)
+        self.assertEqual(len(self.overlays), 1)   # kiro still gets its effort overlay
+
+    async def test_stored_kiro_stays_on_kiro(self):
+        self._configure("kiro")
+        kwargs = await self._spawn()
+        self.assertEqual(kwargs["acp_backend"], rp.ACP_BACKEND_KIRO)
+
+    async def test_claude_falls_back_to_kiro_and_warns_once(self):
+        self._configure("claude")
+        with self.assertLogs(rp.logger, level="WARNING") as logs:
+            kwargs = await self._spawn()
+            self.assertEqual(rp.review_backend(), rp.ACP_BACKEND_KIRO)
+        self.assertEqual(kwargs["acp_backend"], rp.ACP_BACKEND_KIRO)
+        warnings = [r for r in logs.records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("'claude'", warnings[0].getMessage())
+        self.assertIn("kiro-cli", warnings[0].getMessage())
+
+    def test_reads_agent_acp_backend_from_gateway_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.json").write_text(
+                json.dumps({"agent": {"acp_backend": "codex"}}), encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, {"KIROCREW_HOME": tmp}):
+                self.assertEqual(rp.review_backend(), "codex")
+
+    def test_config_local_overlay_wins_over_config_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.json").write_text(
+                json.dumps({"agent": {"acp_backend": "codex"}}), encoding="utf-8")
+            Path(tmp, "config.local.json").write_text(
+                json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, {"KIROCREW_HOME": tmp}):
+                self.assertEqual(rp.review_backend(), rp.ACP_BACKEND_KIRO)
+
+    def test_preflight_skips_kiro_cli_lookup_for_a_non_kiro_backend(self):
+        self._configure("kas")
+        with unittest.mock.patch.object(rp, "resolve_kiro_cli", lambda: None):
+            self.assertEqual(rp.runtime_preflight(), "")
+
+    def test_preflight_still_requires_kiro_cli_on_kiro(self):
+        self._configure(None)
+        with unittest.mock.patch.object(rp, "resolve_kiro_cli", lambda: None):
+            self.assertIn("kiro-cli", rp.runtime_preflight())

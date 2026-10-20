@@ -1054,8 +1054,8 @@ class TestNativeAutoApproveLogSanitization:
     request stream, which is impractical to stand up in a unit test. Instead
     this exercises the PRODUCTION helper ``_safe_native_crew_debug_title`` that
     the handler applies to the tool title before logging, plus the ``%r``
-    formatting at the log call site. Reverting the redaction in chat_runner.py
-    therefore breaks these assertions.
+    formatting at the log call site. Reverting the redaction in ``_on_permission_request``
+    (chat_turn/tool_approval.py) therefore breaks these assertions.
     """
 
     def test_newline_is_escaped_not_forged(self) -> None:

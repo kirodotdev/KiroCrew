@@ -6,6 +6,7 @@
 // three pieces. They live here rather than being re-implemented per dialog.
 import { useEffect, type RefObject } from 'react'
 import { useDocumentImeLatch } from './useImeGuard'
+import { useLocalCrewHidden } from '../components/overlayRoot'
 
 /** Focusable descendants of a dialog, in DOM order, skipping disabled ones. */
 export const FOCUSABLE =
@@ -47,6 +48,10 @@ export const FOCUSABLE =
  *
  * A dialog with no single trigger (the Modal family) has neither problem and
  * keeps the default.
+ *
+ * Key handling also stands down while the dialog's Crew is hidden behind a
+ * remote one (`useLocalCrewHidden`): the dialog is kept for the return, and the
+ * keys belong to the Crew in front.
  *
  * The keydown listener is CAPTURE phase on purpose: dialogs stop keydown
  * propagation so the page's own shortcuts don't fire while the user types
@@ -90,9 +95,10 @@ export function useDialogFocusTrap(
   // happens to be the last (or first) focusable element yanks focus and
   // aborts the composition.
   const imeLatch = useDocumentImeLatch(enabled)
+  const crewHidden = useLocalCrewHidden()
 
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || crewHidden) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && handleEscape) {
         // An Escape the IME owns must not dismiss the dialog: the user is
@@ -134,5 +140,5 @@ export function useDialogFocusTrap(
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [containerRef, onEscape, enabled, handleEscape, imeLatch])
+  }, [containerRef, onEscape, enabled, handleEscape, imeLatch, crewHidden])
 }

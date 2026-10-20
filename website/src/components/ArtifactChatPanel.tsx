@@ -24,7 +24,7 @@ import { i18nT } from '../i18n/t'
  * companion session IS your active session while you work on the artifact, so
  * /chat lands on it afterwards.
  *
- * Composer staging ("Ask agent to address") rides the existing `writePrefill`
+ * Composer staging ("Draft a prompt in chat") rides the existing `writePrefill`
  * sessionStorage channel that ChatPage already consumes when the slot
  * activates — no ChatPage fork needed.
  *

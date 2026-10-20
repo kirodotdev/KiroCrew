@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from kiro_crew.security import DENIED_ROOT_PARTS
+from kiro_crew.security.redaction import _credential_matches
 
 Response = tuple[int, str, bytes]
 
@@ -445,16 +446,17 @@ def contains_credential(runtime: Any, data: bytes) -> bool:
         # Images, fonts, and wasm have no text credentials to scan and must not
         # become false positives merely because they are arbitrary bytes.
         return False
-    for pattern in runtime.get_credential_patterns():
-        for match in pattern.finditer(text):
-            hit = match.group()
-            if "PRIVATE KEY" in hit and not runtime._PEM_BODY_RE.search(
-                runtime._PEM_MARKER_RE.sub("", hit)
-            ):
-                # Documentation often quotes a PEM marker without carrying key
-                # material; require an armoured body before refusing that case.
-                continue
-            return True
+    # The shared scanner finds the same matches as the credential pattern in
+    # time linear in the text; the raw pattern is quadratic on repeated headers.
+    for match in _credential_matches(text):
+        hit = match.group()
+        if "PRIVATE KEY" in hit and not runtime._PEM_BODY_RE.search(
+            runtime._PEM_MARKER_RE.sub("", hit)
+        ):
+            # Documentation often quotes a PEM marker without carrying key
+            # material; require an armoured body before refusing that case.
+            continue
+        return True
     return False
 
 

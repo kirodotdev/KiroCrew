@@ -33,6 +33,7 @@ from kiro_crew.dashboard.state_parts.slot_turns import _log_task_exception
 from kiro_crew.security.credential_sources import CredentialEvidence
 
 if TYPE_CHECKING:
+    from kiro_crew.dashboard.git_repo_touches import TouchCandidates
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
@@ -270,6 +271,16 @@ class _ChatSlot:
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
+        "_git_repos",
+        "_git_repos_evicted",
+        "_git_repos_evicted_overflow",
+        "_git_repos_seeded",
+        "_git_repos_incomplete",
+        "_git_repo_touch_overflow",
+        "_git_repo_touch_pending",
+        "_git_repo_touch_terminal",
+        "_git_repo_walk_pending",
+        "_git_repo_walk_task",
         "_turn_reply_mids",
         "linked_session_key",
         # Relay-archive marker: an older build ran this slot's turns on a peer
@@ -477,6 +488,16 @@ class _ChatSlot:
     _pending_variants: list[dict]
     _lock: asyncio.Lock
     _file_changes: list[dict[str, Any]]
+    _git_repos: list[str]
+    _git_repos_evicted: list[str]
+    _git_repos_evicted_overflow: int
+    _git_repos_seeded: bool
+    _git_repos_incomplete: bool
+    _git_repo_touch_overflow: bool
+    _git_repo_touch_pending: dict[str, TouchCandidates]
+    _git_repo_touch_terminal: dict[str, str]
+    _git_repo_walk_pending: list[str]
+    _git_repo_walk_task: asyncio.Task[None] | None
     _turn_reply_mids: list[str]
     linked_session_key: str
     _active_turn_session_key: str

@@ -50,9 +50,12 @@ def fts5_quote_tokens(query: str) -> list[str]:
 # word. Mirrors `history_search._is_cjk_char`, the character set the session
 # search's CJK gate already ships; Hangul is deliberately absent from both,
 # because modern Korean is space-separated and needs no segmentation.
-_CJK_RANGES = (
+_KANA_RANGES = (
     (0x3040, 0x30FF),  # Hiragana + Katakana
     (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
+)
+_CJK_RANGES = (
+    *_KANA_RANGES,
     (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
@@ -64,6 +67,16 @@ def is_cjk_char(ch: str) -> bool:
     """True if ``ch`` belongs to a script written without word spacing."""
     cp = ord(ch)
     return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
+
+
+def is_kana_char(ch: str) -> bool:
+    """True if ``ch`` is Japanese kana: the part of the CJK set that is not Han.
+
+    Session search splits a pure-Han run into Chinese dictionary words; a run
+    holding any kana is Japanese and keeps the character path.
+    """
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _KANA_RANGES)
 
 
 # Derived from _CJK_RANGES rather than spelled out, so the two cannot drift apart.
@@ -211,6 +224,7 @@ __all__ = [
     "fts5_segment_for_index",
     "fts5_cjk_match_groups",
     "is_cjk_char",
+    "is_kana_char",
     "script_runs",
 ]
 

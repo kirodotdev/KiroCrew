@@ -2,7 +2,7 @@
 
 Unit-level cover for :mod:`kiro_crew.dashboard.arrival_folders`. The handler's own
 use of it (both arrival routes, the late resolution, the mid-import repair) is
-pinned in ``test/test_session_transfer.py``; what is pinned HERE is the resolution
+pinned in ``test/test_session_transfer_landing.py``; what is pinned HERE is the resolution
 itself, and specifically the five folder-lifecycle constraints
 ``docs/request-for-change/rfc-arrival-provenance-filing.md`` §5 records. Each of
 those constraints is a real defect class in the folder lifecycle rather than in

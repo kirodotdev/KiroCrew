@@ -56,7 +56,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 from kiro_crew.agent_sdk.tool_search import TOOL_SEARCH_LOADER_TOOL
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # A server name is config-derived, so an installed app chooses it: it reaches a
@@ -580,6 +580,14 @@ class McpSessionReport:
     #: (:mod:`kiro_crew.acp.mcp_mount_check`) started for one attempt can tell
     #: that the report has moved on to another and write nothing.
     generation: int = 0
+    #: The enabled ``mcpServers`` names of the agent spec this session runs, set
+    #: by :meth:`record_declared`. Only an unattended run reads it: it waits for
+    #: each of these to report before its first prompt (see
+    #: :meth:`declared_unreported`) and names the ones that never became ready.
+    declared: tuple[str, ...] = ()
+    #: How many more enabled servers the spec declares than :attr:`declared`
+    #: keeps. Counted, and named as not ready, rather than dropped.
+    declared_omitted: int = 0
     _ready: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
@@ -615,6 +623,8 @@ class McpSessionReport:
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
         self.generation += 1
+        self.declared = ()
+        self.declared_omitted = 0
         self._started = True
         self._ready.clear()
         self._failed.clear()
@@ -657,6 +667,55 @@ class McpSessionReport:
             if ref and ref not in seen:
                 seen.append(ref)
         self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
+
+    def record_declared(self, spec: Any) -> None:
+        """Record the servers the agent spec *spec* declares and leaves enabled.
+
+        Set rather than accumulated, like :meth:`record_unresolved_refs`: it is
+        read from the one spec the session started on. A muted server (any
+        ``disabled`` but an absent or literal ``false``, the same rule the launch
+        uses) is not expected to start, so it is left out. Names
+        are sanitized and capped like a frame's, so they compare equal to the
+        names the frames report.
+        """
+        servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+        seen: list[str] = []
+        for raw, entry in servers.items() if isinstance(servers, dict) else ():
+            if mcp_entry_is_muted(entry):
+                continue
+            name = sanitize_sink_text(str(raw), _NAME_CAP)
+            if name and name not in seen:
+                seen.append(name)
+        self.declared = tuple(seen[:_BUCKET_CAP])
+        self.declared_omitted = max(0, len(seen) - _BUCKET_CAP)
+
+    def declared_unreported(self) -> tuple[str, ...]:
+        """Declared servers that have not reported at all yet, in spec order."""
+        reported = {*self._ready, *self._failed, *self._awaiting_auth}
+        return tuple(name for name in self.declared if name not in reported)
+
+    def declared_never_reported(self) -> tuple[str, ...]:
+        """Declared servers with no report at all, for the run's notice.
+
+        A failed or awaiting-authorization server is already named, with its
+        reason, by :meth:`problem_summary`; this names only the ones nothing else
+        does. Servers past the cap are among them, counted as one entry.
+        """
+        missing = list(self.declared_unreported())
+        if self.declared_omitted:
+            missing.append(f"{self.declared_omitted} more declared server(s), not tracked")
+        return tuple(missing)
+
+    def declared_not_ready(self) -> tuple[str, ...]:
+        """Declared servers this session cannot use: failed, awaiting auth or unreported.
+
+        Servers past the cap are not tracked, so nothing can say they are ready:
+        they are counted as one trailing entry rather than read as fine.
+        """
+        missing = [name for name in self.declared if name not in self._ready]
+        if self.declared_omitted:
+            missing.append(f"{self.declared_omitted} more declared server(s), not tracked")
+        return tuple(missing)
 
     def record_pruned(self, name: Any, reason: Any) -> bool:
         """Record a server Crew left out of this session's array before sending it.

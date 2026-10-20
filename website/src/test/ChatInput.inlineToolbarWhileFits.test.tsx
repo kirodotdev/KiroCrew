@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 
@@ -49,6 +49,29 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     expect(inline()).toBe(false)
     expect(wrapper().className).toContain('rounded-2xl')
     expect(screen.getByTestId('composer-bottom-row').className).toContain('justify-between')
+  })
+
+  it('keeps one row through focus and blur on a list draft, with the list-indent hint screen-reader only', () => {
+    renderWithProviders(<ChatInput value="- item" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    const ta = screen.getByRole('textbox')
+    expect(inline()).toBe(true)
+    expect(screen.getByTestId('list-indent-hint').className).toBe('sr-only')
+    fireEvent.focus(ta)
+    // Focus does not reshape the box: the hint stays out of the visual row
+    // and is still described to screen readers.
+    expect(inline()).toBe(true)
+    expect(screen.getByTestId('list-indent-hint').className).toBe('sr-only')
+    expect(ta.getAttribute('aria-describedby')).toContain(screen.getByTestId('list-indent-hint').id)
+    fireEvent.blur(ta)
+    expect(inline()).toBe(true)
+  })
+
+  it('shows the list-indent hint under the text once the draft no longer fits one row', () => {
+    renderWithProviders(<ChatInput value={'- item\n- next'} onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    const ta = screen.getByRole('textbox')
+    fireEvent.focus(ta)
+    expect(inline()).toBe(false)
+    expect(screen.getByTestId('list-indent-hint').className).toContain('text-[12px]')
   })
 
   it('opens to two rows while a file is staged: the file strip has no place on one line', () => {

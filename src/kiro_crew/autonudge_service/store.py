@@ -11,9 +11,9 @@ held or unparsed row.
 
 :class:`~kiro_crew.autonudge.AutoNudgeService` composes one ``LoopStore`` and keeps the
 entry points callers and tests patch (``_write_state``, ``_save``, ``_serialize_state``,
-``_serialized_loops``). The loader that decides what each stored row MEANS stays on the
-service in :mod:`kiro_crew.autonudge`, because it vets and scrubs every row at the trust
-boundary; it reads and records through this store.
+``_serialized_loops``). The loader that decides what each stored row MEANS is bound on the
+service from :mod:`kiro_crew.autonudge_service.store_loader`, which vets and scrubs every row
+at the trust boundary; it reads and records through this store.
 """
 
 from __future__ import annotations

@@ -9,15 +9,19 @@ it. These tests drive a real turn through ``turn_harness`` with a real
 ``provider_type``: ``""`` when the capture's read failed, the configured provider
 when it did not.
 
-The turn reads the config several times. The capture is the read it makes while it
-holds its session's ``slot_switch_session_lock`` (the lock that serializes the
-capture against a slot switch), so the failure is armed for exactly that window:
+The turn reads the config several times. The capture is the read its loop makes
+while it holds its session's ``slot_switch_session_lock`` (the lock that serializes
+the capture against a slot switch), so the failure is armed for exactly that read:
 the reads before it (the turn ceiling, the slash-command check) and after it (the
-context builder's own) succeed, the way a transient read failure leaves them.
+context builder's own) succeed, the way a transient read failure leaves them. A read
+another thread makes inside the same window -- the first message's early embed,
+which starts on the recall pool while a cold start holds the lock -- is not the
+capture and is left alone.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -90,9 +94,11 @@ async def test_a_failed_binding_capture_read_does_not_end_a_context_builder_turn
         # The registry holds these locks weakly, so the reference kept here is what
         # makes the turn's own lookup return this same lock.
         capture_lock = slot_switch_session_lock(effective_session_key(ctx.slot))
+        # Armed on the turn's loop, which is the thread the capture reads on.
+        loop_thread = threading.get_ident()
 
         def _load() -> KiroCrewConfig:
-            if capture_lock.locked():
+            if capture_lock.locked() and threading.get_ident() == loop_thread:
                 failed.append("binding capture")
                 raise _UnreadableConfig("config.json cannot be read")
             return real_load()

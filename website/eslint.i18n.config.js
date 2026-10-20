@@ -1321,6 +1321,22 @@ export default [
     },
   },
 
+  // Debug-only developer diagnostics, same class as `commitProfiler.tsx` above:
+  // `startDashboardLoadTiming` emits the Dashboard-tab load step timers (#20952)
+  // to the browser console and the User Timing panel for whoever is profiling,
+  // never to a user through the UI. The format of each line IS the interface
+  // (`[dashboard-timing] member:oncall step2-sandbox-post +18ms (t=42ms)`), so a
+  // localised copy would destroy the only property that makes it useful, exactly
+  // as it would for a `console.log`. Whole-file and scoped to this one module,
+  // which renders nothing and holds only these diagnostics; product copy added
+  // here later belongs in the catalog, not under this exemption.
+  {
+    files: ['src/lib/dashboardTiming.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // A pure-CSS module: one template literal of scoped style rules (hover/focus
   // states inline styles cannot express) injected via a <style> tag. It contains
   // selectors and declarations, never user-visible copy. The Tailwind/CSS shape

@@ -33,8 +33,8 @@ import { pathBasename } from '../../../utils/pathBasename'
 /**
  * A base64 screen-capture crop, as a File the upload route accepts.
  *
- * Lives HERE, next to `ingestFiles`, rather than in the panel: ChatPanel imports
- * lucide's `File` ICON, which shadows the DOM `File` constructor for that whole
+ * Lives HERE, next to `ingestFiles`, rather than in the panel: a panel file that
+ * imports lucide's `File` ICON shadows the DOM `File` constructor for that whole
  * module, so `new File(...)` there constructs a React component and throws
  * "File is not a constructor" at runtime. Keeping the construction in this module
  * — which imports no icons — makes the correct `File` the only one in scope, and

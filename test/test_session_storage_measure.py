@@ -95,6 +95,30 @@ class TestPairing:
         assert report.total_sessions == 2
         assert report.reclaimable_sessions == 2
 
+    def test_only_a_transcript_with_a_kiro_cli_half_carries_a_sid(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A transcript's unit takes its sid from the kiro-cli half it pairs with.
+
+        The map names ``bbbb2222`` for the second transcript, but no kiro-cli half
+        of that id exists, so that transcript is a unit of its own with no sid, the
+        same as one the map does not name at all.
+        """
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=32, age_days=40)
+        _transcript(crew_home, "dashboard_chat-2", size=32, age_days=40)
+        _transcript(crew_home, "cron_74173071", size=32, age_days=40)
+        index = _index({"aaaa1111": "dashboard_chat-1", "bbbb2222": "dashboard_chat-2"})
+
+        units = session_storage.select_reclaimable(index, 0, now=_NOW)
+
+        assert {u.uid: u.sid for u in units} == {
+            "aaaa1111": "aaaa1111",
+            "dashboard_chat-2": "",
+            "cron_74173071": "",
+        }
+
     @requires_symlinks
     def test_a_transcript_symlink_is_not_owned_by_the_session(
         self, stores: tuple[Path, Path]

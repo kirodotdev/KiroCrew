@@ -167,7 +167,7 @@ class TestF3IdentityWiring:
         # A non-allowlisted event_type raises inside the best-effort
         # try/except and silently skips persistence (dead check).
         from pathlib import Path
-        src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
+        src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers_sites.py"
         text = src.read_text(encoding="utf-8")
         assert 'event_type="edited"' in text
         # Renamed from _persist_dist_id: the same best-effort writeback now also
@@ -177,7 +177,7 @@ class TestF3IdentityWiring:
 
     def test_writeback_flows_result_distribution_id(self):
         from pathlib import Path
-        src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
+        src = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers_sites.py"
         text = src.read_text(encoding="utf-8")
         idx = text.index("_persist_deployment")
         window = text[idx - 500: idx + 900]

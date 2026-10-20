@@ -45,7 +45,7 @@ import { fmtDateTimeNumeric } from '../../i18n/format'
 import { useImeGuard } from '../../hooks/useImeGuard'
 /** The provider a connect flow is pointed at.
  *
- * An ALIAS of `api.ts`'s `SourceProvider`, not a second union: this used to be its
+ * An ALIAS of `apiTypes.ts`'s `SourceProvider`, not a second union: this used to be its
  * own `'github' | 'gitlab'`, and two independently-maintained lists of the same
  * thing is how a provider gets added to one and not the other — the panel would
  * compile fine and simply never offer the new source. */

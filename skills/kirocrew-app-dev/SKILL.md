@@ -344,6 +344,11 @@ _jsx('button', {
 | Show a loading/error state when config is unavailable | Show cryptic error messages |
 | Read app state through an app-owned API or `/api/apps/MY-APP/config` | Derive arbitrary absolute data-home paths in UI code |
 
+When app UI moves, or draws a live figure such as a gauge or a diagram, the
+`living-ui` skill's rules apply to it too. An app may bundle that skill's
+toolkit, `toolkit/living-ui.js`, instead of inlining its helper blocks. The file
+exports nothing, so end the app's copy with `export { LivingUI };` and import it.
+
 ### Available Gateway APIs
 
 | Endpoint | Method | Returns |

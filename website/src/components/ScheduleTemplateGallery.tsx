@@ -55,7 +55,7 @@ export default function ScheduleTemplateGallery({ open, onClose, onPick }: Props
                     <span className="flex items-center gap-2 mt-auto pt-1">
                       <span className="text-[12px] text-muted/80 font-medium">{formatCadence(p.prefill)}</span>
                       {p.writes && (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warn-fg bg-warn-subtle rounded-full px-2 py-0.5" title={i18nT('pages.schedulePage.writes_badge_tooltip')}>
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warn-text bg-warn-subtle rounded-full px-2 py-0.5" title={i18nT('pages.schedulePage.writes_badge_tooltip')}>
                           <GitPullRequestArrow size={11} aria-hidden="true" />
                           {i18nT('pages.schedulePage.writes_to_your_repos')}
                         </span>

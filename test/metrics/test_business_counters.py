@@ -330,6 +330,8 @@ class TestAttributeValuesAreBounded:
             "taskq/store_waits.py",
             "taskq/store_reads.py",
             "recovery/ladder.py",
+            "webhooks.py",
+            "subagent_manager/terminal.py",
         ],
     )
     def test_no_emit_passes_an_f_string_or_a_concatenation(self, rel):
@@ -383,3 +385,232 @@ class TestOverloadSeriesNames:
         ev.emit_histogram(ev.RECOVERY_DURATION_SECS, 1.5, {"layer": "L1_tool_call"}, unit="s")
         with patch("kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("x")):
             ev.emit_histogram(ev.TASKQ_DEPTH, 1.0, {"state": "queued"})
+
+
+class TestWebhookRequests:
+    """``kirocrew.webhook.requests``, driven through ``WebhookRunStore.record``.
+
+    The run store is the one commit point every inbound request reaches, so these
+    drive the real method against a temp base dir rather than calling
+    ``emit_counter`` directly -- a counter wired anywhere else would pass a direct
+    call and still miss the rejection outcomes.
+    """
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        from kiro_crew.webhooks import WebhookRunStore
+
+        return WebhookRunStore(base_dir=tmp_path)
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            "completed",
+            "timeout",
+            "error",
+            "rejected_capacity",
+            "unauthorized",
+            "disabled",
+        ],
+    )
+    def test_each_recorded_outcome_is_exactly_one_increment(self, rec, store, outcome):
+        store.record(outcome=outcome)
+        calls = _named(rec, ev.WEBHOOK_REQUESTS)
+        assert len(calls) == 1
+        assert calls[0]["attrs"] == {"outcome": outcome}
+        assert calls[0]["value"] == 1
+
+    def test_the_refusal_outcomes_are_not_folded_together(self, rec, store):
+        """``unauthorized`` / ``disabled`` / ``rejected_capacity`` / ``timeout``
+        are four different operator problems; a shared bucket answers none."""
+        for outcome in ("unauthorized", "disabled", "rejected_capacity", "timeout"):
+            store.record(outcome=outcome)
+        seen = [c["attrs"]["outcome"] for c in _named(rec, ev.WEBHOOK_REQUESTS)]
+        assert seen == ["unauthorized", "disabled", "rejected_capacity", "timeout"]
+
+    def test_an_unknown_outcome_maps_to_other(self):
+        from kiro_crew.webhooks import METRIC_OUTCOME_OTHER, metric_outcome
+
+        assert metric_outcome("teleported") == METRIC_OUTCOME_OTHER
+        assert metric_outcome("") == METRIC_OUTCOME_OTHER
+        assert metric_outcome(None) == METRIC_OUTCOME_OTHER
+        assert metric_outcome(7) == METRIC_OUTCOME_OTHER
+
+    def test_an_unknown_outcome_is_refused_before_it_is_counted(self, rec, store):
+        """``record`` rejects a value outside its own enum, so the fold is the
+        fallback for a stored row -- not a way to admit a new outcome."""
+        from kiro_crew.webhooks import WebhookError
+
+        with pytest.raises(WebhookError):
+            store.record(outcome="teleported")
+        assert _named(rec, ev.WEBHOOK_REQUESTS) == []
+
+    def test_every_recorded_outcome_is_a_member_of_the_metric_enum(self):
+        """The recorded half of the series key is exactly the store's own enum.
+
+        The other half -- the endpoint refusals the run store never sees -- and
+        the whole-enum shape are pinned in
+        ``test/test_webhooks_request_counter.py``, which owns that population.
+        """
+        from kiro_crew.webhooks import METRIC_OUTCOME_OTHER, METRIC_OUTCOMES, VALID_OUTCOMES
+
+        assert VALID_OUTCOMES <= METRIC_OUTCOMES
+        assert METRIC_OUTCOME_OTHER not in VALID_OUTCOMES
+
+    def test_no_identifier_or_free_text_reaches_an_attribute(self, rec, store):
+        """``detail``, ``name``, the hook id and the session key are all unbounded."""
+        store.record(
+            outcome="error",
+            hook_id="hook_secret",
+            session_key="hook:someone/private",
+            name="Nightly deploy webhook",
+            token_id="tok_abc",
+            detail="Traceback: /home/someone/.aws/credentials",
+        )
+        assert _named(rec, ev.WEBHOOK_REQUESTS)[-1]["attrs"] == {"outcome": "error"}
+
+    def test_a_history_write_failure_still_counts_the_request(self, rec, store):
+        """The series counts REQUESTS, not history rows: the request happened
+        whether or not the bounded ring could record it."""
+        with patch("kiro_crew.webhooks.write_json_atomic", side_effect=OSError("full")):
+            store.record(outcome="completed")
+        assert len(_named(rec, ev.WEBHOOK_REQUESTS)) == 1
+
+    def test_nothing_is_recorded_with_telemetry_off(self, store):
+        """A disabled recorder is the gate: no instrument, no point."""
+        from kiro_crew.metrics.recorder import MetricsRecorder
+
+        off = MetricsRecorder(None)
+        assert off.enabled is False
+        with patch("kiro_crew.metrics.provider.get_recorder", return_value=off):
+            # Would raise if a disabled recorder tried to reach an instrument.
+            store.record(outcome="completed")
+
+
+class TestSubagentCompleted:
+    """``kirocrew.subagent.completed`` -- one increment per run, never two."""
+
+    def test_each_terminal_outcome_keeps_its_own_label(self):
+        assert ev.subagent_outcome("completed") == "completed"
+        assert ev.subagent_outcome("failed") == "failed"
+        assert ev.subagent_outcome("stopped") == "stopped"
+
+    def test_an_unreadable_outcome_maps_to_unknown(self):
+        """A stop is not a failure, so a record whose outcome cannot be read is
+        named unknown rather than guessed as either."""
+        assert ev.subagent_outcome(None) == ev.SUBAGENT_OUTCOME_UNKNOWN
+        assert ev.subagent_outcome("") == ev.SUBAGENT_OUTCOME_UNKNOWN
+        assert ev.subagent_outcome("reaped") == ev.SUBAGENT_OUTCOME_UNKNOWN
+        assert ev.subagent_outcome(object()) == ev.SUBAGENT_OUTCOME_UNKNOWN
+        assert ev.subagent_outcome("unknown") == ev.SUBAGENT_OUTCOME_UNKNOWN
+
+    def test_the_enum_covers_every_outcome_the_runtime_can_report(self):
+        """``SubagentInfo.outcome`` is THE classifier, and this enum restates it
+        because ``metrics`` sits below the sub-agent manager in the dependency
+        order. A fourth value appearing in that property without a row in the
+        metrics doc would silently land on ``unknown``, so harvest the property's
+        own return literals and fail here instead.
+        """
+        from kiro_crew.subagent_parts import run_record
+
+        tree = ast.parse(Path(run_record.__file__).read_text(encoding="utf-8"))
+        prop = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "outcome"
+            and any(isinstance(d, ast.Name) and d.id == "property" for d in node.decorator_list)
+        )
+        returned = {
+            node.value.value
+            for node in ast.walk(prop)
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        }
+        assert returned == {"completed", "failed", "stopped"}
+        assert returned <= ev.SUBAGENT_OUTCOMES
+        assert ev.SUBAGENT_OUTCOMES == returned | {ev.SUBAGENT_OUTCOME_UNKNOWN}
+
+    def test_one_terminal_is_exactly_one_increment(self, rec):
+        """The emit sits past the finalize claim, so the reaper and the run
+        loop's ``finally`` cannot both count the same run."""
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            outcome = "completed"
+
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(_Info())
+        calls = _named(rec, ev.SUBAGENT_COMPLETED)
+        assert len(calls) == 1
+        assert calls[0]["attrs"] == {"outcome": "completed"}
+
+    @pytest.mark.parametrize("outcome", ["completed", "failed", "stopped"])
+    def test_a_stopped_run_is_not_reported_as_a_completion(self, rec, outcome):
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            pass
+
+        info = _Info()
+        info.outcome = outcome
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(info)
+        assert _named(rec, ev.SUBAGENT_COMPLETED)[-1]["attrs"]["outcome"] == outcome
+
+    def test_a_record_whose_outcome_raises_is_counted_as_unknown(self, rec):
+        """``outcome`` is a property, so reading it is the one line that can
+        raise -- and a run that reached a terminal must still be counted."""
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            @property
+            def outcome(self):
+                raise RuntimeError("record is half-written")
+
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        coordinator._record_terminal_metric(_Info())
+        calls = _named(rec, ev.SUBAGENT_COMPLETED)
+        assert len(calls) == 1
+        assert calls[0]["attrs"] == {"outcome": ev.SUBAGENT_OUTCOME_UNKNOWN}
+
+    def test_the_emit_is_not_gated_on_the_crew_log_emitter(self):
+        """It is called BESIDE ``_record_crew_log_terminal``, not inside it: that
+        method returns early with the crew log off, which would narrow this
+        counter's population to installs that happen to keep one."""
+        from kiro_crew.subagent_manager import terminal as term
+
+        source = Path(term.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        bodies = {
+            node.name: node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef)
+        }
+        emits = [
+            node
+            for node in ast.walk(bodies["_record_crew_log_terminal"])
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "emit_counter"
+        ]
+        assert emits == [], "the terminal counter must not sit behind the crew log flag"
+        calls = [
+            node
+            for node in ast.walk(bodies["_report_terminal_impl"])
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "attr", "") == "_record_terminal_metric"
+        ]
+        assert len(calls) == 1, "exactly one call, from the exclusive terminal report"
+
+    def test_nothing_is_recorded_with_telemetry_off(self):
+        from kiro_crew.metrics.recorder import MetricsRecorder
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        class _Info:
+            outcome = "failed"
+
+        off = MetricsRecorder(None)
+        assert off.enabled is False
+        coordinator = TerminalCoordinator.__new__(TerminalCoordinator)
+        with patch("kiro_crew.metrics.provider.get_recorder", return_value=off):
+            coordinator._record_terminal_metric(_Info())

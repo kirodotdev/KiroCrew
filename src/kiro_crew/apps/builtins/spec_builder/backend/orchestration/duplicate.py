@@ -20,14 +20,16 @@ from ..parsers import _VALID_TYPES, _clean_str, _sha256_text
 from ..repository import (
     _DUPLICATING,
     _PROCESS_ID,
-    _create_duplicate_stage,
-    _duplicate_stage_identity,
     _forget_deleted,
     _mutate_index,
     _new_slot_key,
-    _prepare_spec_dir,
-    _remove_duplicate_marker,
     _reservation_is_ours,
+)
+from ..repository_discovery import _prepare_spec_dir
+from ..repository_duplicate import (
+    _create_duplicate_stage,
+    _duplicate_stage_identity,
+    _remove_duplicate_marker,
     _rollback_staged_docs,
     _write_and_publish_duplicate,
 )

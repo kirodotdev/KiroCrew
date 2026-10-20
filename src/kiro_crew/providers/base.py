@@ -97,6 +97,15 @@ class SessionMcpReport(Protocol):
         self, kind: str, server_name: str, error: str = "", *, fanout_no_owner: bool = False
     ) -> bool: ...
 
+    #: The agent spec's enabled servers this session cannot use: failed,
+    #: awaiting authorization, or never reported. Decides an unattended run's
+    #: outcome.
+    def declared_not_ready(self) -> tuple[str, ...]: ...
+
+    #: The declared servers that never reported, which ``problem_summary`` does
+    #: not name. An unattended run's notice names them.
+    def declared_never_reported(self) -> tuple[str, ...]: ...
+
 
 class LLMProvider(ABC):
     """Abstract LLM backend."""
@@ -852,6 +861,15 @@ class LLMProvider(ABC):
         remove. A provider without one returns None explicitly.
         """
         return None
+
+    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+        """Wait, at most *timeout* seconds, for the agent spec's MCP servers to report.
+
+        For an unattended run (webhook, cron) before its first prompt. Returns
+        the declared servers that are still not ready, empty when all are. A
+        provider that keeps no MCP report has nothing to wait for or name.
+        """
+        return ()
 
     def get_valid_effort_levels(self) -> list[str]:
         """Reasoning-effort levels the provider accepts. Default empty for a

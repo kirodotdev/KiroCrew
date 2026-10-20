@@ -19,11 +19,13 @@ mkdirSync(out, { recursive: true })
 const { srv, base } = await serveDist()
 const SLOTS = [{ key: 'chat-vscode-keys', title: 'VS Code shortcuts', running: false, messages: 2, agent: 'kirocrew', project: '/workspace', last_ts: new Date().toISOString() }]
 
-/** Persisted panel state — the source of truth for "open" and the tab count. */
+/** Panel state: `open` is this window's per-window flag (sessionStorage,
+ *  'mc-bottom-terminal-open'); the tab count stays in the shared layout. */
 const panelState = page => page.evaluate(() => {
   const raw = localStorage.getItem('mc-bottom-terminal')
   const s = raw ? JSON.parse(raw) : {}
-  return { open: !!s.open, tabs: (s.tabs || []).length }
+  const open = sessionStorage.getItem('mc-bottom-terminal-open') === '1'
+  return { open, tabs: (s.tabs || []).length }
 })
 /** Wait until exactly one terminal tab paints the selected pill — the chips fade
  *  their pill (transition-colors), so a frame shot mid-fade shows two. */

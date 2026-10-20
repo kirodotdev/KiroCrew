@@ -180,6 +180,38 @@ def post_compaction_parts(
     return parts
 
 
+def ledger_reinjection_part(session_key: str | None, turn_text: str) -> str:
+    """The session's ``[work ledger]`` snapshot for a post-compaction turn, or ``""``.
+
+    A compaction drops whatever the agent had read of its own durable state, and
+    the instruction to read it again went with it. A monitor-loop cycle already
+    starts from this snapshot (``compose_nudge_body``); an interactive turn gets
+    the same block here. Empty when the session has no ledger or a terminal one,
+    and when *turn_text* already carries the snapshot -- a nudge cycle that lands
+    on the first turn after a compaction is not given the block twice.
+
+    Best-effort: a failed read costs the block, never the turn. The ledger is
+    agent-written text, so its payload is scrubbed of structural markers.
+    """
+    if not session_key:
+        return ""
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_ledger
+
+    try:
+        snapshot = session_ledger.render_snapshot(session_ledger.ledger_key(session_key))
+    except Exception:
+        logger.debug("reinjection: ledger snapshot failed for %s", session_key, exc_info=True)
+        return ""
+    if not snapshot or snapshot in turn_text:
+        return ""
+    return (
+        "[REINJECTED AFTER COMPACTION — work ledger]\n"
+        + ctx._neutralize_structural_markers(snapshot)
+        + "\n[END REINJECTED]\n\n"
+    )
+
+
 def thread_context_parts(
     *,
     channel_id: str | None,

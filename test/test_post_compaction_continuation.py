@@ -622,9 +622,11 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
         if turn_file.name != "__init__.py"
     )
     # A comment line, or a line of the boundary scan (its call is wrapped across
-    # three lines by the formatter, so each shape is named).
+    # three lines by the formatter, so each shape is named, and its result is copied
+    # onto the turn).
     filler = (
-        r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|(?:turn\.)?assistant_text|\))\n)*"
+        r"(?:[ \t]*(?:#[^\n]*|(?:turn\.)?_compaction_dropped_leak = [^\n]*"
+        r"|(?:turn\.)?assistant_text|\))\n)*"
     )
     assert re.search(
         r"if not event\.synthesized:[ \t]*\n"

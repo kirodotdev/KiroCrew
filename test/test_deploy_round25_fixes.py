@@ -17,7 +17,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_f1_backend_verifies_expected_resource_ids():
-    src = (_ROOT / "src/kiro_crew/deploy/handlers.py").read_text(encoding="utf-8")
+    src = (_ROOT / "src/kiro_crew/deploy/handlers_sites.py").read_text(encoding="utf-8")
     assert "expected_distribution_id" in src
     assert "resource ids changed since preview" in src
     # The verification happens before engine.destroy.

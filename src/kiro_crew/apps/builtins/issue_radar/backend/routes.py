@@ -396,7 +396,7 @@ def _require_enabled(handler):
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
     """Emit a Security Event Log entry for a GitHub-mutating action — on denial,
-    success, or failure — mirroring deploy/handlers.py's ``_audit``. Fire-and-
+    success, or failure — mirroring deploy/handlers_guards.py's ``_audit``. Fire-and-
     forget (non-critical); the caller keeps its own HTTP response."""
     sel().log_api_access(
         caller="core:issue-radar",

@@ -565,7 +565,7 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         async def _fake_run_chat(state, target_slot, message, **kwargs):
             # Stand in for the runner's identity step verbatim: the real
             # _run_chat computes session_key = effective_session_key(slot) and
-            # hands THAT to publish_turn_identity (chat_runner.py). Recording the
+            # hands THAT to publish_turn_identity (chat_turn/turn_admission.py). Recording the
             # key the shared writer receives is recording the identity the crew
             # tools will resolve.
             published.append(effective_session_key(target_slot))

@@ -41,27 +41,22 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import importlib as _importlib
 import json
 import logging
 import os
 import platform
 import re
 import shutil
-import socket
-import subprocess
 import sys
 import tempfile
-import threading
 import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from kiro_crew.config.paths import data_home
+from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
-from kiro_crew.platform_compat import (
+from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     IS_POSIX,
     kill_popen_tree,
     make_owner_only_dir,
@@ -72,6 +67,55 @@ from kiro_crew.platform_compat import (
     try_acquire_lock_or_raise,
 )
 from kiro_crew.subprocess_utf8 import utf8_stdout
+
+# isort: split
+from kiro_crew import _facade_mirror
+from kiro_crew.platform.wheel_engine_build_child import (
+    FAILURE_TEXT_CHARS,
+    _redacted_detail,
+    _run,
+    _spawn_build_child,
+)
+from kiro_crew.platform.wheel_engine_contract import (
+    _ALLOW_SOURCE_BUILDS_ENV,
+    _CLI_MANIFEST_SCHEMA,
+    _FETCH_TIMEOUT_SECS,
+    _MANIFEST_EXPECTED_FIELDS,
+    _MANIFEST_MAX_BYTES,
+    _MANIFEST_OPTIONAL_FIELDS,
+    _MIN_VERSION_RE,
+    _NO_CONTEXT,
+    _OPENSSL_TIMEOUT_SECS,
+    _PIP_INSTALL_TIMEOUT_SECS,
+    _PROBE_TIMEOUT_SECS,
+    _PUB_DATE_RE,
+    _REMOVE_PARTIAL_TREE_REASONS,
+    _SHA256_RE,
+    _SHADOW_MIN_FREE_BYTES,
+    _VENV_CREATE_TIMEOUT_SECS,
+    _WHEEL_FETCH_TIMEOUT_SECS,
+    _WHEEL_MAX_BYTES,
+    ApplyCancel,
+    WheelUpdateBusy,
+    WheelUpdateCancelled,
+    WheelUpdateError,
+    WheelUpdateIncompatible,
+    _BuildContext,
+    _pip_binary_policy,
+    _raise_if_cancelled,
+    check_release_version,
+)
+from kiro_crew.platform.wheel_engine_layout import (
+    _SHADOW_SENTINEL,
+    _TOMBSTONE_INFIX,
+    ManagedVenvLayout,
+    _interpreter_in,
+    _is_owned_tree,
+    _is_stable_target,
+    _realpath,
+    managed_venv_layout,
+)
+from kiro_crew.platform.wheel_engine_transfer import _download_to_file, _fetch_bytes, _staging_dir
 
 logger = logging.getLogger(__name__)
 
@@ -95,747 +139,8 @@ CLI_MANIFEST_PUBLIC_KEY_B64 = (
     "LS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
 )
 
-#: Same schema string cli.sh and the dashboard check enforce.
-_CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
-
-#: Same ceiling cli.sh applies to the manifest with ``--max-filesize``.
-_MANIFEST_MAX_BYTES = 65536
-
-#: Received-bytes ceiling for the wheel download. The wheel is tens of MB
-#: today; the cap exists so a misbehaving origin cannot fill the disk, not as
-#: a tight bound. Enforced against received bytes, never Content-Length.
-_WHEEL_MAX_BYTES = 500 * 1024 * 1024
-
-#: Free-space floor on the venv parent before a shadow build is attempted.
-#: A shadow tree is a full second install; failing before pip half-fills the
-#: disk beats an ENOSPC mid-build. Sized to a current install (~350 MiB with
-#: dependencies) plus headroom.
-_SHADOW_MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024
-
-_FETCH_TIMEOUT_SECS = 30
-#: Per-read socket timeout for the wheel download.
-_WHEEL_FETCH_TIMEOUT_SECS = 300
-#: Wall-clock bound on the whole wheel download. The per-read timeout alone lets
-#: an origin that drips one byte every few minutes hold the apply indefinitely.
-_WHEEL_FETCH_TOTAL_SECS = 900
-_OPENSSL_TIMEOUT_SECS = 30
-_VENV_CREATE_TIMEOUT_SECS = 120
-#: pip resolves and downloads the full dependency set into a tree that has
-#: never seen it — the same bound dep_sync uses for a cold reinstall, doubled
-#: for a slow index on a cold cache, and for the compile fallback a host can
-#: opt back into below.
-_PIP_INSTALL_TIMEOUT_SECS = 900
-_PROBE_TIMEOUT_SECS = 60
-#: Dependencies are installed from prebuilt wheels only (the same policy as
-#: cli.sh's `PIP_BINARY_ONLY`). Without it pip builds any dependency that has
-#: no wheel for this host from its sdist, which needs a C toolchain the gateway
-#: host was never required to have; with it, such a host fails fast with pip's
-#: "No matching distribution found" naming the dependency.
-_PIP_BINARY_ONLY = "--only-binary=:all:"
-#: cli.sh's opt-in for a host that has the toolchain and wants the compile
-#: fallback back; read from this (gateway) process's environment, so a service
-#: unit has to carry it for an update to honour it.
-_ALLOW_SOURCE_BUILDS_ENV = "KIROCREW_ALLOW_SOURCE_BUILDS"
-
-
-def _pip_binary_policy() -> list[str]:
-    """The pip flags that keep dependency resolution binary-only (see above)."""
-    if os.environ.get(_ALLOW_SOURCE_BUILDS_ENV, "0") == "1":
-        return []
-    return [_PIP_BINARY_ONLY]
-
-
-# Signed-but-optional, mirroring cli.sh: a breaking release adds a fleet
-# floor (`min_version`). The signature still covers it (it stays in the
-# canonical payload), so the set check tolerates exactly this key and
-# nothing else. The floor is metadata for RUNNING installs; this engine
-# always installs the signed version itself, so format is all it checks.
-_MANIFEST_OPTIONAL_FIELDS = frozenset({"min_version"})
-_MIN_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*\Z")
-
-_MANIFEST_EXPECTED_FIELDS = {
-    "algorithm",
-    "channel",
-    "key_id",
-    "pub_date",
-    "python_requires",
-    "schema",
-    "sha256",
-    "signature",
-    "version",
-    "wheel_url",
-}
-
-_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+]{0,127}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_PUB_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-
-
-class WheelUpdateError(Exception):
-    """A wheel update step failed; the message is operator-facing.
-
-    Every raise site leaves the install exactly as it found it: the stable
-    link is only ever touched by :func:`promote`, which is the last step and
-    is atomic.
-    """
-
-
-class WheelUpdateCancelled(WheelUpdateError):
-    """The caller withdrew the apply before :func:`promote` ran.
-
-    Raised only where nothing has been promoted, so the stable link still names
-    the tree it named before the call. ``reason`` is the cancel's
-    (:attr:`ApplyCancel.reason`).
-    """
-
-    def __init__(self, message: str, *, reason: str = "") -> None:
-        super().__init__(message)
-        self.reason = reason
-
-
-class WheelUpdateBusy(WheelUpdateError):
-    """Another writer holds this layout's update lock; nothing was touched."""
-
-
-class WheelUpdateNotReady(WheelUpdateError):
-    """A precondition is still settling (memory is being prepared); retry soon."""
-
-
-class WheelUpdateSnapshotFailed(WheelUpdateError):
-    """The pre-update memory copy did not land, so nothing is promoted.
-
-    Never answered with the installer re-run, which would perform exactly the
-    un-copied update this refusal stops.
-    """
-
-
-class WheelUpdateIncompatible(WheelUpdateError):
-    """The SIGNED release metadata excludes this host; retrying will not help.
-
-    Decided from the verified manifest before anything is downloaded (today:
-    ``python_requires`` against the build interpreter), on every attempt.
-    ``version``/``sha256`` name the release.
-    """
-
-    def __init__(self, message: str, *, version: str, sha256: str) -> None:
-        super().__init__(message)
-        self.version = version
-        self.sha256 = sha256
-
-
-#: Cancel reasons after which the process keeps running, so a partial tree is
-#: removed at once. Any other reason (a shutdown, an exec, a hard exit) means the
-#: process is ending: the tree is only renamed aside, and the next sweep deletes it.
-_REMOVE_PARTIAL_TREE_REASONS = frozenset({"deadline", "cancel"})
-
-
-class ApplyCancel:
-    """A cancel flag whose :meth:`set` also kills the build child in flight.
-
-    The apply runs on a worker thread its caller cannot stop. Setting this flag
-    from any thread stops the apply at its next step boundary, and the hooks a
-    running step registered (:meth:`on_set`) run synchronously inside ``set()``:
-    a build child's process group is killed, a blocked download socket is shut
-    down. So a caller that sets it and then exits leaves nothing writing behind.
-    The first ``set`` decides :attr:`reason`.
-    """
-
-    def __init__(self) -> None:
-        self._event = threading.Event()
-        self._lock = threading.Lock()
-        self._hooks: list[Callable[[], None]] = []
-        self.reason = ""
-
-    def set(self, reason: str = "cancel") -> None:
-        with self._lock:
-            if self._event.is_set():
-                return
-            self.reason = reason
-            self._event.set()
-            hooks = list(self._hooks)
-        for hook in hooks:
-            with contextlib.suppress(Exception):
-                hook()
-
-    def is_set(self) -> bool:
-        return self._event.is_set()
-
-    def on_set(self, hook: Callable[[], None]) -> Callable[[], None]:
-        """Run *hook* when the flag is set (now, if it already is); return the undo."""
-        with self._lock:
-            fire_now = self._event.is_set()
-            if not fire_now:
-                self._hooks.append(hook)
-        if fire_now:
-            hook()
-
-        def _remove() -> None:
-            with self._lock:
-                if hook in self._hooks:
-                    self._hooks.remove(hook)
-
-        return _remove
-
-
-def _raise_if_cancelled(cancel: ApplyCancel | None) -> None:
-    if cancel is not None and cancel.is_set():
-        raise WheelUpdateCancelled(
-            "the update was cancelled before promotion; the current install is unchanged",
-            reason=cancel.reason,
-        )
-
-
-@dataclass(frozen=True)
-class _BuildContext:
-    """What every child of one locked apply shares."""
-
-    cancel: ApplyCancel | None = None
-    #: The update lock's descriptor, handed to EVERY child so the lock is held
-    #: for as long as a child that could still write the tree is alive, even past
-    #: this process (``flock`` locks belong to the open file description, which
-    #: the child shares).
-    lock_fd: int | None = None
-    #: ``True`` for a child started inside the gateway: the trusted system PATH
-    #: and no loader-injection variables (see :func:`_build_child_env`). ``False``
-    #: (``kirocrew update`` in the operator's shell) passes the full environment,
-    #: so a toolchain on the operator's PATH reaches a source build.
-    trusted_env: bool = True
-
-
-_NO_CONTEXT = _BuildContext()
-
-
-def check_release_version(version: str) -> None:
-    """Raise :class:`WheelUpdateError` unless *version* is in the release grammar.
-
-    A version reaches the update paths from the unsigned feed (and the armed
-    approval that records it) before the signed manifest is read, so each path
-    refuses a malformed one as an update failure instead of a raw ``ValueError``
-    from building its tree's name.
-    """
-    if not _VERSION_RE.fullmatch(version):
-        raise WheelUpdateError(f"release version {version[:64]!r} fails validation")
-
-
-@dataclass(frozen=True)
-class ManagedVenvLayout:
-    """Where the managed install's trees live for this data home."""
-
-    #: The legacy fixed venv cli.sh installs into (``crew-venv``). Never
-    #: written by this engine; functional fallback per the first-migration
-    #: protocol.
-    legacy: Path
-    #: The stable symlink (``crew-venv-current``) every launch path should
-    #: resolve through. May not exist yet on an unmigrated install.
-    stable_link: Path
-
-    def versioned_tree(self, version: str) -> Path:
-        """The sibling tree a given version installs into.
-
-        Raises :class:`WheelUpdateError` for a version outside the release grammar
-        (:func:`check_release_version`).
-        """
-        check_release_version(version)
-        return self.stable_link.with_name(f"{self.legacy.name}-{version}")
-
-    def is_managed_tree(self, path: Path) -> bool:
-        """Is *path* inside one of this layout's trees (legacy or versioned)?"""
-        try:
-            resolved = path.resolve()
-        except OSError:
-            return False
-        prefix = f"{self.legacy.name}-"
-        # Identity trust extends ONLY to the legacy root — the one path this
-        # layout owns unconditionally. Every versioned sibling (a genuinely
-        # promoted tree included) goes through the convention-plus-artifacts
-        # branch below, which every real install satisfies (bin/kirocrew ships
-        # with every completed build, the sentinel with every in-flight one).
-        # The stable link's TARGET is deliberately NOT an identity root: the
-        # respawn guard uses this predicate to detect a link repointed OUTSIDE
-        # the layout, and trusting the target by identity would make that
-        # check vacuously true.
-        try:
-            legacy_resolved = self.legacy.resolve()
-            if resolved == legacy_resolved or resolved.is_relative_to(legacy_resolved):
-                return True
-        except OSError:
-            pass
-        # A tree created after this snapshot: matched by naming convention in
-        # the same parent — but POSITIVELY identified, never by prefix alone.
-        # `KIROCREW_VENV=/srv/crew` makes the prefix "crew-", which a sibling
-        # like /srv/crew-dev (someone's unrelated venv) satisfies by name; a
-        # restart would then resolve through /srv/crew-current and switch an
-        # unmanaged process's runtime. A managed versioned tree additionally
-        # carries this engine's own artifacts: the kirocrew console script
-        # (every completed install ships it) or the build sentinel (every
-        # in-flight build does).
-        parent = self.legacy.parent
-        try:
-            if resolved.is_relative_to(parent.resolve()):
-                rel = resolved.relative_to(parent.resolve())
-                head = rel.parts[0] if rel.parts else ""
-                if head == self.legacy.name:
-                    return True
-                if not head.startswith(prefix):
-                    return False
-                candidate = parent / head
-                return (candidate / "bin" / "kirocrew").exists() or (
-                    candidate / _SHADOW_SENTINEL
-                ).exists()
-        except OSError:
-            pass
-        return False
-
-
-def managed_venv_layout() -> ManagedVenvLayout:
-    """Resolve the managed-venv layout for this install.
-
-    Mirrors cli.sh's path rule exactly: ``KIROCREW_VENV`` wins, else the venv
-    lives BESIDE the data home (``${KIROCREW_HOME%/}-venv``) — never inside
-    it, for the blast-radius reason cli.sh documents.
-    """
-    override = os.environ.get("KIROCREW_VENV", "").strip()
-    if override:
-        legacy = Path(os.path.abspath(override))
-    else:
-        legacy = Path(f"{str(data_home()).rstrip('/')}-venv")
-    return ManagedVenvLayout(
-        legacy=legacy,
-        stable_link=legacy.with_name(f"{legacy.name}-current"),
-    )
-
-
-def running_from_managed_venv(layout: ManagedVenvLayout | None = None) -> bool:
-    """Is THIS process served by the managed venv (legacy or versioned tree)?
-
-    The dispatch predicate for the shadow path: a pipx install, a system
-    Python, or a dev venv must never take it — their bytes are owned by
-    something else, and building a sibling tree beside a data home they do not
-    use would be litter at best. POSIX-only by construction: cli.sh is a POSIX
-    installer, so on Windows there is no managed venv to detect.
-
-    Identity comes from the interpreter's ``bin/`` directory, not the file:
-    ``python -m venv`` symlinks ``bin/python3`` to the base interpreter, so
-    resolving that file leaves the venv before the layout can recognize it.
-    """
-    if not IS_POSIX:
-        return False
-    if layout is None:
-        layout = managed_venv_layout()
-    return layout.is_managed_tree(Path(sys.executable).parent)
-
-
-#: Name of the metadata file pipx writes at the root of every environment it
-#: manages (``$PIPX_HOME/venvs/<env>/pipx_metadata.json``). pipx owns it,
-#: rewrites it atomically after each operation, and reads it to drive its own
-#: ``upgrade``/``reinstall``/``uninstall`` — so its presence beside the running
-#: interpreter is an authoritative, version-stable "this venv is pipx's" signal
-#: that needs no path-guessing against ``$PIPX_HOME``.
-_PIPX_METADATA_NAME = "pipx_metadata.json"
-
-
-def running_from_pipx() -> bool:
-    """Is THIS process served by a pipx-managed environment?
-
-    Distinguishes the one non-managed shape whose installer re-run is
-    legitimate — ``cli.sh`` installs into a pipx venv when pipx is present, and
-    a re-run upgrades that same pipx venv in place — from a user's own plain
-    ``pip install`` into a venv they manage, where a re-run would build a
-    SECOND copy beside the one actually serving the user.
-
-    Identity is the metadata file pipx keeps at the environment root. A pipx
-    venv's root is ``sys.prefix`` for a process launched from it (the console
-    script runs the venv's own interpreter), so the marker sits one directory
-    up from ``bin/``. Reading ``sys.prefix`` rather than resolving
-    ``sys.executable`` keeps the answer stable across the ``bin/python3 ->``
-    base-interpreter symlink that ``python -m venv`` writes.
-    """
-    try:
-        return (Path(sys.prefix) / _PIPX_METADATA_NAME).is_file()
-    except OSError:
-        return False
-
-
-def _legacy_nested_venv() -> Path:
-    """The venv an earlier ``cli.sh`` created INSIDE the data home.
-
-    Mirrors cli.sh's ``_OLD_VENV`` (``<data home>/venv``) exactly. The current
-    installer retires it: a re-run that lands a working tree beside the data
-    home repoints the stable link and the launcher at that tree, then
-    ``rm -rf``s this one. An installer re-run while a gateway still serves
-    from this venv deletes it underneath the running process.
-    """
-    return data_home() / "venv"
-
-
-def _respawn_tree_is_managed(layout: ManagedVenvLayout) -> bool:
-    """Is the tree serving THIS process one a restart may re-route?
-
-    Identity is read from the interpreter's ``bin/`` directory, not from the
-    interpreter file: ``python -m venv`` writes ``bin/python3`` as a symlink
-    to the base interpreter, so resolving the file lands outside every venv
-    and would answer "not managed" for every real install. The directory
-    resolves through the layout's own links (stable link -> versioned tree)
-    and stops there.
-
-    Two identities qualify. A tree of this layout (legacy or versioned), and
-    the retired in-data-home venv — our own environment from an earlier
-    installer, which the same cli.sh re-run that lands the new tree deletes
-    from under the running gateway; without the stable link that process has
-    no interpreter left to exec. This is the respawn identity only: the
-    dispatch predicate for the shadow-build path is
-    :func:`running_from_managed_venv`, which keeps its own rule.
-    """
-    bin_dir = Path(sys.executable).parent
-    if layout.is_managed_tree(bin_dir):
-        return True
-    try:
-        resolved = bin_dir.resolve()
-        nested = _legacy_nested_venv().resolve()
-    except OSError:
-        return False
-    return resolved == nested or resolved.is_relative_to(nested)
-
-
-def _interpreter_in(tree: Path) -> str | None:
-    """The usable interpreter inside *tree*'s ``bin/``, or ``None``.
-
-    Prefers this process's own interpreter name so a restart keeps the version
-    it was launched under, and falls back to ``python3``, which every venv
-    ships.
-    """
-    for name in (os.path.basename(sys.executable), "python3"):
-        candidate = tree / "bin" / name
-        try:
-            if candidate.exists() and os.access(candidate, os.X_OK):
-                return str(candidate)
-        except OSError:
-            continue
-    return None
-
-
-def _respawn_fallback(layout: ManagedVenvLayout) -> str:
-    """The answer when the stable link cannot carry the restart.
-
-    ``sys.executable`` whenever it still exists — a broken, absent, or
-    outside-the-layout link must never take the restart path away from a
-    process whose own interpreter is fine.
-
-    When it does NOT exist, the cached path names nothing and the exec would
-    raise ENOENT. That is reachable: the installer re-run that retires the
-    in-data-home venv deletes it on the NEW tree's own import check, which is
-    independent of the stable-link repoint — the repoint is skipped when a real
-    directory sits at the stable name, and its failure is non-fatal. So the
-    nested venv is gone while the link is unusable. The legacy fixed tree is
-    the interpreter that re-run just built and import-verified, and this engine
-    never prunes it, so it is the honest last resort. Validated the same way as
-    the stable link's: inside the layout, present, executable.
-    """
-    if os.path.exists(sys.executable):
-        return sys.executable
-    if layout.is_managed_tree(layout.legacy):
-        candidate = _interpreter_in(layout.legacy)
-        if candidate is not None:
-            return candidate
-    return sys.executable
-
-
-def respawn_executable() -> str:
-    """The interpreter a gateway restart should exec.
-
-    ``sys.executable`` is the answer for every install shape EXCEPT a managed
-    venv that has been promoted past the tree this process started from: there
-    the cached path resolves into the OLD versioned tree (still on disk, so
-    the exec would succeed — and silently resurrect the old version). Routing
-    through the stable link is what makes a restart pick up a promotion, and
-    it is one of the four persisted launch paths RFC §3 requires to resolve
-    through the stable name.
-
-    Falls back to ``sys.executable`` whenever the stable link does not exist
-    or does not carry a usable interpreter, so a broken or absent link can
-    never take the restart path away — except when ``sys.executable`` itself is
-    already gone, where :func:`_respawn_fallback` reaches the legacy tree
-    instead of handing back a path that does not exist.
-
-    One more shape routes here: a process still served by the retired
-    in-data-home venv (:func:`_legacy_nested_venv`). The installer re-run that
-    migrates it deletes that venv after repointing the stable link, so
-    ``sys.executable`` is gone and the stable link is the only interpreter
-    left; before that re-run there is no stable link and the fallback keeps
-    the restart on the nested venv, unchanged.
-
-    The answer names the link's RESOLVED tree (``crew-venv-<version>/bin/…``),
-    never ``crew-venv-current/bin/…``. An interpreter started through the link
-    takes its ``sys.prefix``, and so every later import, its own package data,
-    its installed metadata and its ``sys.executable``, from the link, and the
-    next promotion would swap all of that under the running process. Only the
-    directory is resolved: ``bin/python3`` is itself a symlink to the base
-    interpreter, and resolving it would leave the venv entirely.
-    """
-    if not IS_POSIX:
-        return sys.executable
-    layout = managed_venv_layout()
-    if not _respawn_tree_is_managed(layout):
-        return sys.executable
-    # The link's TARGET must resolve inside this layout's own trees before it
-    # is trusted with an exec: a stable link repointed outside the managed
-    # parent answers sys.executable instead. Scope honestly stated: this pins
-    # WHERE the interpreter may live, not WHO wrote it — an actor with shell
-    # as the gateway's user can rewrite the trees themselves (sys.executable's
-    # own tree included), which is the RFC's accepted local-code-execution gap
-    # and is not widened by the link.
-    if not layout.is_managed_tree(layout.stable_link):
-        return _respawn_fallback(layout)
-    try:
-        target = Path(os.path.realpath(layout.stable_link))
-    except OSError:
-        return _respawn_fallback(layout)
-    candidate = _interpreter_in(target)
-    if candidate is not None:
-        return candidate
-    return _respawn_fallback(layout)
-
-
-def runs_through_stable_link(path: str | None = None) -> bool:
-    """Does *path* (``sys.prefix`` by default) name its tree through the stable link?
-
-    Read lexically, the way the interpreter itself keeps it: a process started as
-    ``crew-venv-current/bin/python3`` keeps that spelling in ``sys.prefix``, so
-    every module it imports later resolves through the link, and the next
-    promotion swaps them under it. Only each component's parent is resolved, so
-    a symlinked home still matches; the link itself is never followed.
-    """
-    if not IS_POSIX:
-        return False
-    layout = managed_venv_layout()
-    link_parent = _realpath(layout.stable_link.parent)
-    if link_parent is None:
-        return False
-    link = link_parent / layout.stable_link.name
-    lexical = Path(os.path.abspath(sys.prefix if path is None else path))
-    for candidate in (lexical, *lexical.parents):
-        parent = _realpath(candidate.parent)
-        if candidate.name and parent is not None and parent / candidate.name == link:
-            return True
-    return False
-
-
-def stable_launch_path(path: str) -> str:
-    """*path* rewritten through the stable link when it lies in a versioned tree.
-
-    For a value that is PERSISTED and later executed outside the writing
-    process's lifetime (a service ``ExecStart``, a launchd launcher, the
-    ``~/.local/bin`` shim): a path inside
-    ``crew-venv-<version>/`` would keep naming that tree after the next update
-    promoted another one, and the prune may delete it. Through
-    ``crew-venv-current/`` it follows every promotion. That holds whichever
-    tree the link targets now: a path in an older tree is rewritten too, since
-    that tree is the one a later prune removes. Returned unchanged when *path*
-    is not inside an engine-built tree of this layout, or when the link is
-    dangling or its tree has no file at the same relative path.
-    """
-    if not IS_POSIX or not path:
-        return path
-    layout = managed_venv_layout()
-    try:
-        resolved = Path(os.path.realpath(path))
-        parent = Path(os.path.realpath(layout.legacy.parent))
-        rel = resolved.relative_to(parent)
-    except (OSError, ValueError):
-        return path
-    if len(rel.parts) < 2 or not _is_owned_tree(layout, parent / rel.parts[0]):
-        return path
-    through = layout.stable_link.joinpath(*rel.parts[1:])
-    try:
-        if os.path.exists(through):
-            return str(through)
-    except OSError:
-        pass
-    return path
-
 
 # ── Manifest fetch and verification ─────────────────────────────────────────
-
-
-def _staging_dir() -> Path:
-    """Per-run staging area under the data home's ``trust/`` keystone directory.
-
-    The verified wheel sits on disk between its SHA-256 check and the pip
-    install, and a TMPDIR staging file is writable by the agent (same uid, and
-    TMPDIR is deliberately agent-reachable scratch) — a swap in that window
-    would promote unverified code. ``trust/`` is the existing whole-directory
-    keystone leaf: the agent's file gate and every bash form refuse it, while
-    this engine (the gateway or the operator's CLI) writes directly. Same
-    accepted residual as every keystone leaf: arbitrary local code as the
-    user is out of scope, the AGENT's tool surface is what is fenced.
-    """
-    root = data_home() / "trust" / "update-staging"
-    make_owner_only_dir(root)
-    return root
-
-
-def _response_socket(resp: object) -> object | None:
-    """The socket under a urllib response, when the stdlib layout exposes it."""
-    raw = getattr(getattr(resp, "fp", None), "raw", None)
-    return getattr(raw, "_sock", None)
-
-
-class _SinkWriteError(Exception):
-    """A :func:`_read_bounded` sink's own write failed (a full or failing staging disk).
-
-    Not a :class:`WheelUpdateError` and not an :class:`OSError`, so it crosses
-    the fetch's own error handling untouched: the fetch would otherwise report
-    the caller's write failure as ``could not fetch <url>``. The caller that
-    owns the destination converts it, naming that destination.
-    """
-
-    def __init__(self, error: OSError) -> None:
-        super().__init__(str(error))
-        self.error = error
-
-
-def _read_bounded(
-    url: str,
-    *,
-    cap: int,
-    read_timeout: float,
-    total_secs: float,
-    cancel: ApplyCancel | None,
-    sink: Callable[[bytes], None],
-) -> None:
-    """Stream *url* into *sink*, bounded per read, in total, in size and by *cancel*.
-
-    ``read1`` returns whatever has arrived rather than looping until a full
-    chunk does, so the deadline and the cancel are checked after every read even
-    against an origin that drips one byte at a time. Each read's socket timeout
-    is the smaller of *read_timeout* and what is left of *total_secs*, and
-    setting *cancel* shuts the socket down, so neither waits on a silent origin.
-    Enforced against received bytes, never Content-Length. An ``OSError`` from
-    *sink* itself is raised as :class:`_SinkWriteError`, never as a fetch failure.
-    """
-    if not url.startswith("https://"):
-        raise WheelUpdateError(f"refusing non-HTTPS URL: {url}")
-    _raise_if_cancelled(cancel)
-    deadline = time.monotonic() + total_secs
-    req = urllib.request.Request(url, headers={"User-Agent": "kirocrew-update/1"})
-    received = 0
-    undo: Callable[[], None] | None = None
-    try:
-        with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
-            req, timeout=min(read_timeout, total_secs)
-        ) as resp:
-            sock = _response_socket(resp)
-            if cancel is not None and sock is not None:
-
-                def _shut() -> None:
-                    with contextlib.suppress(OSError):
-                        sock.shutdown(socket.SHUT_RDWR)  # type: ignore[attr-defined]
-
-                undo = cancel.on_set(_shut)
-            while True:
-                _raise_if_cancelled(cancel)
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise WheelUpdateError(f"{url} did not finish within {total_secs:.0f}s")
-                # http.client closes the response, and the socket under it, in the
-                # same read that consumes the last byte of a Content-Length body.
-                # settimeout on that socket raises EBADF; the closed response's
-                # read1 returns b"", which is the clean end below.
-                if sock is not None and not resp.isclosed():
-                    sock.settimeout(min(read_timeout, left))  # type: ignore[attr-defined]
-                chunk = resp.read1(65536)
-                # Before EOF is read as "complete": a cancel shuts the socket,
-                # which ends the read the same way a finished body does.
-                _raise_if_cancelled(cancel)
-                if not chunk:
-                    return
-                received += len(chunk)
-                if received > cap:
-                    raise WheelUpdateError(f"{url} exceeded the {cap}-byte ceiling")
-                try:
-                    sink(chunk)
-                except OSError as exc:
-                    raise _SinkWriteError(exc) from exc
-    except (WheelUpdateError, _SinkWriteError):
-        raise
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        # A socket shut down by the cancel surfaces here as a read error.
-        _raise_if_cancelled(cancel)
-        if time.monotonic() >= deadline:
-            raise WheelUpdateError(f"{url} did not finish within {total_secs:.0f}s") from exc
-        raise WheelUpdateError(f"could not fetch {url}: {exc}") from exc
-    finally:
-        if undo is not None:
-            undo()
-
-
-def _download_to_file(
-    url: str,
-    dest: Path,
-    cap: int,
-    timeout: float,
-    expected_sha: str,
-    *,
-    cancel: ApplyCancel | None = None,
-    total_secs: float = _WHEEL_FETCH_TOTAL_SECS,
-) -> None:
-    """Stream *url* into *dest*, enforcing *cap* and the digest INCREMENTALLY.
-
-    Chunked rather than buffered: the wheel ceiling is 500 MiB, and one
-    ``resp.read()`` of that size doubles as a memory spike on the very gateway
-    the update is trying to keep alive. The hash is folded in as chunks land,
-    so the verify step never re-reads the file it just wrote — and the digest
-    therefore covers the exact bytes on disk. Bounded as :func:`_read_bounded`
-    describes.
-    """
-    digest = hashlib.sha256()
-    try:
-        with open(dest, "wb") as out:
-
-            def _sink(chunk: bytes) -> None:
-                digest.update(chunk)
-                out.write(chunk)
-
-            _read_bounded(
-                url,
-                cap=cap,
-                read_timeout=timeout,
-                total_secs=total_secs,
-                cancel=cancel,
-                sink=_sink,
-            )
-    except (OSError, _SinkWriteError) as exc:
-        # The open itself, or a write mid-stream (surfaced distinctly by
-        # ``_read_bounded`` so it is not reported as a fetch failure).
-        cause = exc.error if isinstance(exc, _SinkWriteError) else exc
-        with contextlib.suppress(OSError):
-            dest.unlink(missing_ok=True)
-        raise WheelUpdateError(f"could not write {dest}: {cause}") from cause
-    except BaseException:
-        with contextlib.suppress(OSError):
-            dest.unlink(missing_ok=True)
-        raise
-    got = digest.hexdigest()
-    if got != expected_sha:
-        with contextlib.suppress(OSError):
-            dest.unlink(missing_ok=True)
-        raise WheelUpdateError(
-            f"wheel SHA-256 mismatch (expected {expected_sha}, got {got}) — refusing to install"
-        )
-
-
-def _fetch_bytes(url: str, cap: int, timeout: float, *, cancel: ApplyCancel | None = None) -> bytes:
-    """GET *url*, refusing more than *cap* received bytes or *timeout* in total.
-
-    The single small-document network seam of this module, so tests stub one
-    function. HTTPS is asserted as defence in depth — the callers validate the
-    CDN base before composing the URL, but this function must hold on its own.
-    """
-    parts: list[bytes] = []
-    _read_bounded(
-        url, cap=cap, read_timeout=timeout, total_secs=timeout, cancel=cancel, sink=parts.append
-    )
-    return b"".join(parts)
 
 
 def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1144,251 +449,6 @@ def download_verified_wheel(
 
 
 # ── Shadow build, verification, promotion ───────────────────────────────────
-
-
-#: How much of a child's stderr is kept: its TAIL, where pip and venv put the
-#: error. Written to an anonymous file rather than a pipe, so a chatty child can
-#: neither fill the caller's memory nor block on a full pipe.
-_STDERR_TAIL_BYTES = 64 * 1024
-#: How much of a child's stdout is read when it is wanted (a version string, a
-#: ``pip check`` report).
-_STDOUT_MAX_BYTES = 64 * 1024
-#: How much of a failed build step's redacted stderr goes into its message.
-_ERROR_DETAIL_CHARS = 2000
-#: Ceiling on failure text an operator is shown in one line (a dashboard step, an
-#: ERROR log line, an audit record, a probe's detail). Shared with
-#: :mod:`kiro_crew.platform.wheel_apply`.
-FAILURE_TEXT_CHARS = 500
-#: How often a running child is polled for exit. Its own kill needs no poll:
-#: a timeout or a cancel kills the group at once; this bounds only how soon the
-#: kill (or an ordinary exit) is noticed.
-_REAP_POLL_SECS = 0.05
-
-#: Loader variables the gateway's own process may need its children to keep:
-#: a base interpreter built with a shared libpython finds it through them. The
-#: INJECTION variables (``LD_PRELOAD``, ``DYLD_INSERT_LIBRARIES``) stay removed.
-_KEPT_LOADER_PATHS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
-
-
-def _build_child_env(trusted: bool) -> dict[str, str]:
-    """The environment a child of the apply runs with.
-
-    *trusted* (a child started inside the gateway): the update commands'
-    scrubbed environment (``PATH`` narrowed to the trusted system directories,
-    the interpreter and loader injection variables and exported shell functions
-    removed), keeping only the library search paths the gateway itself was
-    started with (:data:`_KEPT_LOADER_PATHS`). Otherwise (``kirocrew update`` in
-    the operator's shell) the full environment, so the operator's toolchain and
-    credential helpers reach pip. Interpreter children run ``-I`` either way, so
-    an inherited ``PYTHONPATH`` never reaches pip's dependency resolution.
-    """
-    if not trusted:
-        return dict(os.environ)
-    from kiro_crew.platform.update_provider import _trusted_path_env
-
-    env = _trusted_path_env()
-    if env is None:
-        raise WheelUpdateError("no trusted system PATH to run the update's build steps with")
-    for name in _KEPT_LOADER_PATHS:
-        if name in os.environ:
-            env[name] = os.environ[name]
-    return env
-
-
-def _spawn_build_child(
-    argv: list[str],
-    timeout: float,
-    step: str,
-    *,
-    ctx: _BuildContext = _NO_CONTEXT,
-    cwd: str = "/",
-    want_stdout: bool = False,
-    umask: int = -1,
-    stdin_data: bytes | None = None,
-    extra_fds: tuple[int, ...] = (),
-) -> tuple[int, bytes, bytes]:
-    """Run one child of the apply to completion; return ``(rc, stdout, stderr tail)``.
-
-    Every child of the apply comes through here. It runs in its own session, so
-    its whole process group can be killed (``python -m venv`` runs ``ensurepip``
-    as a grandchild), with the environment :func:`_build_child_env` gives it,
-    with the update lock's descriptor (:attr:`_BuildContext.lock_fd`), and with
-    no pipes: stdout and stderr go to anonymous files. *stdin_data*, when
-    given, reaches the child through an anonymous file too, and *extra_fds*
-    are inherited beside the lock's descriptor (openssl reads its key and
-    signature from them as ``/dev/fd/N``).
-
-    The group is killed when *timeout* passes, when the cancel is set
-    (synchronously, inside :meth:`ApplyCancel.set`), and when this call is
-    interrupted, and the child is reaped before this returns or raises. A
-    killed child never reports a status. The exit is polled under the same lock
-    the kill takes, so a kill is only ever signalled while the leader is
-    unreaped: its pid, which names the group, cannot have been reused.
-
-    Raises :class:`WheelUpdateError` naming *step* when the child cannot start
-    or times out, and :class:`WheelUpdateCancelled` on cancel.
-    """
-    _raise_if_cancelled(ctx.cancel)
-    env = _build_child_env(ctx.trusted_env)
-    pass_fds = ((ctx.lock_fd,) if ctx.lock_fd is not None else ()) + tuple(extra_fds)
-    with (
-        tempfile.TemporaryFile() as infile,
-        tempfile.TemporaryFile() as outfile,
-        tempfile.TemporaryFile() as errfile,
-    ):
-        if stdin_data is not None:
-            infile.write(stdin_data)
-            infile.seek(0)
-        try:
-            proc = subprocess.Popen(
-                argv,
-                stdin=infile if stdin_data is not None else subprocess.DEVNULL,
-                stdout=outfile if want_stdout else subprocess.DEVNULL,
-                stderr=errfile,
-                cwd=cwd,
-                env=env,
-                umask=umask,
-                start_new_session=IS_POSIX,
-                pass_fds=pass_fds,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise WheelUpdateError(f"{step} could not run: {exc}") from exc
-        guard = threading.Lock()
-        killed_for: list[str] = []
-
-        def _kill(reason: str) -> None:
-            with guard:
-                if proc.returncode is None:
-                    killed_for.append(reason)
-                    kill_popen_tree(proc)
-
-        undo: Callable[[], None] | None = None
-        try:
-            if ctx.cancel is not None:
-                undo = ctx.cancel.on_set(lambda: _kill("cancel"))
-            deadline = time.monotonic() + timeout
-            while True:
-                with guard:
-                    if proc.poll() is not None:
-                        break
-                if time.monotonic() >= deadline:
-                    _kill("timeout")
-                time.sleep(_REAP_POLL_SECS)
-        except BaseException as exc:
-            _kill("interrupted")
-            proc.wait()
-            if isinstance(exc, (OSError, subprocess.SubprocessError)):
-                raise WheelUpdateError(f"{step} failed while running: {exc}") from exc
-            raise
-        finally:
-            if undo is not None:
-                undo()
-        if killed_for and killed_for[0] == "cancel":
-            _raise_if_cancelled(ctx.cancel)
-        if killed_for:
-            raise WheelUpdateError(f"{step} timed out after {timeout:.0f}s")
-        outfile.seek(0)
-        out = outfile.read(_STDOUT_MAX_BYTES)
-        errfile.seek(0, os.SEEK_END)
-        errfile.seek(max(0, errfile.tell() - _STDERR_TAIL_BYTES))
-        return proc.returncode, out, errfile.read()
-
-
-def _redacted_detail(raw: bytes, limit: int = _ERROR_DETAIL_CHARS) -> str:
-    """A child's output for an error message: redacted IN FULL, then cut to its tail.
-
-    The order is the point. Cutting first can split a credential, and half a
-    token does not match the redactors' patterns, so the surviving fragment
-    would reach the log and the dashboard verbatim.
-    """
-    from kiro_crew.platform.context import redact_log_via_context
-
-    return redact_log_via_context(utf8_stdout(raw).strip())[-limit:]
-
-
-def _run(argv: list[str], timeout: float, step: str, *, ctx: _BuildContext = _NO_CONTEXT) -> None:
-    """Run one build step; raise :class:`WheelUpdateError` with its redacted tail on failure.
-
-    Build steps write into the shadow tree, so they run under the owner-only
-    build umask (see :data:`_BUILD_UMASK`).
-    """
-    rc, _out, err = _spawn_build_child(argv, timeout, step, ctx=ctx, umask=_BUILD_UMASK)
-    if rc != 0:
-        detail = _redacted_detail(err)
-        raise WheelUpdateError(f"{step} exited {rc}" + (f": {detail}" if detail else ""))
-
-
-#: Owner-only umask for the venv/pip build children (POSIX; -1 = leave unchanged).
-#: ``kirocrew service install`` refuses to attach the AppArmor unprivileged-userns
-#: profile to a launcher that is group- or world-writable (service/apparmor.py), and
-#: ``python -m venv``/pip create ``bin/`` under the process umask — so a permissive
-#: umask (``002``, common on shared dev hosts) would otherwise birth the tree ``0775``
-#: and the profile install would refuse, recurring on every update. ``subprocess``
-#: applies ``umask`` in the child between fork and exec (thread-safe, unlike a
-#: ``preexec_fn`` in this threaded gateway), so bin/ and the launcher are born
-#: owner-only with no window and the profile attaches.
-_BUILD_UMASK = 0o077 if IS_POSIX else -1
-
-
-#: Build sentinel: written into a shadow directory the moment this engine
-#: creates it, removed only after the tree is promoted. Its PRESENCE says the
-#: build never completed; together with :data:`TREE_MARKER` it is what makes a
-#: directory deletable debris, whatever else the directory does or does not hold
-#: (an interrupted build can leave nothing but these two files).
-_SHADOW_SENTINEL = ".kirocrew-shadow-incomplete"
-
-#: Infix of a tree being deleted (``.crew-venv-<v>.deleting-<pid>``). A tree is
-#: renamed to a tombstone first and removed after: an interrupted removal of the
-#: tree in place would leave a directory under the versioned name that is not a
-#: whole venv. The tombstone is deleted with its ownership proofs last
-#: (:func:`_remove_tombstone`), so an interrupted removal stays sweepable.
-_TOMBSTONE_INFIX = ".deleting-"
-
-
-def _versioned_name(layout: ManagedVenvLayout) -> re.Pattern[str]:
-    """The one spelling of a versioned sibling's name: ``<legacy>-<version>``."""
-    return re.compile(re.escape(f"{layout.legacy.name}-") + _VERSION_RE.pattern[1:])
-
-
-def _realpath(path: Path) -> Path | None:
-    try:
-        return Path(os.path.realpath(path))
-    except (OSError, RuntimeError):
-        return None
-
-
-def _is_stable_target(layout: ManagedVenvLayout, tree: Path) -> bool:
-    """Is *tree* what the stable link resolves to? The one form of this check."""
-    target, real = _realpath(layout.stable_link), _realpath(tree)
-    return target is not None and real is not None and target == real
-
-
-def _is_owned_tree(layout: ManagedVenvLayout, tree: Path) -> bool:
-    """Did THIS layout's engine build *tree*? Never raises; unreadable is "no".
-
-    Positively identified, so another install that shares the parent directory
-    (``KIROCREW_VENV=/srv/crew`` beside ``/srv/crew-beta``) is never touched: the
-    exact versioned name (a tombstone of one counts), AND either the ownership
-    marker naming this layout or, for a build an earlier engine left unfinished,
-    no marker at all beside the build sentinel.
-    """
-    name = tree.name
-    if name.startswith("."):
-        head, sep, _pid = name[1:].rpartition(_TOMBSTONE_INFIX)
-        if not sep:
-            return False
-        name = head
-    if not _versioned_name(layout).fullmatch(name):
-        return False
-    try:
-        if tree.is_symlink() or not tree.is_dir():
-            return False
-        marker = tree / TREE_MARKER
-        if marker.exists():
-            return marker.read_text(encoding="utf-8").strip() == str(layout.legacy)
-        return (tree / _SHADOW_SENTINEL).exists()
-    except (OSError, UnicodeDecodeError):
-        return False
 
 
 def _owned_siblings(layout: ManagedVenvLayout) -> list[Path]:
@@ -2273,3 +1333,67 @@ __all__ = [
     "stable_launch_path",
     "verify_shadow_venv",
 ]
+
+
+# This module is the facade of the managed-venv update engine: every name is reached
+# through it as ``kiro_crew.platform.wheel_engine.<name>``. A read is served by the owner that binds
+# the name, and a write -- ``monkeypatch.setattr``, ``mock.patch`` -- reaches every owner
+# holding it (:mod:`kiro_crew._facade_mirror`). Owners never import this module. The
+# offline trust root and the manifest signature check that reads it, the shadow build and
+# promotion, debris pruning, the update lock and the apply stay here, and so does
+# ``download_verified_wheel``, the one caller of the transfer owner's
+# ``_download_to_file``, which compares the wheel's SHA-256 to the signed digest. New work
+# goes to the owner of its responsibility:
+#
+#   ``wheel_engine_contract`` -- the bounds, the manifest grammar, the errors, the cancel flag
+#   ``wheel_engine_layout`` -- where the trees live, and what a restart re-executes
+#   ``wheel_engine_build_child`` -- running one child process of the apply
+#   ``wheel_engine_transfer`` -- the bounded download of a release's bytes and its digest
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.platform.wheel_engine_contract",
+    "kiro_crew.platform.wheel_engine_layout",
+    "kiro_crew.platform.wheel_engine_build_child",
+    "kiro_crew.platform.wheel_engine_transfer",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(sys.modules[__name__], _OWNERS, excluded=()).served)
+sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.platform.wheel_engine_build_child import (  # noqa: F401
+        _BUILD_UMASK,
+        _ERROR_DETAIL_CHARS,
+        _KEPT_LOADER_PATHS,
+        _REAP_POLL_SECS,
+        _STDERR_TAIL_BYTES,
+        _STDOUT_MAX_BYTES,
+        _build_child_env,
+    )
+    from kiro_crew.platform.wheel_engine_contract import (  # noqa: F401
+        _PIP_BINARY_ONLY,
+        _VERSION_RE,
+        _WHEEL_FETCH_TOTAL_SECS,
+        WheelUpdateNotReady,
+        WheelUpdateSnapshotFailed,
+    )
+    from kiro_crew.platform.wheel_engine_layout import (  # noqa: F401
+        _PIPX_METADATA_NAME,
+        _legacy_nested_venv,
+        _respawn_fallback,
+        _respawn_tree_is_managed,
+        _versioned_name,
+        respawn_executable,
+        running_from_managed_venv,
+        running_from_pipx,
+        runs_through_stable_link,
+        stable_launch_path,
+    )
+    from kiro_crew.platform.wheel_engine_transfer import (  # noqa: F401
+        _read_bounded,
+        _response_socket,
+        _SinkWriteError,
+    )

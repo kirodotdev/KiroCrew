@@ -51,12 +51,12 @@ Other style rules:
 |---|---|
 | Line length | 100 chars (black and isort are both configured to it) |
 | Python version | >= 3.12; `from __future__ import annotations` for type hints |
-| Imports | `import logging` plus `logger = logging.getLogger(__name__)` |
+| Imports | `import logging` plus `logger = logging.getLogger(__name__)`; a split's owner names the original module instead ([Splitting a file](#splitting-a-file)) |
 | Async | `asyncio` throughout; `async def` for all I/O |
 | Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. CI enforces this (`loop-bound-locks` gate). |
 | Dataclasses | `@dataclass` for data containers |
 | Product name | The product is **Kiro Crew**: two words, a space, capital `K`. Identifiers keep the spelling their own system gave them (the `kirodotdev/KiroCrew` repo slug, `KiroCrew.dmg` artifacts, the `KiroCrew Nightly` OS identifier, the `kirocrew` CLI, `KIROCREW_*` env vars, `kiro_crew` imports). CI gates the lines a change ADDS, so an existing spelling nearby does not exempt a new one; run `BRAND_BASE_REF=origin/main python3 scripts/check_brand_name.py` before pushing. |
-| Errors | ACP exceptions live in `acp/transport_errors.py` (re-exported by `acp/client.py`), `acp/session_handle_runtime_contract.py` (re-exported by `acp/session_handle.py`), and `acp/runtime.py`; return error strings at tool boundaries. See [error-handling](error-handling.md). |
+| Errors | ACP exceptions live in `acp/transport_errors.py` (re-exported by `acp/client.py`), `acp/session_handle_runtime_contract.py` (re-exported by `acp/session_handle.py`), and `acp/runtime.py` (the binding and session-start errors in `acp/runtime_session_setup.py` and `acp/runtime_session_create.py`, re-exported by it); return error strings at tool boundaries. See [error-handling](error-handling.md). |
 
 ## Comments explain the WHY
 
@@ -137,7 +137,7 @@ Linux-only errors CI fails on, so a clean local run is a false green.
 
 | Gate | Rule | Detail |
 |---|---|---|
-| flake8 F401 | No unused imports. | Remove any import not directly used in the file. A pyflakes check, always on. |
+| flake8 F401 | No unused imports. | Remove any import not directly used in the file. A pyflakes check, on everywhere except the split facades listed under `setup.cfg`'s `per-file-ignores`, each row under a comment naming the test that stands in for it ([Splitting a file](#splitting-a-file)). |
 | flake8 N806 | Function-local variables are lowercase: `mock_client`, not `MockClient`. | Needs the `pep8-naming` plugin in the flake8 environment. The repo's pinned `flake8==7.1.0` alone does not report it, so an N806 that passes locally can still be flagged by a reviewer or a differently-provisioned environment. In-function Windows API constants carry `# noqa: N806`. |
 | flake8 W504 | Line break BEFORE a binary operator, not after. | Both W503 and W504 are in pycodestyle's DEFAULT_IGNORE, and `setup.cfg` uses `extend-ignore` (not bare `ignore`) precisely so those black-compatible defaults stay in effect. So neither fires in a normal run; W503 is additionally listed explicitly because black formats that way. Write it operator-first anyway, because that is what black produces and what the codebase reads like. |
 | mypy | Annotate empty collections: `output: list[str] = []`. | `check_untyped_defs = true`, so this fires inside unannotated functions too. mypy only needs the annotation when it cannot infer the element type from the same scope, which is why an `out = []` that is immediately `append`ed and returned from an annotated function is fine. |
@@ -206,6 +206,119 @@ rewrite every row:
 ```bash
 python3 scripts/check_file_line_cap.py --update-baseline
 ```
+
+### Splitting a file
+
+A new responsibility gets a new module, never a new section in a large file, and a change
+that takes a code file past 1,600 lines splits it in the same PR or in one before it.
+Every module a split creates holds 1,600 lines or fewer, so the next change has room, and
+the split deletes or lowers its own baseline row as described
+[above](#no-file-over-2000-lines). Split by responsibility, never by line ranges: each new
+module owns one job you can name in a sentence and is named for it, as a sibling
+`<module>_<topic>.py` or a module in a `<module>_parts/` package (with an `__init__.py`,
+or `packages = find:` leaves it out of the wheel).
+
+**The original module stays the import path**, as a facade over its owners built with
+`src/kiro_crew/_facade_mirror.py` in the shape its docstring shows: the foot imports every
+owner, lowest layer first, calls `install()` and sets the module's `__class__` to
+`MirroredModule`, so a write through the facade (a test's `monkeypatch.setattr` or
+`mock.patch` on the old path) lands in every owner that binds the name. A plain re-export
+copies the binding instead, and the patch silently stops reaching the moved code; see
+[testing-conventions](testing-conventions.md#patch-the-defining-module-not-a-re-export).
+`__all__` keeps the list the module had, or is derived from the namespace where it had
+none. A family that already composes through `src/kiro_crew/_facade_compose.py`
+(`hook_runtime/`, `dashboard/chat_api/`, `dashboard/server_runtime/` and the other owner
+packages) takes new owners inside its package; start a new compose family only when moved
+functions must run on the facade's own globals, as when a contract pins their `__module__`.
+
+In a mirror family, moved code reads its names as plain globals of its own owner, and the
+family keeps two rules:
+
+- an owner imports its facade only under `if TYPE_CHECKING:`, and imports only the owners
+  listed before it;
+- a global that code rebinds at run time (`global name; name = ...`) lives in one owner
+  with every function that rebinds it and every reader, since no mirror can follow a
+  rebinding. The facade binds no copy, so the mirror serves it live from that owner (a
+  `surface=` facade lists it, as `_SERVED_LIVE` in `src/kiro_crew/dashboard/state.py`
+  does). A reader that cannot live there looks the facade up in `sys.modules` at call
+  time, never by importing it (`_facade()` in `src/kiro_crew/snapshot_components.py` shows
+  the lookup, for the unmirrored `kiro_crew.snapshot`).
+
+`test/test_facade_mirror_guards.py` finds every mirror facade on its own, refuses an owner
+that imports its facade or rebinds a shared global, fails a facade no test patches through,
+and executes only a few patches per facade. Each facade also gets a patch-reach test that
+executes every name the test trees patch through it (read with `test/facade_mirror_scan.py`)
+and proves the scan finds known seams (`test/test_session_pid_facade.py`).
+
+**A large class keeps one class body**, in the facade or in one home module that sets
+`__module__` to the facade when a pickle, repr or test reads it. Members move to owners as
+functions taking `self`, and the body binds each as a one-line attribute
+(`prompt = _sh_turn.prompt`, or `staticmethod(...)`) under a comment naming the owner,
+with no new mixin or base class (`src/kiro_crew/acp/session_handle_class.py`). A member
+that uses zero-argument `super()`, `__class__` or a name-mangled attribute stays in the
+body. Keep `__module__` and `__qualname__` wherever anything reads them: moved exception
+classes keep the facade's name because error text renders it, and a family-scoped helper
+(`_own_methods` there) renames each bound function `<Class>.<name>`. An owner logs under
+the original module's logger, `logging.getLogger("kiro_crew.<original>")`: the log format
+prints the logger name, and `caplog` tests filter on it.
+
+**Registries keyed by path follow the code.** A `_REDACTION_SINKS` row in
+`src/kiro_crew/security_posture.py` names the module that redacts that sink; when a split
+moves the redactor calls, re-key the row to the owner that now makes them. The sink test
+in `test/test_security_posture.py` also counts calls in the facade's declared owners, so a
+row left on the facade can stay green while it no longer tells an operator where the sink
+is redacted; older splits did that (`dashboard/handlers/files.py`), a new one does not.
+Every module the omission test's text scan matches (a word containing `redact`, or
+`StreamRedactor`, followed by `(`, comments included), facade or owner, is a sink row or
+is listed in `NON_EGRESS_REDACTION_MODULES` under a comment giving the reason. Every other
+list keyed by a path or a module name gets truthful rows in the same commit.
+
+**A new facade or binding test pins identity and reach, never an exact namespace or member
+list.** Each public name the module defined, or imported from `kiro_crew`, before the split
+keeps resolving on it, to its home module's object where the facade binds it by import:
+`test/campaign_facade_inventories/<dotted.module>.json` records them for
+`test/test_campaign_facades_base_public_names.py`. Pin names the split adds as a subset
+(`added <= names`): the `set(vars(m)) - BASE_NAMES == {…}` and `present ^ set(_MEMBERS)`
+freezes some older tests carry fail the next unrelated change that adds a name, and two
+such changes that each passed can merge into a red main. A facade's re-exports carry
+`# noqa: F401`, or it takes a per-file `F401` row in `setup.cfg` with a test that accounts
+for every import (bound before the split, mirror glue, defined by an owner, or read by the
+family's own code) and a planted import that proves the test can fail.
+
+**Test files split by topic** into `test_<module>_<topic>.py` beside the original, with the
+fixtures and helpers the parts share in `<module>_helpers.py` (no `test_` prefix, so pytest
+does not collect it); basenames stay unique across `test/`, which is not a package.
+
+- Test bodies move verbatim: the flake-pattern ratchet forgives a site only when its
+  enclosing function moved unchanged. A `Test*` class bound at module level in another
+  module is collected there a second time.
+- An autouse fixture defined in a test or helpers module applies only there and where it
+  is imported by name, so each part imports the ones its tests relied on. Copy the
+  module-level `pytestmark`, `importorskip` and conftest flags (`ENFORCE_LAUNCH_APPROVAL`)
+  into every part, and add each part wherever a conftest names the original module
+  (`_HOST_SERVICE_EXEC_ALLOWED_MODULES`, `_REAL_MCP_POST_MODULES`).
+- Node ids move with their tests: rewrite their rows in the `test/` lists
+  `windows-expected-failures.txt`, `macos-expected-failures.txt`,
+  `codebuild-expected-failures.txt` and `requires-real-symlinks.txt` (nothing audits the
+  macOS or symlink list for dead rows, so a stale row there silently drops its xfail or
+  skip), list every part of a file `windows-collect-ignore.txt` or
+  `macos-collect-ignore.txt` names, and split the file's `wait_discipline_baseline.txt` row
+  so the parts sum to the old count.
+- Prove nothing was lost: the node ids `pytest --collect-only -qq -n0` prints (addopts
+  adds `--verbose`) are the same multiset before and after, up to the file name.
+
+**Citations move with the code.** A citation of the file that defines moved code is
+re-pointed to the owner in the same commit. Cite a symbol, not a line number: a split
+moves every line, and the docs lint refuses a new backticked line-number citation and
+fails one the split pushes past the end of the file.
+
+**Frontend facades** re-export with explicit lists, `export { … } from './Owner'` and
+`export type { … } from`, never `export *`: a star re-export publishes every owner export
+the module never offered, and it never carries a default export. No owner imports its
+facade, and no production code outside the family imports an owner unless the conventions
+record the exception, because a spec that mocks the facade by its module id would hand
+that code the mock or miss it; see
+[frontend conventions](../../../website/docs/frontend-conventions.md#the-file-panel-the-chat-pane-and-the-browser-panel).
 
 ## Subprocess output is decoded explicitly
 

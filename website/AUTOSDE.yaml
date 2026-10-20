@@ -854,3 +854,48 @@ custom-rules:
       - a delay inside a stub that simulates slow work while the test waits
         on a signal, and the interval of a bounded poll that throws at its
         deadline.
+
+  - id: keep-modules-small
+    blocking: false
+    file-patterns:
+      - "src/**/*.ts"
+      - "src/**/*.tsx"
+      - "src/**/*.js"
+      - "src/**/*.css"
+      - "electron/**/*.js"
+      - "electron/**/*.cjs"
+      - "scripts/**/*.mjs"
+      - "scripts/**/*.ts"
+      - "integration/**/*.ts"
+      - "integration/**/*.tsx"
+      - "playwright/**/*.ts"
+      - "*.config.*"
+    rule: |
+      A hand-written code file holds at most 2,000 lines: the repository root's
+      `scripts/check_file_line_cap.py` fails the lint jobs when a change leaves a
+      file it touches past the cap and the baseline does not list it. The
+      working target is 1,600. How to split is the root
+      `docs/system-specs/common/code-style.md` § Splitting a file; the facades
+      in this package's `docs/frontend-conventions.md` show the shape the
+      existing splits use.
+
+      FLAG, each with what to ask for instead:
+      - A change that takes a hand-written file past 1,600 lines, or that adds a
+        new component, hook or concern to a file already over 1,600. Ask for a
+        sibling module (`<Name><Part>.tsx`, `use<Name>*.ts`, `<name>*.ts`) or a
+        module in a folder named for the family, or for the split in this PR or
+        one before it.
+      - A facade that re-exports with `export * from`. It publishes every owner
+        export the module never offered, and it never carries a default export.
+        Ask for explicit `export { … } from` and `export type { … } from` lists
+        naming what the module exported before the split.
+      - An owner that imports its facade, or production code outside the family
+        that imports an owner directly. Specs mock the facade by its module id,
+        so either edge hands that code the mock or bypasses it. Imports run one
+        way, from the facade to its owners.
+
+      Allowed (do NOT flag): `*.gen.ts` and other generated files; a baselined
+      file that shrinks; a barrel that is not a split facade (`src/i18n/all.ts`,
+      `src/i18n/lazy.ts`, `src/app-sdk/index.ts`); an owner's own spec importing
+      it; an owner import `docs/frontend-conventions.md` records as an
+      exception.

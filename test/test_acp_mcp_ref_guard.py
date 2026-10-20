@@ -20,6 +20,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import sys
 import time
 from typing import Any
 
@@ -600,7 +601,11 @@ class TestTheDocumentedReach:
     def test_the_runtime_call_site_is_wired(self):
         from kiro_crew.acp import runtime as runtime_mod
 
-        src = inspect.getsource(runtime_mod)
+        # runtime.py's owner modules (runtime_*.py) hold code that was its own.
+        src = "".join(
+            inspect.getsource(sys.modules[name])
+            for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+        )
         assert "warn_unresolved_server_refs(" in src
         assert "agent_spec_snapshot" in src, "the runtime must read the spec the detector reads"
 
@@ -1012,7 +1017,11 @@ class TestTheRuntimeCallSitesAreWired:
         """
         from kiro_crew.acp import runtime as runtime_mod
 
-        lines = inspect.getsource(runtime_mod).splitlines()
+        # runtime.py's owner modules (runtime_*.py) hold code that was its own.
+        lines = "".join(
+            inspect.getsource(sys.modules[name])
+            for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+        ).splitlines()
         handoffs = [i for i, ln in enumerate(lines) if ".begin_session(" in ln]
         assert len(handoffs) == 2, "a runtime session-establishment path was added or removed"
         for i in handoffs:
@@ -1066,8 +1075,12 @@ class TestTheRuntimeCallSitesAreWired:
         guard_src = inspect.getsource(AcpRuntime._guard_unresolved_mcp_refs)
         assert "await" not in guard_src
         assert "agent_spec_snapshot" not in guard_src
-        # ONE read in the module, inside the fail-soft wrapper.
-        module_src = inspect.getsource(runtime_mod)
+        # ONE read in the module, inside the fail-soft wrapper. runtime.py's owner modules
+        # (runtime_*.py) hold code that was its own.
+        module_src = "".join(
+            inspect.getsource(sys.modules[name])
+            for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+        )
         reads = module_src.count("agent_spec_snapshot(")
         assert reads == 1, f"expected one wrapped read of the spec, found {reads} call(s)"
         assert "agent_spec_snapshot(" in inspect.getsource(_ref_spec_snapshot)

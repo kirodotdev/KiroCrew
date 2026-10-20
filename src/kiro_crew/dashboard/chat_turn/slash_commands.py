@@ -1,25 +1,45 @@
-"""The dashboard's local slash commands: /workflow, /agent and /goal, the backend a slash
-command would run on, the refusal of a slash command the dashboard does not offer, and the
-answer to a slash command no channel can take."""
+"""The dashboard's local slash commands and the turn's slash gate (``_turn_slash_gate``, which
+answers a local slash command before a session is claimed): /workflow, /agent and /goal, the
+backend a slash command would run on, the refusal of a slash command the dashboard does not
+offer, and the answer to a slash command no channel can take."""
 
 from __future__ import annotations
 
 import asyncio
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        _BLOCKED_SLASH_COMMANDS,
+        _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
+        ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
+        ACP_BACKENDS_COMPACT,
+        ACP_BACKENDS_LOCAL_CLEAR,
         FINISHED_LOOP_REASONS,
+        HOOK_CONTINUATION_RECOVERY_PREFIX,
+        MAX_PROMPT_BYTES,
+        MONITOR_WAKE_PREFIX,
+        SUBAGENT_SYNTHESIS_PREFIX,
         DashboardState,
         KiroCrewConfig,
+        RepeatLoopTracker,
         _ChatSlot,
+        _expand_prompt_mention_off_loop,
+        _list_aim_prompts,
         _reset_conversation,
+        _run_chat,
+        agent_switch_target,
+        capabilities_for,
         capabilities_of,
+        compact_unsupported_backend,
+        compact_unsupported_reply,
         data_home,
         get_instance,
+        is_claude_code,
+        is_harness_slash_command,
         normalize_banner,
         parse_workflow_command,
         reason_in,
@@ -30,6 +50,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.segment_flush import _append_command_reply
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
 
 
 async def _slash_command_backend(state: DashboardState, session_key: str) -> str:
@@ -333,3 +354,383 @@ def _refuse_blocked_slash(turn) -> None:
         "msg msg-a",
     )
     state.push_slots_update()
+
+
+async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
+    """Answer the local slash commands before a session is claimed."""
+    _commands_off = turn._commands_off
+    _directive_channel_origin = turn._directive_channel_origin
+    _directive_self_wake = turn._directive_self_wake
+    _directive_user_origin = turn._directive_user_origin
+    _prompt_depth = turn._prompt_depth
+    _responsive_human = turn._responsive_human
+    _responsive_protected = turn._responsive_protected
+    _synthetic_payload = turn._synthetic_payload
+    _turn_actor = turn._turn_actor
+    message = turn.message
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+    turn_exit = turn.turn_exit
+    # Same call, same result, again and again: told once per call (repeat_loop).
+    _repeat_loop = RepeatLoopTracker()
+    turn._repeat_loop = _repeat_loop
+    # Whether this turn already said "will compact after this turn" (once per turn).
+    _compact_after_turn_noticed = False
+    turn._compact_after_turn_noticed = _compact_after_turn_noticed
+    # Whether the current denied batch's cascade already steered its one
+    # cause-specific notice. One notice covers the whole cascaded remainder, so
+    # this stops the second and later members from repeating it; re-armed each
+    # time ``slot._batch_rejected`` is set, so a second batch denied later in
+    # the same turn gets its own notice.
+    _batch_cascade_steered = False
+    turn._batch_cascade_steered = _batch_cascade_steered
+    # Track how deep an unbroken hook-continuation run is, so the Stop hook can
+    # see it: each consecutive hook continuation is one deeper; any other turn
+    # (a real user message, a refusal recovery) breaks the run and resets it.
+    # Gate on synthetic provenance, not the marker text alone: a real dequeued
+    # continuation carries _synthetic_payload, but a user who types the marker
+    # verbatim is ordinary speech and must not inflate the depth a gate hook
+    # sees (would let a spoofed message drive the hook's self-limit).
+    if _synthetic_payload and message.startswith(HOOK_CONTINUATION_RECOVERY_PREFIX):
+        slot._hook_continuation_depth += 1
+    else:
+        slot._hook_continuation_depth = 0
+    # Runner-authored continuations are orchestration, not user input, and the
+    # post-fan-out synthesis prompt is one too: never mirror either to linked
+    # surfaces (Slack/Telegram) as if the user typed it — only the assistant reply
+    # is delivered. A recovery that replays the user's own message is NOT covered,
+    # because that text is the user's; the queue entry distinguishes the two so a
+    # user who types a marker verbatim still counts as ordinary user speech.
+    _is_synthetic = _synthetic_payload or message.startswith(SUBAGENT_SYNTHESIS_PREFIX)
+    turn._is_synthetic = _is_synthetic
+
+    # ── Slash commands: detect early, before session acquisition ──
+    # Every command branch keys on ``first_word``: _run_chat's harness forward
+    # (``is_slash``), the blocked set and the local commands below (/goal, /workflow,
+    # /prompts, /compact). With commands off the word is not read at all, so a
+    # hand-off entry reaches the model as the text it is, whatever it opens with.
+    first_word = message.split()[0] if message.strip() and not _commands_off else ""
+    turn.first_word = first_word
+    _cfg_agent = KiroCrewConfig.load().agent
+    _is_cc_provider = is_claude_code(_cfg_agent.provider)
+    # Named rather than inlined so the quick-prompt exception is one testable rule
+    # instead of a condition only reachable by driving the whole of _run_chat: a macro
+    # must NOT be forwarded to the harness as a command.
+    is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
+    turn.is_slash = is_slash
+    _this_turn_is_clear = is_slash and first_word.lower() == "/clear"
+    turn._this_turn_is_clear = _this_turn_is_clear
+
+    # Commands that are impossible on every harness stay a true pre-dispatch
+    # gate: refusing them creates and consumes no session. The harness-specific
+    # subtraction is decided only after get_or_create in _turn_admit returns the exact
+    # provider that would execute it. A registry peek is not authoritative:
+    # get_or_create probes liveness and can evict a dead row, then build the
+    # opposite harness from the current factory defaults.
+    if first_word in (_BLOCKED_SLASH_COMMANDS - _KIRO_ONLY_BLOCKED_SLASH_COMMANDS):
+        _refuse_blocked_slash(turn)
+        return _Flow.END
+
+    # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
+    # v0 rides AutoNudgeService unchanged: the nudge instructs the agent to
+    # self-check its Definition of Done each cycle and call autonudge_stop when
+    # met.
+    if first_word == "/goal":
+        turn_exit.local_command = first_word
+        await _handle_goal_command(state, slot, message)
+        return _Flow.END
+
+    if first_word == "/workflow":
+        turn_exit.local_command = first_word
+        await _handle_workflow_command(state, slot, message, session_key)
+        return _Flow.END
+
+    # ── /agent <name>: Crew's own agent switch, never kiro-cli's ──
+    # Every surface that reaches a slot through this runner (the split pane,
+    # a Slack thread linked to a dashboard chat) gets the switch the agent
+    # picker makes. The main composer already sends it there before the
+    # message is ever posted.
+    _agent_target = agent_switch_target(message) if first_word == "/agent" else None
+    if _agent_target is not None:
+        turn_exit.local_command = first_word
+        await _handle_agent_command(state, slot, _agent_target, session_key)
+        return _Flow.END
+
+    # ── /prompts: handle locally instead of forwarding to kiro-cli ──
+    if first_word == "/prompts":
+        turn_exit.local_command = first_word
+
+        args = message.split(None, 2)  # /prompts [get] [name]
+        sub = args[1] if len(args) > 1 else ""
+
+        if sub == "get" and len(args) > 2:
+            # /prompts get <name> — invoke the prompt in this chat
+            name = args[2]
+            # Off the loop for the same reason as the @mention path in _turn_admit.
+            expanded, status = await _expand_prompt_mention_off_loop(f"@{name}", state, slot)
+            if status == "ok":
+                sel().log_tool_invocation(
+                    session_key="",
+                    agent=slot.agent or "kirocrew",
+                    source="dashboard",
+                    tool_name="prompt_expansion",
+                    tool_kind="prompt",
+                    outcome="ok",
+                    metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
+                )
+                # Re-enter _run_chat with the expanded message (depth=1, no further
+                # expansion). The actor travels with it: the nested turn has the same
+                # author as the one that carried the mention, and the resolver's
+                # fallback is ``user``, so dropping it here would record a person
+                # who never typed anything.
+                # The nested call is a whole turn with its own exit guard, so the
+                # tail is its to run, however it ends.
+                turn_exit.handed_off = True
+                await _run_chat(
+                    state,
+                    slot,
+                    expanded,
+                    _prompt_depth=1,
+                    _responsive_human=_responsive_human,
+                    _responsive_protected=_responsive_protected,
+                    _directive_user_origin=_directive_user_origin,
+                    _directive_self_wake=_directive_self_wake,
+                    _directive_channel_origin=_directive_channel_origin,
+                    _turn_actor=_turn_actor,
+                )
+            elif status == "blocked":
+                sel().log_tool_invocation(
+                    session_key="",
+                    agent=slot.agent or "kirocrew",
+                    source="dashboard",
+                    tool_name="prompt_expansion",
+                    tool_kind="prompt",
+                    outcome="blocked",
+                    metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
+                )
+                _append_command_reply(slot, f"🔒 Prompt `{name}` blocked — sensitive path.")
+                state.push_slots_update()
+            elif status == "too_large":
+                sel().log_tool_invocation(
+                    session_key="",
+                    agent=slot.agent or "kirocrew",
+                    source="dashboard",
+                    tool_name="prompt_expansion",
+                    tool_kind="prompt",
+                    outcome="too_large",
+                    metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
+                )
+                _append_command_reply(
+                    slot, f"⚠️ Prompt `{name}` exceeds size limit ({MAX_PROMPT_BYTES // 1000}KB)."
+                )
+                state.push_slots_update()
+            else:
+                sel().log_tool_invocation(
+                    session_key="",
+                    agent=slot.agent or "kirocrew",
+                    source="dashboard",
+                    tool_name="prompt_expansion",
+                    tool_kind="prompt",
+                    outcome="not_found",
+                    metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
+                )
+                _append_command_reply(slot, f"❌ Prompt `{name}` not found.")
+                state.push_slots_update()
+            return _Flow.END
+
+        # /prompts or /prompts list — show available prompts
+        try:
+            # _list_aim_prompts walks the (possibly large or edition-supplied)
+            # prompt_source_roots() with rglob + file reads; keep it off the
+            # event loop so a slow/network-backed root can't stall the gateway.
+            # Pass THIS slot's project so its local prompts are listed per-slot
+            # (fail-closed to global-only when the slot has no project).
+            project_dir = Path(slot.project) if slot.project else None
+            prompts = await asyncio.to_thread(_list_aim_prompts, project_dir)
+        except Exception:
+            prompts = []
+        if not prompts:
+            slot.append(
+                "assistant",
+                "No prompts found. Create prompts in `~/.kiro/prompts/` (or `~/.kiro/crew/prompts/`).",
+                "msg msg-a",
+            )
+            sel().log_tool_invocation(
+                session_key="",
+                agent=slot.agent or "kirocrew",
+                source="dashboard",
+                tool_name="prompt_list",
+                tool_kind="prompt",
+                outcome="empty",
+                metadata={"count": 0, "slot": slot.key, "via": "/prompts"},
+            )
+            state.push_slots_update()
+            return _Flow.END
+        lines = ["**Available Prompts** — type `@name` to invoke\n"]
+        by_source: dict[str, list] = {}
+        for p in prompts:
+            (by_source.setdefault(p["source"], [])).append(p)
+        for src, items in sorted(by_source.items()):
+            label = "User Prompts" if src in ("aim", "package") else f"User Prompts ({src})"
+            turn.label = label
+            lines.append(f"\n**{label}:**")
+            for p in items:
+                desc = f" — {p['description']}" if p["description"] else ""
+                lines.append(f"- `@{p['fullName']}`{desc}")
+        text = "\n".join(lines)
+        _append_command_reply(slot, text)
+        sel().log_tool_invocation(
+            session_key="",
+            agent=slot.agent or "kirocrew",
+            source="dashboard",
+            tool_name="prompt_list",
+            tool_kind="prompt",
+            outcome="ok",
+            metadata={"count": len(prompts), "slot": slot.key, "via": "/prompts"},
+        )
+        state.push_slots_update()
+        return _Flow.END
+
+    # Refuse local-only commands before a claim can spawn or wait on a provider.
+    # A positively live row answers for itself; otherwise use allocation's
+    # member-aware successor selection. Acquisition still confirms support,
+    # because the provider can be replaced between this probe and the claim.
+    if first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
+        _todos_backend = await _slash_command_backend(state, session_key)
+        if not capabilities_for(_todos_backend).supports_native_todos:
+            _refuse_blocked_slash(turn)
+            return _Flow.END
+
+    # ── Manual /compact capability gate ──
+    # KAS never answers the /compact prompt with a compaction status (its
+    # summarization_* frames fire only for KAS-initiated auto-summarization),
+    # so dispatching the command would strand the deferred
+    # wait_for_compaction() for the full COMPACT_WAIT_TIMEOUT_SECS. KAS manages
+    # compaction itself — the same relationship the cc_managed decline encodes
+    # for Claude-Code sessions — so answer informationally, as a LOCAL command.
+    #
+    # Placed HERE, ahead of _turn_admit's OPTIONS-expiry boundary and before any
+    # session is acquired, so a refused /compact behaves as if the turn never
+    # started: no pending Slack OPTIONS control is struck through, no session is
+    # created, and no one-shot first-turn state (history replay, resume sid,
+    # session-map binding, compaction override) can be consumed or destroyed.
+    # The live session's provider is authoritative when one exists (peeked,
+    # never created); otherwise use the factory's member-aware backend
+    # selection, so a dead row cannot answer for its successor.
+    if first_word == "/compact":
+        _live_provider = state.sessions.get_provider(session_key)
+        _live_provider_alive = (
+            await state.sessions.is_provider_alive(session_key)
+            if _live_provider is not None
+            else None
+        )
+        if _live_provider is not None and _live_provider_alive is True:
+            # The same predicate every channel's /compact gate asks.
+            _compact_unsupported = compact_unsupported_backend(_live_provider)
+        elif _is_cc_provider:
+            # Claude Code compacts natively in-prompt (cc_managed).
+            _compact_unsupported = None
+        else:
+            # A dead registry row is not the harness dispatch would reach:
+            # get_or_create evicts it and uses this same member-aware selector.
+            _agent_cfg = KiroCrewConfig.load().agent
+            _cfg_backend = select_provider_backend(
+                session_key,
+                getattr(_agent_cfg, "member_acp_backend", ""),
+                getattr(_agent_cfg, "acp_backend", ""),
+            )
+            _compact_unsupported = (
+                _cfg_backend
+                if isinstance(_cfg_backend, str) and _cfg_backend not in ACP_BACKENDS_COMPACT
+                else None
+            )
+        # The isinstance guard means only a positively named unsupported
+        # backend id is refused — a mocked provider's truthy attribute never
+        # reads as one.
+        if isinstance(_compact_unsupported, str) and _compact_unsupported:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                agent=slot.agent or "kirocrew",
+                source="dashboard",
+                tool_name=first_word,
+                tool_kind="slash_command",
+                outcome="auto_managed_backend",
+                metadata={"backend": _compact_unsupported, "slot": slot.key},
+            )
+            # The shared three-arm reply, not a sentence of this surface's own.
+            # An inline copy here said the harness self-manages for EVERY backend
+            # outside ``ACP_BACKENDS_COMPACT``, which is true of one of them --
+            # and this is the dashboard, where the claim is most visible. The
+            # markdown register matches what that helper already emits.
+            slot.append(
+                "assistant",
+                compact_unsupported_reply(_compact_unsupported),
+                "msg msg-a",
+            )
+            state.push_slots_update()
+            return _Flow.END
+
+    # ── Harness commands on KAS, which has no command channel ──
+    # The session handle runs a command natively only on kiro-cli; KAS gets it
+    # as session/prompt text, and KAS has no built-in /clear there, so the
+    # model reads "/clear" as a request and the conversation stays. KAS also
+    # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
+    # Answer here instead, before any session work: /clear takes the same discard
+    # reset_conversation queues, and every other command gets a notice rather
+    # than reaching the model. /compact passes through: on KAS the session handle
+    # sends it as the engine's own compaction verb, not as prompt text. A /todos
+    # that got past its own gate is on a harness that runs it natively.
+    # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
+    # either, so /clear alone is answered here for them too; their other commands
+    # keep the prompt path, where those harnesses serve the ones they know.
+    if (
+        is_slash
+        and not _is_cc_provider
+        and first_word != "/compact"
+        and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+    ):
+        _command_backend = await _slash_command_backend(state, session_key)
+        if _command_backend == ACP_BACKEND_KAS or (
+            _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
+        ):
+            turn_exit.local_command = first_word
+            await _answer_slash_without_channel(state, slot, session_key, first_word)
+            return _Flow.END
+
+    _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)
+    turn._is_monitor_wake = _is_monitor_wake
+    _acquired = False
+    turn._acquired = _acquired
+    # Whether this turn holds the session-switch lock (see the acquire in _turn_admit);
+    # read by _run_chat's finally so an exit between acquire and release never leaks it.
+    turn._dispatch_lock_held = False
+    _mirror_stream_ts: str = ""
+    turn._mirror_stream_ts = _mirror_stream_ts
+    _mirror_chan: str | None = ""
+    turn._mirror_chan = _mirror_chan
+    _mirror_active_task = ""
+    turn._mirror_active_task = _mirror_active_task
+    _mirror_active_task_title = ""
+    turn._mirror_active_task_title = _mirror_active_task_title
+    _mirror_thread: str | None = ""
+    turn._mirror_thread = _mirror_thread
+    _mirror_task_counter = 0
+    turn._mirror_task_counter = _mirror_task_counter
+    _memory_preparation_admitted = False
+    turn._memory_preparation_admitted = _memory_preparation_admitted
+    # Zero until _turn_admit writes the marker, so a cancellation that lands during
+    # startup admission has nothing to clear.
+    _local_turn_marker_generation = 0
+    turn._local_turn_marker_generation = _local_turn_marker_generation
+    # Bound before _run_chat's main try because cancellation may land while this turn
+    # waits for shared memory preparation, before any provider is allocated.
+    client: Any = None
+    turn.client = client
+    # The pre-acquisition gate accepted this command. Keep its deferred OPTIONS
+    # drain owned by _run_chat's finally until acquisition either refuses or drains it.
+    _deferred_options_expiry = (
+        _prompt_depth == 0 and first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+    )
+    turn._deferred_options_expiry = _deferred_options_expiry
+    return None

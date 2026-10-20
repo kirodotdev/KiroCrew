@@ -143,7 +143,7 @@ class TestRuleFamilies:
         ), f"families without a probe: {set(gate.FAMILY_REMEDY) - seen}"
 
     def test_each_family_classifies_to_its_own_name(self) -> None:
-        # The corpus proves "flagged"; these four pin WHICH family, which is what
+        # The corpus proves "flagged"; these pin WHICH family, which is what
         # selects the remedy text a contributor is shown.
         assert self._families("async def f(store):\n    store.db.execute('SELECT 1')\n") == ["db"]
         assert self._families(
@@ -153,6 +153,21 @@ class TestRuleFamilies:
             "import requests\nasync def f():\n    requests.get('http://x')\n"
         ) == ["http"]
         assert self._families("import time\nasync def f():\n    time.sleep(5)\n") == ["sleep"]
+        assert self._families("import os\nasync def f(p):\n    os.path.isdir(p)\n") == ["fs"]
+        # os.system stays subprocess even though os now carries fs entries too.
+        assert self._families("import os\nasync def f():\n    os.system('true')\n") == [
+            "subprocess"
+        ]
+
+    def test_a_path_method_is_matched_only_without_a_positional_argument(self) -> None:
+        # Arity is the whole precision story for a receiver a name scan cannot
+        # type: `p.exists()` probes a path, `store.exists(key)` asks a store.
+        source = "async def f(p, store, key):\n    p.exists()\n    store.exists(key)\n"
+        assert gate._violations_in_source(source) == [(2, "fs", None)]
+
+    def test_only_a_bare_open_is_the_builtin(self) -> None:
+        source = "async def f(p, z):\n    open(p)\n    z.open(p)\n"
+        assert gate._violations_in_source(source) == [(2, "fs", None)]
 
     def test_flags_multiline_calls_once(self) -> None:
         source = (
@@ -350,6 +365,21 @@ class TestBaselineRatchet:
             "thread or carries an inline on-loop-io-ok marker, not a new "
             f"baseline entry: {entries}"
         )
+
+    def test_the_fs_ledger_never_counts_another_familys_site(self) -> None:
+        # The fs baseline is a SEPARATE ledger, so no fs entry can stand in for
+        # a db / subprocess / http / sleep call in the same file.
+        found = {"a.py": [(1, "fs", None), (2, "db", None)], "b.py": [(3, "fs", None)]}
+        assert gate._split(found, fs=True) == {
+            "a.py": [(1, "fs", None)],
+            "b.py": [(3, "fs", None)],
+        }
+        assert gate._split(found, fs=False) == {"a.py": [(2, "db", None)]}
+
+    def test_committed_fs_baseline_is_byte_identical_to_a_refresh(self, tmp_path: Path) -> None:
+        path = tmp_path / gate.FS_BASELINE.name
+        gate._write_baseline(path, gate._read_baseline(gate.FS_BASELINE))
+        assert path.read_text(encoding="utf-8") == gate.FS_BASELINE.read_text(encoding="utf-8")
 
     def test_missing_baseline_refuses_rather_than_absorbs(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit):

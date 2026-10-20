@@ -1,5 +1,5 @@
 /**
- * sessionIsBusyForClose — when a close must ask even though the user switched
+ * closeBusyReasons — when a close must ask even though the user switched
  * `confirmCloseSession` off.
  *
  * The rule is "closing would retire live work", not "the sidebar lane is not
@@ -9,10 +9,14 @@
  * is a session that can never be closed.
  */
 import { describe, it, expect } from 'vitest'
-import { sessionIsBusyForClose } from '../lib/closeBusyGate'
+import { closeBusyReasons } from '../lib/closeBusyGate'
+
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+
+// Busy means a non-empty reason list: the close asks whatever the setting says.
+const sessionIsBusyForClose = (state: RootState, key: string) => closeBusyReasons(state, key).length > 0
 
 const KEY = 'slot-1'
 

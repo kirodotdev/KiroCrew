@@ -279,6 +279,28 @@ def test_zero_ai_fields_are_dropped_not_sent_as_zero() -> None:
     assert hb["category"] == "ai coding"
 
 
+def test_negative_ai_fields_are_dropped_not_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # note_coding_activity hands a negative count to _make_heartbeat unclamped,
+    # so its positive-only check is the one guard that keeps it off the wire.
+    built: list[dict[str, Any]] = []
+
+    class _FakeLoop:
+        def create_task(self, coro: Any) -> None:
+            pass
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _FakeLoop())
+    monkeypatch.setattr(heartbeats, "send_heartbeat", built.append)
+    heartbeats.note_coding_activity(
+        "/tmp/my-repo",
+        ai_input_tokens=-5,
+        ai_output_tokens=-1,
+        ai_line_changes=-3,
+        config=cast(Any, _Cfg()),
+    )
+    assert len(built) == 1
+    assert not {"ai_input_tokens", "ai_output_tokens", "ai_line_changes"} & built[0].keys()
+
+
 def test_line_changes_counts_added_and_removed() -> None:
     changes = [
         {"content": "a\nb\nc\n", "after": "a\nB\nc\nd\n"},

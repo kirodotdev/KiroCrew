@@ -170,6 +170,9 @@ interface Props {
    * same time as the button saying it is noise.
    */
   gestureDriven?: boolean
+  /** `stt.submit_on_release`: clicking the mic sends in either transport, so
+   *  the hint says so and names Shift-click as the way to keep a draft. */
+  submitOnRelease?: boolean
   /** What the speech model this session waits on is doing: fetching, or loading. */
   download?: SttModelProgress | null
 }
@@ -181,7 +184,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven, download }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven, submitOnRelease, download }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -245,9 +248,13 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
               theme the muted token over the glow read as blank. */}
           {!gestureDriven && (
             <span className="ml-auto whitespace-nowrap text-text font-normal font-mono text-[11px] [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]">
-              {streaming
-                ? i18nT('components.voiceDictationPanel.esc_to_cancel_enter_to_send')
-                : i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish')}
+              {/* Submit-on-release first: with it on, stopping sends in either
+                  transport, so the hint has to name the way to keep a draft. */}
+              {submitOnRelease
+                ? i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_send')
+                : streaming
+                  ? i18nT('components.voiceDictationPanel.esc_to_cancel_enter_to_send')
+                  : i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish')}
             </span>
           )}
         </div>

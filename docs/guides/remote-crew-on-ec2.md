@@ -189,6 +189,13 @@ gateway started from the Dock or Finder has a minimal `PATH`.
   sure, reinstall it from
   [AWS's install page](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
   first, then run the command. `kirocrew cloud doctor` reports the same.
+- **"Your AWS credentials were not checked. Found at `<path>`, but … will not
+  run it: `<reason>`."** The same check refused the `aws` binary at the path the row names,
+  so the credentials row says why instead of "not found", and reinstalling the CLI
+  the same way does not help. No command is offered. Fix the ownership or
+  permissions the reason names (or, for a root gateway, start it from a regular
+  account), then re-check.
+  `kirocrew cloud doctor` reports it on its `aws CLI` line.
 
 ### Non-fatal warnings you can ignore
 

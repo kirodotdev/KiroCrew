@@ -22,6 +22,7 @@ import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
+import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
@@ -32,6 +33,8 @@ import { platformShortcut } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 
 import { i18nT } from '../../i18n/t'
+import { useProvider } from '../../providers'
+import { useModelsAuthRequired } from '../../providers/modelListHealth'
 import ErrorNotice from '../../components/ErrorNotice'
 
 export type { LinkPatternRule, LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
@@ -39,6 +42,7 @@ export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
 
 export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const qc = useQueryClient()
+  const provider = useProvider()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
   const [saveError, rawSetSaveError] = useState('')
   // The failure banner is one shared slot written by every save on this panel,
@@ -307,6 +311,16 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // Cross-cutting notices (a save failure, a config-load failure) render in the
   // SubNav banner slot so they stay visible in EVERY group — not only whichever
   // one happened to host them when the page was one scroll.
+  // When the model list is degraded because kiro-cli's login expired or is
+  // signed out, the MODEL-LIST banner's notice says the one thing that fixes it
+  // (run `kiro-cli login`) instead of the generic "Failed to load config." The
+  // flag is set where the /api/models error is formed (providers/adapters/acp.ts),
+  // so this reads one boolean rather than the refusal code; it feeds only the
+  // availableModelsQ banner, since the dashboard/roster reads do not carry it.
+  const kiroSignInRequired = useModelsAuthRequired(provider.id)
+  const configLoadMessage = kiroSignInRequired
+    ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+    : i18nT('pages.settings.chatPanel.failed_to_load_config')
   const banner = (
     <>
       {/* No hand-off: `localRoleOther`, `localBudget` and `localKeepChars` are
@@ -338,7 +352,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: same drafts as above share this panel. One row for
               the config, the agent roster and the resolved-model reads: they
               fail the same way to the user, so they share one notice and one
-              Retry, which re-asks whichever of them failed. */}
+              Retry, which re-asks whichever of them failed. Always the generic
+              message: the kiro-cli sign-in flag is set only by the model-list
+              fetch, so these reads must not borrow its remedy for a failure of
+              their own. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
             message={i18nT('pages.settings.chatPanel.failed_to_load_config')}
@@ -357,10 +374,13 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       {(availableModelsQ.isError || availableModelsQ.isDegraded) && (
         <div className="mb-4 flex flex-wrap items-center gap-3">
           {/* No hand-off: the editable drafts in this panel stay mounted while
-              the catalog retry runs; navigating away could discard them. */}
+              the catalog retry runs; navigating away could discard them. This is
+              the one banner whose cause the sign-in flag describes, so it shows
+              the "run kiro-cli login" message when the model list is degraded by
+              an expired / signed-out login. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            message={i18nT('pages.settings.chatPanel.failed_to_load_config')}
+            message={configLoadMessage}
           />
           <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
@@ -445,6 +465,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               )}
             </div>
           )}
+          <FollowDefaultModelAction />
           <SettingsMultiSelect
             label={i18nT('pages.settings.chatPanel.selectable_models')}
             hint={i18nT('pages.settings.chatPanel.selectable_models_description')}

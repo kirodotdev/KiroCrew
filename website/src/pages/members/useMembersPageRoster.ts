@@ -24,7 +24,7 @@ import {
   normalizeAutomationRecord,
   type AutomationRecord,
 } from '../../monitoring/automation'
-import { countByFilter, hasNoCrewmates, narrowRoster, queryNarrows, type MemberSignals } from './rosterFilter'
+import { countByFilter, hasNoCrewmates, matchesSource, narrowRoster, queryNarrows, rowLabel, type MemberSignals } from './rosterFilter'
 import { useMemberRosterViews } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import { type MembersPageRosterView } from './MembersPageRoster'
@@ -147,6 +147,9 @@ export function useMembersPageRoster() {
 
 export type MembersPageRosterRead = ReturnType<typeof useMembersPageRoster>
 
+/** How many hidden crewmates the roster's hidden line names; the rest are counted. */
+const HIDDEN_NAMES_MAX = 3
+
 interface MembersPageRosterSignalsOptions {
   rosterRead: MembersPageRosterRead
   rosterView: MembersPageRosterView
@@ -244,10 +247,39 @@ export function useMembersPageRosterSignals({ rosterRead, rosterView, slotKeyOf 
   // the way in, rather than an empty list under "0 crewmates".
   const allHidden =
     rowsReady && loaded && !loadError && !filter.trim() && shownMembers.length === 0 && !hasNoCrewmates(members)
+  // How many crewmates the listing rule hides beside the ones it lists (#21852):
+  // "2 crewmates" over a crew of three read as the whole crew, and the third
+  // turned up only when a search happened to match it. The rule and the count
+  // stay as they are; the list ends by saying which or how many more there are
+  // and that the search reaches them. Zero (no line) while a search is typed, since the
+  // search then decides the list alone; while a filter narrows it, since the
+  // header then reads "N of M" over the listed rows and a third number about
+  // the unfiltered crew would muddle it; and when `allHidden` already says it
+  // for every row.
+  const hiddenCount =
+    rowsReady && loaded && !loadError && !filter.trim() && !narrowed && shownMembers.length > 0
+      ? members.length - shownMembers.length
+      : 0
+  // The first HIDDEN_NAMES_MAX hidden crewmates are named on that line so a user
+  // who does not remember a crewmate's name still knows what to type: the ones
+  // the user made come first (origin Mine, or created on the dashboard), so a
+  // crewmate just created is named rather than counted behind package and app
+  // rows, then roster order. Past that the line counts the rest ("A, B, C and 4
+  // more"): the hidden set is often dozens of package and app crewmates, and
+  // naming them all is no help.
+  const hiddenNames = useMemo(() => {
+    if (hiddenCount === 0) return []
+    const shown = new Set(shownMembers.map((m) => m.name))
+    const hidden = orderedMembers.filter((m) => !shown.has(m.name))
+    const madeByUser = (m: MemberRosterRow) => matchesSource(m, 'mine') || m.dashboard_created === true
+    return [...hidden.filter(madeByUser), ...hidden.filter((m) => !madeByUser(m))]
+      .slice(0, HIDDEN_NAMES_MAX)
+      .map((m) => rowLabel(m))
+  }, [hiddenCount, orderedMembers, shownMembers])
 
   return {
     isUnread, patrol, automationOf, isLoopOn, signalsOf, isNeedsYou, sortedMembers, filterCounts, narrowed, filteredOut,
-    allHidden,
+    allHidden, hiddenCount, hiddenNames,
   }
 }
 

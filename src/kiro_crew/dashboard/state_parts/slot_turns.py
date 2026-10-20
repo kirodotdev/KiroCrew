@@ -10,7 +10,11 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_approval_instances``, ``_approval_stopped``, ``_buffers``, ``_chunk_seq``,
 ``_closing``, ``_compacting``, ``_coordinator_approvals``, ``_cycle_reached_provider``,
 ``_dashboard_card_exempt``, ``_dashboard_card_identity``, ``_deferred_notes``,
-``_dropped_note_ids``, ``_file_changes``, ``_has_reader_flag``,
+``_dropped_note_ids``, ``_file_changes``, ``_git_repo_touch_overflow``,
+``_git_repo_touch_pending``, ``_git_repo_touch_terminal``, ``_git_repo_walk_pending``,
+``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
+``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
+``_has_reader_flag``,
 ``_hook_continuation_depth``, ``_last_enqueue_ts``, ``_last_turn_auth_required``,
 ``_last_turn_awaiting_permission``, ``_last_turn_children_announced``, ``_lock``,
 ``_member_approval_seeded``, ``_on_card_event``, ``_on_message``,
@@ -396,6 +400,32 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._file_changes = (
         []
     )  # [{path, content, canonical_path, pending_str_replace?}] before-snapshots per turn for chips
+    # Real roots of the git repositories this session's tool calls worked
+    # in, oldest to newest touch (``git_repo_touches``). In memory only:
+    # ``_git_repos_seeded`` records whether the transcript's file-change rows
+    # have been folded in yet, which is how a restored slot gets its list
+    # back after a gateway restart.
+    self._git_repos = []
+    # Distinct roots the cap dropped and not held now (bounded), plus how
+    # many older evicted roots are kept only as a count.
+    self._git_repos_evicted = []
+    self._git_repos_evicted_overflow = 0
+    self._git_repos_seeded = False
+    # Sticky loss of executed path evidence, separate from counted roots.
+    self._git_repos_incomplete = False
+    # Turn-local proposal eviction: only an untracked executed result can
+    # promote this uncertainty to the sticky listing flag.
+    self._git_repo_touch_overflow = False
+    # Proposed calls retain only bounded raw candidate strings and a loss
+    # bit until their successful terminal result. Never persisted.
+    self._git_repo_touch_pending = {}
+    # Bounded terminal receipts for a result whose first paths arrive in
+    # its following refinement event, including receipts that forbid a touch.
+    self._git_repo_touch_terminal = {}
+    # Executed paths queued for this slot's one repository walker and the
+    # walker task itself: resolution runs off the runner's event path.
+    self._git_repo_walk_pending = []
+    self._git_repo_walk_task = None
     # ``meta.mid`` of every reply row the runner in flight appended this
     # turn (``chat_runner._flush_segment`` / ``_persist_partial_reply``).
     # ``_flush_file_changes`` attaches the turn's chips only to one of these

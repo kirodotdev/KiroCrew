@@ -15,6 +15,7 @@ answers with a reason rather than raising into a background thread.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import stat
 import sys
@@ -376,6 +377,38 @@ class TestRedaction:
         log on every transfer. What a reader needs instead is the caller's *label*.
         """
         assert dl.redact_url(raw) == expected
+
+    @pytest.mark.parametrize(
+        "make_exc",
+        [
+            lambda url: http.client.InvalidURL("nonnumeric port: 'sup3rsecret@mirror.example'"),
+            lambda url: urllib.error.HTTPError(url, 403, "Forbidden", {}, None),
+        ],
+        ids=["InvalidURL", "HTTPError"],
+    )
+    def test_returned_reason_never_carries_the_credentialed_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_exc
+    ) -> None:
+        """The returned reason reaches the Papyrus and PPTX Maker install state on the dashboard.
+
+        It names the exception type and the host, and no credential the url carries.
+        """
+        url = "https://user:sup3rsecret@mirror.example/tok-9f3b2c/a.bin?X-Amz-Signature=sig123"
+        exc = make_exc(url)
+
+        def _open(request, timeout=None):  # noqa: ANN001 - OpenerDirector.open signature
+            raise exc
+
+        monkeypatch.setattr(
+            "kiro_crew.asset_downloader.build_opener",
+            lambda *a, **k: SimpleNamespace(open=_open),
+        )
+        ok, reason = dl.download_to(tmp_path / "a.bin", url, sha256="0" * 64)
+        assert ok is False
+        for secret in ("sup3rsecret", "tok-9f3b2c", "sig123"):
+            assert secret not in reason
+        assert type(exc).__name__ in reason
+        assert "mirror.example" in reason
 
 
 class TestSameHostRedirects:

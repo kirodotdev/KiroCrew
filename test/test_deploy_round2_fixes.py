@@ -273,7 +273,7 @@ def test_engine_deploy_returns_oac_id():
 def test_handlers_manifest_includes_oac_id():
     """F7: The deploy manifest JSON written by handlers includes oac_id."""
     # Just verify the manifest_data construction in source code
-    source = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers.py"
+    source = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "handlers_sites.py"
     content = source.read_text(encoding="utf-8")
     assert '"oac_id": result.get("oac_id", "")' in content
 

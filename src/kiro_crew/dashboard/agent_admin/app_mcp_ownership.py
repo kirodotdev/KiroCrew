@@ -100,7 +100,7 @@ def _drop_unbacked_app_entries(
     the distinction is worth stating because the weaker claim is false. Two paths
     legitimately write a ``:``-containing key into this spec: ``_register_mcp_servers``
     builds every app bridge as ``f"{app_name}:{server_name}"``, and the MCP page's
-    ``handlers/mcp.py::_sync_mcp_to_agent_unlocked`` copies a global mcp.json server
+    ``handlers/mcp_agent_sync.py::_sync_mcp_to_agent_unlocked`` copies a global mcp.json server
     in under ``mcp_server_alias``, which returns a slash-free name UNCHANGED and so
     preserves a colon (``npm:foo`` stays ``npm:foo``). What this rule withholds is
     the ability to introduce such a name through the RAW EDITOR, where the client's
@@ -232,7 +232,7 @@ def _merge_unowned_servers(
     write (see :func:`_commit_agent_config`), and every writer of this file
     INSIDE the gateway takes that same flock -- ``_register_mcp_servers``,
     ``_deregister_mcp_servers``, ``reregister_app_mcp_servers``, the agent
-    rebuild, and ``handlers/mcp.py``'s spec syncs -- so no app registration or
+    rebuild, and ``handlers/mcp_agent_sync.py``'s spec syncs -- so no app registration or
     deregistration can interleave with this read, in either direction. That
     window is closed rather than narrowed, which matters because the
     deregistration direction does not self-heal: startup reconciliation only

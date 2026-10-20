@@ -13,14 +13,58 @@
 import { useSyncExternalStore } from 'react'
 
 const degradedByProvider = new Map<string, boolean>()
+// Set when a provider's model list is degraded SPECIFICALLY because kiro-cli's
+// login expired or is signed out (GET /api/models answered 503 with
+// `code: kiro_prerequisite_required`). Separate from `degradedByProvider`
+// because the two answer different questions: "keep polling?" (any degraded
+// cause) versus "is this an auth wall the user must clear with `kiro-cli
+// login`?" (this one cause). The Settings ▸ Chat banner reads this to show the
+// one actionable sign-in message instead of the generic config-load failure.
+// Cleared on the next LIVE success, like the degraded flag.
+const authRequiredByProvider = new Map<string, boolean>()
 const subscribers = new Set<() => void>()
 
 /** Record whether the last fetch for a provider was degraded (fallback) or
  *  live. The adapter calls this on every fetch outcome. */
 export function markModelsDegraded(providerId: string, degraded: boolean): void {
-  if (degradedByProvider.get(providerId) === degraded) return
-  degradedByProvider.set(providerId, degraded)
+  // A live success is the one event that clears the auth-required flag: the
+  // list loaded, so whatever sign-in wall there was is gone. A degraded fetch
+  // leaves the flag to `markModelsAuthRequired`, which the adapter calls with
+  // the actual cause — degraded alone does not imply auth.
+  let changed = false
+  if (!degraded && authRequiredByProvider.get(providerId)) {
+    authRequiredByProvider.set(providerId, false)
+    changed = true
+  }
+  if (degradedByProvider.get(providerId) !== degraded) {
+    degradedByProvider.set(providerId, degraded)
+    changed = true
+  }
+  if (changed) for (const cb of subscribers) cb()
+}
+
+/** Record whether the provider's degraded model list is due to an expired /
+ *  signed-out kiro-cli login. The adapter calls this from the one place the
+ *  /api/models error is formed, reading the response `code`; it never threads
+ *  the code through the pickers. */
+export function markModelsAuthRequired(providerId: string, authRequired: boolean): void {
+  if (authRequiredByProvider.get(providerId) === authRequired) return
+  authRequiredByProvider.set(providerId, authRequired)
   for (const cb of subscribers) cb()
+}
+
+/** True only when the provider's degraded list is a kiro-cli sign-in wall. */
+export function modelsAuthRequired(providerId: string): boolean {
+  return authRequiredByProvider.get(providerId) === true
+}
+
+/** Reactive form of `modelsAuthRequired`, for a banner that renders from it. */
+export function useModelsAuthRequired(providerId: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => modelsAuthRequired(providerId),
+    () => false,
+  )
 }
 
 function subscribe(cb: () => void): () => void {

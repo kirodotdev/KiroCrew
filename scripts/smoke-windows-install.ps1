@@ -28,8 +28,10 @@
 #     bytes THIS install wrote. installer.nsh carries a whole heal path for a
 #     shortcut left naming a stale sibling root, and a .lnk is a pointer no
 #     build-time check can follow.
-#   * the bundled CLI's reachability as its own NEW process, run from the
-#     installed prefix rather than found on PATH.
+#   * the bundled CLI's (kirocrew.cmd, not kiro-cli) reachability as its own NEW
+#     process, run from the installed prefix rather than found on PATH.
+#   * that the tree carries NO bundled kiro-cli: the shipped app detects the
+#     user's own install (BUNDLE_KIRO_CLI=1 opts a build in and flips this check).
 #   * that the installed tree can actually BOOT. The packaged interpreter ships
 #     checked-hash bytecode for the gateway import closure, so a prune that drops
 #     a module produces an artifact that installs green and refuses to start.
@@ -385,21 +387,23 @@ if ($displayVersion -and ($cliText -notmatch [Regex]::Escape($displayVersion))) 
   throw "The bundled CLI reported '$($cliText.Trim())' but the registration says '$displayVersion'; the installed backend and the installer disagree about the build."
 }
 
-# The kiro-cli the build stages beside the backend, checked in the INSTALLED
-# tree rather than only in the build's own staging dir: this is the copy every
-# desktop session spawns, and the desktop app has no other. The expected release
-# is the checkout's pin file (the same two-file contract the build fetches by);
-# a tree without the copy makes sessions fall through to whatever the machine
-# has, which is the failure bundling exists to remove. `BUNDLE_KIRO_CLI=0` is
-# the build's documented opt-out and is honoured here the same way.
+# The shipped app carries NO kiro-cli: it detects the user's own install, and the
+# first-run gate tells them to install one. A tree that does carry one was built
+# with the `BUNDLE_KIRO_CLI=1` opt-in, and only then is the staged copy checked
+# in the INSTALLED tree (the copy every desktop session would spawn) against the
+# checkout's pin file. The default here matches the build's default: off, and an
+# unexpected payload is a failure, not a bonus.
 $bundledKiroDir = Join-Path $installLocation "resources\backend-dist\kiro-cli"
 $bundledKiro = Join-Path $bundledKiroDir "kiro-cli.exe"
-$kiroPinFile = Join-Path $PSScriptRoot "..\packaging\kiro-cli-version"
-$pinnedKiroVersion = (Get-Content -LiteralPath $kiroPinFile -Raw).Trim()
 $kiroText = ""
-if ($env:BUNDLE_KIRO_CLI -eq "0") {
-  Write-Host "> Bundled kiro-cli: skipped (BUNDLE_KIRO_CLI=0)"
+if ($env:BUNDLE_KIRO_CLI -ne "1") {
+  Write-Host "> Bundled kiro-cli: not part of this build (BUNDLE_KIRO_CLI=1 asserts one)"
+  if (Test-Path -LiteralPath $bundledKiroDir) {
+    throw "The installed tree carries a bundled kiro-cli at $bundledKiroDir but the build was not asked for one."
+  }
 } else {
+  $kiroPinFile = Join-Path $PSScriptRoot "..\packaging\kiro-cli-version"
+  $pinnedKiroVersion = (Get-Content -LiteralPath $kiroPinFile -Raw).Trim()
   if (-not (Test-Path -LiteralPath $bundledKiro)) {
     throw "The installed tree carries no bundled kiro-cli at $bundledKiro (packaging/kiro-cli-version pins $pinnedKiroVersion)."
   }
@@ -536,14 +540,15 @@ if (-not $healthy) {
 }
 Write-Host "> Installed gateway answered /api/health in $healthSeconds seconds"
 
-  # The installed product must RESOLVE the bundled copy the way the desktop
-  # shell wires it (KIROCREW_BUNDLED_KIRO_DIR, set by website/electron/
-  # gateway-env.js at spawn). `kirocrew doctor` prints the binary a session
-  # spawns on its kiro-cli row, so that row naming the installed exe is the
-  # proof; the fake backend above stays pinned for the gateway boot because the
-  # boot assertion is about the interpreter, not the agent. Text is asserted,
-  # not the exit code: doctor also reports host facts this runner fails on.
-  if ($env:BUNDLE_KIRO_CLI -ne "0") {
+  # BUNDLE_KIRO_CLI=1 builds only: the installed product must RESOLVE the
+  # bundled copy the way the desktop shell wires it (KIROCREW_BUNDLED_KIRO_DIR,
+  # set by website/electron/gateway-env.js at spawn). `kirocrew doctor` prints
+  # the binary a session spawns on its kiro-cli row, so that row naming the
+  # installed exe is the proof; the fake backend above stays pinned for the
+  # gateway boot because the boot assertion is about the interpreter, not the
+  # agent. Text is asserted, not the exit code: doctor also reports host facts
+  # this runner fails on.
+  if ($env:BUNDLE_KIRO_CLI -eq "1") {
     $doctorOut = Join-Path $requestedRoot "doctor.out"
     $doctorErr = Join-Path $requestedRoot "doctor.err"
     $savedKiroBin = $env:KIROCREW_KIRO_BIN
@@ -651,7 +656,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
     "| --- | --- |",
     "| Silent install | $installSeconds s (ceiling $MaxInstallSeconds s) |",
     "| Installed gateway /api/health | $healthSeconds s (ceiling $MaxHealthSeconds s) |",
-    "| Bundled kiro-cli | $(if ($kiroText) { $kiroText.Trim() } else { 'skipped (BUNDLE_KIRO_CLI=0)' }) |",
+    "| Bundled kiro-cli | $(if ($kiroText) { $kiroText.Trim() } else { 'none (the app detects the user''s own kiro-cli)' }) |",
     "| Start Menu shortcut target | matches this install |",
     "| Silent uninstall | registration and tree removed |"
   )

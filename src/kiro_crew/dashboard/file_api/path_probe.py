@@ -172,7 +172,11 @@ def _tracked_path_probe(key: str, fn: Callable[..., _ProbeT], /, *args: object) 
 
 
 async def _run_path_probe(
-    fn: Callable[..., _ProbeT], /, *args: object, transfer: bool = False
+    fn: Callable[..., _ProbeT],
+    /,
+    *args: object,
+    transfer: bool = False,
+    stall_path: str | None = None,
 ) -> _ProbeT:
     """Run a blocking request-path call on a dedicated bounded pool, or refuse.
 
@@ -215,8 +219,13 @@ async def _run_path_probe(
     served. Probes that arrive together, before any of them is past the budget,
     are still bounded only by the pool. A transfer naming a stuck prefix is refused the same way,
     but a transfer never marks a prefix stuck: it legitimately runs long.
+
+    ``stall_path`` names the path the call touches when it is not the first
+    argument: a closure, a config-first helper, a root the caller computed. It
+    is keyed by the same lexical rule, and ``""`` means no key. Without it the
+    first argument is the key, as before.
     """
-    key = _path_probe_stall_key(args)
+    key = _path_probe_stall_key(args if stall_path is None else (stall_path,))
     if key and _path_probe_prefix_wedged(key):
         raise _PathProbeBusy()
     pool = executors.path_transfer_executor() if transfer else executors.path_probe_executor()

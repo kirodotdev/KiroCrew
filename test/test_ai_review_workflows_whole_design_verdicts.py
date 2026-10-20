@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from ai_review_workflows_helpers import (
     DESIGN_LANES,
+    SCRUB_CALL,
     _bash,
     _flat,
     _line_containing,
@@ -313,8 +314,8 @@ class TestConcernsIsVisibleInTheChecksUi:
             workflow = _workflow(name)
             finalize = _step_script(workflow, "Finalize check-run (advisory)")
             assert body in finalize, name
-            # The same file is the one the perl redaction targets.
-            redaction = _line_containing(workflow, "perl -i -pe", "REDACTED-AWS-KEY-ID")
+            # The same file is the one the base-owned redactor rewrites.
+            redaction = _line_containing(workflow, SCRUB_CALL)
             assert body in redaction or f'f="$RUNNER_TEMP/{body}"' in workflow, name
 
     def test_pr_readiness_still_counts_neutral_as_a_pass(self) -> None:

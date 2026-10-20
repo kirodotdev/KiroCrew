@@ -82,7 +82,7 @@ import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
 import { AddInstanceForm } from './InstancesPanel'
 import { CrewVersionsReadError } from './CrewVersionStatus'
-import { credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
+import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   instanceFormFromView,
 } from './InstanceFormFields'
@@ -565,7 +565,14 @@ export function RemoteCrewPanel() {
         })
       }
     },
-    onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.connect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
+    onError: (e, id) => {
+      // The flag was turned on after the gateway started, so no tunnel manager
+      // exists until a restart. The not-active banner already says how; the error
+      // points at it, keyed on the gateway's code, instead of quoting its message.
+      setActionErr(e instanceof ApiError && parseErrorCode(e.body) === 'instances_manager_unavailable'
+        ? i18nT('pages.settings.instancesPanel.connect_needs_restart', { id })
+        : i18nT('pages.settings.instancesPanel.connect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) }))
+    },
     onSettled: reloadInstances,
   })
   const disconnectMutation = useMutation({
@@ -805,6 +812,9 @@ export function RemoteCrewPanel() {
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
+  // The same for an `aws` CLI the gateway found and refused: the credentials row
+  // says why, instead of the CLI's "not found" error and its install link.
+  const cliRefusal = preflight ? awsCliRefusalCopy(preflight) : null
   const blockingOk = !!preflight
     && preflight.reachable
     && !!preflight.account
@@ -997,7 +1007,7 @@ export function RemoteCrewPanel() {
             {needsRestart && (
               <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
                 <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-                <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
+                <span>{i18nT('pages.settings.instancesPanel.enabled_but_not_active_yet_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_start_the_ssh_tunnel_manager_and_activate_ins')}</span>
               </div>
             )}
             {listLoading ? (
@@ -1262,6 +1272,8 @@ export function RemoteCrewPanel() {
                     : ''}
                   failure={preflight.reachable && preflight.account
                     ? undefined
+                    : cliRefusal
+                      ? cliRefusal.failure
                     : preflight.credential_helper_missing
                       // The helper's name is the actionable part, so the sentence
                       // leads; the CLI's own error sits under it (failureDetail)
@@ -1270,7 +1282,11 @@ export function RemoteCrewPanel() {
                       : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
                   failureDetail={preflight.reachable && preflight.account
                     ? undefined
-                    : (preflight.credential_helper_missing && preflight.detail) || undefined}
+                    : cliRefusal
+                      ? cliRefusal.failureDetail
+                      : (preflight.credential_helper_missing && preflight.detail) || undefined}
+                  failureReport={cliRefusal ? awsCliRefusalReport(preflight, cliRefusal) : undefined}
+                  steps={cliRefusal?.steps}
                   onRecheck={runCheck}
                   rechecking={preflightQuery.isFetching}
                 />

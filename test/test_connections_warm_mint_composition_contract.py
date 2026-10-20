@@ -815,10 +815,83 @@ _OWNERS: dict[str, tuple[str, ...]] = {
         "_shared_mints_pending",
         "_warm_table_row",
     ),
+    "spec_body": (
+        "_WARM_AGENT_PREFIX",
+        "_WARM_ALL_AGENT",
+        "_WARM_BASE_AGENT",
+        "_WARM_NAME_RE",
+        "_WARM_SPEC_SENTINEL",
+        "_is_stale_warm_spec",
+        "_warm_ownership_marks",
+        "_warm_spec_body",
+        "_warm_spec_description",
+        "connections_tool_aliases",
+    ),
+    "generation_tree": (
+        "_WARM_GENERATION_MARKER",
+        "_WARM_GENERATION_MARKER_MAX_BYTES",
+        "_WARM_GENERATION_MARKER_VERSION",
+        "_WARM_GENERATION_PREFIX",
+        "_WARM_GENERATION_SENTINEL",
+        "_WARM_RUNTIME_DIR_ATTR",
+        "_bind_warm_generation",
+        "_create_warm_generation_dir",
+        "_release_runtime_generation",
+        "_remove_warm_generation_dir",
+        "_runtime_generation_dir",
+        "_spawn_left_no_process",
+        "_warm_generation_agents_dir",
+        "_warm_generation_marker_path",
+        "_warm_generation_owner",
+        "_warm_generations_dir",
+        "_warm_work_dir",
+        "_write_warm_generation_owner",
+    ),
+    "mint_process": (
+        "_WarmMintResult",
+        "_WarmSession",
+        "_acp_runtime_factory",
+        "_collect_oauth_requests",
+        "_destroy_session_quietly",
+        "_kill_quietly",
+        "_runtime_alive",
+        "_warm_session_mcp_servers",
+    ),
+    "rearms": (
+        "_forget_invalidation_rearm",
+        "_invalidation_rearms",
+        "_rearm_dead_warm_mint",
+        "_rearm_invalidated_provider",
+        "_settle_invalidation_rearms",
+        "rearm_invalidated_provider",
+    ),
+    "table_flow": (
+        "_absorb_warm_requests",
+        "_adopt_shared_row",
+        "_providers_with_requests",
+        "_recover_redrained_requests",
+        "adopt_shared_mint",
+        "warm_mint_all",
+    ),
 }
 
-#: The one facade name an owner may reach at call time, and the owner that reaches it.
-_FACADE_REACH = {"shared_rows": frozenset({"_dispose_mint"})}
+#: The facade names each owner reaches at call time, as a call on ``_warm_facade()``.
+_FACADE_REACH = {
+    "shared_rows": frozenset({"_dispose_mint"}),
+    "spec_body": frozenset({"declared_tool_aliases"}),
+    "generation_tree": frozenset(
+        {
+            "_is_plain_warm_generation_dir",
+            "_read_warm_generation_owner",
+            "_recorded_runtime_is_dead",
+            "data_home",
+        }
+    ),
+    "rearms": frozenset({"_rearm_invalidated_provider", "warm_mint_all"}),
+    "table_flow": frozenset(
+        {"_absorb_warm_requests", "_mint_watcher", "_warm_activate", "_warm_row_alive"}
+    ),
+}
 
 #: Every name a test or caller substitutes on the warm facade. An owner calling one of them by
 #: its bare name would bind its own copy and silently stop seeing the substitution.

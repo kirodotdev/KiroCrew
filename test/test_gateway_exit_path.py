@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import threading
+import time
+import weakref
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -23,6 +26,7 @@ import pytest
 from kiro_crew import cli as cli_mod
 from kiro_crew import eventlog_hooks
 from kiro_crew import session as session_mod
+from kiro_crew import skill_usage
 from kiro_crew.slack import gateway as gw
 
 
@@ -146,6 +150,7 @@ async def test_the_exit_path_runs_every_drain_and_exits_once(
         else {"side_effect": OSError("disk wedged")}
     )
     monkeypatch.setattr(crew_log_emit, "drain_for_shutdown", MagicMock(**drain_kwargs))
+    monkeypatch.setattr(skill_usage, "flush_all_for_shutdown", MagicMock(**drain_kwargs))
     seams.drain.configure_mock(**drain_kwargs)
     orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
     orch.dashboard_state = None
@@ -167,3 +172,67 @@ async def test_the_exit_path_runs_every_drain_and_exits_once(
     else:
         assert "the session's log drain failed during shutdown" in caplog.text
         assert "the member event log drain failed during shutdown" in caplog.text
+    if drain_fails == "returns-false":
+        assert "the skill-usage ledger did not fully flush before exit" in caplog.text
+    else:
+        assert "the skill-usage ledger flush failed during shutdown" in caplog.text
+
+
+def _bare_orchestrator() -> Any:
+    orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
+    orch.dashboard_state = None
+    orch._dashboard_port = 0
+    orch._sign_in_refresher_task = None
+    orch._shutdown = AsyncMock()
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_the_exit_path_persists_skill_hits_accepted_inside_the_debounce_window(
+    monkeypatch, seams, tmp_path
+) -> None:
+    # The gateway leaves through os._exit, which skips atexit and kills the
+    # daemon flush thread. A hit record() accepted inside the 60 s window must
+    # still be on disk once _shutdown_and_exit has run.
+    from kiro_crew.skill_usage import SkillUsageLedger
+
+    monkeypatch.setattr(skill_usage, "_live_ledgers", weakref.WeakSet())
+    no_exit = _NoExitOs()
+    monkeypatch.setattr(gw, "os", no_exit)
+    monkeypatch.setattr(gw, "drain_sign_in_refresher", AsyncMock())
+    monkeypatch.setattr(gw, "flush_audit_queue_before_hard_exit", AsyncMock())
+    monkeypatch.setattr(cli_mod, "drain_log_queue_before_hard_exit", AsyncMock())
+    path = tmp_path / "skill-usage.json"
+    ledger = SkillUsageLedger(path)
+    ledger._last_flush = time.time() + 3600  # inside the window: record() spawns no write
+    ledger.record("alpha")
+    ledger.record("alpha")
+    assert not path.exists(), "precondition: the hits are debounced, only in memory"
+
+    await _bare_orchestrator()._shutdown_and_exit()
+
+    no_exit._exit.assert_called_once_with(0)
+    assert SkillUsageLedger(path).score("alpha")[0] == 2.0
+    assert not ledger.dirty
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_skill_usage_flush_cannot_hold_the_exit(monkeypatch, seams) -> None:
+    release = threading.Event()
+
+    def _wedged() -> bool:
+        release.wait(10)
+        return True
+
+    monkeypatch.setattr(skill_usage, "flush_all_for_shutdown", _wedged)
+    monkeypatch.setattr(skill_usage, "SHUTDOWN_FLUSH_SECS", 0.05)
+    no_exit = _NoExitOs()
+    monkeypatch.setattr(gw, "os", no_exit)
+    monkeypatch.setattr(gw, "drain_sign_in_refresher", AsyncMock())
+    monkeypatch.setattr(gw, "flush_audit_queue_before_hard_exit", AsyncMock())
+    monkeypatch.setattr(cli_mod, "drain_log_queue_before_hard_exit", AsyncMock())
+    try:
+        await _bare_orchestrator()._shutdown_and_exit()
+        no_exit._exit.assert_called_once_with(0)
+    finally:
+        release.set()

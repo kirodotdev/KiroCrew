@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _MAX_RECENT_PROJECTS,
         _favorite_projects_lock,
+        atomic_write,
         config_dir,
         deny_non_dashboard_caller,
         is_sensitive_path,
@@ -130,25 +131,31 @@ def _read_favorite_projects() -> list[str]:
     filter matches the recents read: a path that became sensitive after it was
     favourited is withheld from the response, and removing it stays possible because
     the delete path reads `_load_favorite_projects` instead of this.
+
+    The file is loaded under `_favorite_projects_lock`, the lock the write transaction
+    holds. On Windows a rename cannot replace a file another handle has open, so a
+    read open while an add or remove renamed its new list into place failed that
+    write with `PermissionError` and lost its change. The filesystem probes run after
+    the lock is released: they can stall on a network mount and must not hold up a
+    write.
     """
 
-    return [d for d in _load_favorite_projects() if os.path.isdir(d) and not is_sensitive_path(d)]
+    with _favorite_projects_lock:
+        stored = _load_favorite_projects()
+    return [d for d in stored if os.path.isdir(d) and not is_sensitive_path(d)]
 
 
 def _write_favorite_projects(paths: list[str]) -> None:
-    """Replace the favourites file atomically (same temp-file dance as the recents write)."""
+    """Replace the favourites file atomically.
 
-    fp = _favorite_projects_path()
-    fp.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=fp.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
-            tmp_fh.write(json.dumps(paths))
-        os.replace(tmp, fp)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    Through the shared `atomic_write`: a unique temp, the temp removed on any exit,
+    and a rename that retries the Windows sharing-violation window a handle from
+    outside this process (an indexer, an AV scanner) can open on either path. The
+    explicit owner-only mode is the one the hand-rolled `mkstemp` write always
+    published, kept wherever the file lives.
+    """
+
+    atomic_write(_favorite_projects_path(), json.dumps(paths), mode=0o600)
 
 
 def _probe_favorite_candidate(path: str) -> tuple[str, bool, bool]:

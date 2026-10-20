@@ -24,6 +24,30 @@ The slot key remains the header's hover title for debugging; `frameless` embeds
 have no title strip. `ChatEmbed.title.test.tsx` covers the delayed first read,
 fresh and resumed untitled pages, later title arrival and a slot change.
 
+An installed app may declare top-level `config.json` object ownership with
+`config_keys`. Config validation unions those declarations with the core
+compatibility fallback before warning. A manifest on disk without
+`installed.json` owns nothing, so stale or merely downloaded apps cannot silence
+unknown-key warnings. Non-gateway CLI commands and slim MCP startup prime
+installed app and admissible companion declarations before their first config
+load and before an event loop starts. This priming reads the admission policy
+without side effects: it seeds no policy file and writes no SEL record.
+
+Gateway startup keeps registry scans off its socket-readiness path. Dashboard
+startup runs `register_builtin_apps` in an executor to publish app declarations,
+and companion admission publishes plugin declarations. A config load that runs
+before that executor refresh can still log one unrecognized-key warning for an
+installed app's key. Loads after the refresh do not warn.
+
+Successful install, update, uninstall, and migrated-builtin cleanup operations
+atomically refresh the published in-memory registry. A self-managed registry
+install pre-registers the app without a registry scan; its declarations take
+effect at the next startup prime or lifecycle refresh. Config validation only
+reads this registry. It performs no app-directory, manifest, or
+distribution-metadata I/O, including after config cache invalidation. Discovery
+or registry failures degrade to the core fallback and never make validation
+raise.
+
 ## Scoped frontend HTTP transport
 
 `useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and
@@ -101,7 +125,13 @@ unconfirmed one, a host `onSend` that rejects), its staged files come back with
 it, ahead of any staged since, so a retry needs no new upload; the files ride
 the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
-the composer, as it takes the text back, so they are not sent twice. A
+the composer, as it takes the text back, so they are not sent twice. That
+proof is the send's own `sendId`. A host `onSend` send carries none, so its
+only proof is its text arriving as a user row after the send's anchor row;
+text cannot say which send landed, so that proof never touches the composer:
+the warning becomes a calm line saying the message is in the conversation and
+its text is still in the composer, or simply goes away when there is no kept
+text left to explain (a chip send, or text the user has cleared or edited). A
 slot switch or unmount aborts in-flight
 uploads and drops their late results.
 
@@ -682,7 +712,7 @@ ENABLED apps — so the resurrected bridge stayed live and callable.
 reserved *from this endpoint* — the raw editor is not one of its writers. Two paths
 legitimately put a colon-containing key here: `_register_mcp_servers` (every app
 bridge, as `<app>:<server>`) and the MCP page's
-`handlers/mcp.py::_sync_mcp_to_agent_unlocked` (a global mcp.json server copied in
+`handlers/mcp_agent_sync.py::_sync_mcp_to_agent_unlocked` (a global mcp.json server copied in
 under `mcp_server_alias`, which returns a slash-free name unchanged and so keeps a
 colon). A name either of them actually wrote is present on disk, and therefore
 untouched.
@@ -871,7 +901,7 @@ complete). The callers act on it as follows:
 A session a palette command opens for its app's own agent (`app_agent_owner`) runs
 only on a backend whose routing is `Routing.AGENT_SPEC` (KAS and Kiro), the hosts that
 launch the agent from its spec. Any other backend would run the app-authored prompt
-without the app's spec, so `dashboard/chat_runner.py` refuses the turn before the
+without the app's spec, so `dashboard/chat_turn/turn_admission.py` (`_turn_admit`) refuses the turn before the
 claim (the selected backend) and again after it (the claimed provider's
 capabilities), with `apps.manager.app_agent_backend_refusal` as the message and the
 `app_agent_refused` row kind. The bare-name check `app_command_agent_refusal` runs
@@ -894,7 +924,7 @@ A manifest is portable data validated on whichever host installs the app, so all
 three must reach the same verdict everywhere. Both lexical checks are therefore
 written **flavour-explicitly** rather than via the running host's `os.path`
 (matching the `PurePosixPath|PureWindowsPath` idiom in
-`dashboard/handlers/knowledge.py`), and neither is deferred to `resolve()`:
+`dashboard/handlers/knowledge_sources.py`), and neither is deferred to `resolve()`:
 
 - **`is_absolute()` is flavour-bound.** It and `os.path.isabs` answer for the
   RUNNING host, and `os.path` **is** `ntpath` on Windows, so pairing the two in an
@@ -1538,7 +1568,7 @@ feeds the confirm dialog, and it is **additive**: a client that skips it and
 POSTs straight to uninstall gets the same safe default (clean removable, keep
 everything else). The route is registered by `register_app_routes` and
 exercised by the dashboard client; `TestUninstallPreview` in
-`test/test_apps_routes_coverage.py` drives it over the router with an HTTP
+`test/test_apps_routes_coverage_update_uninstall.py` drives it over the router with an HTTP
 test client, so removing the registration fails that test rather than
 degrading silently. The frontend still treats the fetch as best-effort: on
 failure the dialog renders without the dependency panel.
@@ -1775,7 +1805,7 @@ Four paths read the set and all four narrow: the gate, the `slots` payload
 filter, the subagent-batch payload filter, and the LOG fan-out. The log path is
 the odd one — `subscribe_logs` grants once and the ring handler then writes
 straight to `_ws_log_subscribers` without passing the chokepoint, so the re-check
-lives at the send (`handlers/updates._safe_ws_send`), which also drops the
+lives at the send (`handlers/updates_streams._safe_ws_send`), which also drops the
 subscription. That check must stay on the event loop: the handler's `emit()` runs
 on arbitrary threads, where a cold cache miss would fall back to a synchronous
 manifest read.
@@ -2843,7 +2873,7 @@ Writers: `apps/registry_pipeline/sources.py` (`_effective_registries`,
 `_pinned_registries`, `_registry_trust_tier`, `_is_owner_designated_repo`,
 `_sel_credential_decision`), `apps/registry_pipeline/indexes.py`
 (`_owner_tier_confirmed`), `apps/registry_pipeline/subprocess_env.py`
-(`anonymous_git_env`), `platform/interfaces.py`
+(`anonymous_git_env`), `platform/interfaces_structural.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).
 
@@ -2879,6 +2909,16 @@ against the install directory. It preserves containment rather than re-deriving
 it: a `subdirectory` the lexical gate rejects is not joined, an absolute path or
 URL is left untouched, and no normalisation happens, so a `..` in the asset path
 still reaches the blob route's own rejection.
+
+**Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
+page and its only import path: it loads the app (`load()` resolves the art fields
+described here), holds the page's state, and renders the actions and the info
+cards. Two owners beside it never import it. `AppDetailPageArt.tsx` renders the
+art, `HeroBanner` and `ScreenshotGallery`, each with its local-art second chance and
+the same-origin gate on that fallback, so new work on the banner, the gallery or its
+lightbox goes there. `appDetailPageTypes.ts` holds the page's view model (`AppInfo`
+and the manifest and registry-row types it joins), which is where a new view-model
+field goes.
 
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes
@@ -2989,7 +3029,7 @@ file outside the install directory would open cleanly, report `S_ISREG`, sit und
 cap, and have its bytes served with a 200 — laundering, through an unsandboxed
 gateway, a read the app's own sandboxed code can be refused. Every other
 descriptor-validated read in the tree applies the same gate (`memory_files.py`,
-`memory_stores.py`, the `spec_builder` repository, `onboarding_scan.py`,
+`memory_stores.py`, the `spec_builder` duplicate transaction, `onboarding_scan.py`,
 `pinned_fs.copy_file_pinned`), so this route
 was the outlier rather than a new rule.
 
@@ -3101,7 +3141,8 @@ Writers: builtin `app.json` manifests, `apps/registry_pipeline/manifests.py`
 `apps/routes.py` (`handle_app_art_file`),
 `website/src/components/appstore/appManifest.ts`,
 `website/src/components/appstore/useHeroArt.ts`,
-`website/src/pages/AppDetailPage.tsx`, and
+`website/src/pages/AppDetailPage.tsx`,
+`website/src/pages/AppDetailPageArt.tsx`, and
 `website/scripts/check-app-manifest-sync.mjs`.
 
 ## 17. A backend's health is a standing observation, not a startup verdict
@@ -3498,15 +3539,21 @@ records which module owns which part, so a change lands in its owner.
 | `orchestration/duplicate.py` | The duplicate's staged publication transaction |
 | `runtime.py` | The worker session binding: slot scoping, turn relay, turn and slot stop, and the transcript projection |
 | `decisions.py` | The protected decision ledger and its outbox rows |
-| `repository.py`, `parsers.py` | The index, the documents, settings, and state-file projections |
+| `repository.py`, `parsers.py` | The index, settings, deletion tombstones and slot identity, the safe filesystem, and the document reads |
+| `repository_duplicate.py` | The duplicate's staged copy, its publication without replacement, and recovery of an abandoned one |
+| `repository_sentinel.py` | The STOP sentinel and the handoff gate that arms it |
+| `repository_discovery.py` | Spec discovery, each spec's phase and documents, and new spec directories |
+| `repository_git.py` | The audited git spawn and the worktree helpers |
 
 Imports only point down this order: `routes`, `handlers`, the `orchestration`
-owners, `runtime`, `decisions`, `repository`, `parsers`. There is no cycle, and no
-owner imports the facade. `handlers.py` re-exports each route entry point straight
+owners, `runtime`, `decisions`, the `repository_*` owners, `repository`, `parsers`.
+There is no cycle, and no owner imports the facade. A `repository_*` owner imports
+only `repository` and `parsers`, never another owner. `handlers.py` re-exports each route entry point straight
 from its owner, one hop, so `routes.py` keeps a single import surface.
 
 Two placements are constraints rather than style. Only the modules listed in
 `NON_EGRESS_REDACTION_MODULES` (`handlers.py`, `runtime.py`, `repository.py`,
+`repository_discovery.py`, `repository_git.py`, `repository_sentinel.py`,
 `parsers.py`) call the redactor, so a redacting projection stays in one of them. The
 persisted-transcript read stays in `_serialize_messages` in `runtime.py`, the
 plumbing site the transcript-derivation seam allowlists.
@@ -3914,12 +3961,13 @@ pickle names the path callers import.
 The placements are constraints rather than style. `CORE_APP_ROUTE_SEGMENTS` stays in
 `manifest.py` because `website/src/test/fileMenuContributions.test.tsx` reads its
 literal there. `JobSDK._execute` stays beside `_write_terminal` in `job_sdk.py` because
-`test_job_sdk.py` reads the text between them there; its two one-site counts (the
-interruption fields' assignments, the message table's spellings) read the facade joined
-with its owners, so a second site in any of them fails. `test_setup_hooks_contract.py`
-excludes `manifest_sections.py`, where every `setup` hook is declared and serialized,
-from its runtime scan; `test_agent_spec_hardened_reads.py` keys the hardened agent-spec
-read under `manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
+`test_job_sdk_returns.py` reads the text between them there; its one-site count of the
+message table's spellings and `test_job_sdk_invariants.py`'s of the interruption fields'
+assignments read the facade joined with its owners, so a second site in any of them
+fails. `test_setup_hooks_contract.py` excludes `manifest_sections.py`, where every
+`setup` hook is declared and serialized, from its runtime scan;
+`test_agent_spec_hardened_reads.py` keys the hardened agent-spec read under
+`manifest_containment.py`; and `NON_EGRESS_REDACTION_MODULES` names
 `apps/job_sdk_records.py`, whose `_redact` is the ingest scrub.
 
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,

@@ -13,32 +13,50 @@ metadata address onto one dotted-quad, and the metadata check built on it.
 The environment tier lives in ``denied_rules``: it resolves catalog rule ids to
 row objects at import time, which is a dependency on the catalog rather than on
 anything here.
+
+The URL rule tables (``exfil_url_rules``), the OAuth endpoint set and shape
+diagnostics (``exfil_oauth``) and the data-egress command gate (``exfil_bash``)
+live in owner modules beside this one. This module is the import path of every
+name they define, and keeps the URL classifier, the blocked-link records, the
+URL redactor, the OAuth credential diagnosis and the IMDS folder and check.
+A read through this module answers with the owner's object, and a write
+reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
 """
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
-import fnmatch
+import importlib as _importlib
 import ipaddress
-import json
 import logging
 import re
 import socket
-import string
-import time
-import uuid
-from collections import Counter
+import sys as _sys
+import time  # noqa: F401  (a test clock installs here and the mirror carries it to exfil_oauth)
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
-from kiro_crew.credential_patterns import AWS_KEY_ID
-from kiro_crew.sel import SecurityEvent, SecurityEventLog
-
-from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
+from .exfil_oauth import (  # noqa: F401
+    _OAUTH_EXTENSION_HOST_RE,
+    _OAUTH_QUERY_PARAMS,
+    OAuthUrlCredentialDiagnostic,
+    _approved_oauth_authorization_endpoint,
+    _oauth_diagnostic,
+    _oauth_query_diagnostic,
+    _oauth_url_payload_diagnostic,
+    _valid_oauth_extension_path,
+)
+from .exfil_url_rules import (
+    _EXFIL_PATTERNS,
+    _EXFIL_PERCENT_RE,
+    _EXFIL_QUERY_MIN_LEN,
+    _HARD_CREDENTIAL_RE,
+    _MAX_URL_DECODE_PASSES,
+    _URL_RE,
+    _is_safe_presigned,
+)
 from .redaction import (
     _contains_fixed_credential,
     _text_contains_bare_secret,
@@ -49,713 +67,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
-
-
-def exfil_query_min_len() -> int:
-    """Public view of the long-query exfiltration threshold (chars)."""
-    return _EXFIL_QUERY_MIN_LEN
-
-
-# ── URL Exfiltration Detection ──
-# Detects URLs whose path/query contain credential-like data. We flag the
-# PAYLOAD, not the destination: any URL with secrets is suspicious regardless of
-# host. The general redactors have one narrow carve-out for companion-supplied
-# exact tenant hosts. A separate, opt-in carve-out for standard OAuth params is
-# available only to ``oauth_url_contains_credential`` on the ACP banner path.
-# Fixed/encoded credentials and heavy percent encoding remain unconditional.
-
-# Host group (group 1) matches THREE host shapes so a raw-IP exfil destination
-# is not silently skipped: a DNS name with a letter TLD, a raw
-# IPv4 literal (``192.168.1.1``, incl. link-local/metadata ``169.254.169.254``),
-# or a bracketed IPv6 literal (``[::1]``, ``[fd00::1]``). The prior regex required
-# a ``.<letters>`` TLD, so ``http://169.254.169.254/latest/…/<secret>`` never
-# matched _URL_RE and its path/query was never scanned. Group 3 stays the
-# path+query so the scan/redact call sites are unchanged.
-_URL_RE = re.compile(
-    r"https?://"
-    r"("
-    r"[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}"  # DNS name with a letter TLD
-    r"|\d{1,3}(?:\.\d{1,3}){3}"  # raw IPv4 literal
-    r"|\[[0-9A-Fa-f:.]+\]"  # bracketed IPv6 literal (incl. IPv4-mapped ::ffff:d.d.d.d)
-    # Group 3 = path AND/OR query. It must start with ``/`` (path) OR ``?``
-    # (a query attached directly to the host, no path segment). The prior
-    # ``/[...]*`` required a leading slash, so ``https://host?leak=<secret>``
-    # yielded group(3)=None and both scan/redact bailed on ``qmark == -1``,
-    # never inspecting the query — a real exfil bypass. ``[/?]`` admits both;
-    # the ``path_and_query.find("?")`` split at the call sites is unchanged.
-    r")(:\d+)?([/?][^\s)\"'>]*)?"
-)
-
-# Query string length threshold — normal URLs rarely exceed this
-_EXFIL_QUERY_MIN_LEN = 200
-
-# Patterns that indicate secrets or encoded data in query params
-_EXFIL_PATTERNS = re.compile(
-    r"(?:"
-    r"[A-Za-z0-9+/]{40,}={0,2}|[A-Za-z0-9+/]{39}=|[A-Za-z0-9+/]{38}=="  # base64, "=" is padding
-    r"|%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}"  # heavy URL-encoding (20+ encoded chars)
-    f"|{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
-    r"|(?:ssh-rsa|ssh-ed25519)[\s+%]"  # SSH public key
-    r"|BEGIN[\s+%](?:RSA|DSA|EC|OPENSSH)[\s+%]PRIVATE[\s+%]KEY"  # private key header
-    r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
-    r")",
-    re.IGNORECASE,
-)
-
-# Heavy URL-encoding detector — the same "20+ consecutive percent-encoded
-# octets" branch carved out of _EXFIL_PATTERNS. This stays UNCONDITIONAL: the
-# context-specific exemptions below skip only the base64-blob and query-length
-# heuristics (which false-positive on legitimate document pointers or banner
-# state/PKCE), NOT this detector, so a heavily encoded payload is still caught.
-_EXFIL_PERCENT_RE = re.compile(
-    r"%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}",
-    re.IGNORECASE,
-)
-
-# Percent-decoding passes applied when re-scanning a URL for encoded
-# credentials. More than one is required because a double-encoded payload
-# survives a single pass; the bound stops a deliberately over-encoded URL from
-# making the scan loop indefinitely.
-_MAX_URL_DECODE_PASSES = 3
-
-_OAUTH_DIAGNOSTIC_PARAMETER_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
-_OAUTH_URL_SYMBOLS = frozenset("-._~:/?#[]@!$&'()*+,;=")
-
-
-@dataclass(frozen=True)
-class OAuthUrlShapeProfile:
-    """Non-sensitive character-class profile for one rejected URL component."""
-
-    length: int
-    ascii_uppercase: int
-    ascii_lowercase: int
-    digits: int
-    percent_signs: int
-    symbols: int
-    other: int
-
-
-@dataclass(frozen=True)
-class OAuthUrlCredentialDiagnostic:
-    """Privacy-safe explanation of the first OAuth URL rejection rule."""
-
-    rule: str
-    component: str
-    parameter: str | None
-    shape: OAuthUrlShapeProfile
-
-    def as_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-def _oauth_char_class(char: str) -> str:
-    if char in string.ascii_uppercase:
-        return "ascii_uppercase"
-    if char in string.ascii_lowercase:
-        return "ascii_lowercase"
-    if char in string.digits:
-        return "digits"
-    if char == "%":
-        return "percent_signs"
-    if char in _OAUTH_URL_SYMBOLS:
-        return "symbols"
-    return "other"
-
-
-def _oauth_shape_profile(value: str) -> OAuthUrlShapeProfile:
-    counts = Counter(_oauth_char_class(char) for char in value)
-    return OAuthUrlShapeProfile(
-        length=len(value),
-        ascii_uppercase=counts["ascii_uppercase"],
-        ascii_lowercase=counts["ascii_lowercase"],
-        digits=counts["digits"],
-        percent_signs=counts["percent_signs"],
-        symbols=counts["symbols"],
-        other=counts["other"],
-    )
-
-
-def _safe_oauth_parameter_name(name: str | None) -> str | None:
-    if (
-        name is None
-        or name not in _OAUTH_QUERY_PARAMS
-        or not _OAUTH_DIAGNOSTIC_PARAMETER_RE.fullmatch(name)
-    ):
-        return None
-    if _contains_fixed_credential(name) or _text_contains_bare_secret(name):
-        return None
-    return name
-
-
-def _oauth_diagnostic(
-    rule: str,
-    component: str,
-    value: str,
-    *,
-    parameter: str | None = None,
-) -> OAuthUrlCredentialDiagnostic:
-    return OAuthUrlCredentialDiagnostic(
-        rule=rule,
-        component=component,
-        parameter=_safe_oauth_parameter_name(parameter),
-        shape=_oauth_shape_profile(value),
-    )
-
-
-def _oauth_query_diagnostic(
-    rule: str,
-    query: str,
-    *,
-    predicate: Callable[[str], bool] | None = None,
-    decoder: Callable[[str], str] | None = None,
-    fallback: bool = True,
-) -> OAuthUrlCredentialDiagnostic | None:
-    segments = query.split("&")
-    for segment in segments:
-        key, separator, value = segment.partition("=")
-        if not separator:
-            continue
-        candidate = decoder(value) if decoder is not None else value
-        if predicate is not None and predicate(candidate):
-            return _oauth_diagnostic(rule, "query_parameter", candidate, parameter=key)
-        if predicate is None and len(segments) == 1:
-            return _oauth_diagnostic(rule, "query_parameter", candidate, parameter=key)
-    if not fallback:
-        return None
-    target = decoder(query) if decoder is not None else query
-    return _oauth_diagnostic(rule, "query", target)
-
-
-def _oauth_url_payload_diagnostic(
-    rule: str,
-    url: str,
-    target: str,
-    predicate: Callable[[str], bool],
-    *,
-    decoder: Callable[[str], str] | None = None,
-) -> OAuthUrlCredentialDiagnostic:
-    try:
-        parsed = urlparse(url)
-        if parsed.query:
-            query_diagnostic = _oauth_query_diagnostic(
-                rule,
-                parsed.query,
-                predicate=predicate,
-                decoder=decoder,
-                fallback=False,
-            )
-            if query_diagnostic is not None:
-                return query_diagnostic
-        for component, value in (
-            ("scheme", parsed.scheme),
-            ("authority", parsed.netloc),
-            ("path", parsed.path),
-            ("path_params", parsed.params),
-            ("fragment", parsed.fragment),
-        ):
-            candidate = decoder(value) if decoder is not None else value
-            if candidate and predicate(candidate):
-                return _oauth_diagnostic(rule, component, candidate)
-    except Exception:
-        pass
-    return _oauth_diagnostic(rule, "url", target)
-
-
-# Exact, code-owned OAuth authorization endpoints whose standard front-channel
-# parameters may legitimately contain high-entropy state/PKCE values on the ACP
-# banner-safety path. This is deliberately NOT configurable and never uses
-# suffix matching: an agent-owned
-# setting or ``api.notion.com.attacker.example`` must not lower the redaction
-# ceiling. Paths are exact and case-sensitive; explicit ports and HTTP are not
-# exempted.
-_OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("accounts.google.com", "/o/oauth2/v2/auth"),
-        ("api.notion.com", "/v1/oauth/authorize"),
-        ("app.asana.com", "/-/oauth_authorize"),
-        ("auth.atlassian.com", "/authorize"),
-        ("github.com", "/login/oauth/authorize"),
-        ("linear.app", "/oauth/authorize"),
-        ("login.microsoftonline.com", "/common/oauth2/v2.0/authorize"),
-        ("slack.com", "/oauth/v2/authorize"),
-        # MCP-server authorization servers. A provider's *MCP* server usually
-        # runs its own authorization server, distinct from the classic web-OAuth
-        # endpoint above -- so the pairs above are NOT sufficient for the
-        # Connections launch set. Each pair below was taken from the provider's
-        # own advertised `authorization_endpoint` (RFC 8414 metadata reached via
-        # RFC 9728 protected-resource discovery from the registry's mcp_url) and
-        # independently corroborated by an authorize URL kiro-cli actually
-        # minted. A launch provider missing from this set cannot be connected at
-        # all: its banner fails closed with "authentication failed: URL
-        # contained credential or exfiltration pattern", which is how the gap
-        # was found. Every entry added to the Connections registry needs its
-        # MCP authorization server here too.
-        ("access.stripe.com", "/mcp/oauth2/authorize"),
-        ("gitlab.com", "/oauth/authorize"),
-        ("mcp.auth.mail.superhuman.com", "/oauth2/authorize"),
-        ("mcp.linear.app", "/authorize"),
-        # Miro's authorization_endpoint per its RFC 8414 metadata at
-        # https://mcp.miro.com/.well-known/oauth-authorization-server. Also a
-        # Connections registry entry; without this pair the fail-closed banner
-        # blocks every attempt to connect the Miro remote MCP server.
-        ("mcp.miro.com", "/authorize"),
-        ("mcp.notion.com", "/authorize"),
-        ("vercel.com", "/oauth/authorize"),
-        # Industry-baseline batches (registry entries, all launch-gated). Each
-        # pair is the ``authorization_endpoint`` from the issuer's RFC 8414
-        # document, the issuer itself reached via RFC 9728 discovery from the
-        # registry ``mcp_url`` by the L0 probe. The kiro-cli-minted
-        # corroboration the launch set carries lands with each provider's
-        # manual launch-gate check.
-        ("airtable.com", "/oauth2/v1/authorize"),
-        ("api.supabase.com", "/v1/oauth/authorize"),
-        ("auth.prisma.io", "/authorize"),
-        ("bindings.mcp.cloudflare.com", "/oauth/authorize"),
-        ("huggingface.co", "/oauth/authorize"),
-        ("mcp.amplitude.com", "/authorize"),
-        ("mcp.canva.com", "/authorize"),
-        ("mcp.neon.tech", "/api/authorize"),
-        ("mcp.paypal.com", "/authorize"),
-        ("mcp.postman.com", "/authorize"),
-        ("mcp.sentry.dev", "/oauth/authorize"),
-        ("mcp.squareup.com", "/authorize"),
-        ("mcp.webflow.com", "/oauth/authorize"),
-        ("mcp.zapier.com", "/oauth/authorize"),
-        ("netlify-mcp.netlify.app", "/oauth-server/auth"),
-        ("todoist.com", "/oauth/authorize"),
-        ("www.dropbox.com", "/oauth2/authorize"),
-        # Two issuers advertise a consent page on a different host than the
-        # issuer itself: Figma's MCP authorization server (issuer api.figma.com)
-        # sends the user to www.figma.com, Mixpanel's (issuer
-        # mcp.mixpanel.com/mcp) to mixpanel.com. Only the consent host is
-        # listed, because the banner gate keys on the URL the browser opens;
-        # the registry test maps issuer host to consent host for these two.
-        ("www.figma.com", "/oauth/mcp"),
-        ("mixpanel.com", "/oauth/authorize"),
-    }
-)
-
-# OAuth 2.0 / OIDC front-channel parameters whose values are expected to be
-# opaque and high-entropy. The banner-only exemption is valid ONLY at an exact
-# endpoint above. Every unknown parameter still receives the full query
-# heuristics, even when it shares an otherwise-approved authorization URL.
-_OAUTH_QUERY_PARAMS = frozenset(
-    {
-        "access_type",
-        "acr_values",
-        "allow_signup",
-        "audience",
-        "client_id",
-        "code_challenge",
-        "code_challenge_method",
-        "display",
-        "domain_hint",
-        "id_token_hint",
-        "login",
-        "login_hint",
-        "max_age",
-        "nonce",
-        "prompt",
-        "redirect_uri",
-        "request_uri",
-        "resource",
-        "response_mode",
-        "response_type",
-        "scope",
-        "state",
-        "team",
-        "ui_locales",
-        "user_scope",
-    }
-)
-
-# ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
-# ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
-# exact-match, but that leaves no remedy short of a code release when a user's
-# identity provider (Okta, Auth0, self-hosted OIDC, tenant-scoped Entra) is not
-# in the launch set: its real consent URL routinely exceeds the query-length
-# heuristic and the gate fails closed. The extension below restores an
-# OPERATOR-owned escape hatch without weakening the ceiling for the agent:
-#
-# * the file lives on ``_CREW_SECRET_LEAVES`` (read+write keystone), so the
-#   agent can neither read nor author its own trust widening;
-# * a missing/unreadable/corrupt/non-object file yields the EMPTY set — a
-#   mangled file must never widen trust (same posture as
-#   ``computer_use.enable_state.load_state``);
-# * every entry is strictly validated (exact host+path, no wildcards, no
-#   ports/userinfo/percent-escapes, no ``..``), and invalid entries are
-#   SKIPPED with a warning rather than failing the whole file;
-# * HTTPS-only / no-explicit-port stays enforced by the gate logic at both
-#   call sites and is NOT relaxable via the file;
-# * the exemption granted is identical to the builtin set's: only the
-#   base64-blob/query-length heuristics on known ``_OAUTH_QUERY_PARAMS`` are
-#   skipped — fixed-credential patterns, heavy percent-encoding, userinfo,
-#   fragments, backslashes, and unknown-param heuristics remain unconditional.
-_ENDPOINT_EXTENSION_ENTRIES_KEY = "additional_authorization_endpoints"
-
-# Bounds the accepted set AND the validation walk (the entry list is sliced to
-# this before iteration), so a pathological file cannot amplify into an
-# unbounded parse/warn loop or turn the endpoint check into a large probe.
-_ENDPOINT_EXTENSION_CAP = 50
-
-# Strict DNS-name shape for an operator entry, matched against the
-# lowercase-normalized host: dot-separated LDH labels ending in a letter TLD.
-# The letter-TLD requirement rejects raw IPv4 literals; the character class
-# rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
-# backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
-# The lookahead bounds total length to the DNS maximum.
-_OAUTH_EXTENSION_HOST_RE = re.compile(
-    r"\A(?=.{1,253}\Z)"
-    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
-    r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
-    r"\.[a-z]{2,}\Z"
-)
-
-# Paths are exact and case-sensitive (same semantics as the builtin set).
-_OAUTH_EXTENSION_PATH_MAX_LEN = 512
-
-# Rejected anywhere in an operator path entry: query/fragment/path-param
-# delimiters and percent-escapes would let one entry smuggle structure the
-# exact-match comparison is not built to normalize, and ``..`` plus backslash
-# invite parser-differential games. The comparison is byte-exact, so a benign
-# provider path never needs any of these.
-_OAUTH_EXTENSION_PATH_BAD = (";", "?", "#", "%", "\\", "..")
-
-
-def _valid_oauth_extension_path(path: str) -> bool:
-    """True when *path* is safe to compare exactly against a consent URL path."""
-    if not path.startswith("/") or len(path) > _OAUTH_EXTENSION_PATH_MAX_LEN:
-        return False
-    if any(marker in path for marker in _OAUTH_EXTENSION_PATH_BAD):
-        return False
-    return not any(ch.isspace() for ch in path)
-
-
-# Memo for the parsed extension file, keyed on the file's identity + stat
-# (path, mtime_ns, size) so a hand-edit takes effect on the next check without
-# a gateway restart, while repeated checks against an unchanged file cost one
-# ``stat`` instead of a read+parse+validate pass. (path, None) memoizes the
-# absent-file case; any stat/read error bypasses the memo and fails soft.
-_OAUTH_EXTENSION_MEMO: dict[tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]] = {}
-
-
-def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
-    """Load the operator's OAuth-endpoint extension set (fail-soft to EMPTY).
-
-    Reads ``<config_dir>/oauth_endpoints.json`` and returns the validated
-    ``(lowercase host, exact path)`` pairs. Absent, unreadable, corrupt, or
-    non-object files — and any entry that fails the strict per-entry
-    validation — yield nothing: a mangled extension file must never widen
-    trust. The ``config.loader`` import stays function-local to keep this
-    module's import graph independent of the loader's: ``config/loader_snapshots.py``
-    and ``config/loader_pipeline.py`` import ``security`` symbols function-locally to
-    avoid a cycle, and a module-level import here would quietly re-arm that cycle the
-    moment the loader hoists its own.
-    """
-    from kiro_crew.config import loader as config_loader
-
-    try:
-        path = config_loader.oauth_endpoints_path()
-        try:
-            stat = path.stat()
-            stat_key: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
-        except FileNotFoundError:
-            stat_key = None
-        memo_key = (str(path), stat_key)
-        cached = _OAUTH_EXTENSION_MEMO.get(memo_key)
-        if cached is not None:
-            return cached
-        if stat_key is None:
-            _OAUTH_EXTENSION_MEMO.clear()
-            _OAUTH_EXTENSION_MEMO[memo_key] = frozenset()
-            return frozenset()
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug("oauth_endpoints.json unreadable; ignoring extension file", exc_info=True)
-        return frozenset()
-
-    approved = _validate_operator_oauth_entries(raw)
-    # One live entry per file: the memo never outgrows a handful of keys, but a
-    # test suite that rewrites the file hundreds of times should not accrete.
-    _OAUTH_EXTENSION_MEMO.clear()
-    _OAUTH_EXTENSION_MEMO[memo_key] = approved
-    return approved
-
-
-def _validate_operator_oauth_entries(raw: object) -> frozenset[tuple[str, str]]:
-    """Strictly validate a parsed extension document into ``(host, path)`` pairs."""
-    if not isinstance(raw, dict):
-        logger.warning("oauth_endpoints.json is not a JSON object; ignoring it")
-        return frozenset()
-    entries = raw.get(_ENDPOINT_EXTENSION_ENTRIES_KEY)
-    if not isinstance(entries, list):
-        if entries is not None:
-            logger.warning(
-                "oauth_endpoints.json: %r is not a list; ignoring it",
-                _ENDPOINT_EXTENSION_ENTRIES_KEY,
-            )
-        return frozenset()
-    if len(entries) > _ENDPOINT_EXTENSION_CAP:
-        logger.warning(
-            "oauth_endpoints.json: %d entries exceed the cap (%d); extra entries ignored",
-            len(entries),
-            _ENDPOINT_EXTENSION_CAP,
-        )
-
-    approved: set[tuple[str, str]] = set()
-    for entry in entries[:_ENDPOINT_EXTENSION_CAP]:
-        host = entry.get("host") if isinstance(entry, dict) else None
-        path = entry.get("path") if isinstance(entry, dict) else None
-        if not isinstance(host, str) or not isinstance(path, str):
-            logger.warning(
-                "oauth_endpoints.json: skipping malformed entry (need host+path strings)"
-            )
-            continue
-        host_norm = host.lower()
-        if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(
-            path
-        ):
-            # The host is operator-authored config, not secret material, and
-            # naming it is what makes the warning actionable.
-            logger.warning(
-                "oauth_endpoints.json: skipping invalid endpoint entry host=%r", host[:64]
-            )
-            continue
-        approved.add((host_norm, path))
-    return frozenset(approved)
-
-
-# Per-process dedupe for the extension-used audit event, so repeated checks of
-# the same URL (every banner emit/redraw re-validates) do not spam the SEL.
-_OAUTH_EXTENSION_AUDITED: set[tuple[str, str]] = set()
-
-
-def _emit_oauth_extension_used_event(host: str, path: str) -> None:
-    """SEL-audit that an OPERATOR extension entry approved a consent endpoint.
-
-    Best-effort: an audit failure must not break the user's ability to
-    authorize their MCP server — the operator explicitly allowlisted the
-    endpoint, so the approval stands regardless of audit success.
-    """
-    if (host, path) in _OAUTH_EXTENSION_AUDITED:
-        return
-    _OAUTH_EXTENSION_AUDITED.add((host, path))
-    try:
-        # Function-local for the same loader-cycle reason as
-        # _load_operator_oauth_endpoints.
-        from kiro_crew.config import loader as config_loader
-
-        SecurityEventLog().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex[:16],
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_extension_used",
-                caller_identity="",
-                agent="kirocrew",
-                source="security",
-                operation="oauth_banner_check",
-                outcome="allowed",
-                resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "file": str(config_loader.oauth_endpoints_path()),
-                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
-                },
-            )
-        )
-    except Exception:
-        logger.debug(
-            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
-            exc_info=True,
-        )
-
-
-def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
-    """Exact-match endpoint approval for the banner-only OAuth entropy carve-out.
-
-    Union of the code-owned builtin set and the operator's keystone extension,
-    computed at check time so a hand-edited file takes effect without a
-    restart. The builtin set is consulted first so the common providers never
-    touch the disk; an approval that came from an operator entry is SEL-audited
-    (deduped per process). Callers keep enforcing HTTPS-only / no-explicit-port
-    — this helper only answers endpoint identity.
-    """
-    key = (host.lower(), path)
-    if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
-        return True
-    if _discovered_oauth_endpoint_approved(key):
-        return True
-    if key in _load_operator_oauth_endpoints():
-        _emit_oauth_extension_used_event(*key)
-        return True
-    return False
-
-
-# ── Discovered OAuth endpoints (verified from an operator-configured MCP server) ──
-# Filled only by ``mcp_oauth_discovery``; trust anchor, bounds and why this does
-# not lower the agent's ceiling: docs/system-specs/modules/security.md,
-# "Discovery-verified consent endpoints".
-_OAUTH_DISCOVERED_TTL_SECONDS = 24 * 60 * 60
-_OAUTH_DISCOVERED_CAP = 64
-# Bound on the server URL copied into the SEL event; nothing else retains it.
-_OAUTH_DISCOVERED_MCP_URL_MAX_LEN = 512
-# (host, path) -> monotonic expiry. Host and path are bounded by the validators.
-_OAUTH_DISCOVERED_ENDPOINTS: dict[tuple[str, str], float] = {}
-
-
-def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
-    """Whether *key* was verified by discovery and has not expired."""
-    expiry = _OAUTH_DISCOVERED_ENDPOINTS.get(key)
-    if expiry is None:
-        return False
-    if expiry <= time.monotonic():
-        _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
-        return False
-    return True
-
-
-def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> bool:
-    """Approve an authorization endpoint verified by MCP OAuth discovery.
-
-    Called ONLY by ``kiro_crew.mcp_oauth_discovery`` after it matched the
-    endpoint against the metadata advertised for an operator-configured MCP
-    server. Returns False (and records nothing) for a host or path the operator
-    file's validators would refuse. A newly recorded endpoint is SEL-audited
-    with the server URL it was verified from.
-    """
-    host_norm = host.lower()
-    if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(path):
-        return False
-    key = (host_norm, path)
-    fresh = not _discovered_oauth_endpoint_approved(key)
-    _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
-    while len(_OAUTH_DISCOVERED_ENDPOINTS) >= _OAUTH_DISCOVERED_CAP:
-        # A default: a worker thread may expire the same key concurrently.
-        _OAUTH_DISCOVERED_ENDPOINTS.pop(next(iter(_OAUTH_DISCOVERED_ENDPOINTS)), None)
-    _OAUTH_DISCOVERED_ENDPOINTS[key] = time.monotonic() + _OAUTH_DISCOVERED_TTL_SECONDS
-    if fresh:
-        _emit_oauth_discovered_endpoint_event(host_norm, path, mcp_url)
-    return True
-
-
-def _emit_oauth_discovered_endpoint_event(host: str, path: str, mcp_url: str) -> None:
-    """Best-effort SEL record that discovery approved a consent endpoint."""
-    if len(mcp_url) > _OAUTH_DISCOVERED_MCP_URL_MAX_LEN:
-        mcp_url = mcp_url[: _OAUTH_DISCOVERED_MCP_URL_MAX_LEN - 1] + "…"
-    try:
-        SecurityEventLog().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex[:16],
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_discovered",
-                caller_identity="",
-                agent="kirocrew",
-                source="security",
-                operation="oauth_banner_check",
-                outcome="allowed",
-                resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "mcp_url": mcp_url,
-                    "mechanism": "OAUTH_ENDPOINT_DISCOVERY",
-                },
-            )
-        )
-    except Exception:
-        logger.debug("SEL audit failed for oauth_endpoint_discovered (allow stands)", exc_info=True)
-
-
-# S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that
-# matches the base64-like blob pattern above.  These are intentional
-# time-limited access tokens, not leaked credentials.  Skip the exfil
-# check when ALL standard presigned-URL query params are present on an
-# amazonaws.com domain.  Values are validated to prevent spoofing.
-_S3_PRESIGNED_RE = re.compile(
-    r"X-Amz-Algorithm=AWS4-HMAC-SHA256"
-    f".*X-Amz-Credential={AWS_KEY_ID}"  # shared spelling: credential_patterns
-    r"(?:%2F|/)"
-    r".*X-Amz-Expires=\d{1,6}"
-    r".*X-Amz-Signature=[0-9a-f]{64}",
-    re.IGNORECASE,
-)
-
-# Only these parameter keys are allowed in a presigned URL.  Any extra
-# keys cause the fast-path to reject, falling through to normal checks.
-_S3_PRESIGNED_PARAMS = frozenset(
-    {
-        "X-Amz-Algorithm",
-        "X-Amz-Credential",
-        "X-Amz-Date",
-        "X-Amz-Expires",
-        "X-Amz-SignedHeaders",
-        "X-Amz-Signature",
-        "X-Amz-Security-Token",
-    }
-)
-
-
-# Structural validators for presigned param values that would otherwise
-# false-positive against _EXFIL_PATTERNS.  Each value is validated rather
-# than exempted, so attacker-controlled data cannot be smuggled through.
-_STS_TOKEN_RE = re.compile(r"^(?:FwoGZX|IQoJb3JpZ2lu)[A-Za-z0-9+/=%]{1,2000}$")
-_CREDENTIAL_RE = re.compile(
-    f"^{AWS_KEY_ID}"  # shared spelling: credential_patterns
-    r"(?:%2F|/)[0-9]{8}"
-    r"(?:%2F|/)[a-z0-9-]+(?:%2F|/)s3(?:%2F|/)aws4_request$"
-)
-_SIGNATURE_RE = re.compile(r"^[0-9a-f]{64}$")
-
-_STRUCTURAL_VALIDATORS = {
-    "X-Amz-Credential": _CREDENTIAL_RE,
-    "X-Amz-Signature": _SIGNATURE_RE,
-    "X-Amz-Security-Token": _STS_TOKEN_RE,
-}
-
-
-def _is_safe_presigned(domain: str, query: str) -> bool:
-    """Return True if the URL is a valid S3 presigned URL with no extra parameters."""
-    if not domain.endswith(".amazonaws.com"):
-        return False
-    if not _S3_PRESIGNED_RE.search(query):
-        return False
-    params = parse_qs(query, keep_blank_values=True)
-    if not _S3_PRESIGNED_PARAMS.issuperset(params.keys()):
-        return False
-    # Structurally validate params that would false-positive against
-    # _EXFIL_PATTERNS.  No values are fully exempt — each is checked.
-    for key, values in params.items():
-        validator = _STRUCTURAL_VALIDATORS.get(key)
-        if validator:
-            for val in values:
-                if not validator.match(val):
-                    return False
-        else:
-            for val in values:
-                if _EXFIL_PATTERNS.search(val):
-                    return False
-    return True
-
-
-# Hard, unambiguous credential markers scanned across the FULL URL path+query
-# — a real AWS key / SSH-or-PEM header / Slack token in a URL is
-# exfil even to an otherwise-safe host, and even with no ``?`` query (secret in
-# the PATH). Distinct from the broader _EXFIL_PATTERNS base64/length heuristics,
-# which stay query-only (long base64 PATH segments — CDN asset ids, git object
-# hashes — are benign).
-_HARD_CREDENTIAL_RE = re.compile(
-    r"(?:"
-    f"{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
-    r'|(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:SessionToken|aws_session_token)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:AccessKeyId|aws_access_key_id)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r"|(?:ssh-rsa|ssh-ed25519)[\s+%]"  # SSH public key
-    r"|BEGIN[\s+%](?:RSA|DSA|EC|OPENSSH)[\s+%]PRIVATE[\s+%]KEY"  # private key header
-    r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
-    r")",
-    re.IGNORECASE,
-)
 
 
 def _exempt_exact_hosts() -> frozenset[str]:
@@ -1974,212 +1285,6 @@ def oauth_rejection_is_endpoint_exemptible(url: str) -> bool:
     return diagnose_oauth_url_credential(url, assume_approved_endpoint=True) is None
 
 
-# Data-egress / reverse-shell command shapes — the exfiltration-specific subset
-# of SUSPICIOUS_BASH_PATTERNS. These are enforced at the
-# tool-invocation gate (denied), unlike the full SUSPICIOUS_BASH_PATTERNS list
-# which stays advisory: that list also carries destructive-but-local shapes
-# (rm -rf, dd if=, chmod on system dirs, DROP TABLE) that a user may legitimately
-# run in their own workspace, so hard-denying all of them at the gate would break
-# ordinary use. This subset is narrowly the "push local data OUT / open a shell
-# to a remote" shapes, where a hijacked-agent block is worth the rare false
-# positive.
-#
-# Entries containing `*` are fnmatch globs (`*<pat>*`); the rest are
-# case-insensitive substrings, so they fire regardless of intervening flags /
-# token layout — `curl -d @f`, `curl -s -d @f`, `curl --data-binary @f` all
-# match. The `@` sigil on curl body/upload flags means "read from a local file"
-# (the tell-tale of egress); a bare `-d 'x=1'` inline body has no `@` and is not
-# matched. curl long options accept BOTH ` @` and `=@` separators, so both are
-# listed. `--data-raw` is deliberately EXCLUDED: it is the one --data variant
-# that does NOT interpret a leading `@` as a file reference, so `--data-raw @x`
-# posts the literal string `@x` (never reads a file) — including it would only
-# add false positives. Multipart uploads use a glob (`-F *=@`) so ANY field name
-# matches, not just a field literally named `file` (`curl -F x=@secret` exfils
-# just as well).
-_BASH_EXFIL_PATTERNS: list[str] = [
-    "-d @",  # curl POST body read from a local file (space + `=` separators)
-    "-d@",
-    "-d=@",
-    "--data @",
-    "--data=@",
-    "--data-binary @",
-    "--data-binary=@",
-    "--data-ascii @",
-    "--data-ascii=@",
-    "--data-urlencode @",  # also reads a local file when the value starts with @
-    "--data-urlencode=@",
-    "-F *=@",  # curl multipart file upload, any field name (glob)
-    "--form *=@",
-    "--upload-file",  # curl upload, long form
-    "wget --post-file",  # wget file upload
-    "/dev/tcp/",  # bash builtin reverse shell (>/dev/tcp/host/port)
-    "/dev/udp/",
-]
-
-# Exfil shapes where whitespace or flag CASE around an operator matters, so a
-# plain lowercased substring/glob would either miss a no-space variant or
-# false-positive. Matched via regex against the ORIGINAL (non-lowercased)
-# command. Each entry is (compiled pattern, human label).
-_BASH_EXFIL_RES: list[tuple[re.Pattern[str], str]] = [
-    # netcat reading a local file via input redirect — `nc host port < file` AND
-    # `nc host port <file` (no space after `<`, a valid shell redirect that the
-    # old `nc * < ` glob missed). `nc`/`ncat` is anchored at a word boundary so
-    # `sync`/`func` etc. do not match. Case-insensitive (command name).
-    (re.compile(r"(?:^|\s)nc(?:at)?\s+\S.*<", re.IGNORECASE), "nc/ncat file redirect"),
-    # netcat reverse shell `nc -e <prog>` / `ncat -e <prog>`. `nc`/`ncat` is
-    # anchored at a word boundary so `rsync -e ssh` (contains `nc -e`) and
-    # `vnc -e` do NOT match; a plain substring `"nc -e"` false-positived on them.
-    (re.compile(r"(?:^|\s)nc(?:at)?\s+-e\b", re.IGNORECASE), "nc/ncat reverse shell"),
-    # curl upload short form `-T <file>` / `-Tfile` (no space). CASE-SENSITIVE
-    # `-T`: curl's upload flag is uppercase, so this does NOT match lowercase long
-    # options such as `--trace-time`. `-T` must begin at a word boundary.
-    (re.compile(r"\bcurl\b.*(?:^|\s)-T\s*\S"), "curl -T upload"),
-]
-
-
-# Which catalog rule each always-on exfil branch enforces, so a denial maps back
-# to a rule id and an operator opt-out is honoured. Patterns/labels absent from
-# these maps stay unconditional.
-_BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
-    "-d @": "data-exfil-curl-file-body",
-    "-d@": "data-exfil-curl-file-body",
-    "-d=@": "data-exfil-curl-file-body",
-    "--data @": "data-exfil-curl-file-body",
-    "--data=@": "data-exfil-curl-file-body",
-    "--data-binary @": "data-exfil-curl-file-body",
-    "--data-binary=@": "data-exfil-curl-file-body",
-    "--data-ascii @": "data-exfil-curl-file-body",
-    "--data-ascii=@": "data-exfil-curl-file-body",
-    "--data-urlencode @": "data-exfil-curl-file-body",
-    "--data-urlencode=@": "data-exfil-curl-file-body",
-    "-F *=@": "data-exfil-curl-multipart-upload",
-    "--form *=@": "data-exfil-curl-multipart-upload",
-    "--upload-file": "data-exfil-curl-upload",
-    "wget --post-file": "data-exfil-wget-post-file",
-    "/dev/tcp/": "reverse-shell-devtcp",
-    "/dev/udp/": "reverse-shell-devtcp",
-}
-
-# A single regex can span more than one catalog row, so this maps to a TUPLE. The
-# gate attributes each MATCH to one of those rows and honours that row's own
-# toggle — see _exfil_rule_id_for_match.
-_BASH_EXFIL_RULE_BY_LABEL: dict[str, tuple[str, ...]] = {
-    "nc/ncat file redirect": ("data-exfil-nc-file-redirect",),
-    "nc/ncat reverse shell": ("reverse-shell-nc", "reverse-shell-ncat"),
-    "curl -T upload": ("data-exfil-curl-upload",),
-}
-
-#: For a label whose regex spans several catalog rows, the token that identifies
-#: WHICH row a given match belongs to. Ordered longest-first so ``ncat`` is tested
-#: before ``nc`` — the reverse would classify every ``ncat`` hit as ``nc``.
-_BASH_EXFIL_ROW_DISCRIMINATORS: dict[str, tuple[tuple[str, str], ...]] = {
-    "nc/ncat reverse shell": (("ncat", "reverse-shell-ncat"), ("nc", "reverse-shell-nc")),
-}
-
-
-def _exfil_rule_id_for_match(label: str, matched: str, rule_ids: tuple[str, ...]) -> str:
-    """The catalog row a single exfil match belongs to.
-
-    One regex can cover more than one row, and the operator toggles rows, not
-    regexes — so a match has to be attributed before its toggle can be honoured.
-    Falls back to the label's first row when nothing discriminates, which keeps the
-    single-row labels (the common case) on their existing behaviour and never
-    returns an id outside ``rule_ids``.
-    """
-    low = matched.lower()
-    for token, rid in _BASH_EXFIL_ROW_DISCRIMINATORS.get(label, ()):
-        if token in low and rid in rule_ids:
-            return rid
-    return rule_ids[0]
-
-
-# `-d @` is a bare substring, so it also fires on benign commands that egress
-# nothing (GNU `date` converting an epoch, `grep` for the literal `-d @`). The
-# denial stays on the text — fail-closed, never anchored to curl, since no text
-# matcher models bash. The carve-out relaxes it only for a command the
-# deny-exception gate judges a single plain command whose first word runs no
-# subcommand, so a `-d @` in it cannot reach an HTTP client.
-_DATA_EXFIL_FILE_BODY_RULE = "data-exfil-curl-file-body"
-
-#: `date` plus the inert-search verbs. `date` is local, not added to
-#: `_INERT_SEARCH_VERBS`, which must not grow the `rm -rf /` deny-exception.
-_CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
-
-#: Bash splits words on space and tab only; `str.split()` also splits on
-#: Unicode spaces such as NBSP, which would misread `date<NBSP>x` as `date`.
-_BASH_BLANKS_RE = re.compile(r"[ \t]+")
-
-
-def _data_at_carveout_allows(command: str) -> bool:
-    """A `-d @` hit in a benign `date`/`grep` command, not an upload: reuses
-    `denied_rules._exception_eligible` (the blessed single-plain-command test)
-    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand."""
-    if not _exception_eligible(command):
-        return False
-    words = _BASH_BLANKS_RE.split(command.strip(" \t"))
-    return words[0] in _CARVEOUT_VERBS
-
-
-def audit_bash_exfiltration(
-    command: str, *, enabled_ids: "frozenset[str] | None" = None
-) -> str | None:
-    """Return a denial reason if *command* matches a data-egress / reverse-shell
-    shape that must be blocked at the tool-invocation gate, else None.
-
-    Scoped to _BASH_EXFIL_PATTERNS / _BASH_EXFIL_RES (exfil/reverse-shell only) so
-    it can be wired into the deny path in ``hooks.on_tool_call`` without blocking
-    benign local commands. The broader :func:`audit_bash_command` stays advisory.
-
-    Every branch carries the id of the catalog rule it enforces, so *enabled_ids*
-    lets the caller honour an operator opt-out: a branch whose rule the operator
-    disabled is skipped. ``None`` (the default) means ALL enabled — fail-closed,
-    which is what keeps the callers that hold no effective set (cron command
-    vetting, computer-use input vetting) at full strength without a change.
-    """
-    lower = command.lower()
-
-    def _on(rule_id: str) -> bool:
-        return enabled_ids is None or rule_id in enabled_ids
-
-    carveout_allows: bool | None = None
-    for pattern in _BASH_EXFIL_PATTERNS:
-        rule_id = _BASH_EXFIL_RULE_BY_PATTERN.get(pattern, "")
-        if rule_id and not _on(rule_id):
-            continue
-        pat = pattern.lower()
-        if "*" in pat:
-            if fnmatch.fnmatch(lower, f"*{pat}*"):
-                return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
-        elif pat in lower:
-            # Fail-closed denial, except an inert `date`/`grep` command (computed
-            # once per command and reused).
-            if rule_id == _DATA_EXFIL_FILE_BODY_RULE:
-                if carveout_allows is None:
-                    carveout_allows = _data_at_carveout_allows(command)
-                if carveout_allows:
-                    continue
-            return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
-    for rx, label in _BASH_EXFIL_RES:
-        rule_ids = _BASH_EXFIL_RULE_BY_LABEL.get(label, ())
-        if not rule_ids:
-            if rx.search(command):
-                return f"Blocked: command matches data-exfiltration pattern ({label})"
-            continue
-        # A label can span more than one catalog row (one regex covers both the nc
-        # and ncat rules). Denying while EITHER is enabled defeats the operator:
-        # switching `reverse-shell-nc` off left `nc` blocked by its sibling. So
-        # resolve each MATCH to the row it actually belongs to and honour that
-        # row's own toggle. Every match is examined, not just the first, because a
-        # command can carry both spellings and the leading one may be the disabled
-        # row while the other is still enforced.
-        for m in rx.finditer(command):
-            matched_id = _exfil_rule_id_for_match(label, m.group(0), rule_ids)
-            if _on(matched_id):
-                return f"Blocked: command matches data-exfiltration pattern ({label})"
-        continue
-    return None
-
-
 # ── IP Canonicalization (IMDS bypass prevention) ──
 # Attackers bypass IMDS checks by encoding 169.254.169.254 in alternate forms:
 #   - Decimal:   2852039166 (single 32-bit integer)
@@ -2386,3 +1491,91 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
             except ValueError:
                 pass
     return None
+
+
+# This module is the import path of every name the egress layer offers. The URL classifier,
+# the blocked-link records, the URL redactor, the OAuth credential diagnosis and the IMDS
+# check above stay here; the rule tables, the OAuth endpoint set and the command gate live
+# in the owner modules below, and a write through this module (a patch) reaches every
+# module holding the name (:mod:`kiro_crew._facade_mirror`). The header also binds the
+# owner names ``display_safety`` reads here.
+# Owners never import this module. New work goes to the owner of its responsibility:
+#   ``exfil_url_rules`` -- the URL and query patterns and the presigned-URL validator
+#   ``exfil_oauth`` -- the OAuth endpoint set, its audit events and the shape diagnostics
+#   ``exfil_bash`` -- the data-egress and reverse-shell command gate
+from kiro_crew import _facade_mirror  # noqa: E402
+
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.security.exfil_url_rules",
+    "kiro_crew.security.exfil_oauth",
+    "kiro_crew.security.exfil_bash",
+)  # the loop below imports them in this order
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name of the unsplit module's namespace.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.security.exfil_bash import (  # noqa: F401
+        _BASH_BLANKS_RE,
+        _BASH_EXFIL_PATTERNS,
+        _BASH_EXFIL_RES,
+        _BASH_EXFIL_ROW_DISCRIMINATORS,
+        _BASH_EXFIL_RULE_BY_LABEL,
+        _BASH_EXFIL_RULE_BY_PATTERN,
+        _CARVEOUT_VERBS,
+        _DATA_EXFIL_FILE_BODY_RULE,
+        _data_at_carveout_allows,
+        _exfil_rule_id_for_match,
+        audit_bash_exfiltration,
+    )
+    from kiro_crew.security.exfil_oauth import (  # noqa: F401
+        _ENDPOINT_EXTENSION_CAP,
+        _ENDPOINT_EXTENSION_ENTRIES_KEY,
+        _OAUTH_AUTHORIZATION_ENDPOINTS,
+        _OAUTH_DIAGNOSTIC_PARAMETER_RE,
+        _OAUTH_DISCOVERED_CAP,
+        _OAUTH_DISCOVERED_ENDPOINTS,
+        _OAUTH_DISCOVERED_MCP_URL_MAX_LEN,
+        _OAUTH_DISCOVERED_TTL_SECONDS,
+        _OAUTH_EXTENSION_AUDITED,
+        _OAUTH_EXTENSION_MEMO,
+        _OAUTH_EXTENSION_PATH_BAD,
+        _OAUTH_EXTENSION_PATH_MAX_LEN,
+        _OAUTH_URL_SYMBOLS,
+        OAuthUrlShapeProfile,
+        _discovered_oauth_endpoint_approved,
+        _emit_oauth_discovered_endpoint_event,
+        _emit_oauth_extension_used_event,
+        _load_operator_oauth_endpoints,
+        _oauth_char_class,
+        _oauth_shape_profile,
+        _safe_oauth_parameter_name,
+        _validate_operator_oauth_entries,
+        record_discovered_oauth_endpoint,
+    )
+    from kiro_crew.security.exfil_url_rules import (  # noqa: F401
+        _CREDENTIAL_RE,
+        _S3_PRESIGNED_PARAMS,
+        _S3_PRESIGNED_RE,
+        _SIGNATURE_RE,
+        _STRUCTURAL_VALIDATORS,
+        _STS_TOKEN_RE,
+        exfil_query_min_len,
+    )
+if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
+    from kiro_crew.credential_patterns import (  # noqa: F401
+        AWS_KEY_ID,
+    )
+    from kiro_crew.security.denied_rules import (  # noqa: F401
+        _INERT_SEARCH_VERBS,
+        _exception_eligible,
+    )
+    from kiro_crew.sel import (  # noqa: F401
+        SecurityEvent,
+        SecurityEventLog,
+    )

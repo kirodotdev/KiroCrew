@@ -13,7 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 
 SRC = Path(__file__).parent.parent / "src" / "kiro_crew"
-HANDLERS = (SRC / "deploy" / "handlers.py").read_text(encoding="utf-8")
+HANDLERS = "".join(
+    (SRC / "deploy" / name).read_text(encoding="utf-8")
+    for name in ("handlers_guards.py", "handlers_content.py", "handlers_sites.py", "handlers.py")
+)
 # The deploy_artifact handler lives in its domain module, not mcp_core.py.
 MCP_DEPLOY = (SRC / "mcp_tools" / "artifacts.py").read_text(encoding="utf-8")
 SCRIPTS = SRC / "deploy" / "skills" / "artifact-deploy" / "scripts"

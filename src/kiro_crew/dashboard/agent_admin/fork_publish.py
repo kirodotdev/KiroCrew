@@ -84,12 +84,9 @@ async def api_agent_fork(request: web.Request) -> web.Response:
             source, source_name, taken, source_path = await asyncio.to_thread(
                 _load_template_specs, agents_dir, name, "api_agent_fork"
             )
-        except _AmbiguousTemplateName:
+        except _AmbiguousTemplateName as exc:
             return web.json_response(
-                {
-                    "error": f"'{name}' matches more than one template file; rename one first.",
-                    "code": "ambiguous_template_name",
-                },
+                {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
         if source is None:

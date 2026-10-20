@@ -573,7 +573,7 @@ jobs:
         # ADVISORY: the finalize step below resolves an errored/incomplete run to
         # NEUTRAL (never a hard failure) and fails the check ONLY on a real BLOCK
         # verdict. Mirrors design-review.yml's advisory contract.
-        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
+        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
@@ -1024,12 +1024,44 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "Design review verdict: $verdict"
 
+      # The outbound scrub is `scripts/scope_redact.py`, staged from the BASE
+      # commit. A redactor taken from the change under review could
+      # rewrite the scrub of its own published output. Every model step after
+      # this one is read-only, so nothing can rewrite the staged copy.
+      - name: Stage the base-owned redactor
+        id: redactor
+        if: always() && steps.pr.outputs.obsolete != 'true'
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a symlink at this path would redirect the write.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA). Refusing to publish text no base-owned scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
       - name: Redact credential shapes
         if: always() && steps.pr.outputs.obsolete != 'true'
+        env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
         run: |
           f="$RUNNER_TEMP/design-review-output.md"
           if [ -f "$f" ]; then
-            perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' "$f"
+            # No redactor, or a scrub that fails, is a refusal: the file is removed so
+            # no later `always()` step can publish it raw.
+            if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ] \
+              || ! python3 "$REDACTOR" --mode text "$f"; then
+              echo "::error::the base-owned redactor could not scrub $f. Refusing to publish it raw."
+              rm -f "$f"
+              exit 1
+            fi
           fi
 
       # UPSERT the advisory design verdict comment. Leak-safe: only post the raw

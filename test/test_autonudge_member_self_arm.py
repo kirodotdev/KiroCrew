@@ -902,7 +902,7 @@ def test_only_the_session_directive_consumer_passes_initiator_slot_key() -> None
     import kiro_crew
 
     root = Path(kiro_crew.__file__).resolve().parent
-    allowed = {root / "dashboard" / "session_directive_apply.py"}
+    allowed = {root / "dashboard" / "session_directive_apply_monitor.py"}
     definers = {root / "autonudge_authz.py"}
     offenders: list[str] = []
     for path in root.rglob("*.py"):

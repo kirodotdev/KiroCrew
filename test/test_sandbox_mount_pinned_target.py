@@ -128,7 +128,11 @@ class _Libc(CoveringLibc):
         return super().bound(source, target, fstype, flags)
 
     def target_ids(self) -> list[tuple[int, int] | None]:
-        return [call.target_id for call in self.calls]
+        # Bind targets only. A read-only seal is a REMOUNT over a name a bind already
+        # covered (the windowless-masked-dir seal, the exposed-ceiling seal), so counting
+        # it would double-report that one mask -- the membership checks below only ever
+        # ask whether a bind landed on a name.
+        return [call.target_id for call in self.calls if not call.flags & _MS_REMOUNT]
 
 
 class _Bed:

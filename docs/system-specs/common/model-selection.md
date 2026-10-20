@@ -414,7 +414,7 @@ its own once the cache refreshes with a list that carries it.
   every validated model pin (`agent.role_models.*`, `agent.fallback_model`,
   `agent.refusal_fallback_model`, the per-app `apps.<name>.model` and the
   `decisions.model_route` tiers) one
-  grammar, `_MODEL_PIN_PATTERN` in `dashboard/handlers/core.py`: a bare id, or the
+  grammar, `_MODEL_PIN_PATTERN` in `dashboard/handlers/core_config_schema.py`: a bare id, or the
   provider-qualified `provider/model` form OpenCode advertises, built from the
   same `QUALIFIED_MODEL_PATTERN` the spawn and cron model-name check uses (so
   `ollama/qwen3:8b` saves too). It refuses empty
@@ -480,8 +480,44 @@ its own once the cache refreshes with a list that carries it.
   it queues the same reset a model pick queues, consumed with `skip_if_busy`, so a
   turn already streaming on that session is never cut. An empty stamp is unknown and
   triggers nothing. A slot or crewmate pin never triggers it. A `slot.model` an
-  earlier backfill stored is indistinguishable from a person's pick and stays until
-  the user picks Auto.
+  earlier backfill stored is indistinguishable from a person's pick, so nothing
+  clears it on its own: it stays until the user picks Auto in that chat, or presses
+  **Make my chats follow the default** under Settings > Chat > Model. That action
+  (`dashboard/chat_follow_default.py`, owner-only) counts the chats a person started
+  that keep a model, through `GET /api/chat/slots/follow-default`. The count also
+  answers the saved Default Model (`""` on Auto), the kept models with how many
+  chats keep each, and the titles of the first five counted chats, open ones first,
+  each redacted for display before it is capped; the confirm names all three, so it
+  says where the chats land, which models they leave and which chats change.
+  Kept model names are redacted for display too, with counts grouped by display label.
+  A chat whose agent template pins a model follows that pin rather than the Default
+  Model, as that setting's own hint says. On confirm,
+  `POST` clears `slot.model` on exactly the counted set: the request carries the
+  count's digest and is refused `409 chats_changed`, changing nothing, when the set
+  has moved since, and it answers `500 chats_not_saved` with the counts, never a
+  success, when a line cannot be rewritten. A chat being opened at that moment, or
+  one whose close is still being saved, is left for the next press. So is a chat
+  whose tab the boot restore has not rebuilt yet (or could not read), like one
+  being opened. A chat a
+  throttle or refusal fallback is serving is not counted, so the press never strands
+  it on the fallback: the fallback's restore still moves it back. A chat
+  `session_create` made (its line names a `created_by`), a crewmate's own chat, and
+  app, cron, channel and remote sessions are never counted. Neither is a chat on a
+  crewmate whose config pins a model: that pin outranks the default, and the chat's
+  next turn would write it back. A slot kind a person does not start must set a
+  non-person origin or a `created_by`: the origin check is the guard that keeps it
+  out. Config pins are read, never written. An open chat's clear is saved at once
+  and confirmed as a guarded write, so a close waits for it or refuses it. A
+  skipped save does not count as changed. A failed save restores
+  the model, provided the slot, session key, cleared model and pick generation still
+  match and no fallback is serving. A reset this clear queued stays armed and
+  restarts the session on the restored model.
+  That chat fails the confirm and is counted again on the next press. A replacement
+  or a later pick wins and is skipped; other drift fails without rollback, leaving
+  the slot dirty for the flush to retry. The press itself resets no live session.
+  A chat whose cleared pin or non-empty allocation stamp differs from the Default
+  Model setting gets the pick's `skip_if_busy` reset at its next turn, Auto included.
+  The pin also covers a session switched in place, which leaves the stamp unchanged.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;

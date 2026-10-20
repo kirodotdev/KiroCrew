@@ -42,11 +42,11 @@ runs all three in the same order, reporting which one decided:
 | Tier | Check | Lives in |
 |---|---|---|
 | `sensitive-bash` | `is_sensitive_bash_command` — scan ceiling, IMDS reach, env-credential detector | `security/paths.py` |
-| `exfil` | `audit_bash_exfiltration` — egress and reverse-shell shapes | `security/exfil.py` |
+| `exfil` | `audit_bash_exfiltration` — egress and reverse-shell shapes | `security/exfil_bash.py` |
 | `deny-rules` | `is_denied` — the rule catalog and the argv-structural floors | `security/deny_gate.py` |
 
 Measuring only the last one would be the specific way this gate could ship a
-meaningless green: its trigger paths cover `paths.py` and `exfil.py`, so a
+meaningless green: its trigger paths cover `paths.py` and `exfil_bash.py`, so a
 tightening there would run it, come back empty, and leave the green badge
 standing as evidence the question had been asked. The tier is reported because
 "the bash scan refused it" and "a catalog rule matched it" need different fixes.

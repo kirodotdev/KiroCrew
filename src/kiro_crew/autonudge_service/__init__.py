@@ -4,9 +4,8 @@
 and the runtime coordination state every owner below shares -- the service lock, the
 per-loop timer tasks, the fire window, the charge-on-delivery claims, the structured
 correlations -- because a lock order and a delete-wins rule only hold where one object
-owns them. It also keeps its lifecycle and singleton publication, and the loader that
-vets every stored row at the trust boundary. Each module here owns one responsibility
-and, at import time, imports only modules listed above it:
+owns them. It also keeps its lifecycle and singleton publication. Each module here owns
+one responsibility and, at import time, imports only modules listed above it:
 
 * :mod:`~kiro_crew.autonudge_service.model` -- the loop record, its stop-reason
   vocabulary and the predicates over one record;
@@ -27,7 +26,10 @@ and, at import time, imports only modules listed above it:
 * :mod:`~kiro_crew.autonudge_service.mutations` -- the legacy loop transactions: arm,
   update, deactivate and remove;
 * :mod:`~kiro_crew.autonudge_service.monitor_records` -- the structured-monitor
-  transitions the typed controller drives.
+  transitions the typed controller drives;
+* :mod:`~kiro_crew.autonudge_service.store_loader` -- the loader, which vets and scrubs
+  every stored row at the trust boundary, and the scrub helpers every other entrance
+  shares.
 
 No module but ``store`` holds state of its own. Every function that takes the service
 as ``self`` is an ``AutoNudgeService`` method, bound on the class by name
@@ -40,7 +42,7 @@ stays the import and patch surface: every name these modules hold is re-exported
 as the same object. The names moved code reads through that facade at call time -- a
 function-local import, so the graph stays acyclic at import time -- are the ones tests
 patch there (``_OVERDUE_REARM_SECS``, ``_RECONCILE_INTERVAL_SECS``,
-``replace_with_retry``, ``fsync_dir``) and the ones that must stay defined in it
-(``scrubbed_judge_spec``, ``_INSTANCE``, ``_MAINTENANCE_LOCKS``,
-``_MUTATION_LOCK_OWNERS``).
+``replace_with_retry``, ``fsync_dir``, ``scrubbed_judge_spec``, ``_bounded_judge_verdict``)
+and the ones that must stay defined in it (``repair_sentinel_path``, ``_INSTANCE``,
+``_MAINTENANCE_LOCKS``, ``_MUTATION_LOCK_OWNERS``).
 """

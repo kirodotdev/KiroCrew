@@ -272,7 +272,7 @@ def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() 
 
 
 def test_a_facade_write_of_the_time_module_reaches_every_reader() -> None:
-    """``test_cli.py`` swaps the whole ``time`` binding through the facade
+    """``test_cli_restart_readiness.py`` and ``test_cli_token.py`` swap the whole ``time`` binding through the facade
     (``patch.object(cli_server, "time", fake)``) for the readiness waits, which now
     live in ``cli_server_restart``: the swap must land there and in the stop owner."""
     sentinel = object()

@@ -81,7 +81,24 @@ class _AmbiguousTemplateName(Exception):
 
     def __init__(self, name: str, paths: tuple[Path, ...] = ()):
         super().__init__(name)
+        self.name = name
         self.paths = paths
+
+    def refusal_text(self) -> str:
+        """The ``error`` sentence of a ``409 ambiguous_template_name`` refusal.
+
+        Names each claimant by its file NAME inside ``~/.kiro/agents/`` (never
+        the absolute path, which would leak the home layout), sorted, so the
+        reader knows what to rename. A raiser that did not scan the files says
+        only that more than one matches. Each name goes through ``_roster_mask``
+        like every other agents-directory string the API returns: whoever writes
+        that directory chooses the file names.
+        """
+        head = f"'{_roster_mask(self.name)}' matches more than one template file"
+        if not self.paths:
+            return f"{head}; rename one first."
+        files = ", ".join(sorted(_roster_mask(p.name) for p in self.paths))
+        return f"{head} in ~/.kiro/agents/ ({files}); rename one first."
 
 
 def _load_template_specs(

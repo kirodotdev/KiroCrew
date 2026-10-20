@@ -127,6 +127,7 @@ def _apply_restored_open_slot(
     preserve_remote_only: bool = False,
     tail: list[dict] | None = None,
     dropped: set[str] | None = None,
+    pending_backfills: list[tuple[str, dict]] | None = None,
 ) -> int:
     """Turn one prefetched open-tab read into a slot; return 1 if it restored.
 
@@ -137,6 +138,11 @@ def _apply_restored_open_slot(
     ``asyncio.Queue.put_nowait`` / ``Event.set``, so this half must run on the
     event loop even when the read that fed it did not. Shared by both drivers so
     the "unreadable metadata keeps its reopen seed" rule has one definition.
+
+    *pending_backfills*, when supplied by the async driver, is threaded into
+    :func:`_rehydrate_slot_from_history` so the tab-id backfill this slot mints
+    is collected and DRAINED (its ``os.replace`` committed) before the driver
+    returns, instead of firing off the loop here — see that function's note.
 
     *conv_log* and *started* together opt into the POST-HOP re-checks and are
     passed only by the async driver, whose read happened in a worker thread. The
@@ -230,6 +236,7 @@ def _apply_restored_open_slot(
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
         _lazy_tail=tail if messages is None else None,
+        pending_backfills=pending_backfills,
     )
     return 1 if slot is not None else 0
 
@@ -394,6 +401,7 @@ def _rehydrate_slot_from_history(
     _prefetched_agent: str | None = None,
     _prefetched_effort_marker: bool = False,
     _lazy_tail: list[dict] | None = None,
+    pending_backfills: list[tuple[str, dict]] | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -405,6 +413,15 @@ def _rehydrate_slot_from_history(
     *kiro_model_map* lets a bulk caller build the agent→model map once and share
     it across every slot instead of paying a fresh directory glob + JSON parse
     per tab; omit it and one is built on demand for single-slot callers.
+
+    *pending_backfills* collects the ``(key, fields)`` of any tab-id metadata
+    backfill this slot mints, instead of firing it off the loop here. The async
+    open-slot driver passes a list and DRAINS it (its ``os.replace`` committed)
+    before it returns, so a caller's immediate on-loop transcript read right
+    after restore cannot land inside that replace window and trip a Windows
+    sharing violation. When ``None`` (every synchronous caller) the backfill
+    fires off the loop as before. Mirrors the drain :func:`_apply_recent_session`
+    performs for the recent-session driver.
 
     Unlike ``state.get_or_create_slot`` (which creates a fresh, empty slot with
     default ``memory_mode='persistent'``), this helper reads the session's
@@ -526,9 +543,21 @@ def _rehydrate_slot_from_history(
             # returns the identical window whether it is written before or after.
             # Kept off the loop because update_metadata enters _locked (flock +
             # os.close), a blocking-on-loop-prohibited op.
-            update_metadata_off_loop(
-                state.conversation_log, history_key, {"tab_id": applied.minted_tab_id}
-            )
+            #
+            # Reading first makes THIS slot's own read quiescent, but firing the
+            # backfill off the loop here still leaves its os.replace in flight
+            # when the restore driver returns. A caller that reads this transcript
+            # on the loop right after restore (a sidebar read, a resume) can then
+            # land inside the replace window — the same Windows sharing violation.
+            # When the driver supplies a drain list we hand the backfill to it so
+            # the replace is committed before the driver returns; otherwise it
+            # fires off the loop. Mirrors _apply_recent_session's pending_backfills.
+            if pending_backfills is not None:
+                pending_backfills.append((history_key, {"tab_id": applied.minted_tab_id}))
+            else:
+                update_metadata_off_loop(
+                    state.conversation_log, history_key, {"tab_id": applied.minted_tab_id}
+                )
         if _lazy_tail is not None:
             # A sidebar row: the window waits for its first reader. The tail
             # stands in for the summary, and nothing here read the transcript,

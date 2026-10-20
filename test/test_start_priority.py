@@ -907,12 +907,13 @@ def test_the_dashboard_runner_allocates_at_the_turns_priority():
             if turn_file.name != "__init__.py"
         )
     )
-    run_chat = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_chat"
+    # The turn's admission phase (chat_turn/turn_admission.py) builds the allocation.
+    admit = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_turn_admit"
     )
     kwargs = [
         n
-        for n in ast.walk(run_chat)
+        for n in ast.walk(admit)
         if isinstance(n, ast.AnnAssign)
         and isinstance(n.target, ast.Name)
         and n.target.id == "_allocation_kwargs"
@@ -1064,7 +1065,9 @@ def test_slack_automation_paths_name_no_priority():
         )
     )
     assert "start_priority" not in source
-    events = (_SRC / "slack/events.py").read_text(encoding="utf-8")
+    events = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted((_SRC / "slack").glob("events*.py"))
+    )
     assert events.count("start_priority=person_priority(not ") == 4
 
 
@@ -1139,7 +1142,7 @@ def test_the_oneliner_does_not_cancel_the_shared_runtimes_own_start():
     """``run_bg_oneliner``'s ``timeout`` bounds the DRIVE only. Cancelling the
     acquisition would kill the shared ``_bg`` (re)spawn every later caller reuses,
     and leak a backend session whose ``session/new`` had already gone out."""
-    tree = ast.parse((_SRC / "llm_helpers.py").read_text(encoding="utf-8"))
+    tree = ast.parse((_SRC / "llm_helpers_parts/background_turns.py").read_text(encoding="utf-8"))
     fn = next(
         n
         for n in ast.walk(tree)

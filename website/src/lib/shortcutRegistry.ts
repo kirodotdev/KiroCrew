@@ -313,7 +313,10 @@ export function loadShortcutOverrides(): ShortcutOverrides {
 // cannot be tested against a real one. That PR adds the writer beside its form;
 // the contract it must honour is the reader above (registry ids only, `null` =
 // unbound, valid chords normalized, broadcast SHORTCUT_OVERRIDES_EVENT after
-// writing SHORTCUT_OVERRIDES_KEY).
+// writing SHORTCUT_OVERRIDES_KEY). The same change must also list
+// SHORTCUT_OVERRIDES_KEY in `DURABLE_PREF_KEYS` (lib/uiPrefs.ts), so a rebound
+// shortcut survives an upgrade like the other Settings → Shortcuts choices. A
+// key joins that allowlist together with its writer.
 
 // ---- Resolution -------------------------------------------------------------
 

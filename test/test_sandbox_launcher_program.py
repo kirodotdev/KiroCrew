@@ -58,6 +58,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "real_uid": os.getuid(),
         "real_gid": os.getgid(),
         "sensitive_dirs": [],
+        "seal_windowless_masks": [],
         "sensitive_dir_ids": {},
         "private_dirs": [],
         "private_dir_ids": {},
@@ -667,7 +668,10 @@ def test_every_stand_in_carries_the_pid_prefix_the_janitor_reclaims(tmp_path: Pa
     assert run.src_prefix == "kirocrew_sb_%d_" % os.getpid()
 
 
-#: Every mount a child run over :class:`_Home` makes, in order.
+#: Every mount a child run over :class:`_Home` makes, in order. The _Home tree's masks
+#: are all tier-origin (``.aws``, ``policy_cache``, ``apps``, the nested ``edits`` leaf),
+#: and the windowless read-only seal applies only to CALLER-supplied masks
+#: (``seal_windowless_masks``), so none of them is sealed and the count is unchanged.
 _MOUNTS_PER_RUN = 16
 
 

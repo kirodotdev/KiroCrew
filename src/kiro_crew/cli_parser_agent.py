@@ -19,9 +19,20 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
 from kiro_crew.config.loader import DASHBOARD_PORT
+from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
+
+# ``--auto-pause-after`` help for ``cron add`` and ``cron update``. The cap and
+# the default are read from the cron model so this copy cannot drift from them.
+_AUTO_PAUSE_AFTER_HELP = (
+    f"Consecutive failed runs before the job auto-pauses (0..{_AUTO_PAUSE_MAX}, "
+    f"default {_AUTO_PAUSE_THRESHOLD}; 0 = never auto-pause. With 0 or a limit "
+    f"above {_AUTO_PAUSE_THRESHOLD}, from the {_AUTO_PAUSE_THRESHOLD}th consecutive "
+    "failure each further run waits 5 minutes, doubling per failure up to "
+    "one hour, until it succeeds or reaches a nonzero limit)"
+)
 
 # Helper for commands with examples
 _fmt = argparse.RawDescriptionHelpFormatter
@@ -158,6 +169,13 @@ Examples:
         "the store's per-kind default when --timeout is omitted -- plus 5s cleanup.",
     )
     cron_add.add_argument(
+        "--auto-pause-after",
+        type=int,
+        dest="auto_pause_after_failures",
+        default=None,
+        help=_AUTO_PAUSE_AFTER_HELP,
+    )
+    cron_add.add_argument(
         "--model",
         dest="model",
         default="",
@@ -226,6 +244,13 @@ Examples:
         dest="timeout_secs",
         default=None,
         help="Per-wake execution budget in seconds (1..86400, default 1800)",
+    )
+    cron_update.add_argument(
+        "--auto-pause-after",
+        type=int,
+        dest="auto_pause_after_failures",
+        default=None,
+        help=_AUTO_PAUSE_AFTER_HELP,
     )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")

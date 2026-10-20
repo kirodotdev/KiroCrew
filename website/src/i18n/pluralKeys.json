@@ -1,4 +1,5 @@
 [
+  "components.gitPanel.repos_omitted",
   "components.redaction.coach_title",
   "pages.overview.vectorMemoryCard.repair_deferred",
   "pages.overview.vectorMemoryCard.repair_invalidation",
@@ -205,6 +206,8 @@
   "pages.membersPage.activity_more_days",
   "pages.membersPage.activity_projects_more",
   "pages.membersPage.activity_routed_count",
+  "pages.membersPage.hidden_more_hint",
+  "pages.membersPage.hidden_named_hint",
   "pages.membersPage.member_count",
   "pages.membersPage.team_crewmate_count",
   "pages.membersPage.team_need_you_count",
@@ -282,5 +285,9 @@
   "commandCenter.crewMain.approvals_open",
   "components.fileRenderers.json_string_show_all",
   "pages.chatPage.closed_sessions_not_deleted",
-  "pages.chatPage.older_sessions_deleted_count"
+  "pages.chatPage.older_sessions_deleted_count",
+  "pages.settings.chatPanel.follow_default_confirm_title",
+  "pages.settings.chatPanel.follow_default_done",
+  "pages.settings.chatPanel.follow_default_model_chats",
+  "pages.settings.chatPanel.follow_default_more"
 ]

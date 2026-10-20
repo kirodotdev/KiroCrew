@@ -697,7 +697,7 @@ async def _handle_pack_detail(request: web.Request) -> web.Response:
 
 #: Names currently being probed, so click-spam on "discover tools" cannot spawn
 #: one server process per click. Core guards its whole-inventory probe the same
-#: way (`handlers/mcp.py::_mcp_probe_in_progress`); this is the per-name form,
+#: way (`handlers/mcp_probe.py::_mcp_probe_in_progress`); this is the per-name form,
 #: because here the name comes from the request rather than from the config.
 _mcp_probe_inflight: set[str] = set()
 

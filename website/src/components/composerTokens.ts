@@ -23,10 +23,16 @@ export function matchFileToken(before: string): string | null {
  * (lowercase, digits, slash for nested keys, underscore, hyphen) — so the picker
  * triggers on exactly the tokens the backend will resolve, including a digit-led
  * slug. `$PATH`/`$VAR` don't trigger because uppercase isn't in the class, and a
- * bare `$` at a word boundary returns "" so "type `$` then browse" works.
+ * bare sigil at a word boundary returns "" so "type the sigil then browse" works.
+ *
+ * The sigil class also accepts the three CJK currency glyphs an IME emits for
+ * the same physical Shift+4 — U+00A5, U+FFE5 and U+FF04 — so a CJK-IME user
+ * opens the skills list without switching to an English keyboard (issue #22348).
+ * Detection only: the picker still inserts a canonical `$`-prefixed marker (see
+ * PickerMenus), so the backend grammar is unchanged.
  */
 export function matchSkillToken(before: string): string | null {
-  const m = before.match(/(^|[\s])\$([a-z0-9][a-z0-9/_-]*)?$/)
+  const m = before.match(/(^|[\s])[$\u00A5\uFFE5\uFF04]([a-z0-9][a-z0-9/_-]*)?$/u)
   return m ? (m[2] ?? '') : null
 }
 

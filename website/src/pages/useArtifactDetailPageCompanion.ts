@@ -33,7 +33,6 @@ import { byRecentActivity } from '../utils/slotRecency'
 import type {
   ArtifactDetailPageStateRead, ArtifactDetailPageDocumentRead,
 } from './useArtifactDetailPageDocument'
-import type { ArtifactDetailPageCommentsRead } from './useArtifactDetailPageComments'
 
 // Seconds. Without a TTL a dormant slot marches to the per-source ceiling and 429s every
 // later post, so the TTL is what bounds this entry.
@@ -62,12 +61,11 @@ type InjectVars = { slotKey: string; version: number; slug: string; refresh?: bo
 
 /** The companion chat session, its context entry and the batch submit of pending comments. */
 export function useArtifactDetailPageCompanion({
-  stateRead, documentRead, commentsRead, durableComments, setPanel, sidebarUserToggledRef,
+  stateRead, documentRead, durableComments, setPanel, sidebarUserToggledRef,
   buildCompanionContext, popout,
 }: {
   stateRead: ArtifactDetailPageStateRead
   documentRead: ArtifactDetailPageDocumentRead
-  commentsRead: ArtifactDetailPageCommentsRead
   durableComments: ArtifactComment[]
   setPanel: Dispatch<SetStateAction<'none' | 'comments' | 'chat'>>
   sidebarUserToggledRef: MutableRefObject<boolean>
@@ -78,7 +76,6 @@ export function useArtifactDetailPageCompanion({
     slug, navigate, dispatch, setSaveError, setContextError, setContextErrorIsRefresh, contextFailureMessage,
   } = stateRead
   const { artifact } = documentRead
-  const { setCommentActionError } = commentsRead
   /**
    * Single navigation dispatcher for every affordance that leaves the artifact
    * view. In the main dashboard it navigates locally (seeding the composer
@@ -315,11 +312,12 @@ export function useArtifactDetailPageCompanion({
    *  Offered ONLY while a session is bound (see the render in ArtifactDetailPageBody.tsx), so the bar
    *  never promises a send it cannot make: with none bound it would have to
    *  decide whether this artifact has one, and a wrong answer there opens a
-   *  second companion chat. Unbound, the footer's "Ask agent to address" is the
+   *  second companion chat. Unbound, the footer's "Draft a prompt in chat" is the
    *  affordance, and it says what it does. The `boundSlot` test here is the
    *  backstop for that, not a second flow. */
   const submitCommentsToChat = useCallback(async (extraPrompt?: string) => {
-    if (!connected || !artifact || !boundSlot || pendingComments.length === 0) return
+    // Nothing sent: `false`, so the bar hands the typed instruction back.
+    if (!connected || !artifact || !boundSlot || pendingComments.length === 0) return false
     const batch = pendingComments
     setSubmittingComments(true)
     try {
@@ -346,19 +344,22 @@ export function useArtifactDetailPageCompanion({
       // (`transport-error`) both leave it pending, and the cost of being wrong
       // is one duplicate turn the user chooses, not a submitted review that is
       // silently gone.
+      //
+      // A refusal goes back to the bar, which frames the server's reason
+      // beside its button (sendTurn: the reason is fit to show).
       if (receipt.status !== 'dispatched' && receipt.status !== 'queued' && receipt.status !== 'unknown') {
-        setCommentActionError(receipt.reason || i18nT('pages.artifactDetailPage.couldn_t_send_your_comments_are_still_pending'))
-        return
+        return receipt.reason || false
       }
       markSent(batch)
       // Show the session the batch landed in; the panels are mutually exclusive,
       // so this is what replaces the chat's own sent-message echo.
       sidebarUserToggledRef.current = true
       setPanel('chat')
+      return true
     } finally {
       setSubmittingComments(false)
     }
-  }, [connected, artifact, pendingComments, boundSlot, slug, markSent, appStore, jevAutoConsented, setCommentActionError, setPanel, sidebarUserToggledRef])
+  }, [connected, artifact, pendingComments, boundSlot, slug, markSent, appStore, jevAutoConsented, setPanel, sidebarUserToggledRef])
 
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */

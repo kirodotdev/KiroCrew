@@ -272,7 +272,7 @@ class TestTranscribeFiles:
             }
         ]
         # This test deliberately makes unlink fail, so the downloaded file survives
-        # the run. events.py allocates it with tempfile.mkstemp(), which would put it
+        # the run. events_voice.py allocates it with tempfile.mkstemp(), which would put it
         # in the SYSTEM temp dir -- a real artifact left on the host, which the
         # blocking no-test-side-effects rule forbids. Pin the allocation into
         # tmp_path so the surviving file is inside pytest's own scratch dir.

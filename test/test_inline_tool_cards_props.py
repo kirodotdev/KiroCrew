@@ -156,7 +156,7 @@ class TestProperty1SegmentFlushOnInterrupt:
             slot.append("chunk", chunk, "chunk")
             assistant_text += chunk
 
-        # Flush segment (simulates what _run_chat does on EVENT_TOOL_CALL).
+        # Flush segment (simulates _on_tool_call in chat_turn/tool_rows.py on EVENT_TOOL_CALL).
         assert assistant_text != ""
         expected_text, _ = redact_exfiltration_urls(assistant_text)
         expected_text, _ = redact_credentials(expected_text)

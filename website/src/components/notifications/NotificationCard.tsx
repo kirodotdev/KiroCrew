@@ -98,7 +98,7 @@ export default function NotificationCard({
     <>
       {member ? <CrewmateNoteFace member={member} size={26} fallback={kindIcon} /> : kindIcon}
       <div className="flex-1 min-w-0">
-        {member && <CrewmateNoteName member={member} className="block text-[11px] text-muted truncate leading-tight mb-0.5" />}
+        {member && <CrewmateNoteName member={member} title={n.title} className="block text-[11px] text-muted truncate leading-tight mb-0.5" />}
         <div className={`text-[13px] font-semibold truncate leading-tight ${muted ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
         {bodyOverride !== undefined
           ? bodyOverride

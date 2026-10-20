@@ -1301,7 +1301,11 @@ async def _resolve_path(request: web.Request, tool_name: str) -> tuple[str, web.
     raw_path = request.query.get("path", "")
     if request.query.get("resolve") == "1":
         try:
-            raw_path, err = await _files._run_path_probe(_files._resolve_project_relative, raw_path)
+            raw_path, err = await _files._run_path_probe(
+                _files._resolve_project_relative,
+                raw_path,
+                stall_path=_files._project_relative_stall_path(raw_path),
+            )
         except _files._PathProbeBusy:
             return raw_path, _files._probe_busy_response(resource=raw_path, tool_name=tool_name)
         if err == "cannot_resolve":

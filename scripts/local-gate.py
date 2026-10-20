@@ -4,7 +4,7 @@
 Why this exists
 ---------------
 The iteration loop on this repo (review-fix rounds, babysit amends) used to run
-the full backend suite -- 62,108 tests, roughly an hour, and with ``-n auto`` one
+the full backend suite -- far too large to run per change, and with ``-n auto`` one
 xdist worker per core -- for every change whose diff touched more than one
 surface or any ``scripts/`` file. On a shared 48-core box that is 32 workers
 owning the machine while every other session crawls, to produce a signal CI

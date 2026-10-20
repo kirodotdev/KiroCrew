@@ -332,7 +332,7 @@ COMPACT_WAIT_TIMEOUT_SECS = 300.0
 SUBAGENT_TIMEOUT_SECS = 10800
 
 # Budget for an agent backend's ``initialize`` handshake, in seconds. Spent by
-# ``acp.runtime`` (which re-exports it as ``_INITIALIZE_TIMEOUT`` and documents why
+# ``acp.runtime_spawn_launch`` (which binds it as ``_INITIALIZE_TIMEOUT`` and documents why
 # the value is what it is), and read by the subagent startup watchdog, whose window
 # has to cover a handshake that spends all of it
 # (``SubagentManager._startup_deadline``). Owned here because that second reader is

@@ -34,7 +34,7 @@ if os.name == "nt":
         def _close_self_pipe(self) -> None:
             # Windows implements ``socketpair`` with a localhost TCP connection.
             # pytest-asyncio 0.21 creates two fresh loops per async test, so this
-            # 62k-test suite can consume the 16,384-port dynamic range before
+            # suite is large enough to consume the 16,384-port dynamic range before
             # TIME_WAIT entries expire.  Abortive close is safe for the loop's
             # private wakeup socket (it carries no application data) and releases
             # the port immediately while preserving a fresh Proactor loop per test.
@@ -1210,6 +1210,26 @@ def _restore_autonudge_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _reset_cjk_segmenter():
+    """Forget session search's registered Chinese segmenter around each test.
+
+    ``history_search.register_cjk_segmenter`` fills one process-global slot, and
+    the gateway boot fills it (``_init_services``). Tests share one interpreter, so
+    a test that boots the gateway would leave every LATER test in the worker parsing
+    Chinese queries into dictionary words, and the character-path tests would red
+    depending on which tests shared the worker. Read from ``sys.modules`` so a test
+    that never imports search pays nothing.
+    """
+    module = sys.modules.get("kiro_crew.history_search")
+    if module is not None:
+        module.reset_cjk_segmenter_for_tests()
+    yield
+    module = sys.modules.get("kiro_crew.history_search")
+    if module is not None:
+        module.reset_cjk_segmenter_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _reset_reasoning_effort_globals():
     """Snapshot + restore the process-global reasoning-effort allowlist around
     each test. The allowlist is union-only/monotonic by design (persistence
@@ -1754,7 +1774,7 @@ def _restore_default_child_watcher():
 
     Some tests install a real, non-default asyncio child watcher via the
     gateway's ``_install_child_watcher()`` -- notably
-    ``test_cli.py::test_real_subprocess_works_after_install_on_linux``, which on
+    ``test_cli_main_entry.py::test_real_subprocess_works_after_install_on_linux``, which on
     Linux installs a ``PidfdChildWatcher`` and runs ``asyncio.run``. On exit,
     ``asyncio.run`` detaches the watcher's loop, leaving a loop-less watcher in
     the global policy. Two distinct failures follow from that leak, and which

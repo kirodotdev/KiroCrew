@@ -85,6 +85,18 @@ session <caller> via <verb>]` envelope so the target's transcript can never
 render it as something the person typed, and channel agents are blocked from it
 outright.
 
+A send from a work-ledger conductor to the worker it bound also hands that
+worker's waiting item back (`work_ledger.read_send_handback` before delivery,
+`stamp_send_handback` after). It writes only when the target's binding resolves
+to the caller, the item is `blocked` or `question` with no `reason` (a report
+with `approval` / `needs_human` waits on a person), and no `decide` has
+answered its last report yet. Under the board lock it re-reads the item and writes only
+if that report is unchanged, so a report filed while the message was in flight
+stays the conductor's move. The decision is the message redacted through
+`safe_work_fields`, clipped to `MAX_DECISION_CHARS` with a marker, and recorded
+through the same `decide` pipeline as `work_ledger_record`. The stamp is
+best-effort: a skip or failure never fails a delivered send.
+
 `session_broadcast` is not a second delivery path. It resolves an audience and
 then calls `send_to_target` once per target, so every bound above holds per
 delivery unchanged — the same gate, the same containment snapshot, the same
@@ -371,9 +383,10 @@ window and replaces it with a narrower one: the steer RPC suspends on
   second read, so a retarget landing between validation and record would be
   recorded as the admitted audience without having been judged, and the publisher
   would find live and recorded equal and publish the private read into the new
-  room. Written only INSIDE a dashboard-runner turn -- under the identity
-  `_run_chat` publishes on the slot at turn start (`_active_turn_session_key`)
-  and retires in the same teardown that empties this record -- because that
+  room. Written only INSIDE a dashboard-runner turn -- under the identity the
+  turn's admission phase (`_turn_admit`, in `dashboard/chat_turn/turn_admission.py`)
+  publishes on the slot at turn start (`_active_turn_session_key`) and `_run_chat`'s
+  `finally` retires in the same teardown that empties this record -- because that
   teardown is the only thing that clears it: a channel-born session's own turns
   run in the messaging driver, which sets no such marker and runs no such
   teardown, so an owner-DM conductor calling these tools from its channel turn
@@ -502,8 +515,12 @@ caller's own store exactly as an unshadowed template child does (see "A created
 worker receives one execution identity"). On an install with no shadowing member
 the template kind resolves exactly what the bare name resolves — the resolver
 skips only the alias lookup — so the goal conductor's charter and the
-goal-conductor skill always pass it when they dispatch `kirocrew-worker`, and no
-conductor meets the refusal first. There is no `member` kind on this route: a bare
+goal-conductor skill always pass it when they dispatch `kirocrew-worker`. The
+route does not rely on the caller remembering: a bare `agent: "kirocrew-worker"`
+with no kind is read as `agent_kind: "template"` (`_STOCK_WORKER_AGENT` in
+`session_create.py`), so a model that drops the kind still gets the template on
+its own store instead of the refusal. That default covers the stock worker's
+name only; every other crew member named bare still resolves name-first. There is no `member` kind on this route: a bare
 name already selects the member, so the value would only restate that
 resolution. The kind is selection input, never authority, and every gate on this
 route still applies. A stated kind requires `agent` (`agent_kind_requires_agent`,
@@ -711,6 +728,23 @@ No tail fork (`direction` is fixed to `head`); the human route keeps it behind
 `dashboard.tail_fork_enabled`. No `prompt`: the child starts idle, and seeding
 it is `session_send`'s job — the same split that keeps `session_create` from
 being the front half of a delivery.
+
+**A parent with no recorded execution identity.** A legacy slot saved before
+execution carriers were recorded has only its `agent` name and `agent_kind`
+stamp. `chat_fork._fork_execution_context` rebuilds the child's carrier the way
+`resolve_session_agent_bindings` resolves the parent's own turns: a stored
+skill-view name is first mapped back to its source agent with `_source_of_view`,
+then `resolve_agent_identity(cfg, agent, selection_kind=agent_kind)` decides
+whether the name is a crewmate alias. An alias gets the member carrier
+`resolve_member_execution` writes for an owner's create, with that crewmate's
+template, model pin and store, so `default` launches `kirocrew` rather than a
+template called `default`. Any other name, and any slot stamped `template`, gets
+a template carrier under the name as written, and an empty name falls back to
+`kirocrew`. The fork is refused with `store_unavailable` when the recorded store
+or the crewmate's resolved store is private V2 memory, because no carrier proves
+the parent ran on it, and when the resolved store differs from a store the
+parent recorded. `agent_kind` is one of the identity fields the fork re-reads
+to detect a parent changed mid-fork.
 
 ### What a created child inherits
 

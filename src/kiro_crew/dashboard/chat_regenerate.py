@@ -401,7 +401,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     # ``validation`` <-> ``artifacts`` cycle resolves only once something else
     # has pulled those in), so hoisting these two to module scope makes
     # ``import kiro_crew.dashboard.chat_regenerate`` fail on its own. Same reason
-    # ``session_control`` and ``handlers/core`` reach it this way.
+    # ``session_control`` and ``handlers/core_config_models`` reach it this way.
     from kiro_crew.dashboard.chat_handlers import (
         _reauthorize_after_await,
         _subagents_attached_response,

@@ -258,6 +258,72 @@ def test_lazily_opened_store_keeps_vectors_after_restart(migration, monkeypatch,
             reopened.close()
 
 
+def declare_mean_pooling(model):
+    """Write a GGUF header declaring a bert model with mean pooling over *model*."""
+    architecture = b"bert"
+    key = b"bert.pooling_type"
+    header = struct.pack("<4sIQQ", b"GGUF", 3, 0, 2)
+    header += struct.pack("<Q", 20) + b"general.architecture" + struct.pack("<I", 8)
+    header += struct.pack("<Q", len(architecture)) + architecture
+    header += struct.pack("<Q", len(key)) + key + struct.pack("<I", 4) + struct.pack("<I", 1)
+    with model.open("r+b") as stream:
+        stream.write(header)
+
+
+def test_legacy_vectors_are_rebuilt_when_the_file_declares_another_pooling(migration, monkeypatch):
+    # Legacy vectors were made with last-token pooling. A file declaring mean
+    # pooling is recorded with @mean after its digest, so they are not that space.
+    config, model, stores = migration
+    declare_mean_pooling(model)
+    legacy = f"custom:{model.name}:{model.stat().st_size}"
+    config.write_text(
+        json.dumps(
+            {"memory": {"embed_model_path": str(model), "embed_model_id": "", "embedding_dim": 2}}
+        ),
+        encoding="utf-8",
+    )
+    for store in stores:
+        store.reconcile_embedding_space(emb.embedding_space_signature(legacy, 2))
+    backend = activate(monkeypatch)
+    assert backend.model_id.startswith("custom:sha256:") and backend.model_id.endswith("@mean")
+    for store in stores:
+        assert emb.align_store_embedding_space(store) > 0
+        assert vectors(store) == []
+    # The rebuilt vectors are not legacy, so nothing asks to reapply the model.
+    assert "embed_model_legacy_ids" not in json.loads(config.read_text(encoding="utf-8"))["memory"]
+
+
+def test_legacy_ids_beside_a_pooled_id_are_not_adopted(migration, monkeypatch):
+    # Every recorder drops legacy ids when it records a pooled id, so only a hand
+    # edit pairs them; the legacy vectors are still last-token, so they rebuild.
+    config, model, stores = migration
+    declare_mean_pooling(model)
+    legacy = f"custom:{model.name}:{model.stat().st_size}"
+    model_id = emb._custom_model_id(model, "")
+    assert model_id.startswith("custom:sha256:") and model_id.endswith("@mean")
+    config.write_text(
+        json.dumps(
+            {
+                "memory": {
+                    "embed_model_path": str(model),
+                    "embed_model_id": model_id,
+                    "embed_model_stamp": list(emb._model_file_stamp(model)),
+                    "embed_model_legacy_ids": [legacy],
+                    "embedding_dim": 2,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    for store in stores:
+        store.reconcile_embedding_space(emb.embedding_space_signature(legacy, 2))
+    backend = activate(monkeypatch)
+    assert backend.model_id == model_id
+    for store in stores:
+        assert emb.align_store_embedding_space(store) > 0
+        assert vectors(store) == []
+
+
 def test_identity_metadata_is_typed_and_round_trips(migration, monkeypatch):
     from kiro_crew.config import loader
     from kiro_crew.config.schema import JSON_SCHEMA

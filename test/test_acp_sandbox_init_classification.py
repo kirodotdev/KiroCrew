@@ -596,11 +596,16 @@ def test_the_first_session_clears_the_latch_in_the_source():
     migrating back to the handshake and re-opening the gap, and both are properties
     of the file.
     """
+    import sys
     from pathlib import Path
 
     import kiro_crew.acp.runtime as runtime_mod
 
-    source = Path(runtime_mod.__file__).read_text()
+    # runtime.py's owner modules (runtime_*.py) hold code that was its own.
+    source = "".join(
+        Path(sys.modules[name].__file__).read_text()
+        for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
+    )
     marker = "self._first_session_ready = True"
     assert source.count(marker) == 1, "more than one startup completion to keep in step"
     after = source.split(marker, 1)[1][:400]
@@ -1178,13 +1183,16 @@ def test_the_failed_handshake_settles_the_drain_before_teardown():
     Asserted on the file because what can go wrong is the two statements swapping
     places, which no behavioural double can pin without driving a whole real spawn.
     """
+    import sys
     from pathlib import Path
 
     import kiro_crew.acp.runtime as runtime_mod
 
-    source = Path(runtime_mod.__file__).read_text()
+    # The spawn and its failed-start cleanup live in the owner that binds _spawn_admitted.
+    owner = sys.modules[runtime_mod.AcpRuntime._spawn_admitted.__module__]
+    source = Path(owner.__file__).read_text()
     handler = source.split("await self._snapshot_descendants(retry_when_empty=True)", 1)[1]
-    handler = handler.split("    #: One retry for a descendant scan", 1)[0]
+    handler = handler.split("\nasync def _handshake_client_capabilities(", 1)[0]
 
     settle = handler.index("await self.settle_stderr()")
     teardown = handler.index('reason="failed init handshake cleanup"')

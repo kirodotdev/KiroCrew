@@ -130,7 +130,7 @@ Both endpoints emit SEL audit records.
 | Tool handler (`suggest_followup`, `_emit_directive`) | `src/kiro_crew/mcp_tools/control_parts/directive.py` |
 | Dispatch (`HANDLERS`) | `src/kiro_crew/mcp_tools/control.py` |
 | Directive marker codec | `src/kiro_crew/session_directive.py` |
-| Directive applier (the effect) | `src/kiro_crew/dashboard/session_directive_apply.py` |
+| Directive applier (the effect) | `src/kiro_crew/dashboard/session_directive_apply_slot.py` |
 | Arg schema | `src/kiro_crew/validation_parts/core_turn_schemas.py` |
 | Card endpoint | `src/kiro_crew/dashboard/chat_api/followup_card.py` |
 | Worktree endpoint | `src/kiro_crew/dashboard/handlers/worktree.py` |

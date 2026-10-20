@@ -1,8 +1,8 @@
 """Regression tests for Slack log sanitization (_safe_log).
 
 Covers CWE-117 (log injection via CR/LF) and CWE-532 (customer data /
-credentials written verbatim to logs) for the Slack slash-command text and
-inbound message body log sites in ``slack/events.py``.
+credentials written verbatim to logs) for the Slack slash-command text
+(``slack/events_slash.py``) and inbound message body (``slack/events.py``) log sites.
 """
 
 from kiro_crew.slack.events import _safe_log

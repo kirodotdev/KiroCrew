@@ -1497,7 +1497,7 @@ class TestNoPinnedWalkBackstop:
         the ``os.open`` itself follows an ancestor junction planted after any
         check, and a UNC target fires outbound SMB authentication as a side
         effect of the open, which no after-open check can undo. Per the repo
-        ruling recorded in ``snapshot.py``'s notification copy, the branch now
+        ruling recorded in ``snapshot_merge_driver.py``'s notification copy, the branch now
         refuses outright: nothing is opened, nothing is copied, even for an
         honest file. The route answers 501 before this is ever reached; this
         pins the backstop."""

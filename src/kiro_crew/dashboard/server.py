@@ -255,6 +255,7 @@ from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
     _kick_display_verdicts,
     _kick_knowledge_orphan_reclaim,
     _kick_local_decision_model,
+    _kick_otel_crew_log_subscriber,
     _kick_owner_only_sweep,
     _kick_session_search_index,
     _own_host_warm_done,
@@ -567,6 +568,12 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # Session search's Chinese dictionary words for mcp-core (the gateway
+        # holds the host's one copy). MCP-only, no browser caller. The handler
+        # re-asserts loopback AND ``internal_auth`` itself, because a missing
+        # header falls through to cookie auth and a ``local_only=False``
+        # deployment reclassifies strict paths as mixed.
+        "/api/search/segment",
         # Blocking MCP ask_question: open / wait / withdraw. STRICT for the same
         # reason as the keepalive above -- the only caller is the tool in an MCP
         # subprocess, and the card is addressed by the attested X-Session-Key,
@@ -2238,6 +2245,22 @@ async def start_dashboard(
     # It is installed here rather than on a first request because the frame exists
     # so a watching client learns of a growth it did not ask for.
     handlers.install_crew_log_publisher(state)
+    # The OTel usage export's own subscription to the same bus, gated on telemetry
+    # consent rather than on the crew-log flag above: a no-op when
+    # ``telemetry.enabled`` is off (the default), so an unopted host installs no
+    # subscriber and sends nothing. Kicked as a tracked task off the loop, not called
+    # inline: on an opted-in host the first ``get_recorder()`` the install reaches
+    # builds the recorder synchronously (SDK import plus the install-id write), which
+    # must not sit in front of the publish (``no-new-work-on-gateway-boot-path``). See
+    # ``maintenance._kick_otel_crew_log_subscriber``.
+    #
+    # WHAT THE GATE DOES NOT COVER, said plainly: the usage FOLDS themselves are
+    # members of the crew log's own ``_FOLDS``, so they advance in the eager worker's
+    # pass and are written into the savepoint on every host that keeps a crew log,
+    # consent or none. That cost is a handful of integers per session and the enum
+    # ``otel_usage`` folds an agent name down to; only the egress is behind the
+    # consent flag. See ``crew_log_export.install_otel_crew_log_subscriber``.
+    _kick_otel_crew_log_subscriber(state)
 
     # Event-loop heartbeat and its off-loop stall watchdog (see the heartbeat owner).
     _loop_watchdog = await _open_loop_watchdog(_launch_environment)

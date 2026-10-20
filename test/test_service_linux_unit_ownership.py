@@ -641,11 +641,13 @@ class TestLinuxServiceScopesOwnership:
         answering `None` for every layout, `uninstall()` issues no verb in either
         scope, whatever the manager reports."""
         import ast
+        import importlib
         import inspect
 
         from kiro_crew.service import linux as svc_linux
 
-        tree = ast.parse(inspect.getsource(svc_linux))
+        family = (svc_linux, *map(importlib.import_module, svc_linux._OWNERS))
+        tree = ast.parse("".join(inspect.getsource(module) for module in family))
         owned_first = set()
         arms = set()
         for node in ast.walk(tree):

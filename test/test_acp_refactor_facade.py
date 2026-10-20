@@ -397,7 +397,13 @@ _MOVED: dict[str, dict[str, tuple[str, ...]]] = {
 #: there is a seam like any moved helper's.
 _MOVED_METHODS: dict[str, dict[str, tuple[str, ...]]] = {
     "kiro_crew.acp.client": {
-        "kiro_crew.acp.harness.opencode": ("_verify_opencode_routing",),
+        "kiro_crew.acp.harness.opencode": (
+            "_verify_opencode_routing",
+            # The version gate's probe reads the same client-owned
+            # spawn-env internals as the routing read-back beside it, by the same
+            # function-local import.
+            "_opencode_reported_major",
+        ),
         "kiro_crew.acp.harness.pi": ("_verify_pi_gate",),
         "kiro_crew.acp.harness.deepseek": ("_verify_deepseek_gate",),
     },
@@ -1396,6 +1402,10 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
             ("kiro_crew.acp.harness.pi", "_verify_pi_gate"),
             ("kiro_crew.acp.harness.deepseek", "_verify_deepseek_gate"),
             ("kiro_crew.acp.harness.opencode", "_verify_opencode_routing"),
+            # The version gate's probe builds its child's env by the SAME
+            # bindings, so the probe's answer describes the environment the
+            # read-back and the spawn actually run under.
+            ("kiro_crew.acp.harness.opencode", "_opencode_reported_major"),
         )
     },
 }
@@ -1799,8 +1809,9 @@ def test_the_launch_capture_patches_no_moved_name() -> None:
 
 
 #: Names a test patches through a facade that the facade AND an owner both bind, each
-#: importing its own: such a patch reaches only the facade's own code. Every entry is
-#: patched for code that stayed in the facade -- the client's stderr drain and session
+#: importing its own: such a patch reaches only the facade's own code, which a mirrored
+#: facade's write also reaches in the owner modules that code moved to. Every entry is
+#: patched for code of the facade's own family -- the client's stderr drain and session
 #: init (``logger``), ``AcpClient.send_command`` (``redact_exfiltration_urls``), the
 #: runtime's response bound and descendant snapshot -- or for the launch the driver
 #: starts: each driver hands the launch tail its OWN sandbox wrap, scrub and scratch

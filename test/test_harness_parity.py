@@ -63,6 +63,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
@@ -726,15 +727,16 @@ def test_only_overlay_readers_are_written_to() -> None:
     later clear can reach — and the overlay names an effort level, so a harness
     that DOES read the file later inherits a level nobody set for it.
 
-    The two overlay keys have DIFFERENT reader sets, so each writer names its own:
-    the effort write keeps the slash-dialect set it always had, while Tool Search
-    is written only for kiro-cli's Rust engine -- KAS takes that setting over the
-    wire (measured: the relay forwards no ``toolSearch.*`` key from this file), so
-    a Tool Search write gated on the wider set is a dead file that makes the
-    dashboard's "deferred" badge lie.
+    Each overlay key names its own reader set. Both are narrower than the slash
+    dialect: KAS speaks it but never opens this file. Tool Search reaches KAS over
+    the wire (measured: the relay forwards no ``toolSearch.*`` key from this file),
+    so a write gated on the wider set is a dead file that makes the dashboard's
+    "deferred" badge lie. Effort reaches KAS as ``effortLevel``, and the file is
+    shared by every session in the work dir, so a KAS level written there and read
+    back at construction starts the next new chat at it.
     """
     expected = {
-        providers_acp.AcpProvider._apply_effort_overlay: "ACP_BACKENDS_KIRO_SLASH_COMMANDS",
+        providers_acp.AcpProvider._apply_effort_overlay: "ACP_BACKENDS_EFFORT_OVERLAY",
         providers_acp.AcpProvider._apply_tool_search_overlay: "ACP_BACKENDS_TOOL_SEARCH_OVERLAY",
     }
     for fn, membership in expected.items():
@@ -742,8 +744,9 @@ def test_only_overlay_readers_are_written_to() -> None:
         assert (
             membership in source
         ), f"{fn.__name__}: overlay write is not scoped to the overlay's readers"
-    assert ACP_BACKENDS_TOOL_SEARCH_OVERLAY < ACP_BACKENDS_KIRO_SLASH_COMMANDS
-    assert ACP_BACKEND_KAS not in ACP_BACKENDS_TOOL_SEARCH_OVERLAY
+    for readers in (ACP_BACKENDS_EFFORT_OVERLAY, ACP_BACKENDS_TOOL_SEARCH_OVERLAY):
+        assert readers < ACP_BACKENDS_KIRO_SLASH_COMMANDS
+        assert ACP_BACKEND_KAS not in readers
 
 
 def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None:
@@ -1049,6 +1052,12 @@ def test_vocabulary_home_exempts_the_vocabulary_module_and_its_listed_owners_onl
 
 _RUNTIME_PATH_MODULES = (
     "src/kiro_crew/acp/runtime.py",
+    "src/kiro_crew/acp/runtime_tree_kill.py",
+    "src/kiro_crew/acp/runtime_spawn_launch.py",
+    "src/kiro_crew/acp/runtime_spawn_entry.py",
+    "src/kiro_crew/acp/runtime_session_setup.py",
+    "src/kiro_crew/acp/runtime_session_create.py",
+    "src/kiro_crew/acp/runtime_session_load.py",
     "src/kiro_crew/acp/session_handle.py",
     "src/kiro_crew/acp/session_handle_runtime_contract.py",
     "src/kiro_crew/acp/session_handle_watchdog.py",
@@ -1078,18 +1087,26 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "plus consent capability). No other harness sends it, and reading it elsewhere would "
     "mint a non-shell verdict from a shape that backend never promised.",
     (
-        "src/kiro_crew/acp/runtime.py",
+        "src/kiro_crew/acp/runtime_spawn_launch.py",
         "_spawn_admitted",
     ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "
     "setting used to bound skill metadata. Other harnesses must keep their own spawn plans.",
     (
-        "src/kiro_crew/acp/runtime.py",
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_guard_unresolved_mcp_refs",
+    ): "Only kiro-cli launches the agent spec's own ``mcpServers`` (via ``--agent``) and "
+    "reports each one's start, so only there is the spec's list the set an unattended run "
+    "can wait for. KAS holds entries back by registry mode and keeps its own managed "
+    "readiness wait; any other host may never report a spec server, and waiting there "
+    "would cost every webhook and cron run the whole bound.",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
         "_unpooled_control_planes",
     ): "Kiro alone loads its native agent spec without a mirror or wire agent. "
     "Its unpooled managed stdio declarations need a per-session token override; "
     "other harnesses already carry identity through their own projections.",
     (
-        "src/kiro_crew/acp/runtime.py",
+        "src/kiro_crew/acp/runtime_session_load.py",
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "

@@ -102,6 +102,8 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
+import { ApiError } from '../api/apiError'
+import { markModelsAuthRequired, markModelsDegraded } from '../providers/modelListHealth'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 
@@ -190,6 +192,19 @@ beforeEach(() => {
   patchConfigMock.mockReset()
   tipsStatusMock.mockReset()
   tipsFeedbackMock.mockReset()
+  // The model list health store and the models mock are module-global; a test
+  // that drives a degraded / auth-required fetch must not leak that state into
+  // the next. Reset both to the healthy default before each test.
+  modelsMock.mockReset()
+  modelsMock.mockImplementation(() =>
+    Promise.resolve([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'claude-opus-4.8', description: 'Opus' },
+      { model_name: 'claude-haiku-4.5', description: 'Haiku' },
+    ]) as never
+  )
+  markModelsAuthRequired('acp', false)
+  markModelsDegraded('acp', false)
   dashboardConfigMock.mockImplementation(() => Promise.resolve({ ...BASE_DASH }) as never)
   updateDashboardConfigMock.mockImplementation(() => Promise.resolve({}) as never)
   patchConfigMock.mockImplementation(() => Promise.resolve({}) as never)
@@ -234,6 +249,35 @@ describe('ChatPanel — load failures', () => {
     await screen.findByText('Failed to load dashboard config.')
     await screen.findByText('Failed to load config.')
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2)
+  })
+
+  it('says to run kiro-cli login when the model list is degraded by expired auth', async () => {
+    // /api/models answers 503 with the sign-in code (expired kiro-cli login).
+    // The acp adapter reads that code where the fetch error forms and flags the
+    // provider auth-required; the banner must then show the one actionable
+    // sign-in message, NOT the generic "Failed to load config."
+    const authErr = new ApiError(
+      503,
+      'model list unavailable',
+      JSON.stringify({ error: 'kiro-cli login', code: 'kiro_prerequisite_required' }),
+    )
+    modelsMock.mockImplementation(() => Promise.reject(authErr) as never)
+    wrap()
+    expect(
+      await screen.findByText(/Run 'kiro-cli login' in your terminal, then click Retry\./i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load config.')).not.toBeInTheDocument()
+  })
+
+  it('keeps the generic config banner when /api/models is degraded for a non-auth reason', async () => {
+    // A generic degraded 503 (code model_list_unavailable) is a transient blip,
+    // not an auth wall: the banner stays the generic "Failed to load config." and
+    // never claims a sign-in is needed (fail-safe).
+    const blip = new ApiError(503, 'model list unavailable', JSON.stringify({ error: 'model list timed out', code: 'model_list_unavailable' }))
+    modelsMock.mockImplementation(() => Promise.reject(blip) as never)
+    wrap()
+    expect(await screen.findByText('Failed to load config.')).toBeInTheDocument()
+    expect(screen.queryByText(/kiro-cli login/i)).not.toBeInTheDocument()
   })
 })
 

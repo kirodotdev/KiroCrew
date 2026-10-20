@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.acp.types import ACP_BACKENDS_KIRO_SLASH_COMMANDS, ACP_BACKENDS_TOOL_SEARCH_OVERLAY
+from kiro_crew.acp.types import ACP_BACKENDS_EFFORT_OVERLAY, ACP_BACKENDS_TOOL_SEARCH_OVERLAY
 from kiro_crew.agent_sdk.tool_search import (
     TOOL_SEARCH_DEFAULT_MIN_PCT,
     TOOL_SEARCH_DEFAULT_MIN_TOKENS,
@@ -304,24 +304,23 @@ def _apply_effort_overlay(
 ) -> bool:
     """Write the kiro workspace cli.json overlay for (current model, effort).
 
-    Written only for the harnesses that READ it
-    (``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` — the kiro family takes effort from
-    this file at spawn); adapter harnesses use a live set_config_option push
-    instead. Also a no-op when the model is not effort-capable or no level
-    resolves. Called before every (re)spawn so resume/restart keeps the same
-    level.
+    Written only for the harnesses that READ it (``ACP_BACKENDS_EFFORT_OVERLAY``
+    — kiro-cli takes effort from this file at spawn); every other harness takes
+    its level live, KAS as the ``effortLevel`` config option. Also a no-op when
+    the model is not effort-capable or no level resolves. Called before every
+    (re)spawn so resume/restart keeps the same level.
 
-    KAS is written too, though kiro-cli's KAS engine never reads the file:
-    Crew does, re-seeding the slot's levels from it at construction, so a
-    level set on a KAS session survives a gateway restart. The live level
-    there travels as the ``effortLevel`` config option instead.
+    KAS is not written: the file is shared by every session in the work dir and
+    construction reads it back, so a level one KAS chat left there would start
+    the next one. A KAS slot's own level survives a gateway restart through the
+    slot's metadata instead, which the factory hands back as its override.
 
-    Membership rather than "not claude": the companion clear
-    (``_clear_cli_overlay_effort`` in :meth:`change_effort`) is already
-    membership-gated, so a negation here writes an overlay for a harness the
-    clear will never reach — a stale file left in the user's workspace.
+    Membership rather than "not claude": the companion reads and clears (provider
+    construction, :meth:`change_effort`, :meth:`clear_effort`) are gated on the
+    same set, so a wider gate here writes an overlay for a harness they never
+    reach — a stale file left in the user's workspace.
     """
-    if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+    if self._client.backend not in ACP_BACKENDS_EFFORT_OVERLAY:
         return True
     model = self._effort_model
     level = self._resolve_effort()

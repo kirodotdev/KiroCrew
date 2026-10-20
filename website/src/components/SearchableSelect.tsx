@@ -6,6 +6,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { cn } from '../lib/utils'
 
 import { i18nT } from '../i18n/t'
+import { useInsideDialog } from './overlayRoot'
 
 /**
  * Searchable single-select dropdown for lists too long to scan.
@@ -94,6 +95,7 @@ export interface SearchableSelectProps {
    * on an ordinary page a modal popup would lock page scroll, swallow the first
    * click on a neighbouring field, and aria-hide the rest of the page —
    * regressions, not protections, when there is no host dialog to coexist with.
+   * Outside a dialog the shared Popover ignores it.
    */
   modal?: boolean
 }
@@ -126,8 +128,12 @@ export default function SearchableSelect({
   style,
   'aria-label': ariaLabel,
   'aria-describedby': ariaDescribedBy,
-  modal = false,
+  modal: modalProp = false,
 }: SearchableSelectProps) {
+  // The shared Popover is modal only inside a Radix dialog, so focus handling
+  // follows the modality it actually gets (components/overlayRoot).
+  const insideDialog = useInsideDialog()
+  const modal = modalProp && insideDialog
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const triggerRef = useRef<HTMLButtonElement>(null)

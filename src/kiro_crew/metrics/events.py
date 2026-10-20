@@ -113,6 +113,66 @@ SESSION_IDLE_EXPIRED = "kirocrew.session.idle_expired"
 #: its own reset semantics and could not be read per-attribute like this.
 SUBAGENTS_SPAWNED = "kirocrew.subagent.spawned"
 
+#: One per sub-agent run reaching a TERMINAL state -- the denominator
+#: :data:`SUBAGENTS_SPAWNED` has no outcome half of. ``outcome`` is the folded
+#: :data:`SUBAGENT_OUTCOMES` enum.
+#:
+#: Emitted from the sub-agent manager's one-shot exclusive terminal report, past
+#: the point its finalize claim has been granted, which is what makes "exactly
+#: one increment per run" true: the reaper and the run loop's own ``finally``
+#: both race to report and only one of them is let through, and a run closing
+#: through ``subagent/failed`` is the SAME run that could have closed through
+#: ``subagent/completed`` -- a counter on each of those two closers would count a
+#: stopped run twice on the paths that take both.
+SUBAGENT_COMPLETED = "kirocrew.subagent.completed"
+
+#: The remainder member of :data:`SUBAGENT_OUTCOMES`. ``SubagentInfo.outcome`` is
+#: a property over three values, so this is reachable only from a record whose
+#: outcome is absent or not a string -- which is precisely when a guess would be
+#: wrong, hence a named "we do not know" rather than defaulting to ``failed``.
+SUBAGENT_OUTCOME_UNKNOWN = "unknown"
+
+#: Every value ``outcome`` can carry on :data:`SUBAGENT_COMPLETED`. The first
+#: three are ``SubagentInfo.outcome``'s own canonical three-way classification,
+#: restated here rather than imported: ``metrics`` sits below the sub-agent
+#: manager in the dependency order. ``test_business_counters`` pins the two
+#: against each other so the restatement cannot drift.
+SUBAGENT_OUTCOMES = frozenset({"completed", "failed", "stopped", SUBAGENT_OUTCOME_UNKNOWN})
+
+
+def subagent_outcome(raw: object) -> str:
+    """Fold a runtime terminal outcome onto :data:`SUBAGENT_OUTCOMES`; never raises."""
+    if isinstance(raw, str) and raw in SUBAGENT_OUTCOMES:
+        return raw
+    return SUBAGENT_OUTCOME_UNKNOWN
+
+
+#: One per inbound webhook REQUEST the endpoint decides, which is WIDER than the
+#: runs the history ring stores. TWO emitters, both through
+#: ``webhooks.count_request``:
+#:
+#: * ``webhooks.WebhookRunStore.record`` counts each recorded run;
+#: * ``dashboard/handlers/hooks.py::api_hooks_agent`` counts, with an inline
+#:   ``count_request`` above each of its 21 refusing ``return``s, the requests it
+#:   turns away before a run exists.
+#:
+#: Neither is sufficient alone, and that is the point rather than an accident.
+#: The refusals cannot record: the unreadable store is what a record would write
+#: to, and the per-source auth throttle exists to stop doing work on a flood. Left
+#: uncounted they made the series lie in the case it is for -- a rotated
+#: credential records a few ``unauthorized`` runs, the throttle then trips, and
+#: the rate falls to zero while the integration is still broken. So do NOT read
+#: either emitter as redundant and delete it; the increments are disjoint, which
+#: ``test_webhooks_request_counter.py`` pins, and that file's
+#: ``test_every_refusal_branch_is_counted`` reads the endpoint's syntax tree so a
+#: new branch cannot answer without counting.
+#:
+#: ``outcome`` is folded by ``webhooks.metric_outcome`` over two disjoint halves
+#: plus a remainder: the recorded runs (``webhooks.VALID_OUTCOMES``), the refusals
+#: (``webhooks.METRIC_REFUSAL_OUTCOMES``) and ``other``. No free text from the
+#: run's ``detail`` field, and no id, reaches an attribute.
+WEBHOOK_REQUESTS = "kirocrew.webhook.requests"
+
 #: One per cron job execution. ``kind`` separates the three dispatch shapes
 #: (``agent`` runs an LLM turn, ``script`` and ``command`` bypass the model
 #: entirely), which is the difference between a job that costs tokens and one

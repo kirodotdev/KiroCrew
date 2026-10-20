@@ -22,6 +22,15 @@ export interface SlotTurnTimeout {
   max: number
 }
 
+/** What `GET /api/chat/slots/follow-default` answers. */
+export interface FollowDefaultCount {
+  count: number
+  digest: string
+  default_model: string
+  models: { model: string; count: number }[]
+  titles: string[]
+}
+
 export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const selection = {
     models: () => fetch('/api/models').then(j),
@@ -70,6 +79,18 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/turn-timeout', { secs }).then(j) as Promise<SlotTurnTimeout & { ok?: boolean }>,
     chatSlotsModel: (model: string, skip_running: boolean) =>
       post('/api/chat/slots/model', { model, skip_running }).then(j) as Promise<{ ok: boolean; model: string; switched: string[]; skipped_running: string[]; unchanged: string[]; failed: string[] }>,
+    /** How many chats a person started keep a model of their own, and a digest of
+     *  exactly that set for `chatSlotsFollowDefault` to confirm. Changes nothing.
+     *  Also what the confirm names: the saved Default Model (`''` on Auto), how
+     *  many counted chats keep each model (most first), and the redacted titles of
+     *  the first five counted chats (`''` when untitled). */
+    chatSlotsFollowDefaultCount: () =>
+      fetch('/api/chat/slots/follow-default').then(j) as Promise<FollowDefaultCount>,
+    /** Clear the kept model on the chats the count's `digest` names, so each
+     *  follows the default again. 409 `chats_changed` (nothing changed) when that
+     *  set has moved since the count. */
+    chatSlotsFollowDefault: (digest: string) =>
+      post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
     chatSlotWorkspace: (slot: string, workspace: string) =>

@@ -1319,6 +1319,129 @@ class TestDependencyInstall:
             for r in caplog.records
         )
 
+    def test_the_backend_log_is_preserved_across_a_restart(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A respawn must not erase the prior session's log.
+
+        The log opened in mode ``"w"`` truncated on every (re)start, so the one
+        artifact that records why the backend last crashed was gone the moment
+        it respawned. Driving the spawn path twice -- each start writes a
+        distinct provision line into the log before the limiter freezes it --
+        the first start's line must still be present after the second, which it
+        is only with an append open.
+        """
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        log_path = spawn_root / "data" / "logs" / "backend.log"
+
+        def _start_once(marker: str) -> None:
+            _record_runs(
+                monkeypatch,
+                exc=subprocess.CalledProcessError(1, ["pip"], stderr=marker.encode()),
+            )
+            _capture_popen(monkeypatch)
+            with pytest.raises(_StopSpawn):
+                bmod._start_app_backend_body("restart-log", _manifest("server.py"))
+
+        _start_once("FIRST-SESSION-CRASH-CAUSE")
+        assert "FIRST-SESSION-CRASH-CAUSE" in log_path.read_text()
+        _start_once("SECOND-SESSION-LINE")
+        log_text = log_path.read_text()
+        assert "SECOND-SESSION-LINE" in log_text
+        assert (
+            "FIRST-SESSION-CRASH-CAUSE" in log_text
+        ), "the previous session's crash cause must survive the respawn"
+
+    def test_the_backend_log_is_rotated_when_it_reaches_the_size_cap(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Append alone grows the file without bound; a full log is rolled
+        aside to ``backend.log.1`` on open so the current file starts fresh and
+        on-disk history stays bounded (one previous generation kept)."""
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        log_dir = spawn_root / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "backend.log"
+        # Seed a log at the cap so the next start must rotate it.
+        log_path.write_bytes(b"O" * bmod._BACKEND_LOG_MAX_BYTES)
+
+        _record_runs(
+            monkeypatch,
+            exc=subprocess.CalledProcessError(1, ["pip"], stderr=b"NEW-SESSION"),
+        )
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("rotate-log", _manifest("server.py"))
+
+        rolled = log_dir / "backend.log.1"
+        assert rolled.exists(), "the full log must be rolled aside"
+        assert rolled.stat().st_size == bmod._BACKEND_LOG_MAX_BYTES
+        # The current file is a fresh append holding only the new session.
+        current = log_path.read_text()
+        assert "NEW-SESSION" in current
+        assert "O" * 64 not in current
+
+    def test_rotation_keeps_one_bounded_generation(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only one previous generation is kept: a start with the log at the
+        cap replaces whatever was in ``backend.log.1`` with the current full
+        file, so on-disk history stays bounded at about twice the cap and never
+        accumulates generations across restarts."""
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        log_dir = spawn_root / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "backend.log"
+        log_path.write_bytes(b"O" * bmod._BACKEND_LOG_MAX_BYTES)
+        (log_dir / "backend.log.1").write_text("STALE-OLD-GENERATION")
+
+        _record_runs(
+            monkeypatch,
+            exc=subprocess.CalledProcessError(1, ["pip"], stderr=b"NEW"),
+        )
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("rotate-drop", _manifest("server.py"))
+
+        # backend.log (the full current log) replaces .1; the previous .1 is
+        # gone and no second generation is created, so disk use is bounded.
+        assert (log_dir / "backend.log.1").stat().st_size == bmod._BACKEND_LOG_MAX_BYTES
+        assert not (log_dir / "backend.log.2").exists()
+        for p in log_dir.iterdir():
+            if p.is_file():
+                assert "STALE-OLD-GENERATION" not in p.read_text(errors="replace")
+
+    def test_a_small_backend_log_is_not_rotated(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The common case: a restart with a log below the cap only appends --
+        no rotation file is created and the prior content is kept inline."""
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        log_dir = spawn_root / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "backend.log"
+        log_path.write_text("PRIOR-SMALL-SESSION\n")
+
+        _record_runs(
+            monkeypatch,
+            exc=subprocess.CalledProcessError(1, ["pip"], stderr=b"APPENDED"),
+        )
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("small-log", _manifest("server.py"))
+
+        assert not (log_dir / "backend.log.1").exists()
+        text = log_path.read_text()
+        assert "PRIOR-SMALL-SESSION" in text and "APPENDED" in text
+
     def test_a_provisioning_failure_is_written_into_the_backend_log(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1399,6 +1522,47 @@ class TestDependencyInstall:
         assert "(no output)" not in message
         assert "address already in use" in message
         assert "[PORT COLLISION]" in message
+
+    def test_a_silent_exit_does_not_inherit_a_prior_sessions_port_collision(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The immediate-exit diagnostic must read only THIS session's output.
+
+        backend.log is opened in append mode, so it can already hold a prior
+        session's lines. A child that exits silently (a launcher failure, a
+        kill, a crash before its first flush) writes nothing new, so reading the
+        tail of the whole file would surface the previous session's last lines.
+        If one of those was an ``errno 98`` / ``address already in use`` from an
+        earlier spawn, every later silent exit would be mislabelled
+        ``[PORT COLLISION]`` with a stale "cause" -- the exact misdiagnosis this
+        change exists to prevent. Reading from the recorded start offset makes
+        the tail "(no output)" and drops the stale collision flag.
+        """
+        (spawn_root / "server.py").write_text("x = 1\n")
+        log_dir = spawn_root / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "backend.log"
+        # A prior session that really did hit a port collision.
+        log_path.write_text(
+            "[kiro-crew] previous session\n"
+            "Error: [Errno 98] address already in use: bind failed\n"
+        )
+
+        def _popen(*_a: Any, **_kwargs: Any) -> Any:
+            # The child writes nothing to the log before it exits.
+            return SimpleNamespace(pid=99_999_999_999, returncode=1, poll=lambda: 1)
+
+        monkeypatch.setattr(bmod, "popen_limited", _popen)
+        monkeypatch.setattr(bmod, "_survived_spawn", lambda _proc, _port=None: False)
+        with caplog.at_level(logging.ERROR):
+            result = bmod._start_app_backend_body("silent-exit", _manifest("server.py"))
+        assert result is None
+        message = next(r.message for r in caplog.records if "exited immediately" in r.message)
+        assert (
+            "[PORT COLLISION]" not in message
+        ), "a silent exit must not inherit the previous session's errno-98 tail"
+        assert "address already in use" not in message.lower()
+        assert "(no output)" in message
 
     def test_tokenized_url_query_strings_are_stripped_from_pip_stderr(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch

@@ -523,6 +523,152 @@ def test_mcp_first_party_set_is_the_installer_constant_not_a_local_copy():
 
 
 # ---------------------------------------------------------------------------
+# raw readers — registered webhooks
+# ---------------------------------------------------------------------------
+
+
+def _hooks_home(monkeypatch, tmp_path):
+    """Point the registrations path at *tmp_path* and return the hooks.json path.
+
+    ``webhooks.context_registrations_path`` imports ``data_home`` inside its body,
+    so the patch has to land on the owning module rather than on a name bound
+    into ``webhooks``.
+    """
+    from kiro_crew.config import paths
+
+    monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
+    return tmp_path / "hooks.json"
+
+
+def _registration(summary="did a thing"):
+    return {"context_summary": summary, "registered_at": 1_700_000_000.0}
+
+
+def test_registered_webhooks_counts_the_registrations(tmp_path, monkeypatch):
+    path = _hooks_home(monkeypatch, tmp_path)
+    path.write_text(
+        json.dumps({"alpha": _registration(), "beta": _registration("another")}),
+        encoding="utf-8",
+    )
+    assert ig.read_registered_webhooks() == 2
+
+
+def test_registered_webhooks_ignores_the_script_hook_store_sharing_the_file(tmp_path, monkeypatch):
+    """``hooks.json`` is shared with ``ScriptHookStore``, whose ``hooks`` key
+    holds a LIST. Counting its entries would report script hooks as webhooks."""
+    path = _hooks_home(monkeypatch, tmp_path)
+    path.write_text(
+        json.dumps(
+            {
+                "hooks": [{"id": "s1", "command": "echo"}, {"id": "s2", "command": "ls"}],
+                "alpha": _registration(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert ig.read_registered_webhooks() == 1
+
+
+def test_registered_webhooks_missing_file_is_a_genuine_zero(tmp_path, monkeypatch):
+    """An install that uses no webhooks has no file, and that is a real 0 -- not
+    a fault, or every such install sits permanently in the broken bucket."""
+    ig.reset_for_testing()
+    try:
+        _hooks_home(monkeypatch, tmp_path)
+        assert ig.read_registered_webhooks() == 0
+        assert ig.read_probe_failures() == {}
+    finally:
+        ig.reset_for_testing()
+
+
+def test_registered_webhooks_empty_object_is_a_genuine_zero(tmp_path, monkeypatch):
+    ig.reset_for_testing()
+    try:
+        path = _hooks_home(monkeypatch, tmp_path)
+        path.write_text("{}", encoding="utf-8")
+        assert ig.read_registered_webhooks() == 0
+        assert ig.read_probe_failures() == {}
+    finally:
+        ig.reset_for_testing()
+
+
+def test_registered_webhooks_corrupt_file_is_a_gap_AND_a_counted_fault(tmp_path, monkeypatch):
+    """Same fault/gap split ``crons.json`` draws: a 0 would claim nobody
+    registered a hook, and a silent gap is indistinguishable from a host that
+    stopped exporting."""
+    ig.reset_for_testing()
+    try:
+        path = _hooks_home(monkeypatch, tmp_path)
+        path.write_text("{not json", encoding="utf-8")
+        assert ig.read_registered_webhooks() is None
+        assert ig.read_probe_failures() == {ig.PROBE_WEBHOOKS: 1}
+    finally:
+        ig.reset_for_testing()
+
+
+def test_registered_webhooks_callback_never_raises_on_a_corrupt_file(tmp_path, monkeypatch):
+    """End to end through a real pipeline: the fault is published as DATA and the
+    exporter keeps running -- a raise in an observable callback would spam the SDK
+    every export interval."""
+    ig.reset_for_testing()
+    try:
+        path = _hooks_home(monkeypatch, tmp_path)
+        path.write_text("[1, 2", encoding="utf-8")
+        metrics = _collect()
+        assert (
+            ig.GAUGE_WEBHOOKS_REGISTERED not in metrics or not metrics[ig.GAUGE_WEBHOOKS_REGISTERED]
+        )
+        failures = {dp.attributes["probe"]: dp.value for dp in metrics[ig.GAUGE_PROBE_FAILURES]}
+        assert failures.get(ig.PROBE_WEBHOOKS) == 1, f"webhook fault not published: {failures}"
+    finally:
+        ig.reset_for_testing()
+
+
+def test_registered_webhooks_top_level_non_object_holds_no_registrations(tmp_path, monkeypatch):
+    """A list parses, so it is not a fault -- it simply carries no registrations."""
+    ig.reset_for_testing()
+    try:
+        path = _hooks_home(monkeypatch, tmp_path)
+        path.write_text("[]", encoding="utf-8")
+        assert ig.read_registered_webhooks() == 0
+        assert ig.read_probe_failures() == {}
+    finally:
+        ig.reset_for_testing()
+
+
+def test_registered_webhook_count_agrees_with_the_dashboard_listing(tmp_path, monkeypatch):
+    """The gauge and the surface a user reads must not disagree on what counts as
+    a registration, which is why both reduce through the same owner."""
+    from kiro_crew.dashboard.handlers import hooks_webhook_intake as intake
+
+    path = _hooks_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(intake, "_HOOK_STORE_PATH", path, raising=False)
+    path.write_text(
+        json.dumps(
+            {
+                "alpha": _registration(),
+                "beta": {"summary": "legacy field name"},
+                "hooks": [{"id": "s1", "command": "echo"}],
+                "gamma": "not a registration",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert ig.read_registered_webhooks() == len(intake._read_hook_registrations()) == 2
+
+
+def test_no_hook_identifier_or_summary_is_restated_in_this_module():
+    """The shape test has one owner, so renaming a registration field reaches the
+    gauge and the dashboard together rather than leaving the gauge to count by a
+    rule only it still applies."""
+    import inspect
+
+    source = inspect.getsource(ig.read_registered_webhooks)
+    assert "registered_context_count" in source
+    assert "context_summary" not in source
+
+
+# ---------------------------------------------------------------------------
 # OTEL registration + collection
 # ---------------------------------------------------------------------------
 
@@ -563,6 +709,7 @@ def test_collection_yields_every_instrument_with_the_expected_shape():
             return_value={ig.MCP_CLASS_FIRST_PARTY: 4, ig.MCP_CLASS_THIRD_PARTY: 1},
         ),
         patch.object(ig, "read_config_toggles", return_value={"beacon": 1, "stt": 0}),
+        patch.object(ig, "read_registered_webhooks", return_value=5),
     ):
         metrics = _collect()
 
@@ -598,6 +745,13 @@ def test_collection_yields_every_instrument_with_the_expected_shape():
 
     toggles = {dp.attributes["key"]: dp.value for dp in metrics[ig.GAUGE_CONFIG_TOGGLE]}
     assert toggles == {"beacon": 1, "stt": 0}
+
+    # Same rule as the two store-backed counts above: the number of registered
+    # hooks rides in the value, and no hook id, session key or context summary
+    # becomes an attribute -- each is agent-chosen free text.
+    (hooks,) = metrics[ig.GAUGE_WEBHOOKS_REGISTERED]
+    assert hooks.value == 5
+    assert dict(hooks.attributes or {}) == {}
 
 
 def test_no_mcp_server_name_reaches_any_attribute():

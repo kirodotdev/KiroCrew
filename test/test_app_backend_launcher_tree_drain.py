@@ -90,6 +90,29 @@ def _isolated_module_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> An
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     monkeypatch.setattr(bmod, "_pidfile_path", lambda: tmp_path / "app_backends.pids.json")
     monkeypatch.setattr(bmod, "sel", lambda: MagicMock())
+    # The spawn path rolls a full backend.log aside with rotate_jsonl_at, whose
+    # non-blocking lock imports fcntl (POSIX) or msvcrt (Windows) from
+    # platform_compat per IS_POSIX. These tests simulate the OTHER platform, so
+    # on any single host one of those modules is genuinely absent and the import
+    # would raise. Close both seams with harmless stand-ins whose lock just
+    # succeeds (added only when missing, so a real platform module is untouched);
+    # the drain behaviour under test is unaffected by the rotation lock.
+    if not hasattr(bmod.platform_compat, "fcntl"):
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "fcntl",
+            SimpleNamespace(
+                LOCK_EX=2, LOCK_SH=1, LOCK_NB=4, LOCK_UN=8, flock=lambda *_a, **_k: None
+            ),
+            raising=False,
+        )
+    if not hasattr(bmod.platform_compat, "msvcrt"):
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "msvcrt",
+            SimpleNamespace(LK_NBLCK=1, LK_UNLCK=0, locking=lambda *_a, **_k: None),
+            raising=False,
+        )
     with bmod._lock:
         bmod._processes.clear()
         bmod._allocated_ports.clear()
@@ -132,6 +155,16 @@ def windows(monkeypatch: pytest.MonkeyPatch) -> None:
     """Simulate Windows at the platform seam; every kernel call is closed below."""
     monkeypatch.setattr(bmod.platform_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(bmod.platform_compat, "IS_POSIX", False)
+    # The spawn path now rolls a full backend.log aside with rotate_jsonl_at,
+    # whose non-blocking lock takes the msvcrt branch under IS_POSIX=False. On a
+    # Linux host msvcrt does not exist, so close that seam too with a stand-in
+    # whose locking() just succeeds; the test is about the drain, not the lock.
+    monkeypatch.setattr(
+        bmod.platform_compat,
+        "msvcrt",
+        SimpleNamespace(LK_NBLCK=1, LK_UNLCK=0, locking=lambda *_a, **_k: None),
+        raising=False,
+    )
     monkeypatch.setattr(
         bmod.platform_compat,
         "kill_process_tree",

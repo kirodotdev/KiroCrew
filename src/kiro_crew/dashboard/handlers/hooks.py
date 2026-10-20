@@ -34,7 +34,13 @@ from kiro_crew.agent import (  # noqa: F401
     unsent_kiro_hook_rows,
 )
 from kiro_crew.agent_capabilities import CapabilityError
-from kiro_crew.agent_sdk.mcp_problems import session_mcp_problems
+from kiro_crew.agent_sdk.mcp_problems import (
+    UNATTENDED_MCP_WAIT_SECS,
+    declared_mcp_missing,
+    missing_mcp_notice,
+    session_mcp_problems,
+    wait_for_declared_mcp,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import (
     DENY_CAUSE_AUDIT_UNAVAILABLE,
@@ -126,6 +132,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             error="webhook store unreadable",
         )
+        # Counted here rather than through the run store: the store a record
+        # would write to is the one that cannot be read.
+        webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
         return web.json_response(
             {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
             status=503,
@@ -160,6 +169,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             error="auth failures throttled",
         )
+        # The branch the series exists for. The throttle deliberately records
+        # nothing -- a disk write per rejected request is what it is avoiding --
+        # so without this increment a rotated credential goes silent here
+        # exactly while it is still broken.
+        webhooks.count_request(webhooks.METRIC_OUTCOME_THROTTLED)
         return web.json_response(
             {"error": "too many failed attempts", "code": "auth_throttled"}, status=429
         )
@@ -183,6 +197,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             error="webhook store unreadable",
         )
+        webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
         return web.json_response(
             {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
             status=503,
@@ -214,6 +229,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         try:
             source_entry = await asyncio.to_thread(webhooks.token_store().entry_for, token_id)
         except webhooks.WebhookStoreUnreadable:
+            webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
             return web.json_response(
                 {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
                 status=503,
@@ -229,6 +245,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
                 resources=f"token:{token_id}",
                 error="webhook source revoked during admission",
             )
+            # A credential this build judged and refused, so it shares the
+            # recorded member rather than minting a second auth label.
+            webhooks.count_request(webhooks.OUTCOME_UNAUTHORIZED)
             return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
         if source_entry.get("enabled", True) is False:
             _sel().log_api_access(
@@ -259,6 +278,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     try:
         raw_body = await _read_hook_body(request)
     except _HookBodyTooLarge:
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {
                 "error": f"request body exceeds {_HOOK_BODY_MAX_BYTES} bytes",
@@ -267,6 +287,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             status=413,
         )
     except Exception:
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "could not read request body", "code": "body_unreadable"}, status=400
         )
@@ -312,8 +333,10 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     try:
         body = json.loads(raw_body.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     # Type-check before touching the values: a signed caller sending
@@ -321,15 +344,18 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     # mistake into a 500. Same for sessionKey and its .startswith() below.
     raw_message = body.get("message", "")
     if not isinstance(raw_message, str):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "message must be a string", "code": "message_not_a_string"}, status=400
         )
     message = raw_message.strip()
     if not message:
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "message required", "code": "message_required"}, status=400
         )
     if len(message) > _HOOK_MESSAGE_MAX_LEN:
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": f"message exceeds {_HOOK_MESSAGE_MAX_LEN} chars", "code": "message_too_long"},
             status=400,
@@ -337,6 +363,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
 
     session_key = body.get("sessionKey", "")
     if not isinstance(session_key, str):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "sessionKey must be a string", "code": "session_key_not_a_string"}, status=400
         )
@@ -345,6 +372,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         # the same second that shared a key would have the second refused.
         session_key = f"hook:default:{int(time.time())}-{secrets.token_hex(6)}"
     if not session_key.startswith(_HOOK_SESSION_PREFIX):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {
                 "error": f"sessionKey must start with '{_HOOK_SESSION_PREFIX}'",
@@ -360,11 +388,13 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         # non-string raises there, the notification and Slack DM never run, and
         # the ephemeral session is already reset — the turn's output is gone
         # while the run history says it was delivered.
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "name must be a string", "code": "name_not_a_string"}, status=400
         )
     requested_agent = body.get("agent", "") or None
     if requested_agent is not None and not isinstance(requested_agent, str):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "agent must be a string", "code": "agent_not_a_string"}, status=400
         )
@@ -376,6 +406,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         )
     # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
     except (ValueError, TypeError, OverflowError):
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},
             status=400,
@@ -391,6 +422,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             resources=f"token:{token_id};agent:{mapped_agent}",
             error="request agent conflicts with source destination",
         )
+        webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {
                 "error": "request agent conflicts with the source destination",
@@ -413,6 +445,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
                 resources=f"token:{token_id};agent:{mapped_agent}",
                 error="destination-agent discovery unavailable",
             )
+            webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
             return web.json_response(
                 {
                     "error": "destination agent could not be verified",
@@ -429,6 +462,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
                 resources=f"token:{token_id};agent:{mapped_agent}",
                 error="source destination agent is not installed",
             )
+            webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
             return web.json_response(
                 {
                     "error": "the webhook source destination agent is not installed",
@@ -510,6 +544,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             execution = await asyncio.to_thread(_load_hook_execution, session_key)
         except (OSError, ValueError):
             _hook_inflight_sessions.discard(session_key)
+            webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
             return web.json_response(
                 {"error": "hook execution identity is unavailable", "code": "memory_unavailable"},
                 status=503,
@@ -707,6 +742,10 @@ async def _run_hook_inner(
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     if on_client is not None:
         on_client(client)
+    if is_new:
+        # Nobody can reconnect a slow MCP server by hand in this run, so the
+        # first prompt waits (bounded) for the agent spec's servers to report.
+        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
     full_message = message
     # The ContextBuilder prompt is the only text on this path that legitimately
     # MINTS structural boundary markers, so it is the one text the scrub below
@@ -964,6 +1003,8 @@ async def _run_hook_agent(
     detail = ""
     clients: list[Any] = []
     mcp_problems = ""
+    mcp_missing: tuple[str, ...] = ()
+    mcp_never_reported = ""
     try:
         # Loading the persisted context (written by the register_hook MCP tool)
         # is INSIDE the try because the caller's permit and the in-flight claim
@@ -1045,6 +1086,8 @@ async def _run_hook_agent(
         # down. Here rather than in the inner turn so a timeout or crash still
         # says which servers never started.
         mcp_problems = session_mcp_problems(clients[0] if clients else None)
+        mcp_missing = declared_mcp_missing(clients[0] if clients else None)
+        mcp_never_reported = missing_mcp_notice(clients[0] if clients else None)
         if mcp_problems:
             logger.warning(
                 "Hook agent %s: MCP servers unusable in this run — %s",
@@ -1085,6 +1128,12 @@ async def _run_hook_agent(
     # received nothing.
     destinations: list[str] = []
     mcp_notice = f"MCP servers unusable in this run: {mcp_problems}" if mcp_problems else ""
+    if mcp_missing and outcome == webhooks.OUTCOME_COMPLETED:
+        # A turn that ran without a declared server is not a clean completion:
+        # a distinct outcome lets the operator retry it instead of trusting it.
+        outcome = webhooks.OUTCOME_DEGRADED
+    if mcp_never_reported:
+        mcp_notice = f"{mcp_never_reported}. {mcp_notice}" if mcp_notice else mcp_never_reported
     if mcp_notice:
         result_text = f"{result_text}\n\n{mcp_notice}" if result_text else mcp_notice
     if result_text:
@@ -1118,7 +1167,7 @@ async def _run_hook_agent(
                     logger.exception("Hook agent: Slack delivery failed")
 
     delivered = bool(destinations)
-    if outcome == "completed" and not detail:
+    if outcome in (webhooks.OUTCOME_COMPLETED, webhooks.OUTCOME_DEGRADED) and not detail:
         if not deliver or not result_text:
             detail = "No result to deliver"
         elif destinations:
@@ -1196,7 +1245,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _delete_hook_context,
         _DestinationAgentGone,
         _hook_slots_in_use,
-        _is_context_registration,
         _list_hook_contexts,
         _public_runs,
         _redact_hook_identifier,
@@ -1213,5 +1261,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_discovery import _read_agent_spec, list_agents  # noqa: F401
-    from kiro_crew.config.loader import data_home  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401

@@ -22,7 +22,7 @@ from aiohttp import web
 
 from kiro_crew import webhooks
 from kiro_crew.agent_discovery import list_agents
-from kiro_crew.config.loader import KiroCrewConfig, data_home
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.execution_context import ExecutionContext
 
 # ── Webhook Hooks (OpenClaw-style /hooks/agent) ──
@@ -45,8 +45,17 @@ _HOOK_STORE_PATH: Path | None = None
 
 
 def _hook_store_path() -> Path:
-    """hooks.json path, resolved against the live data home."""
-    return _HOOK_STORE_PATH if _HOOK_STORE_PATH is not None else data_home() / "hooks.json"
+    """hooks.json path, resolved against the live data home.
+
+    Resolved by :func:`kiro_crew.webhooks.context_registrations_path`, which is
+    the single owner of that location: ``kirocrew.inventory.webhooks.registered``
+    counts the same file from the metrics reader thread, where this module's
+    test-only override is not in play and a second spelling of the path would
+    read a different install's home.
+    """
+    if _HOOK_STORE_PATH is not None:
+        return _HOOK_STORE_PATH
+    return webhooks.context_registrations_path()
 
 
 _HOOK_MESSAGE_MAX_LEN = 49_999  # ~50K chars — leave 1 char headroom
@@ -139,16 +148,14 @@ def _read_hook_registrations() -> dict[str, dict]:
 
     ``hooks.json`` is also (mis)used by ``ScriptHookStore``, which writes a
     ``{"hooks": [...]}`` shape; anything whose value is not a dict is not a
-    webhook registration and is skipped rather than crashing the read.
+    webhook registration and is skipped rather than crashing the read. The shape
+    test is :func:`kiro_crew.webhooks.is_context_registration`, shared with the
+    id-addressed delete and with the registered-hook gauge.
     """
     raw = _read_json_file(_hook_store_path())
     if not isinstance(raw, dict):
         return {}
-    return {
-        str(k): v
-        for k, v in raw.items()
-        if isinstance(v, dict) and ("context_summary" in v or "summary" in v)
-    }
+    return {str(k): v for k, v in raw.items() if webhooks.is_context_registration(v)}
 
 
 def _read_json_file(path) -> object:

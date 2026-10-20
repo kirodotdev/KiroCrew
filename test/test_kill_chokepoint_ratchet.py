@@ -86,7 +86,7 @@ BYPASS_BASELINE = 67
 #: failed start's cleanup) and the runtime's own kill.
 ATTRIBUTED_KILL_PATHS = (
     ("session_pid_provider_kill.py", "_sync_kill_provider"),
-    ("acp/runtime.py", "kill"),
+    ("acp/runtime_tree_kill.py", "kill"),
 )
 
 GATE = "authorize_runtime_kill"

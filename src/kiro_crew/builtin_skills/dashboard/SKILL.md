@@ -243,6 +243,9 @@ second design.
 - Readable at 320px wide, through to an expanded view. No fixed-width canvas and
   no table that forces the whole page to scroll sideways; stack or disclose dense
   content on a phone.
+- When a bound value moves or a new item lands, the `living-ui` skill says
+  how that motion should feel. Never run the idle tour it describes for
+  explainers: this page stays open all day.
 - Motion off under `prefers-reduced-motion`.
 - Colour is never the only carrier of a state: pair it with a word.
 - Every link gets `target="_blank" rel="noopener noreferrer"`.

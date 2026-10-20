@@ -256,13 +256,20 @@ class TestRunnerBranch:
     def src(self) -> str:
         from pathlib import Path
 
-        return "\n".join(
-            turn_file.read_text(encoding="utf-8")
-            for turn_file in [
-                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
-                Path(chat_runner.__file__),
-            ]
-            if turn_file.name != "__init__.py"
+        # A turn-state copy (``turn.x = x``, written after a store so a later phase reads
+        # the current value) is plumbing between the runner and its phases, not branch
+        # content: the character windows below measure the code without it.
+        return re.sub(
+            r"(?m)^[ \t]*turn\.(\w+) = \1\n",
+            "",
+            "\n".join(
+                turn_file.read_text(encoding="utf-8")
+                for turn_file in [
+                    *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                    Path(chat_runner.__file__),
+                ]
+                if turn_file.name != "__init__.py"
+            ),
         )
 
     def test_reads_the_handles_verdict_not_a_regex(self, src):

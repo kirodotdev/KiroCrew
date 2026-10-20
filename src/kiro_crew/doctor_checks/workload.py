@@ -65,6 +65,15 @@ _LOOPBACK_HOST = "127.0.0.1"
 # a cron verb that already exists.
 _CRON_REPORT_CAP = 5
 
+#: How long past its ``next_run_at`` an unleased, non-terminal task row must be
+#: before doctor calls it stranded. A due row still waits for a free slot, so the
+#: bound leaves room for one queued behind a full cap; a row a lost terminal write
+#: strands stays due for as long as nothing settles it, hours rather than minutes.
+_STRANDED_OVERDUE_SECS = 3600
+
+#: Stranded rows named one per line; the rest are summarised as ``+N more``.
+_STRANDED_REPORT_CAP = 5
+
 
 def _format_job_labels(entries: list[tuple[str, str]]) -> str:
     """Render ``(id, name)`` *entries* capped at :data:`_CRON_REPORT_CAP`.
@@ -88,13 +97,19 @@ def _format_job_labels(entries: list[tuple[str, str]]) -> str:
 
 
 def _doctor_task_store(issues: list[str]) -> None:
-    """Report the durable task queue: depth, oldest wait, journal warnings.
+    """Report the durable task queue: depth, oldest wait, stranded rows, journal warnings.
 
     Reads ``$KIROCREW_HOME/tasks/tasks.db`` directly with a read-only view of
     the store's own diagnostics, so a wedged gateway cannot hide a backlog.
     Silent on a fresh install with no store yet. A network-filesystem data home
     is reported here because the store then runs on ``journal_mode=DELETE``,
     which is slower but never a refusal.
+
+    A stranded row is one that is not terminal, holds no lease and fell due more
+    than :data:`_STRANDED_OVERDUE_SECS` ago (:meth:`TaskStore.overdue_unleased_rows`).
+    It is reported, never settled: doctor writes nothing to the store, and which
+    ending a row earned is the boot reconcile's call, made from the run's own
+    artifacts, not a diagnostic's.
     """
     from kiro_crew.config.paths import data_home
     from kiro_crew.taskq import TaskStore, TaskStoreUnavailable
@@ -116,10 +131,18 @@ def _doctor_task_store(issues: list[str]) -> None:
     if not path.exists():
         return
     store = TaskStore(path, diagnostic=True)
+    stranded: list[Any] = []
+    stranded_unread = ""
     try:
         store.open()
         lines = store.doctor_lines()
         by_state = store.count_by_state()
+        try:
+            stranded = store.overdue_unleased_rows(_STRANDED_OVERDUE_SECS)
+        except (TaskStoreUnavailable, ValueError) as exc:
+            # A row this build cannot model, or a read refused after the open:
+            # the counts above still stand, so only this check is reported unread.
+            stranded_unread = str(exc)
     except TaskStoreUnavailable as exc:
         print(f"  task store: ⚠️  {path} cannot be opened ({exc})")
         issues.append(
@@ -134,8 +157,69 @@ def _doctor_task_store(issues: list[str]) -> None:
     queued = {state: n for state, n in sorted(by_state.items()) if n}
     if queued:
         print("  task states: " + ", ".join(f"{state}={n}" for state, n in queued.items()))
+    if stranded_unread:
+        from kiro_crew.terminal_safe import safe_terminal_line
+
+        print(f"  stranded rows: ⚠️  not checked ({safe_terminal_line(stranded_unread)})")
+    elif stranded:
+        _report_stranded_rows(stranded, store.now(), issues)
     for warning in store.warnings:
         issues.append(warning)
+
+
+def _report_stranded_rows(rows: list[Any], now: float, issues: list[str]) -> None:
+    """Name each row :meth:`TaskStore.overdue_unleased_rows` returned, capped.
+
+    Each row is named by id, state, session key and how long it is overdue, the
+    four things a user needs to find it in the store or match it to a chat slot.
+    The id and session key are read off disk, so each goes through
+    :func:`~kiro_crew.terminal_safe.safe_terminal_line` before it is printed.
+
+    The verdict depends on whether a gateway runs, read from the lock-holder pair
+    the Memory Pressure section composes (``cli_doctor._read_gateway_pid`` and
+    ``resources._gateway_lock_indeterminate``). With none running, a due row may
+    only be waiting for the next start, which claims it, so the rows are listed as
+    advisory and no issue is recorded. With one running, or when the probe cannot
+    tell, the rows are a warning and an issue.
+    """
+    from kiro_crew.doctor_checks import resources
+    from kiro_crew.terminal_safe import safe_terminal_line
+
+    hours = _STRANDED_OVERDUE_SECS / 3600
+    try:
+        gateway_down = (
+            cli_doctor._read_gateway_pid() is None and not resources._gateway_lock_indeterminate()
+        )
+    except Exception:
+        # The probe failed, which does not say the gateway is stopped: the
+        # warning stands, as the Memory Pressure section's own "probe failed" does.
+        gateway_down = False
+    icon = "ℹ️ " if gateway_down else "⚠️ "
+    print(
+        f"  stranded rows: {icon} {len(rows)} task row(s) not terminal, with no lease, "
+        f"due more than {hours:g}h ago"
+    )
+    for rec in rows[:_STRANDED_REPORT_CAP]:
+        overdue_h = max(0.0, now - float(rec.next_run_at or 0.0)) / 3600
+        print(
+            f"               {safe_terminal_line(rec.id)} ({safe_terminal_line(rec.state)}, "
+            f"session {safe_terminal_line(rec.session_key or '-')}, overdue {overdue_h:.1f}h)"
+        )
+    if len(rows) > _STRANDED_REPORT_CAP:
+        print(f"               +{len(rows) - _STRANDED_REPORT_CAP} more")
+    if gateway_down:
+        print("               No gateway is running, so these may only be waiting for it:")
+        print("               a gateway claims due rows when it starts. Run doctor again")
+        print("               once it has been up a few minutes; a row still listed then")
+        print("               is stranded.")
+        return
+    print("               No gateway holds these rows. A queued, retry_wait or recovering")
+    print("               sub-agent row still counts as its parent session's pending")
+    print("               work, so that session's chat slot answers")
+    print("               409 slot_subagents_running until the row ends.")
+    issues.append(
+        f"{len(rows)} task row(s) not terminal, with no lease, due more than {hours:g}h ago"
+    )
 
 
 def _doctor_ledger_backlog() -> None:

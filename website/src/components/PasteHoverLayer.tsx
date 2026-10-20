@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { findTokenRanges, type PasteBlock } from '../utils/pasteTokens'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
@@ -206,7 +206,7 @@ const PasteHoverLayer = forwardRef<PasteHoverHandle, Props>(function PasteHoverL
   // handleMouseLeave — both simply dismiss any pending/open preview.
   useImperativeHandle(ref, () => ({ handleMouseMove, handleMouseLeave, handleCaret }), [handleMouseMove, handleMouseLeave, handleCaret])
 
-  return createPortal(
+  return <OverlayPortal>
     <PastePreviewTooltip
       open={previewOpen}
       panelId={panelId}
@@ -214,9 +214,8 @@ const PasteHoverLayer = forwardRef<PasteHoverHandle, Props>(function PasteHoverL
       content={hovered ? hovered.content : ''}
       seq={hovered ? hovered.seq : 0}
       testIdPrefix="composer-paste-preview"
-    />,
-    document.body,
-  )
+    />
+  </OverlayPortal>
 })
 
 export default PasteHoverLayer

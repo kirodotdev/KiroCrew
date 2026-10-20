@@ -37,7 +37,7 @@ def _pin_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> Path:
     reads that one and never ``HOME`` -- pinning only ``HOME`` leaves the
     matcher anchored on the real runner profile there, which is what made these
     tests fail on the Windows shard while passing on Linux. Mirrors the autouse
-    fixture in ``test_pod.py``, which pins both for the same reason.
+    ``_isolate_pod_host_state`` in ``pod_helpers.py``, which pins both for the same reason.
 
     **The HOME-derived target cache in ``security`` is reset**, and that is what
     makes a pinned home actually reach the gate rather than only the environment.

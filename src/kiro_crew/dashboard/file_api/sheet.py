@@ -303,7 +303,7 @@ async def api_file_sheet(request: web.Request) -> web.Response:
         return _load_sheet_payload(checked.file, max_bytes=_MAX_UPLOAD_BYTES)
 
     try:
-        result = await _run_path_probe(_open_and_load, transfer=True)
+        result = await _run_path_probe(_open_and_load, transfer=True, stall_path=raw_path)
     except asyncio.CancelledError:
         # Shutdown or client disconnect: the access attempt must not vanish
         # from the audit trail. No resource handling here -- the worker

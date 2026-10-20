@@ -1312,8 +1312,8 @@ must not be published: a malformed document reaches the text through a parser er
 `json`'s errors quote the offending bytes — so an endpoint echoing back the request's
 `Authorization` header (its own request reflected, a proxy error page) would carry that
 credential to both surfaces. Those bytes are not ours, which is why
-`platform/policy_distribution.py` is a registered `_REDACTION_SINKS` entry rather than an
-allowlisted non-egress use.
+`platform/policy_distribution_boot.py`, where `_sanitize_detail` lives, is a registered
+`_REDACTION_SINKS` entry rather than an allowlisted non-egress use.
 
 `refresh_now()` **never raises**; it returns a `RefreshOutcome` whose `status` is one
 of `not_configured` / `unchanged` / `applied` / `rejected` / `unreachable`. Named
@@ -1732,7 +1732,7 @@ disposition:
   evaluates the `channels` scope on the host surface with `fail_closed=True` (its
   audit row names the direction, `outbound:<channel>`), writes a governed allow
   `critical=True`, and fails closed. Discord re-checks it in
-  `discord/client.py` after each REST wait and in
+  `discord/client_recheck.py` after each REST wait and in
   `discord/transport_dispatch_interactions.py` before the approval-verdict edit, so a
   policy installed during a send stops it.
   Detail: [messaging.md](messaging.md).
@@ -2264,7 +2264,7 @@ upgrade for a policy that loads today.
 `on_tool_call(..., tool_kind=, raw_params=)` carries these from the ACP event
 (`AcpEvent.tool_kind` / `.raw_tool_params`); the call sites thread them
 (`llm_helpers`, `subagent`, `task_executor`, `task_planner`, dashboard
-`chat_runner`, slack `handler`). **The `EVENT_PERMISSION_REQUEST` event the gate
+`chat_turn/tool_approval.py`, slack `handler`). **The `EVENT_PERMISSION_REQUEST` event the gate
 runs on must carry `raw_tool_params`** — `acp/client_tool_events.py` caches the structured
 rawInput at the ToolCall notification (`_tool_call_params`, keyed by
 `toolCallId`) and `acp/client_permissions.py` attaches it to the later permission event, because that
@@ -2585,7 +2585,7 @@ denials leave the same forensic trail.
 - **Windows has no machine-policy managed tier today, so the central ceiling is
   advisory against a local account.** There is no machine-scoped policy pin on
   Windows, so `resolve_distribution`
-  ([`src/kiro_crew/platform/policy_distribution.py`](../../../src/kiro_crew/platform/policy_distribution.py))
+  ([`src/kiro_crew/platform/policy_distribution_source.py`](../../../src/kiro_crew/platform/policy_distribution_source.py))
   lets a per-setting environment override stand: a standard user can set the
   `KIROCREW_POLICY_URL` environment variable to a document of their own and
   replace the whole central rung. Read the Windows guidance accordingly —
@@ -2894,7 +2894,7 @@ Consulted at **four** chokepoints — the send gate plus EVERY write path to
 | Chokepoint | Pinned-off behavior |
 |---|---|
 | `beacon.telemetry_permitted()` | Refuses both heartbeat and receipt egress. Ranked **above** the config flag so the reported reason names the policy, not the (now irrelevant) local value |
-| `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `telemetry.beacon_enabled=true` |
+| `PATCH /api/config/kirocrew` (`handlers/core_config_patch.py`) | **403** on `telemetry.beacon_enabled=true` |
 | `kirocrew telemetry enable` (`cli_commands.py`) | Exits **1** without writing config.json |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The *generic* setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
 
@@ -2990,7 +2990,7 @@ half-control:
 |---|---|
 | `tailnet.resolve_tailnet_host()` | Contributes no origin **and does not spawn the CLI**, so the pin closes both halves an administrator objects to. Checked ahead of the daemon call |
 | `tailnet_serve.publish()` | Refuses to run `tailscale serve`, so the dashboard is never put on the tailnet in the first place. Checked before the spawn — refusing after publishing would be theatre |
-| `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `dashboard.tailscale.enabled=true` |
+| `PATCH /api/config/kirocrew` (`handlers/core_config_patch.py`) | **403** on `dashboard.tailscale.enabled=true` |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The generic setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
 
 `tailnet_serve.unpublish()` is deliberately **not** gated, and the asymmetry is
@@ -3389,7 +3389,7 @@ its own — `resolve_selected_backend` degrades a now-denied persisted value to 
 floor with a logged reason on the next load, and the `PATCH
 /api/config/kirocrew` allowlist, `GET /api/config/schema`, `GET /api/acp-backends`
 and the provider factory all read the one derivation
-(`handlers/core.py::_selectable_acp_backends`). `bootstrap_context` additionally
+(`handlers/core_config_schema.py::_selectable_acp_backends`). `bootstrap_context` additionally
 re-runs that SAME gate over the config instance it is holding — that instance was
 normalised before the narrowing — rather than adding a second gate anywhere.
 
@@ -3682,13 +3682,24 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `read_policy_trust_root` (the side-effect-free trust-root reader).
 - `platform/update_governance.py` — the shared update seam (`resolve_remote_url`,
   `update_blocked_reason`, `update_required`, `min_version`) called by
-  `dashboard/handlers/updates.py`, `cli_server_update.py` and the gateway's update owners
+  the update handler owners (`dashboard/handlers/updates_verdict.py`, `updates_check.py`,
+  `updates_apply.py`), `cli_server_update.py` and the gateway's update owners
   (`slack/gateway_runtime/update_schedule.py`, `slack/gateway_runtime/update_apply.py`).
 - `platform/policy_distribution.py` — central distribution: source resolution
   (env ∘ the policy's `distribution` block), the append-only
   `register_policy_fetcher` transport seam, the last-known-good cache, the
   `refresh_now` / `validate_ceiling` / `apply_ceiling` / `start_refresher`
-  live-refresh path.
+  live-refresh path. It stays the import path and patch surface, a mirror facade
+  (`_facade_mirror`) that keeps the live-refresh path, the refresher thread and
+  `distribution_posture`, over three owners:
+  - `platform/policy_distribution_source.py` — the `KIROCREW_POLICY_*` settings,
+    the fetch records, `register_policy_fetcher` and the built-in transports, and
+    `resolve_distribution`;
+  - `platform/policy_distribution_cache.py` — the last-known-good cache and the
+    tier's process state, with `reset_process_state`;
+  - `platform/policy_distribution_boot.py` — `parse_distributed_policy`,
+    `load_distributed_policy`, `fetch_once`, `validate_ceiling` and the
+    `_sanitize_detail` redaction sink.
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
@@ -3717,7 +3728,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `dashboard/handlers_system.py` — `GET /api/governance/channels`.
 - `dashboard/handlers/security_governance_policy.py` — `GET /api/governance/policy`
   (posture-only serialization), served through `dashboard/handlers/security.py`.
-- chokepoints: `sandbox.py`, `mcp_cron.py`, `subagent_parts/agent_policy.py`, `mcp_core.py`,
+- chokepoints: `sandbox.py`, `mcp_cron_vet.py`, `subagent_parts/agent_policy.py`, `mcp_core.py`,
   plus the audit-only seam `computer_use/gate.py` (not a governance chokepoint:
   `require_computer_use` always proceeds and audits, and `apply_observation_ceiling`
   passes the payload through).

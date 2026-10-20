@@ -93,8 +93,12 @@ export function CrewmateNoteFace({ member, size, fallback }: { member: NoteMembe
 
 /** The crewmate's display label, or nothing while the roster loads or when the
  *  crewmate is gone. */
-export function CrewmateNoteName({ member, className = '' }: { member: NoteMember; className?: string }) {
+export function CrewmateNoteName({ member, title, className = '' }: { member: NoteMember; title?: string; className?: string }) {
   const row = useCrewmateRow(member)
   if (!row) return null
-  return <span data-testid="notification-crewmate-name" className={className}>{crewDisplayName(row)}</span>
+  const name = crewDisplayName(row)
+  // A note titled with the crewmate's own name would say it twice, once small
+  // above the title and once bold as the title: the label adds nothing there.
+  if (title !== undefined && name === title) return null
+  return <span data-testid="notification-crewmate-name" className={className}>{name}</span>
 }

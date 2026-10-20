@@ -1,7 +1,7 @@
 """Top-level config.json sections that core writes and reads without a dataclass model.
 
 ``voice_reply`` is the voice-settings block: the dashboard and Slack settings UI
-persist it into config.json (``slack/interactions.py`` via ``data.setdefault``,
+persist it into config.json (``slack/interactions_modals.py`` via ``data.setdefault``,
 ``dashboard/chat_voice.py`` via ``json.dump``), and the gateway reads it back on
 startup (``slack/handler_runtime/voice.py::load_voice_reply_config``). There is
 no ``SCHEMA_REGISTRY`` entry and no ``KiroCrewConfig`` field, so before the

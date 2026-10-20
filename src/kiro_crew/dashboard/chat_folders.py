@@ -512,7 +512,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
     Shaped exactly like :func:`api_chat_slot_pin`, with one deliberate
     difference: this write is the user's own decision (``session_create``'s
     contract says an agent must not open sessions already silenced), so this
-    route is NOT in the member-admitted set in ``handlers/_shared.py`` and no
+    route is NOT in the member-admitted set in ``handlers/_shared_route_guards.py`` and no
     MCP tool reaches it. The same three ownership fences still apply.
     """
 

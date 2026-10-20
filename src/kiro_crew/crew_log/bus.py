@@ -45,6 +45,7 @@ notifications. They are named here because the shape of this module is the answe
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from typing import Any, Final, NamedTuple
@@ -290,6 +291,38 @@ def _call(sub: _Subscriber, event: Any) -> None:
         sub.callback(event)
     except Exception:
         _log_exc("crew log bus subscriber for %s failed", sub.kind)
+        _count_subscriber_error(sub.kind)
+
+
+def _count_subscriber_error(kind: str) -> None:
+    """Count one subscriber that raised, beside the log line. Never raises.
+
+    The COUNT is what the log line cannot give: the publisher is told nothing by
+    design, and a WARNING per failed event carries neither a rate nor a total, which
+    is what an operator asks of a subscriber that is failing on every fold.
+
+    Resolved from ``sys.modules`` rather than imported. This module is loaded by the
+    eager folder on the gateway's boot path and a ``TREE_ADVANCED`` publish can run on
+    a crew log WRITE thread, so an ordinary import here would let that thread trigger
+    the first load of the metrics facade -- which reads config and builds the SDK.
+
+    THE COST OF THAT CHOICE, stated because it is a real gap and not only a saving: the
+    module is put in ``sys.modules`` by the consent-gated registration in
+    ``metrics.provider._build_recorder``, and that build is itself lazy. So on a process
+    with telemetry ON whose recorder has not been built yet, a subscriber raising in
+    that window is logged at WARNING and NOT counted. The window closes at the first
+    ``get_recorder()`` from anywhere, which the gateway reaches at boot. A dropped point
+    in it is the price of never putting an import on a write thread, and the log line
+    still records the failure. :func:`kiro_crew.crew_log.checkpoint.\
+_count_savepoint_write` is off that thread and imports instead, so it has no such gap.
+    """
+    try:
+        health = sys.modules.get("kiro_crew.metrics.crew_log_health")
+        if health is None:
+            return
+        health.bus_subscriber_error(kind)
+    except Exception:  # pragma: no cover - telemetry must never reach the bus
+        pass
 
 
 def _read_baseline(scope: str, key: str, fold: str) -> "FoldAdvanced | None":
@@ -377,6 +410,7 @@ def publish(kind: str, event: Any) -> None:
             # lease is released by a finalizer when the handle is dropped. See
             # ``eager._log_exc``, which states this at length for the same reason.
             _log_exc("crew log bus subscriber for %s failed", kind)
+            _count_subscriber_error(kind)
 
 
 def subscriber_count(kind: str) -> int:

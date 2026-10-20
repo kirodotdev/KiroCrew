@@ -203,8 +203,32 @@ export function usePanelLayout({
     // it is bound to the ACTIVE slot, so focusing before creation fulfils puts
     // the caret on the old session and loses whatever is typed. See the module.
     // Agent-less: the server stamps the default custom agent (a template).
-    focusComposerAfter(dispatch(createSlot({ mode: mode || '' })).unwrap())
-  }, [dispatch, mode, flyout])
+    const created = dispatch(createSlot({ mode: mode || '' })).unwrap()
+    focusComposerAfter(created)
+    // A failed create must not be a silent no-op: `createSlot.rejected` only
+    // clears the pending flag and `focusComposerAfter` swallows the rejection
+    // (it only governs focus), so without this the flyout New would fail with
+    // no visible notice (errors-use-error-notice). Only an `ApiError`'s message
+    // is user-facing copy — `apiFailure` builds it with `friendlyErrText`, which
+    // unwraps the backend's `{ error | detail | message }`. Anything else is a
+    // raw thrown exception (a `fetch` TypeError, an unexpected throw) whose
+    // `.message` is developer text, so it falls back to a readable sentence
+    // rather than being shown verbatim. The create thunk throws rather than
+    // `rejectWithValue`, so `createAsyncThunk` serializes the error and
+    // `unwrap()` rejects with a plain object — the `ApiError` CLASS is gone by
+    // here (see utils/thunkError). The serializer keeps string fields, so the
+    // one-safe check is the surviving `name`, exactly as `isMissingSlotError`
+    // duck-types on the status; `instanceof ApiError` would be false even for a
+    // real backend refusal.
+    void created.catch((error: unknown) => {
+      const fromApi = typeof error === 'object' && error !== null
+        && (error as { name?: unknown }).name === 'ApiError'
+      showActionError(
+        (fromApi && errMessage(error))
+          || i18nT('pages.chatPage.could_not_start_a_new_session'),
+      )
+    })
+  }, [dispatch, mode, flyout, showActionError])
 
   // Force the list open when there is nothing in it, so a user with no sessions
   // still has the surface that creates one. Skipped while expand mode owns the

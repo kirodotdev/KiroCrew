@@ -311,8 +311,9 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 status=409,
             )
         if _updated_live:
-            # The live pick supersedes the allocation's recorded effort override.
-            state.sessions.retire_effort_override(session_key)
+            # The live pick replaces the allocation's recorded effort override, so
+            # a restart or reset successor starts on the level this session runs.
+            state.sessions.record_effort_override(session_key, effort)
 
         if effective_session_key(slot) != session_key and _updated_live:
             # The slot was bound to a different session while change_effort /

@@ -44,6 +44,7 @@ from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_tex
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
@@ -663,6 +664,15 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
             self._mcp_report.record_header_secret_refs(header_refs, omitted)
     except Exception:
         logger.debug("remote-header guard: evaluation failed", exc_info=True)
+    try:
+        # The same spec names the servers an unattended run waits for, but only
+        # on kiro-cli: it launches the spec's own servers (via --agent) and
+        # reports each one's start. Elsewhere a spec server may be held back or
+        # never report, and every run would wait out the bound for nothing.
+        if self.backend == ACP_BACKEND_KIRO:
+            self._mcp_report.record_declared(spec)
+    except Exception:
+        logger.debug("declared MCP servers: spec unreadable", exc_info=True)
 
 
 def _session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
@@ -1153,6 +1163,22 @@ def mcp_session_report(self: AcpClient) -> McpSessionReport:
     bounded and a late frame still arrives mid-turn.
     """
     return self._mcp_report
+
+
+async def wait_for_declared_mcp(self: AcpClient, timeout: float) -> tuple[str, ...]:
+    """Hold until every server the agent spec declares has reported; never raises.
+
+    The dedicated-transport twin of ``AcpSessionHandle.wait_for_declared_mcp``,
+    for an unattended run before its first prompt: the init drain stops a second
+    after it starts, so a slow server can miss it. Returns the declared servers
+    that are not ready, in spec order; empty when all are.
+    """
+    if self._mcp_report.declared_unreported() and timeout > 0:
+        try:
+            await self._drain_notifications(duration=timeout, until_declared=True)
+        except Exception:
+            logger.debug("declared MCP wait failed", exc_info=True)
+    return self._mcp_report.declared_not_ready()
 
 
 def _placed_mcp_server_names(self: AcpClient) -> tuple[str, ...]:

@@ -62,7 +62,7 @@ def _under_skill_write_lock(fn: Any, *args: Any) -> Any:
 
 
 # Open-standard skill-key territories whose READ path (_resolve_skill_root in
-# _shared.py) resolves per-session / per-machine — ``kiro-user/`` against
+# _shared_skill_roots.py) resolves per-session / per-machine — ``kiro-user/`` against
 # ``~/.kiro/skills`` and ``kiro-workspace/`` against ``<project>/.kiro/skills`` —
 # while the WRITE handlers (skills.create/update/delete_skill) join the key onto
 # a core root. That means the same key names a DIFFERENT file on write than the

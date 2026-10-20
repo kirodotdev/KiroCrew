@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard.handlers import mcp as mcp_handlers
 from kiro_crew.dashboard.routes import agent_config as agent_config_routes
 
 pytestmark = pytest.mark.asyncio
@@ -22,10 +23,14 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _TARGET_HANDLER_MODULES = frozenset(
     {
         "kiro_crew.dashboard.handlers.core",
+        "kiro_crew.dashboard.handlers.core_config_patch",
+        "kiro_crew.dashboard.handlers.core_config_view",
         "kiro_crew.dashboard.handlers.mcp",
         "kiro_crew.dashboard.handlers.mcp_custom",
         "kiro_crew.dashboard.handlers.mcp_discover",
     }
+    # ``handlers/mcp.py``'s owners, every one its ``_OWNERS`` names, routes or not yet.
+    | set(mcp_handlers._OWNERS)
 )
 
 

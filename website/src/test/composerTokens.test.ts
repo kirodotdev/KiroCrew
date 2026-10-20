@@ -172,3 +172,43 @@ describe('caret-relative detection across newlines + detection↔insertion agree
     expect(next.value).toBe('see @src/main.ts \nrest')
   })
 })
+
+// Issue #22348: a CJK IME emits ¥ (U+00A5), ￥ (U+FFE5) or ＄ (U+FF04) for the
+// same physical Shift+4 that types $ on a US layout. All three open the skills
+// list as aliases of $, and selecting a skill rewrites the aliased token to the
+// canonical $-prefixed marker the backend resolves.
+const SKILL_ALIAS_INSERT_RE = /(^|[\s])[$\u00A5\uFFE5\uFF04][a-z0-9/_-]*$/u
+
+describe('matchSkillToken — CJK currency-symbol aliases (issue #22348)', () => {
+  it('opens on a bare aliased sigil at a word boundary (full list)', () => {
+    expect(matchSkillToken('\u00A5')).toBe('')      // ¥
+    expect(matchSkillToken('\uFFE5')).toBe('')      // ￥
+    expect(matchSkillToken('\uFF04')).toBe('')      // ＄
+    expect(matchSkillToken('hello \u00A5')).toBe('')
+  })
+
+  it('captures the slug after an aliased sigil, same as $', () => {
+    expect(matchSkillToken('\u00A5cr')).toBe('cr')
+    expect(matchSkillToken('use \uFFE5browser-auth')).toBe('browser-auth')
+    expect(matchSkillToken('\uFF04oncall/handover')).toBe('oncall/handover')
+  })
+
+  it('keeps the existing $ behaviour unchanged', () => {
+    expect(matchSkillToken('$cr')).toBe('cr')
+    expect(matchSkillToken('$')).toBe('')
+    expect(matchSkillToken('$PATH')).toBeNull()
+    expect(matchSkillToken('foo$bar')).toBeNull()
+  })
+
+  it('does NOT fire when an aliased token is not the token at the caret', () => {
+    expect(matchSkillToken('\u00A5cr more')).toBeNull()
+    expect(matchSkillToken('\u00A5 ')).toBeNull()
+  })
+
+  it('insertion regex rewrites an aliased token to the canonical $skill', () => {
+    const value = 'use \u00A5cr'
+    const next = replaceTokenAtCaret(value, value.length, SKILL_ALIAS_INSERT_RE, '$cr-review ')
+    expect(next.value).toBe('use $cr-review ')
+    expect(next.caret).toBe('use $cr-review '.length)
+  })
+})

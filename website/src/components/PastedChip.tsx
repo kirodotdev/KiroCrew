@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, memo, useId } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import type { PasteBlock } from '../utils/pasteTokens'
@@ -20,7 +20,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  *
  * Hovering (or keyboard-focusing) the collapsed chip shows a small floating
  * preview of the first PREVIEW_MAX_LINES lines, so a paste can be identified
- * without expanding it. The preview renders through a portal to document.body,
+ * without expanding it. The preview renders through a portal to the body-level overlay root,
  * anchored to the chip's viewport rect — the message bubble ancestors clip
  * overflow, so an in-tree absolutely-positioned panel would be invisible. It
  * is suppressed while the block is expanded (the full content is already
@@ -105,10 +105,9 @@ function PastedChip({ block }: { block: PasteBlock }) {
         />
         {i18nT('components.pastedChip.paste_lines', { seq: block.seq, count: block.lines })}
       </button>
-      {createPortal(
-        <PastePreviewTooltip open={previewOpen} panelId={panelId} anchor={anchor} content={block.content} seq={block.seq} />,
-        document.body,
-      )}
+      <OverlayPortal>
+        <PastePreviewTooltip open={previewOpen} panelId={panelId} anchor={anchor} content={block.content} seq={block.seq} />
+      </OverlayPortal>
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div

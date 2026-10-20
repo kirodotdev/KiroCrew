@@ -69,7 +69,7 @@ import { i18nT } from '../../i18n/t'
 import { useAppSelector } from '../../store'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import { PROFILE_FACE_PX } from './CrewProfilePanel'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { useGuideOpenedSurface } from '../../guide/useGuideOpenedSurface'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { useGuidePredicate, useGuideSelection } from '../../guide/guidePredicates'
@@ -178,7 +178,7 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
     })
     return () => ctrl.stop()
   }, [flight, onDone])
-  return createPortal(
+  return <OverlayPortal>
     <div
       ref={ref}
       className="fixed left-0 top-0 z-[60] pointer-events-none origin-top-left will-change-transform"
@@ -194,9 +194,8 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
         size={PROFILE_FACE_PX}
         working="full"
       />
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }
 
 export default function MembersPage() {

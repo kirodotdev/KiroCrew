@@ -55,6 +55,7 @@ from kiro_crew.config.integration_sections import (
     _resolve_stub_servers,
 )
 from kiro_crew.config.memory_sections import (
+    STARTUP_RECALL_TIMEOUT_MAX_SECS,
     KnowledgeConfig,
     MemoryConfig,
     SessionSummaryConfig,
@@ -239,6 +240,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
         inject_activity=section.read("inject_activity", _safe_bool),
+        startup_recall_timeout_secs=section.read(
+            "startup_recall_timeout_secs", _safe_float, 0.0, STARTUP_RECALL_TIMEOUT_MAX_SECS
+        ),
         migrated=section.get("migrated"),
     )
 
@@ -800,6 +804,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
             "idle_evict_secs", _safe_int, lo=_STT_IDLE_EVICT_SECS_MIN, hi=_STT_IDLE_EVICT_SECS_MAX
         ),
         endpointing=section.read("endpointing", _safe_bool),
+        submit_on_release=section.read("submit_on_release", _safe_bool),
         dictation_panel=section.read("dictation_panel", _safe_bool),
         timeout_secs=section.read(
             "timeout_secs", _safe_int, lo=_STT_MIN_TIMEOUT_SECS, hi=_STT_MAX_TIMEOUT_SECS

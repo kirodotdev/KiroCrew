@@ -8,6 +8,7 @@ import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShor
 import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -134,7 +135,7 @@ function PanelToggleConfig() {
  * discoverable, permanent home in Settings.
  */
 export function ShortcutsPanel() {
-  const { enabled, macCtrl, toggle, toggleMacCtrl } = useShortcutPrefs()
+  const { enabled, macCtrl, toggle, toggleMacCtrl, saveError } = useShortcutPrefs()
   const globalHotkey = useGlobalHotkey()
 
   return (
@@ -154,6 +155,9 @@ export function ShortcutsPanel() {
             checked={macCtrl}
             onChange={toggleMacCtrl}
           />
+        )}
+        {saveError && (
+          <ErrorNotice variant="inline" message={saveError} askAgent testId="shortcut-pref-save-error" className="px-2 pb-2" />
         )}
       </SettingsCard>
       {SHORTCUT_GROUPS.map((group, gi) => {

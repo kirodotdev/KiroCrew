@@ -152,13 +152,16 @@ CREDENTIAL_MASK_AUTH_NOTE = (
 )
 
 
-def _with_credential_mask_note(runtime: object, message: str, cause: BaseException) -> str:
+def _with_credential_mask_note(
+    runtime: object, message: str, cause: BaseException, *, read_stderr: bool = True
+) -> str:
     """*message*, plus :data:`CREDENTIAL_MASK_AUTH_NOTE` when the mask explains *cause*.
 
     Added only when all three hold: this spawn ran under a credential mask, that
     mask re-exposes ``~/.aws/config`` (so ``~/.aws`` itself is hidden), and the
     failure or the child's stderr says the AWS SDK could not load a credential.
-    Never added twice.
+    Never added twice. ``read_stderr=False`` matches *cause* alone: the stderr
+    tail lives as long as the runtime, so a turn must not inherit an old line.
     """
     backend = getattr(runtime, "acp_backend", None)
     hidden = getattr(runtime, "sandbox_hidden_dirs", None)
@@ -167,7 +170,7 @@ def _with_credential_mask_note(runtime: object, message: str, cause: BaseExcepti
     config = os.path.join(os.path.expanduser("~"), ".aws", "config")
     if config not in adapter_expose_files(backend, hidden):
         return message
-    tail_reader = getattr(runtime, "redacted_stderr_tail", None)
+    tail_reader = getattr(runtime, "redacted_stderr_tail", None) if read_stderr else None
     tail = tail_reader() if callable(tail_reader) else ""
     haystack = f"{cause}\n{tail if isinstance(tail, str) else ''}"
     if not _MASKED_CREDENTIAL_AUTH_RE.search(haystack):
@@ -176,10 +179,13 @@ def _with_credential_mask_note(runtime: object, message: str, cause: BaseExcepti
     return message if note in message else f"{message} {note}"
 
 
-def _name_credential_mask(runtime: object, exc: BaseException) -> None:
-    """Append the mask note to *exc*'s own text in place, keeping its type."""
+def _name_credential_mask(runtime: object, exc: BaseException, *, read_stderr: bool = True) -> None:
+    """Append the mask note to *exc*'s own text in place, keeping its type.
+
+    *read_stderr* is passed through to :func:`_with_credential_mask_note`.
+    """
     text = str(exc)
-    named = _with_credential_mask_note(runtime, text, exc)
+    named = _with_credential_mask_note(runtime, text, exc, read_stderr=read_stderr)
     if named != text:
         exc.args = (named,)
 

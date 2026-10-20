@@ -109,7 +109,10 @@ async def test_api_models_keeps_the_tight_bound_and_reprobes_a_stale_latch() -> 
     # The stubbed probe left the latch ready=True, so the gate authorizes and
     # falls through to the pre-existing degraded branch (binary unresolved).
     assert resp.status == 503
-    assert json.loads(cast(bytes, resp.body)) == {"error": "kiro binary not resolved"}
+    assert json.loads(cast(bytes, resp.body)) == {
+        "error": "kiro binary not resolved",
+        "code": "model_list_unavailable",
+    }
 
 
 @pytest.mark.asyncio

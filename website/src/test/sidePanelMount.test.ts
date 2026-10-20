@@ -18,6 +18,13 @@ const chatPageHost = () => [
   ...readdirSync(PAGES).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
     .map(f => readSource(join(PAGES, f))),
 ].join('\n')
+// SidePanel.tsx composes sibling owners (SidePanelAddMenu.tsx, SidePanelTabChip.tsx,
+// SidePanelTabBodies.tsx, useSidePanelSize.ts), so a pin over the whole panel reads
+// the facade with every owner, and a pin on one construct reads the file it lives in.
+const CHAT = join(PAGES, 'chat')
+const sidePanelSource = () => readdirSync(CHAT)
+  .filter(f => /^(use)?SidePanel\w*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+  .map(f => readSource(join(CHAT, f))).join('\n')
 
 const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false, hasBrowserTab = false) =>
   ({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen })
@@ -79,7 +86,7 @@ describe('side panel mount decision', () => {
    * the panel is merely collapsed, or the `AppHost` would remount and lose its state.
    */
   it('composes the cross-slot app-tab body from BOTH selection and panel visibility', () => {
-    const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx'))
+    const src = sidePanelSource()
     expect(src).toMatch(/<AppPanelTabBody kind=\{t\.kind\} active=\{shown && !panelHidden\}/)
     // The visibility style must NOT pick up the same flag, or a collapsed panel
     // remounts the host instead of merely hiding it.
@@ -94,17 +101,19 @@ describe('side panel mount decision', () => {
    * `FolderPanel` scope their handlers to their own elements, so they cannot.
    */
   it('passes the same visibility signal to the artifact body', () => {
-    const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx'))
+    const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanelTabBodies.tsx'))
     expect(src).toMatch(/<ArtifactPanel\s+embedded\s+active=\{active\}/)
     const panel = readSource(join(__dirname, '..', 'components', 'ArtifactPanel.tsx'))
     // The guard, and the flag in the effect's deps so a switch re-binds it. The
     // prop is aliased to `visible` there because a local `active` in that file
     // already names the fullscreen icon.
     expect(panel).toContain('active: visible = true')
-    expect(panel).toContain('if (!visible) return')
+    // The same guard also stands down while a remote Crew fills the window: the
+    // whole local dashboard, this panel included, is then off screen.
+    expect(panel).toContain('if (!visible || crewHidden) return')
     // Close and exit-fullscreen go through the comment-draft guard, so those
     // guarded callbacks are the deps rather than `onClose` itself.
-    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active])')
+    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden])')
   })
 
   describe('find pane claims the dock', () => {

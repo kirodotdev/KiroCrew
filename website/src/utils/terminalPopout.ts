@@ -8,6 +8,7 @@ import {
   type PopoutMap,
   type PopoutMsg,
 } from './popoutController'
+import { closeBottomTerminal } from '../hooks/useBottomTerminal'
 
 /**
  * Cross-window coordination for the popped-out terminal panel.
@@ -60,6 +61,11 @@ const controller = createPopoutController({
   // returnSelfToMain fallback: a deep-linked popout with no script opener
   // can't close itself, so it becomes a main dashboard view instead.
   mainViewUrl: () => '/',
+  // Another main window clicked Return and re-docks the panel there. The dock
+  // `open` flag is per window, so this window yields: with its flag still set
+  // from before the pop-out it would re-dock too, and two docks on one PTY is
+  // the takeover #7638 describes. The window that clicked keeps its own flag.
+  onBringBackObserved: id => { if (id === TERMINAL_POPOUT_ID) closeBottomTerminal() },
 })
 
 /** Subscribe a main-window listener (for useSyncExternalStore). Starts the heartbeat lazily. */
@@ -77,7 +83,9 @@ export function openPopout(): void { controller.openPopout(TERMINAL_POPOUT_ID) }
 export function isPopoutOpen(): boolean { return controller.getSnapshot().has(TERMINAL_POPOUT_ID) }
 /** Focus the terminal popout window (direct handle, else ask it to focus itself). */
 export function focusPopout(): void { controller.focusPopout(TERMINAL_POPOUT_ID) }
-/** Close the terminal popout window and drop it from the map (caller re-docks the panel). */
+/** Close the terminal popout window and drop it from the map. The caller
+ *  re-docks the panel in ITS window (`open` is per window), so a Return clicked
+ *  in a tab that never showed the panel still gets one. */
 export function bringBack(): void { controller.bringBack(TERMINAL_POPOUT_ID) }
 /** True when THIS window is the live terminal popout. */
 export function isSelfPopout(): boolean { return controller.isSelfPopout(TERMINAL_POPOUT_ID) }

@@ -1577,6 +1577,12 @@ class TestEveryBackendIdLogSiteIsSanitized:
 
     SITES = {
         "src/kiro_crew/acp/client.py": [],
+        "src/kiro_crew/acp/runtime_tree_kill.py": [],
+        "src/kiro_crew/acp/runtime_spawn_launch.py": [],
+        "src/kiro_crew/acp/runtime_spawn_entry.py": [],
+        "src/kiro_crew/acp/runtime_session_setup.py": [],
+        "src/kiro_crew/acp/runtime_session_create.py": [],
+        "src/kiro_crew/acp/runtime_session_load.py": [],
         "src/kiro_crew/acp/client_turn.py": [
             "ACP event: method=%s id=%s action=%s",
         ],

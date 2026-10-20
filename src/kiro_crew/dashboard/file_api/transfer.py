@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         _PathProbeBusy,
         _probe_busy_response,
         _probe_request_path,
+        _project_relative_stall_path,
         _resolve_project_relative,
         _run_path_probe,
         _sel,
@@ -208,7 +209,11 @@ async def api_file_download(request: web.Request) -> web.Response:
     # api_file_read). Off-loop: the resolution is a pair of realpath calls.
     if request.query.get("resolve") == "1":
         try:
-            raw_path, _resolve_err = await _run_path_probe(_resolve_project_relative, raw_path)
+            raw_path, _resolve_err = await _run_path_probe(
+                _resolve_project_relative,
+                raw_path,
+                stall_path=_project_relative_stall_path(raw_path),
+            )
         except _PathProbeBusy:
             return _probe_busy_response(resource=raw_path, tool_name="file_download")
         if _resolve_err == "cannot_resolve":
@@ -243,6 +248,7 @@ async def api_file_download(request: web.Request) -> web.Response:
                 _open_checked, raw_path, tool_name="file_download", max_bytes=_MAX_UPLOAD_BYTES
             ),
             transfer=True,
+            stall_path=raw_path,
         )
     except _PathProbeBusy:
         return _probe_busy_response(resource=raw_path, tool_name="file_download")

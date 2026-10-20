@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { formatCommentsMessage, type Comment } from '../components/CommentOverlay'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
+import { findUniqueCoords } from '../components/markdownPanelSourcePos'
 
 describe('formatCommentsMessage', () => {
   it('omits location when not provided (legacy behavior)', () => {
@@ -227,6 +228,67 @@ describe('findCoords', () => {
     // Triple-click / multi-line drag: selection spans multiple lines. We
     // anchor at the start, which is still a useful coord for the agent.
     expect(findCoords('alpha\nbeta\ngamma', 'beta\ngamma')).toEqual({ line: 2, column: 1 })
+  })
+})
+
+describe('findUniqueCoords', () => {
+  const SOURCE = 'a\n  foo\nb'
+
+  it('reports the first visible character of an indented selection', () => {
+    expect(findUniqueCoords(SOURCE, '  foo')).toEqual({ line: 2, column: 3 })
+  })
+
+  it('reports the line of the first visible character when the selection starts on a newline', () => {
+    expect(findUniqueCoords(SOURCE, '\n  foo')).toEqual({ line: 2, column: 3 })
+  })
+
+  it('leaves the position alone for the newline a drag to the end of the line picks up', () => {
+    expect(findUniqueCoords(SOURCE, 'foo\n')).toEqual({ line: 2, column: 3 })
+  })
+
+  it('has no position for text it cannot tell apart, or does not find', () => {
+    expect(findUniqueCoords('foo\nfoo', 'foo')).toBeUndefined()
+    expect(findUniqueCoords(SOURCE, 'bar')).toBeUndefined()
+  })
+
+  it('looks up the first row of a selection that spans rows', () => {
+    expect(findUniqueCoords('a\n  foo\n  bar\nb', '  foo\n  bar')).toEqual({ line: 2, column: 3 })
+  })
+
+  it('finds a selection that spans rows in a file with CRLF line endings', () => {
+    expect(findUniqueCoords('a\r\n  foo\r\n  bar\r\nb', '  foo\n  bar')).toEqual({ line: 2, column: 3 })
+    expect(findUniqueCoords('a\r\n  foo\r\nb', '\n  foo')).toEqual({ line: 2, column: 3 })
+  })
+
+  it('finds a block nested in a list or a quote, whose source rows carry a prefix the rendered rows do not', () => {
+    expect(findUniqueCoords('1. Steps:\n   ```bash\n   ls -la\n   mycli rm NAME\n   ```\n', 'ls -la\nmycli rm NAME')).toEqual({ line: 3, column: 4 })
+    expect(findUniqueCoords('> ```bash\n> ls -la\n> mycli rm NAME\n> ```\n', 'ls -la\nmycli rm NAME')).toEqual({ line: 2, column: 3 })
+  })
+
+  it('has no position for a first row another copy shares, whatever follows it', () => {
+    const nested = '1. Clean up:\n   ```bash\n   ls\n   mycli rm NAME\n   ```\n\n```bash\nmycli rm NAME --force\n```\n'
+    expect(findUniqueCoords(nested, '\nmycli rm NAME')).toBeUndefined()
+    expect(findUniqueCoords(nested, 'mycli rm NAME')).toBeUndefined()
+  })
+
+  // A tab-prefixed block and a space-indented block can render the same row, so neither copy gets a line.
+  it.each([
+    ['an indented fence', '  ```sh\n\tfoo\n\tbar\n  ```\n\n```sh\n  foo\n  baz\n```\n'],
+    ['a list item', '- step\n  ```sh\n\tfoo\n\tbar\n  ```\n\n```sh\n  foo\n  baz\n```\n'],
+    ['a quote', '> ```sh\n>\tfoo\n>\tbar\n> ```\n\n```sh\n  foo\n  baz\n```\n'],
+  ])('has no position for rows a tab-indented block in %s shares with a space-indented one', (_name, source) => {
+    expect(findUniqueCoords(source, '  foo\n  bar')).toBeUndefined()
+  })
+
+  it.each([
+    ['a code block', '> ```\n>\t>\n>\tbar\n> ```\n\n```\n  > baz\n```\n'],
+    ['prose', '> ```\n>\t>\n>\tbar\n> ```\n\n- item\n  > note\n'],
+  ])('has no position for a first row that is only the quote marker, beside %s', (_name, source) => {
+    expect(findUniqueCoords(source, '  >\n  bar')).toBeUndefined()
+  })
+
+  it('still places a tab-indented row that occurs once', () => {
+    expect(findUniqueCoords('a\n\tfoo()\n\tbar()\nb', '\tfoo()\n\tbar()')).toEqual({ line: 2, column: 2 })
   })
 })
 

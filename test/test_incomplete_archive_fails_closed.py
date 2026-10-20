@@ -245,7 +245,7 @@ def test_the_live_snapshot_is_taken_before_the_archive() -> None:
     duplicate them, which `drop_persisted_tail_prefix` already removes.
     """
     src = (
-        Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "history_projection.py"
+        Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "history_projection_reads.py"
     ).read_text(encoding="utf-8")
     body = src[src.index("def read_messages_chained_full") :]
     body = body[: body.index("def chain_mid_rotation")]

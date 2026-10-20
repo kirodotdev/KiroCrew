@@ -5,7 +5,7 @@
 The dashboard's Releases archive needs the changelog as *data* (one entry per
 version, each independently selectable) rather than as one markdown blob. The
 parsing is a pure string function with no I/O, so it lives here and is tested
-directly — the handler in ``dashboard/handlers/updates.py`` only reads the file
+directly — the handler in ``dashboard/handlers/updates_channel.py`` only reads the file
 and calls in.
 
 ## What the list contains, and why it is not "every version"

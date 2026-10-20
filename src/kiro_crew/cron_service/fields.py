@@ -20,7 +20,12 @@ from typing import Any
 
 from kiro_crew import cron_script
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
-from kiro_crew.cron_service.model import CronJob, CronSchedule
+from kiro_crew.cron_service.model import (
+    _AUTO_PAUSE_THRESHOLD,
+    CronJob,
+    CronSchedule,
+    validate_auto_pause_after_failures,
+)
 from kiro_crew.cron_service.schedule import (
     is_valid_skip_date,
     is_valid_timezone,
@@ -198,6 +203,7 @@ def build_job(
     timeout: int = 0,
     timeout_secs: int = 0,
     app_manifest_digest: str = "",
+    auto_pause_after_failures: int | None = None,
 ) -> CronJob:
     """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
@@ -209,6 +215,10 @@ def build_job(
     ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
     the ``_JOB_TIMEOUT_SECS`` default. Distinct from ``timeout``, which
     bounds only script/command subprocesses.
+
+    ``auto_pause_after_failures`` is how many consecutive failed runs pause the
+    job; ``None`` means the ``_AUTO_PAUSE_THRESHOLD`` default and ``0`` means the
+    job never auto-pauses.
 
     The optional presentation/routing fields (``agent_id``, ``model``,
     ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
@@ -261,6 +271,11 @@ def build_job(
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
     validate_create_timeouts(timeout, timeout_secs, command=command, script=script)
+    _auto_pause = (
+        _AUTO_PAUSE_THRESHOLD
+        if auto_pause_after_failures is None
+        else validate_auto_pause_after_failures(auto_pause_after_failures)
+    )
     if timezone and not is_valid_timezone(timezone):
         raise ValueError(f"Invalid timezone: {timezone!r}")
     skip_dates = skip_dates or []
@@ -311,6 +326,7 @@ def build_job(
         timeout=timeout,
         timeout_secs=int(timeout_secs) if timeout_secs else seams._JOB_TIMEOUT_SECS,
         app_manifest_digest=app_manifest_digest or "",
+        auto_pause_after_failures=_auto_pause,
     )
 
 
@@ -400,6 +416,9 @@ def apply_job_update(
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
         _check_timeout_secs_range(_tsecs)
+    _auto_pause: int | None = None
+    if "auto_pause_after_failures" in kwargs and kwargs["auto_pause_after_failures"] is not None:
+        _auto_pause = validate_auto_pause_after_failures(kwargs["auto_pause_after_failures"])
     # Script/command subprocess timeout. MCP cron_update passes this
     # field, so a branch has to consume it here — otherwise the
     # update is accepted and silently dropped.
@@ -578,6 +597,10 @@ def apply_job_update(
         job.timeout_secs = _tsecs
     if _tsub is not None:
         job.timeout = _tsub
+    if _auto_pause is not None:
+        # A new limit governs the NEXT failure; it does not lift a pause the
+        # job is already in -- resuming stays the user's explicit action.
+        job.auto_pause_after_failures = _auto_pause
 
     # Schedule changes (already validated above)
     if "cron_expr" in kwargs and kwargs["cron_expr"]:

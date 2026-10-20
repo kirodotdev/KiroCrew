@@ -913,16 +913,36 @@ class TestThePortabilityRoutesAreOwnerOnly:
     async def test_a_non_owner_cannot_export(self, handlers):
         ph, events = handlers
         called = []
-        with patch.object(ph, "create_export_zip", lambda **_kw: called.append(1) or (b"x", {})):
+        with patch.object(ph, "plan_export", lambda **_kw: called.append(1) or object()):
             resp = await ph.api_portability_export(
                 self._request("GET", "/api/portability/export", user="slack-participant")
             )
         assert resp.status == 403
-        assert called == [], "the archive must not even be built for a non-owner"
+        assert called == [], "the archive must not even be planned for a non-owner"
 
     async def test_the_owner_can_export(self, handlers):
         ph, _ = handlers
-        with patch.object(ph, "create_export_zip", lambda **_kw: (b"zip", {"created_at": "t"})):
+
+        class _Plan:
+            prefix = "kirocrew-export-t"
+            created_at = "2026-01-01T00:00:00Z"
+            include_sessions = False
+            memory_only = False
+            include_agent_templates = False
+            bundled_templates: list[str] = []
+            agent_templates_past_cap = 0
+            session_plan = None
+            sessions_skipped = 0
+
+        def _stream(write, _plan):
+            write(b"zip")
+            return {"created_at": "t", "contents": {}}
+
+        with (
+            patch.object(ph, "plan_export", lambda **_kw: _Plan()),
+            patch.object(ph, "stream_export_zip", _stream),
+            patch.object(ph, "unbundled_agent_templates", lambda *a, **k: ([], 0)),
+        ):
             resp = await ph.api_portability_export(
                 self._request("GET", "/api/portability/export", user="local-app")
             )

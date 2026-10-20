@@ -26,6 +26,7 @@ from kiro_crew.embeddings_model import (
     _model_file_stamp,
     default_model_path,
     legacy_embedding_ids,
+    model_pooling_type,
     models_dir,
     resolve_custom_model,
 )
@@ -33,6 +34,7 @@ from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
     _MAX_EMBED_CHARS,
     _MODEL_ID,
+    _POOLING_TYPE_LAST,
     _REJECTED_MODEL_SENTINEL,
     PRIORITY_NORMAL,
     EmbeddingWork,
@@ -413,6 +415,9 @@ def _align_store_embedding_space(store: "_AlignableStore") -> int:
             and isinstance(backend, LlamaCppEmbedder)
             and backend.model_path == Path(str(memory.get("embed_model_path", ""))).expanduser()
             and backend.model_id == memory.get("embed_model_id")
+            # The legacy vectors were made with last-token pooling, so they are
+            # this space only while the model still runs with it.
+            and model_pooling_type(backend.model_id) == _POOLING_TYPE_LAST
             and store._embedding_dim == dim
             and store.recorded_embedding_space()
             in {embedding_space_signature(label, dim) for label in legacy_ids}
@@ -656,6 +661,21 @@ def _shared_sync_embed(
 
 
 _shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]
+
+
+def embedding_in_flight(text: str) -> bool:
+    """Whether the shared embedder is computing the vector for *text* right now.
+
+    A caller that embeds *text* while this holds joins that inference, and a joined
+    wait ends at the caller's own deadline even while the inference runs. Starts,
+    loads and reads nothing beyond the in-flight record.
+    """
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None:
+        return False
+    with _sync_embed_cache_lock:
+        return (id(backend), text[:_MAX_EMBED_CHARS]) in _sync_embed_flights
 
 
 def make_sync_embed_fn() -> Callable[[str], "list[float] | None"]:

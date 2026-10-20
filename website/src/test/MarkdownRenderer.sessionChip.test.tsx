@@ -145,7 +145,10 @@ describe('session chip — a SHORT slot name', () => {
     await act(async () => { fireEvent.click(screen.getByText(SHORT), { ctrlKey: true }) })
     expect(copyToClipboard).toHaveBeenCalledWith(KEY)
     const notice = screen.getByTestId('md-chip-copy-error')
-    expect(notice).toHaveTextContent(/^The copy failed\. Ctrl\/Cmd\+click copies the full session ID for chat-24\.$/)
+    expect(notice).toHaveTextContent(/^Couldn’t copy the full session ID for chat-24\.$/)
+    // The notice shows only after the gesture was refused, so naming it again
+    // reads as advice to try something else (#14294). The tooltip cues it.
+    expect(notice).not.toHaveTextContent(/ctrl|cmd|click/i)
     expect(notice).not.toHaveTextContent(/select the text/i)
     expect(screen.getByRole('tooltip').contains(notice)).toBe(true)
     act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS) })
@@ -689,7 +692,10 @@ describe('session chip — copy acknowledgment', () => {
     // chip that pushes the sentence around.
     const notices = screen.getAllByTestId('md-chip-copy-error')
     expect(notices).toHaveLength(1)
-    expect(notices[0]).toHaveTextContent('The copy failed. Ctrl/Cmd+click copies the full session ID for chat-24-1784661951.')
+    expect(notices[0]).toHaveTextContent('Couldn’t copy the session ID chat-24-1784661951.')
+    // The label IS the key here, so "the full session ID for <key>" would name
+    // the key twice (#14294).
+    expect(notices[0]).not.toHaveTextContent(/full|for chat/)
     expect(screen.getByRole('tooltip').contains(notices[0])).toBe(true)
     expect(flow.innerHTML).toBe(flowBefore)
     expect(flow.querySelector('[data-testid="md-chip-copy-error"], [role="alert"]')).toBeNull()
@@ -728,12 +734,12 @@ describe('session chip — copy acknowledgment', () => {
     expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs)
     const alerts = screen.getAllByRole('alert')
     expect(alerts).toHaveLength(1)
-    expect(alerts[0]).toHaveTextContent('The copy failed. Ctrl/Cmd+click copies the full session ID for chat-24-1784661951.')
+    expect(alerts[0]).toHaveTextContent('Couldn’t copy the session ID chat-24-1784661951.')
 
     // The rest of the window changes nothing: the failure stays, nothing flips.
     act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
     expect(chip).toHaveAttribute('title', restTitle)
     expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs)
-    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('The copy failed. Ctrl/Cmd+click copies the full session ID for chat-24-1784661951.')
+    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Couldn’t copy the session ID chat-24-1784661951.')
   })
 })

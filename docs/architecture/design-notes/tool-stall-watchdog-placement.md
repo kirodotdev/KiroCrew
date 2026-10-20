@@ -20,8 +20,8 @@ read, and how out-of-band action stays out of the in-band recovery path's way.
 ## The failure that made this concrete
 
 `_dispatch_events` yields a permission event (`action == "permission"` →
-`_build_permission_event`). The consumer, `dashboard/chat_runner.py`, handles it
-in place at the `EVENT_PERMISSION_REQUEST` branch and awaits the user's decision:
+`_build_permission_event`). The consumer, `dashboard/chat_turn/permission_prompt.py`, handles it
+in place in `_on_permission_prompt` and awaits the user's decision:
 
 ```python
 outcome = await asyncio.wait_for(fut, timeout=_approval_window)

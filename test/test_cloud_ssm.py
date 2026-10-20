@@ -997,3 +997,77 @@ class TestWrapRemoteCommand:
         # The embedded payload decodes back to the exact original script.
         token = wrapped.split()[1]
         assert base64.b64decode(token).decode() == script
+
+
+class TestAwsCliRefusal:
+    """The ``aws`` CLI's found-but-refused reading, the plugin's twin."""
+
+    @staticmethod
+    def _install(monkeypatch, tmp_path) -> Path:
+        """An ``aws`` reachable only through the resolver's install dirs."""
+        from kiro_crew.deploy import engine
+
+        install = tmp_path / "sessionmanagerplugin" / "bin"
+        install.mkdir(parents=True)
+        cli = install / "aws"
+        cli.write_text("#!/bin/sh\n")
+        cli.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install),))
+        monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+        # Even inside the tree the plugin's ownership command targets, no command
+        # is offered for the CLI: none is known to clear its refusal.
+        monkeypatch.setattr(ssm, "_AWS_PKG_PLUGIN_PREFIX", str(tmp_path / "sessionmanagerplugin"))
+        return cli
+
+    def test_no_refusal_when_the_cli_is_absent(self, monkeypatch, tmp_path):
+        from kiro_crew.deploy import engine
+
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path / "nothing-here"),))
+        monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+
+        assert ssm.aws_cli_refusal() is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_an_accepted_cli_has_no_refusal(self, monkeypatch, tmp_path):
+        from kiro_crew import github_runner
+
+        self._install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+
+        assert ssm.aws_cli_refusal() is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_third_account_refusal_names_the_cli_with_no_command(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew import github_runner
+
+        cli = self._install(monkeypatch, tmp_path)
+        monkeypatch.setattr(github_runner, "strict_provider_bins", lambda: False)
+        monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+        monkeypatch.setattr(os, "geteuid", lambda: cli.stat().st_uid + 1)
+
+        refusal = ssm.aws_cli_refusal()
+        assert refusal is not None
+        assert refusal.path == str(cli)
+        assert "is owned by another user (uid " in refusal.reason
+        assert refusal.code == "other_owner"
+        assert refusal.owner_uid == cli.stat().st_uid
+        assert refusal.remedy_command == ""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_the_real_check_root_gateway_refusal_carries_its_code(self, monkeypatch, tmp_path):
+        cli = self._install(monkeypatch, tmp_path)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+        refusal = ssm.aws_cli_refusal()
+        assert refusal is not None
+        assert refusal.path == str(cli)
+        assert refusal.code == "root_gateway"
+        assert refusal.remedy_command == ""

@@ -5455,7 +5455,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "The new window is a same-origin Chromium window on the Xvfb display (Playwright popup); setArtifactNavIntentHandler in App.tsx handles 'Ask agent to address' from the popout. Fallback: load /popout/artifact/queue-badge directly."
+        "notes": "The new window is a same-origin Chromium window on the Xvfb display (Playwright popup); setArtifactNavIntentHandler in App.tsx handles 'Draft a prompt in chat' from the popout. Fallback: load /popout/artifact/queue-badge directly."
       },
       "runnable": "nightly",
       "estimated_steps": 2,

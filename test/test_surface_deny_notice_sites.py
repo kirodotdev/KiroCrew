@@ -308,7 +308,7 @@ def _answer(provider, *, hooks, interactive=True, allowed=None, monkeypatch=None
     """Answer one request through the real ``_answer_permission``.
 
     *allowed* stands in for the person's keystroke (the prompt itself is
-    pinned in ``test_cli.py``); None leaves the prompt unreached.
+    pinned in ``test_cli_chat_permission.py``); None leaves the prompt unreached.
     """
     if allowed is not None:
         monkeypatch.setattr(cli_chat, "_can_prompt", lambda _interactive: True)

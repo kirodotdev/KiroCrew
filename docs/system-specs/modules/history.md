@@ -86,10 +86,43 @@ use:
 - `history_cache.py` owns the bounded cache containers and the invalidation /
   guarded-publish coordinator. Cache objects and generation state remain on
   the facade owner.
-- `history_search.py` owns query parsing plus the list/search/snippet catalog
-  projection.
-- `history_projection.py` owns bounded transcript reads, tab-chain/index
-  projection, metadata reads and updates, permanent deletion, and previews.
+- `history_search.py` owns the list/search/snippet catalog projection
+  (`SessionCatalogProjection`) with the scan, ranking and indexing constants
+  it reads, and is a mirrored facade (`kiro_crew._facade_mirror`) over two
+  sibling owners, lowest layer first: `history_search_query.py` (what a query
+  means: `parse_search_query`, `SearchNeedle` and its caps and weights,
+  `count_needle`, the forge-reference spellings, the source-provider spelling
+  slot, `snippet_needles` and `needles_match_text`) and
+  `history_search_memo.py` (what every search over one directory shares: the
+  byte budgets of the log's fold and snippet caches, the content-addressed
+  count and snippet memos and their byte ceilings, the single-flight table and
+  the memo-gated counter). The facade binds every name its owners define
+  except `_search_ref_resolver`, the one global an owner rebinds at run time,
+  which it serves, so a patch of `kiro_crew.history_search.<name>` reaches
+  every owner that reads it. The query owner logs under the
+  `kiro_crew.history_search` logger; the classes that moved name their owner
+  as `__module__` (nothing reads it). New parsing work goes to
+  `history_search_query.py` and new shared search state to
+  `history_search_memo.py`; `test/test_history_search_bindings.py` pins the
+  owners, the served slot, the logger and the patch reach.
+- `history_projection.py` owns locked metadata updates and permanent deletion
+  (`SessionMetadataProjection`) and is a mirrored facade
+  (`kiro_crew._facade_mirror`) over two sibling owners, lowest layer first:
+  `history_projection_contract.py` (the metadata-line states,
+  `DISPLAY_ONLY_ROLES`, the chained page and revision types, the bounded
+  readers' tuning and chunked line splitter, `drop_persisted_tail_prefix`, and
+  the `kiro_crew.history` logger the projections share) and
+  `history_projection_reads.py` (`TranscriptReadProjection`: bounded transcript
+  reads, tab-chain/index projection, metadata reads, and previews). The facade
+  binds every name it imported and serves the moved ones, so a patch of
+  `kiro_crew.history_projection.<name>` reaches every owner that reads it.
+  `TranscriptRevisionChanged` keeps `kiro_crew.history_projection` as its
+  `__module__`, because its name reaches tracebacks; `TranscriptPage` and
+  `TranscriptReadProjection` name their owner (nothing reads it). New read work
+  goes to `history_projection_reads.py`, which is close to the line cap, so a
+  new read family gets an owner of its own; a name both projections need goes
+  to `history_projection_contract.py`. `test/test_history_projection_facade.py`
+  pins the owners, the exception's module, the logger and the patch reach.
 - `history_rewrite.py` owns locked compaction rewrites and size-based rotation.
 - `history_consolidation.py` defines `HistoryConsolidator` (construction,
   `reconfigure`, retry accounting, off-loop counting and every scheduling entry
@@ -605,7 +638,7 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
   freshness checks, shortlist validation and snippet reads use the same encoding.
   Existing integer rows and schema version 2 remain compatible; unsigned Windows
   device IDs and 128-bit inode IDs do not require an index migration.
-- `search_sessions(query, limit=50, *, keys=None)` — case-insensitive substring content search over the newest `_SEARCH_SCAN_WINDOW` session JSONL files; the ONE ranking shared by the dashboard history filter, the `search_chat_history` MCP tool, and Discord session resume. The query is parsed by `parse_search_query` into needles: non-CJK terms are required substrings (AND over the document); a spaceless-script run (Han ideographs + kana; NOT Hangul, since modern Korean is space-separated) gates on its individual characters (required, down-weighted) plus an adjacency floor — at least one of the run's character bigrams must hit somewhere, so a spaceless multi-word CJK query matches documents containing the words apart (each word is a bigram hit) while scatter-only character noise is excluded, and adjacency dominates the ranking; the floor is waived when the query's bigram set exceeds its cap (a partial set cannot prove no-adjacency-anywhere, so truncation only ever loosens). Occurrence counts are weighted per needle, length-normalized, title-boosted, phrase-bonused, then multiplied by a bounded recency boost (×2.5 for a session modified now, decaying toward ×1 with a 30-day half-weight — never a penalty; sized so a year-old double mention loses to today's single mention while a decisively better old match still wins), and capped to `limit` results. `keys`, when given, drops every session outside it from the scan window before scoring (after the memo prune, which still sees the whole window), so the cap counts allowed sessions only; an app caller's `GET /api/sessions/search` passes the transcripts that app owns. A short ASCII term (one or two characters: `5`, `s3`; never CJK or other non-ASCII, and never a run of three or more characters, digits included — incidental substring frequency falls roughly 10x per extra character, so `4411` keeps raw frequency) carries `SearchNeedle.saturate_body`; a forge-reference needle is saturated when any of its spellings is such a term (`issue 5` gates on `#5`, `issues/5` and the bare `5`) and keeps raw frequency otherwise (`#4411`), and its CONTENT contribution is `log1p` of its length-normalized hit count instead of the raw count over the length norm: such a substring matches timestamps, account ids and commit hashes far more often than prose about the thing does, so unsaturated a long transcript's thousands of incidental digit hits out-score the session whose title IS the query (`"case 5"`). Saturating the normalized count keeps body-only matches in frequency order (a long substantive discussion still beats one stray mention in a short session). Its title hits and its place in the AND gate are unchanged, and longer terms and CJK needles keep raw frequency, so only queries carrying a short token re-rank. Exposed via `GET /api/sessions/search?q=<q>&limit=<n>` (min 2 chars); used by the dashboard history filter to find sessions by content (CR ids, error messages, file paths) rather than title alone. Returns the same meta dicts as `list_sessions()`, so each search hit likewise carries `folder_id` (when present), letting the sidebar group results by folder. Snippet builders (`_content_snippet`, mcp_core's `_extract_history_snippet`) derive their needles from the same parse via `snippet_needles` (phrase first, then whole terms/bigrams, lone CJK characters last) so match and excerpt cannot drift apart. The fold/snippet memos backing the search are keyed by the sanitized `path.stem` (from `list_sessions`' meta dicts) while writers invalidate under the logical session key; `_invalidate_cache`'s identity-wide pops are what connect the two spellings, so a housekeeping rewrite that restores the file's mtime still drops the memo and search stops matching text the transcript no longer contains.
+- `search_sessions(query, limit=50, *, keys=None)` — case-insensitive substring content search over the newest `_SEARCH_SCAN_WINDOW` session JSONL files; the ONE ranking shared by the dashboard history filter, the `search_chat_history` MCP tool, and Discord session resume. The query is parsed by `parse_search_query` into needles: non-CJK terms are required substrings (AND over the document); a spaceless-script run (Han ideographs + kana; NOT Hangul, since modern Korean is space-separated) gates on its individual characters (required, down-weighted) plus an adjacency floor — at least one of the run's character bigrams must hit somewhere, so a spaceless multi-word CJK query matches documents containing the words apart (each word is a bigram hit) while scatter-only character noise is excluded, and adjacency dominates the ranking; the floor is waived when the query's bigram set exceeds its cap (a partial set cannot prove no-adjacency-anywhere, so truncation only ever loosens). When a Chinese segmenter is registered (`register_cjk_segmenter`), a pure-Han run of 2..64 characters is split into dictionary words instead: each word is a required needle (`SearchNeedle.word`; a one-character word carries the lone-character weight), so words may sit apart but each word's own characters must be adjacent, and a run split into more than one word adds itself as a scoring-only `verbatim` needle. A required word of two or more characters that survives the token cap proves adjacency in every session the gate admits, so it turns the adjacency floor off: a kana run's bigrams beside it (`吉卜力 テスト`) do not gate. Rows sort by how many verbatim runs they hold before score, so a session holding the run as typed ranks above every session holding only its words, at any word frequency or age. A run holding kana, a run the split leaves as single characters, a run past the bounds (`CJK_SEGMENT_MAX_RUN_CHARS`, `CJK_SEGMENT_MAX_RUNS`) and every run of a query whose segmenter fails or is absent keep the character path above, which is exactly the parse without a dictionary. The dictionary is rjieba (the jieba-rs binding), held once per host: the gateway registers `history_words.segment_runs`, which loads it lazily on the first Chinese query (about 45 MB, 0.15 s), and an mcp-core process registers `mcp_tools.sessions.gateway_cjk_words`, which asks the gateway over `POST /api/search/segment` (strict internal: loopback or the gateway's unix socket plus the internal secret, re-checked by the handler) with a 2 s timeout. Answers are validated (the words must join back to the run) and memoized per run, and a failed call is not repeated for 60 s. A two-character word is looked up in the index's CJK-character column as an AND of its characters, a longer one in the trigram table. Occurrence counts are weighted per needle, length-normalized, title-boosted, phrase-bonused, then multiplied by a bounded recency boost (×2.5 for a session modified now, decaying toward ×1 with a 30-day half-weight — never a penalty; sized so a year-old double mention loses to today's single mention while a decisively better old match still wins), and capped to `limit` results. `keys`, when given, drops every session outside it from the scan window before scoring (after the memo prune, which still sees the whole window), so the cap counts allowed sessions only; an app caller's `GET /api/sessions/search` passes the transcripts that app owns. A short ASCII term (one or two characters: `5`, `s3`; never CJK or other non-ASCII, and never a run of three or more characters, digits included — incidental substring frequency falls roughly 10x per extra character, so `4411` keeps raw frequency) carries `SearchNeedle.saturate_body`; a forge-reference needle is saturated when any of its spellings is such a term (`issue 5` gates on `#5`, `issues/5` and the bare `5`) and keeps raw frequency otherwise (`#4411`), and its CONTENT contribution is `log1p` of its length-normalized hit count instead of the raw count over the length norm: such a substring matches timestamps, account ids and commit hashes far more often than prose about the thing does, so unsaturated a long transcript's thousands of incidental digit hits out-score the session whose title IS the query (`"case 5"`). Saturating the normalized count keeps body-only matches in frequency order (a long substantive discussion still beats one stray mention in a short session). Its title hits and its place in the AND gate are unchanged, and longer terms and CJK needles keep raw frequency, so only queries carrying a short token re-rank. Exposed via `GET /api/sessions/search?q=<q>&limit=<n>` (min 2 chars); used by the dashboard history filter to find sessions by content (CR ids, error messages, file paths) rather than title alone. Returns the same meta dicts as `list_sessions()`, so each search hit likewise carries `folder_id` (when present), letting the sidebar group results by folder. Snippet builders (`_content_snippet`, mcp_core's `_extract_history_snippet`) derive their needles from the same parse via `snippet_needle_tiers` (phrase first, then whole terms/bigrams, lone CJK characters last) so match and excerpt cannot drift apart. A query with no dictionary words is one tier, and the first message holding any of its needles gives the snippet; a query with words has three tiers (phrase and verbatim runs, then words of two or more characters and whole terms, then one-character words), and the snippet comes from the first message holding the best tier any message holds, so a lone character in an early message cannot take it from the phrase later on. The fold/snippet memos backing the search are keyed by the sanitized `path.stem` (from `list_sessions`' meta dicts) while writers invalidate under the logical session key; `_invalidate_cache`'s identity-wide pops are what connect the two spellings, so a housekeeping rewrite that restores the file's mtime still drops the memo and search stops matching text the transcript no longer contains.
 - Restricted search re-judges `keys` membership under the transcript lock held through snippet extraction for each output row, dropping the row if membership changed or the lock timed out.
 - `needles_match_text(needles, folded_text)` — the single-string form of `search_sessions`' match gate (required needles as substrings + the CJK adjacency floor), for callers filtering one text field; Discord session resume's zero-hit title fallback uses it so title matching cannot grow a second spelling of tokenization.
 - `read_file_change_messages(key)` — a lightweight Artifacts projection that streams one transcript as bytes, skips lines without the serialized `"file_changes"` key before JSON parsing, and retains only `ts` plus `meta.file_changes` in its own bounded, file-stamped cache. It never warms `_msg_cache`, so scanning the session-document firehose cannot retain the full parsed transcript corpus.
@@ -1116,6 +1149,10 @@ no longer destroy older turns.
   `dashboard.tail_fork_enabled`; if the gate is off, a `direction="tail"`
   request falls back to a normal head-fork instead of erroring. The source
   slot's history file is untouched, so the head stays archived in the parent.
+  While the gate is on, the dashboard's message menu lists "Fork with earlier messages"
+  beside the plain entry: the plain entry sends `direction="tail"` and this one
+  sends `direction="head"`. With the gate off the plain entry already forks with
+  history, so the menu lists no second entry.
 - **Fork inherits `memory_mode`, and never loosens it**: an incognito or
   temporary session forks like a persistent one, and the child is born with the
   parent's mode -- passed to `get_or_create_slot` at creation so the child's
@@ -1340,7 +1377,7 @@ no longer destroy older turns.
   cleanup probes), the abort latches — every later save of new activity is
   skipped, which is why the skip logs at WARNING with the slot key.
 - **Turn persistence is offloaded through ONE choke point**
-  (`save_conversation_turn_off_loop`, `llm_helpers.py`): `save_conversation_turn`
+  (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
   AND takes `_locked`'s single non-blocking acquire — dropping the durable copy
   exactly when another writer is active. Every async caller (the Slack handler,
@@ -1708,6 +1745,21 @@ and a caller deleting "the session" removes one half and leaves the other behind
 
 - `set_title(key, title)` — persists a title into the session's metadata line (first line of JSONL)
 
+### A crewmate's own DM thread is never auto-titled
+
+A slot with `mode == "member"` is one long-lived conversation with one
+crewmate, and the sidebar names its row after the crewmate (its display name,
+else its name), derived from the member binding at render time
+(`lib/memberThreadTitle.ts`). `chat_title.py` therefore skips it on
+every background path: `_maybe_auto_title`, the refresh (`_refresh_blocked`) and
+`generate_manual_title`, which answers `""`. Opening the thread
+(`POST /api/members/{slug}/thread`) stores the crewmate's display name as its
+title with origin `member` (`name_member_thread`; a title a person set, origin `user`, is kept, and a stored name follows a renamed crewmate on the next open),
+so the tab title and command palette read the same name. The Members page
+header and the chat page never draw a member thread's title row, so no rename
+or regenerate control exists for it there. Sessions a crewmate opens for its workers are
+ordinary slots and are titled as usual.
+
 ### Session titling is independent of `memory_mode`
 
 Auto-titling (`dashboard/chat_title.py:_maybe_auto_title`) runs for **every**
@@ -1980,7 +2032,16 @@ The separate session removes semaphore contention between long extraction turns
 and short `_bg` metadata jobs; cheap dedupe and merge judges remain on `_bg`.
 It can idle-expire and is recreated on demand without native session-map resume.
 Active turns hold the existing session semaphore and survive idle cleanup.
-Live reuse retains provider context until expiry or context-driven recycling.
+The session semaphore queues jobs, and every job starts on an empty conversation:
+`_call_llm` asks `background_turn` for `fresh_conversation=True`, which, before
+the permit is released and whether the turn succeeded or failed, opens a new
+conversation on the same running process (`new_conversation()`). The old
+session's teardown deletes its backend record (KAS `_kiro/session/delete`;
+kiro-cli terminate plus the guarded `sessions/cli/<sid>` unlink). When the
+provider has no `new_conversation` or it raises, the key is `reset` instead,
+so the next job starts on a new process with no history. INFO names the path
+taken, once per job, and the context-driven recycle does not run for this key.
+A failed turn's warning names the served model and the prompt size.
 Private V2 extraction retains its per-store `memory-consolidation:` session and
 cleanup path. Acquisition timing includes startup and semaphore acquisition;
 it is not a measurement of queue wait alone.
@@ -2452,7 +2513,7 @@ conversation is the chat. Any message, the user's or the crewmate's, can carry
 one.
 
 **Flag.** The feature ships behind `dashboard.crewmate_threads` (`config/sections_dashboard.py`,
-default `False`; editable from the dashboard, `handlers/core.py` `_EDITABLE_CONFIG`,
+default `False`; editable from the dashboard, `handlers/core_config_schema.py` `_EDITABLE_CONFIG`,
 and read live -- the config watcher's snapshot, else a load off the loop -- so a
 toggle takes effect on the next request without a restart). Off, the three routes
 below answer `404 {"error": "not found", "code": "slot_not_found"}` -- the same

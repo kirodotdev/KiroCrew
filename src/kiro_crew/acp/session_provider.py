@@ -60,6 +60,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
@@ -636,6 +637,15 @@ class AcpSessionProvider(LLMProvider):
                 raise AcpAuthRequired(
                     host_auth.signed_out_message(self.backend), backend=self.backend
                 ) from exc
+            # A masked codex can open its session and only fail the AWS
+            # credential load at the turn; name the mask the way the start
+            # paths do. One table read, so the kiro path compares and stops (H13).
+            # The error's own text only: the stderr tail spans every turn.
+            if self.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                # Local import: acp_runtime_start imports this module.
+                from kiro_crew.providers.acp_runtime_start import _name_credential_mask
+
+                _name_credential_mask(self._runtime, exc, read_stderr=False)
             raise
         except AcpRuntimeDead as exc:
             # Translate the shared-runtime death into the exception types
@@ -1013,6 +1023,9 @@ class AcpSessionProvider(LLMProvider):
         # session this runtime served BEFORE the handoff; leaking them lets
         # check_context_usage() compact the new, empty session.
         self._handle.last_prompt_stats.reset_context_state()
+        # Credits held between turns belong to the session served before the
+        # claim; the claiming session's first turn must not bill them.
+        self._handle._between_turn_credits = 0.0
         # Claim-push: re-target this session's MCP stub connections under the
         # shared runtime's PID to the claiming session (see AcpClient.rekey for
         # the rationale). Fire-and-forget; no-ops without a gateway socket.
@@ -1416,6 +1429,10 @@ class AcpSessionProvider(LLMProvider):
     def mcp_session_report(self) -> McpSessionReport:
         """This session's MCP registration report."""
         return self._handle.mcp_session_report()
+
+    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+        """Hold the first prompt until the spec's servers report (see the handle)."""
+        return await self._handle.wait_for_declared_mcp(timeout)
 
     def get_valid_effort_levels(self) -> list[str]:
         """Valid effort levels from config options."""

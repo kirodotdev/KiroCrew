@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, type RefObject } from 'react'
 import { hasCommandModifier } from '../utils/commandModifier'
+import { useLocalCrewHidden } from './overlayRoot'
+import { matchRanges, searchRuns, watchText } from '../utils/pierreShadow'
 
 /**
  * `MarkdownPanel`'s CSS Custom Highlight registry, and the preview find (Cmd+F)
@@ -52,6 +54,8 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   // and we're in markdown preview (edit surface and non-markdown are untouched).
   // Highlights paint via the CSS Custom Highlight API (Range objects outside
   // the DOM) so the react-markdown subtree is never mutated.
+  // True while a remote Crew covers the local dashboard this panel lives in.
+  const crewHidden = useLocalCrewHidden()
   const [findOpen, setFindOpen] = useState(false)
   const [findTerm, setFindTerm] = useState('')
   const [findCase, setFindCase] = useState(false)
@@ -109,34 +113,23 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
     ranges[idx]?.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [paintFind])
 
-  const runFind = useCallback((term: string, caseSensitive: boolean) => {
+  // `keep` is the match to stay on when the document changed under a find that is
+  // already open; omitted, the term is new and the find starts over.
+  const runFind = useCallback((term: string, caseSensitive: boolean, keep?: number) => {
     clearFindMarks()
     const root = fullscreen ? fullscreenPreviewRef.current : previewRef.current
     if (!root || !term) { setFindCount(0); setFindIdx(0); return }
     const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi')
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => (n.nodeValue && n.nodeValue.trim()) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
-    })
-    const nodes: Text[] = []
-    let node: Node | null
-    while ((node = walker.nextNode())) nodes.push(node as Text)
-    const ranges: Range[] = []
-    for (const tn of nodes) {
-      const text = tn.nodeValue ?? ''
-      let m: RegExpExecArray | null
-      re.lastIndex = 0
-      while ((m = re.exec(text))) {
-        const r = document.createRange()
-        r.setStart(tn, m.index)
-        r.setEnd(tn, m.index + m[0].length)
-        ranges.push(r)
-        if (m.index === re.lastIndex) re.lastIndex++
-      }
-    }
+    // Code blocks are drawn into shadow roots a TreeWalker cannot enter; the
+    // shared runs read them too, one source line at a time.
+    const ranges = matchRanges(searchRuns(root), re)
     findRangesRef.current = ranges
     setFindCount(ranges.length)
-    setFindIdx(0)
-    if (ranges.length) { paintFind(ranges, 0); ranges[0].startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
+    const idx = keep === undefined ? 0 : Math.min(keep, Math.max(ranges.length - 1, 0))
+    setFindIdx(idx)
+    if (!ranges.length) return
+    paintFind(ranges, idx)
+    if (keep === undefined) ranges[0].startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [clearFindMarks, paintFind, fullscreen, previewRef, fullscreenPreviewRef])
 
   const stepFind = useCallback((dir: number) => {
@@ -161,6 +154,14 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
     runFind(findTerm, findCase)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runFind is stable per `fullscreen`; listing it would re-run on every match repaint
   }, [findOpen, findTerm, findCase, content, fullscreen])
+
+  // A code block is swapped for its highlighted copy after a find has run, which
+  // drops the ranges taken on the first one; find again on the same match.
+  useEffect(() => {
+    const root = fullscreen ? fullscreenPreviewRef.current : previewRef.current
+    if (!findOpen || !findTerm || !root) return
+    return watchText(root, () => runFind(findTerm, findCase, findIdx))
+  }, [findOpen, findTerm, findCase, findIdx, fullscreen, runFind, previewRef, fullscreenPreviewRef])
 
   // Find highlight names belong to the one active panel, so clear them if it
   // unmounts. Annotation ranges use per-owner cleanup in MarkdownPanel.tsx; deleting their
@@ -203,7 +204,7 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
-      if (!active) return                                   // hidden tab: never claim the key
+      if (!active || crewHidden) return                     // hidden tab or another Crew showing: never claim the key
       if (editing) return                                   // editor owns it (#6397)
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
       if (diffMode || !isMarkdown) {
@@ -223,7 +224,7 @@ export function useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fu
     }
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [active, editing, diffMode, isMarkdown])
+  }, [active, editing, diffMode, isMarkdown, crewHidden])
 
   return { findOpen, findTerm, setFindTerm, findCase, setFindCase, findIdx, findCount, findInputRef, stepFind, closeFind }
 }

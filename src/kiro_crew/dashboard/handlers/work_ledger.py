@@ -43,8 +43,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
+import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import web
@@ -66,6 +69,7 @@ from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.metrics import work as work_metrics
 from kiro_crew.validation import (
     WORK_LEDGER_READ_SCHEMA,
     WORK_LEDGER_RECORD_SCHEMA,
@@ -760,6 +764,10 @@ async def api_work_report(request: web.Request) -> web.Response:
                     caller, "work_report", item.item_id, conductor_key, snapshot
                 )
             await asyncio.to_thread(_mark_recorded, conductor_key, item.item_id)
+            # Counted from the COMMITTED item, after its record landed: a refused
+            # report -- an unknown or closed item, a ``done`` with no evidence, a
+            # status outside the worker's vocabulary -- returned long before here.
+            work_metrics.record_report(item.status, item.reason)
             crew_store = _crew_store(conductor_key)
             if crew_store and item.status:
                 # The answer to the dispatch, in the crew's own log: the emitter
@@ -836,6 +844,40 @@ def _mark_recorded(slot: str, item_id: str) -> None:
         work_ledger.mark_item_recorded(slot, item_id)
     except (WorkLedgerError, OSError):
         logger.debug("work ledger: could not mark %s recorded", item_id, exc_info=True)
+
+
+def _count_recorded(action: str, item: Any, header: Any) -> None:
+    """The ``kirocrew.work.*`` counter one committed conductor write is owed.
+
+    Four of the six actions carry a number worth counting; ``decide`` and
+    ``verdict`` carry none of their own -- a decision's text and a verdict's
+    ruling are already visible in the close they lead to, and an item's fail
+    count is read off the close rather than off each verdict that raised it.
+
+    Every value comes from the COMMITTED record the caller holds, never from the
+    request, so a field the store defaulted or clamped is counted as the store
+    holds it. ``goal`` counts only the write that OPENED the board: the committed
+    header's ``goal_version`` is 1 on exactly that write and higher on every
+    reword, round bump, cap raise and ``new_goal`` after it.
+    """
+    depth = getattr(header, "depth", None)
+    if action == "goal":
+        if getattr(header, "goal_version", 0) == 1:
+            work_metrics.record_goal_created(depth)
+    elif action == "create":
+        work_metrics.record_item_created(depth)
+    elif action == "close":
+        work_metrics.record_item_closed(
+            getattr(item, "state", None),
+            getattr(item, "fails", None),
+            getattr(item, "created_at", None),
+            getattr(item, "closed_at", None),
+        )
+    elif action == "bind":
+        # ``session`` is the kind the dispatch this bind records always names; see
+        # the ``crew_log_emit.on_crew_dispatch`` call below, which builds the
+        # target object, and ``metrics/work.py::record_dispatch``.
+        work_metrics.record_dispatch("session")
 
 
 def _entry_with_baseline(slot: str, item: Any, header: Any, **fields: Any) -> dict[str, Any]:
@@ -1091,6 +1133,188 @@ async def _refuse_unrecorded(
         },
         status=503,
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class SendHandback:
+    """The waiting item a conductor's ``session_send`` would answer, read BEFORE delivery.
+
+    ``report`` is the identity of the report the conductor is answering. The stamp
+    re-reads the item under the board lock and writes only when that identity is
+    unchanged, so a NEW ``blocked`` / ``question`` the worker files while the
+    message is in flight is never marked answered by the message that preceded it.
+    """
+
+    conductor_key: str
+    worker_key: str
+    item_id: str
+    report: tuple[Any, ...]
+
+
+# The audit name of the hand-back stamp: its skips and writes are bookkeeping
+# beside a delivered send, so they never read as a denied ``session_send``.
+_HANDBACK_OPERATION = "session_send_handback"
+
+
+def _report_identity(item: Any) -> tuple[Any, ...]:
+    """What distinguishes one worker report from the next on *item*.
+
+    Every worker-owned field a report writes, so two reports in the same second
+    still differ when either changed anything. ``artifacts`` is serialized so the
+    identity holds an immutable copy rather than the item's own mapping.
+    """
+    return (
+        getattr(item, "last_report_at", None),
+        getattr(item, "status", None),
+        getattr(item, "reason", None),
+        getattr(item, "summary", None),
+        json.dumps(getattr(item, "artifacts", None), sort_keys=True, default=str),
+        getattr(item, "pr", None),
+    )
+
+
+def _awaits_answer(item: Any, worker_key: str) -> bool:
+    """*item* is open, bound to *worker_key*, waiting on its conductor, and not yet answered."""
+    return (
+        item is not None
+        and not item.is_terminal
+        and item.worker_session_key == worker_key
+        and item.status in work_ledger.WAITING_STATUSES
+        # A report with a ``reason`` (``approval`` / ``needs_human``) waits on a
+        # person, not on the conductor's answer: a message about it hands nothing back.
+        and not getattr(item, "reason", None)
+        # One answer per report: a follow-up ("any update?") to an item already
+        # handed back must not replace the recorded decision or restart the window.
+        and work_ledger._decided_after_report(item) is None
+    )
+
+
+async def _read_waiting_item(conductor_key: str, worker_key: str) -> "tuple[str, Any] | None":
+    """The ``(item_id, item)`` *worker_key* is bound to on *conductor_key*'s board, if waiting."""
+    binding = await asyncio.to_thread(work_ledger.read_binding, worker_key)
+    if binding is None:
+        return None
+    bound_conductor, item_id = binding
+    if bound_conductor != conductor_key:
+        # Another board's worker: the caller's message is not that item's answer.
+        return None
+    item = await asyncio.to_thread(work_ledger.read_work_item, bound_conductor, item_id)
+    if not _awaits_answer(item, worker_key):
+        return None
+    return item_id, item
+
+
+async def read_send_handback(caller_key: str, target_key: str) -> SendHandback | None:
+    """The item a send from *caller_key* to *target_key* would answer, or ``None``.
+
+    Read before the message is delivered, so the stamp answers the report the
+    conductor saw. Every condition is the store's own identity, never the
+    request's word: the TARGET must be a session whose binding names a live item
+    (folded like every key that reaches the store), the CALLER must be the
+    conductor that binding resolves to (a bystander messaging the worker hands
+    nothing back), and the item must still be WAITING on that conductor and not
+    yet answered since its last report. Never raises: a send must not fail over
+    bookkeeping.
+    """
+    conductor_key = session_ledger.ledger_key(caller_key)
+    worker_key = session_ledger.ledger_key(target_key)
+    if not conductor_key or not worker_key:
+        return None
+    try:
+        found = await _read_waiting_item(conductor_key, worker_key)
+    except Exception:  # noqa: BLE001 - bookkeeping never fails a send
+        logger.debug("session_send hand-back read failed for %s", worker_key, exc_info=True)
+        return None
+    if found is None:
+        return None
+    item_id, item = found
+    return SendHandback(conductor_key, worker_key, item_id, _report_identity(item))
+
+
+def _handback_decision(message: str) -> str | None:
+    """The sent *message* as a ``decision``: redacted first, like every ledger write.
+
+    The record and report routes redact before they commit, so the cache and its
+    crew-log entry hold byte-identical text; the stamp keeps that rule. A message
+    over ``MAX_DECISION_CHARS`` is clipped with a visible marker, because the full
+    text already reached the worker and the decision only names the hand-back.
+    """
+    try:
+        cleaned = crew_log_emit.safe_work_fields({"decision": message.strip()})["decision"]
+    except crew_log_emit.WorkFieldError:
+        return None
+    if not isinstance(cleaned, str) or not cleaned:
+        return None
+    limit = work_ledger.MAX_DECISION_CHARS
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1] + "\u2026"
+    return cleaned
+
+
+async def stamp_send_handback(
+    state: DashboardState, handback: SendHandback, delivered_to: str, message: str
+) -> bool:
+    """The server half of the charter's "answer it, then record it".
+
+    When a conductor's ``session_send`` reaches the worker session an OPEN item
+    reported ``blocked`` / ``question`` on, that message IS the decision the
+    charter then tells the conductor to record with ``work_ledger_record
+    action=decide`` -- a second call an LLM conductor can forget, and a forgotten
+    one left the item pointing at the conductor forever: never handed back, so
+    :func:`work_ledger.is_stale` never flagged the worker that never resumed.
+    This stamps that ``decided_at`` hand-back on the delivery itself, with the
+    sent message as the ``decision`` -- the same write the forgotten call would
+    have made, through the same commit-and-record pipeline.
+
+    *handback* is what :func:`read_send_handback` saw before delivery. Under the
+    board lock the item is read again and stamped only when it is the same
+    waiting, unanswered report on the same binding; anything else is a plain
+    message and moves nothing.
+
+    Best-effort, and ``False`` for every skip or refusal: the message has
+    already been delivered, so a bookkeeping miss must never read back as a
+    failed send. A stamp that commits but cannot be recorded is undone, the
+    same ``_refuse_unrecorded`` rule the routes keep.
+    """
+    conductor_key = handback.conductor_key
+    item_id = handback.item_id
+    if session_ledger.ledger_key(delivered_to) != handback.worker_key:
+        return False
+    decision = _handback_decision(message)
+    if decision is None:
+        return False
+    unit, refusal = _acting_unit(state, conductor_key, _HANDBACK_OPERATION, item_id)
+    if refusal is not None:
+        return False
+    assert unit is not None
+
+    async def _still_answering() -> web.Response | None:
+        # Re-read under the lock every report write also holds: ``decide`` only
+        # checks that the item is open, so this is what fences the stamp to the
+        # report the conductor answered.
+        current = await _read_waiting_item(conductor_key, handback.worker_key)
+        if (
+            current is None
+            or current[0] != item_id
+            or _report_identity(current[1]) != handback.report
+        ):
+            return _refuse_400("handback_report_changed", "the answered report changed")
+        return None
+
+    try:
+        response = await _record_conductor_write(
+            state,
+            conductor_key,
+            unit,
+            "decide",
+            {"action": "decide", "item_id": item_id, "decision": decision},
+            operation=_HANDBACK_OPERATION,
+            before_write=_still_answering,
+        )
+    except Exception:  # noqa: BLE001 - bookkeeping never fails a delivered send
+        logger.warning("session_send hand-back stamp failed for %s", item_id, exc_info=True)
+        return False
+    return response.status == 200
 
 
 def _work_entry(slot: str, **fields: Any) -> dict[str, Any]:
@@ -1543,54 +1767,25 @@ def _slot_open(state: DashboardState, key: str) -> bool:
         return False
 
 
-async def api_work_ledger_record(request: web.Request) -> web.Response:
-    """POST /api/work-ledger/record — one conductor-owned write.
+async def _record_conductor_write(
+    state: DashboardState,
+    key: str,
+    unit: str,
+    action: str,
+    cleaned: dict[str, Any],
+    *,
+    operation: str,
+    before_write: Callable[[], Awaitable[web.Response | None]] | None = None,
+) -> web.Response:
+    """Probe, commit and record one conductor-owned write on *key*'s board.
 
-    An ``action`` selects the operation because the field sets are disjoint and
-    one flat schema would accept nonsense combinations. ``goal`` and ``create``
-    also BOOTSTRAP the ledger, which is the only way one comes into existence;
-    every other action answers ``no_ledger`` until then, so a conductor cannot
-    bind or decide against a ledger that was never opened.
+    The one commit-and-record path for every conductor action: the record route
+    and the ``session_send`` hand-back (:func:`stamp_send_handback`) both write
+    through it. *cleaned* is already validated and redacted. *operation* names
+    the write in the audit trail. *before_write*, when given, runs under the
+    board lock before the snapshot; a response from it stops the write and is
+    returned as is.
     """
-    key, refusal = await _caller_key(request, "work_ledger_record")
-    if refusal is not None:
-        return refusal
-    assert key is not None
-
-    body, bad = await _json_object(request)
-    if bad is not None:
-        return bad
-    assert body is not None
-    try:
-        cleaned = validate_tool_args(_drop_nulls(body), WORK_LEDGER_RECORD_SCHEMA)
-    except ValidationError as exc:
-        return _refuse_400(_validation_code(exc), str(exc))
-    try:
-        cleaned = crew_log_emit.safe_work_fields(cleaned)
-    except crew_log_emit.WorkFieldError as exc:
-        return _refuse_400(work_ledger.CODE_INVALID_VALUE, str(exc))
-
-    action = str(cleaned.get("action") or "")
-    if action not in RECORD_ACTIONS:
-        return _refuse_400(
-            work_ledger.CODE_INVALID_ACTION,
-            f"unknown action {action!r}; expected one of: {', '.join(sorted(RECORD_ACTIONS))}",
-        )
-
-    state: DashboardState = request.app["state"]
-    unit, urefusal = _acting_unit(state, key, "work_ledger_record", action)
-    if urefusal is not None:
-        return urefusal
-    dirty = await _refuse_if_dirty(key, key, "work_ledger_record")
-    if dirty is not None:
-        return dirty
-    assert unit is not None
-
-    if action == "bind":
-        refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
-        if refusal is not None:
-            return refusal
-
     # Refused BEFORE the ledger is even bootstrapped: the widest entry this action
     # can produce,
     # with the store-generated fields at their widest, must fit one log line. The
@@ -1659,8 +1854,8 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             decided_at=_WIDEST_STAMP,
             pending_since=_WIDEST_STAMP,
         ):
-            return _refuse_item_too_large(key, "work_ledger_record", str(cleaned.get("item_id")))
-        _audit(key, "work_ledger_record", "denied", resources=action, error="work_entry_too_large")
+            return _refuse_item_too_large(key, operation, str(cleaned.get("item_id")))
+        _audit(key, operation, "denied", resources=action, error="work_entry_too_large")
         return _refuse_400(
             "work_entry_too_large",
             "the action's crew-log record does not fit one log line; shorten it",
@@ -1668,9 +1863,13 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
 
     async def _under_board() -> web.Response:
         # Re-checked under the lock, for the same reason the report route does.
-        dirty = await _refuse_if_dirty(key, key, "work_ledger_record")
+        dirty = await _refuse_if_dirty(key, key, operation)
         if dirty is not None:
             return dirty
+        if before_write is not None:
+            stop = await before_write()
+            if stop is not None:
+                return stop
         # The worker key is folded through ``session_ledger.ledger_key`` before the
         # store writes the binding (see the module note); the snapshot names the
         # same path, or a failed bind's binding would escape the undo.
@@ -1693,14 +1892,14 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             if isinstance(bootstrapped, web.Response):
                 return bootstrapped
         else:
-            _record, lrefusal = await _own_ledger(key, "work_ledger_record")
+            _record, lrefusal = await _own_ledger(key, operation)
             if lrefusal is not None:
                 return lrefusal
 
         try:
             result = await asyncio.to_thread(_write, key, action, cleaned)
         except WorkLedgerError as exc:
-            _audit(key, "work_ledger_record", "denied", resources=action, error=exc.code)
+            _audit(key, operation, "denied", resources=action, error=exc.code)
             return _refuse_store_error(exc)
         except OSError:
             logger.warning("work ledger write failed for %s", key, exc_info=True)
@@ -1713,7 +1912,7 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         if not established:
             return await _refuse_unrecorded(
                 key,
-                "work_ledger_record",
+                operation,
                 getattr(item, "item_id", None),
                 key,
                 snapshot,
@@ -1773,7 +1972,7 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         if not landed:
             return await _refuse_unrecorded(
                 key,
-                "work_ledger_record",
+                operation,
                 getattr(item, "item_id", None),
                 key,
                 snapshot,
@@ -1784,6 +1983,10 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             await asyncio.to_thread(_mark_recorded, key, item.item_id)
         if action == "goal":
             await asyncio.to_thread(_mark_goal_recorded, key)
+        # Counted here and not a line earlier: every refusal above returns, and a
+        # write whose record did not land is undone above, so this point is
+        # reached once per write the route reports as successful.
+        _count_recorded(action, item, header)
         crew_store = _crew_store(key) if action == "bind" else ""
         worker_slot = getattr(item, "worker_session_key", "") or ""
         if item is not None and crew_store and worker_slot:
@@ -1800,7 +2003,7 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             )
         _audit(
             key,
-            "work_ledger_record",
+            operation,
             "ok",
             resources=f"{action} {getattr(item, 'item_id', '') or ''}".strip(),
         )
@@ -1832,6 +2035,59 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     # the lock goes back with that divergence visible to the next reader.
     async with _board_lock(key):
         return await _drain_before_cancelling(_under_board())
+
+
+async def api_work_ledger_record(request: web.Request) -> web.Response:
+    """POST /api/work-ledger/record — one conductor-owned write.
+
+    An ``action`` selects the operation because the field sets are disjoint and
+    one flat schema would accept nonsense combinations. ``goal`` and ``create``
+    also BOOTSTRAP the ledger, which is the only way one comes into existence;
+    every other action answers ``no_ledger`` until then, so a conductor cannot
+    bind or decide against a ledger that was never opened.
+    """
+    key, refusal = await _caller_key(request, "work_ledger_record")
+    if refusal is not None:
+        return refusal
+    assert key is not None
+
+    body, bad = await _json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
+    try:
+        cleaned = validate_tool_args(_drop_nulls(body), WORK_LEDGER_RECORD_SCHEMA)
+    except ValidationError as exc:
+        return _refuse_400(_validation_code(exc), str(exc))
+    try:
+        cleaned = crew_log_emit.safe_work_fields(cleaned)
+    except crew_log_emit.WorkFieldError as exc:
+        return _refuse_400(work_ledger.CODE_INVALID_VALUE, str(exc))
+
+    action = str(cleaned.get("action") or "")
+    if action not in RECORD_ACTIONS:
+        return _refuse_400(
+            work_ledger.CODE_INVALID_ACTION,
+            f"unknown action {action!r}; expected one of: {', '.join(sorted(RECORD_ACTIONS))}",
+        )
+
+    state: DashboardState = request.app["state"]
+    unit, urefusal = _acting_unit(state, key, "work_ledger_record", action)
+    if urefusal is not None:
+        return urefusal
+    dirty = await _refuse_if_dirty(key, key, "work_ledger_record")
+    if dirty is not None:
+        return dirty
+    assert unit is not None
+
+    if action == "bind":
+        refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
+        if refusal is not None:
+            return refusal
+
+    return await _record_conductor_write(
+        state, key, unit, action, cleaned, operation="work_ledger_record"
+    )
 
 
 async def holds_ledger(session_key: str) -> bool:

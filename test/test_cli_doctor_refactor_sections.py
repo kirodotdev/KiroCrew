@@ -547,6 +547,7 @@ def test_the_task_store_rows_and_warnings(task_home, capsys, monkeypatch) -> Non
     monkeypatch.setattr(
         TaskStore, "count_by_state", lambda self: {"running": 1, "done": 0, "queued": 2}
     )
+    monkeypatch.setattr(TaskStore, "overdue_unleased_rows", lambda self, overdue_secs: [])
     issues: list[str] = []
 
     cli_doctor._doctor_task_store(issues)

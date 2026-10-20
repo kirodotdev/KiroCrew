@@ -6,8 +6,8 @@ database. Reading side: the member filter extraction runs through, the size boun
 before anything is extracted, and the manifest readers. A name that comes out of an
 archive is escaped here before it reaches a terminal.
 
-What a bundle RECORDS is composed by the snapshot command itself
-(:func:`kiro_crew.snapshot._build_snapshot`), which writes ``MANIFEST.json``.
+What a bundle RECORDS is composed by the snapshot build
+(:func:`kiro_crew.snapshot_build._build_snapshot`), which writes ``MANIFEST.json``.
 """
 
 from __future__ import annotations

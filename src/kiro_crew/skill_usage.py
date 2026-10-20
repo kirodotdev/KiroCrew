@@ -18,17 +18,23 @@ via ``resolve_dollar_skills``, not from an async event-loop hot path, so:
   the in-memory tally with zero IO.
 
 Losing up to a debounce window of counts on a hard crash is acceptable — this
-is a ranking heuristic, not durable state. The file is best-effort throughout:
-a missing / corrupt file yields an empty ledger and is self-healed on next flush.
+is a ranking heuristic, not durable state. A *shutdown* is not a crash, though:
+the gateway's exit paths call ``flush_all_for_shutdown`` before ``os._exit``
+and, through a pre-exec stop, before an in-place restart's ``os.execv`` (both
+skip atexit), so the hits accepted inside the last debounce window reach disk. The file is best-effort
+throughout: a missing / corrupt file yields an empty ledger and is self-healed
+on next flush.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Protocol
 
@@ -152,6 +158,54 @@ _MAX_TRACKED = 1024
 #: keeping the ledger fresh enough across restarts.
 _FLUSH_DEBOUNCE_SECS = 60.0
 
+#: Upper bound on the gateway's shutdown flush. One small JSON file per ledger;
+#: the bound only matters for a wedged disk, which must delay the exit, never
+#: hold it.
+SHUTDOWN_FLUSH_SECS = 2.0
+
+#: Every ledger alive in this process, so the gateway's exit path can flush them
+#: without knowing which loader owns which. Weak, so registering never keeps a
+#: ledger (or the loader that dropped it) alive.
+_live_ledgers: weakref.WeakSet[SkillUsageLedger] = weakref.WeakSet()
+_live_ledgers_lock = threading.Lock()
+
+
+def flush_all_for_shutdown() -> bool:
+    """Flush every live ledger. Returns True when none was left unwritten.
+
+    The gateway exits through ``os._exit``, which skips atexit and kills the
+    daemon flush thread, so a hit ``record`` accepted inside the debounce window
+    would die in memory. This is the shutdown write for that path. Synchronous
+    and filesystem-bound: the caller runs it off the loop, under a timeout.
+    Never raises.
+    """
+    with _live_ledgers_lock:
+        ledgers = list(_live_ledgers)
+    ok = True
+    for ledger in ledgers:
+        try:
+            ledger.flush()
+        except Exception:
+            logger.debug("skill-usage: shutdown flush failed", exc_info=True)
+            ok = False
+        else:
+            ok = ok and not ledger.dirty
+    return ok
+
+
+async def flush_all_before_exec() -> None:
+    """``flush_all_for_shutdown`` off-loop, bounded by ``SHUTDOWN_FLUSH_SECS``.
+
+    The pre-exec stop for the in-place restarts (the dashboard's restart and the
+    update coordinator's), which end in ``os.execv``: like ``os._exit``, the exec
+    kills the daemon flush thread and skips atexit. Registered at gateway boot
+    with ``pre_exec_stops.register_pre_exec_stop``.
+    """
+    if not await asyncio.wait_for(
+        asyncio.to_thread(flush_all_for_shutdown), timeout=SHUTDOWN_FLUSH_SECS
+    ):
+        logger.warning("skill-usage: the ledger did not fully flush before restart")
+
 
 class SkillUsageLedger:
     """In-memory per-skill usage tally with debounced, atomic persistence.
@@ -166,9 +220,15 @@ class SkillUsageLedger:
         self._hits: dict[str, int] = {}
         self._last_seen: dict[str, float] = {}
         self._lock = threading.Lock()
+        # Held from snapshot to file replacement, so writes land in snapshot
+        # order: a shutdown flush cannot be overwritten afterwards by an older
+        # snapshot a daemon flush thread took first. Taken before ``_lock``.
+        self._write_lock = threading.Lock()
         self._dirty = False
         self._last_flush = 0.0
         self._load()
+        with _live_ledgers_lock:
+            _live_ledgers.add(self)
 
     # --- read path (used by get_context ranking) -------------------------
 
@@ -281,8 +341,23 @@ class SkillUsageLedger:
             self._last_seen = last_seen
         logger.info("skill-usage: loaded %d tracked skill(s) from %s", len(hits), self._path)
 
+    @property
+    def dirty(self) -> bool:
+        """Whether accepted hits are still waiting for a write."""
+        with self._lock:
+            return self._dirty
+
     def flush(self) -> bool:
-        """Atomically persist the tally if it changed. Returns True on write."""
+        """Atomically persist the tally if it changed. Returns True on write.
+
+        Serialized on ``_write_lock``, so a call waits for an in-flight daemon
+        write and nothing older can land after it.
+        """
+        with self._write_lock:
+            return self._flush_serialized()
+
+    def _flush_serialized(self) -> bool:
+        """``flush`` body. Caller holds ``_write_lock``."""
         with self._lock:
             if not self._dirty:
                 return False

@@ -682,12 +682,16 @@ describe('Kiro credits pill', () => {
 })
 
 describe('Kiro credits pill — edge cases', () => {
-  it('stays in loading state if the usage fetch rejects', async () => {
+  it('renders no credit segment when the usage fetch rejects on a non-kiro harness', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockRejectedValueOnce(new Error('boom'))
     renderWithProviders(<App />, { route: '/chat' })
-    // useQuery (retry:false) surfaces the error and leaves data undefined; pill stays in the checking/loading state
-    expect(await screen.findByTitle(/Kiro credit usage/)).toBeInTheDocument()
+    // This suite's harness is `claude`, which has no Kiro credit balance, so a
+    // failed read has nothing true to show and the segment is dropped. The
+    // capsule itself still renders, which makes the absence meaningful, and
+    // waiting for it takes the read after the harness verdict has settled.
+    await waitFor(() => expect(document.querySelector('.tb-capsule')).toBeTruthy())
+    await waitFor(() => expect(screen.queryByTitle(/Kiro credit usage/)).toBeNull())
   })
 
   it('opens the modal in a loading state when clicked before data resolves', async () => {
@@ -859,17 +863,25 @@ describe('Kiro credits pill — edge cases', () => {
 })
 
 describe('import outcome notice', () => {
-  it('is mounted once, above the layout branch, so every layout renders it', () => {
+  it('is mounted for every layout: popout and embed above the branch, the dashboard in its local pane', () => {
     // The row's menu closes on the picker's blur, so an import's outcome only
     // reaches the user through this notice. The popout, embed and dashboard
-    // layouts each render a session menu; mounting above the branch that picks
-    // among them is what keeps a new layout from shipping without it.
+    // layouts each render a session menu, so each must host the notice. The
+    // dashboard's copy lives inside the local pane's overlay root so it hides
+    // while a remote Crew shows; the frames, which have no local pane, keep one
+    // mounted above the branch that picks among them.
     // Read from source: standing up the popout and embed shells here would
     // mean faking the window-level flags each branch keys on.
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
-    const mounts = src.split('<ImportSessionOutcomeNotice />').length - 1
-    expect(mounts).toBe(1)
-    expect(src.indexOf('<ImportSessionOutcomeNotice />')).toBeLessThan(src.indexOf('{isPopout ? ('))
-    expect(src.indexOf('<ImportSessionOutcomeNotice />')).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
+    const frames = '{(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}'
+    expect(src.split('<ImportSessionOutcomeNotice />').length - 1).toBe(2)
+    expect(src.split(frames).length - 1).toBe(1)
+    expect(src.indexOf(frames)).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
+    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{isPopout ? ('))
+    // The only other branch is the dashboard, and its copy is in the local pane.
+    expect(src).toContain(') : isEmbed ? (')
+    const dashboard = src.indexOf('<ImportSessionOutcomeNotice />', src.indexOf('<LocalOverlayRoot hidden='))
+    expect(dashboard).toBeGreaterThan(-1)
+    expect(dashboard).toBeLessThan(src.indexOf('</LocalOverlayRoot>'))
   })
 })

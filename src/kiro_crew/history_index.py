@@ -58,6 +58,11 @@ single-character lookup is a token lookup. It is bounded by the character
 inventory rather than document length (a few thousand entries at most), which is
 why it costs almost nothing next to the trigram index.
 
+When a dictionary splits the run into words instead, a word of three or more
+characters is a trigram lookup like any other needle, and a two-character word
+looks up both of its characters here (an AND); the scorer's substring check then
+decides adjacency, exactly as it does for every needle.
+
 The title boundary
 ------------------
 ``search_sessions`` gates on title OR content, and this index holds content
@@ -681,8 +686,17 @@ class SessionSearchIndex:
             if not needle.required:
                 continue
             spellings = (needle.text, *needle.alts)
-            if len(spellings) == 1 and len(needle.text) == 1 and is_cjk_char(needle.text):
-                out.append((pos, "session_cjk", needle.text))
+            text = needle.text
+            if (
+                len(spellings) == 1
+                and len(text) < _MIN_TRIGRAM_CHARS
+                and all(map(is_cjk_char, text))
+            ):
+                # A one- or two-character CJK word: every one of its characters
+                # must be in the document. Space-separated characters are an
+                # implicit AND over the per-character tokens; adjacency is left to
+                # the scorer's substring check, so this stays a superset.
+                out.append((pos, "session_cjk", " ".join(text)))
                 continue
             if any(len(s) < _MIN_TRIGRAM_CHARS for s in spellings):
                 continue

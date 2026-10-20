@@ -612,7 +612,7 @@ class TestYoloFromConfigGuard:
 
 
 class TestYoloFromConfigSlackGuards:
-    """Cover already-active early-return paths in events.py and handler.py."""
+    """Cover already-active early-return paths in events_slash.py and handler.py."""
 
     @pytest.fixture(autouse=True)
     def _reset_yolo(self):
@@ -624,7 +624,7 @@ class TestYoloFromConfigSlackGuards:
 
     @pytest.mark.asyncio
     async def test_events_yolo_on_noop_when_already_active(self) -> None:
-        """events.py: /kirocrew yolo on responds with 'already ON' when active."""
+        """events_slash.py: /kirocrew yolo on responds with 'already ON' when active."""
         from unittest.mock import AsyncMock, MagicMock
 
         from kiro_crew.slack.handler import set_yolo_mode

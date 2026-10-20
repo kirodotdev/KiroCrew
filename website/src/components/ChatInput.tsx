@@ -8,7 +8,7 @@ import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import RejectDropdown from './RejectDropdown'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppStore, useAppDispatch } from '../store'
@@ -24,6 +24,7 @@ import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
 import TrustDropdown from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { focusComposerAfterPick as pickerFocusAfterPick } from './chat-input/pickerFocus'
 import ErrorNotice from './ErrorNotice'
@@ -40,6 +41,7 @@ import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
+import { hasListLine } from './composerListIndent'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -326,6 +328,7 @@ function ChatInput({
     voiceDeviceLabel = '',
     voiceDeviceId = '',
     voiceDictationPanel = false,
+    voiceSubmitOnRelease = false,
     voiceStreaming = false,
     voiceSampleRef,
     voicePartial = '',
@@ -439,6 +442,9 @@ function ChatInput({
   const wrapperRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fileInputId = useId()
+  const listIndentHintId = useId()
+  const draftHasListLine = useMemo(() => hasListLine(value), [value])
+  const [textareaFocused, setTextareaFocused] = useState(false)
   const { shelfRef, shelfHeight, shelfCompact, shelfTiny } = useShelfMeasure()
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
@@ -479,6 +485,15 @@ function ChatInput({
     return `${i18nT('components.chatInput.project_switch_applies_next_turn', { project: name })}\n${i18nT('components.chatInput.project_switch_links_follow_pick')}`
   }, [isRunning, turnStartProject])
   const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
+  // The project chip opens its picker on the mouse press (usePressActivation);
+  // keyboard and touch stay on click. ProjectPicker's outside-press dismiss
+  // skips the anchor rect, so a press on the chip while open is a toggle.
+  // keepFocusOffTrigger: ProjectPicker stays mounted, so a reopen to Recent or
+  // Favorites renders its cached rows and mounts the autoFocus search box in
+  // the pointerdown commit, before mousedown. Without the guard the mousedown
+  // default would move focus back to the chip and typing would go nowhere. A
+  // first open or Browse focuses later, so the guard cancels nothing there.
+  const bindProjectPress = usePressActivation()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
   // Client-side `accept` is a UX hint only (input-validation guidance: server enforces type via
@@ -695,7 +710,7 @@ function ChatInput({
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, holdBarLabel,
     voiceModePlaceholder,
   } = useHoldToTalk({
-    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload,
+    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease,
     voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation,
   })
   // The name in the status row is the way there: one click switches to the
@@ -761,6 +776,11 @@ function ChatInput({
     !!voiceError || !!voiceDownload || voiceDrainCancellable || micHeldElsewhere || voiceHeldLanded
   const inlineToolbar = inlineToolbarWhileFits && textFitsOneRow && !pendingFiles.length && !pendingDirs.length && !hasQuote && !hasSessionRefs && !inBoxStatusStrip && manualHeight === null &&
     !terminal.active && !voiceHoldMode && !showDictation && !lexicalLoadFailed
+  // The list-indent hint shows under the text while the textarea has focus.
+  // On the one-row shape it stays screen-reader only: a visible row would sit
+  // beside the text and squeeze it, and reshaping the box on every focus and
+  // blur moves the toolbar under the pointer. Focus never changes the shape.
+  const listHintVisible = draftHasListLine && textareaFocused && !(lexicalComposer && !lexicalLoadFailed) && !inlineToolbar
   inlineRef.current = inlineToolbar
   const reduceMotion = useReducedMotion()
   // The box's height (`inlineToolbarWhileFits` only), measured off the inner
@@ -1188,15 +1208,14 @@ function ChatInput({
         )}
         {/* Where a release would land: portalled so a transformed ancestor
             cannot offset its viewport coordinates. */}
-        {treeDrop.state === 'accept' && treeDrop.caret && createPortal(
+        {treeDrop.state === 'accept' && treeDrop.caret && <OverlayPortal>
           <div
             aria-hidden="true"
             data-testid="composer-tree-drop-caret"
             className="pointer-events-none fixed z-50 w-0.5 rounded-full bg-accent"
             style={{ left: treeDrop.caret.left - 1, top: treeDrop.caret.top, height: treeDrop.caret.height }}
-          />,
-          document.body,
-        )}
+          />
+        </OverlayPortal>}
         {/* A folder whose path cannot be written as a folder reference: say why
             instead of leaving only the no-drop cursor. */}
         {treeDrop.state === 'refuse' && (
@@ -1238,7 +1257,7 @@ function ChatInput({
         </div>
 
         <VoiceCaptureStatus
-          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} showDictation={showDictation} value={value} voicePartial={voicePartial}
+          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} showDictation={showDictation} value={value} voicePartial={voicePartial}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
           voiceStreaming={voiceStreaming} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
           onClearVoiceError={onClearVoiceError} voiceDrainCancellable={voiceDrainCancellable} cancelVoiceDrain={cancelVoiceDrain} onVoiceToggle={onVoiceToggle}
@@ -1345,7 +1364,9 @@ function ChatInput({
           aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
           data-composer-input=""
           spellCheck={spellCheck}
-          aria-describedby={pastePreviewPanelId ?? undefined}
+          // On a draft with a list line Tab may indent, so screen readers also
+          // hear how to leave the composer (Esc then Tab, chat-input/keyboard.ts).
+          aria-describedby={[pastePreviewPanelId, draftHasListLine ? listIndentHintId : null].filter(Boolean).join(' ') || undefined}
           data-composer-typo
           // Chromium paints no `text-overflow` on a `::placeholder`, so the cut tail
           // fades out instead, the way the app's other cut edges do.
@@ -1366,8 +1387,8 @@ function ChatInput({
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
             // in the binding itself, so these handlers only carry what is local here.
-            onFocus: prefetchSkills,
-            onBlur: () => { if (hoverRef.current) hoverRef.current.handleMouseLeave() },
+            onFocus: () => { setTextareaFocused(true); prefetchSkills() },
+            onBlur: () => { setTextareaFocused(false); if (hoverRef.current) hoverRef.current.handleMouseLeave() },
           })}
           onPaste={disabled ? e => e.preventDefault() : handlePaste}
           onCopy={handleCopy}
@@ -1383,6 +1404,14 @@ function ChatInput({
         {pasteBlocks.length > 0 && <PasteHoverLayer ref={hoverRef} value={value} blocks={pasteBlocks} mirrorRef={mirrorRef} onActivePanelChange={setPastePreviewPanelId} />}
         </>)}
         </motion.div>
+        {/* The Tab rule and its way out. Screen readers get it through the
+            textarea's aria-describedby; sighted keyboard users see the same
+            line while the textarea has focus, except on the one-row shape. */}
+        {draftHasListLine && !(lexicalComposer && !lexicalLoadFailed) && (
+          <p id={listIndentHintId} data-testid="list-indent-hint" className={listHintVisible ? `px-4 pt-1 text-[12px] text-muted ${showDictation || voiceHoldMode ? 'sr-only' : ''}` : 'sr-only'}>
+            {i18nT('components.chatInput.list_indent_hint')}
+          </p>
+        )}
 
         {voiceHoldMode && (
           <HoldToTalkBar manualHeight={manualHeight} setHoldTarget={setHoldTarget} touchPtt={touchPtt} disabled={disabled} micBlocked={micBlocked} optimizing={optimizing} voiceSettling={voiceSettling} holdBarLabel={holdBarLabel} />
@@ -1672,7 +1701,7 @@ function ChatInput({
           <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted">
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
-            onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
+            {...bindProjectPress<HTMLButtonElement>(el => onProjectClick(el.getBoundingClientRect(), el), { keepFocusOffTrigger: true })}
             /* Stays enabled mid-turn: the project route never touches the
                running turn's process. It waits on the session lock a turn
                holds while it prepares, then writes slot.project and arms the

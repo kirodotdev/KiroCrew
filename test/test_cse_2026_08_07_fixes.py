@@ -322,7 +322,7 @@ class TestMdNotebookErrorRedaction:
         """Modeled and catch-all branches both reach the browser, so neither may
         interpolate str(exc) directly."""
         src = (Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "apps"
-               / "builtins" / "md_notebook" / "server.py").read_text(encoding="utf-8")
+               / "builtins" / "md_notebook" / "server_http.py").read_text(encoding="utf-8")
         body = src.split("async def error_middleware", 1)[1].split("\n\n\n", 1)[0]
         assert "str(exc)" not in body, "a middleware branch still leaks raw exception text"
         assert body.count("_safe_error(exc)") == 2

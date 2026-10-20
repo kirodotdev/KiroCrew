@@ -581,6 +581,10 @@ _INIT_GUARD_JS: Final[str] = f"""
 }})();
 """
 
+#: The flag the beacon reports as ``refill``: did the PAGE register a listener that
+#: a refill reaches? Set by the probe below, and by ``subscribe`` in the bootstrap.
+_REFILL_FLAG: Final[str] = "__kirocrewPageRefills"
+
 _BOOTSTRAP_JS: Final[str] = f"""
 (function () {{
   var el = document.getElementById({_DATA_ELEMENT_ID!r});
@@ -628,6 +632,13 @@ _BOOTSTRAP_JS: Final[str] = f"""
     if (typeof name !== 'string' || typeof cb !== 'function') return function () {{}};
     var entry = {{ name: name, cb: cb, live: true }};
     subscribers.push(entry);
+    // A PAGE THAT SUBSCRIBES IS ONE A REFILL REACHES: `notify` runs on every push,
+    // so the callback redraws the page without a reload. The probe below watches
+    // `addEventListener` and cannot see this, because a subscriber is held in this
+    // closure's registry and never registers a listener on `window`. Set here, after
+    // the argument check, so a call that registered nothing does not count. The probe
+    // resets the flag before the page runs, so only the page's own call sets it.
+    window[{_REFILL_FLAG!r}] = true;
     // FIRES NOW, against the read the page already holds. A page's inline script
     // runs during parse, before a single binding is filled, so a callback that only
     // fired on a push would draw nothing on first paint -- over a log that has the
@@ -813,18 +824,16 @@ _BOOTSTRAP_JS: Final[str] = f"""
 }})();
 """
 
-#: The flag the beacon reports as ``refill``: did the PAGE register a listener that
-#: a refill reaches?
-_REFILL_FLAG: Final[str] = "__kirocrewPageRefills"
-
 #: Whether the page's own script will redraw on a refill, recorded as it registers.
 #:
 #: The bootstrap's refill fills the bound cells of ANY page, but a page that draws
 #: from ``window.kirocrew`` in its own script only shows the new values if it draws
 #: again when one lands. The host cannot read that off the page, so it asks the page
 #: by watching what it does: a page that listens for ``message`` or for the refill
-#: event on ``window`` is one a refill reaches. Every builtin template does. A page
-#: that does not is re-minted on a new read, which is what every page got before, so
+#: event on ``window`` is one a refill reaches, and so is a page that calls
+#: ``window.kirocrew.subscribe`` (the bootstrap sets the flag itself, because a
+#: subscriber never registers a listener on ``window``). Every builtin template does.
+#: A page that does neither is re-minted on a new read, which is what every page got before, so
 #: a wrong NO costs a reload and never a stale value.
 #:
 #: Installed AFTER the bootstrap, so the bootstrap's own refill listener is not

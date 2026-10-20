@@ -1,8 +1,9 @@
 """The report sections of ``kirocrew doctor``, one module per family.
 
 :mod:`kiro_crew.cli_doctor` is the command's facade and orchestrator: it prints the
-sections in a fixed order, owns the rows repository gates pin to that file, and
-renders the verdict and exit code. The families here hold the rest:
+sections in a fixed order, owns the rows repository gates pin to it (with the
+:mod:`kiro_crew.cli_doctor_parts` owners composed onto it), and renders the verdict and
+exit code. The families here hold the rest:
 
 * :mod:`~kiro_crew.doctor_checks.render` -- the escaping, indent and wrapping
   helpers the sections share

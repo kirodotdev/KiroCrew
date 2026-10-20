@@ -1,9 +1,10 @@
 """A masked harness's startup auth failure names the credential mask.
 
 An enforced adapter that re-exposes ``~/.aws/config`` runs with the rest of
-``~/.aws`` hidden on purpose. When such a child fails ``initialize`` or
-``session/new`` because the AWS SDK could not load a credential, the surfaced
-error says so once, so the deliberate layout is not reported as a broken control.
+``~/.aws`` hidden on purpose. When such a child fails ``initialize``,
+``session/new`` or its first turn because the AWS SDK could not load a
+credential, the surfaced error says so once, so the deliberate layout is not
+reported as a broken control.
 """
 
 from __future__ import annotations
@@ -13,8 +14,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpAuthRequired
+from kiro_crew.acp.client import AcpAuthRequired, AcpError
 from kiro_crew.acp.runtime import AcpRuntimeError
+from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.transport_errors import _raise_acp_error
 from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO, ACP_BACKEND_OPENCODE
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_gate import label_for
@@ -211,3 +214,91 @@ async def test_the_kiro_start_path_never_calls_the_mask_helpers(path: str, signe
     name_helper.assert_not_called()
     expected = host_auth.signed_out_message(ACP_BACKEND_KIRO) if signed_out else _AUTH_RPC_ERROR
     assert str(caught.value) == expected
+
+
+# The frame codex-acp 1.11.0 ends a turn with when Bedrock cannot load a credential
+# after session/new succeeded (test/fixtures/acp_frames/README.md, codex row).
+_TURN_AWS_FRAME = {
+    "code": -32603,
+    "message": "Internal error",
+    "data": "stream disconnected before completion: failed to load AWS credentials: "
+    "the credentials provider was not properly configured",
+}
+_TURN_OTHER_FRAME = {"code": -32603, "message": "Internal error", "data": "model overloaded"}
+
+
+def _turn_provider(
+    frame: dict,
+    *,
+    backend: str = ACP_BACKEND_CODEX,
+    hidden: tuple[str, ...] | None = None,
+    stderr: str = "",
+) -> AcpSessionProvider:
+    """A real session provider over a handle whose first prompt fails with *frame*."""
+    handle = MagicMock()
+    handle.session_id = "codex-sess-1"
+    handle.memory_mode = "persistent"
+
+    async def prompt(_message: str):
+        _raise_acp_error(frame, backend=backend)
+        yield  # pragma: no cover - makes this an async generator
+
+    handle.prompt = prompt
+    runtime = _runtime(backend=backend, hidden=hidden, stderr=stderr)
+    runtime.is_alive.return_value = True
+    runtime._process = MagicMock(returncode=None)
+    runtime._last_activity = 0.0
+    return AcpSessionProvider(handle, runtime)
+
+
+async def _turn_error(provider: AcpSessionProvider) -> AcpError:
+    with pytest.raises(AcpError) as caught:
+        async for _event in provider.stream("hello"):
+            pass
+    return caught.value
+
+
+@pytest.mark.asyncio
+async def test_an_aws_auth_failure_at_the_first_turn_names_the_mask_once():
+    error = await _turn_error(_turn_provider(_TURN_AWS_FRAME))
+    text = str(error)
+    assert text.startswith(_TURN_AWS_FRAME["data"])
+    assert text.count(_note()) == 1
+    # Only the text changes: the classifier's verdict rides on the same object.
+    assert error.transient is False
+
+
+@pytest.mark.asyncio
+async def test_a_turn_failure_that_is_not_an_aws_auth_failure_gets_no_note():
+    error = await _turn_error(_turn_provider(_TURN_OTHER_FRAME))
+    assert _note() not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_an_old_aws_stderr_line_does_not_name_the_mask_on_a_later_turn_failure():
+    # The stderr tail spans the runtime's life; a turn matches its own error only.
+    error = await _turn_error(_turn_provider(_TURN_OTHER_FRAME, stderr=_AWS_STDERR))
+    assert _note() not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_an_unmasked_turn_failure_gets_no_note():
+    error = await _turn_error(_turn_provider(_TURN_AWS_FRAME, hidden=()))
+    assert str(error) == _TURN_AWS_FRAME["data"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_failure_that_already_names_the_mask_is_not_doubled():
+    noted = dict(_TURN_AWS_FRAME, data=f"{_TURN_AWS_FRAME['data']} {_note()}")
+    error = await _turn_error(_turn_provider(noted))
+    assert str(error).count(_note()) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_kiro_turn_path_never_calls_the_mask_helper():
+    # harness-parity H13: kiro compares the backend against the table and stops.
+    provider = _turn_provider(_TURN_AWS_FRAME, backend=ACP_BACKEND_KIRO)
+    with patch("kiro_crew.providers.acp_runtime_start._name_credential_mask") as name_helper:
+        error = await _turn_error(provider)
+    name_helper.assert_not_called()
+    assert _note(ACP_BACKEND_KIRO) not in str(error)

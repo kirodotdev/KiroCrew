@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         _FILE_KINDS_MAX_PATHS,
         _FILE_READ_BINARY_EXTS,
         _FILE_READ_SNIFF_BYTES,
+        _path_probe_stall_key,
         _PathProbeBusy,
         _probe_busy_response,
         _probe_request_path,
@@ -412,6 +413,34 @@ def _resolve_project_relative(raw: str) -> tuple[str, str | None]:
     return candidate, None
 
 
+def _project_relative_stall_path(raw: str) -> str:
+    """The path :func:`_resolve_project_relative` touches for *raw*, for the probe's stall key.
+
+    A path it passes through unchanged is its own key, as before. A relative
+    one is resolved inside the project directory, so it is charged to that
+    directory: two resolves stuck on a dead project mount then refuse the next
+    one. ``""`` (no key) when no project directory is set, since that answer
+    touches no filesystem. Lexical, so it runs on the event loop.
+    """
+    if not raw or raw.startswith(("/", "~", "\\")) or ntpath.splitdrive(raw)[0]:
+        return raw
+    return os.environ.get("KIROCREW_PROJECT_DIR", "")
+
+
+def _batch_stall_path(raws: list[str]) -> str:
+    """The stall path for :func:`_classify_request_paths` over *raws*, or ``""``.
+
+    The batch is keyed only when every path in it falls under ONE stall key;
+    then that key is exactly the mount the hop can wedge on. A batch spanning
+    several mounts gets no key: keying it on any one path (the first, say)
+    would let two batches stuck on a dead mount listed third refuse a healthy
+    mount listed first, on every route. Such a batch stays bounded by the pool.
+    """
+    paths = [_project_relative_stall_path(raw) for raw in raws]
+    keys = {_path_probe_stall_key((p,)) for p in paths}
+    return paths[0] if len(keys) == 1 else ""
+
+
 def _classify_request_paths(raws: list[str]) -> list[tuple[str, str, str]]:
     """Classify each request path exactly as ``HEAD /api/file-read?resolve=1`` would.
 
@@ -489,7 +518,9 @@ async def api_file_kinds(request: web.Request) -> web.Response:
     if not unique:
         return web.json_response({"kinds": {}})
     try:
-        verdicts = await _run_path_probe(_classify_request_paths, unique)
+        verdicts = await _run_path_probe(
+            _classify_request_paths, unique, stall_path=_batch_stall_path(unique)
+        )
     except _PathProbeBusy:
         return _probe_busy_response(resource=f"{len(unique)} paths", tool_name="file_read")
     sel = _sel()

@@ -397,8 +397,15 @@ async def resolve_session_choices(
     normalized = " ".join(query.casefold().split())
     if normalized:
         rows = await asyncio.to_thread(conv_log.search_sessions, query, fetch_limit)
-        needles, phrase, floor = parse_search_query(normalized)
-        multi_word = [n.text for n in needles if n.required] != [phrase]
+        # Off the loop too: the parse may ask the Chinese dictionary, whose first
+        # use loads it.
+        needles, phrase, floor = await asyncio.to_thread(parse_search_query, normalized)
+        # A Chinese run split into dictionary words counts as many words, as its
+        # characters always did, so a one-word query such as "内存" keeps the
+        # title fallback it had before the split.
+        multi_word = [n.text for n in needles if n.required] != [phrase] or any(
+            n.word for n in needles
+        )
         if not rows and multi_word:
             # search_sessions matches multi-word queries needle-wise, so out-of-order
             # words DO resolve. What it cannot reach is a session older than its scan

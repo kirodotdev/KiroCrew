@@ -1,0 +1,43 @@
+{
+ "base_public_names": [
+  "DISCORD_BLOCKED",
+  "DISCORD_CHUNK_LIMIT",
+  "DISCORD_MAX_FILES_PER_MESSAGE",
+  "DISCORD_MAX_FILE_BYTES",
+  "DISCORD_MAX_TEXT",
+  "DISCORD_MAX_TOTAL_UPLOAD_BYTES",
+  "DISCORD_OK",
+  "DISCORD_PERMANENT",
+  "DISCORD_TRANSIENT",
+  "DiscordApiResult",
+  "DiscordClient",
+  "DiscordInbound",
+  "DiscordInteraction",
+  "EDIT_FAILED",
+  "EDIT_GONE",
+  "EDIT_OK",
+  "OutboundFile",
+  "SendPermission",
+  "channel_outbound_permitted",
+  "logger",
+  "redact_credentials",
+  "redact_exfiltration_urls",
+  "redact_for_display",
+  "sel",
+  "upload_filename"
+ ],
+ "note": "DiscordClient's REST ladder, mid-send re-check and Gateway owners moved into client_*; the facade binds what its own code reads (the result, permission and inbound records among them) and serves every other moved name from its owner through kiro_crew._facade_mirror.",
+ "rebound": {
+  "DiscordApiResult": "kiro_crew.discord.client_rest",
+  "DiscordInbound": "kiro_crew.discord.client_gateway",
+  "DiscordInteraction": "kiro_crew.discord.client_gateway",
+  "OutboundFile": "kiro_crew.messaging.outbound_files",
+  "SendPermission": "kiro_crew.discord.client_recheck",
+  "channel_outbound_permitted": "kiro_crew.messaging.identity",
+  "redact_credentials": "kiro_crew.security",
+  "redact_exfiltration_urls": "kiro_crew.security",
+  "redact_for_display": "kiro_crew.messaging.display_safety",
+  "sel": "kiro_crew.sel",
+  "upload_filename": "kiro_crew.messaging.outbound_files"
+ }
+}

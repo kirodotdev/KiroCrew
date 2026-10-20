@@ -508,7 +508,7 @@ class PoolHandoffTests(unittest.IsolatedAsyncioTestCase):
         FU.write_descriptor = self._real_write
         self._tmp.cleanup()
 
-    async def _send(self, handle, *, keep, stop="end_turn"):
+    async def _send(self, handle, *, keep, stop="end_turn", backend=None):
         # The pool's work_dir is this test's own temp dir, never `os.getcwd()`:
         # a sibling test in the same xdist worker can chdir into a directory it
         # then deletes, and reading the process cwd here would raise
@@ -520,7 +520,10 @@ class PoolHandoffTests(unittest.IsolatedAsyncioTestCase):
             async def create_session(self, cwd=None, agent=None):
                 return handle
 
-        pool._holder.acquire = lambda: _done(FakeRuntime())  # type: ignore
+        runtime = FakeRuntime()
+        if backend is not None:
+            runtime.acp_backend = backend  # type: ignore[attr-defined]
+        pool._holder.acquire = lambda: _done(runtime)  # type: ignore
         handle.scripts = [[_ev("text_chunk", text="report"),
                            _ev("complete", stop_reason=stop)]]
         return await pool.send("task", timeout=5, keep_session_key=keep)
@@ -537,6 +540,22 @@ class PoolHandoffTests(unittest.IsolatedAsyncioTestCase):
         # follow-up session has to be created with that same agent.
         self.assertEqual(self.recorded,
                          [("run1", "c1", "sid-1", self.pool._agent)])
+
+    async def test_a_kiro_runtime_still_keeps_the_review(self):
+        h = FakeHandle()
+        await self._send(h, keep="run1:c1", backend=RP.ACP_BACKEND_KIRO)
+        self.assertTrue(h.keep_transcript)
+        self.assertEqual(len(self.recorded), 1)
+
+    async def test_a_kas_runtime_offers_no_follow_up(self):
+        """KAS deletes the session at teardown and ``followup`` only reads
+        kiro-cli's store, so a descriptor would name a conversation that is gone."""
+        h = FakeHandle()
+        out = await self._send(h, keep="run1:c1", backend="kas")
+        self.assertEqual(out, "report")
+        self.assertFalse(h.keep_transcript)
+        self.assertEqual(h.destroyed, 1)
+        self.assertEqual(self.recorded, [])
 
     async def test_without_a_key_nothing_is_kept(self):
         h = FakeHandle()

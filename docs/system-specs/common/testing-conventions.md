@@ -2107,8 +2107,9 @@ run, and each named a class the floor did not yet close.
   registry, and `pod_root` from `Path.home()/.kirocrew-pods`. A fixture that was simply
   `PodConfig.load()` therefore recorded `viability-*.refused` notes into the real pod plane.
   The floor now pins `KIROCREW_POD_ROOT` and `KIROCREW_POD_ENV_DIR` per test
-  (`TestThePodPlaneIsPinnedForEveryTestpath`); `test_pod.py` clears them deliberately
-  because its subject includes the home-derived defaults, with `HOME` redirected first.
+  (`TestThePodPlaneIsPinnedForEveryTestpath`); the modules that import `pod_helpers.py`'s
+  autouse `_isolate_pod_host_state` (`test_pod.py` among them) clear them deliberately because
+  the pod tests' subject includes the home-derived defaults, with `HOME` redirected first.
 - **A collection-time probe reads the operator's config.** `test_app_backend.py`'s
   `_sandbox_can_spawn()` runs at import, before any per-test pin, and called
   `wrap_argv()` — which loads `KiroCrewConfig` from the REAL `~/.kiro/crew/config.json`.
@@ -3245,7 +3246,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   `monkeypatch.chdir(tmp_path)` in the fixture closes the process-cwd hazard; adding
   `cwd=` to the product would turn git's rc=128 for a missing clone into a Python
   `FileNotFoundError` before git runs, which every caller reads off `returncode`, so that
-  descriptor is deliberately left. One production change: `browser_cli/install.py`'s
+  descriptor is deliberately left. One production change: `browser_cli/install_launcher.py`'s
   staged node launcher now runs from the managed leaf its docstring already promised, and
   `test_browser_cli_install_gateway_command.py` pins the `cwd` it is handed.
 - **`fd_leak` at +3 per unclosed SQLite handle, and why refcounting never reclaims it.**
@@ -3499,7 +3500,7 @@ that survives neither is the probe's.
 
 #### What not to re-derive
 
-`test_plugin_import.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
+`test_plugin_import_bounds.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
 took 101 s once (round 1) and 30-41 s after: a nested-pytest test on a loaded host, the
 same shape as the ipv6 one, left as is.
 `test_instances_proxy.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`
@@ -4667,7 +4668,7 @@ More shapes this class hides, all Windows-only and all green on every Linux run:
   run then fails as whichever later assertion happens to touch it first — a park that
   never happened reported as `assert [] == ['provider:acp']` three lines on.
 - **A silent bounded wait reports a THROUGHPUT shortfall as an ordering defect.**
-  `test_subagent_scale.TestDurableQueueScale::test_queue_survives_manager_loss_and_drains_fifo`
+  `test_subagent_scale_queue.TestDurableQueueScale::test_queue_survives_manager_loss_and_drains_fifo`
   drained 199 recovered queue rows under `while store.count(DONE) < 199 and
   time.monotonic() < deadline`, then asserted `started == ids[1:]`. On the Windows
   shard the deadline expired mid-drain, the loop exited silently, and the run failed

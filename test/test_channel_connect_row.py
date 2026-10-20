@@ -279,8 +279,9 @@ class TestTheSendPathHonoursIt:
             ]
             if turn_file.name != "__init__.py"
         )
-        gate = src.index("and not slack_mirror_is_paused(state, session_key)")
-        resolve = src.index("_mirror_thread, _mirror_chan = state.sessions.get_slack_link")
+        start = src.index("async def _turn_dispatch_gates(")
+        gate = src.index("and not slack_mirror_is_paused(state, session_key)", start)
+        resolve = src.index("_mirror_thread, _mirror_chan = state.sessions.get_slack_link", start)
         assert gate < resolve, "the pause gate must precede link resolution"
 
     def test_both_cross_surface_legs_are_gated(self):

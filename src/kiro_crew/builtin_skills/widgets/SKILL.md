@@ -239,6 +239,11 @@ Every animation:
 - Carries every value it needs in the HTML: the frame blocks runtime
   fetches (see Rules).
 
+How to move is the `living-ui` skill's job. Once the test above says move,
+load it: it covers how motion feels, where the eye goes, where words sit,
+keyboard and screen-reader use, and how to check the result before you show
+it. It never picks a colour, a font or a shape.
+
 If the user wants to take it elsewhere (a slide, Slack, an email), a widget is
 the wrong container: render a video or GIF file instead.
 

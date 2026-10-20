@@ -145,6 +145,113 @@ def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatc
     assert set(state2._slots) == {f"chat-{i}-race" for i in range(n)}
 
 
+def test_restore_open_slots_drains_its_tab_id_backfills_before_returning(tmp_path, monkeypatch):
+    """A tab-id backfill is an ``os.replace`` of a session file. If the open-slot
+    restore leaves it in flight (the fire-and-forget off-loop helper), it can
+    still be mid-replace when a caller reads the same transcript on the loop
+    right after restore — on Windows that ``open()`` is a sharing violation
+    (``PermissionError``) the on-loop read cannot wait out, so it re-raises (the
+    intermittent dropped-tab / read error on restart). The async open-slot
+    driver must COMMIT its own backfills before it returns, the way the
+    recent-session driver does.
+
+    The seeded transcripts carry no ``tab_id``, so every restored tab mints one
+    and schedules a backfill. This asserts the driver's contract: it does NOT
+    hand those backfills to the fire-and-forget off-loop helper, and once it
+    RETURNS the backfilled ``tab_id`` is already durable on every restored tab —
+    nothing left mid-replace to race a reader.
+
+    Fails on the base: there the backfill goes through
+    ``update_metadata_off_loop`` and is still in flight at return.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    keys = ("chat-1-drain", "chat-2-drain")
+    for k in keys:
+        _seed_session(state, k)  # no tab_id -> restore mints + backfills one
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": list(keys), "ts": 0.0}))
+
+    import kiro_crew.dashboard.chat_persistence as chat_persistence
+
+    state2 = _make_state(tmp_path / "sessions")
+    log = state2.conversation_log
+
+    # The fire-and-forget helper must not be the one carrying a restore backfill:
+    # that is the path whose os.replace outlives the driver's return and races
+    # the next on-loop reader.
+    fire_and_forget: list[tuple[str, dict]] = []
+    real_off_loop = chat_persistence.update_metadata_off_loop
+
+    def _record_off_loop(conv_log, key, fields):
+        fire_and_forget.append((key, dict(fields)))
+        return real_off_loop(conv_log, key, fields)
+
+    monkeypatch.setattr(chat_persistence, "update_metadata_off_loop", _record_off_loop)
+
+    restored = asyncio.run(restore_open_slots_async(state2))
+
+    assert restored == 2
+    # The async driver drained the backfills itself rather than firing them off:
+    # nothing was handed to the fire-and-forget helper.
+    assert fire_and_forget == [], (
+        "an open-slot tab-id backfill was fired off the loop; its os.replace "
+        "outlives restore and can race a reader on Windows"
+    )
+    # Every restored tab's backfilled tab_id is already durable on disk the
+    # moment restore returned — no replace still in flight.
+    for k in keys:
+        assert log.get_metadata(_history_key_for(k)).get("tab_id"), k
+    # An immediate on-loop read of a restored transcript still returns it.
+    assert log.read_messages_chained(_history_key_for(keys[0]))
+
+
+def test_open_slot_drained_backfill_does_not_recreate_a_session_deleted_mid_restore(
+    tmp_path, monkeypatch
+):
+    """Deferring the tab-id backfills to the end of the restore pass widens the
+    window in which a ``DELETE /api/sessions/{key}`` can land. The drain must go
+    through ``update_metadata_if(require_existing=True)``, which re-checks
+    existence UNDER the write lock, so a session unlinked during that window is
+    left deleted instead of being resurrected as a metadata-only transcript the
+    next restore would reopen as an empty tab.
+
+    We model the delete by unlinking one restored transcript as its slot is
+    applied — after it is queued for backfill but before the end-of-loop drain
+    runs. The drained backfill for that key must NOT recreate the file.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    keys = ("chat-1-live", "chat-2-victim")
+    for k in keys:
+        _seed_session(state, k)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": list(keys), "ts": 0.0}))
+
+    import kiro_crew.dashboard.chat_persistence as chat_persistence
+
+    state2 = _make_state(tmp_path / "sessions")
+    log = state2.conversation_log
+    victim_key = "chat-2-victim"
+    victim_path = (tmp_path / "sessions") / f"{_history_key_for(victim_key)}.jsonl"
+    real_apply = chat_persistence._apply_restored_open_slot
+
+    def _apply_then_maybe_delete(state_, key, *args, **kwargs):
+        result = real_apply(state_, key, *args, **kwargs)
+        # The delete lands after the victim's backfill is queued but before the
+        # end-of-loop drain commits it.
+        if key == victim_key and victim_path.exists():
+            victim_path.unlink()
+        return result
+
+    monkeypatch.setattr(chat_persistence, "_apply_restored_open_slot", _apply_then_maybe_delete)
+
+    asyncio.run(restore_open_slots_async(state2))
+
+    # The deleted transcript was NOT recreated by the drained backfill.
+    assert not victim_path.exists(), "a deleted session was resurrected by its backfill"
+    # The surviving tab still got its tab_id.
+    assert log.get_metadata(_history_key_for("chat-1-live")).get("tab_id")
+
+
 def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
     """The async and sync drivers must restore the same slots.
 

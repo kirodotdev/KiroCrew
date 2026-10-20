@@ -17,7 +17,7 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
     fallback path may proceed for Reqs 1/3/4/5/6 without it (Req 8.4).
   - Define `PendingDecision` (`slot`, `approval: PendingApproval`, optional `toolCallId`,
     `invocation`) and the `ToolInvocationState` union in a shared types module. The model
-    WRAPS the existing `PendingApproval` wire type (`types/index.ts`) rather than re-spelling
+    WRAPS the existing `PendingApproval` wire type (`types/index.chat.ts`) rather than re-spelling
     its fields, so `tsc` pins it to the real event shape and it carries `request_id`.
     `ToolInvocationState` is non-generic with three reachable phases
     (`input-available` | `output-available` | `output-error`); `input-streaming` is omitted

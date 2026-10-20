@@ -158,7 +158,7 @@ The entry gains these fields. Each replaces exactly one shape-read, and each has
 | `surface` | `sel.py`, `context.py`, `validation.py` prefix ladders | mint site |
 | `channels[]` | Phase 0's in-memory attach set (`_dashboard_surfaced` in `session_surface.py`) — persists what already exists, and holds channels only, per §5.3 | attach/detach |
 | `stateful` | `_STATELESS_PREFIXES` in `session_parts/policy.py` plus exact-key handling | mint site, mutable thereafter |
-| `restricted` | constructed `dashboard:` keys in dashboard persistence/handlers, read by `handlers/_shared.py:_is_restricted_session` | the restrict/unrestrict handler |
+| `restricted` | constructed `dashboard:` keys in dashboard persistence/handlers, read by `handlers/_shared_session_memory.py:_is_restricted_session` | the restrict/unrestrict handler |
 | `approval_policy` | session policy lookups keyed by a constructed or effective session key | the approval handler |
 | `delegated` | `_DELEGATED_CALLER_PREFIXES`, read by `_caller_app_scope` in `mcp_dashboard_caller_scope.py` | mint site |
 | `nudgeable`, `nudge_mode` | `binding_key_for` + `is_channel_key` (`autonudge.py` and its channel predicates) | mint site |
@@ -216,7 +216,7 @@ This does not make attachment useless — it is what says *where else this conve
 |---|---|---|
 | `can_render_rich_html` | `context.py` · `_resolve_prompt_templates` | the widget block in the system prompt |
 | `can_render_interactive_card` | `context_assembly/turn.py` · `interactive_guidance`; `mcp_tools/control.py` · `ask_question`; `session_directive_apply.py` · `apply_session_directive` | the question/card feature at the prompt, tool and directive-consumer boundaries — three sites, one name, must not diverge |
-| `has_mutable_slot` | `session_directive_apply.py` · `_has_user_surface` | one input to whether a user-originated directive may retarget project or CWD |
+| `has_mutable_slot` | `session_directive_apply_outcome.py` · `_has_user_surface` | one input to whether a user-originated directive may retarget project or CWD |
 | `can_inject_turn` | `subagent_manager/monitoring.py` · `_notify_orphan_impl` | orphan notice as a turn, or fall back to a DM digest |
 
 Each surface type declares its set once. The four are not asked the same way, and the split follows §5.3: the first three are **delivery** questions, resolved against the capabilities of this turn's delivery surface. `can_inject_turn` is a **reachability** question — it is asked by a subagent with no turn of its own, so it has no ingress, and it resolves against `channels[]` plus the always-present host.

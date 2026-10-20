@@ -226,7 +226,7 @@ def status_snapshot(
         "update_min_version": update_min_version,
         # The RUNNING build's version folded for display (clean base on
         # the stable channel; see `_display_version` in
-        # handlers/updates.py). DISPLAY-ONLY sibling of the raw `version`
+        # handlers/updates_verdict.py). DISPLAY-ONLY sibling of the raw `version`
         # the WS frame appends after this snapshot — that one is what the
         # SPA compares across pushes to force a reload over a gateway
         # upgrade, so it must never be folded. Empty string on emitters

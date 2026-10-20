@@ -2,7 +2,7 @@
 
 `_might_contain_credential` spells three anchors so that each starts with a
 literal `re` can search at memchr speed (see the comment above them in
-`redaction.py`). That rewrite is only safe if every rewritten anchor accepts
+`redaction_patterns.py`). That rewrite is only safe if every rewritten anchor accepts
 EXACTLY the strings its plain spelling accepts: accepting less would let a
 credential skip redaction, accepting more would only cost speed but would make
 the gate's verdict drift from the one it replaced. So each anchor is compared

@@ -87,7 +87,7 @@ function mcp(
     mcp: {
       per_tool_deny: reach,
       // The server ships its classification beside the reach
-      // (`backend_mcp_ability.COSTS_WHOLE_SERVER`), so the fixture ships one too and
+      // (`registry.PerToolDeny.costs_whole_server`), so the fixture ships one too and
       // a test that states only a reach gets the payload the gateway would send.
       // Overridable, because the point of a server-side flag is that the two can be
       // stated independently — an unclassified reach, or one this frontend has never

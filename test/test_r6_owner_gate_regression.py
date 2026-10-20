@@ -54,10 +54,10 @@ _LOCAL_SUBJECT = "local-app"
 
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-#: The five modules whose mutating routes carry the gate. ``handlers/security.py``
-#: and ``handlers/hooks.py`` are facades, so their owners -- where their routes'
-#: functions live -- are listed too; the instances control plane is its facade and
-#: the owner its peer-reading routes live in.
+#: The five modules whose mutating routes carry the gate. ``handlers/security.py``,
+#: ``handlers/hooks.py`` and ``handlers/mcp.py`` are facades, so their owners --
+#: where their routes' functions live -- are listed too; the instances control plane
+#: is its facade and the owner its peer-reading routes live in.
 _GATED_MODULES = frozenset(
     {
         "kiro_crew.dashboard.handlers.hooks",
@@ -73,6 +73,8 @@ _GATED_MODULES = frozenset(
         "kiro_crew.dashboard.handlers_instances",
         "kiro_crew.dashboard.handlers_instances_peer",
     }
+    # ``handlers/mcp.py`` and every owner its ``_OWNERS`` names, routes or not yet.
+    | {mcp_handlers.__name__, *mcp_handlers._OWNERS}
 )
 
 #: The inbound agent webhook authenticates itself and must not acquire the gate.

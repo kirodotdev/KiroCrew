@@ -184,6 +184,22 @@ def test_a_pinned_fleet_redacts_a_token_in_a_whole_design_punchline(capsys) -> N
     assert token not in out
 
 
+def test_a_pinned_fleet_keeps_the_concerns_stop() -> None:
+    """``--reviewers GPT,OPUS`` excludes whole-design lanes from
+    ``marker_eval["verdicts"]``, but the unanswered-CONCERNS gate must still
+    see them via ``design_lane_verdicts()`` so a DESIGN CONCERNS blocks merge."""
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(f"No findings.\n[GPT-REVIEWED] {_HEAD}"),
+            _bot_comment(f"No findings.\n[OPUS-REVIEWED] {_HEAD}", key="claude-ai-review"),
+            _design_comment(),  # Design-Verdict: CONCERNS, stamped for this head
+        ]
+    )
+    _install_fake_gh(module, _pr_payload(_GREEN_CHECKS), comments=comments)
+    assert module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"]) == 20
+
+
 def test_every_whole_design_lane_carries_the_concerns_stop() -> None:
     module = _load_script()
     lanes = [

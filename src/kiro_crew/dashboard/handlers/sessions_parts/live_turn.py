@@ -209,7 +209,7 @@ async def api_session_directive(request: web.Request) -> web.Response:
     # ``X-Internal-Secret`` match on a same-machine transport; ``peer_verified``
     # only after the kernel-attested AF_UNIX peer resolved to the DECLARED key —
     # either one is positive proof of a local caller, and a cookie carries
-    # neither. Same predicate as ``handlers/updates.py``'s host-locality gate.
+    # neither. Same predicate as ``handlers/updates_step_up.py``'s host-locality gate.
     if not (request.get("internal_auth") or request.get("peer_verified")):
         logger.warning(
             "session-directive REFUSED (not_local_caller): neither internal_auth nor "

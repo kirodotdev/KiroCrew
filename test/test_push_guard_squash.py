@@ -453,8 +453,25 @@ class TestPushGuardSquash:
         hooks = tmp_path / "hooks"
         hooks.mkdir()
         hook = hooks / "commit-msg"
-        # flake-ok: the hook's own 20 s sleep keeps it running until the test interrupts it
-        hook.write_text("#!/bin/sh\ntouch " + shlex.quote(str(mark)) + "\nsleep 20\n")
+        # The hook execs one Python process that writes the mark and then waits.
+        # Nothing is forked after the mark appears, so the group signal cannot
+        # race a fork: macOS can miss a child forked while killpg runs, and a
+        # `sleep` that misses it holds the stderr pipe past the wait below.
+        waiter = (
+            "import os, signal, sys, time; "
+            # Die on Ctrl-C as `sleep` would, but keep an inherited ignore.
+            "signal.getsignal(signal.SIGINT) is signal.default_int_handler "
+            "and signal.signal(signal.SIGINT, signal.SIG_DFL); "
+            "open(sys.argv[1] + '.tmp', 'w').close(); "
+            "os.replace(sys.argv[1] + '.tmp', sys.argv[1]); "
+            # flake-ok: the hook's own 60 s wait keeps it running until the test interrupts it
+            "time.sleep(60)"
+        )
+        hook.write_text(
+            "#!/bin/sh\nexec "
+            + " ".join(shlex.quote(a) for a in (sys.executable, "-c", waiter, str(mark)))
+            + "\n"
+        )
         hook.chmod(0o755)
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
         _write_message(clone_dir)

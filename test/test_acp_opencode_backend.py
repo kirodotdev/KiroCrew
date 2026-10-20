@@ -41,6 +41,7 @@ from kiro_crew.acp.harness import opencode as opencode_mod
 from kiro_crew.acp.harness.base import SpawnContext
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE, Routing, routing_for
 from kiro_crew.acp_tool_gate import seeded_setting_issue
+from kiro_crew.agent_sdk.backends import launch_for
 
 #: A read-back argv as the spawn arm hands it over: already sandbox-wrapped there,
 #: so these tests pass one through unchanged rather than reconstructing it.
@@ -617,18 +618,23 @@ class _OpencodeLaunchRig:
     """``OpencodeLaunch.resolve_spawn`` driven against fakes at the adapter's own seams.
 
     The resolution, the session's MCP warm, the sandbox preflight, the sandbox wrap,
-    the read-back child and its cleanup each answer a fixed value and record, in
-    order, that they ran, on which thread and with what. What a test asserts is what
-    the launch DID with them.
+    the version probe, the read-back child and their cleanups each answer a fixed
+    value and record, in order, that they ran, on which thread and with what. What a
+    test asserts is what the launch DID with them.
+
+    The launch starts TWO wrapped children of the harness binary -- the version
+    probe and the routing read-back -- so each seam's event names which child it
+    served (``wrap_version``/``wrap_readback``, ``unlink_version``/``unlink_readback``).
     """
 
     BIN = "/opt/bin/opencode"
     HIDDEN = ("/opt/creds/.aws",)
     SANDBOX = ["/opt/run/kirocrew_sandbox_launcher"]
     CLEANUP = "/opt/run/kirocrew_sandbox_readback"
+    CLEANUP_VERSION = "/opt/run/kirocrew_sandbox_version"
     MODE = "standard"
 
-    def __init__(self, monkeypatch, tmp_path, *, routing=("", "")):
+    def __init__(self, monkeypatch, tmp_path, *, routing=("", ""), probe_stdout="1.19.0"):
         self.events: list[tuple] = []
         self.loop_thread: int | None = None
         self.plan = None
@@ -651,15 +657,18 @@ class _OpencodeLaunchRig:
             return self.HIDDEN
 
         async def _wrap(argv, **kwargs):
-            _record("wrap", list(argv), kwargs)
-            return [*self.SANDBOX, *argv], self.CLEANUP
+            name = "wrap_version" if "--version" in argv else "wrap_readback"
+            _record(name, list(argv), kwargs)
+            cleanup = self.CLEANUP_VERSION if name == "wrap_version" else self.CLEANUP
+            return [*self.SANDBOX, *argv], cleanup
 
         def _verify(session, backend, argv, config_content):
             _record("verify", list(argv), config_content, session, backend)
             return routing
 
         def _unlink(path):
-            _record("unlink", path)
+            name = "unlink_version" if path == self.CLEANUP_VERSION else "unlink_readback"
+            _record(name, path)
 
         monkeypatch.setattr(launch_mod, "resolve_self_served_launch", _launch)
         monkeypatch.setattr(self.client, "_prepare_session_mcp", _prepare_session_mcp)
@@ -667,6 +676,22 @@ class _OpencodeLaunchRig:
         monkeypatch.setattr(opencode_mod, "wrap_argv_async", _wrap)
         monkeypatch.setattr(opencode_mod, "_verify_opencode_routing", _verify)
         monkeypatch.setattr(launch_mod, "_unlink_readback_launcher", _unlink)
+        # The version gate's seam: every launch probes fresh (the gate holds no
+        # cache by design), so every rig answers the probe at the subprocess seam
+        # -- in range by default, a rig naming a different stdout to exercise the
+        # refusal.
+        assert probe_stdout is not None
+
+        class _Completed:
+            returncode = 0
+            stdout = probe_stdout
+            stderr = ""
+
+        def _run(argv, **kwargs):
+            _record("version_probe", list(argv))
+            return _Completed()
+
+        monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _run)
 
     def run(self):
         """Resolve the plan on a fresh loop, noting the thread the loop runs on."""
@@ -727,7 +752,7 @@ def test_the_sandbox_floor_is_checked_before_any_child_is_started(monkeypatch, t
     rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
     rig.run()
     names = rig.names()
-    assert names.index("preflight") < names.index("wrap") < names.index("verify"), (
+    assert names.index("preflight") < names.index("wrap_readback") < names.index("verify"), (
         "the sandbox-floor preflight must precede the read-back, or a refused "
         "session still spawns a harness child first"
     )
@@ -748,7 +773,7 @@ def test_the_read_back_child_is_sandbox_wrapped_with_the_adapter_mask(
     """
     rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
     plan = rig.run()
-    wrapped, kwargs = rig.args_of("wrap")
+    wrapped, kwargs = rig.args_of("wrap_readback")
     expose = acp_tool_gate.adapter_expose_files(ACP_BACKEND_OPENCODE, rig.HIDDEN)
     assert wrapped == [rig.BIN, *acp_client._OPENCODE_CONFIG_READBACK_ARGS]
     assert kwargs["mode"] == rig.MODE
@@ -757,8 +782,10 @@ def test_the_read_back_child_is_sandbox_wrapped_with_the_adapter_mask(
     assert kwargs["strip_python_env"] is True
     assert rig.args_of("verify")[0] == [*rig.SANDBOX, *wrapped], "the read-back ran unwrapped"
     names = rig.names()
-    assert rig.args_of("unlink") == (rig.CLEANUP,), "the wrapper's launcher artifact leaked"
-    assert names.index("verify") < names.index("unlink")
+    assert rig.args_of("unlink_readback") == (
+        rig.CLEANUP,
+    ), "the wrapper's launcher artifact leaked"
+    assert names.index("verify") < names.index("unlink_readback")
     assert plan.extra_hidden_dirs == rig.HIDDEN
     assert plan.extra_expose_files == expose
 
@@ -773,7 +800,7 @@ def test_the_read_back_vouches_for_the_seed_the_session_carries(monkeypatch, tmp
     rig.adapter.apply_spawn_env(env)
     assert env == {_ENV_CONFIG: seed}
     # And the session's MCP array is warmed before any child of this harness starts.
-    assert rig.names().index("session_mcp") < rig.names().index("wrap")
+    assert rig.names().index("session_mcp") < rig.names().index("wrap_readback")
 
 
 def test_a_routing_refusal_is_translated_to_the_acp_layer_type(monkeypatch, tmp_path) -> None:
@@ -788,7 +815,9 @@ def test_a_routing_refusal_is_translated_to_the_acp_layer_type(monkeypatch, tmp_
         rig.run()
     assert type(excinfo.value) is acp_client.AcpToolGateUnroutable
     assert excinfo.value.__suppress_context__, "the gate module's exception leaks as context"
-    assert "unlink" in rig.names(), "the read-back's launcher must be reclaimed on refusal too"
+    assert (
+        "unlink_readback" in rig.names()
+    ), "the read-back's launcher must be reclaimed on refusal too"
 
 
 def test_a_successful_load_is_adopted_without_a_modes_block() -> None:
@@ -989,6 +1018,171 @@ def test_the_spawn_arm_refuses_before_the_first_prompt(monkeypatch, tmp_path, ro
 def test_the_backend_declares_the_verified_mechanism() -> None:
     """Named here so a change of mechanism cannot pass as a refactor."""
     assert routing_for(ACP_BACKEND_OPENCODE) is Routing.VERIFIED_SEEDED_SETTINGS
+
+
+# ── The version gate ─────────────────────────────────────────────────────────
+
+
+def test_the_harness_names_the_tested_major() -> None:
+    """The pin is a fact of this harness's own module, beside the probe that reads
+    it -- the install advice in the launch table pins the same line."""
+    assert opencode_mod._OPENCODE_TESTED_MAJOR == 1
+    assert "opencode-ai@1" in launch_for(ACP_BACKEND_OPENCODE).install_command
+
+
+def _version_gate(monkeypatch, *, stdout="", returncode=0, raise_exc=None) -> dict:
+    """Answer the version gate's probe at the subprocess seam; count the probes.
+
+    The sandbox wrap answers the launcher shape the read-back's own tests use, so
+    an argv assertion shows the child the gate actually started.
+    """
+    calls: dict = {"probes": 0}
+
+    answer = type("_Completed", (), {"returncode": returncode, "stdout": stdout, "stderr": ""})
+
+    def _run(argv, **kwargs):
+        calls["probes"] += 1
+        calls["argv"] = list(argv)
+        if raise_exc is not None:
+            raise raise_exc
+        return answer()
+
+    async def _wrap(argv, **kwargs):
+        return ["/opt/run/launcher", *argv], "/opt/run/version_readback"
+
+    monkeypatch.setattr(opencode_mod.subprocess_mod, "run", _run)
+    monkeypatch.setattr(opencode_mod, "wrap_argv_async", _wrap)
+    return calls
+
+
+def _version_refusal(client: AcpClient, binary: str) -> tuple[str, str]:
+    """Run the version gate the way the launch does, and answer its verdict."""
+
+    async def _go():
+        return await opencode_mod._opencode_version_refusal(
+            client, binary, sandbox_mode="standard", hidden=(), expose=()
+        )
+
+    return asyncio.run(_go())
+
+
+def test_a_tested_major_passes(tmp_path, monkeypatch) -> None:
+    """In range: no refusal, and the child the gate started is the wrapped
+    ``--version`` of the resolved binary."""
+    calls = _version_gate(monkeypatch, stdout="1.19.0")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    assert _version_refusal(client, "/opt/bin/opencode") == ("", "")
+    assert calls["argv"] == ["/opt/run/launcher", "/opt/bin/opencode", "--version"]
+
+
+def test_the_gate_is_probed_fresh_on_every_launch(tmp_path, monkeypatch) -> None:
+    """No cache sits in front of this answer, on purpose.
+
+    A verdict keyed on the resolved path keeps reporting the OLD major after an
+    in-place upgrade puts a new binary behind the same path -- the gate would then
+    wave through the very launch it exists to refuse. So every launch probes
+    again, the same order of cost as the read-back child it precedes.
+    """
+    calls = _version_gate(monkeypatch, stdout="1.19.0")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    assert _version_refusal(client, "/opt/bin/opencode") == ("", "")
+    assert _version_refusal(client, "/opt/bin/opencode") == ("", "")
+    assert calls["probes"] == 2, "a second launch read a stale answer instead of probing"
+
+
+def test_an_untested_newer_major_refuses_and_names_both_lines(tmp_path, monkeypatch) -> None:
+    """A PATH refresh onto the untested line is the exact hazard: the refusal says
+    which major moved, and the remedy is a tested release or the override."""
+    calls = _version_gate(monkeypatch, stdout="opencode 2.0.27")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    issue, remedy = _version_refusal(client, "/opt/bin/opencode")
+    assert "major 2" in issue
+    assert "major 1" in issue
+    assert OPENCODE_INSTALL_COMMAND in remedy
+    assert _ENV_BIN in remedy
+    # And the answer is re-read next launch, so a retry wears nothing down.
+    assert _version_refusal(client, "/opt/bin/opencode")[0]
+    assert calls["probes"] == 2
+
+
+def test_an_older_major_refuses_too(tmp_path, monkeypatch) -> None:
+    """The pin is one measured line, not a ceiling: 0.x is as unmeasured as 2.x."""
+    _version_gate(monkeypatch, stdout="0.104.0")
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    issue, _remedy = _version_refusal(client, "/opt/bin/opencode")
+    assert "major 0" in issue
+
+
+@pytest.mark.parametrize(
+    ("gate_kwargs",),
+    [
+        ({"stdout": ""},),
+        ({"stdout": "opencode"},),
+        ({"returncode": 1, "stdout": "1.19.0"},),
+        ({"raise_exc": FileNotFoundError("no such binary")},),
+    ],
+    ids=["empty-output", "no-dotted-pair", "non-zero-exit", "child-would-not-run"],
+)
+def test_an_unreadable_answer_refuses_closed(tmp_path, monkeypatch, gate_kwargs) -> None:
+    """A version the gate cannot read is not a pass. Everything the launch does
+    below the gate is measured against the tested major, so an unreadable answer
+    establishes nothing and the direction that cannot silently downgrade is out."""
+    calls = _version_gate(monkeypatch, **gate_kwargs)
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    issue, remedy = _version_refusal(client, "/opt/bin/opencode")
+    assert "did not report a readable version" in issue
+    assert OPENCODE_INSTALL_COMMAND in remedy
+    assert calls["probes"] == 1
+
+
+def test_the_version_child_is_wrapped_like_the_read_back(monkeypatch, tmp_path) -> None:
+    """The probe runs this harness's own binary, so it starts behind the same mask.
+
+    The read-back is wrapped because the binary's config resolution can load
+    project plugins; the version child is the same binary at the same trust level,
+    and a gate that unwrapped one child to add another would trade a checked fact
+    for an unchecked one.
+    """
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, probe_stdout="1.19.0")
+    rig.run()
+    wrapped, kwargs = rig.args_of("wrap_version")
+    expose = acp_tool_gate.adapter_expose_files(ACP_BACKEND_OPENCODE, rig.HIDDEN)
+    assert wrapped == [rig.BIN, "--version"]
+    assert kwargs["mode"] == rig.MODE
+    assert kwargs["extra_hidden_dirs"] == rig.HIDDEN, "the probe lost the session's mask"
+    assert kwargs["extra_expose_files"] == expose
+    assert kwargs["strip_python_env"] is True
+    assert rig.args_of("version_probe")[0] == [*rig.SANDBOX, *wrapped]
+    assert rig.ran_off_the_loop("version_probe"), "the version child ran on the event loop"
+
+
+def test_the_version_gate_runs_between_the_preflight_and_the_read_back(
+    monkeypatch, tmp_path
+) -> None:
+    """Order carries the properties: the mask exists before the probe starts, the
+    probe's launcher artifact is reclaimed before the read-back starts, and the
+    session's MCP warm precedes every child of this harness."""
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, probe_stdout="1.19.0")
+    rig.run()
+    names = rig.names()
+    assert names.index("session_mcp") < names.index("wrap_version")
+    assert names.index("preflight") < names.index("wrap_version")
+    assert names.index("unlink_version") < names.index("wrap_readback")
+    assert names.index("wrap_version") < names.index("wrap_readback")
+
+
+def test_an_out_of_range_major_refuses_before_the_read_back(monkeypatch, tmp_path) -> None:
+    """A binary outside the tested line must not reach the read-back whose parsed
+    shapes were never measured against it. The refusal names the line that moved,
+    the probe's launcher artifact is reclaimed, and no read-back child starts."""
+    rig = _OpencodeLaunchRig(monkeypatch, tmp_path, probe_stdout="opencode 2.0.27")
+    with pytest.raises(acp_client.AcpToolGateUnroutable) as excinfo:
+        rig.run()
+    assert "major 2" in str(excinfo.value)
+    assert rig.plan is None
+    names = rig.names()
+    assert "wrap_readback" not in names, "the read-back child started behind a refused gate"
+    assert "unlink_version" in names, "the probe's launcher artifact leaked on refusal"
 
 
 # ── A per-tool rule from a lower config source ───────────────────────────────

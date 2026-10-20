@@ -59,12 +59,16 @@ one this must not spend. A subscriber that raises, a full socket, a client that 
 each leaves the memo ahead of the consumer, and the next lazy read serves the current value.
 The publish is currency, never the record.
 
-WHAT IT IS NOT. Durable for a slot. A session fold has its savepoint beside the unit's
-file and the warm memo brings it forward; a slot memo lives in this process, so a
-restart folds a slot cold. A savepoint for a SLOT fold would be a store of its own, keyed by slot rather than by
-unit, with its own admission rules about the unit vector it was folded over. That is
-not this module's, and :func:`~kiro_crew.session_ledger._fold_checkpoint` already says
-so about the same cell.
+WHAT IT IS NOT. A second place a slot fold's durability lives. A session fold has its
+savepoint beside the unit's file; a slot fold has its own savepoint beside the slot's
+NEWEST unit (``kiro_crew.crew_log.checkpoint.SLOT_CHECKPOINT_DIR``), admitted on the
+same conditions the warm memo already checks before trusting a continuation
+(``_continuable`` and ``_folded_prefix_holds`` in
+:mod:`~kiro_crew.crew_log.projection_slot_memo`). Either way, a restart finds this
+process's in-memory memo empty and resumes from THAT savepoint rather than folding the
+whole unit vector cold -- this module owns neither file, it only drives the read path
+that reads them, and :func:`~kiro_crew.session_ledger._fold_checkpoint` already says so
+about the same cell.
 """
 
 from __future__ import annotations
@@ -326,6 +330,32 @@ def _count_drop(unit_id: str, entry_type: str) -> None:
             unit_id,
             entry_type,
         )
+
+
+def queue_depth() -> "int | None":
+    """How many wakes are waiting to be folded right now, or ``None``.
+
+    ``None`` when no queue exists in this process -- nothing has committed an eager
+    entry, so there is no fold thread and no queue -- which is a DIFFERENT fact from an
+    empty queue and must not be reported as a zero.
+
+    Reads the module global directly and never calls :func:`_ensure_worker`: a caller
+    asking how deep the queue is must not be the thing that creates it and starts the
+    fold thread. Takes no lock either, so it cannot contend with the append path: the
+    rebind of ``_queue`` is atomic, and ``qsize`` is already only a snapshot of a
+    number that moves while it is read.
+
+    The one reader is the crew log health gauge
+    (:mod:`kiro_crew.metrics.crew_log_health`), which observes it on a metrics reader
+    thread.
+    """
+    pending = _queue
+    if pending is None:
+        return None
+    try:
+        return pending.qsize()
+    except Exception:  # pragma: no cover - qsize is unimplemented on no platform we ship
+        return None
 
 
 # --------------------------------------------------------------------------- #

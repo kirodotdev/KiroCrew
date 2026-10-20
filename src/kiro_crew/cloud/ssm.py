@@ -28,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import aws
@@ -243,7 +243,7 @@ def session_manager_plugin_installed() -> bool:
 
 @dataclass(frozen=True)
 class PluginRefusal:
-    """A Session Manager plugin that is installed but failed the provenance check.
+    """A Session Manager plugin (or ``aws`` CLI) that is installed but failed the provenance check.
 
     ``path`` is the candidate the resolver found and ``reason`` the check's own
     words. ``remedy_command`` is a copy-pasteable fix when one is known for this
@@ -274,11 +274,27 @@ def session_manager_plugin_refusal() -> Optional[PluginRefusal]:
     Reads the same walk :func:`session_manager_plugin_installed` performs and
     changes nothing about what is accepted.
     """
-    resolved, refusals = resolve_aws_tool_bin_with_refusals(_SESSION_MANAGER_PLUGIN)
+    return _tool_refusal(_SESSION_MANAGER_PLUGIN, _plugin_ownership_remedy)
+
+
+def aws_cli_refusal() -> Optional[PluginRefusal]:
+    """Why an installed ``aws`` CLI is not used, or None when there is nothing to explain.
+
+    The same reading as :func:`session_manager_plugin_refusal`, for the CLI, so a
+    found but refused ``aws`` is not reported as missing with an install link that
+    puts the same refused file back. ``remedy_command`` is always "": the ownership
+    command is known to clear a refusal only inside AWS's plugin install tree.
+    """
+    return _tool_refusal("aws", lambda _candidate, _reason: "")
+
+
+def _tool_refusal(name: str, remedy_for: Callable[[str, str], str]) -> Optional[PluginRefusal]:
+    """The first candidate for *name* the resolver refused, or None (accepted or absent)."""
+    resolved, refusals = resolve_aws_tool_bin_with_refusals(name)
     if os.path.isabs(resolved) or not refusals:
         return None
     first = refusals[0]
-    remedy = _plugin_ownership_remedy(first.path, first.reason)
+    remedy = remedy_for(first.path, first.reason)
     code, owner_uid = _classify_refusal(first.reason)
     # With a remedy, name the resolved file: the candidate is often a link from a
     # bin directory, and the command targets the folder the real file sits in.

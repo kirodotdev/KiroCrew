@@ -58,7 +58,8 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Record one step of long-running work into THIS session's "
                 "durable ledger, so the state survives context compaction and "
-                "is re-injected into monitor-loop cycles. Write what a cold "
+                "is re-injected into monitor-loop cycles and into the first "
+                "turn after a context compaction. Write what a cold "
                 "resume needs: `next` as a concrete intent (not a status "
                 "word), approaches you tried and rejected, and artifact "
                 "pointers (worktree, branch, PR). Fields you omit keep their "

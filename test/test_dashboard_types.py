@@ -100,6 +100,14 @@ _DRIVERS: dict[str, list[tuple[str, dict[str, Any]]]] = {
         ("message/sent", {"turn": 1, "step": 1, "text": "an answer"}),
         ("turn/completed", {"turn": 1, "stop_reason": "end_turn"}),
     ],
+    # A depth of 2 so the render holds a real int under ``depth`` and the declared
+    # ``number``/``integer`` type can be checked against it.
+    "otel_session_tree": [
+        (
+            "session/opened",
+            {"agent": "kirocrew", "slot": "chat-7", "model": "", "resumed": False, "depth": 2},
+        ),
+    ],
 }
 
 
@@ -469,6 +477,7 @@ class TestDeclaredNullables:
             "status.last_time",
             "status.turn.started_at",
             "approvals.last.time",
+            "otel_session_tree.depth",
         ):
             assert required in checked, f"{required} was not populated, so its type went unchecked"
 

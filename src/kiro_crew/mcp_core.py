@@ -50,6 +50,10 @@ from kiro_crew.history import (  # noqa: F401
     is_incognito_transcript,
     snippet_needles,
 )
+
+# Bound on the facade for mcp_core_parts/history.py: unbound, the mirror would
+# serve these from outside its family (pinned by test_mcp_core_facade.py).
+from kiro_crew.history_search import snippet_needle_tiers, tiered_first_hit  # noqa: F401
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
@@ -970,6 +974,12 @@ ADVERTISE_CALLER_IDENTITY = True
 
 def run_mcp_core_server() -> None:
     """Run MCP stdio server for core agent tools."""
+    # Session search asks the gateway for Chinese dictionary words instead of
+    # loading the dictionary in every core process.
+    from kiro_crew.history_search import register_cjk_segmenter
+    from kiro_crew.mcp_tools.sessions import gateway_cjk_words
+
+    register_cjk_segmenter(gateway_cjk_words)
     run_mcp_stdio_loop(
         "kirocrew-core",
         "1.0.0",
@@ -1052,6 +1062,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _history_is_incognito,
         _parse_iso_date_epoch,
         _redact_history_output,
+        _snippet_contents,
         _ws_bucket,
     )
     from kiro_crew.mcp_core_parts.identity import (  # noqa: F401

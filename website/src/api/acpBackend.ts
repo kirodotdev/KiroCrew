@@ -102,8 +102,8 @@ export function acpBackendShortName(id: string): string {
  *
  * - `rule`: only where the server classed the reach as able to cost a whole
  *   server (`mcp.costs_whole_server === true`). The classification is the
- *   server's (`agent_sdk/backend_mcp_ability.COSTS_WHOLE_SERVER`, held to the
- *   reach vocabulary by a completeness test), never re-derived from the reach
+ *   server's (each reach declares it on
+ *   `providers/mirrors/registry.PerToolDeny.costs_whole_server`), never re-derived from the reach
  *   name here: today it is `whole-server` and `per-call`. Compared against
  *   `true`, so a missing flag (an older gateway) or a truthy string says nothing.
  * - `exception`: only on a `per-call` reach, which spares Crew's own servers.

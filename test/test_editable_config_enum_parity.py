@@ -1,6 +1,6 @@
 """Every Settings enum offers exactly the values the config schema declares.
 
-``dashboard/handlers/core.py`` hand-maintains a ``values`` list for each
+``dashboard/handlers/core_config_schema.py`` hand-maintains a ``values`` list for each
 ``_EDITABLE_CONFIG`` entry of ``type: enum``. The config schema
 (``config/sections.py`` ``_meta(enum=...)``, exported as ``SCHEMA_REGISTRY``)
 declares the same set for the CLI and the loader. When the two lists differ, a

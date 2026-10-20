@@ -1,0 +1,396 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.93.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "kind": "external",
+        "label": "AWS Bedrock"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "auto",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "default",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "",
+        "description": "Main-thread agent persona",
+        "id": "agent",
+        "name": "Agent",
+        "options": [],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "auto",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions"
+      ]
+    },
+    "session_id": "claude-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      30865,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "ToolSearch",
+        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_kind": "other",
+        "wire_title": "ToolSearch"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "query": "select:mcp__crew-probe__crew_probe_echo"
+        },
+        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_input": "{\n  \"query\": \"select:mcp__crew-probe__crew_probe_echo\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "max_results": 1,
+          "query": "select:mcp__crew-probe__crew_probe_echo"
+        },
+        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_input": "{\n  \"query\": \"select:mcp__crew-probe__crew_probe_echo\",\n  \"max_results\": 1\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      30978,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01MZbJj1pwksHs5Wz6V5raY1",
+        "tool_final": true,
+        "tool_output": "Tool: mcp__crew-probe__crew_probe_echo",
+        "tool_output_bytes": 38,
+        "tool_output_digest": "9843a72eebe0a5a0c4d26ecf735c8109838f586ca6822affc0a7774c5962c97a",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31130,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "mcp__crew-probe__crew_probe_echo",
+        "tool_call_id": "toolu_bdrk_015nbrkjM5S7mioVEywmy2sn",
+        "tool_kind": "other",
+        "wire_title": "mcp__crew-probe__crew_probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow-with-updates",
+            "label": "Yes, and don't ask again for Crew Probe Echo commands"
+          },
+          {
+            "id": "reject",
+            "label": "No"
+          }
+        ],
+        "shell_classified": true,
+        "title": "mcp__crew-probe__crew_probe_echo",
+        "tool_call_id": "toolu_bdrk_015nbrkjM5S7mioVEywmy2sn",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-with-updates",
+      "once": "allow-once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31170,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_015nbrkjM5S7mioVEywmy2sn",
+        "tool_final": true,
+        "tool_output": "crew-member-mount-proved",
+        "tool_output_bytes": 24,
+        "tool_output_digest": "f0abdccca1dc7c476cb16489423c6fc3a1db1d23de479775fc995477fe453734",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31271,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_bdrk_zkklv6elajt4ac4qdyqlqqov7gacgsenmrw7y22rrwpb7jokufdq",
+        "text": "crew-member-mount-proved"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "crew-member-mount-proved",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31273,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31273,
+      1000000
+    ],
+    "usage_cost": 0.1384863
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "prompt_tokens": [
+      7,
+      176,
+      61976,
+      31262
+    ],
+    "stop_reason": "end_turn"
+  }
+]

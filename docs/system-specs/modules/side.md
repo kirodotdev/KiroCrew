@@ -496,10 +496,12 @@ session confined (`AcpClient._claude_session_meta`):
   tool, `Bash` or subagent exists for an allow rule to pre-approve.
 - The `mcpServers` array is empty and `strictMcpConfig` keeps the user's, the
   project's and plugins' servers out. READ_ONLY refuses every MCP call anyway.
-- Inline settings add `permissions.ask` rules for `WebFetch` and `WebSearch`, so
-  a web call reaches the gate even where the user's own allow rule would
-  pre-approve it (an operator's `auto_deny_tools` on `web_fetch` / `web_search`
-  therefore binds), and set `disableAllHooks`, so settings and plugin hooks —
+- Inline settings add a `permissions.ask` rule for each read built-in (`Read`,
+  `Grep`, `Glob`, `WebFetch`, `WebSearch`;
+  `acp/client_claude_session._CLAUDE_SIDE_READ_ONLY_ASK_RULES`), so every read
+  reaches the gate even inside the work dir or where the user's own allow rule
+  would pre-approve it (an operator's `auto_deny_tools` on `web_fetch` /
+  `web_search` therefore binds), and set `disableAllHooks`, so settings and plugin hooks —
   shell commands claude runs unprompted, some fed the model's tool input — do
   not run. That matches the hooks the kiro-cli derived spec removes, and has
   the same cost: a user's own `PreToolUse` hook that denies a read does not run
@@ -519,15 +521,19 @@ session confined (`AcpClient._claude_session_meta`):
   moves a `bypassPermissions` or `auto` starting mode to `default` before the
   first prompt.
 
-Inside the work dir, or where the user's settings allow it, Claude Code runs Read,
-Grep and Glob without asking; such a native read runs outside the gate, as
-kiro-cli's `fs_read` does, and the deny rules above keep it off the sensitive
-paths. A call that does
-reach the gate is proven read-only by `harness_builtin_tool`: the kiro-cli
+In `default` mode Claude Code runs Read, Grep and Glob inside the work dir
+without asking; the `ask` rules above override that, so each such call reaches
+the gate and gets an SEL row (captured on claude-agent-acp 0.93.0,
+`test/fixtures/claude_side_read_ask`). A call under a denied path is refused
+by claude before it asks. A call that reaches the gate is proven read-only by `harness_builtin_tool`: the kiro-cli
 built-in that the tool name claude-agent-acp stamped on the call's `tool_call`
 frame (`_meta.claudeCode.toolName`) maps to, never the title or the permission
 payload (`hook_runtime/tool_identity._is_harness_read_only_builtin`). The ACP
-kind still narrows, so a `search`-kind Grep outside the work dir is refused. The
+kind still narrows. claude states kind `search` for Grep and Glob, so for a
+Side Chat call whose stamped name is `Grep` or `Glob`, that `search` is read as
+`read` (`acp/_dispatch_parts/permission_requests`); any other non-read kind
+still refuses. The gate's sensitive-path tier still refuses such a call aimed
+at a credential path. The
 same mapped name is a deny target and a governance identity, so a deny rule or a
 ceiling's `tools` deny on `web_fetch` binds claude's WebFetch. Only a Side Chat
 session's permission events carry it (`build_permission_event(side_read_only=)`):
@@ -857,7 +863,7 @@ Backend invariants are covered by `test/test_side.py`:
 | Channel separation | `test_side_run_id_never_leaks_to_main_channels` |
 | Tool-rejection fallback | `test_empty_llm_output_produces_visible_fallback` |
 | READ_ONLY honours the classifier, never a grant | `test_read_only_policy_refuses_a_write_the_config_grant_matches`, `test_read_only_policy_refuses_an_app_own_server_grant`, `test_read_only_policy_classifies_a_read_the_grant_also_matches`, `test_read_only_policy_does_not_trust_a_read_kind_alone` (`test/test_llm_helpers_tool_gate.py`) |
-| READ_ONLY proof is host-trusted only | `test_read_only_policy_rejects_a_read_kind_on_a_mutating_tool`, `test_read_only_policy_rejects_a_read_kind_with_no_host_identity`, `test_read_only_policy_rejects_a_host_known_name_without_trusted_provenance`, `test_read_only_policy_rejects_a_read_looking_title_alone`, `test_read_only_policy_rejects_an_mcp_tool_with_a_read_kind`, `test_read_only_policy_rejects_a_host_known_read_tool_under_a_non_read_kind`, `test_read_only_policy_approves_a_host_known_read_tool`, `test_read_only_policy_approves_a_read_only_shell_command`, `test_hook_based_policy_still_approves_a_read_kind_tool` (`test/test_llm_helpers_tool_gate.py`); `TestClassifierOnlyHostTrustedProof` (`test/test_hooks.py`) |
+| READ_ONLY proof is host-trusted only | `test_read_only_policy_rejects_a_read_kind_on_a_mutating_tool`, `test_read_only_policy_rejects_a_read_kind_with_no_host_identity`, `test_read_only_policy_rejects_a_host_known_name_without_trusted_provenance`, `test_read_only_policy_rejects_a_read_looking_title_alone`, `test_read_only_policy_rejects_an_mcp_tool_with_a_read_kind`, `test_read_only_policy_rejects_a_host_known_read_tool_under_a_non_read_kind`, `test_read_only_policy_approves_a_host_known_read_tool`, `test_read_only_policy_approves_a_read_only_shell_command`, `test_hook_based_policy_still_approves_a_read_kind_tool` (`test/test_llm_helpers_tool_gate.py`); `TestClassifierOnlyHostTrustedProof` (`test/test_hooks_trusted_identity.py`) |
 | Dashboard-bound profile governs a side turn | `test_dashboard_bound_profile_governs_a_side_turn` (`test/test_side_turn_confinement.py`), `test_side_key_binds_the_dashboard_surface` (`test/test_governance_profiles.py`), `TestInferSource` (`test/test_sel.py`) |
 | claude side turns run read-only on a confined session | `test_side_turn_on_claude_runs_read_only_on_a_confined_session`, `test_side_turn_on_claude_with_an_unverified_adapter_runs_no_tools`, `test_dashboard_bound_profile_governs_a_claude_side_read`, `test_side_tools_answers_what_a_side_turn_runs`, `test_side_tools_is_false_when_the_config_does_not_load` (`test/test_side_turn_confinement.py`); `test_a_side_read_only_session_starts_confined_and_pinned`, `test_a_side_read_only_session_keeps_the_exclusions_restrictions`, `test_a_handshake_below_the_floor_stops_a_side_read_only_session` (`test/test_acp_session_mcp_client_seam.py`); `test_skips_pool_for_a_side_read_only_session` (`test/test_session_pool.py`) |
 | An inherited allow rule cannot open a sensitive path to a claude side read | `test_an_inherited_read_allow_does_not_open_a_sensitive_path`, `test_a_side_session_without_its_deny_rules_never_starts`, `test_a_target_is_written_as_a_root_anchored_rule` (`test/test_acp_session_mcp_client_seam.py`) |

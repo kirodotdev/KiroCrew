@@ -9,6 +9,7 @@ import { MaybeGuideRevealScope } from '../../guide/GuideRevealScope'
 import type { GuideRevealScopeId } from '../../uiLocations/guidePlans.gen'
 import { createTriggerContext, heldGuard, ProbeHoldContext, useProbeHold, useProbeTarget, useTriggerRef } from '../../guide/probeRegistry'
 import { useGuideTrustRootAttrs } from '../../guide/trustRoot'
+import { MountAfterCommit, useCloseWhenCrewHidden, useOverlayRoot } from '../overlayRoot'
 
 type DropdownMenuProps = React.ComponentProps<typeof DropdownMenuPrimitive.Root> & {
   /**
@@ -71,6 +72,7 @@ function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal: modalP
   const close = React.useCallback(() => handleOpenChange(false), [handleOpenChange])
 
   useCloseOnFileDrag(open && modal, close)
+  useCloseWhenCrewHidden(open, close)
 
   // A probe opens the menu through this state and closes it the same way.
   const trigger = React.useRef<HTMLElement | null>(null)
@@ -111,7 +113,15 @@ const DropdownMenuTrigger = React.forwardRef<
 })
 DropdownMenuTrigger.displayName = DropdownMenuPrimitive.Trigger.displayName
 const DropdownMenuGroup = DropdownMenuPrimitive.Group
-const DropdownMenuPortal = DropdownMenuPrimitive.Portal
+// Portals into the owning pane's overlay root, so content opened in the local
+// dashboard hides with it behind a remote Crew (see components/overlayRoot).
+function DropdownMenuPortal(props: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
+  return (
+    <MountAfterCommit>
+      <DropdownMenuPrimitive.Portal container={useOverlayRoot()} {...props} />
+    </MountAfterCommit>
+  )
+}
 const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup
 
 type SubPhoneContextValue = { isPhone: boolean; expanded: boolean; toggle: () => void }
@@ -146,7 +156,7 @@ const DropdownMenuContent = React.forwardRef<
   // `onOpenAutoFocus` is not in Content's public props, but Radix reads it from them.
   const probeFocus = { onOpenAutoFocus: heldGuard<Event>(held, undefined) }
   return (
-  <DropdownMenuPrimitive.Portal>
+  <DropdownMenuPortal>
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
@@ -174,7 +184,7 @@ const DropdownMenuContent = React.forwardRef<
       )}
       {...props}
     />
-  </DropdownMenuPrimitive.Portal>
+  </DropdownMenuPortal>
   )
 })
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName
@@ -321,7 +331,7 @@ const DropdownMenuSubContent = React.forwardRef<
     )
   }
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPortal>
       <DropdownMenuPrimitive.SubContent
         ref={ref}
         {...trustRoot}
@@ -334,7 +344,7 @@ const DropdownMenuSubContent = React.forwardRef<
       >
         {children}
       </DropdownMenuPrimitive.SubContent>
-    </DropdownMenuPrimitive.Portal>
+    </DropdownMenuPortal>
   )
 })
 DropdownMenuSubContent.displayName = DropdownMenuPrimitive.SubContent.displayName

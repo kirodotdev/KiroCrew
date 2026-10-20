@@ -806,9 +806,16 @@ class TestMcpEnableHandlersOffloadTheSync:
     loop freezes on slow storage."""
 
     def test_handlers_offload_sync_to_agent(self) -> None:
+        import importlib
         import re
 
-        src = (_REPO_ROOT / "src/kiro_crew/dashboard/handlers/mcp.py").read_text(encoding="utf-8")
+        from kiro_crew.dashboard.handlers import mcp
+
+        # The handler facade and its owners, read as one text.
+        src = "\n".join(
+            Path(importlib.import_module(m).__file__).read_text(encoding="utf-8")
+            for m in (mcp.__name__, *mcp._OWNERS)
+        )
         # No bare synchronous call to a PUBLIC sync-to-agent function inside an
         # async handler: every such invocation is wrapped in asyncio.to_thread.
         # The `_unlocked` variants are the sync locking-wrapper's own delegation

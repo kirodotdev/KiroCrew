@@ -30,6 +30,15 @@ from kiro_crew.telegram.renderer import _split_markdown_table_aware, _table_bloc
 from kiro_crew.whatsapp.renderer import render_chunks
 
 
+def _discord_renderer_tree() -> ast.Module:
+    """The Discord renderer's facade and the owners its methods are bound from, as one module."""
+    paths = [SRC / "discord" / "renderer.py", *sorted((SRC / "discord").glob("renderer_*.py"))]
+    return ast.Module(
+        body=[node for path in paths for node in ast.parse(path.read_text(encoding="utf-8")).body],
+        type_ignores=[],
+    )
+
+
 class TestDiscordRotatesWithoutHandingOverAKey:
     """Discord seals every chunk but the last as its own message, like Telegram.
 
@@ -78,7 +87,7 @@ class TestDiscordRotatesWithoutHandingOverAKey:
 
     def test_the_seam_record_has_exactly_one_writer(self) -> None:
         """One grader and one writer, so no sealing path carries its own rule."""
-        tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
+        tree = _discord_renderer_tree()
         writers = [
             node
             for node in ast.walk(tree)
@@ -238,7 +247,7 @@ class TestDiscordRotatesWithoutHandingOverAKey:
 
     def test_every_standalone_send_grades_records_or_says_why_not(self) -> None:
         """A new send is a new seam, and silence is not one of its options."""
-        tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
+        tree = _discord_renderer_tree()
         sends = {"send_message", "send_message_with_files"}
         answered = {"_stream_live", "_seal_current", "_land_sealed", "_flush_thinking"}
         stack: list[tuple[ast.AST, str]] = [(tree, "")]

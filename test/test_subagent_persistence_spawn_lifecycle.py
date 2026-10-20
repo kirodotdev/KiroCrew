@@ -80,7 +80,9 @@ class TestSpawnCreatesFolder:
         assert state_path.exists(), f"Expected {state_path} to exist"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         assert state["id"] == info.id
-        assert state["status"] == "running"
+        # The run has ended; its record must not read as running.
+        assert state.get("status") != "running"
+        assert "status" not in state
         assert state["parent_session"] == "dashboard:default"
 
     @pytest.mark.asyncio

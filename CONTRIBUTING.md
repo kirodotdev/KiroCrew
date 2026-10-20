@@ -250,7 +250,7 @@ index, no changelog narration, run `./scripts/docs-lint.sh` — plus the
 ## Extending Kiro Crew
 
 - **Skills** — a skill is a directory holding a `SKILL.md`. See [skills/README.md](skills/README.md) for the format and where skills are installed
-- **MCP tools** — a `kirocrew-core` tool is a `schemas()` descriptor plus a `HANDLERS` entry in `src/kiro_crew/mcp_tools/<domain>.py`; cron tools live in `mcp_cron.py`. See [MCP](docs/architecture/mcp.md#a-kirocrew-core-tool-has-two-halves). Every LLM-facing command must have an MCP tool
+- **MCP tools** — a `kirocrew-core` tool is a `schemas()` descriptor plus a `HANDLERS` entry in `src/kiro_crew/mcp_tools/<domain>.py`; cron tools live in `mcp_cron.py` (their bodies) and `mcp_cron_tool_list.py` (their schemas). See [MCP](docs/architecture/mcp.md#a-kirocrew-core-tool-has-two-halves). Every LLM-facing command must have an MCP tool
 - **Hooks** — see [Steering files, prompts and hooks](src/kiro_crew/docs/steering-and-hooks.md)
 - **Lessons** — self-learned from corrections and stored in the memory store (`lessons.jsonl` is a legacy fallback); see [Memory & Learning](src/kiro_crew/docs/memory-and-learning.md#lessons)
 

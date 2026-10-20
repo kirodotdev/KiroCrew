@@ -628,6 +628,14 @@ def main() -> None:
     # which call config_dir(). Skipped for the seed path above, which set up its
     # own $KIROCREW_HOME (an override → migration is a no-op there anyway).
     ensure_data_home()
+    # Registry discovery reads installed app files and distribution metadata.
+    # Prime ordinary CLI commands before their first config load. Gateway startup
+    # keeps this growing work off its socket-readiness path and refreshes apps on
+    # the dashboard executor plus plugins from companion admission.
+    if args.command != "gateway":
+        from kiro_crew.config.validation import prime_extension_config_keys
+
+        prime_extension_config_keys()
     # Console + gateway.log logging. Extracted to a helper because the
     # detach-spawned gateway needs double-write protection (stderr IS
     # gateway.log in that mode) — see _setup_cli_logging.
@@ -784,7 +792,7 @@ def main() -> None:
             print(f"👻 {exc}", file=sys.stderr)
             # A live holder is a sibling gateway already serving this home, so
             # retrying can only meet the same refusal: exit the code the systemd
-            # unit's RestartPreventExitStatus= names (service/linux.py) and let
+            # unit's RestartPreventExitStatus= names (service/linux_unit.py) and let
             # the supervisor stand down. Every other refusal is one a later
             # attempt may find cleared, so it keeps the restartable exit 1.
             sys.exit(LIVE_HOLDER_EXIT_CODE if exc.live_holder else 1)
@@ -1113,6 +1121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LOG_QUEUE_LISTENER,
         _LONG_LIVED_COMMANDS,
         _CliLogQueueHandler,
+        _fd_is_regular_file,
         _fd_targets_file,
         _FdTrackingRotatingFileHandler,
         _redirect_fds_to,

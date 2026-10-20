@@ -38,7 +38,9 @@ class TestFU1ReaperRemediation:
         assert "--profile" not in h._reaper_remediation("", "")
 
     def test_both_409_sites_attach_remediation(self):
-        src = Path(h.__file__).read_text(encoding="utf-8")
+        deploy = Path(h.__file__).parent
+        names = ("handlers_guards.py", "handlers_content.py", "handlers_sites.py", "handlers.py")
+        src = "".join((deploy / name).read_text(encoding="utf-8") for name in names)
         # Base missing gets the base-then-reaper command; reaper missing gets
         # the reaper command alone.
         assert src.count('"remediation": _base_remediation(profile, region)') == 1

@@ -8856,14 +8856,15 @@ class TestParentEndCancelsItsChildren:
     async def test_the_teardown_records_one_audit_line_naming_its_verb(self, caplog):
         """A parent end cancels work someone may be waiting on, so it says what it took.
 
-        Six verbs reach one helper, and from outside the only evidence a run was cancelled
+        Several verbs reach one helper, and from outside the only evidence a run was cancelled
         by a teardown is the absence of its result — which is indistinguishable from a
         cancelled-too-early row. The line carries the verb, the key, whether the retired
         generation still held, and the ids from each source, so the two can be told apart
         from a log alone.
 
-        One line at one choke point rather than a print at each verb: six copies of a log
-        statement drift, and the verb is only known here.
+        One line at one choke point rather than a print at each verb: a log statement
+        copied into each verb drifts, and only the teardown itself sees the ids from
+        every source.
         """
         import logging
 
@@ -9620,6 +9621,9 @@ class TestParentEndCancelsItsChildren:
             "taskrunner_parts/run_scope.py",
             # The pool starts a NEW conversation on a pooled key.
             "workflows/agent_pool.py",
+            # A fresh-conversation background turn ends its conversation when the
+            # cheap ``new_conversation`` path is unavailable.
+            "llm_helpers_parts/background_turns.py",
             # ``clear_conversation`` throws the conversation away: sid cleared, replay
             # suppressed, so the successor cold-starts with none of its history.
             "session_compaction.py",

@@ -121,6 +121,12 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; isRepoRoot?: boolean; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
+    /** The repositories the Git tab lists for one chat: its project (when that
+     *  is in a repository) first, then every repository its tool calls worked
+     *  in, most recent first. Each `path` is accepted by the status/log routes.
+     *  `listed` counts the agent rows shown and `omitted` the ones past the cap.
+     *  `incomplete` means bounded tool-path tracking may have missed repositories. */
+    projectGitRepos: (slot: string) => fetch('/api/project/git/repos?slot=' + encodeURIComponent(slot)).then(j) as Promise<{ repos: { path: string; source: 'project' | 'agent' }[]; omitted: number; listed: number; incomplete: boolean }>,
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>

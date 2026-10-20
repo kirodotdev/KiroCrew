@@ -233,6 +233,41 @@ def host_node_key(system: str | None = None, machine: str | None = None) -> str:
     return f"{_host_os(system or platform.system())}-{_host_arch(machine or platform.machine())}"
 
 
+def _require_loadable_glibc(system: str | None, machine: str | None) -> None:
+    """Refuse the install on a Linux host whose glibc is too old to run the bundle.
+
+    The published ``linux-x64`` Node build is linked against glibc 2.28, so a host
+    below that floor cannot run the bundled Node at all. The engine also ships a
+    native ``onnxruntime`` library (via ``@huggingface/transformers``) linked
+    against glibc 2.27, so an Amazon Linux 2-era host below glibc 2.27 additionally
+    cannot load that library even with an older Node swapped in. Stop here, before
+    any engine or Node artifact is downloaded or extracted, with one message naming
+    the found glibc, the minimum, and the reason, rather than letting ``_probe_node``
+    surface the raw "GLIBC_2.28 not found" loader line after a download.
+
+    Reuses the glibc reader and floor ``doctor``'s Node remedy uses
+    (:func:`kiro_crew.constants._host_glibc_version`,
+    :data:`kiro_crew.constants._OFFICIAL_NODE_GLIBC_FLOOR`). A no-op on non-Linux,
+    at or above the floor, or when glibc cannot be read.
+    """
+    from kiro_crew import constants
+
+    if _host_os(system or platform.system()) != "linux":
+        return
+    glibc = constants._host_glibc_version()
+    floor = constants._OFFICIAL_NODE_GLIBC_FLOOR
+    if glibc is None or glibc >= floor:
+        return
+    raise KasBundleError(
+        f"this host's glibc ({glibc[0]}.{glibc[1]}) is older than KAS requires "
+        f"(glibc {floor[0]}.{floor[1]}+): the bundled Node build needs glibc "
+        f"{floor[0]}.{floor[1]}, and Amazon Linux 2-era hosts (glibc below 2.27) "
+        f"also lack the glibc 2.27 the engine's onnxruntime library needs. "
+        f"Move to a newer base image (Amazon Linux 2023, Ubuntu 22.04+). "
+        f"Nothing was installed."
+    )
+
+
 def host_platform_key(system: str | None = None, machine: str | None = None) -> str:
     """The engine's platform key. Mac is one universal JS bundle for both archs."""
     os_name = _host_os(system or platform.system())
@@ -620,6 +655,7 @@ def install_bundle(
     version's name. Raises :class:`KasBundleError`.
     """
     root = root or kas_engines_root()
+    _require_loadable_glibc(system, machine)
     platform_key = host_platform_key(system, machine)
     node_key = host_node_key(system, machine)
     engine_ref = manifest.engine_for(platform_key)

@@ -90,8 +90,8 @@ _MAX_TEXT_INJECT = _LIMITS.max_text_inject
 
 #: Mimetype prefixes Slack uses for voice memos. ``video/webm`` is NOT a
 #: mistake: Slack ships voice clips with a video container mimetype, and the
-#: transcription path in ``slack/events.py`` has always relied on that. Defined
-#: HERE (not in events.py) because this module sits below it in the import
+#: transcription path in ``slack/events_voice.py`` has always relied on that. Defined
+#: HERE (not in events_voice.py) because this module sits below it in the import
 #: graph, so both the transcriber and the ingestion adapter can share ONE
 #: definition. A single definition keeps them in sync, so a transcribed voice
 #: memo is not also rejected as unsupported video.
@@ -114,7 +114,7 @@ VOICE_MEMO_FAILED = "[Audio attachment — transcription failed]"
 #: Pinned here beside the failure notes above for the same reason they are —
 #: byte-identical to the notes ``transcribe_audio_attachments`` emits for the
 #: other channels (pinned both ways by ``test_slack_backports.py``), not
-#: copies left to drift. ``slack/events.py`` consumes both; ``TOO_LONG`` is a
+#: copies left to drift. ``slack/events_voice.py`` consumes both; ``TOO_LONG`` is a
 #: template whose ``{minutes}`` the consumer fills from the active cap.
 VOICE_MEMO_TOO_LONG = "[Audio attachment — exceeds the {minutes}-minute transcription limit]"
 VOICE_MEMO_DURATION_UNVERIFIED = "[Audio attachment — duration could not be verified]"

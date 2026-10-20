@@ -394,7 +394,11 @@ def test_the_session_name_does_not_travel_as_extra_env() -> None:
     family = "".join(
         inspect.getsource(sys.modules[name]) for name in (client.__name__, *client._CLIENT_OWNERS)
     )
-    for source in (family, inspect.getsource(runtime)):
+    runtime_family = "".join(
+        inspect.getsource(sys.modules[name])
+        for name in (runtime.__name__, *runtime._RUNTIME_OWNERS)
+    )
+    for source in (family, runtime_family):
         assert "extra_env.update(browser_session_env" not in source
         assert "browser_session_env" in source
 

@@ -182,7 +182,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 
 **What must be answered:**
 
-- Non-PASS verdicts from the **whole-design lanes** — Design, First Principles, UX: every Watch item, Suggestion and Subtraction, each with its own `target=design` / `target=first-principles` / `target=ux` comment naming its `span=`. Their **BLOCK** verdict blocks readiness, and so does an **unanswered CONCERNS** for the current head: `pr_status.py` exits `20` on it even when the rollup is green, and it clears the moment one `target=<lane> head=<current sha>` disposition exists. Under the `--reviewers` pin, a CONCERNS in the `Whole-design punchlines` block is that stop (`references/rationale.md`). PASS is advisory and must still be answered: its punchline is the ask. `pr_findings.py` prints each item with its `span=` and `Clears when:` line, above the line-level findings.
+- Non-PASS verdicts from the **whole-design lanes** — Design, First Principles, UX: every Watch item, Suggestion and Subtraction, each with its own `target=design` / `target=first-principles` / `target=ux` comment naming its `span=`. Their **BLOCK** verdict blocks readiness, and so does an **unanswered CONCERNS** for the current head: `pr_status.py` exits `20` on it even when the rollup is green, and it clears the moment one `target=<lane> head=<current sha>` disposition exists. The `--reviewers` pin does not hide it (`references/rationale.md`). PASS is advisory and must still be answered: its punchline is the ask. `pr_findings.py` prints each item with its `span=` and `Clears when:` line, above the line-level findings.
 - Non-blocking observations in the GPT / Opus bodies.
 - One-way-door concerns from Design Review — fix or justify in writing.
 - Human review comments and inline threads.
@@ -356,7 +356,7 @@ that view; no local round log is needed.
   ambiguous large conflict; a hard external blocker (infra, permissions, a check
   that never runs). Recurrence, round count, a re-raised finding or self-added
   code is never one. When you pause, name the option you would take.
-- `monitor_start` is bounded to `max_cycles=280` and `max_runtime_secs=86400`
+- `monitor_start` is bounded to `max_cycles=288` and `max_runtime_secs=86400`
   (24 hours, Phase 4's watch included); the agent never raises either. At
   exhaustion, hand over `--rounds` and open findings. Phase 2 separately caps
   local review at 10 passes.
@@ -394,7 +394,7 @@ may edit it.
 2. **Sync base.** `git fetch origin` — **this MUST succeed**; on failure, STOP and report it. Then `git rebase refs/remotes/origin/<base>` (full name: a local `origin/<base>` branch would win). Resolve unambiguous conflicts yourself; ask about an ambiguous large one. Before each `git rebase --continue`, `push_guard.py --check-index` must exit **0**.
 3. **Pre-squash guard** (`single_commit` only). `--squash` (step 4) runs it first, before the commit-count signal is gone.
 4. **Squash to one commit** (`single_commit` only). Write the message (subject, then detail) to `$(git rev-parse --absolute-git-dir)/prepare-pr-commit-msg-<branch>.txt` (`/` as `-`; consumed), or pass `--squash FILE` (kept), then `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --squash`. It commits the branch's **tree**, never an index, with hooks and signing. **0** → squashed; **40** → STOP, read stderr: commits ahead, all yours → its `--max-ahead N`, once; paths it did not commit → read each diff, name them after `--` only if all yours; **41**/**64** → follow the remedy; **2** → env.
-5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. **Scaffold it from the template:** `cat "$(git rev-parse --show-toplevel)/.github/PULL_REQUEST_TEMPLATE.md"`, fill every section, never from memory; drop the CLA placeholder. A `fix`/`revert` PR fills `## Pattern harvest`; a diff that takes something away lists one `Reader:` line per reader — PR Hygiene checks both and `--check-body` does not. **A tightening diff makes `## Backwards compatibility` a `Breaking:` line with a writer sweep re-run on fresh `origin/<base>` before the final push.** Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — name it or drop it from the diff, never pad the prose to hide it. **21** means `What changed` is over `WORD_LIMIT` words — cut the recital, not the facts. **22**: add the template sections it names. If the diff itself is wrong, fix it and amend by name: `push_guard.py --amend -- <path>...`.
+5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. **Scaffold it from the template:** `cat "$(git rev-parse --show-toplevel)/.github/PULL_REQUEST_TEMPLATE.md"`, fill every section, never from memory; drop the CLA placeholder. A `fix`/`revert` PR fills `## Pattern harvest`; a diff that takes something away lists one `Reader:` line per reader — PR Hygiene checks both and `--check-body` does not. **A tightening diff makes `## Backwards compatibility` a `Breaking:` line with a writer sweep re-run on fresh `origin/<base>` before the final push.** Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — name it or drop it from the diff, never pad the prose to hide it. **21** means `What changed` has too many words or table rows — cut the recital, not the facts. **22**: add the template sections it names. If the diff itself is wrong, fix it and amend by name: `push_guard.py --amend -- <path>...`.
 
    **Cold reader.** Once `--check-body` exits 0, hand ONLY the `What changed` text to one tool-less subagent (`spawn_run`, agent `kirocrew-lite`) and ask: *"In two sentences, what does this PR change for a user, and why?"* No answer, or one that leads with a mechanism the section does not, means rewrite and re-check. One round, nothing recorded.
 
@@ -415,8 +415,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
    reports failing tests**: reproduce EXACTLY the node ids from
    `gh run view <run-id> --log-failed`; fix; push.
 
-   **The setup and gate lists are data** in `profiles/kirocrew.json`;
-   `test/test_prepare_pr_profiles.py` pins the floor to `ci.yml` and `fast-gate.yml`. **Before you add,
+   **The setup and gate lists are data** in `profiles/kirocrew.json`. **Before you add,
    change or remove setup or a gate, read `references/gate-floor.md`.**
 
    - **Check exit codes, never piped output.** `cmd | tail` makes `$?` tail's status. Redirect to a file and test `$?`.
@@ -424,6 +423,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
    - **Every new guard or validator helper must have a non-test caller.** `grep` outside `test/`. A change under `src/kiro_crew/deploy/` must be diffed against its `scripts/*.sh` counterpart, and vice versa.
    - **Run the flake-pattern ratchet** when the diff adds or changes a test: `python -m pytest -n0 test/test_flake_pattern_ratchet.py`. It counts the flaky shapes the semgrep rules below miss and compares each changed file with your merge-base, so first fetch the remote your branch was cut from (`upstream` for a fork). CI's Backend Tests run the same comparison and fail on a rise; the related-test runner does not select it, so run it here to see that first.
    - **Run the repository's semgrep rules on the diff** when it adds or changes code or tests: `semgrep scan --config semgrep/ --baseline-commit "$(git merge-base origin/<base> HEAD)" --error`. CI's SAST job runs the same rules diff-scoped and blocking (alongside the registry packs), and none of them is in `gates[]`.
+   - **Split a code file the diff takes past 1,600 lines**: `docs/system-specs/common/code-style.md` § Splitting a file.
 
 2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base origin/<base>` from the worktree: it resolves both SHAs itself and writes one task file per reviewer (`local-review-<name>.md`) with that reviewer's prompt **extracted literally from its `contract` workflow**, plus the base-ref `AUTOSDE.yaml` snapshots, the `BASE...HEAD` diff and the PR intent inside the workflow's own UNTRUSTED framing. It never calls a model.
 
@@ -559,7 +559,7 @@ comes after a record, never instead of one:
                "Merged, terminal state, user stop, blocker or spent budget: "
                "report the outcome, overrides and open findings, then call "
                "autonudge_stop.",
-       interval_secs=300, max_cycles=280, max_runtime_secs=86400, gate=False,
+       interval_secs=300, max_cycles=288, max_runtime_secs=86400, gate=False,
        banner="kirocrew-prepare-pr: polling PR #123")
      ```
 
@@ -663,7 +663,7 @@ finished body. Both stop the loop (why: `references/rationale.md`):
 | check | what it measures | on breach |
 |---|---|---|
 | Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff |
-| Length | words of prose in `What changed` (fenced blocks, table rows, image lines excluded) against the 500 of section 3's paragraph rule | **exit 21** — stop, compress the prose |
+| Length | prose words in `What changed` (fences, tables, images excluded) against the 500 of section 3's paragraph rule; table rows against a picture's eight | **exit 21** — stop, compress the prose |
 
 The template check runs CI's `.github/scripts/pr-description-check.sh` from
 `origin/<base>`: a missing section is **exit 22**. The lowest code wins.

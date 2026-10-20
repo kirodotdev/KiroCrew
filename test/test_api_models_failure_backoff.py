@@ -146,8 +146,14 @@ def test_two_polls_inside_the_window_spawn_once(harness, tmp_path, caplog):
     assert harness.spawner.calls == 1
     assert (first.status, second.status) == (503, 503)
     # The held 503 still says why the list is missing.
-    assert json.loads(first.body) == {"error": "model list command failed"}
-    assert json.loads(second.body) == {"error": "model list command failed"}
+    assert json.loads(first.body) == {
+        "error": "model list command failed",
+        "code": "model_list_unavailable",
+    }
+    assert json.loads(second.body) == {
+        "error": "model list command failed",
+        "code": "model_list_unavailable",
+    }
     assert _list_models_warnings(caplog) == 1
 
 
@@ -182,7 +188,10 @@ def test_an_unresolved_binary_is_not_held(harness, tmp_path):
     # the next poll retries instead of waiting out a window.
     with patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=""):
         resp = _poll(tmp_path)
-    assert json.loads(resp.body) == {"error": "kiro binary not resolved"}
+    assert json.loads(resp.body) == {
+        "error": "kiro binary not resolved",
+        "code": "model_list_unavailable",
+    }
     assert agents._catalog_cache.failure is None
 
     _poll(tmp_path)

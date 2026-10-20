@@ -12,7 +12,7 @@ pod was a real, durable, machine-level credential that OUTLIVED ``pod down``.
 These tests pin the resolver in isolation. The ACP-spawn side of the fix (the
 ``HOME`` remap applied to a pod-spawned kiro-cli child) is pinned in
 ``test_acp_pod_home_remap.py``; the pod-boot seeding side is pinned in
-``test_pod.py``.
+``test_pod_env.py`` and ``test_pod_refusals.py``.
 """
 
 from __future__ import annotations

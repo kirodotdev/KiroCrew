@@ -1786,7 +1786,46 @@ def _consolidator() -> Any:
     return c
 
 
+def _write_incognito_transcript(log: Any, key: str) -> None:
+    log.init()
+    log.append(key, "user", "keep this off the record")
+    log.update_metadata(key, {"memory_mode": "incognito"})
+
+
+async def _seed_incognito_transcript(log: Any, key: str) -> None:
+    """Write a closed incognito transcript for *key*, off the event loop.
+
+    The header rewrite ends in ``atomic_write.replace_with_retry``. That helper
+    retries a Windows sharing violation (a scanner or indexer briefly holding
+    the file just written) only when NO event loop runs in the calling thread.
+    On the test's own loop the first ``PermissionError`` is raised at once, so
+    the write runs in a worker thread, as the product's own callers do.
+    """
+    await asyncio.to_thread(_write_incognito_transcript, log, key)
+
+
 class TestConsolidate:
+    @pytest.mark.asyncio
+    async def test_the_seed_survives_a_windows_sharing_violation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin the seeding helper above to the retrying path.
+
+        A seed run on the loop thread re-raises the first simulated violation.
+        """
+        from windows_sim import replace_sharing_violation
+
+        from kiro_crew import atomic_write, platform_compat
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+        log = ConversationLog(base_dir=tmp_path / "sessions")
+        with replace_sharing_violation(match="dashboard_ghost-1.jsonl", times=1) as sim:
+            await _seed_incognito_transcript(log, "dashboard:ghost-1")
+        assert sim["n"] == 2
+        assert log.get_metadata("dashboard:ghost-1")["memory_mode"] == "incognito"
+
     @pytest.mark.asyncio
     async def test_denied_for_restricted_session(self) -> None:
         state = _make_state(consolidator=_consolidator(), restricted_keys={"dashboard:ghost"})
@@ -1960,13 +1999,10 @@ class TestConsolidate:
         live slot; the mode then comes from the transcript's own ``memory_mode``.
         """
         from kiro_crew.config.paths import config_dir
-        from kiro_crew.history import ConversationLog, allow_on_loop_persist
+        from kiro_crew.history import ConversationLog
 
         log = ConversationLog(base_dir=config_dir() / "sessions")
-        log.init()
-        with allow_on_loop_persist():
-            log.append("dashboard:ghost-13077", "user", "keep this off the record")
-            log.update_metadata("dashboard:ghost-13077", {"memory_mode": "incognito"})
+        await _seed_incognito_transcript(log, "dashboard:ghost-13077")
         cons = _consolidator()
         state = _make_state(consolidator=cons)
         state.conversation_log = log
@@ -2002,7 +2038,7 @@ class TestConsolidate:
         stem = "slack_1785861252.833429"
         sm = SessionMap()
         sm.set_flag(live_key, "incognito", True)
-        sm.flush()
+        await sm.aflush()
         privacy_mode.reset()
         assert sm.channel_key_for_stem(stem) == live_key, "premise: the map unfolds the stem"
         assert privacy_mode.is_incognito(live_key) is False, "premise: trackers start empty"
@@ -2065,17 +2101,14 @@ class TestConsolidate:
         the route probes it too.
         """
         from kiro_crew.config.paths import config_dir
-        from kiro_crew.history import ConversationLog, allow_on_loop_persist
+        from kiro_crew.history import ConversationLog
         from kiro_crew.messaging import privacy_mode
         from kiro_crew.session_map import SessionMap
 
         live_key = "slack:1785861252.833429"
         stem = "slack_1785861252.833429"
         log = ConversationLog(base_dir=config_dir() / "sessions")
-        log.init()
-        with allow_on_loop_persist():
-            log.append(live_key, "user", "keep this off the record")
-            log.update_metadata(live_key, {"memory_mode": "incognito"})
+        await _seed_incognito_transcript(log, live_key)
         sm = SessionMap()  # holds nothing for this thread
         assert sm.channel_key_for_stem(stem) == "", "premise: the map cannot unfold the stem"
         privacy_mode.reset()

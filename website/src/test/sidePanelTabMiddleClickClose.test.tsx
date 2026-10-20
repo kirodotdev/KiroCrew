@@ -1,7 +1,7 @@
 /**
  * Middle-click on a side-panel tab closes it, the same way its × does.
  *
- * The binding lives on the `TabChip` element in `SidePanel.tsx`
+ * The binding lives on the `TabChip` element in `SidePanelTabChip.tsx`
  * (`onAuxClick` → `onClose`, guarded by `closable` and `e.button === 1`). It is
  * the file-tab half of the middle-click-to-close convention every tabbed app
  * ships (issue #9406); `SessionTabStrip.test.tsx` pins the same gesture on the

@@ -1197,6 +1197,7 @@ _BINDINGS = {
     "record_monitor_dispatched": "monitor_records",
     "record_monitor_completion_evidence_unavailable": "monitor_records",
     "_deactivate_unwired_monitor": "monitor_records",
+    "_load": "store_loader",
 }
 _BOUND_AS = {"_serialize_loop": "LoopStore.serialize_loop"}
 
@@ -1212,11 +1213,12 @@ _OWNER_ORDER = (
     "firing",
     "mutations",
     "monitor_records",
+    "store_loader",
 )
 
-#: The names owner code reads through ``kiro_crew.autonudge`` at call time: the four
-#: tests patch there, and the four that stay defined there (a redactor-calling scrub
-#: helper, the singleton, and the two lock registries the boot smoke tracks by name).
+#: The names owner code reads through ``kiro_crew.autonudge`` at call time: the six
+#: tests patch there, and the four that stay defined there (the sentinel repair, the
+#: singleton, and the two lock registries the boot smoke tracks by name).
 _SEAMS = frozenset(
     {
         "_INSTANCE",
@@ -1224,7 +1226,9 @@ _SEAMS = frozenset(
         "_MUTATION_LOCK_OWNERS",
         "_OVERDUE_REARM_SECS",
         "_RECONCILE_INTERVAL_SECS",
+        "_bounded_judge_verdict",
         "fsync_dir",
+        "repair_sentinel_path",
         "replace_with_retry",
         "scrubbed_judge_spec",
     }
@@ -1471,7 +1475,7 @@ class TestTheOwnersReadTheSeamsThroughTheFacade:
 #: was read at its call site: the consumer imports the name from ``kiro_crew.autonudge``
 #: inside the function under test, so the patch reaches it, and the service is a stub there.
 _FACADE_PATCHES_FOR_CONSUMERS = {
-    # dashboard/session_directive_apply.py imports is_structured_monitor_loop per call;
+    # dashboard/session_directive_apply_monitor.py imports is_structured_monitor_loop per call;
     # these tests hand it a SimpleNamespace service, so no owner code runs.
     ("test/test_autonudge_member_self_arm.py", "is_structured_monitor_loop"): "directive consumer",
 }

@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { clearAnnotationHighlight, paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { RefreshCw, Hash, WrapText, Minimize2, Copy, X, FileText, FileDiff, Folders, TriangleAlert } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import DetailPanel from './DetailPanel'
@@ -23,17 +23,31 @@ import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { anchorFromRange } from '../utils/selectionAnchor'
+import { shadowSelectionRange } from '../utils/pierreShadow'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
 import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar } from './MarkdownPanelBody'
-import { findCoords, resolveSourcePos } from './markdownPanelSourcePos'
+import { findCoords, findUniqueCoords, resolveSourcePos } from './markdownPanelSourcePos'
 import { FindHighlightCtor, cssHighlights, FIND_HL_SUPPORTED, useMarkdownPanelFind } from './useMarkdownPanelFind'
 import { useMarkdownPanelDisk, useMarkdownPanelDiff } from './useMarkdownPanelDisk'
 
 export { breadcrumbSegments, FileHeaderBreadcrumb, OverflowMenu, type BreadcrumbSegment } from './MarkdownPanelHeader'
 export { findCoords, resolveSourcePos } from './markdownPanelSourcePos'
 export { MISSING_FILE_RETRY_MS, MISSING_FILE_RETRY_MAX_MS } from './useMarkdownPanelDisk'
+
+/** Where a selection sits, as the comment composer anchors it. */
+interface SelectionInfo {
+  anchor: string
+  rect: DOMRect
+  range: Range | undefined
+  line?: number
+  column?: number
+  /** Offset in the preview's text; absent for text the offset space does not hold. */
+  startOffset?: number
+  /** Selected inside a code block (see `InlineComment.inCode`). */
+  inCode?: boolean
+}
 
 interface Props {
   filePath: string
@@ -307,7 +321,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // while the DOM selection was still live (focus in the input collapses it).
   // A ref, not state: it is read only by the submit handler, and nothing renders
   // from it.
-  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number } | null>(null)
+  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number; inCode?: boolean } | null>(null)
   // Whether the annotation box is open — read by the panel's document-level
   // Escape handler so it yields the key to the box instead of closing the panel.
   const composerOpenRef = useRef(false)
@@ -329,6 +343,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const [refreshing, setRefreshing] = useState(false)
   const [hintDismissed, setHintDismissed] = useState(() => localStorage.getItem(HINT_KEY) === '1')
   const [fullscreen, setFullscreen] = useState(false)
+  // True while a remote Crew covers the local dashboard this panel lives in.
+  const crewHidden = useLocalCrewHidden()
   // Shared IME latch for the full-screen preview's Tab trap: a Tab that lands
   // during an IME composition (or its post-`compositionend` window) is
   // choosing a candidate, not leaving the field, so the trap must decline it
@@ -495,10 +511,21 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     } finally { setRefreshing(false) }
   }, [dirty, filePath, onRefresh, canPreview, confirm, readFromDisk, applyDiskRead, reportActionError, setMissingOnDisk])
 
-  const resolveSelectionCoords = useCallback((fallbackText?: string) => {
+  const resolveSelectionCoords = useCallback((fallbackText?: string): SelectionInfo | undefined => {
     const sel = window.getSelection()
     const root = previewRef.current ?? fullscreenPreviewRef.current
     if (!root) return undefined
+    // Text selected inside a code block reads as collapsed on the document's selection
+    // (see `shadowSelectionRange`). The block's DOM carries no `data-sourcepos` and no
+    // offset in `root`'s text, so text that occurs twice in the file cannot be placed and
+    // carries no line, rather than the line of its first occurrence.
+    const inCode = sel ? shadowSelectionRange(sel, root) : null
+    if (sel && inCode) {
+      const raw = sel.toString()
+      const anchor = raw.trim()
+      const coords = findUniqueCoords(content, raw)
+      return { anchor, rect: inCode.getBoundingClientRect(), range: inCode.cloneRange(), line: coords?.line, column: coords?.column, inCode: true }
+    }
     // Try live selection first
     if (sel && !sel.isCollapsed && sel.anchorNode && root.contains(sel.anchorNode)) {
       const raw = sel.toString()
@@ -572,7 +599,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     if (info) {
       if (info.range) applyHighlightMarks(info.range)
       else clearHighlightMarks()
-      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset }
+      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode }
     } else {
       // No DOM selection to map — anchor on the text the toolbar captured.
       clearHighlightMarks()
@@ -599,7 +626,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   const handleComposerSubmit = useCallback((comment: string, text: string) => {
     const info = pendingAnchorRef.current ?? { anchor: text }
-    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset }
+    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode }
     setComments(prev => [...prev, newComment])
     composerOpenRef.current = false
     composerDraftRef.current = false
@@ -663,7 +690,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     let verdict: void | boolean | Promise<void | boolean>
     try {
-      verdict = onSubmitComments(formatCommentsMessage(filePath, comments, displayContent, extraPrompt), comments.length)
+      verdict = onSubmitComments(formatCommentsMessage(filePath, comments, content, extraPrompt), comments.length)
     } catch {
       verdict = false
     }
@@ -679,7 +706,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       })
       .catch(() => { /* undelivered — keep the batch pending */ })
       .finally(() => { submitInFlightRef.current = false })
-  }, [connected, onSubmitComments, comments, filePath, displayContent])
+  }, [connected, onSubmitComments, comments, filePath, content])
 
   const dismissHint = useCallback(() => {
     setHintDismissed(true)
@@ -713,6 +740,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     commentTooltipRef.current?.remove()
     commentTooltipRef.current = null
   }, [])
+  // The tooltip is appended to `document.body` and removed on mouseleave, which
+  // never fires when the panel is hidden under it by a Crew switch.
+  useEffect(() => { if (crewHidden) removeCommentTooltip() }, [crewHidden, removeCommentTooltip])
   // Tracks the currently-flashing sidebar comment row so a new click cancels
   // the previous flash immediately (instead of leaving two rows highlighted
   // until the first one's timeout fires).
@@ -817,7 +847,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       const ranges: Range[] = []
       const hits: { range: Range; comment: InlineComment }[] = []
       for (const comment of comments) {
-        if (!comment.anchor) continue
+        if (!comment.anchor || comment.inCode) continue
         const bestIdx = findBestOccurrence(fullText, comment.anchor, comment.startOffset)
         if (bestIdx < 0) continue
         const s = locate(bestIdx)
@@ -1073,8 +1103,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // A background tab is mounted but invisible, so neither key may reach it:
       // Escape would close — or raise a discard prompt for — a document the user
       // cannot see, and Cmd+S would let a hidden dirty editor answer a save the
-      // user aimed at the tab in front of them.
-      if (!active) return
+      // user aimed at the tab in front of them. The whole local dashboard is
+      // equally invisible while a remote Crew is showing.
+      if (!active || crewHidden) return
       // While the discard-confirm dialog is open, the keyboard belongs to it.
       // Escape dismisses it via the dialog's own handler (re-running the guard
       // here would re-open the dialog the same keystroke just closed), and the
@@ -1101,7 +1132,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
+  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen, crewHidden])
 
   // The first edit of a clean buffer fences the disk. A read still in flight
   // describes a buffer the user has now typed into: if the user saves before it
@@ -1314,11 +1345,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       </div>
       {/* Keyed by file: a re-target of this tab (e.g. a slot switch) must not
           carry an open composer — and the anchor it resolved against the OLD
-          file — over to the new one. Remount drops it and fires onClose. */}
-      {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
+          file — over to the new one. Remount drops it and fires onClose.
+          Text selected in a code block is anchored by the preview only: the diff
+          view has no preview root for `resolveSelectionCoords` to read. */}
+      {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} codeSelection={!diffViewShown} />}
       {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />}
     </DetailPanel>
-    {fullscreen && createPortal(
+    {fullscreen && <OverlayPortal>{
       // The onKeyDown here implements a focus trap for the modal dialog; a
       // role="dialog"/aria-modal container legitimately owns keyboard handling.
       // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
@@ -1388,13 +1421,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
-        {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
+        {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} codeSelection={!diffViewShown} />}
         <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>
-      </div>,
-      document.body
-    )}
+      </div>
+    }</OverlayPortal>}
     {confirmDialog}
     </>
   )

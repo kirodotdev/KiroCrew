@@ -16,7 +16,12 @@ import struct
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
-from kiro_crew.embeddings_settings import _ENCODER_ARCHITECTURES, _N_CTX, _N_UBATCH
+from kiro_crew.embeddings_settings import (
+    _ENCODER_ARCHITECTURES,
+    _N_CTX,
+    _N_UBATCH,
+    _POOLING_TYPES,
+)
 
 logger = logging.getLogger("kiro_crew.embeddings")
 
@@ -37,25 +42,29 @@ _GGUF_CAUSAL_SUFFIX = ".attention.causal"
 # with, which llama.cpp reads into ``hparams.n_ctx_train``. For an encoder with
 # learned absolute positions it is also the row count of the position table.
 _GGUF_CONTEXT_LENGTH_SUFFIX = ".context_length"
+# `<architecture>.pooling_type`: the pooling the converter recorded for the model,
+# which llama.cpp itself falls back to when no pooling is passed.
+_GGUF_POOLING_TYPE_SUFFIX = ".pooling_type"
 
 
 class _GGUFEmbeddingMetadata(NamedTuple):
-    """The KV-header fields that decide a model's llama.cpp context parameters."""
+    """The KV-header fields that decide a model's llama.cpp load parameters."""
 
     architecture: str | None
     causal: bool | None
     context_length: int | None
+    pooling_type: int | None = None
 
 
 def _read_gguf_embedding_metadata(path: Path) -> _GGUFEmbeddingMetadata:
-    """Read the architecture and its optional causal and context-length keys.
+    """Read the architecture and its optional causal, context-length and pooling keys.
 
-    All three come from the GGUF KV header. The causal flag is the
+    All four come from the GGUF KV header. The causal flag is the
     ``<architecture>.attention.causal`` boolean that llama.cpp reads for every
     architecture into ``hparams.causal_attn`` (default true when absent); the
     context length is the ``<architecture>.context_length`` integer it reads
-    into ``hparams.n_ctx_train``. The file's ``pooling_type`` key is not read:
-    every model is loaded with ``_POOLING_TYPE_LAST`` passed explicitly.
+    into ``hparams.n_ctx_train``; the pooling is the ``<architecture>.pooling_type``
+    integer it reads into ``hparams.pooling_type`` (see :func:`gguf_declared_pooling`).
 
     The header is walked with plain bounded reads, never a mapping: a mapping's
     length is fixed when it is built, so a GGUF truncated in place while its
@@ -154,12 +163,14 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
     architecture: str | None = None
     causal_by_architecture: dict[str, bool] = {}
     context_length_by_architecture: dict[str, int] = {}
+    pooling_by_architecture: dict[str, int] = {}
     for _ in range(metadata_count):
         key = _read_string()
         capture = (
             key == "general.architecture"
             or key.endswith(_GGUF_CAUSAL_SUFFIX)
             or key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
+            or key.endswith(_GGUF_POOLING_TYPE_SUFFIX)
         )
         value = _read_value(_unpack("<I"), capture=capture)
         if key == "general.architecture" and isinstance(value, str):
@@ -173,10 +184,17 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
             and value > 0
         ):
             context_length_by_architecture[key[: -len(_GGUF_CONTEXT_LENGTH_SUFFIX)].lower()] = value
+        elif (
+            key.endswith(_GGUF_POOLING_TYPE_SUFFIX)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            pooling_by_architecture[key[: -len(_GGUF_POOLING_TYPE_SUFFIX)].lower()] = value
     return _GGUFEmbeddingMetadata(
         architecture,
         causal_by_architecture.get(architecture or ""),
         context_length_by_architecture.get(architecture or ""),
+        pooling_by_architecture.get(architecture or ""),
     )
 
 
@@ -231,3 +249,18 @@ def _model_context_policy(path: Path) -> _ContextPolicy:
     # Decoder models keep the lower-RSS micro-batch, which llama.cpp requires
     # to stay within the logical batch.
     return _ContextPolicy(window, window, min(_N_UBATCH, window))
+
+
+def gguf_declared_pooling(path: Path) -> str:
+    """The pooling *path*'s GGUF declares, or ``"last"`` when it declares none usable.
+
+    Every embedding GGUF a current converter writes carries the key: Qwen3
+    declares last-token, EmbeddingGemma and Nemotron mean, the ModernBERT family
+    CLS. A missing or unreadable header, or a pooling Kiro Crew cannot use (none,
+    rank), keeps last-token, the pooling every custom model ran with before.
+    """
+    try:
+        declared = _read_gguf_embedding_metadata(path).pooling_type
+    except (OSError, OverflowError, UnicodeError, ValueError, struct.error):
+        return "last"
+    return next((name for name, value in _POOLING_TYPES.items() if value == declared), "last")

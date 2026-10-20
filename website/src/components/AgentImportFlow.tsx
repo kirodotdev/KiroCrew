@@ -25,6 +25,7 @@ import {
 import { parseErrorCode } from '../utils/errorReport'
 import { fmtList } from '../i18n/format'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
+import { useLocalCrewHidden } from './overlayRoot'
 import { Btn, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from './AgentSpecNotRewrittenNotice'
@@ -361,8 +362,12 @@ export default function AgentImportFlow({
     }
   }
 
+  // Hidden with the local Crew, this chapter still hears keys on the page
+  // (components/overlayRoot): Escape would skip first run unseen, and the Tab
+  // trap would swallow Tab on the Crew in front.
+  const crewHidden = useLocalCrewHidden()
   useEffect(() => {
-    if (!open) return
+    if (!open || crewHidden) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -399,7 +404,7 @@ export default function AgentImportFlow({
     return () => document.removeEventListener('keydown', onKeyDown)
     // `skipAll` intentionally follows the current mutation state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, completionMutation.isPending, applyMutation.isPending, skipAllMutation.isPending, imeLatch])
+  }, [open, crewHidden, completionMutation.isPending, applyMutation.isPending, skipAllMutation.isPending, imeLatch])
 
   if (!open) return null
 

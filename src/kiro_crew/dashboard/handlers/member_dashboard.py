@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 from typing import Any, Callable, Final, Mapping
 
@@ -31,8 +32,10 @@ from aiohttp import web
 from kiro_crew import dashboard_agentic, dashboard_frame
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard import conditional_get
 from kiro_crew.dashboard.handlers import member_dashboard_fields
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.member_dashboard_render import _render
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
     _member_names_for_slug,
@@ -611,6 +614,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
     # without composing carries no data island, no bootstrap, no band and no ready
     # beacon, so it shows no values at all. Only ERROR is excluded, because that is
     # the one state in which the copy does not parse.
+    composed_a_page = False
     if renderable and record.state in (
         instance.STATE_LIVE,
         instance.STATE_EMPTY,
@@ -628,6 +632,41 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
         )
         if rendered is not None:
             body["rendered_html"] = rendered
+            composed_a_page = True
+    # CONDITIONAL GET. The ETag is a STRONG validator over the whole serialized body,
+    # not over a hand-listed set of inputs: `strong_content_etag` hashes the bytes, so
+    # it covers every field the body carries (the composed page, `structure_locked`,
+    # `state_reason`, the panel data) and cannot drift as a field is added -- a 304 then
+    # means the client already holds these exact bytes, and the ~180 KB download is
+    # skipped. `conditional_get` is the one implementation this repo uses for this (the
+    # media routes share it), so there is no second copy of the compare to drift.
+    #
+    # THE VALIDATOR IS SCOPED TO THE AUTHENTICATED READER AND THE STORE KEY, not to the
+    # body alone. This page is a per-reader, owner-only document (every field is this
+    # crewmate's work-ledger and crew-log data), so the tag folds in the caller
+    # `request["user"]` -- the subject the owner gate above already checked -- and the
+    # store key `slug` ahead of the payload. Two different identities, or two different
+    # crewmate pages, therefore MINT DIFFERENT TAGS even in the impossible case that
+    # their composed bytes coincide, so one reader's `If-None-Match` can never score a
+    # 304 against another's page. The owner gate is the real boundary (a non-owner is
+    # 403'd before reaching here); this makes a cross-reader short-circuit impossible by
+    # construction as well, which is the belt-and-braces a shared validator warrants.
+    #
+    # `private, no-cache`: the body is owner-only, so a client may revalidate but a
+    # shared cache must not store it. Offered only when a page was actually composed --
+    # the empty/error/no-html answers are small and carry no ETag, so they are never
+    # short-circuited.
+    if composed_a_page:
+        payload = json.dumps(body).encode("utf-8")
+        reader = str(request.get("user") or "")
+        scope = f"{reader}\x00{slug}\x00".encode("utf-8")
+        return conditional_get.conditional_response(
+            request,
+            payload,
+            "application/json",
+            etag=conditional_get.strong_content_etag(scope + payload),
+            cache_control="private, no-cache",
+        )
     return web.json_response(body)
 
 
@@ -967,84 +1006,6 @@ def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = Non
         return feed.read(manifest, agentic if isinstance(agentic, dict) else {})
     finally:
         feed.unsubscribe()
-
-
-def _render(
-    slug: str,
-    member: str,
-    record: Any,
-    locale: str = "",
-    *,
-    slot: str | None = None,
-    last_user_at: str = "",
-) -> str | None:
-    """The live page with its values filled in: the frame's half of contract v3 part 5.
-
-    Fold values come through :class:`~kiro_crew.dashboard_feed.DashboardFeed`, which
-    subscribes with a baseline -- the bus hands the CURRENT fold value through the
-    projection read path, so nothing refolds a log here. Agentic values come from the
-    slot's ``agentic`` fold. The result is :func:`dashboard_frame.compose_body`, the one
-    builder that also composes a refill, so the page's ``window.kirocrew`` is the same
-    shape on first paint and after.
-
-    *last_user_at* is :func:`_person_last_spoke` for this page's chat, handed to the page
-    beside the write times it is compared with.
-
-    DEMO SCOPE: the feed is opened and closed per request. The contract wants one
-    long-lived feed per open dashboard pushing refills over the WS exporter; until
-    that lands, a re-read (focus, the tab's own refetch) is how the page moves.
-    ``None`` on any failure, so the raw page still renders under the frame's own
-    stale band rather than the tab erroring.
-    """
-    try:
-        from kiro_crew import dashboard_frame
-        from kiro_crew.dashboard_templates.manifest import parse_manifest
-
-        manifest = parse_manifest(dict(record.manifest))
-        # THE EXECUTABLE PAGE COMES FROM THE CATALOG, NEVER FROM THE RECORD.
-        #
-        # `record.html` and `record.manifest` both come out of
-        # ``members/<slug>/dashboard/instance.json``, which is WRITABLE. Gating the
-        # render on `manifest.source` asked that file to vouch for itself: anything
-        # that could append a `<script>` to the stored page could leave the
-        # `builtin` label in place beside it, and this step is the one that hands
-        # the crewmate's task titles and summaries to whatever runs. The label is
-        # not evidence, so it cannot be the gate.
-        #
-        # What IS trusted is the repository. The record's ``template_id`` names a
-        # directory in it, so the id is read from the record and the BYTES are read
-        # from the catalog. A stored page may stay on disk -- a rollback reads it,
-        # and it is what the crewmate copied -- but nothing executes it.
-        page = _trusted_page(slug, record)
-        if page is None:
-            return None
-        read = read_fields(slug, member, manifest, slot=slot)
-        payload = dashboard_frame.read_payload(
-            # MASKED AND REDACTED on the way out, at the one step that hands fold
-            # values to a page's own script. A snapshot is taken from what the page
-            # holds, so it inherits this rather than needing its own pass.
-            {name: _page_safe(value) for name, value in read.fields.items()},
-            agentic=[name for name, spec in manifest.fields.items() if spec.agentic],
-            seq=read.seq,
-            stale=read.stale,
-            missing=read.missing,
-            # Masked like the values beside them: a stamp is not a secret, but this is
-            # the one chokepoint and a field added here later would otherwise skip it.
-            written_at={name: str(_page_safe(at)) for name, at in read.written_at.items()},
-            locale=locale,
-            # A root session's page is read by its slot; a crewmate's never is.
-            subject="crewmate" if slot is None else "session",
-            # Through the same mask as the write times it is compared with.
-            last_user_at=str(_page_safe(last_user_at)),
-        )
-        # The catalog's page, redacted like the values that go into it. The scrub is
-        # kept because this is the one step producing both the raw body and the
-        # composed document, and it guards a hand-edited checkout rather than a page
-        # an attacker chose: the bytes here came out of the repository.
-        return dashboard_frame.compose_body(_template_text_safe(page), payload)
-    except Exception:
-        logger.warning("dashboard: could not fill %r's page", slug, exc_info=True)
-        return None
 
 
 def _refuse_agent_caller(request: web.Request, operation: str, message: str) -> web.Response | None:

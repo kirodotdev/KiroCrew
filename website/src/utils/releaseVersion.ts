@@ -53,6 +53,9 @@ type Parsed = {
 /** Leading numeric core: `0.6.0` out of `0.6.0-rc.2`, `0.6.0rc2`, `0.6.0.dev1`. */
 const CORE_RE = /^[0-9]+(?:\.[0-9]+)*/
 
+/** At most the first three numeric segments: the release, without a build number. */
+const RELEASE_CORE_RE = /^[0-9]+(?:\.[0-9]+){0,2}/
+
 /**
  * Parse *version*, or return `null` when it carries no numeric core at all.
  *
@@ -191,4 +194,34 @@ export function isNewSection(section: string, lastSeen: string, running: string)
     return !!parsedSeen && !sameReleaseCore(parsedSection, parsedSeen)
   }
   return true
+}
+
+/**
+ * The release *version* belongs to, with every prerelease, dev and build suffix
+ * dropped: `0.8.0-insider.1`, `0.8.0rc4`, `0.8.0.dev20260806` and `0.8.0+abc`
+ * all give `0.8.0`. A numeric segment past the third (`0.7.1.5`) is a build
+ * number within the release, so it folds too: `0.7.1.5` gives `0.7.1`. Returns
+ * `null` when there is no numeric core.
+ *
+ * This is the folding `compareVersions` deliberately refuses, used for the one
+ * question that wants it: "are these notes about the release I am running?".
+ * A whole-version comparison cannot answer it: `0.8.0-insider.1` sorts below
+ * `0.8.0` and above `0.7.1`, yet only one of those is the release it belongs to.
+ */
+export function baseRelease(version: string): string | null {
+  return RELEASE_CORE_RE.exec(version.trim().replace(/\+.*$/, ''))?.[0] ?? null
+}
+
+/**
+ * True when the newest changelog section being shown is NOT the running build's
+ * own release, i.e. the reader is looking at an earlier release's notes because
+ * this one's have not been written yet. Unorderable input answers false: the
+ * notice is a claim, and it is not made about versions nobody can place.
+ */
+export function notesPredateRunningRelease(newestShown: string, running: string): boolean {
+  const shown = baseRelease(newestShown)
+  const release = baseRelease(running)
+  if (!shown || !release) return false
+  const order = compareVersions(shown, release)
+  return order !== null && order < 0
 }

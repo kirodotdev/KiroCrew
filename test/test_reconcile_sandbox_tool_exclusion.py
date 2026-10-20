@@ -201,6 +201,11 @@ def _referenced_names(relative: str) -> set[str]:
     if relative == "acp/client.py":
         # client.py's owner modules (client_*.py) hold code that was its own.
         paths += sorted((_SRC / "acp").glob("client_*.py"))
+    if relative == "acp/runtime.py":
+        # runtime.py's owner modules hold code that was its own.
+        from kiro_crew.acp import runtime
+
+        paths += [Path(sys.modules[owner].__file__) for owner in runtime._RUNTIME_OWNERS]
     return {
         node.attr if isinstance(node, ast.Attribute) else node.id
         for path in paths

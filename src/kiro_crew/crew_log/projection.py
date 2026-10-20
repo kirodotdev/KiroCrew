@@ -94,6 +94,8 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_catalogue",
     "kiro_crew.crew_log.projection_session_log",
     "kiro_crew.crew_log.projection_values",
+    "kiro_crew.crew_log.projection_otel_usage",
+    "kiro_crew.crew_log.projection_otel_session_tree",
     "kiro_crew.crew_log.projection_side_panel",
     "kiro_crew.crew_log.projection_usage",
     "kiro_crew.crew_log.projection_subagents",
@@ -209,6 +211,32 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ledger_render,
         _ledger_start,
         _ledger_step,
+    )
+    from kiro_crew.crew_log.projection_otel_session_tree import (  # noqa: F401
+        _TREE_AGENT_KIND_UNSET,
+        OTEL_SESSION_TREE_FOLD_NAME,
+        OTEL_SESSION_TREE_TYPES,
+        SESSION_SPAWNED_TYPE,
+        _otel_session_tree_copy,
+        _otel_session_tree_render,
+        _otel_session_tree_start,
+        _otel_session_tree_step,
+        _tree_count,
+    )
+    from kiro_crew.crew_log.projection_otel_usage import (  # noqa: F401
+        _AGENT_KIND_BY_STEM,
+        _AGENT_KIND_UNSET,
+        OTEL_USAGE_FOLD_NAME,
+        OTEL_USAGE_TYPES,
+        SESSION_OPENED_TYPE,
+        TURN_STARTED_TYPE,
+        _agent_kind,
+        _agent_kind_by_name,
+        _check_agent_kind_table_current,
+        _otel_usage_copy,
+        _otel_usage_render,
+        _otel_usage_start,
+        _otel_usage_step,
     )
     from kiro_crew.crew_log.projection_radar import (  # noqa: F401
         RADAR_EVENT_LIMIT,
@@ -541,6 +569,9 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
     from kiro_crew.crew_log.errors import (  # noqa: F401
         CODE_BAD_DATA,
         CrewLogError,
+    )
+    from kiro_crew.crew_log.otel_session_tree_fold import (  # noqa: F401
+        depth_observation,
     )
     from kiro_crew.crew_log.schema import (  # noqa: F401
         KIND_SESSION,

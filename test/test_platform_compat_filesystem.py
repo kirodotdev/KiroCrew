@@ -408,6 +408,66 @@ class TestFileLockContention:
             os.close(fd_contender)
 
 
+class TestMountIdentity:
+    """``mount_identity``: a path's mount id, device and inode through ``statx``."""
+
+    @pytest.fixture
+    def resolves(self, tmp_path):
+        if pc.mount_identity(str(tmp_path)) is None:
+            pytest.skip("statx does not report a mount id here (not Linux, or Linux < 5.8)")
+
+    @pytest.mark.usefixtures("resolves")
+    def test_a_directory_and_a_descriptor_on_it_agree(self, tmp_path):
+        fd = os.open(tmp_path, getattr(os, "O_PATH", 0) | os.O_DIRECTORY)
+        try:
+            assert pc.mount_identity("", dir_fd=fd) == pc.mount_identity(str(tmp_path))
+        finally:
+            os.close(fd)
+
+    @pytest.mark.usefixtures("resolves")
+    def test_a_symlink_names_its_target_and_inodes_tell_directories_apart(self, tmp_path):
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        (tmp_path / "link").symlink_to(a)
+
+        ident_a = pc.mount_identity(str(a))
+        assert pc.mount_identity(str(tmp_path / "link")) == ident_a
+        ident_b = pc.mount_identity(str(b))
+        assert ident_a is not None and ident_b is not None
+        assert ident_a[:3] == ident_b[:3] and ident_a[3] == a.stat().st_ino != ident_b[3]
+
+    def test_a_missing_path_is_unknown(self, tmp_path):
+        assert pc.mount_identity(str(tmp_path / "absent")) is None
+
+    def test_without_statx_it_is_unknown(self, monkeypatch, tmp_path):
+        from kiro_crew import platform_compat_files
+
+        monkeypatch.setattr(platform_compat_files, "_statx_call", lambda: None)
+        assert pc.mount_identity(str(tmp_path)) is None
+
+    def test_a_kernel_that_reports_no_mount_id_is_asked_once(self, monkeypatch, tmp_path):
+        """Before Linux 5.8 ``statx`` succeeds without ``STATX_MNT_ID``, and it
+        never will on that kernel, so the next call skips the syscall."""
+        import struct
+
+        from kiro_crew import platform_compat_files
+
+        calls = []
+
+        def _statx(_dirfd, _path, _flags, _mask, buf):
+            calls.append(1)
+            struct.pack_into("<I", buf, 0, platform_compat_files._STATX_INO)
+            return 0
+
+        monkeypatch.setattr(platform_compat_files, "_statx_mnt_id_unreported", False)
+        monkeypatch.setattr(platform_compat_files, "_statx_call", lambda: _statx)
+
+        assert pc.mount_identity(str(tmp_path)) is None
+        assert pc.mount_identity(str(tmp_path)) is None
+        assert len(calls) == 1
+
+
 class TestPublishDirNoreplace:
     """Workspace installs must never replace a raced empty
     destination -- POSIX os.rename silently replaces an empty directory, so

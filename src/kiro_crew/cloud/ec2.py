@@ -81,7 +81,7 @@ _REGION_SPEC = FieldSpec(name="region", type=str, max_len=32, pattern=_REGION_RE
 # The profile charset ('+' admitted for IAM Identity Center derived names,
 # leading '-' excluded so a value is never option-shaped, \Z anchor)
 # is deploy/profiles.py's PROFILE_SPEC, aliased rather than re-spelled here
-# (same idiom as deploy/handlers.py; cloud/ already depends on deploy via the
+# (same idiom as deploy/handlers_sites.py; cloud/ already depends on deploy via the
 # shared aws-bin resolver in cloud/aws.py).
 _PROFILE_SPEC = profiles_mod.PROFILE_SPEC
 _CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}\Z")

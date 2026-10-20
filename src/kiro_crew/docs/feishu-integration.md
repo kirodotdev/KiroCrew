@@ -14,6 +14,17 @@ hostname, or open port to manage.
 > it directly into the environment that runs the gateway:
 > `pip install 'lark-oapi>=1.4,<2'`. Without it the gateway logs a line and skips
 > the channel — nothing else is affected.
+>
+> **Desktop app: do not install the SDK into the app.** The desktop app runs
+> its own bundled Python inside `backend-dist`, and the install line above does
+> not apply to it. A `pip install` there writes into the code-signed bundle,
+> which can break launches and updates, and every app upgrade replaces the whole
+> bundle and removes the package anyway (see #14618). On the desktop app,
+> Settings says this gateway cannot install the SDK and shows no command. To use
+> Feishu, run the gateway yourself from a source checkout or a virtual
+> environment (see [Getting Started](getting-started.md)) and install
+> `lark-oapi` there. The Feishu channel then runs on that gateway, not on the
+> app's bundled one, and app upgrades do not touch that environment.
 
 ## Quick start
 
@@ -183,6 +194,7 @@ Known gaps, all follow-up work rather than defects:
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
   optional extra, and running `pip` from a dashboard action would be a new way to
   execute code in the gateway's own environment. When the SDK is missing, Settings reports whether installation is supported for this gateway interpreter and shows its exact install command only when it is; you run that command yourself.
+- **The desktop app cannot run Feishu on its own gateway** until the SDK ships in the bundle (#14618); see the desktop note at the top of this page.
 - **Credentials are not verified on save.** A REST tenant-token probe would have
   to pick a domain (`open.feishu.cn` or `open.larksuite.com`) and would report a
   false failure for whichever tenant it guessed wrong, so the panel stores what

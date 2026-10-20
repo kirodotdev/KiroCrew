@@ -53,6 +53,7 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Coroutine,
     Mapping,
 )
 
@@ -658,6 +659,10 @@ class CronService:
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
+        # The gateway's failure alert for a run its deadline ended (set_timeout_alert),
+        # and the alerts in flight: the loop keeps only weak references to tasks.
+        self._timeout_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
+        self._timeout_alerts: set[asyncio.Task[None]] = set()
         _cfg = KiroCrewConfig.load().cron_history
         _history_dir = base_dir if base_dir is not None else _default_dir()
         # Execution history is BEST-EFFORT and must never be load-bearing for
@@ -791,6 +796,7 @@ class CronService:
     discard_finished_run = _run_registry.discard_finished_run
     running_since = _run_registry.running_since
     set_refresh_callback = _run_registry.set_refresh_callback
+    set_timeout_alert = _run_registry.set_timeout_alert
     run_job = _run_registry.run_job
     _run_claimed_manual = _run_registry._run_claimed_manual
     # When the scheduler wakes: ``kiro_crew.cron_service.service.wake_timer``.
@@ -802,6 +808,7 @@ class CronService:
     # Running one job: ``kiro_crew.cron_service.service.run_execution``.
     _run_job_isolated = _run_execution._run_job_isolated
     _execute_with_timeout = _run_execution._execute_with_timeout
+    _alert_timeout = _run_execution._alert_timeout
     _execute = _run_execution._execute
     # Landing a run's result: ``kiro_crew.cron_service.service.run_merge``.
     _hold_run_record = _run_merge._hold_run_record
@@ -878,6 +885,9 @@ class CronService:
         # to, and clobberable by, the others. A dict the caller allocated is seen
         # by that caller alone.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        # Not a field: the session making this write, recorded on the
+        # auto-pause-limit audit row (see CronJob.audit_auto_pause_limit_change).
+        audit_actor = kwargs.pop("audit_actor", "") or ""
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -904,6 +914,7 @@ class CronService:
                 # onto the SAME object (identity is what readers hold), and the
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
+                previous_limit = job.auto_pause_after_failures
                 before = copy.copy(job)
                 apply_job_update(job, kwargs, chat_folder_out)
                 try:
@@ -911,6 +922,7 @@ class CronService:
                 except BaseException:
                     job.__dict__.update(before.__dict__)
                     raise
+                job.audit_auto_pause_limit_change(previous_limit, audit_actor)
                 logger.info("Updated cron job %s", job_id)
                 return job
         return None

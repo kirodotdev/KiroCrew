@@ -194,7 +194,8 @@ class TestUserAgentEditsSurviveRefresh:
         # survive a template refresh — the same reasoning as `description`.
         #
         # `skills` belongs here too, not in `_FRAMEWORK_OWNED_AGENT_KEYS`: it is a live field
-        # (`agent_discovery.py` reads `row.get("skills")` into `AgentInfo.skills`) naming which
+        # (`agent_discovery_parts/agent_roster.py` reads `row.get("skills")` into
+        # `AgentInfo.skills`) naming which
         # skills an agent loads, which is exactly the kind of choice an operator should be able
         # to change and keep across a refresh — same category as `model`. Framework ownership is
         # reserved for identity and CONTAINMENT keys, which this is not. Added when the
@@ -251,6 +252,9 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
         declared = {f.name for f in dataclasses.fields(AppManifest)}
         # ``extra`` is the catch-all bag, splatted into the dict by key.
         declared.discard("extra")
+        # Parser diagnostics reject a manifest; they are not declarations copied
+        # into a valid builtin's persisted manifest.
+        declared.discard("config_keys_error")
 
         manifest = AppManifest.from_dict(
             {
@@ -269,6 +273,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "jobFamilies": ["jf"],
                 "tags": ["t"],
                 "mcpServers": {"m": {"command": "c"}},
+                "config_keys": ["probe-owned"],
                 "platform": {"requiresDesktopApp": True},
                 "permissions": {"storage": True},
                 "ui": {"entry": "ui/dist/index.js"},

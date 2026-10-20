@@ -574,3 +574,28 @@ async def test_fork_clears_a_stale_refresh_failure(tmp_path, monkeypatch):
         # now corroborating the fork — the spawn gate passes.
         assert "design-crew" not in agent_mod._fork_refresh_failed
         agent_mod.require_fork_governance("design-crew")
+
+
+@pytest.mark.asyncio
+async def test_fork_ambiguous_refusal_names_the_claimant_files(tmp_path):
+    """Two files claiming the name: the 409 names both by file name inside
+    ~/.kiro/agents/, never the absolute path, and keeps its code."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_template(agents_dir, "mytemplate")
+    (agents_dir / "SomePkg-mytemplate.json").write_text(
+        json.dumps({"name": "mytemplate", "model": "claude-x"}), encoding="utf-8"
+    )
+    _seed_config("design-crew", "mytemplate")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_fork(_fork_request("mytemplate", {"crew": "design-crew"}))
+
+    assert resp.status == 409
+    body = json.loads(resp.text)
+    assert body == {
+        "error": "'mytemplate' matches more than one template file in ~/.kiro/agents/ "
+        "(SomePkg-mytemplate.json, mytemplate.json); rename one first.",
+        "code": "ambiguous_template_name",
+    }
+    assert not (agents_dir / "design-crew.json").exists()

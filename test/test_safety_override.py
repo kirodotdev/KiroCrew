@@ -1256,7 +1256,16 @@ class TestGrantLifetimeCopy:
         src_dir = pathlib.Path(h.__file__).parent
         # The native handler's owners render its ``!yolo`` replies, so they are
         # scanned with it; the helper-call floor below fails if that copy leaves.
-        names = ("handler.py", "events.py") + tuple(
+        names = (
+            "handler.py",
+            "events.py",
+            "events_block_text.py",
+            "events_home_tab.py",
+            "events_inbound.py",
+            "events_queue.py",
+            "events_slash.py",
+            "events_voice.py",
+        ) + tuple(
             f"handler_runtime/{path.name}"
             for path in sorted((src_dir / "handler_runtime").glob("[!_]*.py"))
         )

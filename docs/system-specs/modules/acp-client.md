@@ -144,6 +144,41 @@ forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins. New
 bound in the class (`acp/client_class.py`) under that owner's header, and a new timeout or turn budget to
 `acp/client_timeouts.py`.
 
+`AcpRuntime`'s behaviour moves into `acp/runtime_*.py` owner modules the same way, one
+responsibility each. A member's body is a module-level function there whose first parameter
+is `self` (annotated `AcpRuntime` for type checkers only), and the class binds it by name in
+one block above `__init__`, one comment header per owner. The constructor, the properties and
+the class constants stay in the class, and the runtime's state stays on the instance, so a
+patch of a method on the class or on an instance, an `AcpRuntime.__new__` build and an unbound
+`AcpRuntime.<member>(stub, ...)` call all reach the one function; each owner's docstring names
+the instance fields its members write and read. `_own_methods` names each bound function after
+its class attribute, so its `__qualname__` (what a coroutine's and a task's repr print) and
+`inspect.signature` read as before the move, and only its `__module__` names the owner. An
+exception class an owner defines keeps `kiro_crew.acp.runtime` as its `__module__`, so error
+chains name the path callers import it from; `_MirroredSessionMcp` keeps its owner's, which
+nothing reads. `_RUNTIME_OWNERS` lists the owners lowest layer first: an owner imports only
+owners listed before it. Owners log under the `kiro_crew.acp.runtime` logger and never import
+`acp/runtime.py` at run time. The facade keeps binding every name it bound before -- its own
+unused imports are exempt from flake8's F401, and an import check stands in for it: each
+import is a name the facade bound before, its mirror glue, a name an owner defines, or a name
+the facade's or an owner's code reads -- keeps forwarding the names in `_EXPORTS_BY_OWNER` to
+their owners, and a write through it reaches every owner binding the same object
+(`kiro_crew._facade_mirror`). `test/test_runtime_bindings.py` pins the member inventory, the
+binding, the reach and the import check.
+
+| Runtime owner | Owns |
+|---|---|
+| `acp/runtime_tree_kill.py` | the runtime's process tree and its teardown: proving the root is still the process it spawned, recording its descendants, signalling the tree, and `kill` with its reap and the release of what the process held |
+| `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
+| `acp/runtime_spawn_entry.py` | `spawn` under the cold-start admission, the one re-derive retry after a stale spawn spec, and the revive of a runtime whose start failed |
+| `acp/runtime_session_setup.py` | what `session/new` and `session/load` are built from and checked against: the working directory, the MCP server array (the mirrored projection, the stub session, the pooled and unpooled control planes, the member panel), KAS custom agents, the derived-spec and member-projection checks, the unresolved-reference guard, the session-open mount check, the start budget and the copy of the native launch sources |
+| `acp/runtime_session_create.py` | `session/new` end to end: `create_session`, the collector hand-off of a start that outlives its budget and the late-session teardown, the finish every answered start shares, and the entitlement probe session |
+| `acp/runtime_session_load.py` | `session/load` end to end: resuming a prior session and waiting for its managed MCP servers |
+
+The members no row above names, and the module-level code they read, are still defined in
+`acp/runtime.py`. New `AcpRuntime` behaviour goes to the owner whose row names its
+responsibility, bound in the class under that owner's header.
+
 `acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
 the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
 both transports send (`build_session_new_params`, `set_mode_params`, `set_model_params`),
@@ -168,6 +203,26 @@ row names its responsibility, and a new request shape or turn-metadata parser to
 | `acp/_dispatch_parts/tool_result_events.py` | a `tool_call_update`'s output as `EVENT_TOOL_RESULT`: content and `rawOutput` text, the unrenderable-content diagnostic, the output measure and the `todo_list` snapshot |
 | `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope, MCP identity and approval, KAS consent and `build_permission_event` |
 | `acp/_dispatch_parts/session_update_parser.py` | the `session/update` parser: chunk text and message ids, the `tool_call` and refinement builders, and `parse_session_update` |
+
+`acp/liveness.py`, the per-session liveness oracle, keeps `LivenessOracle`, the
+offloaded-consult guard (`consult_offloaded`, `ConsultFutureHolder`,
+`OFFLOADED_CONSULT_TIMEOUT_SECS`) and the module docstring that carries the platform
+evidence matrix, and re-exports every name its owners define, so callers keep importing
+them as `kiro_crew.acp.liveness.<name>`. It is a plain facade: the names tests patch
+through it (`process_start_boot_secs`, `select_darwin_backend`) are read by the oracle as
+its own globals and by no owner, and an owner imports only the owners above it in this
+table, never the facade. The family logs under the `kiro_crew.acp.liveness` logger.
+`test/test_liveness_facade.py` pins the reach, the layer order and the logger. New oracle
+logic goes to `acp/liveness.py`, and a new verdict, tag, tunable, process reader, command
+reader, interactive rule or tool-call field to the owner whose row names it.
+
+| Liveness owner | Owns |
+|---|---|
+| `acp/liveness_evidence.py` | the oracle's vocabulary: the `VERDICT_*` verdicts, the `EVIDENCE_*` tags and the contract tunables its probes read |
+| `acp/liveness_proc.py` | the process-tree readers: the `/proc` helpers, `steady_now`, and the darwin `LibprocBackend` that `select_darwin_backend` picks on a host without procfs |
+| `acp/liveness_command.py` | the cached command text: its retention bound (`MAX_RETAINED_*`, `bounded_command_text`) and the readers that recognise what it started (`match_fragment`, `first_program`, `parse_wait_seconds`, and `launch_matches` over a `LaunchRoster`) |
+| `acp/liveness_interactive.py` | interactive-command classification: the program tables, `InteractiveClassification`, `classify_interactive_command` and `non_interactive_hint` |
+| `acp/liveness_tool_state.py` | the in-flight tool call: `ToolCallState`, the `InFlightToolTracker` hand-off rule and `wait_tool_verdict` |
 
 ## Native skill startup views
 
@@ -205,7 +260,7 @@ Crew process environment and restart Crew's native sessions to roll back to
 authored native agents. Disabled launches restore the Crew-owned inheritance
 overlay before spawning and bypass alias translation and projected search
 requirements. A spawn-time ceiling takes the same fallback automatically: when
-the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (2,000, the
+the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (128, the
 constant the doctor's backlog warning also reads) or more
 `kirocrew-skill-view-*.json` files, a fresh preparation stops minting new views
 and runs the authored agent, so a regression that reopens the leak cannot deepen
@@ -1682,6 +1737,30 @@ an empty `mcpServers` map — opts out via
 `AcpRuntime(expect_mcp_reports=False)`, which passes a zero ceiling and keeps
 the idle shortcut active from the start (the pre-ceiling behavior).
 
+**An unattended run waits longer, for named servers.** The drain above gives a
+server about a second after the first report, which a slow `node` server can
+miss; the session then prompts without its tools. Chat lives with that, because
+a person sees it. A webhook or cron run has nobody, so before the first prompt
+of a NEW session it calls `wait_for_declared_mcp(UNATTENDED_MCP_WAIT_SECS)`
+(30 s, `agent_sdk/mcp_problems.py`) on the provider. Both transports implement
+it (`AcpSessionHandle.wait_for_declared_mcp`, and `AcpClient` through
+`_drain_notifications(until_declared=True)`): it keeps draining init frames,
+handled exactly as the drain handles them, until every enabled `mcpServers`
+name of the agent spec has reported initialized, failed or awaiting
+authorization, or the bound passes. The names come from the spec snapshot the
+unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
+skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
+kiro-cli (and, on the runtime, with `expect_mcp_reports`): kiro-cli launches
+the spec's own servers via `--agent` and reports each one. On another host a
+spec server may be held back or never report, and every run would pay the
+whole bound. `declared_not_ready()` decides the outcome: a webhook run records
+`degraded` instead of `completed`. `declared_never_reported()` is what its
+notice names, because `problem_summary()` already names a failed or
+awaiting-authorization server with its reason. A cron run, which prints no
+problem summary, names every not-ready declared server at the top of its
+result. The other headless callers (sub-agents, workflow agent steps, task-runner
+steps, heartbeat turns) do not wait yet.
+
 **`problem_summary()` renders the report's bad news, and nothing else.** The
 report answers two different questions, so it has two renderers: `payload()` is
 the whole picture a dashboard draws (including `ready` and `configured`), and
@@ -2450,7 +2529,15 @@ fetch serves every request, under a 90 s ceiling
 (`_LIST_MODELS_BACKGROUND_TIMEOUT_SECS`) that outlives the 10 s request wait
 (`_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS`, after which the request answers 503
 `model list timed out`). A cached catalog is served at once and refreshed behind
-the reply once it is older than 300 s (`_LIST_MODELS_CATALOG_TTL_SECS`).
+the reply once it is older than 300 s (`_LIST_MODELS_CATALOG_TTL_SECS`). Every
+degraded `/api/models` 503 carries a machine-readable `code`: the generic
+`model_list_unavailable` on the timeout and subprocess-failure branches, and
+`model_list_sandbox_unavailable` on a genuine sandbox refusal (below). An expired
+or signed-out login is classified in `_fetch_kiro_catalog` from the subprocess
+output and answers `kiro_prerequisite_required` instead of the generic code, so
+the dashboard can tell the user to run `kiro-cli login` rather than report a
+transient failure; the model-list banner reads that code to show the sign-in
+message, and no token or credential text is logged.
 - **One-shot `kiro-cli` calls are supervised.** `--list-models`, `whoami` and the
   `/usage` scrape spawn through `kiro_prerequisite.spawn_supervised_oneshot`: the
   process-group supervisor runs in `--reap-survivors` mode in its own session and
@@ -2474,7 +2561,12 @@ the reply once it is older than 300 s (`_LIST_MODELS_CATALOG_TTL_SECS`).
   `/api/sessions/usage` (polled every 30s by the credit pill). Both return the
   shared `kiro_prerequisite_required` 503 — the same degraded response their
   timeout branches already produce — so the client contract is unchanged and
-  only the subprocess is skipped. Without this gate a signed-out gateway opened
+  only the subprocess is skipped. On `/api/models` the gate is not the only
+  source of that code: when the gate passes but the spawned `--list-models` read
+  itself surfaces an expired or signed-out login, `_fetch_kiro_catalog`
+  classifies that output and answers the same `kiro_prerequisite_required`, so an
+  auth lapse that opens mid-poll is reported as a sign-in prompt rather than a
+  generic degraded 503. Without this gate a signed-out gateway opened
   a browser window every 8 seconds indefinitely. These are the **only** blocking
   readiness gates: ordinary sends are ungated, because a failing ACP attempt
   reports its own `AcpAuthRequired` (see the governance of latched readiness in
@@ -3245,7 +3337,14 @@ Node archive (`node.builds[<os>-<arch>]`, one binary per architecture), transfer
 both through `asset_downloader.download_to` (https-only, same-host redirects,
 sha256 and exact size pinned by the manifest), extracts into a staging directory,
 probes the Node binary (`--version` must match the manifest), and publishes the
-version with one rename under `<data home>/engines/kas/<version>/`. Which
+version with one rename under `<data home>/engines/kas/<version>/`. On a Linux
+host whose glibc is below the official Node floor (2.28; Amazon Linux 2 ships
+2.26) the install refuses up front, before any download, naming the found glibc,
+the minimum, and that the bundled Node needs glibc 2.28 while Amazon Linux 2-era
+hosts (glibc below 2.27) also lack the glibc 2.27 the engine's native onnxruntime
+library needs (the glibc reader and floor are `constants._host_glibc_version` /
+`_OFFICIAL_NODE_GLIBC_FLOOR`, the same ones doctor's Node remedy uses); nothing is
+published. Which
 version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
 published `manifest.json`, which in turn pins every artifact), `kirocrew kas

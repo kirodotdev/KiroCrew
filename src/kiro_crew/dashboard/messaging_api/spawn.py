@@ -228,6 +228,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "crew": body.get("crew", ""),
                 "target_member": body.get("target_member", ""),
                 "backend": body.get("backend", ""),
+                "label": body.get("label", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -373,6 +374,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         model=model or None,
         reasoning_effort=reasoning_effort,
         backend=backend,
+        label=str(cleaned.get("label") or ""),
         approval_mode=approval_mode or None,
         silent=silent,
         batch_id=batch_id,

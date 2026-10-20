@@ -247,15 +247,15 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/memory_edit.py::api_memory_records_refresh": ("512 * 1024", _BOUNDED_EXPLICIT),
     "handlers/memory_member.py::api_memory_seed": ("16384", _BOUNDED_EXPLICIT),
     # knowledge.py -- the 9 sites that moved off the deleted duplicate helper.
-    "handlers/knowledge.py::update_item": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::add_source": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::rename_source": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::retry_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::skip_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::ingest_text": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::import_bundle": ("None", _UNBOUNDED_USER_CONTENT),
-    "handlers/knowledge.py::batch_embed_items": ("None", _CONTROL_FIELDS_CAP_PENDING),
-    "handlers/knowledge.py::add_agent_document_route": (
+    "handlers/knowledge_library.py::update_item": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_sources.py::add_source": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_sources.py::rename_source": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_sources.py::retry_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_sources.py::skip_file": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_ingest.py::ingest_text": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_bundles.py::import_bundle": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/knowledge_embeddings.py::batch_embed_items": ("None", _CONTROL_FIELDS_CAP_PENDING),
+    "handlers/knowledge_agent_context.py::add_agent_document_route": (
         "None",
         _UNBOUNDED_USER_CONTENT,
     ),
@@ -285,11 +285,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "None",
         _UNBOUNDED_USER_CONTENT,
     ),
-    # chat_tags.py: every payload is a tag/column identifier, a short name
-    # (already truncated at _NAME_MAX), or an id array -- all capped.
-    "chat_tags.py::api_chat_tag_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_tags.py::api_chat_tag_adopt": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_tags.py::api_chat_tag_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # chat_tags.py and chat_tags_vocabulary.py: every payload is a tag/column
+    # identifier, a short name (already truncated at _NAME_MAX), or an id array -- all capped.
+    "chat_tags_vocabulary.py::api_chat_tag_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags_vocabulary.py::api_chat_tag_adopt": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags_vocabulary.py::api_chat_tag_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_tags": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_column_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
@@ -338,6 +338,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/agent_switch.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_model.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_model.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # The Settings follow-default confirm carries one field: the count's 64-hex digest.
+    "chat_follow_default.py::api_chat_slots_follow_default": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/slot_effort.py::api_chat_slot_reasoning_effort": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
@@ -353,17 +358,23 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/slot_settings.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/pending_context.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/slot_note.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),
-    # handlers/mcp.py: identifier/flag mutations take the cap; a full server
-    # config (PUT detail) and per-server toolOverrides maps (apply) do not.
-    "handlers/mcp.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # handlers/mcp.py and its owners: identifier/flag mutations take the cap; a full
+    # server config (PUT detail) and per-server toolOverrides maps (apply) do not.
+    "handlers/mcp_probe.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_tool": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_toggle_all": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_remove": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_server_detail": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/mcp.py::_do_mcp_apply": ("_MCP_APPLY_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
-    "handlers/mcp.py::api_mcp_gateway_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "handlers/mcp.py::api_mcp_gateway_set_stub": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp_gateway_routes.py::api_mcp_gateway_enable": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    "handlers/mcp_gateway_stubs.py::api_mcp_gateway_set_stub": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     # handlers/cron.py's owners: create/update carry the job's full agent message,
     # whose MAX_CRON_MESSAGE character bound can exceed the shared 64 KB
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to

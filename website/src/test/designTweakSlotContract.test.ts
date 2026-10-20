@@ -1,3 +1,4 @@
+import { pageFamilyFiles } from './pageFamily'
 import { readSource } from './readSource'
 import { join } from 'node:path'
 
@@ -22,7 +23,10 @@ describe('design-tweak chat-slot response contract', () => {
   const root = process.cwd()
   const api = readSource(join(root, 'src/apps/design-tweak/api.ts'))
   const types = readSource(join(root, 'src/apps/design-tweak/types.ts'))
-  const page = readSource(join(root, 'src/apps/design-tweak/DesignTweakPage.tsx'))
+  // The page is a split page: the facade plus the owners beside it.
+  const page = pageFamilyFiles('DesignTweakPage', join(root, 'src/apps/design-tweak'))
+    .map((f) => readSource(join(root, 'src/apps/design-tweak', f)))
+    .join('\n')
 
   it('types the adopt response `messages` as a number, not a list', () => {
     const block = types.slice(
@@ -345,7 +349,9 @@ describe('readSlotTranscript behavior', () => {
  */
 describe('design-tweak slot-key derivation', () => {
   const root = process.cwd()
-  const page = readSource(join(root, 'src/apps/design-tweak/DesignTweakPage.tsx'))
+  const page = pageFamilyFiles('DesignTweakPage', join(root, 'src/apps/design-tweak'))
+    .map((f) => readSource(join(root, 'src/apps/design-tweak', f)))
+    .join('\n')
 
   it('no longer uses the collision-prone 32-bit single-lane fold', () => {
     expect(page).not.toContain('djb2Base36')

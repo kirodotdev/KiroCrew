@@ -83,10 +83,12 @@ from kiro_crew.agent_files import (  # noqa: F401
     DASHBOARD_AUTHOR_AGENT_FILENAME,
     KAS_RESERVED_AGENT_IDS,
 )
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import (
     EntitlementRevalidating,
     catalog_row_would_drop,
+    is_auth_failure_output,
     resolve_kiro_bin_for_spawn,
     resolve_pin_spelling,
     resolve_ssh_auth_sock,
@@ -314,7 +316,10 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    KIRO_PREREQUISITE_REQUIRED_CODE,
+    reject_if_kiro_unverified,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES  # noqa: F401
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
@@ -943,6 +948,14 @@ def _scoped_default(cfg: Any, backend: str) -> str:
     )
 
 
+#: The ``code`` on an ordinary degraded ``/api/models`` 503 (binary unresolved,
+#: timeout, non-zero exit, empty / invalid output). A machine tag the dashboard
+#: renders as its generic config-load notice; the expired-login path overrides it
+#: with :data:`KIRO_PREREQUISITE_REQUIRED_CODE`. Every ``/api/models`` 503 carries
+#: a code, matching the endpoint's other degraded answers.
+_CATALOG_UNAVAILABLE_CODE = "model_list_unavailable"
+
+
 class _CatalogUnavailable(Exception):
     """A degraded catalog fetch outcome that maps to one 503 body.
 
@@ -957,12 +970,23 @@ class _CatalogUnavailable(Exception):
     (see :data:`_LIST_MODELS_FAILURE_BACKOFF_SECS`). It is true for every outcome
     of a spawn that ran. An unresolved binary spawns nothing and resolves on its
     own shortly after start, so it is retried on the next poll.
+
+    ``code`` is the machine tag the 503 body carries beside ``error`` so a client
+    tells one degraded cause from another, the same contract the sibling 503s on
+    this endpoint already carry (``model_list_revalidating``,
+    ``model_list_sandbox_unavailable``). It defaults to
+    :data:`_CATALOG_UNAVAILABLE_CODE` for the ordinary degraded outcomes (binary
+    unresolved, timeout, non-zero exit, empty / invalid output), which the
+    dashboard renders as its generic config-load notice; the expired / signed-out
+    login path passes :data:`KIRO_PREREQUISITE_REQUIRED_CODE` instead, which the
+    dashboard renders as the one actionable "run ``kiro-cli login``" message.
     """
 
-    def __init__(self, error: str, *, backoff: bool = True):
+    def __init__(self, error: str, *, backoff: bool = True, code: str = _CATALOG_UNAVAILABLE_CODE):
         super().__init__(error)
         self.error = error
         self.backoff = backoff
+        self.code = code
 
 
 def _bounded_catalog(models: list[dict]) -> list[dict]:
@@ -1051,22 +1075,32 @@ class _CatalogCache:
     and ``failed_at`` when it ended. Inside :data:`_LIST_MODELS_FAILURE_BACKOFF_SECS`
     the request path answers that 503 instead of spawning again. Only the message
     is held, not the exception, so no traceback frame outlives the fetch. A
-    successful fetch clears it.
+    successful fetch clears it. ``failure_code`` rides alongside it so a held
+    auth-expiry 503 keeps its :data:`KIRO_PREREQUISITE_REQUIRED_CODE` tag through
+    the backoff window rather than decaying to a generic body on the next poll.
     """
 
     models: list[dict] | None = None
     fetched_at: float = 0.0
     task: "asyncio.Task[list[dict]] | None" = None
     failure: str | None = None
+    failure_code: str = _CATALOG_UNAVAILABLE_CODE
     failed_at: float = 0.0
 
-    def recent_failure(self) -> str | None:
-        """The 503 message of a fetch that failed inside the backoff window."""
+    def recent_failure(self) -> tuple[str, str] | None:
+        """A fetch that failed inside the backoff window: its 503 message and code.
+
+        Returns ``None`` once the window has elapsed (the next poll re-spawns), so
+        a non-``None`` answer is always within backoff. The code is the second
+        element -- the generic ``model_list_unavailable`` for an ordinary degraded
+        outcome, or ``kiro_prerequisite_required`` for an expired login -- so the
+        request path renders the same body the failing fetch would have.
+        """
         if self.failure is None:
             return None
         if time.monotonic() - self.failed_at >= _LIST_MODELS_FAILURE_BACKOFF_SECS:
             return None
-        return self.failure
+        return self.failure, self.failure_code
 
 
 _catalog_cache = _CatalogCache()
@@ -1189,6 +1223,22 @@ async def _fetch_kiro_catalog() -> list[dict]:
             proc.returncode,
             stderr_tail or "<no stderr>",
         )
+        # Classify the ONE non-zero exit that is not a degraded backend blip: an
+        # expired / signed-out kiro-cli login. ``--list-models`` fails that way
+        # mid-session once the token lapses, and the generic 503 below rendered as
+        # the dashboard's "Failed to load config." — pointing the user at retry /
+        # switch-model, neither of which can fix auth. The readiness gate above
+        # cannot catch an EXPIRED login: its latch was verified true at startup
+        # and is stale here. ``is_auth_failure_output`` is the SAME classifier the
+        # ACP error-frame and spawn-stderr paths already use (401 / 403, expiry
+        # wording, rejected bearer, the named service exceptions), so this adds no
+        # new auth vocabulary. The stderr is already redacted above, so no token
+        # reaches this branch or the error carried out of it.
+        if is_auth_failure_output(stderr_tail):
+            raise _CatalogUnavailable(
+                host_auth.signed_out_message(ACP_BACKEND_KIRO),
+                code=KIRO_PREREQUISITE_REQUIRED_CODE,
+            )
         raise _CatalogUnavailable("model list command failed")
 
     if not stdout.strip():
@@ -1292,9 +1342,11 @@ def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
             models = await _fetch_kiro_catalog()
         except _CatalogUnavailable as exc:
             # Remember a failed spawn so the polls inside the backoff window
-            # answer its 503 without spawning again (see recent_failure).
+            # answer its 503 without spawning again (see recent_failure). The
+            # code rides along so an expired-auth hold keeps its sign-in tag.
             if exc.backoff:
                 _catalog_cache.failure = exc.error
+                _catalog_cache.failure_code = exc.code
                 _catalog_cache.failed_at = time.monotonic()
             raise
         finally:
@@ -1307,6 +1359,7 @@ def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
         _catalog_cache.models = bounded
         _catalog_cache.fetched_at = time.monotonic()
         _catalog_cache.failure = None
+        _catalog_cache.failure_code = _CATALOG_UNAVAILABLE_CODE
         return bounded
 
     task = asyncio.ensure_future(_run())
@@ -1398,7 +1451,8 @@ async def api_models(request: web.Request) -> web.Response:
         # straight from the negative entry: no spawn, no new WARNING line.
         failure = _catalog_cache.recent_failure()
         if failure is not None:
-            raise _CatalogUnavailable(failure)
+            message, code = failure
+            raise _CatalogUnavailable(message, code=code)
         task = _shared_catalog_fetch()
         try:
             models = await asyncio.wait_for(
@@ -1409,13 +1463,19 @@ async def api_models(request: web.Request) -> web.Response:
             # (shield already detached it from this await) so the next poll lands
             # on the warmed cache rather than re-spawning.
             logger.warning("api_models: --list-models slower than the request bound; returning 503")
-            return web.json_response({"error": "model list timed out"}, status=503)
+            return web.json_response(
+                {"error": "model list timed out", "code": _CATALOG_UNAVAILABLE_CODE}, status=503
+            )
         models = await _entitled_kiro_models(request, list(models))
         return web.json_response(models)
     except _CatalogUnavailable as exc:
         # A degraded fetch outcome (binary unresolved, timeout, non-zero exit,
-        # empty / invalid output). The carried body is the 503 for that outcome.
-        return web.json_response({"error": exc.error}, status=503)
+        # empty / invalid output). The carried body is the 503 for that outcome,
+        # with a machine ``code`` the dashboard keys on: the generic
+        # ``model_list_unavailable`` renders the config-load notice, while an
+        # expired / signed-out login carries ``kiro_prerequisite_required`` and
+        # renders the one actionable "run kiro-cli login" message.
+        return web.json_response({"error": exc.error, "code": exc.code}, status=503)
     except EntitlementRevalidating:
         # An entitlement revalidation is in flight past the read deadline. The
         # picker snapshot might narrow the catalog on an un-revalidated answer,
@@ -1457,7 +1517,9 @@ async def api_models(request: web.Request) -> web.Response:
         # Spawn failure, JSON parse error, etc. — degraded, not "zero models".
         # 503 so the client retries instead of caching an empty picker.
         logger.warning("api_models failed; returning 503 for client retry", exc_info=True)
-        return web.json_response({"error": "model list unavailable"}, status=503)
+        return web.json_response(
+            {"error": "model list unavailable", "code": _CATALOG_UNAVAILABLE_CODE}, status=503
+        )
 
 
 async def api_effort_levels(request: web.Request) -> web.Response:
