@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -347,6 +348,22 @@ _PROFILE_GENERATION_LOCK = threading.Lock()
 # Bounded, and never awaited on the event loop; ``_ensure_fresh`` gates it.
 _COLD_LOAD_WAIT_S = 2.0
 
+# Minimum gap between two ``_dir_fingerprint`` walks on the EVENT LOOP for a WARM
+# store. ``_dir_fingerprint`` is an ``iterdir`` plus a ``stat`` per file — a
+# synchronous filesystem walk — and ``_ensure_fresh`` is reached on the event loop
+# on EVERY gated tool call (the synchronous PreToolUse gate). Under GIL contention
+# from a CPU-bound thread even that cheap walk becomes a loop stall, and paying it
+# per call stalls the gate. So a warm on-loop caller re-stats at most
+# once per this window and serves the already-published snapshot in between; a
+# changed profile is therefore picked up within at most this window on the loop,
+# and immediately by any OFF-loop restat (the dashboard watcher, the capability
+# prime, the profile-projection watch), which are never rate-limited. This is a
+# LOOP-ONLY freshness rate limit, never a change to the fail-closed paths: an
+# unprimed/cold store still loads (never skipped), and an off-loop caller still
+# stats every call, so the priming/bracket readers that depend on an immediate
+# restat keep their exact semantics.
+_LOOP_RESTAT_MIN_INTERVAL_S = 1.0
+
 
 def _on_event_loop() -> bool:
     """True when the caller runs on an asyncio loop, so it must never block.
@@ -523,6 +540,17 @@ class ProfileStore:
         # the fast path (loaded + fingerprint unchanged) never contends.
         self._lock = threading.Lock()
         self._fingerprint: Optional[Tuple] = None
+        # Monotonic timestamp of the last ``_dir_fingerprint`` walk this store ran
+        # ON THE EVENT LOOP for a warm snapshot (0.0 = never). ``_ensure_fresh``
+        # reads it to rate-limit the on-loop directory walk to once per
+        # ``_LOOP_RESTAT_MIN_INTERVAL_S``; the ceiling token is re-read on every
+        # call regardless, so only the filesystem stat is throttled. A plain float
+        # written and read without a lock, which is safe because it is only a
+        # freshness HINT — a torn read at most skips or runs one extra bounded stat,
+        # never affects a decision. Only the event-loop warm path touches it; an
+        # off-loop caller neither reads nor writes it, so its every-call restat is
+        # unchanged.
+        self._last_loop_restat: float = 0.0
         # The current profiles view, published ATOMICALLY as one immutable object
         # (see ``_Snapshot``). A reader grabs this reference once; a reload swaps a
         # fresh ``_Snapshot`` in a single assignment, so name/bind/unrecoverable are
@@ -558,12 +586,17 @@ class ProfileStore:
           the decision fails closed instead of failing open.
 
         mtime hot-reload still works exactly as documented: an operator edit is
-        picked up without a restart. What this deliberately does NOT have is a
-        per-thread "always block" discipline for off-loop callers. Its only benefit
-        on a warm store is closing a staleness window one call wide while a reload
-        is in flight, which is not worth a thread-local plus a dual code path — and
-        it invites someone to later reach for the blocking path from the loop,
-        reintroducing the wedge.
+        picked up without a restart. On the event loop a WARM store re-stats the
+        profiles DIRECTORY at most once per ``_LOOP_RESTAT_MIN_INTERVAL_S`` — the
+        synchronous PreToolUse gate reaches this per tool call, and a
+        ``_dir_fingerprint`` walk per call stalls the loop under GIL contention —
+        so a profile-FILE edit's on-loop pickup is bounded by that window rather
+        than instant. The ceiling token is NOT rate-limited (it is two locked
+        integer reads, no I/O): it is re-read on every on-loop call, so a
+        mid-session ceiling swap is still picked up at once even inside the window.
+        OFF-loop callers (the watchers, the capability prime) re-stat the directory
+        every call too. The rate limit is confined to the warm path: a
+        cold/unprimed store always loads below.
 
         There is likewise NO same-metadata retry: an unreadable/malformed profile
         fails CLOSED (its surface is a bind-preserving deny-all, see ``_reload``),
@@ -572,7 +605,43 @@ class ProfileStore:
         directory = _profiles_dir()
         fp: Optional[Tuple] = None
         if self._snap.loaded:
-            fp = (_dir_fingerprint(directory), _ceiling_token())
+            # Rate-limit ONLY the ``_dir_fingerprint`` walk on the event loop.
+            # ``_dir_fingerprint`` is a synchronous ``iterdir`` + ``stat``-per-file
+            # walk, and this path runs on the loop on EVERY gated tool call (the
+            # synchronous PreToolUse gate), so under GIL contention paying it per
+            # call stalls the loop. Inside the window a warm on-loop caller reuses
+            # the directory part it last stat'd and skips the walk.
+            #
+            # The ceiling token is NEVER rate-limited: ``_ceiling_token()`` is two
+            # locked integer reads with no filesystem I/O, so it is computed on
+            # every on-loop call and folded into ``fp`` fresh. A mid-session ceiling
+            # swap (``policy_distribution.apply_ceiling`` bumps
+            # ``governance_generation()``) therefore changes ``fp`` even inside the
+            # window, misses the cached fingerprint and takes the reload path at
+            # once — the window delays only the profiles-directory re-stat, not the
+            # ceiling. The reload composes the snapshot against the ceiling, so a
+            # ceiling change must not be deferred.
+            #
+            # LOOP-ONLY: an off-loop caller (``_on_event_loop()`` false) always
+            # re-stats, so the dashboard watcher, the capability prime and the
+            # profile-projection watch pick up a profile-file edit immediately and
+            # the priming/bracket readers keep their exact per-call-restat
+            # semantics. It NEVER touches the cold/unprimed path
+            # (``self._snap.loaded`` is the guard): a never-loaded store always
+            # loads below, fail-closed.
+            cached_dir_fp = self._fingerprint[0] if self._fingerprint is not None else None
+            if _on_event_loop() and cached_dir_fp is not None:
+                now = time.monotonic()
+                if now - self._last_loop_restat < _LOOP_RESTAT_MIN_INTERVAL_S:
+                    # Skip the walk, reuse the last directory fingerprint, but still
+                    # re-read the (cheap, no-I/O) ceiling token so a ceiling swap is
+                    # never deferred.
+                    fp = (cached_dir_fp, _ceiling_token())
+                else:
+                    fp = (_dir_fingerprint(directory), _ceiling_token())
+                    self._last_loop_restat = now
+            else:
+                fp = (_dir_fingerprint(directory), _ceiling_token())
             if fp == self._fingerprint:
                 return True
         # NEVER block on the event loop: this is reachable there (the synchronous
