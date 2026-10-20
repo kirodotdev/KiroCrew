@@ -273,7 +273,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _warn_first_party_unconfined_once _first_party_no_backend_passthrough
         CRON_SCRIPT_CHILD_ENV UnauditedSpawnRefused refuse_unaudited_on_dead_fs
         SandboxUnavailableError LAUNCHER_EXIT_PREFIXES _LAUNCHER_REFUSAL_RE launcher_refusal
-        _TRUSTED_LAUNCHER_TIMEOUT_SECS
+        _TRUSTED_LAUNCHER_TIMEOUT_SECS LAUNCHER_EXEC_FAILURE_RE
         """.split()),
     "kiro_crew.sandbox_wrap": tuple("""
         _last_unshare_failure unavailable_remedy unavailable_reason remedy_guidance

@@ -2244,11 +2244,26 @@ def refuse_hardlinked_credentials(launch, scan_roots=None, max_per_root=100000):
 
 
 def exec_agent(launch, argv):
-    """Replace this process with the agent command, in the scrubbed environment."""
-    if launch.execvp is None:
-        os.execvp(argv[0], argv)
-    else:
-        launch.execvp(argv[0], argv)
+    """Replace this process with the agent command, in the scrubbed environment.
+
+    A command the kernel will not exec ends the launcher the way its other stops do:
+    one FATAL line naming the command and the reason, then exit 1. The exception's
+    own text names no path, and a traceback puts it last, where a caller that keeps
+    the head of stderr cuts it off.
+    """
+    try:
+        if launch.execvp is None:
+            os.execvp(argv[0], argv)
+        else:
+            launch.execvp(argv[0], argv)
+    except OSError as exc:
+        # Unprintable characters go out as escapes: a newline in the path would start a
+        # second line that a reader of launcher stderr could take for the launcher's own.
+        command, reason = (
+            "".join(c if c.isprintable() else ascii(c)[1:-1] for c in str(part))
+            for part in (argv[0], exc.strerror or exc)
+        )
+        sys.exit("sandbox: FATAL — cannot exec %s (%s)" % (command, reason))
 
 
 def place_masks(launch):

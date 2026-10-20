@@ -668,6 +668,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _SSH_VISIBLE_TIERS,
         _TRUSTED_LAUNCHER_TIMEOUT_SECS,
         CRON_SCRIPT_CHILD_ENV,
+        LAUNCHER_EXEC_FAILURE_RE,
         LAUNCHER_EXIT_PREFIXES,
         UNSANDBOXED_BY_OPERATOR,
         UNSANDBOXED_BY_PLATFORM,
