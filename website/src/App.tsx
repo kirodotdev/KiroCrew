@@ -56,6 +56,7 @@ import UpdateModal from './components/UpdateModal'
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
 import { toggleBottomTerminal } from './hooks/useBottomTerminal'
+import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from './shell/runInTerminalShellBridge'
 import { TerminalHostContext } from './hooks/useTerminalCommand'
 // Side effect: closes a terminal tab when its shell exits (main window and popout).
 import './utils/terminalExitClose'
@@ -312,6 +313,8 @@ export default function App() {
     setUpdateError, startupVideo, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
+  // "Run in terminal" from a code block outside every chat, on any route.
+  const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -888,6 +891,7 @@ export default function App() {
       <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
       <Lightbox />
       <ImportSessionOutcomeNotice />
+      <RunInTerminalShellNotice error={runInTerminal.error} onDismiss={runInTerminal.dismiss} />
       </LocalOverlayRoot>
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)

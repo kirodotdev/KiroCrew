@@ -35,7 +35,17 @@ export interface RunInTerminalBridgeOptions extends RunInTerminalRefs {
    *  RunInTerminalScope). Only the chat page does: it is where every request
    *  went before scopes existed. */
   acceptUnscoped?: boolean
+  /** Answer unscoped requests only while no `acceptUnscoped` host is mounted.
+   *  The app shell sets it, so a code block on a page with no chat (an app,
+   *  a knowledge doc) still gets an answer, while the chat page keeps its own
+   *  unscoped requests and one click never opens two terminals. */
+  unscopedFallback?: boolean
 }
+
+/** How many mounted hosts answer unscoped requests (`acceptUnscoped`). A
+ *  fallback host stands down while this is above zero. Read at event time, so
+ *  the order the listeners were added in does not matter. */
+let unscopedHosts = 0
 
 /**
  * The reuse-current setting and the PTY-delete mutation, mirrored onto refs for
@@ -82,6 +92,7 @@ export function useRunInTerminalBridge({
   cwdRef,
   readyRef,
   acceptUnscoped = false,
+  unscopedFallback = false,
   deleteTerminalSessionRef,
   terminalReuseRef,
   terminalCfgUnsettledRef,
@@ -89,14 +100,20 @@ export function useRunInTerminalBridge({
 }: RunInTerminalBridgeOptions): string {
   const scope = useId()
   useEffect(() => {
+    if (!acceptUnscoped) return
+    unscopedHosts += 1
+    return () => { unscopedHosts -= 1 }
+  }, [acceptUnscoped])
+  useEffect(() => {
+    const answersUnscoped = () => acceptUnscoped || (unscopedFallback && unscopedHosts === 0)
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail || {}
       const code: string = detail.code
       const reqId: string = detail.reqId
       const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
-      // Another host's chat (or, without acceptUnscoped, an emitter outside
-      // every scope): not ours to answer.
-      if (typeof detail.scope === 'string' ? detail.scope !== scope : !acceptUnscoped) return
+      // Another host's chat (or an emitter outside every scope that another
+      // host answers, or that this host never answers): not ours to answer.
+      if (typeof detail.scope === 'string' ? detail.scope !== scope : !answersUnscoped()) return
       if (typeof code !== 'string' || !code) return
       // Opt-in reuse focuses the terminal tab the user selected and copies the
       // command for a manual paste. Sending raw bytes into a live terminal is
@@ -327,6 +344,6 @@ export function useRunInTerminalBridge({
     return () => window.removeEventListener('mc:run-in-terminal', handler)
     // All are stable for the host's lifetime (a context client, a []-dep
     // useCallback, refs and a useId), so the listener still installs once.
-  }, [scope, acceptUnscoped, queryClient, showActionError, cwdRef, readyRef, deleteTerminalSessionRef, terminalReuseRef, terminalCfgUnsettledRef, terminalCfgReadFailedRef])
+  }, [scope, acceptUnscoped, unscopedFallback, queryClient, showActionError, cwdRef, readyRef, deleteTerminalSessionRef, terminalReuseRef, terminalCfgUnsettledRef, terminalCfgReadFailedRef])
   return scope
 }
