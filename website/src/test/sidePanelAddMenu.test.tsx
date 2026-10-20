@@ -246,7 +246,7 @@ describe('newMenuSections', () => {
     // Only that row goes — its group still carries the rest, so the group is not
     // dropped and nothing else is collateral.
     expect(kinds({ terminalEnabled: true, summaryEnabled: false })[0])
-      .toEqual(['command-center', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'])
+      .toEqual(['command-center', 'pins', 'issues', 'links', 'subagents', 'sessions', 'workflows', 'git'])
   })
 
   it('keeps each group id fixed however the gates fall', () => {
@@ -281,7 +281,7 @@ describe('newMenuSections', () => {
 
   it('groups by session output, workspaces, then diagnostics', () => {
     expect(kinds({ terminalEnabled: true })).toEqual([
-      ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
+      ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'sessions', 'workflows', 'git'],
       ['side', 'browser', 'terminal'],
       ['logs', 'context', 'crewlog'],
     ])
@@ -301,12 +301,12 @@ describe('newMenuSections', () => {
     // Terminal off and diagnostics withheld: diagnostics gone outright,
     // Terminal dropped from Workspaces — two groups, not three with a hole.
     expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
-      ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
+      ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'sessions', 'workflows', 'git'],
       ['side', 'browser'],
     ])
     // Terminal off alone: diagnostics stay.
     expect(kinds({ terminalEnabled: false })).toEqual([
-      ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
+      ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'sessions', 'workflows', 'git'],
       ['side', 'browser'],
       ['logs', 'context', 'crewlog'],
     ])
