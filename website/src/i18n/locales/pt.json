@@ -12862,6 +12862,8 @@
       "run_in_terminal_shell_alive_error": "O comando não foi enviado para o novo terminal, mas o shell dele está em execução — a aba foi mantida aberta para você executar o comando ali.",
       "run_in_terminal_dispatch_rolled_back_error": "O comando não foi enviado para o novo terminal, por isso esse terminal foi fechado.",
       "delivery_removed_delivered": "Uma mensagem que você removeu foi entregue mesmo assim. Limpe o campo de mensagem para não enviá-la duas vezes.",
+      "delivery_recovered_after_reload": "Uma mensagem de antes de recarregar a página nunca foi confirmada, então o texto dela voltou para o campo de mensagem.",
+      "delivery_recovered_delivered": "Uma mensagem de antes de recarregar a página foi entregue mesmo assim. Limpe o campo de mensagem para não enviá-la duas vezes.",
       "delivery_remove": "Remover mensagem, manter o texto",
       "delivery_unconfirmed_resend": "Entrega não confirmada — reenviar a mensagem pode enviá-la duas vezes.",
       "delivery_unconfirmed_dismiss_note": "Seu texto volta ao campo de mensagem, e esta aba avisa se a mensagem chegou mesmo assim.",

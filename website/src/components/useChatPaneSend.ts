@@ -7,8 +7,9 @@ import { warnDeliveryUnconfirmed } from '../utils/deliveryWarning'
 import { announceIfRemovedSendDelivered } from './useDeliveryWarningStrip'
 import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
 import { expandAll as expandPasteTokens, carryPastes, type PasteBlock } from '../utils/pasteTokens'
-import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { prependQuote, readMessageQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
+import { sanitizePasteBlocks } from '../utils/chatPasteDrafts'
 import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
@@ -62,6 +63,20 @@ export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore)
     pastes: carried.pastes,
     quote: earlier.quote ?? later.quote,
   }
+}
+
+/** A pane payload an earlier page load persisted, or `null` when it holds nothing to put back.
+ *
+ *  Restorable on the same terms `isEmptyTurn` lets a send through: text, files or a quote. The quote
+ *  comes back inside the text, because the stage is not parked with the pane's draft. */
+export function parsePaneSent(v: unknown): PaneSentRestore | null {
+  if (!v || typeof v !== 'object') return null
+  const r = v as Record<string, unknown>
+  if (typeof r.text !== 'string') return null
+  const files = Array.isArray(r.files) ? r.files.filter((f): f is string => typeof f === 'string') : []
+  const quote = readMessageQuote({ quote: r.quote })
+  if (!r.text.trim() && !files.length && !quote) return null
+  return { text: quote ? prependQuote(r.text, quote) : r.text, files, pastes: sanitizePasteBlocks(r.pastes) ?? [], quote: null }
 }
 
 export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent }: {

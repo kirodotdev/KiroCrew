@@ -12674,6 +12674,8 @@
       "run_in_terminal_shell_alive_error": "Der Befehl wurde nicht an das neue Terminal gesendet, aber seine Shell läuft — der Tab bleibt geöffnet, damit Sie den Befehl dort ausführen können.",
       "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen.",
       "delivery_removed_delivered": "Eine entfernte Nachricht wurde doch zugestellt. Leere das Eingabefeld, damit sie nicht doppelt gesendet wird.",
+      "delivery_recovered_after_reload": "Eine Nachricht von vor dem Neuladen der Seite wurde nie bestätigt, deshalb steht ihr Text wieder im Eingabefeld.",
+      "delivery_recovered_delivered": "Eine Nachricht von vor dem Neuladen der Seite wurde doch zugestellt. Leere das Eingabefeld, damit sie nicht doppelt gesendet wird.",
       "delivery_remove": "Nachricht entfernen, Text behalten",
       "delivery_unconfirmed_resend": "Zustellung unbestätigt — erneutes Senden kann die Nachricht doppelt senden.",
       "delivery_unconfirmed_dismiss_note": "Dein Text kommt zurück ins Eingabefeld, und dieser Tab sagt dir, falls die Nachricht doch angekommen ist.",

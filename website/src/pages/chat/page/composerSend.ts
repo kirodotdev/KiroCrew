@@ -3,7 +3,8 @@ import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuot
 import { store, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type PasteBlock } from '../../../utils/pasteTokens'
-import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
+import { mergeSessionRefs, sanitizeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
+import { sanitizePasteBlocks } from '../../../utils/chatPasteDrafts'
 import type { PickedFileTokens } from './composerFileMentions'
 import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
 import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectSendConfirmed, selectSlotRunEpoch, markSendUnconfirmed, confirmOptimisticSend, ageFolderSuggestion } from '../../../store/chatSlice'
@@ -11,7 +12,7 @@ import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
 import { announceIfRemovedSendDelivered } from '../../../components/useDeliveryWarningStrip'
 import { mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
-import { prependQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
+import { prependQuote, readMessageQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { isEmptyTurn, buildOutgoingTurn } from '../../../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../../../chat-core/composer/composerPastes'
 import { addNotification } from '../../../store/notificationsSlice'
@@ -115,6 +116,43 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
     quote: earlier.quote ?? later.quote,
     slotTokens: earlier.slotTokens || later.slotTokens ? tokens : undefined,
     knowledge: [...(earlier.knowledge ?? []), ...(later.knowledge ?? []).filter(i => !knowledgeIds.has(i.id))],
+  }
+}
+
+const isKnowledgeResult = (v: unknown): v is KnowledgeResult => {
+  if (!v || typeof v !== 'object') return false
+  const k = v as Record<string, unknown>
+  return typeof k.id === 'string' && typeof k.title === 'string' && typeof k.content === 'string'
+    && typeof k.summary === 'string' && typeof k.match_type === 'string' && typeof k.tokens === 'number'
+    && (k.source === null || typeof k.source === 'string')
+}
+
+/** A page payload an earlier page load persisted, or `null` when it holds nothing to put back.
+ *
+ *  Restorable on the same terms `isEmptyTurn` lets a send through: typed text, a quote or session
+ *  refs. The quote comes back inside the text rather than on the stage, because the stage is not
+ *  saved with the draft and a second reload would lose it. */
+export function parseSentTurn(v: unknown): SentTurnRestore | null {
+  if (!v || typeof v !== 'object') return null
+  const r = v as Record<string, unknown>
+  if (typeof r.inlined !== 'string') return null
+  const quote = readMessageQuote({ quote: r.quote })
+  const sessionRefs = sanitizeSessionRefs(r.sessionRefs) ?? []
+  if (!r.inlined.trim() && !quote && !sessionRefs.length) return null
+  const tokens: Record<string, string[]> = {}
+  if (r.slotTokens && typeof r.slotTokens === 'object') {
+    for (const [k, list] of Object.entries(r.slotTokens as Record<string, unknown>)) {
+      if (Array.isArray(list)) tokens[k] = list.filter((t): t is string => typeof t === 'string')
+    }
+  }
+  const knowledge = Array.isArray(r.knowledge) ? r.knowledge.filter(isKnowledgeResult) : []
+  return {
+    inlined: quote ? prependQuote(r.inlined, quote) : r.inlined,
+    pastes: sanitizePasteBlocks(r.pastes) ?? [],
+    sessionRefs,
+    quote: null,
+    ...(Object.keys(tokens).length ? { slotTokens: tokens } : {}),
+    ...(knowledge.length ? { knowledge } : {}),
   }
 }
 

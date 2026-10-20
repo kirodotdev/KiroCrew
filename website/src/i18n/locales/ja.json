@@ -12486,6 +12486,8 @@
       "run_in_terminal_shell_alive_error": "コマンドは新しいターミナルに送信されませんでしたが、シェルは実行中です。そこでコマンドを実行できるよう、タブは開いたままにしてあります。",
       "run_in_terminal_dispatch_rolled_back_error": "コマンドは新しいターミナルに送信されなかったため、そのターミナルを閉じました。",
       "delivery_removed_delivered": "削除したメッセージは実際には送信されていました。二重送信を避けるため、入力欄を空にしてください。",
+      "delivery_recovered_after_reload": "ページを再読み込みする前のメッセージは確認されなかったため、その本文を入力欄に戻しました。",
+      "delivery_recovered_delivered": "ページを再読み込みする前のメッセージは実際には送信されていました。二重送信を避けるため、入力欄を空にしてください。",
       "delivery_remove": "メッセージを削除（テキストは残ります）",
       "delivery_unconfirmed_resend": "送信未確認 — 再送信すると二重送信になる可能性があります。",
       "delivery_unconfirmed_dismiss_note": "テキストは入力欄に戻り、メッセージが実際に届いていた場合はこのタブでお知らせします。",
