@@ -1089,8 +1089,8 @@ async def _initialize_session(self: AcpClient) -> None:
     self._last_activity = time.monotonic()
     # The session exists, so the pi process that read the MCP handoff file has
     # started; the file has no further reader and goes now.
-    # Its own process then says which of those servers it registered; a session
-    # that registered none is refused here, before its first prompt.
+    # Its own process then says which of those servers it registered, before the
+    # first prompt: a confirmed refusal is a failed row, no answer an unconfirmed one.
     if self._is_pi:
         try:
             await verify_registration(self)
