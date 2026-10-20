@@ -783,6 +783,23 @@ def is_denied(
             # The raw input, not ``lower``: see the audit note below.
             _emit_deny_event(tool_name, pattern, tool_name)
             return _reason(pattern, note, rule=rule_id, component="argv-floor")
+    # ── World-rwx chmod floor (argv-structural, UNION with the regex) ──
+    # Same shape as the rm floor above: after the regex tier, only while the
+    # row is in the effective set, and only when the text could hold a chmod.
+    _chmod = _submodule("chmod_floor")
+    chmod_rule = _chmod._CHMOD_FLOOR_RULE
+    if chmod_rule and chmod_rule[1] in regex_patterns and _chmod._can_fire(tool_name):
+        note = _chmod._CHMOD_FLOOR_NOTE
+        try:
+            chmod_hit = _chmod._is_chmod_world_rwx(tool_name)
+        except Exception as exc:  # incl. RecursionError and the depth cap
+            # Fail closed: a command the floor cannot read may hide the change.
+            logger.warning("chmod floor could not read the command, refusing: %r", exc)
+            chmod_hit, note = True, _chmod._CHMOD_FLOOR_UNREAD_NOTE
+        if chmod_hit:
+            rule_id, pattern = chmod_rule
+            _emit_deny_event(tool_name, pattern, tool_name)
+            return _reason(pattern, note, rule=rule_id, component="argv-floor")
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     #

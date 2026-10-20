@@ -1558,3 +1558,116 @@ class TestIsDeniedReDoSResistance:
             "echo hello",
         ):
             assert is_denied(cmd) is None, cmd
+
+
+class TestWorldRwxChmodFloor:
+    """The chmod seatbelt: a numeric world-rwx mode however the options are spelled."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "chmod -R 777 ~",
+            "chmod -Rv 777 ~",
+            "chmod -vR 777 ~",
+            "chmod -R -v 777 ~",
+            "chmod --recursive 777 ~",
+            "chmod --rec 777 ~",
+            "chmod -- 777 f",
+            "chmod -R -- 777 f",
+            "chmod 0777 f",
+            "chmod 00777 f",
+            "chmod 1777 /tmp/x",
+            "chmod 7777 f",
+            "chmod -R 0777 ~",
+            "chmod 777 -R ~",
+            'chmod "-R" "777" ~',
+            "chmod -R '777' ~",
+            "/bin/chmod -R 777 ~",
+            "X=1 chmod -R 777 ~",
+            "cd /tmp && chmod -R 777 ~",
+            "ls; chmod -R 777 ~",
+            "echo $(chmod -R 777 ~)",
+            'echo "$(chmod -R 777 ~)"',
+            "chmod -R 777 ~ 2>/dev/null",
+            "# fix perms\nchmod -R 777 ~",
+        ],
+    )
+    def test_a_world_rwx_mode_is_denied_in_any_option_spelling(self, command):
+        assert is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "chmod -R 755 ~",
+            "chmod -R 0755 f",
+            "chmod 0644 f",
+            "chmod 770 f",
+            "chmod -R a+rwx f",
+            "chmod -R u+x f",
+            "chmod -R --reference=f 777",
+            "chmod --reference f 777 g",
+            "chmod 755 777",
+            "chmod -R -777 f",
+            "mkdir -m 777 d",
+            "install -m 777 a b",
+            "chown -R 777 f",
+            "git update-index --chmod=+x f",
+            # Quoted text and heredoc bodies are data, not commands.
+            'grep -n "chmod -R 777" src/',
+            "git commit -m 'refuse chmod -R 777 ~'",
+            "cat > /tmp/notes.md <<'EOF'\nchmod -R 777 ~ is refused\nEOF",
+            "echo chmod -R 777 ~",
+        ],
+    )
+    def test_other_modes_and_mentions_stay_allowed(self, command):
+        assert is_denied(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Symbolic modes are a different grammar, left as they are.
+            "chmod -R a+rwx ~",
+            "chmod -R a=rwx ~",
+            "chmod -R ugo=rwx ~",
+            # A glob or expansion in the program word is not a resolved name.
+            "ch?od -R 777 ~",
+            "${X}mod -R 777 ~",
+            # A mode change inside an interpreter payload is not a shell argv.
+            "python -c \"import os; os.chmod('f', 0o777)\"",
+        ],
+    )
+    def test_out_of_goal_spellings_are_pinned_allowed(self, command):
+        assert is_denied(command) is None
+
+    def test_the_rows_prefix_quirk_is_unchanged(self):
+        reason = is_denied("chmod 7770 f")
+        assert reason is not None
+        assert "argv-floor" not in reason
+
+    def test_the_floor_reports_the_catalog_row(self):
+        reason = is_denied("chmod -R 777 ~")
+        assert reason is not None
+        assert "chmod 777.*" in reason.splitlines()[0]
+        assert "local-destructive-chmod-777" in reason
+        assert "component=argv-floor" in reason
+
+    def test_the_literal_spelling_keeps_the_row_refusal(self):
+        reason = is_denied("chmod 777 ~")
+        assert reason is not None
+        assert "argv-floor" not in reason
+
+    def test_a_disabled_row_disables_its_floor(self):
+        others = ["rm -rf /.*"]
+        assert is_denied("chmod -R 777 ~", denied_regexes=others) is None
+        assert is_denied("chmod -R 777 ~", denied_regexes=["chmod 777.*"]) is not None
+
+    def test_a_floor_error_refuses_only_a_command_that_could_hold_chmod(self, monkeypatch):
+        from kiro_crew.security import chmod_floor
+
+        def _boom(_text):
+            raise RuntimeError("walk failed")
+
+        monkeypatch.setattr(chmod_floor, "_is_chmod_world_rwx", _boom)
+        assert "could not read" in is_denied("chmod -R 755 f")
+        assert is_denied("git status") is None
+        assert is_denied("ls -la /tmp") is None
