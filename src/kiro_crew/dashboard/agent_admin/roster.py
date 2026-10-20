@@ -1,4 +1,4 @@
-"""The ``GET /api/agents`` row: the per-value mask, the guard that keeps a crew PUT from persisting it, the avatar projection and the row serializer."""
+"""The ``GET /api/agents`` row: the per-value mask, the guard that keeps a crew PUT from persisting it, the avatar projection, the row serializer and the ``?project_path=`` root resolver that scopes the roster."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
         KiroCrewAgentConfig,
+        PathPreflightOutcome,
+        _path_preflights,
         _redact_external,
         _safe_avatar,
     )
@@ -313,3 +315,52 @@ def _agent_roster_row(
         # dashboard and the per-crew avatar endpoint need. See ``_roster_avatar``.
         "avatar": _roster_avatar(getattr(agent_cfg, "avatar", {})),
     }
+
+
+def _resolve_roster_project_path(raw: str) -> tuple[str, bool]:
+    """Resolve+validate a ``?project_path=`` query value for roster scoping.
+
+    Returns ``(resolved_path, denied)``:
+
+    * ``denied=True`` — the spelling names an untrusted UNC share, or the
+      realpath'd target is sensitive (a protected tree such as a credential
+      home). ``resolved_path`` is ``""``; the CALLER logs the SEL denial,
+      because this runs in a worker thread and must not touch ``sel()`` there.
+    * ``resolved_path=""`` with ``denied=False`` — the path is neither sensitive
+      nor an existing directory (a half-typed draft, a typo). The caller ships
+      GLOBAL rows only rather than scanning a non-directory or falling back to
+      a different project's roster.
+    * ``resolved_path=<dir>`` — a safe, existing directory to scan.
+
+    Uses :func:`agent_discovery._path_preflights` for the shared UNC / link-chain
+    / sensitive / isdir sequence. This caller's contract differs from
+    ``chat_folders._validate_project_dir``:
+
+    * Returns a boolean ``denied`` flag, not an error message, so the CALLER
+      can SEL-log from the event loop (this function runs in a worker thread).
+    * No absolute-path bar: a read-only roster scan of an existing directory is
+      not held to the cron create-time write bar, and the sensitivity gate is
+      the real protection.
+    * Expand/resolve failures map to ``("", False)`` — a non-existent path, not
+      a denial — so a half-typed draft gracefully degrades to GLOBAL rows.
+
+    Blocking (realpath + stat), so callers run it off the event loop. This
+    resolver validates only the ROOT it is handed. The value actually
+    scanned is the ``.kiro``/``.kiro/agents`` SUBDIR, pinned and
+    sensitivity-checked by the scan machinery that enumerates it
+    (:func:`agent_discovery._pinned_scan_dir_fd`, reached through
+    ``project_agent_names``/``project_agent_files``) at the moment it opens
+    them — not re-validated or held here.
+    """
+    outcome: PathPreflightOutcome = _path_preflights(raw)
+
+    # UNC or link-chain denial: security-relevant, caller SEL-logs.
+    if outcome.unc_denied or outcome.link_chain_denied:
+        return "", True
+    # Sensitive path: security-relevant, caller SEL-logs.
+    if outcome.sensitive:
+        return "", True
+    # Expand/resolve failures or non-directory: not a denial, just unusable.
+    if outcome.expand_failed or outcome.resolve_failed or outcome.not_a_dir:
+        return "", False
+    return outcome.resolved, False

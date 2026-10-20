@@ -11,11 +11,13 @@ warning a scan logs when every spec it read failed.
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import itertools
 import logging
 import os
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from kiro_crew import hooks
 from kiro_crew.agent_spec_format import (
@@ -25,10 +27,22 @@ from kiro_crew.agent_spec_format import (
     parse_agent_spec_bytes,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
-from kiro_crew.pinned_fs import open_fenced_for_read
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    _screen_windows_links,
+    is_unc_shape,
+    unc_probe_allowed,
+)
+from kiro_crew.pinned_fs import (
+    PinnedPathRefusal,
+    fd_real_path,
+    open_fenced_for_read,
+    open_fenced_for_read_at,
+    open_in_pinned_parent,
+    supports_pinned_walk,
+)
 from kiro_crew.platform import redact_log_via_context
-from kiro_crew.security import is_sensitive_canonical_path
+from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import sel as _sel
 from kiro_crew.user_json import strict_json_equal
 
@@ -74,24 +88,55 @@ class _SpecReadRefused(OSError):
 _SpecReadRefused.__module__ = "kiro_crew.agent_discovery"
 
 
-def _read_spec_bytes(real: Path) -> bytes:
-    """Read a resolved, fence-judged spec path pinned to the descriptor it opens.
+def _read_spec_bytes(
+    real: Path,
+    *,
+    dir_fd: int | None = None,
+    operation: str = "list_agents",
+    source: str = "list_agents",
+) -> bytes:
+    """Read a spec through either its resolved path or a held parent descriptor.
 
-    :func:`pinned_fs.open_fenced_for_read` refuses a link at the final
-    component, a non-regular or hardlinked inode, and an opened inode whose
-    kernel path :func:`_fence_refuses` rejects, raising :class:`_SpecReadRefused`;
-    a missing file raises ``FileNotFoundError``. The same ``hooks.MAX_FILE_BYTES``
-    cap as :func:`kiro_crew.hooks.safe_read_file_bytes` applies (read at call
-    time, so the two readers share one cap), raising :class:`FileTooLargeError`
-    past it, so a multi-gigabyte "agent config" is still refused at the cap
-    instead of being slurped into memory. Nothing here submits to the resolver
-    pool off the event loop.
+    A ``dir_fd`` is the descriptor that enumerated *real*'s parent. In that
+    shape the leaf is opened relative to the held directory, so replacing the
+    parent name after enumeration cannot redirect a project-agent parse. The
+    kernel-reported opened path still passes the sensitive-path and UNC fences.
+    ``None`` retains the hardened by-name reader for surfaces without a pinned
+    directory descriptor.
     """
-    fd = open_fenced_for_read(
-        real,
-        fence=lambda fd_real: _fence_refuses(Path(fd_real)),
-        refusal=_SpecReadRefused,
-    )
+    if dir_fd is None:
+        fd = open_fenced_for_read(
+            real,
+            fence=lambda fd_real: _fence_refuses(Path(fd_real)),
+            refusal=_SpecReadRefused,
+        )
+    else:
+
+        def _descriptor_fence(fd_real: str) -> bool:
+            if _unc_refused(fd_real):
+                _audit_denied(
+                    operation=operation,
+                    source=source,
+                    resources=fd_real,
+                    error="untrusted UNC path rejected",
+                )
+                return True
+            if _fence_refuses(Path(fd_real)):
+                _audit_denied(
+                    operation=operation,
+                    source=source,
+                    resources=fd_real,
+                    error="sensitive path rejected",
+                )
+                return True
+            return False
+
+        fd = open_fenced_for_read_at(
+            dir_fd,
+            real.name,
+            fence=_descriptor_fence,
+            refusal=_SpecReadRefused,
+        )
     cap = hooks.MAX_FILE_BYTES
     with os.fdopen(fd, "rb") as fh:
         data = fh.read(cap + 1)
@@ -168,108 +213,13 @@ def _read_agent_spec(
     operation: str = "list_agents",
     source: str = "list_agents",
 ) -> dict[str, Any] | None:
-    """Parse an agent config file, or ``None`` when it is not usable.
-
-    The one reader for both scopes and both forms (``<name>.json`` and the
-    markdown ``<name>.md`` -- see :mod:`kiro_crew.agent_spec_format`), so every
-    guard applies uniformly: AppleDouble sidecars, a symlink whose RESOLVED
-    target is sensitive (``evil.json`` -> ``~/.aws/credentials``), non-UTF-8
-    bytes, a document that is not an object, and oversized files are all
-    rejected. A markdown file with no frontmatter fence is not a spec and is
-    skipped like malformed JSON. The read itself goes through
-    :func:`_read_spec_bytes`: a no-reparse open pinned to the descriptor it
-    reads, the same ``MAX_FILE_BYTES`` cap as every other dashboard file read,
-    and no resolver-pool submission off the event loop, so a multi-gigabyte
-    "agent config" is refused at the size cap instead of being slurped into
-    memory during a cache warm, and a saturated pool cannot drop a healthy spec.
-    The agents directories are user-writable and shared with other tools, so
-    none of
-    these are hypothetical.
-
-    *operation*/*source* label the SEL denial event emitted on a sensitive
-    resolved target. Precisely BECAUSE this is the one reader for every surface,
-    a fixed label would record a denial served for an unrelated request as an
-    agent-listing cache warm: the calling surface names itself here so
-    the security trail attributes the refusal to the request that triggered it.
-    ``source`` is the interface channel (``SecurityEvent.source`` vocabulary:
-    dashboard, cli, slack, cron, ...; ``"unknown"`` when the caller serves
-    multiple channels) — every call site passes it explicitly, enforced by the
-    call-site ratchet test. Both defaults exist ONLY so a bare call reproduces
-    the established event byte-for-byte (a forgotten future call site degrades
-    to exactly today's trail); they are not for new call sites.
-    ``caller`` stays fixed at ``"agent_discovery"``: the reader genuinely is the
-    caller into SEL, and a fixed value keeps the trail greppable by module.
-    """
-    if path.name.startswith("._"):
-        return None
-    if _unc_refused(str(path)):
-        # Refused BEFORE resolve: on Windows the resolve of a UNC spelling is
-        # itself the outbound SMB probe.
-        _audit_denied(
-            operation=operation,
-            source=source,
-            resources=str(path),
-            error="untrusted UNC path rejected",
-        )
-        return None
-    try:
-        real = path.resolve(strict=True)
-    except (OSError, RuntimeError):
-        # OSError: broken link / permission; RuntimeError: pathlib's signal for
-        # a symlink LOOP (a self-referential agent symlink is one `ln -s` away
-        # in a user-writable dir). Both mean "not a readable spec", and an
-        # uncaught loop here crashes whichever surface asked — e.g. Slack's
-        # `!agent` handler exits without replying.
-        return None
-    if _unc_refused(str(real)):
-        # A local link into a share: the resolve has already probed, and the
-        # read must still not load the remote document.
-        _audit_denied(
-            operation=operation,
-            source=source,
-            resources=str(real),
-            error="untrusted UNC path rejected",
-        )
-        return None
-    if _fence_refuses(real):
-        logger.debug("Skipping sensitive agent config: %r", path)
-        _audit_denied(
-            operation=operation,
-            source=source,
-            resources=str(real),
-            error="sensitive path rejected",
-        )
-        return None
-    try:
-        raw = _read_spec_bytes(real)
-    except FileTooLargeError:
-        logger.debug("Skipping oversized agent config: %r", path)
-        return None
-    except _SpecReadRefused as exc:
-        # A link or a hardlink planted at the spec's name, a non-regular inode,
-        # or an opened inode the fence rejects. The agents directories are
-        # shared with other tools (a hardlink-based dotfile layout produces the
-        # nlink refusal legitimately), so the reason and the path are logged
-        # where an operator sees them; a DEBUG line here is what turns a
-        # refused spec into an unexplained "no prepared skill discovery view".
-        # Both values come from an untrusted filename (the refusal message
-        # quotes the spelling), so they are rendered with ``%r``: a newline in
-        # the name is escaped instead of starting a forged log record.
-        logger.warning("Skipping agent config %r: %r", path, exc)
-        return None
-    except OSError:
-        # Absent or unreadable: "not a readable spec".
-        logger.debug("Skipping unreadable agent config: %r", path)
-        return None
-    try:
-        data = parse_agent_spec_bytes(raw, path)
-    except (UnicodeDecodeError, ValueError):
-        logger.debug("Skipping unreadable agent config: %r", path)
-        return None
-    if not isinstance(data, dict):
-        logger.debug("Skipping non-object agent config: %r", path)
-        return None
-    return data
+    """Parse one spec through the hardened by-name reader contract."""
+    return _read_agent_spec_from_descriptor(
+        path,
+        operation=operation,
+        source=source,
+        dir_fd=None,
+    )
 
 
 # Reports the path callers import it from, as it did before it moved: an import
@@ -655,3 +605,532 @@ def _warn_on_systematic_scan_failure(directory: Path, candidates: int, parsed: i
             candidates,
             directory,
         )
+
+
+_DirIdentity = tuple[int, int]
+
+
+_DIR_ID_DEV_ROW = "\0dir-dev"
+
+
+_DIR_ID_INO_ROW = "\0dir-ino"
+
+
+_AGENT_DIRECTORY_MAX_ENTRIES = 4096
+
+
+class ScanUnverifiable(Exception):
+    """Raised when a scan scope could not be pinned and enumerated safely.
+
+    Distinct from the ``None`` sentinel :func:`_pinned_scan_dir_fd` yields for a
+    resolved-sensitive target: that is a POSITIVE verdict (this directory is
+    protected, and the refusal is auditable). This exception means the verdict
+    itself could not be reached at all -- the platform cannot pin
+    (:func:`kiro_crew.pinned_fs.supports_pinned_walk` is False) or the pinned open
+    failed for a reason other than absence. The distinction matters to a caller
+    surfacing state to a human: an unverifiable scan must read as "could not be
+    checked", never silently as "no agents here" -- collapsing the two reports a
+    directory nothing could read as one that holds no agents.
+    """
+
+
+# Named by the path callers import it from: a traceback or a log line renders the
+# raised class as ``module.qualname``, so the owner module must not leak into it.
+ScanUnverifiable.__module__ = "kiro_crew.agent_discovery"
+
+
+def _link_chain_refused(spelling: str) -> bool:
+    r"""Whether resolving a Windows-local *spelling* could touch an SMB share.
+
+    A lexical UNC gate cannot see a local-looking path whose LINK target -- on
+    an ancestor or on the leaf -- is a share. This asks the screen
+    :func:`kiro_crew.hooks.validate_file_path` itself runs,
+    ``hooks._screen_windows_links``: it reads each link's stored target locally
+    (``os.readlink`` connects to no host), refuses an untrusted share or an
+    ambiguous root- or drive-relative target, swaps a vetted target in and
+    walks the rewritten path again, so a deeper link under a benign one is
+    reached. It is called directly rather than through ``validate_file_path`` so
+    a caller keeps its own sensitive-path refusal and audit reason. Off Windows
+    it never refuses, exactly as :func:`_unc_refused`. Callers use this before
+    any resolving or following syscall.
+    """
+    return _WINDOWS and _screen_windows_links(os.path.abspath(spelling)) is None
+
+
+class PathPreflightOutcome:
+    """Outcome of the shared path preflight sequence.
+
+    Callers interpret these flags per their own return contract:
+
+    * ``unc_denied`` — the raw or resolved spelling names an untrusted UNC share.
+    * ``link_chain_denied`` — a local link chain into an untrusted share was found.
+    * ``sensitive`` — the resolved path is a sensitive tree.
+    * ``expand_failed`` — ``os.path.expanduser`` raised.
+    * ``resolve_failed`` — ``os.path.realpath`` raised.
+    * ``not_a_dir`` — the resolved path does not exist or is not a directory.
+    * ``resolved`` — the final realpath'd spelling (empty when any refusal fired
+      before resolution completed).
+    * ``denied_path`` — the exact spelling a refusal fired on: the expanded one
+      for a link-chain denial, the resolved one for a post-resolution UNC
+      denial, the raw one for a raw UNC denial. A caller that audits a refusal
+      must name the spelling that was actually refused, because a link chain or
+      symlink is refused precisely for pointing somewhere other than what the
+      user typed.
+    """
+
+    __slots__ = (
+        "unc_denied",
+        "link_chain_denied",
+        "sensitive",
+        "expand_failed",
+        "resolve_failed",
+        "not_a_dir",
+        "resolved",
+        "denied_path",
+    )
+
+    def __init__(
+        self,
+        *,
+        unc_denied: bool = False,
+        link_chain_denied: bool = False,
+        sensitive: bool = False,
+        expand_failed: bool = False,
+        resolve_failed: bool = False,
+        not_a_dir: bool = False,
+        resolved: str = "",
+        denied_path: str = "",
+    ) -> None:
+        self.unc_denied = unc_denied
+        self.link_chain_denied = link_chain_denied
+        self.sensitive = sensitive
+        self.expand_failed = expand_failed
+        self.resolve_failed = resolve_failed
+        self.not_a_dir = not_a_dir
+        self.resolved = resolved
+        self.denied_path = denied_path
+
+
+def _path_preflights(raw: str) -> PathPreflightOutcome:
+    """Run the shared UNC / link-chain / sensitive / isdir sequence on *raw*.
+
+    This is the single implementation of the validation sequence both
+    ``chat_folders._validate_project_dir`` and
+    ``dashboard/agent_admin/roster._resolve_roster_project_path`` need. Each
+    caller interprets the outcome per its own return contract (error messages,
+    SEL placement, exception wrapping).
+
+    The sequence is:
+
+    1. UNC gate on the raw spelling (before any syscall that could probe it).
+    2. ``expanduser`` (``~`` → home).
+    3. Link-chain gate on the expanded spelling.
+    4. ``realpath`` (resolve symlinks).
+    5. UNC gate on the resolved spelling.
+    6. Sensitive-path gate.
+    7. ``isdir`` existence check.
+
+    Blocking (filesystem I/O), so callers on an async event loop must run it off
+    the loop.
+    """
+    if _unc_refused(raw):
+        return PathPreflightOutcome(unc_denied=True, denied_path=raw)
+    try:
+        expanded = os.path.expanduser(raw)
+    except (OSError, ValueError):
+        return PathPreflightOutcome(expand_failed=True)
+    if _link_chain_refused(expanded):
+        return PathPreflightOutcome(link_chain_denied=True, denied_path=expanded)
+    try:
+        resolved = os.path.realpath(expanded)
+    except (OSError, ValueError):
+        return PathPreflightOutcome(resolve_failed=True)
+    if _unc_refused(resolved):
+        return PathPreflightOutcome(unc_denied=True, denied_path=resolved)
+    if is_sensitive_path(resolved):
+        return PathPreflightOutcome(sensitive=True, resolved=resolved)
+    if not os.path.isdir(resolved):
+        return PathPreflightOutcome(not_a_dir=True, resolved=resolved)
+    return PathPreflightOutcome(resolved=resolved)
+
+
+def _opened_dir_identity(dir_fd: int | None) -> _DirIdentity | None:
+    """Return the held directory's identity, or ``None`` without a usable hold."""
+    if dir_fd is None:
+        return None
+    try:
+        opened = os.fstat(dir_fd)
+    except OSError:
+        return None
+    return (opened.st_dev, opened.st_ino)
+
+
+def _raise_scan_overflow(directory: Path) -> None:
+    raise ScanUnverifiable(
+        f"agent directory {directory!s} exceeds the "
+        f"{_AGENT_DIRECTORY_MAX_ENTRIES}-entry scan cap"
+    )
+
+
+def _bounded_scan_entries(
+    directory: Path | str | int,
+    entries: Iterable[os.DirEntry[str]],
+) -> tuple[list[os.DirEntry[str]], bool]:
+    """Retain at most one agent directory's entry cap, for the pinned walk only.
+
+    One-item lookahead distinguishes a directory exactly at the cap from one
+    whose roster would be partial. Every caller of the pinned walk refuses that
+    partial answer (:func:`_raise_scan_overflow`), so a truncated listing never
+    reads as proof that a name is absent. The by-name walk the session-established
+    callers use is not capped, so it has no partial answer to give.
+    """
+    sampled = list(itertools.islice(entries, _AGENT_DIRECTORY_MAX_ENTRIES + 1))
+    overflow = len(sampled) > _AGENT_DIRECTORY_MAX_ENTRIES
+    if overflow:
+        logger.warning(
+            "agent directory scan for %s exceeds the %d-entry cap; refusing partial roster",
+            directory,
+            _AGENT_DIRECTORY_MAX_ENTRIES,
+        )
+    return sampled[:_AGENT_DIRECTORY_MAX_ENTRIES], overflow
+
+
+@contextlib.contextmanager
+def _pinned_scan_dir_fd(
+    d: Path, *, unsupported_ok: bool = False
+) -> Iterator[tuple[Iterable[os.DirEntry[str]] | None, int | None, bool]]:
+    """Yield *d*'s entries, descriptor, and overflow signal, or ``None`` entries.
+
+    ``project_agent_files`` sensitivity-checks the project ROOT, but the
+    directories it actually enumerates are the ``<project>/.kiro`` and
+    ``<project>/.kiro/agents`` SUBDIRS. A checkout whose ``.kiro`` or
+    ``.kiro/agents`` is a symlink into a credential home has a non-sensitive
+    root yet a sensitive scan target, so the root check alone lets
+    ``scandir``+``stat`` touch the protected directory (per-file reads are
+    still blocked by :func:`_read_agent_spec`, but the probe itself should not
+    happen). ``None`` means refuse-and-audit; an empty iterator means there is
+    simply nothing to scan, which is the ordinary case for a checkout with no
+    ``.kiro`` yet. :class:`ScanUnverifiable` means neither -- the scan could not
+    be run at all, on this platform or for this target, and must not read as
+    either verdict.
+
+    Built on :mod:`kiro_crew.pinned_fs`, the module this repo already uses for
+    every other descriptor-pinned filesystem access
+    (:func:`kiro_crew.pinned_fs.open_fenced_for_read`, used a few lines below in
+    this same file, is its read-a-file counterpart). Its standing rule --
+    refuse on a platform that cannot pin rather than silently falling back to a
+    by-name walk -- is exactly the rule the NEW request-supplied
+    ``?project_path=`` scan needs, so it is asked for rather than
+    re-implemented:
+
+    * *unsupported_ok* selects the walk. ``True`` is every PRE-EXISTING caller
+      (per-turn resolution, ``spawn_run`` validation, Slack, the config loader):
+      none of those reads a query-supplied path, all of them read the session's
+      already-established project directory, and `upstream/main` scans that
+      directory by plain ``Path.is_dir()`` + ``os.scandir`` on every platform.
+      Those callers keep that by-name walk on EVERY platform, with no capability
+      gate and no entry cap, plus a sensitivity verdict on the resolved
+      directory name. The residual is real and stated rather than reasoned away:
+      that walk re-resolves ``.kiro``/``.kiro/agents`` BY NAME, so an ancestor
+      swapped for a link between the ``is_dir()`` check and the read is
+      followed, exactly as on `upstream/main`.
+    * ``False`` is the ``?project_path=`` caller's contract: an HTTP query names
+      a directory the caller does not already trust, so it gets the pinned walk
+      below. :func:`kiro_crew.pinned_fs.supports_pinned_walk` gates it, and a
+      platform that cannot pin REFUSES outright (:class:`ScanUnverifiable`)
+      rather than falling back to a by-name walk an ancestor swap could
+      redirect -- the same fail-closed contract :mod:`kiro_crew.pinned_fs` states
+      for :func:`kiro_crew.pinned_fs.remove_tree_pinned`. The pinned walk caps the
+      listing at :data:`_AGENT_DIRECTORY_MAX_ENTRIES` and reports overflow, which
+      every caller of this branch turns into :class:`ScanUnverifiable`.
+    * The parent chain is resolved ONCE (:func:`os.path.realpath`) and pinned
+      component by component with :func:`kiro_crew.pinned_fs.open_in_pinned_parent`,
+      exactly as :func:`kiro_crew.pinned_fs.open_dir_pinned` pins a directory's
+      ancestors -- so an ancestor swapped for a link after the resolve is
+      refused rather than traversed. The FINAL component is opened WITHOUT
+      ``O_NOFOLLOW`` (plain ``O_RDONLY | O_DIRECTORY``): a link at the leaf
+      itself -- ``.kiro`` or ``.kiro/agents`` symlinked into an ordinary
+      directory, the dotfiles-managed-checkout case -- is followed rather than
+      refused for being a link, because the descriptor is then judged by its
+      RESOLVED target, not by whether it is a link. Refusing every leaf link
+      outright would deny that ordinary checkout as if it were an attack.
+    * The opened descriptor's real path (:func:`kiro_crew.pinned_fs.fd_real_path`,
+      the kernel's own answer for the inode already held, never a name that
+      could have been swapped since) is what :func:`security.is_sensitive_path`
+      judges. A target the kernel cannot report a real path for fails closed as
+      sensitive-denied, because there is nothing else honest to judge.
+    * Enumeration then runs ``os.scandir(fd)`` on the SAME descriptor --
+      descriptor-relative, so it reads the inode that was judged even if the
+      NAME is swapped afterwards. A name-based ``glob`` would re-resolve and
+      follow the swap.
+
+    The caller MUST consume the entries inside the ``with`` block; nothing after
+    it exits is protected.
+    """
+    if unsupported_ok:
+        # The by-name walk every session-established caller gets, on every
+        # platform: `upstream/main` never gated this scan on any capability or
+        # capped it, so this is an `is_dir()` + `os.scandir` walk that never
+        # raises and never truncates. It adds no refusal beyond the sensitivity
+        # check below; the linked-ancestor screen runs on the owner-supplied
+        # folder path before any scan, not here. Sensitivity is judged against
+        # the RESOLVED name, because there is no held descriptor to judge
+        # instead -- the residual is the same check-to-use window
+        # `upstream/main` has.
+        try:
+            if not d.is_dir():
+                yield (), None, False
+                return
+            resolved = os.path.realpath(d)
+        except OSError:
+            yield (), None, False
+            return
+        if is_sensitive_path(resolved):
+            yield None, None, False
+            return
+        try:
+            with os.scandir(d) as scan:
+                listed = list(scan)
+        except OSError:
+            yield (), None, False
+            return
+        yield listed, None, False
+        return
+    if not supports_pinned_walk():
+        raise ScanUnverifiable(
+            "cannot pin a directory descriptor on this platform, so the scan "
+            "would have to re-open every component by name and could be "
+            "redirected by an ancestor swapped mid-walk"
+        )
+    d_str = os.fspath(d)
+    as_given = Path(d_str)
+    try:
+        resolved_parent = os.path.realpath(as_given.parent or Path("."))
+    except (OSError, ValueError) as exc:
+        raise ScanUnverifiable(f"could not resolve the parent of {d_str!r}: {exc}") from exc
+    # Judge the resolved parent before any metadata probe or pinned walk touches
+    # it. A symlinked ``.kiro`` may resolve directly into a credential directory;
+    # that is a positive sensitive-path verdict, not ordinary absence.
+    if is_sensitive_path(resolved_parent):
+        yield None, None, False
+        return
+    # A non-directory ANCESTOR (e.g. a plain file sitting where `.kiro` should
+    # be a directory) is an ordinary malformed checkout, not a security event:
+    # there is nothing behind a regular file to protect, and `pin_parent`
+    # cannot tell "ancestor is a non-directory" apart from "ancestor is a
+    # symlink" -- both surface as ENOTDIR/ELOOP and translate to the SAME
+    # refusal. Checked here, by name, before any pin: a swap landing in the
+    # gap between this check and the pin below still gets caught BY the pin
+    # (an ancestor that becomes a link after this check fails `O_NOFOLLOW`
+    # there), so this pre-check only narrows the "absent" case and cannot
+    # widen what the pin still refuses.
+    if not os.path.isdir(resolved_parent):
+        yield (), None, False
+        return
+    try:
+        fd = open_in_pinned_parent(
+            resolved_parent,
+            as_given.name,
+            # No O_NOFOLLOW: the leaf is FOLLOWED if it is a link, so a link to an
+            # ordinary directory is scanned rather than refused for being a link
+            # -- see the docstring. Every ancestor above it is still pinned by
+            # `open_in_pinned_parent` -> `pin_parent`, refusing a swapped one.
+            flags=os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            mode=0,
+            what="agent scan directory",
+            refusal=PinnedPathRefusal,
+        )
+    except FileNotFoundError:
+        # Absent: the ordinary "nothing here" for a checkout with no `.kiro` yet.
+        yield (), None, False
+        return
+    except NotADirectoryError:
+        # A regular file occupies the scan scope -- a malformed checkout, not a
+        # security event: there is nothing here to enumerate.
+        yield (), None, False
+        return
+    except PinnedPathRefusal as exc:
+        # An ancestor became a link after the resolve above (the check-to-use
+        # swap `pin_parent` exists to catch). The target was never shown to be
+        # sensitive, so this is unverifiable rather than an audited denial.
+        raise ScanUnverifiable(f"could not pin {d_str!r} for scanning: {exc}") from exc
+    except OSError as exc:
+        raise ScanUnverifiable(f"could not open {d_str!r} for scanning: {exc}") from exc
+    try:
+        real = fd_real_path(fd)
+        if real is None:
+            # The kernel could not report the opened inode's own path. Nothing
+            # honest is left to judge, so this fails closed as sensitive-denied
+            # rather than scanning a target that was never verified.
+            yield None, None, False
+            return
+        if is_sensitive_path(real):
+            yield None, None, False
+            return
+        try:
+            # Materialized BEFORE the yield, deliberately. A `@contextmanager`
+            # generator may yield exactly once, and a lazy iterator lets an
+            # `OSError` surface DURING the caller's iteration -- that exception
+            # is thrown back in at the yield, and a second yield from the
+            # handler raises `RuntimeError: generator didn't stop after
+            # throw()`, which aborts the caller's whole command rather than
+            # degrading to "no agents". Reading the bounded entries here also
+            # guarantees the enumeration happens against the same fd that was
+            # judged.
+            with os.scandir(fd) as scan:
+                entries, overflow = _bounded_scan_entries(d, scan)
+        except OSError as exc:
+            # Enumeration itself failed on the pinned descriptor (e.g. a
+            # FUSE/NFS `readdir` EIO) -- distinct from every earlier absence
+            # check above, all of which ran BEFORE anything was opened. Only the
+            # owner-supplied scan reaches the pinned walk, so silently degrading
+            # to an empty tuple would tell that caller "not in this project" when
+            # the truth is "could not be read" -- exactly the
+            # confident-wrong-answer :class:`ScanUnverifiable` exists to prevent.
+            raise ScanUnverifiable(f"could not enumerate {d_str!r}: {exc}") from exc
+        # The descriptor travels with the entries so a caller that must ask this
+        # directory one more question -- does `<stem>.json` exist beside this
+        # `<stem>.md` -- asks it relative to the inode already validated, rather
+        # than by a name a swap could redirect. NOT closed here: the caller owns
+        # it for the life of the `with` block and closes it via the `finally`
+        # below.
+        yield entries, fd, overflow
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def _pinned_scan_dir(
+    d: Path, *, unsupported_ok: bool = False
+) -> Iterator[Iterable[os.DirEntry[str]] | None]:
+    """:func:`_pinned_scan_dir_fd` for a caller that needs only the entries.
+
+    Most callers just enumerate. The descriptor exists for the one that must put
+    a further question to the same directory, so it is not in this signature --
+    a caller cannot hold a descriptor it never asked for past the ``with`` block.
+    """
+    with _pinned_scan_dir_fd(d, unsupported_ok=unsupported_ok) as (
+        entries,
+        _dir_fd,
+        overflow,
+    ):
+        if overflow:
+            _raise_scan_overflow(d)
+        yield entries
+
+
+def _read_agent_spec_from_descriptor(
+    path: Path,
+    *,
+    operation: str,
+    source: str,
+    dir_fd: int | None,
+) -> dict[str, Any] | None:
+    """Parse an agent config file, or ``None`` when it is not usable.
+
+    The one reader for both scopes and both forms (``<name>.json`` and the
+    markdown ``<name>.md`` -- see :mod:`kiro_crew.agent_spec_format`), so every
+    guard applies uniformly: AppleDouble sidecars, a symlink whose RESOLVED
+    target is sensitive (``evil.json`` -> ``~/.aws/credentials``), non-UTF-8
+    bytes, a document that is not an object, and oversized files are all
+    rejected. A markdown file with no frontmatter fence is not a spec and is
+    skipped like malformed JSON. The read itself goes through
+    :func:`_read_spec_bytes`: a no-reparse open pinned to the descriptor it
+    reads, the same ``MAX_FILE_BYTES`` cap as every other dashboard file read,
+    and no resolver-pool submission off the event loop, so a multi-gigabyte
+    "agent config" is refused at the size cap instead of being slurped into
+    memory during a cache warm, and a saturated pool cannot drop a healthy spec.
+    The agents directories are user-writable and shared with other tools, so
+    none of
+    these are hypothetical.
+
+    *operation*/*source* label the SEL denial event emitted on a sensitive
+    resolved target. Precisely BECAUSE this is the one reader for every surface,
+    a fixed label would record a denial served for an unrelated request as an
+    agent-listing cache warm: the calling surface names itself here so
+    the security trail attributes the refusal to the request that triggered it.
+    ``source`` is the interface channel (``SecurityEvent.source`` vocabulary:
+    dashboard, cli, slack, cron, ...; ``"unknown"`` when the caller serves
+    multiple channels) — every call site passes it explicitly, enforced by the
+    call-site ratchet test. Both defaults exist ONLY so a bare call reproduces
+    the established event byte-for-byte (a forgotten future call site degrades
+    to exactly today's trail); they are not for new call sites.
+    ``caller`` stays fixed at ``"agent_discovery"``: the reader genuinely is the
+    caller into SEL, and a fixed value keeps the trail greppable by module.
+    """
+    if path.name.startswith("._"):
+        return None
+    if dir_fd is None:
+        if _unc_refused(str(path)):
+            # Refused BEFORE resolve: on Windows the resolve of a UNC spelling is
+            # itself the outbound SMB probe.
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(path),
+                error="untrusted UNC path rejected",
+            )
+            return None
+        try:
+            real = path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            # OSError: broken link / permission; RuntimeError: pathlib's signal for
+            # a symlink LOOP (a self-referential agent symlink is one `ln -s` away
+            # in a user-writable dir). Both mean "not a readable spec", and an
+            # uncaught loop here crashes whichever surface asked — e.g. Slack's
+            # `!agent` handler exits without replying.
+            return None
+        if _unc_refused(str(real)):
+            # A local link into a share: the resolve has already probed, and the
+            # read must still not load the remote document.
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(real),
+                error="untrusted UNC path rejected",
+            )
+            return None
+        if _fence_refuses(real):
+            logger.debug("Skipping sensitive agent config: %r", path)
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(real),
+                error="sensitive path rejected",
+            )
+            return None
+    else:
+        # This path is only a display and parser label. Opening it by name would
+        # discard the directory descriptor that enumerated the entry and reopen
+        # a replacement directory after a swap.
+        real = path
+    try:
+        raw = _read_spec_bytes(real, dir_fd=dir_fd, operation=operation, source=source)
+    except FileTooLargeError:
+        logger.debug("Skipping oversized agent config: %r", path)
+        return None
+    except _SpecReadRefused as exc:
+        # A link or a hardlink planted at the spec's name, a non-regular inode,
+        # or an opened inode the fence rejects. The agents directories are
+        # shared with other tools (a hardlink-based dotfile layout produces the
+        # nlink refusal legitimately), so the reason and the path are logged
+        # where an operator sees them; a DEBUG line here is what turns a
+        # refused spec into an unexplained "no prepared skill discovery view".
+        # Both values come from an untrusted filename (the refusal message
+        # quotes the spelling), so they are rendered with ``%r``: a newline in
+        # the name is escaped instead of starting a forged log record.
+        logger.warning("Skipping agent config %r: %r", path, exc)
+        return None
+    except OSError:
+        # Absent or unreadable: "not a readable spec".
+        logger.debug("Skipping unreadable agent config: %r", path)
+        return None
+    try:
+        data = parse_agent_spec_bytes(raw, path)
+    except (UnicodeDecodeError, ValueError):
+        logger.debug("Skipping unreadable agent config: %r", path)
+        return None
+    if not isinstance(data, dict):
+        logger.debug("Skipping non-object agent config: %r", path)
+        return None
+    return data

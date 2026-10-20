@@ -28,12 +28,37 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
 
 
 def _validate_project_dir(raw: str) -> tuple[str, str | None]:
-    """Validate and normalize project_dir. Returns (resolved_path, error_msg)."""
+    """Validate and normalize project_dir. Returns (resolved_path, error_msg).
+
+    Absolute-path bar, then ``expanduser``/``realpath``, then the sensitive-path
+    gate with inline SEL logging (which must run on the event loop, not in a
+    worker thread), then the directory-exists check.
+
+    Deliberately NOT routed through :func:`agent_discovery._path_preflights`,
+    whose first and fifth steps are the UNC / link-chain screen. This validator
+    also re-checks STORED values on the slot-create read path
+    (:func:`resolve_folder_project_dir_off_loop`), where any refusal becomes a
+    400 ``folder_project_invalid`` and the folder can open no session at all.
+    ``hooks._screen_windows_links`` refuses far more than an untrusted share -- a
+    ``readlink`` OSError, a ``..`` suffix, a target it cannot normalize, and its
+    own chain and depth limits all refuse -- so screening here would let an
+    ordinary Windows junction behind someone's already-saved project directory
+    stop that folder from starting a chat. The screen belongs on the
+    ``?project_path=`` roster read, where it gates a listing rather than session
+    start; for a stored value the spawn guard remains the authority, exactly as
+    :func:`_folder_project_overlap_denied` says of its own check.
+    """
     if not raw:
         return "", None
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
-    resolved = os.path.realpath(os.path.expanduser(raw))
+    # An unexpandable or unresolvable spelling cannot be validated, so it is
+    # reported as the non-directory it is rather than raising out of the
+    # worker thread this runs on.
+    try:
+        resolved = os.path.realpath(os.path.expanduser(raw))
+    except (OSError, ValueError):
+        return "", "Project directory must be an existing directory"
     if is_sensitive_path(resolved):
         sel().log_api_access(
             caller="dashboard",

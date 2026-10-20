@@ -72,7 +72,12 @@ from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_temp
 from kiro_crew.agent_discovery import (  # noqa: F401
     SCOPE_GLOBAL,
     AgentInfo,
+    PathPreflightOutcome,
+    ScanUnverifiable,
+    _link_chain_refused,
+    _path_preflights,
     _read_agent_spec,
+    _unc_refused,
     clear_list_agents_cache,
     list_agents,
     project_agent_names,
@@ -152,6 +157,7 @@ from kiro_crew.dashboard.agent_admin import default_agent as _owner_default_agen
 from kiro_crew.dashboard.agent_admin import fork_publish as _owner_fork_publish
 from kiro_crew.dashboard.agent_admin import installed_agents as _owner_installed_agents
 from kiro_crew.dashboard.agent_admin import roster as _owner_roster
+from kiro_crew.dashboard.agent_admin import roster_project_path as _owner_roster_project_path
 from kiro_crew.dashboard.agent_admin import template_lineage as _owner_template_lineage
 from kiro_crew.dashboard.agent_admin.agent_config import (  # noqa: F401
     _commit_agent_config,
@@ -260,8 +266,14 @@ from kiro_crew.dashboard.agent_admin.roster import (  # noqa: F401
     _agent_roster_row,
     _carries_mask,
     _name_would_be_masked,
+    _resolve_roster_project_path,
     _roster_avatar,
     _roster_mask,
+)
+from kiro_crew.dashboard.agent_admin.roster_project_path import (  # noqa: F401
+    _refuse_unverifiable_roster_scan,
+    _resolve_audited_roster_project_dir,
+    _roster_project_dir_for_request,
 )
 from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
     _AmbiguousTemplateName,
@@ -343,6 +355,11 @@ from kiro_crew.memory_stores import (  # noqa: F401
     provision_member_memory,
     retire_unpublished_allocation,
 )
+
+# ``supports_pinned_walk`` is read by name from this module's globals by the
+# composed owner ``agent_admin.roster_project_path``, and is the patch target
+# ``test_agents_roster_contract`` uses to drive the unsupported-platform 503.
+from kiro_crew.pinned_fs import PinnedPathRefusal, supports_pinned_walk  # noqa: F401
 from kiro_crew.platform.governance import sanitize_agent_config_governance  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction, kill_and_reap  # noqa: F401
 from kiro_crew.sandbox import (
@@ -352,6 +369,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import is_sensitive_path  # noqa: F401
 from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
@@ -1652,7 +1670,15 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
     # event loop. Failure costs only the project rows, never the roster.
-    project_dir = active_project_dir(state, _read_session_key(request)) if state else ""
+    #
+    # Which directory gets scanned — an owner's explicit ``?project_path=``,
+    # else the active chat slot's project — is decided and SEL-audited by
+    # ``agent_admin.roster_project_path``; see that module for why a supplied
+    # path that fails validation suppresses the slot fallback instead of
+    # answering for a directory nobody asked about.
+    project_dir, owner_supplied_path = await _roster_project_dir_for_request(
+        request, state, redact, operation="api_kirocrew_agents"
+    )
     if project_dir:
         try:
             project_names = await asyncio.get_running_loop().run_in_executor(
@@ -1662,8 +1688,35 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
                     project_dir,
                     operation="api_kirocrew_agents",
                     source="dashboard",
+                    # Only the OWNER-SUPPLIED scan has a distinct UI state for
+                    # "this could not be checked": the folder picker's ErrorNotice
+                    # + Retry row. The slot-derived fallback below has no such
+                    # surface, so it keeps the degrade-to-empty default -- an
+                    # unverifiable slot project reads as "no project agents",
+                    # exactly as an unreadable one always has.
+                    #
+                    # An owner-supplied scan requires a pinnable walk: a
+                    # directory an HTTP query named is not one the caller
+                    # already trusts, so a by-name fallback that re-resolves
+                    # each path component after checking it is not an
+                    # acceptable substitute -- a swapped component could
+                    # redirect the read. On a platform without
+                    # ``O_DIRECTORY``/``O_NOFOLLOW``/``dir_fd`` (Windows),
+                    # every owner-supplied request therefore answers 503 and no
+                    # by-name scan ever runs for it, so folder-level
+                    # project-agent selection is unavailable there -- a stated
+                    # platform limitation, not a failure. The slot-derived
+                    # fallback below is unaffected: it is not caller-supplied,
+                    # so it keeps the by-name discovery on every platform.
+                    raise_unverifiable=owner_supplied_path,
                 ),
             )
+        except (ScanUnverifiable, PinnedPathRefusal):
+            # Owner-supplied scan refused or unverifiable: answered as a 503 by
+            # ``agent_admin.roster_project_path`` -- see that module for the two
+            # shapes (permanent platform limitation vs retryable refusal) and
+            # why an empty 200 is not an acceptable substitute.
+            _refuse_unverifiable_roster_scan()
         except Exception:
             logger.warning("Failed to list project agents for %s", project_dir, exc_info=True)
             project_names = frozenset()
@@ -1925,6 +1978,7 @@ _facade_compose(
         _owner_fork_publish,
         _owner_agent_detail,
         _owner_roster,
+        _owner_roster_project_path,
         _owner_installed_agents,
         _owner_crew_records,
         _owner_crew_update,

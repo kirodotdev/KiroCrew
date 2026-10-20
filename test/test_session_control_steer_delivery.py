@@ -32,6 +32,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.wait import await_until
 
 
 def test_an_identical_steer_is_refused_while_the_first_is_still_in_flight(tmp_path):
@@ -514,7 +515,17 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     # A turn still in flight on the target, so the send queues.
     target.task = MagicMock(done=MagicMock(return_value=False))
     flushed: list = []
-    state.flush_slot_now = lambda slot: flushed.append(slot)
+    loop = asyncio.get_running_loop()
+    wrote = asyncio.Event()
+
+    def _record_write(slot):
+        # Stands in for the production write, and runs on the executor thread
+        # that `start_queue_persist` hands it to -- so the event is set THROUGH
+        # the loop rather than touched across threads.
+        flushed.append(slot)
+        loop.call_soon_threadsafe(wrote.set)
+
+    state.flush_slot_now = _record_write
 
     out = await sc.send_to_target(
         state,
@@ -524,12 +535,21 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     )
 
     assert out["started"] is False, "the prompt was queued, so a receipt was given"
-    # Started, not awaited, and it runs in an executor.
-    for _ in range(20):
-        # flake-ok: pre-existing bounded 20-yield poll for the executor write; moved verbatim and tracked for a de-flake pass
-        await asyncio.sleep(0)
-        if flushed:
-            break
+    # Started, not awaited, and it runs in an executor, so this cannot assert
+    # immediately. Synchronise on the WRITE: the stub above is what the executor
+    # actually calls, so the event is resolved by the completion path itself.
+    # `await_until` carries the lost-run bound, so a write that never starts
+    # becomes a named failure rather than a hang, and the test spends no budget
+    # waiting out a race. A fixed yield count cannot do this at all:
+    # `asyncio.sleep(0)` only reschedules on the event loop and never blocks for
+    # an executor thread.
+    await await_until(
+        wrote,
+        what=(
+            "the immediate queue write never started for the slot whose queue now "
+            "holds the acknowledged prompt"
+        ),
+    )
     assert flushed == [target], (
         "the immediate queue write must have been started for the slot whose queue "
         f"now holds the acknowledged prompt: {flushed}"

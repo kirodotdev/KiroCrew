@@ -24,10 +24,13 @@ from kiro_crew.dashboard.chat_folders_paths import (
     _refuse_principal_steering_dirs,
     _validate_project_dir,
     _validate_steering_dirs,
+    resolve_folder_project_dir_off_loop,
 )
 from kiro_crew.dashboard.chat_folders_records import (
     CREATED_BY_SESSION,
     MAX_CHAT_FOLDERS,
+    FolderAgentScopeError,
+    FolderAgentScopeUnverifiable,
     FolderCapError,
     FolderCreateError,
     FolderNameExistsError,
@@ -41,6 +44,7 @@ from kiro_crew.dashboard.chat_folders_records import (
     _validate_folder_tags,
     agent_creator_key,
     caller_home_slot,
+    check_folder_agent_scope,
     create_folder_record,
 )
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
@@ -52,6 +56,7 @@ from kiro_crew.dashboard.folder_ownership import (
     _is_descendant,
     _subtree_holds_foreign_folder,
 )
+from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
@@ -213,6 +218,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
+            is_owner=source_providers.is_owner_dashboard_request(request),
             tags=folder_tags,
             steering_dirs=steering_dirs,
             # An agent (internal transport) never mints a same-name sibling: its
@@ -246,6 +252,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc), "code": exc.code}, status=403)
     except FolderCapError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=429)
+    except FolderAgentScopeUnverifiable as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except FolderCreateError as exc:
         # Inline literals rather than one hoisted payload dict: the error-code
         # contract scan reads the body at the `json_response` site, and a local
@@ -355,7 +363,9 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
-        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
+        pd, err = await asyncio.to_thread(
+            _validate_project_dir, str(body["project_dir"] or "").strip()
+        )
         if err:
             return web.json_response({"error": err}, status=400)
         if pd:
@@ -467,6 +477,115 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if tags_err:
             return web.json_response({"error": tags_err, "code": "tags_invalid"}, status=400)
         changes["tags"] = clean_tags
+    scope_sensitive = (
+        "default_agent" in changes or "project_dir" in changes or "parent_id" in changes
+    )
+    if scope_sensitive and request_app and _folder_owner_app(folder) != request_app:
+        # Preflight ownership, ahead of scope validation below: without this,
+        # a non-owner's scope-sensitive PATCH reaches `check_folder_agent_scope`
+        # first and gets a 400 that NAMES the folder's effective agent — for a
+        # `member:` principal that discloses exactly what the ownership-filtered
+        # GET withholds (see the filter at line ~479). The authoritative
+        # ownership decision still happens under the lock in `_apply` below
+        # (`not_owned`, ~1917) and is not removed: a concurrent reparent can
+        # change who owns this folder between this read and the write, so only
+        # the locked check is safe to rely on for the actual mutation. This
+        # preflight only prevents scope validation from running — and thus
+        # answering — ahead of an ownership refusal it would otherwise leak
+        # through. The response is built identically to the locked path's
+        # `not_owned` refusal so a caller cannot tell which gate refused.
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error="app cannot change a folder it does not own",
+        )
+        return web.json_response(
+            {
+                "error": "this app does not own that folder",
+                "code": "folder_not_owned",
+            },
+            status=403,
+        )
+    if reparenting and new_parent and request_app:
+        # Preflight the prospective destination ahead of scope validation. A
+        # folder the caller owns can otherwise inherit a foreign parent's
+        # project-scoped agent, and the scope error names that agent before the
+        # locked ``forbidden_parent`` gate below can return the generic
+        # ownership refusal. Mirror that gate's accept-set here, but retain it
+        # as the authoritative decision: only the locked check protects the
+        # mutation if ownership changes between this read and the write.
+        destination = next((f for f in state._folders if f["id"] == new_parent), None)
+        if destination is not None and _folder_owner_app(destination) != request_app:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat.folder_update",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"parent={new_parent}",
+                error="app cannot move a folder into one it does not own",
+            )
+            return web.json_response(
+                {
+                    "error": "this app does not own that folder",
+                    "code": "folder_not_owned",
+                },
+                status=403,
+            )
+    if scope_sensitive:
+        # The modal's Save gate, re-decided here: a PATCH that sets the agent,
+        # directory, or parent must leave the folder's effective agent inside
+        # its effective scope. Reparenting can change both inherited values.
+        # A PATCH touching none of them (rename, collapse, order, color) is not
+        # an agent-scope edit and is never refused for one.
+        # Decided before the store lock, against the pre-state, as the other
+        # pre-lock field checks above are.
+        stored_agent = str(folder.get("default_agent") or "").strip()
+        stored_dir = str(folder.get("project_dir") or "")
+        stored_parent = str(folder.get("parent_id") or "")
+        if stored_dir:
+            # Re-screen the STORED spelling. ``check_folder_agent_scope`` takes
+            # ``own_dir`` as already validated and resolves it to scan, and that
+            # resolution IS the outbound probe for a UNC spelling: it happens
+            # inside ``is_sensitive_path``, ahead of the Windows
+            # unsupported-platform arm, so that 503 does not fence it. A stored
+            # value is not trustworthy for having been validated once on the way
+            # in — a junction re-pointed under a directory that passed keeps the
+            # same spelling — which is why every other read path re-screens it
+            # through ``_resolve_folder_project_dir``. Off-loop, as the incoming
+            # branch above is: the validator realpaths. A stored dir that no
+            # longer validates narrows the accept-set to the global rows rather
+            # than widening it, and the seed below inherits the screened value
+            # so the round-trip exception still compares like with like.
+            stored_dir, _stored_err = await asyncio.to_thread(_validate_project_dir, stored_dir)
+        seeded_dir = stored_dir
+        if not seeded_dir and stored_parent:
+            seeded_dir, _err = await resolve_folder_project_dir_off_loop(
+                state._folders, stored_parent
+            )
+        next_agent = str(changes.get("default_agent", stored_agent))
+        next_dir = str(changes.get("project_dir", stored_dir))
+        try:
+            await check_folder_agent_scope(
+                state._folders,
+                own_agent=next_agent,
+                own_dir=next_dir,
+                parent_id=str(changes.get("parent_id", stored_parent)),
+                request_app=request_app,
+                is_owner=source_providers.is_owner_dashboard_request(request),
+                seeded=(stored_agent, seeded_dir),
+                seeded_parent_id=stored_parent,
+                clears_own_binding=(
+                    (bool(stored_agent) and not next_agent)
+                    or (bool(folder.get("project_dir")) and not next_dir)
+                ),
+            )
+        except FolderAgentScopeUnverifiable as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=503)
+        except FolderAgentScopeError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     # All fields validated — apply atomically under the store lock, re-finding
     # the folder there so a concurrent delete cannot resurrect it, and
     # re-deciding the tree-shape rules there so two concurrent reparents cannot
