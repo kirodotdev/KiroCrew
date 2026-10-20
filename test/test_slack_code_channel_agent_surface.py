@@ -1553,3 +1553,47 @@ def test_a_pre_created_empty_record_reads_as_no_records_and_stays_writable(
     assert first.get(CH) is None
     first.update(CH, plan_canvas_id="F1")
     assert SurfaceStore(path).get(CH).plan_canvas_id == "F1"
+
+
+def test_set_context_bar_reports_items_the_workers_pushed_out(
+    env: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Opus on #21993: worker items filled the bar, so the agent's item is not shown."""
+    from kiro_crew.slack.code_channels.workspace import core as workspace_core
+
+    _bind(env)
+
+    class Client:
+        async def set_context_bar(self, channel_id: str, items: list) -> dict:
+            return {"ok": True}
+
+    svc = service.WorkspaceService(lambda: Client())
+    monkeypatch.setattr(workspace_core, "_SERVICE", svc)
+    WorkspaceStore().put(WorkspaceRecord(team_id="T1", channel_id=CH, project_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        svc, "bar_base_keys", lambda team, channel: ["folder", "w1", "w2", "w3", "w4"]
+    )
+    out = _run(env, tools.SET_CONTEXT_BAR, {"items": [{"key": "tokens", "label": "1.2k"}]})
+    assert out.ok, out.text
+    assert "Not shown" in out.text and "tokens" in out.text
+
+
+def test_set_context_bar_alone_reports_against_no_workspace_items(
+    env: Any, monkeypatch: Any
+) -> None:
+    """With no workspace record the bar holds the agent's items only: none is "not shown"."""
+    from kiro_crew.slack.code_channels.workspace import core as workspace_core
+
+    _bind(env)
+
+    class Stale:
+        async def republish_bar(self, binding: Any) -> None:
+            return None  # no workspace record to publish from
+
+        def bar_base_keys(self, team: str, channel: str) -> list[str]:
+            return ["folder", "w1", "w2", "w3", "w4"]  # from an earlier build
+
+    monkeypatch.setattr(workspace_core, "_SERVICE", Stale())
+    out = _run(env, tools.SET_CONTEXT_BAR, {"items": [{"key": "tokens", "label": "1.2k"}]})
+    assert out.ok, out.text
+    assert "Not shown" not in out.text

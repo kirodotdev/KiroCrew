@@ -18520,7 +18520,7 @@
           "agent_sessions_note": "Das Einschalten ändert in Slack noch nichts. Es ergänzt nur das App-Manifest, den Einrichtungstext, den du in den Schritten unten in Slack kopierst.",
           "update_keeps_working": "Bis zum Update funktioniert Slack wie bisher.",
           "code_channels": "Code-Kanäle",
-          "code_channels_desc": "An: Der Agent kann pro Programmieraufgabe einen Slack-Kanal mit Kontextleiste und Diff-Tab öffnen, dich einladen und dort unter seinem eigenen Namen posten und Notizen führen. Dafür erhält deine Slack-App 5 Berechtigungen. Aus: Es ändert sich nichts, und du kannst die Berechtigungen später in Slack entfernen. Slack führt Code-Kanäle schrittweise ein, daher hat dein Workspace sie vielleicht noch nicht.",
+          "code_channels_desc": "An: Der Agent kann pro Programmieraufgabe einen Slack-Kanal mit Kontextleiste und Diff-Tab öffnen, dich einladen und dort unter seinem eigenen Namen posten, Nachrichten anheften und Notizen führen. Dafür erhält deine Slack-App 6 Berechtigungen. Aus: Es ändert sich nichts, und du kannst die Berechtigungen später in Slack entfernen. Slack führt Code-Kanäle schrittweise ein, daher hat dein Workspace sie vielleicht noch nicht.",
           "stage_tag": "Vorschau",
           "code_channel_dispatch": "Code-Kanäle Hilfsagenten starten lassen",
           "code_channel_dispatch_desc": "Helfer arbeiten im Ordner des Code-Kanals und fragen Sie, bevor sie Dateien ändern, außer der Kanal ist auf automatische Genehmigung gestellt (Trust).",

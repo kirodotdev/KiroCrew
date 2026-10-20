@@ -635,8 +635,21 @@ async def _set_context_bar(call: Call, args: dict[str, Any]) -> str:
     # One read-update-publish-rollback at a time per channel: a slow call's
     # rollback can then never land on top of a newer call's items.
     async with _bar_locks.setdefault(channel, asyncio.Lock()):
-        await _publish_bar_locked(call, channel, items, agent_bar, workspace)
-    base_keys = await asyncio.to_thread(_workspace_keys, call.binding)
+        alone = await _publish_bar_locked(call, channel, items, agent_bar, workspace)
+        # The workspace's items as the bar was just built (its workers included),
+        # read inside the lock, so an agent item the workers pushed out is
+        # reported as not shown.
+        service = getattr(workspace, "_SERVICE", None)
+        built: list[str] | None
+        if alone:
+            built = []  # no workspace items were published beside the agent's
+        elif service is not None and hasattr(service, "bar_base_keys"):
+            built = service.bar_base_keys(call.binding.team_id, channel)
+        else:
+            built = None
+    base_keys = (
+        built if built is not None else await asyncio.to_thread(_workspace_keys, call.binding)
+    )
     _, dropped = agent_bar.merge([{"key": k} for k in base_keys], items)
     shown = [i["key"] for i in items if i["key"] not in dropped]
     if not items:
@@ -655,7 +668,8 @@ _bar_locks: dict[str, asyncio.Lock] = {}
 
 async def _publish_bar_locked(
     call: Call, channel: str, items: list[dict[str, str]], agent_bar: Any, workspace: Any
-) -> None:
+) -> bool:
+    """Store and publish *items*; True when the bar holds the agent's items alone."""
     previous = await surface_get(channel)
     before = previous.context_bar if previous else ()
     # The store write runs on in its thread whatever is cancelled: wait for it,
@@ -668,9 +682,12 @@ async def _publish_bar_locked(
     stored = writing.result().context_bar  # raises the write's own error
     service = getattr(workspace, "_SERVICE", None)
 
+    alone = {"yes": False}
+
     async def publish() -> None:
         result = await service.republish_bar(call.binding) if service is not None else None
         if result is None:
+            alone["yes"] = True  # the bar holds the agent's items only
             # No workspace record to publish from: the bar is the agent's items alone.
             merged, _ = agent_bar.merge([], items)
             await call.client.set_context_bar(channel, merged)
@@ -687,6 +704,7 @@ async def _publish_bar_locked(
             publishing.result()  # re-raises the publish's own error
     if cancelled:
         raise asyncio.CancelledError
+    return alone["yes"]
 
 
 async def _settle_future(coro: Any) -> tuple[asyncio.Future[Any], bool]:

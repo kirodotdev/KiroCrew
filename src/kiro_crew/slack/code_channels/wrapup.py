@@ -89,6 +89,9 @@ class Facts:
     #: None when git could not say.
     uncommitted: bool | None = None
     worktree: str = ""
+    #: One outcome line per worker of a conductor-led channel
+    #: (``• Fix login: PR #12 merged``), already escaped and redacted.
+    workers: tuple[str, ...] = ()
 
 
 def _gather_facts_sync(binding: Binding) -> Facts:
@@ -135,11 +138,29 @@ def _gather_facts_sync(binding: Binding) -> Facts:
     )
 
 
+def _workers_still_admitted(binding: Binding) -> bool:
+    """The board's scope check, asked again just before the wrap-up is posted (fails closed)."""
+    try:
+        from kiro_crew.slack.code_channels.board import source
+
+        return bool(source.scope_admits(surface.dashboard_state(), binding))
+    except Exception:
+        return False
+
+
 async def gather_facts(binding: Binding) -> Facts:
     try:
-        return await asyncio.to_thread(_gather_facts_sync, binding)
+        facts = await asyncio.to_thread(_gather_facts_sync, binding)
     except Exception:
-        return Facts()
+        facts = Facts()
+    try:
+        from kiro_crew.slack.code_channels import board
+
+        lines = await board.outcome_lines(binding)
+    except Exception:
+        logger.debug("code channel %s: worker outcomes unavailable", binding.channel_id)
+        lines = []
+    return replace(facts, workers=tuple(lines)) if lines else facts
 
 
 _PR_WORDS = {"open": "open", "draft": "draft", "merged": "merged", "closed": "closed"}
@@ -164,7 +185,26 @@ def _fact_lines(facts: Facts) -> list[str]:
         lines.append(f"Changed since the branch was cut: {facts.changes}")
     if facts.uncommitted:
         lines.append("⚠️ The worktree has uncommitted changes. Archiving keeps them on disk.")
+    if facts.workers:
+        lines.append("*Workers*\n" + _bounded_lines(facts.workers, _MAX_WORKER_CHARS))
     return lines
+
+
+#: Room the worker outcomes may take in the facts block (Slack caps a text at 3,000).
+_MAX_WORKER_CHARS = 1800
+
+
+def _bounded_lines(lines: tuple[str, ...], limit: int) -> str:
+    """*lines* joined, whole lines only, within *limit* characters, then ``+N more``."""
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > limit:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    rest = len(lines) - len(kept)
+    return "\n".join(kept + ([f"+{rest} more"] if rest else []))
 
 
 def _redact(text: str) -> str:
@@ -401,6 +441,12 @@ async def post_wrap_up(
             channel, operation="slack.code_channel.wrap_up", caller=caller
         ):
             return ""  # again at the commit point, after the facts and the lock
+        if facts.workers and not _workers_still_admitted(binding):
+            # The lock wait and the archive check can outlast a change of the
+            # channel's sharing or activation: the outcomes the board read
+            # admitted earlier are left out, and the rest is posted as before.
+            facts = replace(facts, workers=())
+            blocks = wrap_up_blocks(summary, facts, channel)
         try:
             ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
         except Exception:

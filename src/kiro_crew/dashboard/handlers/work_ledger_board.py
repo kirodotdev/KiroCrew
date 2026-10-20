@@ -32,6 +32,7 @@ The conductor's route is not touched, so nothing reading it today can break.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Mapping
 from datetime import datetime
@@ -293,6 +294,68 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
         if stamp is not None and (reported is None or stamp >= reported):
             return True
     return False
+
+
+async def own_worker_records(
+    slot_key: str,
+) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
+    """*slot_key*'s conductor and items, each worker key kept only when it binds BACK.
+
+    The gateway-owned reader behind a code channel's work board, which publishes a
+    conductor's own workers into its channel. The slot comes from the channel's
+    stored binding, never from a request. The read is one snapshot under the
+    board's own lock, like this module's page read, and a board whose cache is
+    flagged dirty reads as no board: what it holds may be a mutation the record
+    rolled back, and the board's alerts cannot be taken back once posted.
+
+    An item's ``worker_session_key`` is a conductor-written field, so it alone does
+    not make a session that conductor's worker: the worker's own binding file must
+    name this conductor and this item too. Where it does not, the key is blanked
+    and the row reads as not dispatched, so no other session's liveness or deep
+    link can reach the board.
+    """
+    async with _board_lock(slot_key):
+        return await asyncio.to_thread(_own_worker_records_locked, slot_key)
+
+
+def _own_worker_records_locked(
+    slot_key: str,
+) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
+    if work_ledger.cache_dirty(slot_key) is not None:
+        return None, []
+    record = work_ledger.read_conductor(slot_key)
+    if record is None:
+        return None, []
+    items = work_ledger.list_work_items(slot_key)
+    for item in items:
+        worker = item.worker_session_key or ""
+        if not worker:
+            continue
+        bound = False
+        for candidate in dict.fromkeys((worker, session_ledger.ledger_key(worker))):
+            if work_ledger.read_binding(candidate) == (slot_key, item.item_id):
+                bound = True
+                break
+        if not bound:
+            item.worker_session_key = None
+    for item in items:
+        # A person's steer answers a worker's question as a decide does
+        # (:func:`answered_since_report`, the Crew page's rule): the board's row
+        # reads it from the same snapshot, so the two never disagree on who must
+        # act. A read-only mark on this snapshot's copy; the ledger is untouched.
+        answered = False
+        if item.status in {"blocked", "question"} and not work_item_answered(item):
+            events = [
+                dataclasses.asdict(e)
+                for e in work_ledger.read_events(slot_key, item.item_id, limit=_BOARD_EVENT_TAIL)
+            ]
+            answered = answered_since_report(item, events)
+        setattr(item, "answered_by_event", answered)  # noqa: B010 - a snapshot mark, not a field
+    return record, items
+
+
+#: Events per item the work board reads to see whether a report was answered.
+_BOARD_EVENT_TAIL = 20
 
 
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
