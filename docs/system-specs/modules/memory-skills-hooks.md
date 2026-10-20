@@ -4457,7 +4457,19 @@ last page that still names the line count, not a refusal. `read_scoped_skill` ke
 whole-or-`None` contract for the required-skill and `$key` activation paths.
 An external mapping rooted above a catalog prunes that catalog before descent.
 Its entries come only from normal discovery, retaining project consent, no-link
-confinement, disabled-app filtering and first-wins precedence.
+confinement, disabled-app filtering and the per-key copy choice below.
+The enumeration keeps every extra root's copy of a key in precedence order,
+because package installers copy a dependency's skills into every consumer's
+tree. The unscoped catalog serves the first copy per key; a mapped scope
+matches its mappings against every copy, after the disabled-app filter, and
+serves the first matched copy per key. A matched copy another root won is read
+by its own path, fenced to the narrowest admitted root (this loader's roots
+plus the provider roots) that holds it. Budgeted always-loading reads a pinned
+body by path, so it serves that copy; triggers and the unbudgeted legacy
+renderer read the winning copy by key, so they leave it out. The body search
+index is keyed by path
+so scopes serving different copies of one key do not overwrite each other's
+entry. A project copy whose key an operator root holds is still dropped.
 Each literal external `SKILL.md` mapping scans its own directory, so sibling
 skills are not scanned again for every explicit mapping.
 

@@ -231,7 +231,24 @@ def _matches_any(path: str, globs: list[str]) -> bool:
 def _iter(
     loader: SkillsLoader, project_dir: str | Path | None = None
 ) -> list[tuple[str, Path, str | None]]:
+    """The first row per key of :func:`_iter_rows`: the unscoped catalog."""
+    seen: set[str] = set()
+    first: list[tuple[str, Path, str | None]] = []
+    for row in _iter_rows(loader, project_dir):
+        if row[0] not in seen:
+            seen.add(row[0])
+            first.append(row)
+    return first
+
+
+def _iter_rows(
+    loader: SkillsLoader, project_dir: str | Path | None = None
+) -> list[tuple[str, Path, str | None]]:
     """Return all ``(name, skill_file, within)`` triples without walking the tree.
+
+    Rows are in precedence order and a key can repeat: an extra root's copy of
+    a key an earlier root holds is kept, so a ``skill://`` mapping can select
+    it. :func:`_iter` serves the first row per key to everything else.
 
     Local skills take precedence over extra paths, and both take precedence
     over a trusted project's own skills. Precedence is why enumeration ORDER is
@@ -877,7 +894,7 @@ def _get_disabled_app_names(loader: SkillsLoader) -> frozenset[str]:
 def _iter_visible(
     loader: SkillsLoader, project_dir: str | Path | None = None
 ) -> list[tuple[str, Path, str | None]]:
-    """Return all ``(name, skill_file, within)`` pairs, filtering out disabled app skills."""
+    """Return the first ``(name, skill_file, within)`` per key, minus disabled app skills."""
     disabled_apps = loader._get_disabled_app_names()
     if not disabled_apps:
         return loader._iter(project_dir)
@@ -956,9 +973,22 @@ def _scoped_entries(
 
     if only == []:
         return []
-    entries = [sk._ScopedSkillEntry(*entry) for entry in loader._iter_visible(project_dir)]
     if only is None:
-        return entries
+        return [sk._ScopedSkillEntry(*entry) for entry in loader._iter_visible(project_dir)]
+    # Mappings select among every copy of a key, then the first selected copy
+    # per key is served: a mapping names the file it wants even where another
+    # root's copy wins the unscoped catalog.
+    disabled = loader._get_disabled_app_names()
+    rows = _iter_rows(loader, project_dir)
+    winners: dict[str, Path] = {}
+    for key, path, _within in rows:
+        winners.setdefault(key, path)
+    admitted_copy_roots = loader._snapshot_admitted_roots()
+    entries = [
+        sk._ScopedSkillEntry(*row)
+        for row in rows
+        if not disabled or loader._owning_app(row[0], row[1], row[2]) not in disabled
+    ]
     project_key = loader._trusted_project_key(project_dir) if project_dir else ""
     heads = {
         pattern: _canonical_prefix(pattern, project_dir)
@@ -967,25 +997,44 @@ def _scoped_entries(
     }
     canonicals = {pattern: _glob_with_prefix(pattern, heads[pattern]) for pattern in only}
     globs = list(dict.fromkeys([*only, *canonicals.values()]))
-    selected = [entry for entry in entries if _matches_any(str(entry[1]), globs)]
-    known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
     loader_roots = [loader._dir, *loader._extra_paths]
-    catalog_roots = list(loader_roots)
-    if project_dir:
-        catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
     # Compared both as spelled and resolved: ``skills.extra_paths`` roots
     # are stored resolved while a ``~`` mapping may name them through a
     # symlink. Only loader-owned roots are resolved, through the same
     # UNC-gated fence as the glob prefix; the project root stays lexical
     # because a project path is never canonicalized before consent.
     real_roots = [real for root in loader_roots if (real := sk.validate_file_path(str(root)))]
+    matched = [entry for entry in entries if _matches_any(str(entry.path), globs)]
+    aliased = _alias_selected(entries, matched, only, heads, canonicals, loader_roots, real_roots)
+    chosen = {id(entry) for entry in (*matched, *aliased)}
+    selected: list[_ScopedSkillEntry] = []
+    selected_keys: set[str] = set()
+    for entry in entries:
+        if entry.key in selected_keys or id(entry) not in chosen:
+            continue
+        if entry.project_root is None and entry.path != winners[entry.key]:
+            # A key read resolves to the winning copy, so a selected losing
+            # copy is read by its own path, fenced to the narrowest admitted
+            # root that holds it.
+            target = os.path.realpath(entry.path)
+            admitted = max(
+                (root for root in admitted_copy_roots if sk._within_any(target, (root,))),
+                key=len,
+                default=None,
+            )
+            if admitted is None:
+                continue
+            entry = entry._replace(mapping_root=admitted)
+        selected_keys.add(entry.key)
+        selected.append(entry)
+    known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
+    catalog_roots = list(loader_roots)
+    if project_dir:
+        catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
     # An ancestor glob must not descend through a catalog's filtered
     # rows or probe a project skills junction before consent admission.
     excluded = tuple(
         dict.fromkeys([*(os.path.abspath(path) for path in catalog_roots), *real_roots])
-    )
-    selected.extend(
-        _alias_selected(entries, selected, only, heads, canonicals, loader_roots, real_roots)
     )
     # Mapping paths are spec-owned, never caller-supplied read keys. Walk the
     # literal prefix through the same provider/sensitive-path fence as the
@@ -1001,8 +1050,8 @@ def _scoped_entries(
             sk._within_any(os.path.abspath(prefix), (os.path.abspath(root),))
             for root in catalog_roots
         ) or sk._within_any(str(real_prefix), tuple(real_roots)):
-            # The regular enumerator owns precedence, disabled apps and
-            # project consent. A mapping must not re-admit a filtered row.
+            # The rows above already applied disabled apps, project consent
+            # and per-key copy choice. A mapping must not re-admit a filtered row.
             continue
         root = prefix.parent if prefix.name == "SKILL.md" else prefix
         if not root.is_absolute() or sk.validate_file_path(str(root)) is None:
@@ -1059,6 +1108,9 @@ def _iter_uncached(
         )
     ]
     seen = {name for name, _, _ in results}
+    # A root listed twice, or linked into the skills dir, yields one copy twice;
+    # only distinct copies are kept, compared in the resolved form used below.
+    kept = {(name, sk.validate_file_path(str(path)) or str(path)) for name, path, _ in results}
     # (root, confine_to): only the project root is confined — see
     # _iter_skill_files. Extra paths keep the provider-root allowance.
     roots: list[tuple[Path, tuple[str, ...] | None]] = [
@@ -1073,9 +1125,11 @@ def _iter_uncached(
         roots.append((project_root, (project_key,)))
     for root, confine in roots:
         for name, skill_file in sk._iter_skill_files(root, confine_to=confine):
-            if name in seen:
-                continue
             if confine is not None:
+                if name in seen:
+                    # A project copy never sits behind an operator-installed
+                    # one, so it is not kept for a mapping to select.
+                    continue
                 # The descriptor-anchored walker already admitted this
                 # lexical name. Resolving it here would reintroduce the
                 # link-swap/UNC probe the walk exists to prevent. Reads are
@@ -1093,6 +1147,9 @@ def _iter_uncached(
             # going wrong: the key could disagree with the value handed out,
             # and a miss read unconfined. Carried in the tuple, neither is
             # expressible.
+            if (name, resolved) in kept:
+                continue
+            kept.add((name, resolved))
             results.append((name, Path(resolved), None))
             seen.add(name)
     return results
