@@ -1,7 +1,8 @@
 ---
 name: papyrus-diagnose-compilation
+app: papyrus
 description: Diagnose and fix LaTeX compilation failures. Use when the document does not compile, pdflatex/bibtex/biber/tectonic errors out, the PDF is stale, or the author reports a build/compile error in the Papyrus editor.
-triggers: pdflatex error, tectonic error, bibtex, biber, latex compile, undefined control sequence, missing $, stale pdf, .tex will not compile
+triggers: pdflatex error, tectonic error, bibtex, biber, latex compile, undefined control sequence, missing $ inserted, stale pdf, .tex will not compile
 ---
 
 # Diagnose LaTeX Compilation

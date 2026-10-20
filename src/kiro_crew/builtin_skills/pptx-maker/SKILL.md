@@ -1,5 +1,6 @@
 ---
 name: pptx-maker
+app: pptx-maker
 description: "Generate or restyle a PowerPoint deck. Use when the user wants to create or edit a .pptx presentation, build slides from text or a URL, or design a reusable slide style."
 triggers: pptx, powerpoint, presentation, slides, deck, slide deck, keynote
 ---

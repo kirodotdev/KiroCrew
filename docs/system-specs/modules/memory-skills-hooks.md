@@ -5027,6 +5027,12 @@ its bundled skills are withheld across all user-facing surfaces: trigger matchin
 `get_context`, `search_skills`), always-injected bodies (`get_always_skills`),
 and explicit `$skill` token resolution (`resolve_dollar_skills`). An unreadable
 app registry fails open so a transient read error never hides enabled skills.
+A skill is the app's when its registration path says so (`skills/<app>/<skill>`,
+or a flat link resolving into the app's tree) or, failing that, when its own
+frontmatter names the app in `app:`. A builtin app's skill shipped in
+`builtin_skills/` relies on the second form, because the builtin sync copies those
+skills rather than linking them. A confined project skill's frontmatter is not
+read for this.
 Internal plumbing helpers (`load_skill`, `_served_key_by_realpath`,
 `resolve_ledger_aliases`, `_resolve_path_and_root`) remain ungated so
 reconciliation and pinned paths function without modification.

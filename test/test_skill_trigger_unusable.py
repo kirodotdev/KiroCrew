@@ -1,6 +1,6 @@
 """Trigger matching never injects a skill the turn cannot use.
 
-Three false matches put a skill nobody asked for into a turn (27k chars for
+Four false matches put a skill nobody asked for into a turn (27k chars for
 ``computer-use``, 17k for a ``restart`` skill):
 
 * an app name firing on the ordinary word: ``computer-use`` lists ``Word``
@@ -9,10 +9,12 @@ Three false matches put a skill nobody asked for into a turn (27k chars for
 * a skill for a feature that is off: a session with no ``computer_*`` tool gets
   the skill describing those tools;
 * Kiro Crew's own words: a recovery continuation ("do NOT restart from scratch")
-  fires a skill whose trigger is ``restart``.
+  fires a skill whose trigger is ``restart``;
+* punctuation the matcher drops: ``missing $`` scores as the lone word
+  ``missing`` and fires on any message that uses it.
 
 Each case is pinned beside the nearby input that must still match: the name as
-written, the feature on, and the same word typed by a person.
+written, the feature on, the same word typed by a person, and the error text.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
 from kiro_crew.context import ContextBuilder
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.skills_discovery import _BUILTIN_SKILLS_DIR
@@ -115,6 +118,39 @@ class TestCaseExactPhrase:
         roster = [("office crew", "=Word, =Excel")]
         assert rank_triggered("count every word here", roster) == []
         assert [name for name, _ in rank_triggered("fix it in Excel", roster)] == ["office crew"]
+
+
+def _shipped_triggers(skill_md: Path) -> str:
+    return parse_frontmatter(skill_md.read_text(encoding="utf-8"), SKILL_LOADER).get("triggers", "")
+
+
+class TestPunctuationInAPhrase:
+    """The matcher scores ``\\w+`` words, so a phrase token with none in it vanishes."""
+
+    def test_the_word_in_prose_does_not_fire_the_latex_error_skill(self) -> None:
+        skill_md = _BUILTIN_SKILLS_DIR / "papyrus-diagnose-compilation" / "SKILL.md"
+        triggers = _shipped_triggers(skill_md)
+        prose = words_of("the warning is missing from the run report")
+        assert trigger_score(triggers, prose)[0] < MIN_TRIGGER_OVERLAP
+        assert trigger_score(triggers, words_of("! Missing $ inserted.")) == (1.0, False)
+
+    def test_no_packaged_phrase_fires_on_one_of_its_words(self) -> None:
+        phrases = [
+            (skill_md.parent.name, phrase.strip())
+            for skill_md in sorted(_BUILTIN_SKILLS_DIR.rglob("SKILL.md"))
+            for phrase in _shipped_triggers(skill_md).split(",")
+            if len(phrase.split()) > 1 and not phrase.strip().startswith("!")
+        ]
+        assert phrases
+        fired_by_one_word = [
+            (skill, phrase)
+            for skill, phrase in phrases
+            if any(
+                trigger_score(phrase, words_of(token))[0] >= MIN_TRIGGER_OVERLAP
+                for token in phrase.lstrip("=").split()
+            )
+        ]
+        assert fired_by_one_word == []
 
 
 class TestComputerUseSkill:

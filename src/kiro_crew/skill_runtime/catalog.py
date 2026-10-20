@@ -852,7 +852,7 @@ def _iter_visible(
     return [
         (name, skill_file, within)
         for name, skill_file, within in loader._iter(project_dir)
-        if loader._owning_app(name, skill_file) not in disabled_apps
+        if loader._owning_app(name, skill_file, within) not in disabled_apps
     ]
 
 
@@ -1064,7 +1064,9 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
         loader._request_catalog_refresh(scope)
 
 
-def _owning_app(loader: SkillsLoader, name: str, skill_file: Path) -> str | None:
+def _owning_app(
+    loader: SkillsLoader, name: str, skill_file: Path, within: str | None = None
+) -> str | None:
     """The app whose bundle this skill came from, or ``None``.
 
     Two shapes have to resolve to the same owner, because ``bridges``
@@ -1085,6 +1087,13 @@ def _owning_app(loader: SkillsLoader, name: str, skill_file: Path) -> str | None
     Path-shaped, not manifest-keyed, on purpose: it must answer for a
     third-party app just as well as a builtin, and the registration layout
     is the one thing every app shares.
+
+    A skill whose path names no app may name one itself in an ``app:``
+    frontmatter line. An app's skill shipped in ``builtin_skills/`` needs it:
+    the builtin sync copies it into the skills directory, so neither shape
+    above sees it. The line can only withhold the skill that carries it. A
+    confined project skill (*within* set) belongs to its repository, so its
+    frontmatter is not read here.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -1105,7 +1114,10 @@ def _owning_app(loader: SkillsLoader, name: str, skill_file: Path) -> str | None
             return _builtin_dir_app_name(str(pkg_dir))
     except Exception:
         return None
-    return None
+    if within is not None:
+        return None
+    meta = loader._readable_frontmatter(skill_file, within=None) or {}
+    return meta.get("app", "").strip() or None
 
 
 def _resolve_path(

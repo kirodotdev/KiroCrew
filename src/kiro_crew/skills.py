@@ -709,9 +709,9 @@ class SkillsLoader:
         """
         return _listing.list_skills(self, project_dir, _entries=_entries)
 
-    def _owning_app(self, name: str, skill_file: Path) -> str | None:
+    def _owning_app(self, name: str, skill_file: Path, within: str | None = None) -> str | None:
         """The app whose bundle this skill came from, or ``None``."""
-        return _catalog._owning_app(self, name, skill_file)
+        return _catalog._owning_app(self, name, skill_file, within)
 
     def _owned_hint(self, skill_file: Path) -> bool:
         """Whether *skill_file* sits under the directory Kiro Crew owns."""
