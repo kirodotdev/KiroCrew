@@ -629,6 +629,16 @@ is cut with a visible marker so the member prunes it. On Windows that
 read fails closed (`member_briefing_supported`) and the section says the layer is
 unavailable. Every variable payload runs through `_scrub_member_payload` first.
 
+A **memory scope that blocks reads** withholds layer 4 instead of reading it: the
+section carries the `withheld by this turn's memory/privacy scope` placeholder and
+the instruction not to fill the gap from the briefing or recall. `member.py` →
+`briefing_reads_allowed(blocks_reads, context_groups)` is the one predicate, and
+every delivery path — the V2 essentials envelope, session start, slim resume and
+post-compaction re-injection — passes its verdict as `include_briefing`, so a
+temporary turn (whose own prefix promises no memory reads) cannot carry the
+member's working memory however the section reaches the prompt. An **incognito**
+scope blocks writes only and still reads.
+
 `members.py` → `member_turn_context` is the single chokepoint deciding, per
 session lifecycle, whether the section is delivered and whether the rules gate
 runs: `FRESH` (session start), `WARM_REINJECTION` (post-compaction; a minimal
