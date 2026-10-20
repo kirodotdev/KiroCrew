@@ -39,12 +39,14 @@ import platform
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional, cast
 from urllib.parse import urlsplit
 
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics import destination_filter
+from kiro_crew.metrics.product_metrics import PRODUCT_METRICS, PRODUCT_SCOPE
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -55,6 +57,7 @@ from kiro_crew.platform.context import (
 if TYPE_CHECKING:  # real types for annotations; never imported at runtime
     from collections.abc import Iterable
 
+    from opentelemetry.metrics import Meter
     from opentelemetry.sdk.metrics import MeterProvider as _MeterProviderT
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader as _ReaderT
 
@@ -623,6 +626,27 @@ def _resource_attributes() -> "dict[str, str | int]":
     return attrs
 
 
+class _ScopeRoutingMeter:
+    """Files each observable gauge under the meter its NAME belongs on.
+
+    The inventory module registers every gauge on the one meter it is handed.
+    Most of them are product metrics and some are not (a gauge can land in that
+    module before its export is reviewed), so the module cannot be routed in one
+    call. This picks per name with the same rule ``MetricsRecorder._meter_for``
+    uses -- allowlist membership -- so one name only ever reaches one scope.
+    Only ``create_observable_gauge`` is offered: it is the one call that module
+    makes, and anything else should fail loudly rather than pick a scope.
+    """
+
+    def __init__(self, base: Any, product: Any) -> None:
+        self._base = base
+        self._product = product
+
+    def create_observable_gauge(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        target = self._product if name in PRODUCT_METRICS else self._base
+        return target.create_observable_gauge(name, *args, **kwargs)
+
+
 class _Build(NamedTuple):
     """What a build produced, for a caller to install under ``_lock``.
 
@@ -762,6 +786,16 @@ def _build_recorder() -> _Build:
                 ", ".join(otlp_names),
             )
         meter = provider.get_meter(_SCOPE)
+        # A SECOND meter for the product metrics, beside the one above. Scope is
+        # the only thing that differs: same provider, same readers, same views,
+        # same resource, so every destination AND the local sink see exactly what
+        # they saw before apart from the scope name an instrument is filed under.
+        # Nothing in this repo reads the scope -- the dashboard flattens
+        # scope_metrics and keys by metric name -- so the split costs nothing
+        # here and lets a receiving side separate the two populations without
+        # carrying a name list. The ALLOWLIST is still what gates egress; this is
+        # routing, and it narrows nothing.
+        product_meter = provider.get_meter(PRODUCT_SCOPE)
         # Process-resource gauges (threads/fds/gc/rss/cpu) ride the same consent
         # gate: registered only on this live path, and their observable
         # callbacks run solely when a reader collects. Best-effort — a failure
@@ -781,7 +815,13 @@ def _build_recorder() -> _Build:
         try:
             from kiro_crew.metrics.inventory_gauges import register_inventory_gauges
 
-            register_inventory_gauges(meter)
+            # Routed PER NAME: most of these gauges are product metrics, but not
+            # every one (webhooks.registered is still pending review), so the
+            # module is not filed under the product scope as a whole. A gauge
+            # outside PRODUCT_METRICS stays on the base meter.
+            register_inventory_gauges(
+                cast("Meter", _ScopeRoutingMeter(meter, product_meter))
+            )
         except Exception:
             logger.warning("inventory gauges unavailable", exc_info=True)
         # Crew log health: the write-behind's backlog and the eager fold queue depth.
@@ -804,7 +844,9 @@ def _build_recorder() -> _Build:
             register_crew_log_health_instruments(meter)
         except Exception:
             logger.warning("crew log health instruments unavailable", exc_info=True)
-        return _Build(MetricsRecorder(meter), provider, consent)
+        return _Build(
+            MetricsRecorder(meter, product_meter=product_meter), provider, consent
+        )
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: an egress
@@ -867,7 +909,14 @@ def otlp_egress_active(cfg: "TelemetryConfig") -> bool:
     resolve = getattr(provider, "otlp_destinations", None)
     if resolve is None:
         return False
-    return bool(_filter_metric_destinations(resolve(cfg)))
+    # A DESCRIPTION of posture, asked on every Privacy panel refetch: the Kiro
+    # destination's shared-gate check is not audited under this marker. Every
+    # other resolve (the recorder build, the per-export recheck) is enforcement
+    # and is audited.
+    from kiro_crew.metrics import kiro_export
+
+    with kiro_export.disclosure_only():
+        return bool(_filter_metric_destinations(resolve(cfg)))
 
 
 def _filter_metric_destinations(
@@ -988,6 +1037,23 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             foreign,
             foreign,
         )
+    # A destination asking for an unreviewed point-attribute key is REFUSED here,
+    # before an exporter exists: it gets no reader, and local collection plus
+    # every other destination continue untouched. Checked separately from the
+    # build below so the log names the real cause instead of reading as a
+    # constructor failure. Keys are a reviewed non-secret set and safe to name;
+    # the VALUES are constants and are never logged, least of all beside an
+    # endpoint that may carry a credential.
+    try:
+        destination_filter.validate_point_attributes(getattr(dest, "point_attributes", None))
+    except ValueError as exc:
+        logger.warning(
+            "OTLP destination %r declares an unsupported point attribute; "
+            "egress disabled for it (local-only): %s",
+            dest.name,
+            exc,
+        )
+        return None
     # Callable directly (not only via _build_recorder), so make sure the lazily
     # imported SDK symbols this needs are bound.
     if not _load_otel():
@@ -1033,6 +1099,12 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             # separate field on the descriptor.
             kwargs["session"] = dest.session
         exporter = OTLPMetricExporter(**kwargs)
+        # Narrowing, when this destination declared any: a metric allowlist, fixed
+        # point attributes, a reduced Resource. Applied as a WRAPPER around this
+        # destination's own exporter, so the local sink and every other
+        # destination are untouched by construction, and a destination that
+        # declared none is handed back the exporter object itself.
+        exporter = destination_filter.wrap_if_narrowed(dest, exporter)
         return PeriodicExportingMetricReader(
             exporter,
             export_interval_millis=float(

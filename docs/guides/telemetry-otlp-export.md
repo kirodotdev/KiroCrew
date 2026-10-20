@@ -16,6 +16,7 @@ collection, then egress.
 |---|---|---|
 | `telemetry.enabled` | `false` | Nothing is recorded. Metric call sites are cheap no-ops. |
 | `telemetry.otlp_endpoint` | `""` (empty) | Nothing leaves the machine. Local JSONL sink only. |
+| `telemetry.kiro_export` | `false` | Nothing is sent to the Kiro telemetry endpoint. See [Sending product metrics to Kiro](#sending-product-metrics-to-kiro). |
 | OTLP exporter package | not installed | The OTLP exporter is not importable until installed separately. |
 
 Collection and egress are deliberately separate switches. Enabling collection
@@ -315,6 +316,55 @@ your queries, so you can move that line without a Kiro Crew change.
 Resource attributes identify the sending process and are attached to every
 series, so they are what you group by. `service.name` is always `kirocrew`.
 
+### Two instrumentation scopes
+
+Metrics arrive under two OpenTelemetry instrumentation scopes, and your collector
+receives both:
+
+- **`kiro.crew`** -- the product metrics listed under
+  [Sending product metrics to Kiro](#sending-product-metrics-to-kiro).
+- **`kiro_crew`** -- everything else: the histograms, the `kirocrew.process.*`
+  family, and the debugging counters.
+
+Only the scope name differs. Both scopes come from one meter provider with the
+same readers, views and resource, so the same instruments arrive with the same
+values whether or not you send anything to Kiro. The split exists so a receiving
+side can route the two populations apart without a name list. If you filter or
+group by instrumentation scope (most backends expose it as `otel_scope_name` or
+similar), a query pinned to `kiro_crew` alone will not see the metrics in the
+first list. Filter on the metric name instead, or match both scopes.
+
+### A destination can receive less than everything
+
+The paragraph above describes the destination you configure: `otlp_endpoint`
+sends your own collector every instrument the process records, under the full
+resource, with no attribute Kiro Crew added on its way out. That is unchanged and
+is what this guide is about.
+
+A destination is also allowed to receive only PART of that. `OtlpDestination`
+carries three optional fields, and a build that assembles its own destination --
+rather than the one you configure through `otlp_endpoint` -- can set them:
+
+- `allow` -- only metrics whose name is in this set are sent. Unset means
+  everything, which is what your endpoint gets.
+- `point_attributes` -- fixed key/value pairs added to every data point of that
+  destination. The one reviewed key today is `ClientType`.
+- `resource_allow` -- that destination's batches carry a resource reduced to these
+  keys, so a destination that may see only `service.name` and `service.version`
+  does not receive `service.instance.id`.
+
+Three things to take from this if you operate a collector:
+
+- **Your destination is not affected by another one.** Each destination's
+  narrowing is applied to its own exporter, so nothing another destination
+  declares can add an attribute to, or remove a metric from, what reaches yours.
+- **The local JSONL sink is never narrowed.** It records everything the process
+  collected, under the full resource, which is what makes it the place to check
+  what was actually measured on a machine.
+- **A narrowing can only reduce.** None of the three fields can add a metric, relax
+  the consent gate, or bypass the attribute sanitiser; a destination that sets
+  none of them behaves exactly as this guide describes.
+
 ### Before you build a per-host dashboard
 
 Kiro Crew sets `service.instance.id` explicitly to a random, persisted install
@@ -348,6 +398,130 @@ across those processes, so publishing them from each one would count a single ho
 once per process. If you see process metrics from a host but no inventory metrics,
 the gateway on that host is not running or not exporting — that is the signal, not
 a gap in collection.
+
+## Sending product metrics to Kiro
+
+Everything above is about a collector *you* run. This section is about the one
+destination Kiro Crew ships with: the Kiro telemetry endpoint, which is how the
+people who build Kiro Crew see whether a feature is used and whether a release
+helped. It is a second, separate switch, it is off by default, and it sends a
+much smaller set of metrics than your own collector gets.
+
+| | Value |
+|---|---|
+| Switch | `telemetry.kiro_export` (default `false`), and `telemetry.enabled` must also be on |
+| Endpoint | `https://telemetry.<region>.kiro.dev/v1/metrics`, standard OTLP/HTTP over TLS |
+| Region | `telemetry.kiro_export_region`: `us-east-1` (default) or `eu-central-1` |
+| What is sent | Only the metrics in the table below, each with `ClientType=kiro-crew` |
+| Who you are | Your existing Kiro sign-in, when there is one |
+| Cadence | Once per `telemetry.export_interval_seconds` (60s), on the reader thread |
+
+The endpoint is a constant in the code. No setting can turn it into a plain HTTP
+URL or aim it at another host; the region chooses between the two spellings above
+and nothing else. A region that is neither of them switches the destination off
+rather than guessing which one was meant.
+
+### Turning it off
+
+Any one of these is enough, and none of them needs a restart:
+
+- `kirocrew config set telemetry.kiro_export false`
+- the recording switch in Settings -> Privacy, which turns off `telemetry.enabled`
+  and with it every destination
+- `DO_NOT_TRACK=1` in the environment (any value other than `0`/`false`/`no`/`off`
+  counts, per the cross-product convention)
+- `KIROCREW_TELEMETRY_KIRO_EXPORT=0` in the environment
+- running the gateway with `--test-mode`, which switches it off unconditionally
+
+An operator's own `telemetry.otlp_endpoint` is unaffected by all of these, and
+the local JSONL sink still records everything either way, so you can always read
+on your own machine what was measured.
+
+### The exact metrics that leave the machine
+
+Seventeen names, and nothing else. Every other instrument stays in the local sink
+and in your own collector: most of them exist for local debugging, and every
+histogram stays local because its buckets may not survive a receiving backend.
+
+| Metric | Type | Attributes |
+|---|---|---|
+| `kirocrew.session.started` | counter | `session_source` |
+| `kirocrew.session.idle_expired` | counter | `turn_active`, `orphaned` |
+| `kirocrew.subagent.spawned` | counter | `concurrency`, `batched` |
+| `kirocrew.context.compactions` | counter | `success` |
+| `kirocrew.cron.fires` | counter | `kind`, `trigger` |
+| `kirocrew.artifact.created` | counter | `kind`, `source`, `kind_auto` |
+| `kirocrew.workflow.runs` | counter | `authored`, `replay` |
+| `kirocrew.approval.decisions` | counter | `decision`, `security_deny` |
+| `kirocrew.inventory.crons.active` | gauge | none |
+| `kirocrew.inventory.monitor_loops.active` | gauge | none |
+| `kirocrew.inventory.skills.installed` | gauge | none |
+| `kirocrew.inventory.memory.migrated` | gauge | none |
+| `kirocrew.inventory.knowledge.documents` | gauge | none |
+| `kirocrew.inventory.lessons` | gauge | none |
+| `kirocrew.inventory.mcp.servers` | gauge | `class` |
+| `kirocrew.inventory.config.toggle` | gauge | `key` |
+| `kirocrew.inventory.probe.failures` | gauge | `probe` |
+
+Every attribute value above comes from a closed set fixed in the code. None of
+them is a name, a path, a URL, an id, a model identifier or any text you typed.
+A name joins this table only in a reviewed change that also changes
+`PRODUCT_METRICS` in the code, and a test fails if the two ever disagree.
+
+Four resource attributes travel with the data, narrowed down from the fuller set
+your own collector receives: `service.name`, `service.version`, `os.type` and
+`process.pid`. The install id (`service.instance.id`) and the `host.*` readings
+are **not** sent to this destination: they identify a machine, and this
+destination counts none.
+
+### How you are identified
+
+If you are signed in to Kiro, the request carries that sign-in: an
+`Authorization: Bearer` header, plus `x-kiro-token-type` and
+`x-kiro-profile-arn` where your sign-in kind needs them. It is the same token
+Kiro Crew already holds for model calls, read from its cache. Exporting never
+starts a sign-in and never refreshes a token: one that is missing, unreadable or
+close enough to expiry that it would need renewing is treated as no sign-in at
+all.
+
+A headless host that authenticates with `KIRO_API_KEY` in the environment rather
+than an interactive sign-in sends that key the same way, as
+`Authorization: Bearer` with `x-kiro-token-type: API_KEY`. It is read only when
+no stored sign-in can serve the request, which is the order the rest of the
+product resolves the two in.
+
+If you are not signed in, the request carries one header instead,
+`x-kiro-machineid`, a one-way hash (SHA-256 under a fixed prefix) of the
+installation id Kiro Crew already keeps on disk. The endpoint requires one of the
+two headers, which is the only reason it exists; reading no installation id means
+no request is sent. Nothing is counted per machine from it, it is never a metric
+attribute, it never reaches the local sink, and the prefix means it cannot be
+matched against the same installation id used anywhere else.
+
+The token, the profile ARN and the machine id ride in headers only. None of the
+three is ever logged, at any log level.
+
+### What happens when the endpoint does not answer
+
+The worst case is a lost minute of numbers. There is no disk queue, nothing is
+held between intervals, and a long outage holds no growing data.
+
+| Case | What happens |
+|---|---|
+| Slow endpoint | The request times out after 10 seconds, on the reader thread. Nothing you type waits on it. |
+| Down or unreachable | The interval is dropped. The next one is a minute later. |
+| Refused (4xx, including an expired token's 401) | The interval is dropped, and never retried as not-signed-in. Three refusals in a row pause this destination for an hour, so a bad configuration does not retry every minute. |
+| Server error (5xx) | The interval is dropped. It does not count toward the pause: it is weather, not an answer. |
+| Any failure at all | Contained at this destination. Your own collector and the local sink keep working. |
+| Logging | One warning for the first failure, then debug only, and one info line when it starts working again. |
+
+### Why `telemetry.enabled` may refuse to turn on from the dashboard
+
+The Privacy panel's recording switch is offered as local-only, so the config
+route refuses to turn it on (HTTP 409) on a host where doing so would start
+egress. With `telemetry.kiro_export` set to `true` in the config file, that is
+such a host, and the switch says so instead of quietly sending. Turn collection
+on in the config file, which is where the destination was chosen.
 
 ### Traces are not exported
 

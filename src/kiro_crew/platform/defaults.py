@@ -574,22 +574,54 @@ class DefaultTelemetryProvider:
         return None
 
     def otlp_destinations(self, cfg: Any) -> "tuple[OtlpDestination, ...]":
-        # Byte-identical to the endpoint-only OTLP exporter this seam replaced:
-        # ONE destination when telemetry.otlp_endpoint is a non-empty string,
-        # NONE otherwise — so egress stays off by default and the standalone
-        # build reaches exactly the collector it reached before. Read with
-        # getattr so any telemetry-config shape works, and never logged here:
-        # the value can carry credentials in userinfo or query parameters.
+        # Two destinations, resolved independently, and neither can affect the
+        # other: the OPERATOR's own collector (telemetry.otlp_endpoint, which
+        # still gets everything the core collects and is unchanged by this
+        # method gaining a second destination), and the built-in KIRO
+        # destination, which is off unless its own switch is on and gets only
+        # the reviewed product allowlist.
+        # circular import: this module is loaded during ``platform`` package
+        # init, and ``metrics.kiro_export`` reaches ``beacon`` -> ``config`` and
+        # imports ``requests``. Deferred to call time, which is once per recorder
+        # build plus the dashboard's egress-posture query -- a dict lookup after
+        # the first one, and nothing at all on a host that never asks.
+        from kiro_crew.metrics import kiro_export
+        from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
+
+        destinations: "list[OtlpDestination]" = []
+        # The operator destination: ONE when telemetry.otlp_endpoint is a
+        # non-empty string, NONE otherwise, exactly as before. Read with getattr
+        # so any telemetry-config shape works, and never logged here: the value
+        # can carry credentials in userinfo or query parameters. No ``allow``, no
+        # point attributes and no resource narrowing -- an operator's own
+        # collector sees what it always saw.
         endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
-        if not endpoint:
-            return ()
-        return (
-            OtlpDestination(
-                name="telemetry.otlp_endpoint",
-                endpoint=endpoint,
-                signals=frozenset({"metrics"}),
-            ),
-        )
+        if endpoint:
+            destinations.append(
+                OtlpDestination(
+                    name="telemetry.otlp_endpoint",
+                    endpoint=endpoint,
+                    signals=frozenset({"metrics"}),
+                )
+            )
+        # The Kiro destination. Every switch that decides whether it exists lives
+        # in metrics.kiro_export, which answers "" for no destination; the three
+        # narrowing fields are what make this a PRODUCT destination rather than a
+        # second copy of the operator one.
+        kiro_endpoint = kiro_export.endpoint_for(cfg)
+        if kiro_endpoint:
+            destinations.append(
+                OtlpDestination(
+                    name=kiro_export.DESTINATION_NAME,
+                    endpoint=kiro_endpoint,
+                    signals=frozenset({"metrics"}),
+                    session=kiro_export.build_session(),
+                    allow=PRODUCT_METRICS,
+                    point_attributes=kiro_export.POINT_ATTRIBUTES,
+                    resource_allow=kiro_export.RESOURCE_ALLOW,
+                )
+            )
+        return tuple(destinations)
 
 
 class DefaultMemoryFilesProvider:

@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     # when opentelemetry is absent (env-closure drift).
     from opentelemetry.metrics import Counter, Histogram, Meter, UpDownCounter
 
+from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
 from kiro_crew.metrics.schema import validate_attrs, validate_name
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,9 @@ class MetricsRecorder:
     returns immediately without touching the SDK.
     """
 
-    def __init__(self, meter: Optional[Meter]) -> None:
+    def __init__(self, meter: Optional[Meter], *, product_meter: Optional[Meter] = None) -> None:
         self._meter = meter
+        self._product_meter = product_meter
         self._counters: Dict[str, Counter] = {}
         self._updown: Dict[str, UpDownCounter] = {}
         self._histograms: Dict[str, Histogram] = {}
@@ -71,6 +73,21 @@ class MetricsRecorder:
     @property
     def enabled(self) -> bool:
         return self._meter is not None
+
+    def _meter_for(self, name: str) -> Meter:
+        """The meter instrument *name* belongs on.
+
+        A product metric is filed under the ``kiro.crew`` scope when the build
+        supplied that second meter, everything else under the existing one. Keyed
+        on the validated NAME, so one name only ever reaches one meter and the
+        SDK never sees the same name created twice on the same scope. Without a
+        product meter -- a recorder built by anything other than the live build,
+        including every test that constructs one by hand -- this is the single
+        meter, unchanged.
+        """
+        if self._product_meter is not None and name in PRODUCT_METRICS:
+            return self._product_meter
+        return self._meter  # type: ignore[return-value]  # callers check enabled
 
     def _guard(
         self, name: str, attrs: Optional[Attributes], app_id: Optional[str]
@@ -100,7 +117,7 @@ class MetricsRecorder:
                 with self._lock:
                     inst = self._counters.get(vname)
                     if inst is None:
-                        inst = self._meter.create_counter(
+                        inst = self._meter_for(vname).create_counter(
                             vname, unit=unit, description=description
                         )
                         self._counters[vname] = inst
@@ -128,7 +145,7 @@ class MetricsRecorder:
                 with self._lock:
                     inst = self._updown.get(vname)
                     if inst is None:
-                        inst = self._meter.create_up_down_counter(
+                        inst = self._meter_for(vname).create_up_down_counter(
                             vname, unit=unit, description=description
                         )
                         self._updown[vname] = inst
@@ -156,7 +173,7 @@ class MetricsRecorder:
                 with self._lock:
                     inst = self._histograms.get(vname)
                     if inst is None:
-                        inst = self._meter.create_histogram(
+                        inst = self._meter_for(vname).create_histogram(
                             vname, unit=unit, description=description
                         )
                         self._histograms[vname] = inst

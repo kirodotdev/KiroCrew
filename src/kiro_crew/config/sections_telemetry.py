@@ -85,6 +85,32 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
+    kiro_export: bool = field(
+        default=False,
+        metadata=_meta(
+            "Send Product Metrics to Kiro",
+            "Send a reviewed allowlist of product metrics to the Kiro telemetry "
+            "endpoint (https://telemetry.<region>.kiro.dev) so maintainers can "
+            "see which features are used and whether a release helped. Counters "
+            "and gauges with closed-enum attributes only: never prompts, model "
+            "output, file contents, paths, repo names, credentials, host name, "
+            "user name or any free text, and nothing is counted per machine. "
+            "Requires the 'enabled' switch above; the local JSONL sink still "
+            "records everything either way. Turn it off here, or with "
+            "DO_NOT_TRACK=1 or KIROCREW_TELEMETRY_KIRO_EXPORT=0 in the "
+            "environment. See docs/guides/telemetry-otlp-export.md for the exact "
+            "list of metrics that leave the machine.",
+        ),
+    )
+    kiro_export_region: str = field(
+        default="",
+        metadata=_meta(
+            "Kiro Telemetry Region",
+            "Which region the Kiro telemetry endpoint is reached in: "
+            "'us-east-1' (default when empty) or 'eu-central-1'. Any other value "
+            "disables the Kiro destination rather than guessing a region.",
+        ),
+    )
     beacon_enabled: bool = field(
         default=True,
         metadata=_meta(
