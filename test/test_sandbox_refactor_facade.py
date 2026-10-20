@@ -330,6 +330,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         agent_env_scrub_prefixes scrub_agent_denied_env scrub_agent_subprocess_env
         sandboxed_spawn_argv shielded_prepare_off_loop sandboxed_spawn_argv_async
         _CGROUP_SCOPE_BUS_ENV_KEYS cgroup_scope_bus_env without_python_env
+        _namespace_launcher_child_is_confined _NAMESPACE_LAUNCHERS
+        _NAMESPACE_LAUNCHERS_LOCK remember_namespace_launcher
         """.split()),
 }
 

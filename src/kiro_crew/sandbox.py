@@ -583,11 +583,15 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     )
     from kiro_crew.sandbox_spawn import (  # noqa: F401
         _CGROUP_SCOPE_BUS_ENV_KEYS,
+        _NAMESPACE_LAUNCHERS,
+        _NAMESPACE_LAUNCHERS_LOCK,
         _SPAWN_SCRUB_ENV_PREFIXES,
+        _namespace_launcher_child_is_confined,
         agent_env_scrub_prefixes,
         cgroup_scope_bus_env,
         corroborate_launcher_refusal,
         credential_mask_applies,
+        remember_namespace_launcher,
         sandboxed_spawn_argv,
         sandboxed_spawn_argv_async,
         scrub_agent_denied_env,

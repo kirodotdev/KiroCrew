@@ -828,6 +828,18 @@ class LaunchTools:
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
     #: ``agent.env`` (``acp.agent_env.agent_env_overlay``); blocking, run off-loop.
     agent_env_overlay: Callable[[], dict[str, str]] = field(default=dict)
+    #: ``sandbox.remember_namespace_launcher``; non-blocking ``/proc`` reads, never raises.
+    remember_namespace_launcher: Callable[[int, Sequence[str], str | None], None] = field(
+        default_factory=lambda: _remember_namespace_launcher
+    )
+
+
+def _remember_namespace_launcher(
+    pid: int, wrapped_argv: Sequence[str], launcher_script: str | None
+) -> None:
+    from kiro_crew.sandbox import remember_namespace_launcher
+
+    remember_namespace_launcher(pid, wrapped_argv, launcher_script)
 
 
 def _unscoped(argv: list[str]) -> tuple[list[str], str]:
@@ -1027,6 +1039,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # refusal has to name the layer to turn off; the cgroup scope below prepends
     # its own tokens, so the read happens before it.
     host._sandbox_wrapped_by_crew = tools.wrapped_by_crew_sandbox(argv)
+    sandbox_wrapped_argv = tuple(argv)
     host._sandbox_hidden_dirs = tuple(request.extra_hidden_dirs)
     # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server / tool
     # descendants with pids.max (fork bomb) + memory.max (RSS balloon). No-op +
@@ -1151,4 +1164,9 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         await host._discard_bound_workspace()
         host._discard_sandbox_cleanup()
         raise
+    # The live-agent confinement check trusts a namespace launcher only from this
+    # record: the launcher stays in the host namespaces by design, so its command
+    # line cannot be what proves Crew started it. The recorder checks the wrap's
+    # own argv against the launcher script the wrap generated.
+    tools.remember_namespace_launcher(process.pid, sandbox_wrapped_argv, host._sandbox_cleanup)
     return LaunchedProcess(process=process, scope_unit=scope_unit)

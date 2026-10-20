@@ -23,6 +23,7 @@ shows a reviewer which harness moved. The capture both share is
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import logging
 import os
@@ -902,6 +903,23 @@ def test_a_failed_spawn_releases_the_workspace_and_the_sandbox_launcher(
         # One discard before the bind, one for the failure.
         assert host.workspace_discards == 2
         assert host.cleanup_discards == 1
+
+
+def test_the_spawn_hands_the_recorder_the_wraps_own_argv_and_script(monkeypatch, tmp_path) -> None:
+    """The confinement check trusts a launcher only from this record.
+
+    The recorder gets the argv the wrap returned (before the cgroup scope) and the
+    launcher script the wrap generated, so it can tell a real launcher spawn from a
+    command that only looks like one.
+    """
+    _launch_env(monkeypatch)
+    recorded: list[tuple] = []
+    tools = dataclasses.replace(
+        _launch_tools(_Recording(), scratch=_Scratch(None)),
+        remember_namespace_launcher=lambda *args: recorded.append(args),
+    )
+    _run_launch(_FakeHost(tmp_path), _request(), tools)
+    assert recorded == [(99_999_999_999, ("sandbox", "/opt/bin/host", "acp"), "/run/launcher.sh")]
 
 
 def test_a_respawn_joins_the_tree_its_previous_process_staged(monkeypatch, tmp_path) -> None:
