@@ -6040,6 +6040,18 @@
       "session_queued": "This session: {{queued}} queued",
       "session_queued_hint": "Agents this session started are waiting for a free slot while fewer run at once.",
       "load_failed": "Could not check for queued agents"
+    },
+    "codeChannelBadge": {
+      "label": "Slack code channel",
+      "label_short": "Code channel",
+      "archived": "Channel archived",
+      "wrapped_up": "Task done",
+      "open_named": "Open {{channel}} in Slack",
+      "open_unnamed": "Open this code channel in Slack",
+      "opens_in_slack": "(opens in Slack)",
+      "about": "This session runs in a Slack code channel. Messages there and here are one conversation.",
+      "archived_hint": "Archived in Slack. The channel is read-only.",
+      "wrapped_up_hint": "Wrapped up. The task is done and the channel stays open for follow-ups."
     }
   },
   "hooks": {

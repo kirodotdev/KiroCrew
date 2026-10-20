@@ -10132,6 +10132,18 @@
       "session_queued_hint": "একসাথে কম এজেন্ট চলা অবস্থায় এই সেশনের শুরু করা এজেন্টরা খালি জায়গার অপেক্ষায় আছে।",
       "load_failed": "সারিতে থাকা এজেন্ট যাচাই করা যায়নি"
     },
+    "codeChannelBadge": {
+      "label": "Slack কোড চ্যানেল",
+      "label_short": "কোড চ্যানেল",
+      "archived": "চ্যানেল আর্কাইভ করা",
+      "wrapped_up": "টাস্ক শেষ",
+      "open_named": "{{channel}} Slack-এ খোলো",
+      "open_unnamed": "এই কোড চ্যানেল Slack-এ খোলো",
+      "opens_in_slack": "(Slack-এ খোলে)",
+      "about": "এই সেশনটি একটি Slack কোড চ্যানেলে চলে। সেখানকার আর এখানকার বার্তা একই কথোপকথন।",
+      "archived_hint": "Slack-এ আর্কাইভ করা। চ্যানেলটি শুধু পড়ার জন্য।",
+      "wrapped_up_hint": "কাজ শেষ। টাস্কটি হয়ে গেছে, পরের কথার জন্য চ্যানেলটি খোলা থাকে।"
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "“{{filter}}” এর সাথে কোনো টুল মেলে না।",

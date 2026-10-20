@@ -47,6 +47,7 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { CodeChannelBadge, CODE_CHANNEL_AGENT_FIT } from '../../components/CodeChannelBadge'
 
 /**
  * Session-row type scale, quantized to a 4px baseline grid.
@@ -1361,7 +1362,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
+            <div className={`session-agent-label @container/rowmeta ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
                 *  every sidebar commit for a crossfade that fires only on the
@@ -1369,8 +1370,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
+              {/* On a code-channel row the agent name is the first thing to give
+                *  way: it shrinks (by a weight no other item comes near) before
+                *  the channel chip does, and on the narrowest meta line it goes,
+                *  so the chip's Slack mark and the time keep their room. Every
+                *  other row keeps `shrink-0`, exactly as before. */}
               {memberTitle === null && (
-                <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+                <span key={agentName || 'empty'} title={agentDisplay || undefined} data-testid="session-row-agent" className={`truncate ${s.code_channel ? `${CODE_CHANNEL_AGENT_FIT} @max-[10rem]/rowmeta:hidden` : 'shrink-0'} ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
@@ -1528,7 +1534,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  It replaces a `linked_to_slack` Link glyph that fired for ANY
                *  channel, because every non-Slack transport writes its id into
                *  slack_channel_id. */}
-              {connectedChannelLinks(s.links).map(link => (
+              {/* A code channel's own badge (below) carries the Slack mark for
+               *  that link, so the row shows one Slack mark, not two. */}
+              {connectedChannelLinks(s.links).filter(link => !(s.code_channel && link.channel === 'slack')).map(link => (
                 <span
                   key={link.channel}
                   className="inline-flex text-[10px]"
@@ -1544,6 +1552,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
               {s.executor === 'remote' && !inCrewGroup && <ExecutorCrewChip instanceId={s.instance_id || ''} />}
+              {/* The Slack code channel this session IS, on the meta line so the
+               *  row keeps its height. Bounded and shrinkable like the agent
+               *  marker above: it yields width to the trailing time group. */}
+              {s.code_channel && <CodeChannelBadge info={s.code_channel} variant="row" />}
               {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
               {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto

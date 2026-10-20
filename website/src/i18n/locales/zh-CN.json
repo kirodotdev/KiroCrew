@@ -9987,6 +9987,18 @@
       "session_queued_hint": "同时运行的代理减少期间，此会话启动的代理正在等待空位。",
       "load_failed": "无法检查已排队的代理"
     },
+    "codeChannelBadge": {
+      "label": "Slack 代码频道",
+      "label_short": "代码频道",
+      "archived": "频道已归档",
+      "wrapped_up": "任务已完成",
+      "open_named": "在 Slack 中打开 {{channel}}",
+      "open_unnamed": "在 Slack 中打开此代码频道",
+      "opens_in_slack": "（在 Slack 中打开）",
+      "about": "此会话运行在一个 Slack 代码频道中。那里和这里的消息属于同一段对话。",
+      "archived_hint": "已在 Slack 中归档。该频道为只读。",
+      "wrapped_up_hint": "已收尾。任务已完成，频道仍保持开放，可继续跟进。"
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "没有工具匹配“{{filter}}”。",

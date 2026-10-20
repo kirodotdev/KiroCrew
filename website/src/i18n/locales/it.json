@@ -10277,6 +10277,18 @@
       "session_queued_hint": "Gli agenti avviati da questa sessione attendono un posto libero finché ne vengono eseguiti meno alla volta.",
       "load_failed": "Impossibile verificare gli agenti in coda"
     },
+    "codeChannelBadge": {
+      "label": "Canale di codice Slack",
+      "label_short": "Canale di codice",
+      "archived": "Canale archiviato",
+      "wrapped_up": "Attività conclusa",
+      "open_named": "Apri {{channel}} in Slack",
+      "open_unnamed": "Apri questo canale di codice in Slack",
+      "opens_in_slack": "(si apre in Slack)",
+      "about": "Questa sessione gira in un canale di codice Slack. I messaggi lì e qui sono un’unica conversazione.",
+      "archived_hint": "Archiviato in Slack. Il canale è di sola lettura.",
+      "wrapped_up_hint": "Concluso. Il compito è finito e il canale resta aperto per i seguiti."
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "Nessuno strumento corrisponde a «{{filter}}».",

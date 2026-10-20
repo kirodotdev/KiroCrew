@@ -9987,6 +9987,18 @@
       "session_queued_hint": "同時実行数が減っている間、このセッションが開始したエージェントは空きを待っています。",
       "load_failed": "待機中のエージェントを確認できませんでした"
     },
+    "codeChannelBadge": {
+      "label": "Slack コードチャンネル",
+      "label_short": "コードチャンネル",
+      "archived": "チャンネルはアーカイブ済み",
+      "wrapped_up": "タスク完了",
+      "open_named": "Slack で {{channel}} を開く",
+      "open_unnamed": "このコードチャンネルを Slack で開く",
+      "opens_in_slack": "（Slack で開きます）",
+      "about": "このセッションは Slack コードチャンネルで動いています。あちらとこちらのメッセージは同じ会話です。",
+      "archived_hint": "Slack でアーカイブ済みです。チャンネルは読み取り専用です。",
+      "wrapped_up_hint": "完了しました。タスクは終わり、チャンネルはフォローアップのために開いたままです。"
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "「{{filter}}」に一致するツールはありません。",

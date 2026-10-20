@@ -10132,6 +10132,18 @@
       "session_queued_hint": "Von dieser Sitzung gestartete Agenten warten auf einen freien Platz, solange weniger gleichzeitig laufen.",
       "load_failed": "Agenten in der Warteschlange konnten nicht geprüft werden"
     },
+    "codeChannelBadge": {
+      "label": "Slack-Codekanal",
+      "label_short": "Codekanal",
+      "archived": "Kanal archiviert",
+      "wrapped_up": "Aufgabe erledigt",
+      "open_named": "Öffne {{channel}} in Slack",
+      "open_unnamed": "Öffne diesen Codekanal in Slack",
+      "opens_in_slack": "(öffnet sich in Slack)",
+      "about": "Diese Sitzung läuft in einem Slack-Codekanal. Nachrichten dort und hier sind ein Gespräch.",
+      "archived_hint": "In Slack archiviert. Der Kanal ist schreibgeschützt.",
+      "wrapped_up_hint": "Abgeschlossen. Die Aufgabe ist erledigt und der Kanal bleibt für Nachfragen offen."
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "Keine Werkzeuge entsprechen „{{filter}}“.",

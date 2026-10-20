@@ -10132,6 +10132,18 @@
       "session_queued_hint": "एक साथ कम एजेंट चलने तक इस सत्र द्वारा शुरू किए गए एजेंट खाली जगह की प्रतीक्षा कर रहे हैं।",
       "load_failed": "कतार में लगे एजेंटों की जाँच नहीं हो सकी"
     },
+    "codeChannelBadge": {
+      "label": "Slack कोड चैनल",
+      "label_short": "कोड चैनल",
+      "archived": "चैनल संग्रहीत",
+      "wrapped_up": "टास्क पूरा",
+      "open_named": "{{channel}} को Slack में खोलो",
+      "open_unnamed": "इस कोड चैनल को Slack में खोलो",
+      "opens_in_slack": "(Slack में खुलता है)",
+      "about": "यह सेशन एक Slack कोड चैनल में चलता है। वहाँ और यहाँ के संदेश एक ही बातचीत हैं।",
+      "archived_hint": "Slack में संग्रहीत। चैनल केवल पढ़ने के लिए है।",
+      "wrapped_up_hint": "काम पूरा। टास्क हो गया है और आगे की बातचीत के लिए चैनल खुला रहता है।"
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "“{{filter}}” से कोई टूल मेल नहीं खाता।",

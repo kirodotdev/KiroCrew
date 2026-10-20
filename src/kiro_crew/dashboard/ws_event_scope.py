@@ -1408,11 +1408,24 @@ def filter_slots_for_app(
         if slot is None:
             continue
         if _slot_visible(slot, app, allowed_events, state):
-            result.append(_strip_pin_rank(_strip_source_link_status(slot_dict)))
+            result.append(_strip_pin_rank(_strip_source_link_status(_withhold_from_apps(slot_dict))))
             _audit_allow(app, "slots_item")
         else:
             _audit_deny(app, "slots_item", "slot_scope_denied")
     return result
+
+
+#: Slot-row fields for a person's dashboard only. The WS app frame is built from
+#: the dashboard-user list, so they are removed here as well as never being put
+#: on the bare list (``slack/code_channels/dashboard_view.py``).
+_PERSON_ONLY_SLOT_KEYS = ("code_channel",)
+
+
+def _withhold_from_apps(slot_dict: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *slot_dict* without :data:`_PERSON_ONLY_SLOT_KEYS` (or itself)."""
+    if not any(k in slot_dict for k in _PERSON_ONLY_SLOT_KEYS):
+        return slot_dict
+    return {k: v for k, v in slot_dict.items() if k not in _PERSON_ONLY_SLOT_KEYS}
 
 
 # Credential-backed chip fields attached by ``state._project_source_links``.

@@ -160,6 +160,18 @@ describe('ChatTitleOverlay', () => {
     expect(phone.setSidebarPinned).not.toHaveBeenCalled()
   })
 
+  it('marks a Slack code channel session in the header, and nothing else', () => {
+    const codeChannel = {
+      channel_name: 'fix-login', status: 'active' as const,
+      web_url: 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1',
+    }
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false } as never })} />)
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false, code_channel: codeChannel } as never })} />)
+    expect(screen.getByTestId('code-channel-badge-header')).toHaveAttribute('href', codeChannel.web_url)
+  })
+
   it('offers no reveal on an embedded chat, and renames the active session', () => {
     const setEditingTitleSlot = vi.fn()
     render(<ChatTitleOverlay {...base({ embedMode: 'chat', setEditingTitleSlot })} />)
