@@ -11336,7 +11336,15 @@
         "restart_gateway_failed": "ゲートウェイは再起動しませんでした。",
         "restart_gateway_refused_hint": "このゲートウェイを運用している人に再起動を依頼してください。その人はターミナルで {{command}} を実行できます。",
         "restart_gateway_retry_hint": "もう一度「{{button}}」を押すか、ターミナルで {{command}} を実行してください。",
-        "restart_gateway_refused_title": "このアカウントではゲートウェイを再起動できません。"
+        "restart_gateway_refused_title": "このアカウントではゲートウェイを再起動できません。",
+        "repair_images": "画像を修復して再開",
+        "repair_images_pending": "画像を修復しています…",
+        "repair_images_hint": "大きすぎる画像を縮小してチャットを続行できるようにします。メッセージは保持され、元の画像はバックアップされます。チャットの修復は一度だけ可能です。失敗した試行はカウントされません。",
+        "repair_images_done": "画像を修復しました。アシスタントが再び返信しています。",
+        "repair_images_done_not_resumed": "画像を修復しました。返信を続けるには「再開」を押してください。",
+        "repair_images_failed": "1 つのチャットで画像を 2 回修復することはできません。続けるには新しいセッションを開始してください — このチャットは保持され、アシスタントは要約から続行します。",
+        "repair_images_not_persistent": "プライベートまたは一時的なチャットでは画像を修復できません。再読み込みすると履歴が消去されるためです。続けるには新しいセッションを開始してください。",
+        "repair_images_retry_hint": "今回は問題が発生したため、1 回分の修復は使用されていません — もう一度試すには「画像を修復して再開」を押してください。"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",
@@ -12436,7 +12444,8 @@
       "comments_refused_overlay": "{{name}}はこれらのコメントを受け取れませんでした—サイドパネルを開き直して、もう一度送信してください。コメントはドキュメントに残っています。",
       "comments_sent_other": "{{count}}件のコメントを送信しました",
       "your_crewmate": "クルーメート",
-      "jump_to_new_other": "新着 {{count}} 件 · 最新へ"
+      "jump_to_new_other": "新着 {{count}} 件 · 最新へ",
+      "could_not_repair_images": "画像を修復できませんでした"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

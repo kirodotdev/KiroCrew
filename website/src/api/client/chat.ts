@@ -209,6 +209,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
     /** Drop the slot's native conversation; the next turn starts a fresh one seeded from a text replay of the transcript (`replay: true`). The transcript stays. */
     resetConversation: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/reset-conversation', { replay: true }).then(j) as Promise<{ slot: string; reset: boolean; replay: boolean }>,
+    /** Downscale the oversized images in the slot's transcript in place, then re-issue the interrupted turn (recovery from the provider's many-image 2000px cap). No turns are lost, unlike `resetConversation`. */
+    repairImages: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/repair-images', undefined).then(j) as Promise<{ slot: string; repaired: boolean; resumed: boolean }>,
     switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
     editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
     rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),

@@ -11336,7 +11336,15 @@
         "restart_gateway_failed": "网关未能重启。",
         "restart_gateway_refused_hint": "请让运行此网关的人重启它。他们可以在终端运行 {{command}}。",
         "restart_gateway_retry_hint": "再次点击“{{button}}”，或在终端运行 {{command}}。",
-        "restart_gateway_refused_title": "此账号无法重启网关。"
+        "restart_gateway_refused_title": "此账号无法重启网关。",
+        "repair_images": "修复图片并继续",
+        "repair_images_pending": "正在修复图片……",
+        "repair_images_hint": "缩小过大的图片，以便聊天可以继续。你的消息会被保留，原始图片会被备份。每个聊天只能修复一次；失败的尝试不计入次数。",
+        "repair_images_done": "图片已修复。助手正在重新回复。",
+        "repair_images_done_not_resumed": "图片已修复。按继续以继续回复。",
+        "repair_images_failed": "同一聊天中的图片无法修复两次。请开始新的会话以继续 — 此聊天会保留，助手将从摘要处继续。",
+        "repair_images_not_persistent": "隐身或临时聊天中的图片无法修复，因为重新加载会清除其历史记录。请开始新的会话以继续。",
+        "repair_images_retry_hint": "这次出了点问题，因此你的一次修复机会未被使用 — 按“修复图片并继续”重试。"
       },
       "folderPanel": {
         "clear_search": "清除搜索",
@@ -12436,7 +12444,8 @@
       "comments_refused_overlay": "{{name}} 未收到这些评论——请重新打开侧边面板并再次发送。评论仍在文档中。",
       "comments_sent_other": "{{count}} 条评论已发送",
       "your_crewmate": "你的队员",
-      "jump_to_new_other": "{{count}} 条新 · 跳到最新"
+      "jump_to_new_other": "{{count}} 条新 · 跳到最新",
+      "could_not_repair_images": "无法修复图片"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",

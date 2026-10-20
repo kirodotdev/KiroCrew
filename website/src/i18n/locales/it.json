@@ -11668,7 +11668,15 @@
         "restart_gateway_failed": "Il gateway non si è riavviato.",
         "restart_gateway_refused_hint": "Chiedi a chi gestisce questo gateway di riavviarlo. Può eseguire {{command}} in un terminale.",
         "restart_gateway_retry_hint": "Premi di nuovo «{{button}}» oppure esegui {{command}} in un terminale.",
-        "restart_gateway_refused_title": "Questo account non può riavviare il gateway."
+        "restart_gateway_refused_title": "Questo account non può riavviare il gateway.",
+        "repair_images": "Ripara le immagini e riprendi",
+        "repair_images_pending": "Riparazione delle immagini in corso…",
+        "repair_images_hint": "Riduce le immagini troppo grandi così la chat può continuare. I tuoi messaggi vengono conservati e gli originali vengono salvati. Puoi riparare una chat una volta; un tentativo fallito non conta.",
+        "repair_images_done": "Immagini riparate. L'assistente sta rispondendo di nuovo.",
+        "repair_images_done_not_resumed": "Immagini riparate. Premi Riprendi per continuare la risposta.",
+        "repair_images_failed": "Le immagini non possono essere riparate due volte nella stessa chat. Avvia una nuova sessione per continuare — questa chat resta nel tuo elenco e l'assistente prosegue da un riepilogo.",
+        "repair_images_not_persistent": "Le immagini non possono essere riparate in una chat in incognito o temporanea, perché ricaricarla ne cancella la cronologia. Avvia una nuova sessione per continuare.",
+        "repair_images_retry_hint": "Qualcosa è andato storto questa volta, quindi la tua unica riparazione non è stata utilizzata — puoi riprovare."
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",
@@ -12818,7 +12826,8 @@
       "your_crewmate": "Il tuo compagno",
       "jump_to_new_one": "{{count}} nuovo · Vai in fondo",
       "jump_to_new_other": "{{count}} nuovi · Vai in fondo",
-      "jump_to_new_many": "{{count}} nuovi · Vai in fondo"
+      "jump_to_new_many": "{{count}} nuovi · Vai in fondo",
+      "could_not_repair_images": "Impossibile riparare le immagini"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

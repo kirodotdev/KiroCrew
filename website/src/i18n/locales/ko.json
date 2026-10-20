@@ -11336,7 +11336,15 @@
         "restart_gateway_failed": "게이트웨이가 재시작되지 않았습니다.",
         "restart_gateway_refused_hint": "이 게이트웨이를 운영하는 사람에게 재시작을 요청하세요. 그 사람은 터미널에서 {{command}} 를 실행할 수 있습니다.",
         "restart_gateway_retry_hint": "‘{{button}}’ 버튼을 다시 누르거나 터미널에서 {{command}} 를 실행하세요.",
-        "restart_gateway_refused_title": "이 계정으로는 게이트웨이를 재시작할 수 없습니다."
+        "restart_gateway_refused_title": "이 계정으로는 게이트웨이를 재시작할 수 없습니다.",
+        "repair_images": "이미지 복구 후 재개",
+        "repair_images_pending": "이미지 복구 중…",
+        "repair_images_hint": "너무 큰 이미지를 축소하여 채팅을 계속할 수 있도록 합니다. 메시지는 유지되고 원본은 백업됩니다. 채팅은 한 번만 복구할 수 있으며, 실패한 시도는 횟수에 포함되지 않습니다.",
+        "repair_images_done": "이미지를 복구했습니다. 어시스턴트가 다시 응답하고 있습니다.",
+        "repair_images_done_not_resumed": "이미지를 복구했습니다. 응답을 계속하려면 재개를 누르세요.",
+        "repair_images_failed": "한 채팅에서 이미지를 두 번 복구할 수 없습니다. 계속하려면 새 세션을 시작하세요 — 이 채팅은 유지되고, 어시스턴트는 요약을 기반으로 이어갑니다.",
+        "repair_images_not_persistent": "시크릿 또는 임시 채팅에서는 이미지를 복구할 수 없습니다. 다시 불러오면 기록이 지워지기 때문입니다. 계속하려면 새 세션을 시작하세요.",
+        "repair_images_retry_hint": "이번에는 문제가 발생하여 한 번의 복구 기회가 사용되지 않았습니다 — 다시 시도하려면 “이미지 복구 후 재개”을 누르세요."
       },
       "folderPanel": {
         "clear_search": "검색 지우기",
@@ -12436,7 +12444,8 @@
       "comments_refused_overlay": "{{name}}이(가) 이 댓글들을 받지 못했습니다 — 사이드 패널을 다시 열고 다시 보내세요. 댓글은 문서에 그대로 있습니다.",
       "comments_sent_other": "{{count}}개의 댓글이 전송되었습니다",
       "your_crewmate": "크루메이트",
-      "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로"
+      "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로",
+      "could_not_repair_images": "이미지를 복구하지 못했습니다"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

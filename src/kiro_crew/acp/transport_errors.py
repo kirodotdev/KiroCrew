@@ -28,6 +28,10 @@ from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via th
     compaction_failure_detail,
     compaction_failure_is_transient,
 )
+from kiro_crew.acp.image_dimension_wedge import (
+    format_many_image_dimension_message,
+    is_many_image_dimension,
+)
 from kiro_crew.acp.runtime_models import (
     DEFAULT_MODEL,
     advertised_model_ids,
@@ -140,6 +144,14 @@ class AcpError(Exception):
         # current attachment from an unsupported image retained in native
         # history. Set only from the raw provider data field.
         self.image_format_unsupported: bool = False
+        # Narrow structural subtype for the provider's many-image PIXEL cap: an
+        # image already in native history exceeds 2000px on its longest edge.
+        # Distinct from ``image_format_unsupported`` and ``context_overflow``
+        # because its fix is distinct -- the oversized images can be downscaled
+        # in the transcript in place (``session_image_repair``), losing no turns.
+        # The dashboard reads this flag to offer "Repair images and resume"
+        # instead of Resume. Set only from the raw provider data field.
+        self.image_dimension_wedge: bool = False
         # Whether a TRANSIENT failure is the network path to the provider
         # (dispatch failure, connection reset or refused, DNS, TLS, connect
         # timeout) rather than a provider answer such as a 5xx or a throttle.
@@ -1221,6 +1233,14 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # fall-through, and so a future transient marker added below cannot
         # accidentally match malformed-request wording.
         return False
+    if is_many_image_dimension(data):
+        # Terminal on this conversation: an image already in the native history
+        # exceeds the provider's 2000px many-image cap, so replaying the same
+        # history is refused identically every time. Recovery is to downscale the
+        # offending images in place (session_image_repair), not to retry. Scoped
+        # to `data` like its image siblings, and stated explicitly so a
+        # co-occurring 5xx wrapper or retry hint cannot rescue a dimension verdict.
+        return False
     if _RE_CONTEXT_WINDOW_OVERFLOW.search(data):
         # Terminal on this native session: its startup/turn envelope already
         # exceeds the model window, so replaying it reproduces the rejection.
@@ -1537,6 +1557,11 @@ def _format_acp_error_worded(
                 "Retrying or switching models will not help. Start a fresh session."
                 f"{req_id_suffix}"
             )
+        elif is_many_image_dimension(data):
+            # The provider's many-image PIXEL cap (>2000px on an image already in
+            # history). Surface-blind like its image siblings; the harness-specific
+            # remedy is built in image_dimension_wedge.
+            formatted = format_many_image_dimension_message(backend, req_id_suffix)
         elif _RE_IMAGE_FORMAT_UNSUPPORTED.search(data):
             # Deterministic image rejection. A new attachment can be repaired by
             # the sender; an image retained in native history needs a fresh
@@ -1885,10 +1910,11 @@ def _raise_acp_error(
     )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four
+    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Five
     # answers carry the tag: context-window overflow, malformed request, image
-    # validation failure, and kiro-cli's own refusal of a request it could not
-    # shrink to fit -- each reproduced exactly by re-sending the same context.
+    # validation failure, the many-image pixel-dimension cap, and kiro-cli's own
+    # refusal of a request it could not shrink to fit -- each reproduced exactly
+    # by re-sending the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
     # The claude adapter's overflow rides in ``message`` (anchored match, see
@@ -1898,10 +1924,12 @@ def _raise_acp_error(
         or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)
     )
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
+    _image_dimension_wedge = is_many_image_dimension(raw_data_field)
     if (
         _context_overflow
         or _RE_MALFORMED_REQUEST.search(raw_data_field)
         or _image_format_unsupported
+        or _image_dimension_wedge
         or _RE_OVERSIZED_REQUEST.search(raw_data_field)
     ):
         err.structural_terminal = True
@@ -1912,6 +1940,20 @@ def _raise_acp_error(
         err.context_overflow = True
     if _image_format_unsupported:
         err.image_format_unsupported = True
+    if _image_dimension_wedge:
+        # Terminal for every harness (re-sending the same oversized history is
+        # refused identically), so transient stays False. But the REPAIR this
+        # tag offers is Kiro-only -- it rewrites kiro-cli's own transcript -- so
+        # the dashboard-repair tag is set only for the kiro-cli backend
+        # (``""`` IS the kiro id, per the session-expiry branch above). Under
+        # another harness the error stays terminal and structural but carries no
+        # repair affordance, which is honest: a remedy written for Kiro is not
+        # offered by default to a harness it cannot help (AGENTS.md "Harness
+        # parity", the H-class negative-identity shape). The self-wake loop reads
+        # structural_terminal (set above) and stops re-firing regardless.
+        err.transient = False
+        if backend in ("", ACP_BACKEND_KIRO):
+            err.image_dimension_wedge = True
     # Tag a model-rejection so the SUBSTITUTE (background) retry layer can pick a
     # served model; harmless on every other error (attributes just stay unset).
     rejected = _rejected_model_from_error(error)

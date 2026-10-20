@@ -11668,7 +11668,15 @@
         "restart_gateway_failed": "La passerelle n’a pas redémarré.",
         "restart_gateway_refused_hint": "Demande à la personne qui gère cette passerelle de la redémarrer. Elle peut lancer {{command}} dans un terminal.",
         "restart_gateway_retry_hint": "Appuie à nouveau sur « {{button}} », ou lance {{command}} dans un terminal.",
-        "restart_gateway_refused_title": "Ce compte ne peut pas redémarrer la passerelle."
+        "restart_gateway_refused_title": "Ce compte ne peut pas redémarrer la passerelle.",
+        "repair_images": "Répare les images et reprends",
+        "repair_images_pending": "Réparation des images…",
+        "repair_images_hint": "Réduit les images trop volumineuses pour que la conversation puisse continuer. Tes messages sont conservés et les originaux sont sauvegardés. Tu peux réparer une conversation une fois ; une tentative échouée ne compte pas.",
+        "repair_images_done": "Images réparées. L'assistant répond à nouveau.",
+        "repair_images_done_not_resumed": "Images réparées. Appuie sur Reprendre pour continuer la réponse.",
+        "repair_images_failed": "Les images ne peuvent pas être réparées deux fois dans une même conversation. Démarre une nouvelle session pour continuer — cette conversation est conservée, et l'assistant reprend à partir d'un résumé.",
+        "repair_images_not_persistent": "Les images ne peuvent pas être réparées dans une conversation incognito ou temporaire, car la recharger efface son historique. Démarre une nouvelle session pour continuer.",
+        "repair_images_retry_hint": "Quelque chose s'est mal passé cette fois, donc ta réparation unique n'a pas été utilisée — appuie sur « Répare les images et reprends » pour réessayer."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",
@@ -12818,7 +12826,8 @@
       "your_crewmate": "Ton coéquipier",
       "jump_to_new_one": "{{count}} nouveau · Aller en bas",
       "jump_to_new_other": "{{count}} nouveaux · Aller en bas",
-      "jump_to_new_many": "{{count}} nouveaux · Aller en bas"
+      "jump_to_new_many": "{{count}} nouveaux · Aller en bas",
+      "could_not_repair_images": "Impossible de réparer les images"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

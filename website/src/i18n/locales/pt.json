@@ -11668,7 +11668,15 @@
         "restart_gateway_failed": "O gateway não reiniciou.",
         "restart_gateway_refused_hint": "Peça a quem administra este gateway para reiniciá-lo. Essa pessoa pode executar {{command}} em um terminal.",
         "restart_gateway_retry_hint": "Pressione “{{button}}” de novo ou execute {{command}} em um terminal.",
-        "restart_gateway_refused_title": "Esta conta não pode reiniciar o gateway."
+        "restart_gateway_refused_title": "Esta conta não pode reiniciar o gateway.",
+        "repair_images": "Reparar imagens e retomar",
+        "repair_images_pending": "Reparando imagens…",
+        "repair_images_hint": "Reduz as imagens grandes demais para que o chat possa continuar. Suas mensagens são mantidas e os originais têm backup. Você pode reparar um chat uma vez; uma tentativa malsucedida não conta.",
+        "repair_images_done": "Imagens reparadas. O assistente está respondendo novamente.",
+        "repair_images_done_not_resumed": "Imagens reparadas. Pressione Retomar para continuar a resposta.",
+        "repair_images_failed": "As imagens não podem ser reparadas duas vezes no mesmo chat. Inicie uma nova sessão para continuar — este chat permanece na sua lista, e o assistente continua a partir de um resumo.",
+        "repair_images_not_persistent": "As imagens não podem ser reparadas em um chat anônimo ou temporário, porque recarregá-lo apaga o histórico. Inicie uma nova sessão para continuar.",
+        "repair_images_retry_hint": "Algo deu errado desta vez, então o seu único reparo não foi usado — você pode tentar novamente."
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",
@@ -12818,7 +12826,8 @@
       "your_crewmate": "Seu colega",
       "jump_to_new_one": "{{count}} nova · Ir para o final",
       "jump_to_new_other": "{{count}} novas · Ir para o final",
-      "jump_to_new_many": "{{count}} novas · Ir para o final"
+      "jump_to_new_many": "{{count}} novas · Ir para o final",
+      "could_not_repair_images": "Não foi possível reparar as imagens"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

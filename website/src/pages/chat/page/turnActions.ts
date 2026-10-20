@@ -31,6 +31,7 @@ export const REFUSED_PRESS_TITLE_KEYS = {
   side_turn: 'pages.chatPage.could_not_send_to_side_chat',
   agent_switch: 'pages.chatPage.could_not_switch_agent',
   fresh_session: 'pages.chatPage.could_not_start_fresh_session',
+  repair_images: 'pages.chatPage.could_not_repair_images',
 } as const
 
 export type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS

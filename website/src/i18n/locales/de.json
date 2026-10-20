@@ -11502,7 +11502,15 @@
         "restart_gateway_failed": "Das Gateway wurde nicht neu gestartet.",
         "restart_gateway_refused_hint": "Bitte die Person, die dieses Gateway betreibt, es neu zu starten. Sie kann {{command}} in einem Terminal ausführen.",
         "restart_gateway_retry_hint": "Drücke erneut „{{button}}“ oder führe {{command}} in einem Terminal aus.",
-        "restart_gateway_refused_title": "Dieses Konto kann das Gateway nicht neu starten."
+        "restart_gateway_refused_title": "Dieses Konto kann das Gateway nicht neu starten.",
+        "repair_images": "Bilder reparieren und fortsetzen",
+        "repair_images_pending": "Bilder werden repariert…",
+        "repair_images_hint": "Verkleinert die zu großen Bilder, damit der Chat fortgesetzt werden kann. Deine Nachrichten bleiben erhalten und die Originale werden gesichert. Du kannst einen Chat einmal reparieren; ein fehlgeschlagener Versuch zählt nicht.",
+        "repair_images_done": "Bilder repariert. Der Assistent antwortet wieder.",
+        "repair_images_done_not_resumed": "Bilder repariert. Drücke auf Fortsetzen, um die Antwort fortzusetzen.",
+        "repair_images_failed": "Bilder können in einem Chat nicht zweimal repariert werden. Starte eine neue Sitzung, um fortzufahren — dieser Chat bleibt in deiner Liste, und der Assistent macht anhand einer Zusammenfassung weiter.",
+        "repair_images_not_persistent": "In einem Inkognito- oder temporären Chat können Bilder nicht repariert werden, weil ein Neuladen seinen Verlauf löscht. Starte eine neue Sitzung, um fortzufahren.",
+        "repair_images_retry_hint": "Diesmal ist etwas schiefgelaufen, daher wurde deine eine Reparatur nicht verbraucht — du kannst es erneut versuchen."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",
@@ -12627,7 +12635,8 @@
       "comments_sent_other": "{{count}} Kommentare gesendet",
       "your_crewmate": "Dein Crewmate",
       "jump_to_new_one": "{{count}} neue · Zum Ende",
-      "jump_to_new_other": "{{count}} neue · Zum Ende"
+      "jump_to_new_other": "{{count}} neue · Zum Ende",
+      "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
