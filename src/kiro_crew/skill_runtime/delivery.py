@@ -549,7 +549,10 @@ def _legacy_context(
     always = loader.get_always_skills(project_dir)
     if restricted:
         allowed = {s["key"] for s in all_skills} | {s["name"] for s in all_skills}
-        always = [a for a in always if a in allowed]
+        # Always-loading reads the winning copy by key, so a key whose mapped
+        # copy is another root's (it carries its own mapping_root) is left out.
+        shadowed = {s["key"] for s in all_skills if s.get("mapping_root")}
+        always = [a for a in always if a in allowed and a not in shadowed]
     parts: list[str] = []
     project_skills = [s for s in all_skills if s.get("confine_root")]
     project_keys = {s["key"] for s in project_skills}

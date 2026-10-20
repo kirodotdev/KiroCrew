@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.skill_runtime import catalog as _catalog
+
 if TYPE_CHECKING:
     from kiro_crew.skills import SkillsLoader
 
@@ -88,7 +90,8 @@ def _served_key_by_realpath(loader: SkillsLoader) -> dict[str, str]:
     it behind a cheap check rather than running it per tool call.
     """
     by_realpath: dict[str, list[tuple[str, Path]]] = {}
-    for key, skill_file, _within in loader._iter():
+    # Every copy, not the first per key: a mapping can serve a losing copy.
+    for key, skill_file, _within in _catalog._iter_rows(loader):
         try:
             rp = str(skill_file.resolve())
         except (OSError, RuntimeError):
@@ -119,7 +122,7 @@ def resolve_tool_read_keys(
     path earns nothing, because the ledger's hits mean a body reached the
     model.
 
-    Filesystem-bound (``_iter`` plus a ``resolve()`` per served skill), so
+    Filesystem-bound (``_iter_rows`` plus a ``resolve()`` per copy), so
     candidates are filtered on the ``SKILL.md`` basename first and callers
     must keep this off the event loop.
     """
