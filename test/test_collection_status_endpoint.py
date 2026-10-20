@@ -35,6 +35,7 @@ def _home(tmp_path, monkeypatch):
     """Isolated data home, and no ambient env pin from the developer's shell."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
     return tmp_path
 
 
@@ -97,6 +98,17 @@ class TestCollectionStatusEndpoint:
             body = await _get(c)
         assert body["enabled"] is False
         assert body["env_pinned"] is True
+
+    @pytest.mark.asyncio
+    async def test_do_not_track_beats_an_on_env_var_and_is_named(self, _home, monkeypatch) -> None:
+        _write_config(_home, {"enabled": True})
+        monkeypatch.setenv("KIROCREW_TELEMETRY", "1")
+        monkeypatch.setenv("DO_NOT_TRACK", "1")
+        async with TestClient(TestServer(_make_app())) as c:
+            body = await _get(c)
+        assert body["enabled"] is False
+        assert body["env_pinned"] is True
+        assert body["env_var"] == "DO_NOT_TRACK"
 
     @pytest.mark.asyncio
     async def test_overlay_entry_is_reported(self, _home) -> None:

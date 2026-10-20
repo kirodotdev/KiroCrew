@@ -623,6 +623,7 @@ def _beacon_stub(monkeypatch: pytest.MonkeyPatch, info: dict, *, env_opted_out: 
     stub.status = MagicMock(return_value=info)
     stub.is_env_opted_out = MagicMock(return_value=env_opted_out)
     stub.DISABLE_ENV = "KIROCREW_TELEMETRY_DISABLED"
+    stub.opt_out_env_var = MagicMock(return_value="KIROCREW_TELEMETRY_DISABLED")
     monkeypatch.setattr(h, "beacon", stub)
     return stub
 
