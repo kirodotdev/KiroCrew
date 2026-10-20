@@ -186,6 +186,14 @@ _CGROUP_SCOPE_PROBE_AT = 0.0
 # reads and one non-blocking connect(), so once a minute costs nothing.
 _CGROUP_SCOPE_PROBE_TTL_SECONDS = 60.0
 _CGROUP_SCOPE_PROBE_LOCK = threading.Lock()
+# Counts the user-manager sessions this process has seen enforcement in: it goes
+# up each time the probe computes "available" for the first time, after an
+# "unavailable" answer, or under a new session fingerprint. The slice-level
+# ceilings are ``--runtime`` properties that vanish with the login session, so
+# state recorded for an earlier epoch (an applied value, a failed apply) says
+# nothing about the current user manager; the slice reconcilers compare their
+# stamp with :func:`_cgroup_scope_epoch` to re-apply after a re-login.
+_CGROUP_SCOPE_EPOCH = 0
 _CGROUP_WARNED = False
 # Appended to every "no reachable user manager" reason, so both the one-time
 # warning and the mid-run transition warning name the fix an operator can apply.
@@ -333,7 +341,7 @@ def _probe_cgroup_scope() -> tuple[bool, str]:
     :func:`_log_cgroup_scope_transition`), so the ceiling is never lost quietly.
     """
     global _CGROUP_SCOPE_PROBE, _CGROUP_SCOPE_PROBE_SESSION, _CGROUP_SCOPE_PROBE_AT
-    global _CPU_DELEGATED
+    global _CPU_DELEGATED, _CGROUP_SCOPE_EPOCH
     session = _cgroup_scope_session_fingerprint()
     now = time.monotonic()
     cached = _CGROUP_SCOPE_PROBE
@@ -351,7 +359,10 @@ def _probe_cgroup_scope() -> tuple[bool, str]:
             and now - _CGROUP_SCOPE_PROBE_AT < _CGROUP_SCOPE_PROBE_TTL_SECONDS
         ):
             return cached
+        previous_session = _CGROUP_SCOPE_PROBE_SESSION
         result = _compute_cgroup_scope_probe()
+        if result[0] and (cached is None or not cached[0] or session != previous_session):
+            _CGROUP_SCOPE_EPOCH += 1
         _CGROUP_SCOPE_PROBE = result
         _CGROUP_SCOPE_PROBE_SESSION = session
         _CGROUP_SCOPE_PROBE_AT = now
@@ -360,6 +371,15 @@ def _probe_cgroup_scope() -> tuple[bool, str]:
     if cached is not None and cached[0] != result[0]:
         _log_cgroup_scope_transition(result)
     return result
+
+
+def _cgroup_scope_epoch() -> int:
+    """Return the current enforcement epoch (see :data:`_CGROUP_SCOPE_EPOCH`).
+
+    Read through this function, not by importing the name, so a caller in
+    another module always sees the value the last probe wrote.
+    """
+    return _CGROUP_SCOPE_EPOCH
 
 
 def _log_cgroup_scope_transition(result: tuple[bool, str]) -> None:

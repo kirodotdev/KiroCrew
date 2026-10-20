@@ -298,6 +298,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _probe_cgroup_scope _log_cgroup_scope_transition _compute_cgroup_scope_probe
         _CPU_DELEGATED _cpu_controller_delegated _cgroup_limits_from_config
         _CGROUP_DEFAULT_SCOPE_MEMORY_HIGH_PCT _scope_memory_high_mb _read_resource_limits
+        _CGROUP_SCOPE_EPOCH _cgroup_scope_epoch
         """.split()),
     "kiro_crew.sandbox_slice": tuple("""
         _SLICE_MEMORY_HIGH_FRACTION _SLICE_FALLBACK_MEMORY_HIGH_MB _SLICE_MEMHIGH_APPLIED
@@ -326,6 +327,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _host_swap_total_kb _slice_reclaim_cannot_swap _write_memory_reclaim
         _disarm_slice_reclaim _log_slice_reclaim_skip_once _run_slice_reclaim_episode
         reclaim_agents_slice_page_cache
+        _SLICE_MEMHIGH_EPOCH _slice_memory_high_is_stale _forget_stale_slice_memory_high
+        _SLICE_LIMITS_EPOCH _reapply_slice_limits_for_new_session
         """.split()),
     "kiro_crew.sandbox_rlimit": tuple("""
         _UNSET _RESOURCE_PREEXEC resource_limit_preexec _EXTRACTOR_PREEXEC
