@@ -172,6 +172,7 @@ class _SessionEntry(Protocol):
     first_turn: object
     provider_switch_replay: bool
     retire_on_identity_change: bool
+    cwd_retracted: bool
     prev_turn_cancelled: bool
 
 

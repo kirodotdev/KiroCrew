@@ -42,7 +42,19 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     if clear or not project:
         slot.project = ""
         if old_project:
-            slot._pending_reset_history_key = effective_session_key(slot)
+            session_key = effective_session_key(slot)
+            state.sessions.retract_cwd(session_key)
+            slot._pending_reset_history_key = session_key
+            slot._pending_reset_clears_cwd = True
+            try:
+                await state.sessions.aflush()
+            except Exception:
+                logger.warning("saving the cleared project cwd failed", exc_info=True)
+                _push(state)
+                return (
+                    "Error: the project was cleared but the change could not be saved, "
+                    "so a restart may reopen the old directory. Clear it again."
+                )
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
@@ -85,6 +97,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     slot.project = rp
     if rp != old_project:
         slot._pending_reset_history_key = effective_session_key(slot)
+        slot._pending_reset_clears_cwd = False
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project
 
