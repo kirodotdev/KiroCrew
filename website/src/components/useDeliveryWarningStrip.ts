@@ -1,13 +1,17 @@
 /** The delivery-warning strip's state and exit, shared by both chat surfaces so neither spells
  *  them on its own. */
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useAppDispatch, useAppSelector, useAppStore, type AppDispatch, type RootState } from '../store'
 import { appendSlotMessage, dropUnconfirmedRow, endLocalTurn, selectSendAccepted, selectSlotMessages, selectSlotRunEpoch } from '../store/chatSlice'
 import {
-  dismissDeliveryWarnings, pruneDeliveryWarnings, removedSendsFor, takeRemovedSend, useDeliveryWarnings,
-  type DeliveryWarningSurface,
+  adoptRecoveredSends, claimRecoveredSends, dismissDeliveryWarnings, pruneDeliveryWarnings, releaseRecoveredSends, removedSendsFor,
+  takeRemovedSend, useDeliveryWarnings, type DeliveryWarningSurface,
 } from '../utils/deliveryWarning'
+import { forgetRestoredSendRecoveries, forgetSendRecovery, loadSendRecoveries, markSendRecoveryRestored, type LoadedSendRecovery } from '../utils/sendRecoveryStore'
+import { acceptedInHistory } from '../utils/recoveredSendHistory'
 import { i18nT } from '../i18n/t'
+import { quoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { PASTE_TOKEN_REGEX, decodeIdInvisible } from '../utils/pasteTokens'
 
 /** Pending means the optimistic row is still on screen and no row anywhere confirms or queues
  *  the send: confirmed, queued, cleared and refetched-away sends have nothing left to hand back. */
@@ -18,11 +22,52 @@ const sendPending = (state: RootState, slot: string, sendId: string): boolean =>
 /** For the receipt paths: a removed send whose late receipt still lands must say so, because the
  *  composer now holds a copy of a delivered message. */
 export function announceIfRemovedSendDelivered(dispatch: AppDispatch, slot: string, sendId: string): void {
-  if (!takeRemovedSend(slot, sendId)) return
+  const how = takeRemovedSend(slot, sendId)
+  if (!how) return
+  const key = how === 'recovered' ? 'pages.chatPage.delivery_recovered_delivered' : 'pages.chatPage.delivery_removed_delivered'
   dispatch(appendSlotMessage({
     slot,
-    message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_removed_delivered'), cls: '' },
+    message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(key), cls: '' },
   }))
+}
+
+/** Retire `slot`'s handed-back recovered sends once its composer goes from holding something to
+ *  empty: the user sent or cleared it.
+ *
+ *  The holding observation must be one the slot owned: settled (`settled`: the switch onto `slot`
+ *  has landed), and preceded by an observation of the same slot, or by none at all on mount, where
+ *  the composer starts from the slot's own draft. Right after a switch the composer can still carry
+ *  the chat left behind until its draft restore runs, and that hand-over is not an emptying. */
+export function useRetireRecoveredWhenEmptied(
+  slot: string | null | undefined, surface: DeliveryWarningSurface, empty: boolean, settled: boolean,
+): void {
+  const was = useRef<{ slot: string | null | undefined; empty: boolean; owned: boolean } | null>(null)
+  useEffect(() => {
+    const prev = was.current
+    const owned = !!slot && settled && (prev === null || prev.slot === slot)
+    was.current = { slot, empty, owned }
+    if (owned && empty && prev?.slot === slot && prev.owned && !prev.empty) forgetRestoredSendRecoveries(slot, surface)
+  }, [slot, surface, empty, settled])
+}
+
+/** A paste token keyed by its block id rather than its number: handing a send back renumbers a
+ *  carried block whose number the composer already uses, and keeps its id. */
+const ID_MARK = '\u0000'
+const SEQ_MARK = '\u0001'
+const byPasteId = (text: string): string =>
+  text.replace(PASTE_TOKEN_REGEX, (_t, seq: string, bits?: string) =>
+    bits ? ID_MARK + decodeIdInvisible(bits) + ID_MARK : SEQ_MARK + seq + SEQ_MARK)
+
+/** Whether a composer holding `text` and `items` (staged files or session refs) still carries
+ *  every part of a send: its typed text, its quote as the composer writes it, and each item. A
+ *  send with no part to look for is never carried. */
+export function composerCarries(
+  text: string, items: readonly string[], want: { text: string; quote: MessageQuote | null; items: readonly string[] },
+): boolean {
+  const parts = [byPasteId(want.text).trim(), ...(want.quote ? [quoteBlock(want.quote)] : [])].filter(Boolean)
+  if (!parts.length && !want.items.length) return false
+  const held = byPasteId(text)
+  return parts.every(p => held.includes(p)) && want.items.every(i => items.includes(i))
 }
 
 export interface DeliveryWarningStripHost<P> {
@@ -35,10 +80,23 @@ export interface DeliveryWarningStripHost<P> {
   merge: (earlier: P, later: P) => P
   /** A crewmate pane draws no notice rows, so it could not say a removed send arrived. */
   disabled?: boolean
+  /** Whether `slot`'s transcript has loaded. A send from an earlier page load is then checked
+   *  against the server's history, not only the loaded window, before its text is handed back. */
+  ready: boolean
+  /** The surface's payload shape, applied to what an earlier page load persisted. */
+  parse: (sent: unknown) => P | null
+  /** Whether `slot`'s composer still carries this send (see `composerCarries`). A send an earlier
+   *  load already handed back keeps its record until the composer is emptied; a later load hands it
+   *  back again unless its text survived, so a surviving draft is not appended to a second time,
+   *  and text typed since cannot pass for it. */
+  holdsSend: (slot: string, sent: P) => boolean
+  /** What a send carries that the composer's saved draft does not, put back for a send whose text
+   *  survived (the page's selected knowledge and file aliases). */
+  restoreAside?: (slot: string, sent: P) => void
 }
 
 export function useDeliveryWarningStrip<P>(host: DeliveryWarningStripHost<P>): { show: boolean; onDismiss: () => void } {
-  const { slot, surface, currentSlot, restore, merge, disabled } = host
+  const { slot, surface, currentSlot, restore, merge, disabled, ready, parse, holdsSend, restoreAside } = host
   const dispatch = useAppDispatch()
   const store = useAppStore()
   const records = useDeliveryWarnings(slot)
@@ -51,6 +109,73 @@ export function useDeliveryWarningStrip<P>(host: DeliveryWarningStripHost<P>): {
   useEffect(() => {
     if (slot && records.length) pruneDeliveryWarnings(slot, id => sendPending(store.getState(), slot, id))
   }, [slot, records, pending, store])
+
+  // Read through a ref: a host re-render must not cancel a history check already in flight.
+  const recoverWith = useRef({ restore, merge, parse, holdsSend, restoreAside })
+  recoverWith.current = { restore, merge, parse, holdsSend, restoreAside }
+
+  useEffect(() => {
+    if (!slot || disabled || !ready) return
+    const claims = claimRecoveredSends(slot, surface)
+    if (!claims.length) return
+    const ids = claims.map(r => r.sendId)
+    // A handed-back send whose text the composer lost is unmarked now, so emptying the composer
+    // while the history is read cannot retire it.
+    const carried = (rec: LoadedSendRecovery): boolean => {
+      const sent = rec.restored ? recoverWith.current.parse(rec.sent) : null
+      return sent !== null && recoverWith.current.holdsSend(slot, sent)
+    }
+    for (const rec of claims) if (rec.restored && !carried(rec)) markSendRecoveryRestored(slot, rec.sendId, false)
+    let live = true
+    let adopted: string[] = []
+    void acceptedInHistory(slot, ids).then(seen => {
+      if (!live) return
+      // Undecidable: hand nothing back and keep every record for the next load to check again.
+      if (seen === null) { releaseRecoveredSends(slot, ids); return }
+      const { restore: put, merge: fold, parse: read, restoreAside: putAside } = recoverWith.current
+      const kept = new Set(claims.filter(carried).map(r => r.sendId))
+      // A record retired while the history was read (its composer was sent or cleared) is gone on
+      // purpose: handing its text back would undo the user's clear.
+      const still = new Set(loadSendRecoveries(slot).map(r => r.sendId))
+      const gone = ids.filter(id => !still.has(id))
+      releaseRecoveredSends(slot, gone)
+      const back: Array<{ sendId: string; sent: P }> = []
+      // Handed back by an earlier load and still in the composer: not appended again, but still
+      // tracked, so a late echo says it was delivered after all.
+      const surviving: string[] = []
+      for (const rec of claims) {
+        if (!still.has(rec.sendId)) continue
+        const sent = seen.has(rec.sendId) || selectSendAccepted(store.getState(), slot, rec.sendId) ? null : read(rec.sent)
+        if (sent === null) {
+          // Delivered while a draft holding its text survived: say so, or the next Enter sends it twice.
+          if (kept.has(rec.sendId)) {
+            dispatch(appendSlotMessage({
+              slot,
+              message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_recovered_delivered'), cls: '' },
+            }))
+          }
+          forgetSendRecovery(slot, rec.sendId)
+          continue
+        }
+        if (kept.has(rec.sendId)) { surviving.push(rec.sendId); markSendRecoveryRestored(slot, rec.sendId); putAside?.(slot, sent); continue }
+        back.push({ sendId: rec.sendId, sent })
+      }
+      adopted = [...back.map(b => b.sendId), ...surviving]
+      releaseRecoveredSends(slot, ids.filter(id => !adopted.includes(id)))
+      adoptRecoveredSends(slot, adopted)
+      if (!back.length) return
+      put(slot, back.map(b => b.sent).reduce(fold))
+      for (const b of back) markSendRecoveryRestored(slot, b.sendId)
+      dispatch(appendSlotMessage({
+        slot,
+        message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_recovered_after_reload'), cls: '' },
+      }))
+    })
+    return () => {
+      live = false
+      releaseRecoveredSends(slot, ids.filter(id => !adopted.includes(id)))
+    }
+  }, [slot, disabled, ready, surface, store, dispatch])
 
   useEffect(() => {
     if (!slot || !acceptedRemoved) return
