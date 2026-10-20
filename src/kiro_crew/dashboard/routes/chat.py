@@ -116,6 +116,8 @@ def register(app: web.Application) -> None:
     # POST below, so aiohttp's registration-order resolution cannot read
     # "resume-all" as a slot name and answer it from a per-slot handler.
     app.router.add_post("/api/chat/slots/resume-all", chat.api_chat_slots_resume_all)
+    app.router.add_post("/api/chat/generate-titles", chat.api_chat_slots_generate_titles)
+    app.router.add_get("/api/chat/generate-titles", chat.api_chat_slots_generate_titles_status)
     # Static segment BEFORE the ``/api/chat/slots/{slot}`` GET below, for the reason
     # the import route's own note gives: aiohttp resolves in registration order, so a
     # later wildcard would shadow this path and answer it as a slot detail read.
