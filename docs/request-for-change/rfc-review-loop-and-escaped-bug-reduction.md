@@ -62,7 +62,7 @@ Lead with this table. Section 4 holds the detail for each row.
 
 | # | Decision | What changes | Main evidence | Main cost | Rollout |
 |---|---|---|---|---|---|
-| D1 | **Review gate is PASS or BLOCK** (headline) | Every lane prints PASS or BLOCK plus a 1 to 3 sentence reason. A BLOCK must state a trigger and an observable wrong outcome. Style notes leave the gate. A BLOCK leaves only by a fix or an override record with a class. Security, data-loss, crash and guard-removal blocks need a writer other than the PR author. | 282 risks set aside and later shipped as bugs: 201 (71.3%) were advisory, 9 (3.2%) were BLOCK. 97% of deferrals and 98.2% of overrides were written by the PR author. | More BLOCKs, so possibly more rounds. The false-block rate is unknown. | Replay on history, then shadow, then enforce lane by lane |
+| D1 | **Review gate is PASS or BLOCK** (headline) | Every lane prints PASS or BLOCK plus a 1 to 3 sentence reason. A BLOCK must state a trigger and an observable wrong outcome. Style notes leave the gate. A BLOCK leaves only by a fix or an override record with a class. Security, data-loss, crash and guard-removal blocks need a writer other than the PR author. | 282 risks set aside and later shipped as bugs: 201 (71.3%) were advisory, 9 (3.2%) were BLOCK. 97% of deferrals and 98.2% of overrides were written by the PR author. | More BLOCKs, so possibly more rounds. The false-block rate is unknown. | Replay on history, then shadow, then enforce lane by lane. Superseded by the D1 amendment in section 2.2: direct enforcement on all lanes, safety is a revert by pull request. |
 | D2 | **Lint first** | Heavy CI jobs wait for the two lint jobs, through one small aggregate job | 25,571 heavy job-minutes sat in 88 pushes that lint would have stopped (10.5-day window). Lint median 8.1 min | Every green push waits about 8.1 min more before heavy jobs start | Repository variable, off then on |
 | D3 | **Sibling sweep in the PR body** | New `## Sibling sweep` section on `fix`/`revert` pull requests, checked for presence and shape (exit 23) | 786 `partial_fix` loops (12.0%); 234 `partial_fix` bugs (20.1% of bug-fix PRs) | One more section on a fix body | Warn 14 days, then red |
 | D4 | **Proof inside `## Tests`** | One `Proof:` line under the existing heading on `fix` pull requests (exit 24). No new heading | 36.0% of bug-fix bodies claim a test fails without the fix; nothing checks it | One `prove.py` run per fix | Warn 14 days, then red |
@@ -79,7 +79,7 @@ rules in [README.md](README.md).
 
 | # | Outcome (accept / reject / amend) | Recorded by (role) | Date | Amendment text |
 |---|---|---|---|---|
-| D1 | amend | repository owner | 2026-10-20 | Amended 2026-10-20: the rollout in section 4.1 (the replay on history, the shadow period with its kill rule and the `REVIEW_VERDICT_ENFORCED` switch, and enforcement one lane at a time) is replaced by direct enforcement on all lanes from the first merge. No replay, no shadow mode, no kill switch, no auto-rollback. The safety is a revert by pull request. The change is observed for one week after the merge. |
+| D1 | amend | repository owner | 2026-10-20 | Amended 2026-10-20: the rollout in section 4.1 (the replay on history, the shadow period with its kill rule and the `REVIEW_VERDICT_ENFORCED` switch, and enforcement one lane at a time) is replaced by direct enforcement on all lanes from the first merge. No replay, no shadow mode, no kill switch, no auto-rollback. The safety is a revert by pull request. The change is observed for one week after the merge. The same replacement applies to every other row that describes that rollout: the D1 rows in sections 2.1 and 2.3, the file-list, replay, shadow, enforce, cost, rollout and rollback rows of sections 4.1.6 to 4.1.8, the D1 rows of the alternatives table in section 5, releases 0, 1 and 3 and reasons 1 and 4 in section 7, and the answer to question 1 in section 8. Each is marked and its original text is kept beside the marker. |
 | D2 | accept | repository owner | 2026-10-20 | None. |
 | D3 | accept | repository owner | 2026-10-20 | None. |
 | D4 | accept | repository owner | 2026-10-20 | None. |
@@ -94,7 +94,7 @@ rules in [README.md](README.md).
 |---|---|---|
 | D3, D4, D5 | Release 0 (SKILL.md byte budget move) | `SKILL.md` of `kirocrew-prepare-pr` is 55,986 of 56,000 bytes (`test/test_review_repair_routing_skill.py` line 116), so 14 bytes remain |
 | D3, D4, D7 | The exit-code map in section 7.3 | Three new exit codes of `diff_signals.py --check-body`, assigned once |
-| D1 | Nothing in CI to start the replay; a shadow period before any gate changes | The replay and the shadow period change no gate |
+| D1 | Nothing in CI to start the replay; a shadow period before any gate changes | The replay and the shadow period change no gate. Superseded by the D1 amendment in section 2.2: direct enforcement on all lanes, safety is a revert by pull request. |
 | D2, D6, D1 | None of the others | Each stands alone |
 | D8 | Nothing | Measures the rest; useful even if all others are rejected |
 
@@ -254,6 +254,7 @@ BLOCKING / FINDING with exactly two verdicts, PASS and BLOCK. This is the
 headline of the RFC and can be accepted or rejected without D2 to D8. The
 repository owner accepted D1 with an amendment on 2026-10-20 (section 2.2):
 the rollout described below is replaced by direct enforcement on all lanes.
+The same replacement applies to the rows in sections 2.1, 2.3, 4.1.6 to 4.1.8, 5, 7 and 8 that describe the replay, the shadow period, the kill rule, the `REVIEW_VERDICT_ENFORCED` switch or enforcement one lane at a time. Each is marked, and its original text stays beside the marker as the record.
 
 #### 4.1.1 What happens today
 
@@ -410,13 +411,15 @@ PASS or BLOCK, which is the case for (b). The team should
 decide with the replay of 4.1.7 in hand; the cost of (b) is the unknown
 false-block rate, and the cost of (a) is that the soft tier stays.
 
+Superseded by the D1 amendment in section 2.2: the owner chose (b) and no replay precedes it. Enforcement is direct on all lanes, and the safety is a revert by pull request.
+
 #### 4.1.6 Files that change
 
 | Area | Files |
 |---|---|
 | Lane prompts | `.github/review-prompts/gpt-review-core.md`, `gpt-output-contract.md`, `gpt-round-convergence.md`, `gpt-block-adjudication.md`, `opus-validate.md`, `opus-discovery.md`, `first-principles.md`, `security-scope.md`; the inline prompts of `design-review.yml` and `ux-review.yml` and of their fork copies |
-| Lane gates | `codex-review.yml`, `claude-review.yml`, `design-review.yml`, `ux-review.yml`, `first-principles-review.yml`, `security-scope-review.yml` and the six `fork-*` copies (verdict parse, remove the CONCERNS digest steps, add the shadow line) |
-| Readiness and local loop | `_review_contract.py` (verdict regex, `release_violations`), `pr_status.py`, `pr-readiness.yml` (a `REVIEW_VERDICT_ENFORCED` variable), `SKILL.md` Phase 4 text |
+| Lane gates | `codex-review.yml`, `claude-review.yml`, `design-review.yml`, `ux-review.yml`, `first-principles-review.yml`, `security-scope-review.yml` and the six `fork-*` copies (verdict parse, remove the CONCERNS digest steps, add the shadow line). The shadow line is superseded by the D1 amendment in section 2.2: no shadow mode exists, enforcement is direct on all lanes. |
+| Readiness and local loop | `_review_contract.py` (verdict regex, `release_violations`), `pr_status.py`, `pr-readiness.yml` (a `REVIEW_VERDICT_ENFORCED` variable), `SKILL.md` Phase 4 text. The `REVIEW_VERDICT_ENFORCED` variable is superseded by the D1 amendment in section 2.2: no switch exists, the safety is a revert by pull request. |
 | Override handler | `ai-review-human-override.yml` (class grammar, independence rule, record line), new `.github/scripts/release_record.py` |
 | Deferral check | `disposition-deferral-check.yml` (shared `issue_problems()`, parity test) |
 | Docs and tests | `docs/ci/ci-and-reviews.md` ("One shared binary contract", "Advisory means advisory", "Human override", "AI-review human overrides"), `AGENTS.md` (one subsection), `test/test_review_lane_prompt_parity.py`, `test/test_ai_review_workflows*.py`, new `test/test_release_record.py` |
@@ -432,11 +435,13 @@ them.
 Proposed measurement, in three steps. All numbers below are proposals; the team
 should change them before the replay starts.
 
+Superseded by the D1 amendment in section 2.2: there is no replay, no shadow period, no kill rule and no per-lane enforcement. The steps below, and the cost paragraph after them, stay as the record of what was proposed.
+
 | Step | What | Acceptance to move on |
 |---|---|---|
-| 1. Replay on history (no CI change) | **Positives:** the introducing pull requests of the 282 bugs (277 have one recorded). **Negatives:** a matched set of about three per positive, from the same merge week, area and size decile, that no bug-fix pull request names as an introducer. Run each lane's new prompt on the stored diff at the merged head. Two readers judge each BLOCK; a third settles a split. | **Recall on stated risks** (positives where the old lane already wrote a trigger and an outcome, paths a, a2, b): at least 90% get a BLOCK carrying the same risk. **Recall on all positives**: report it; proposed floor 50%. **False-block rate**: share of negative pull requests with at least one BLOCK both readers call not a defect: at most 10%, and at most 0.15 false BLOCKs per pull request (0.15 is 4.5% of the 3.31 loops per PR today). |
-| 2. Shadow mode | Each lane keeps its current verdict as the gate and prints the new verdict beside it: `Verdict (shadow): PASS or BLOCK, reason` in the comment and the job summary. A weekly job reports the agreement matrix per lane, the share of new BLOCKs with a missing field (target below 5%) and, once overrides exist, the share overridden as `false-positive`. A switch `REVIEW_VERDICT_ENFORCED: "false"` follows the pattern of `issue-gate.yml` (`GATE_ENFORCED`, lines 168-196), where any value other than `"true"` or `"false"` fails the job. | At least 14 days and the replay numbers confirmed on live pull requests. Kill rule: more than 30% of new BLOCKs overridden as `false-positive` by an independent writer withdraws the prompt (30% is a placeholder; the base rate is unknown). |
-| 3. Enforce, one lane at a time | Order: GPT 6.1 and Opus 5.5 first (already two-state at the gate), then Security Scope, First Principles, Design, and UX last (`ux_copy_or_layout` is 298 loops, 4.5%, and the lane judges taste). | Each lane flips on its own date. |
+| 1. Replay on history (no CI change) | **Positives:** the introducing pull requests of the 282 bugs (277 have one recorded). **Negatives:** a matched set of about three per positive, from the same merge week, area and size decile, that no bug-fix pull request names as an introducer. Run each lane's new prompt on the stored diff at the merged head. Two readers judge each BLOCK; a third settles a split. | **Recall on stated risks** (positives where the old lane already wrote a trigger and an outcome, paths a, a2, b): at least 90% get a BLOCK carrying the same risk. **Recall on all positives**: report it; proposed floor 50%. **False-block rate**: share of negative pull requests with at least one BLOCK both readers call not a defect: at most 10%, and at most 0.15 false BLOCKs per pull request (0.15 is 4.5% of the 3.31 loops per PR today). Superseded by the D1 amendment in section 2.2: direct enforcement on all lanes, safety is a revert by pull request. |
+| 2. Shadow mode | Each lane keeps its current verdict as the gate and prints the new verdict beside it: `Verdict (shadow): PASS or BLOCK, reason` in the comment and the job summary. A weekly job reports the agreement matrix per lane, the share of new BLOCKs with a missing field (target below 5%) and, once overrides exist, the share overridden as `false-positive`. A switch `REVIEW_VERDICT_ENFORCED: "false"` follows the pattern of `issue-gate.yml` (`GATE_ENFORCED`, lines 168-196), where any value other than `"true"` or `"false"` fails the job. | At least 14 days and the replay numbers confirmed on live pull requests. Kill rule: more than 30% of new BLOCKs overridden as `false-positive` by an independent writer withdraws the prompt (30% is a placeholder; the base rate is unknown). Superseded by the D1 amendment in section 2.2: no switch, kill rule or auto-rollback exists; enforcement is direct on all lanes and the only remedy is a revert by pull request. |
+| 3. Enforce, one lane at a time | Order: GPT 6.1 and Opus 5.5 first (already two-state at the gate), then Security Scope, First Principles, Design, and UX last (`ux_copy_or_layout` is 298 loops, 4.5%, and the lane judges taste). | Each lane flips on its own date. Superseded by the D1 amendment in section 2.2: direct enforcement on all lanes, safety is a revert by pull request. |
 
 Costs of the replay: about 1,100 pull requests times up to five lanes, so
 roughly 5,500 lane runs at a median of 2 to 7 minutes each. Tokens and dollars
@@ -451,11 +456,11 @@ measured false-block rate, so it errs against D1.
 
 | Facet | Content |
 |---|---|
-| Cost | Prompt rewrites in 6 lanes and 6 fork copies; parser changes; the override handler (medium); the replay (cost unknown); a weekly shadow report. More BLOCKs means possibly more rounds. A second writer on sensitive blocks adds latency of unknown size. |
+| Cost | Prompt rewrites in 6 lanes and 6 fork copies; parser changes; the override handler (medium); the replay (cost unknown); a weekly shadow report. More BLOCKs means possibly more rounds. A second writer on sensitive blocks adds latency of unknown size. The replay and the weekly shadow report are superseded by the D1 amendment in section 2.2: neither is built. |
 | Risk | **False blocks.** A BLOCK the author disagrees with costs a push, an override or both. **Taste lanes.** UX and Design judge experience and shape; "Trigger" and "Outcome" fit them less well than a code path. **Rubric widening.** 74% of sampled bugs fall outside today's blocking classes, so the BLOCK bar widens most where lanes have the least training signal. |
 | False-positive example | The UX lane states the trigger "a user opens Settings in a 320 px window" and the outcome "a label wraps onto a second line". Both fields are present and the outcome is observable. Under the impact floor (item 3) this is a note unless the label becomes unreadable. Without the floor, it blocks. The replay decides where the floor sits. |
-| Rollout | Replay (no CI change) then shadow then enforce per lane (4.1.7). Old and new override grammar both accepted for six weeks. |
-| Rollback | Set `REVIEW_VERDICT_ENFORCED` to `false`: the old gate returns, because the old parser branches stay for two releases. Revert the grammar by dropping the class requirement; the second hidden line is ignored by old readers. |
+| Rollout | Replay (no CI change) then shadow then enforce per lane (4.1.7). Old and new override grammar both accepted for six weeks. The replay, shadow and per-lane parts are superseded by the D1 amendment in section 2.2: direct enforcement on all lanes, safety is a revert by pull request. |
+| Rollback | Set `REVIEW_VERDICT_ENFORCED` to `false`: the old gate returns, because the old parser branches stay for two releases. Revert the grammar by dropping the class requirement; the second hidden line is ignored by old readers. Superseded by the D1 amendment in section 2.2: no switch, kill rule or auto-rollback exists; enforcement is direct on all lanes and the only remedy is a revert by pull request. |
 | Owner (proposed) | The maintainers who own the review lanes (CODEOWNERS team `kirocrew-pr-review`), with CI owners for the workflow edits. |
 | Success metric (baseline to target) | Risks released with no record: 49 of 282 path-b cases (17.4%) to 0 for BLOCK items. Overrides carrying a class: 0 of 833 to 100%. Sensitive-class overrides by the PR author: unknown baseline (98.2% of all overrides) to 0. `deferred` overrides with a valid issue: not recorded to 100%. `deferred_risk` bug-fix pull requests: 282 of 1,162 (24.3%) to a lower share; no number is promised, because other changes land at the same time (design D section 9). |
 
@@ -598,8 +603,8 @@ baseline.
 | Alternative | What it would do | Why not (or why not alone) |
 |---|---|---|
 | **Do nothing** | Keep today's rules. | Costs stay: 3.31 loops per pull request, 46.9% of loops in 7.6% of pull requests, 24.3% of bug-fix pull requests repairing a set-aside risk, and about 91 runner-hours a day on avoidable pushes. The study has no trend that says they fall by themselves: loops per PR run from 3.2 to 2.32 across the ten batch rows, but the rows differ in surviving evidence (`SYNTHESIS` section 1). |
-| **Keep the concerns tier** | D1 option (a): three tiers plus a `Bug-likely` tag. | A coherent choice with a smaller false-block exposure (section 4.1.5). It leaves a vocabulary in which one word means "read this and decide", and its gate depends on a tag whose accuracy nobody has measured. It stays the fallback if the replay shows an unacceptable false-block rate for D1. |
-| **Prompt-only calibration of the lanes** | Add the 18 sampled blocker-class bugs as regression prompts; change no gate (design D section 5.2, item 1). | Cheap and worth doing inside D1's replay, but it fixes the 15-point gap between today's rubric and today's behaviour only. 74% of sampled bugs sit outside the rubric. |
+| **Keep the concerns tier** | D1 option (a): three tiers plus a `Bug-likely` tag. | A coherent choice with a smaller false-block exposure (section 4.1.5). It leaves a vocabulary in which one word means "read this and decide", and its gate depends on a tag whose accuracy nobody has measured. It stays the fallback if the replay shows an unacceptable false-block rate for D1. Superseded by the D1 amendment in section 2.2: there is no replay, so this condition cannot trigger; direct enforcement on all lanes, safety is a revert by pull request. |
+| **Prompt-only calibration of the lanes** | Add the 18 sampled blocker-class bugs as regression prompts; change no gate (design D section 5.2, item 1). | Cheap and worth doing inside D1's replay, but it fixes the 15-point gap between today's rubric and today's behaviour only. 74% of sampled bugs sit outside the rubric. The replay is superseded by the D1 amendment in section 2.2: there is no replay. |
 | **Every deferral needs an issue and a pinning test** (design A, Rule 1) | Fire on all `accepted-and-deferred` replies. | 135 of the 282 bugs (47.9%) already had an issue and shipped. The pin would touch about 109 deferrals a week (design D section 11), most of them low risk, and a strict `xfail` pin collides with the GPT lane's "a ratchet may only tighten" rule. D1 asks for an issue on every `deferred` override and a pin only for a sensitive-class deferral (open question 6). |
 | **Mechanical sibling probe** (design A, Rule 2, stage 1) | Flag a removed line that still appears elsewhere. | Fires on 7.2% of fix commits and pointed at the later fix in 5.8% of cases. Kept as a non-blocking hint only, after D3. |
 | **Fold lint into Fast Gate** | D2 by another route. | Costlier (section 4.2). |
@@ -629,15 +634,16 @@ abandonable. A decision that is rejected drops its rows and nothing else.
 
 | Release | Contents | Behaviour change | Gate to the next release |
 |---|---|---|---|
-| **0** | `SKILL.md` byte-budget move: relocate the retrospective and Phase 4 text into `references/` so the file has real headroom (14 bytes today). D8 metrics in report-only form. D1 replay (offline). D2 `lint-gate` in shadow (no job depends on it). | None | Baselines reproduced within sampling error; replay pilot (50 positives, 150 negatives) done; two weeks of `lint-gate` notices |
-| **1** | D3 template block and `sibling_list_check.py` in warn mode, local exit 23. D4 `Proof:` text and `proof_line_check.py` in warn mode, local exit 24, `prove.py` update. D7 `pre_push_gate.py` and `gate_map.json`, local exit 25. D5 phase 0: `rounds_view` counts fix outcomes and prints `SEAM REPEAT` (exit 30 unchanged) and the `SKILL.md` edits. D1 shadow: lanes print the new verdict beside the old one; the override handler accepts both grammars. | Warnings and printed lines only | 14 days of warn data; shadow agreement matrix per lane |
+| **0** | `SKILL.md` byte-budget move: relocate the retrospective and Phase 4 text into `references/` so the file has real headroom (14 bytes today). D8 metrics in report-only form. D1 replay (offline). D2 `lint-gate` in shadow (no job depends on it). | None | Baselines reproduced within sampling error; replay pilot (50 positives, 150 negatives) done; two weeks of `lint-gate` notices. The D1 replay in this row is superseded by the D1 amendment in section 2.2: there is no replay. |
+| **1** | D3 template block and `sibling_list_check.py` in warn mode, local exit 23. D4 `Proof:` text and `proof_line_check.py` in warn mode, local exit 24, `prove.py` update. D7 `pre_push_gate.py` and `gate_map.json`, local exit 25. D5 phase 0: `rounds_view` counts fix outcomes and prints `SEAM REPEAT` (exit 30 unchanged) and the `SKILL.md` edits. D1 shadow: lanes print the new verdict beside the old one; the override handler accepts both grammars. | Warnings and printed lines only | 14 days of warn data; shadow agreement matrix per lane. The D1 shadow in this row is superseded by the D1 amendment in section 2.2: there is no shadow. |
 | **2** | D2 enforce: `lint-gate` added to the heavy jobs' `needs`. D3 and D4 turn red for pull requests opened after `ENFORCE_FROM`. D5 `sweep_check.py` in warn mode. D6 `PR Size` check, `/pr-size approve` handler and `regen_shared.py` in shadow (`SIZE_ENFORCED: "false"`, labels only). | Lint-first is live; two body checks go red | 14 days of D5 warn data; D6 shadow list reviewed |
-| **3** | D5 `SWEEP_ENFORCED` true. D6 `PR Size` red at 80 or more files. D1 enforce, one lane per date: GPT and Opus first, then Security Scope, First Principles, Design, UX last. | The three remaining enforcement changes | Each D1 lane flips only when its replay and shadow numbers meet the acceptance of section 4.1.7 |
+| **3** | D5 `SWEEP_ENFORCED` true. D6 `PR Size` red at 80 or more files. D1 enforce, one lane per date: GPT and Opus first, then Security Scope, First Principles, Design, UX last. | The three remaining enforcement changes | Each D1 lane flips only when its replay and shadow numbers meet the acceptance of section 4.1.7. The D1 part of this row is superseded by the D1 amendment in section 2.2: D1 enforces directly on all lanes from the first merge, not one lane per date and not gated on replay or shadow numbers. |
 
 ### 7.2 Why this order
 
 1. Measure before changing: D8 and the D1 replay change no behaviour and give
-   every later step a baseline.
+   every later step a baseline. The D1 replay in this reason is superseded by the D1
+   amendment in section 2.2: there is no replay.
 2. D5 and D4 add bytes to `SKILL.md`, which has 14 spare, so release 0 frees
    room first.
 3. Checks start as warnings for 14 days and turn red only for pull requests
@@ -646,7 +652,8 @@ abandonable. A decision that is rejected drops its rows and nothing else.
 4. D1 is the largest change in blast radius. It starts as text printed beside
    the old verdict, and each lane flips on its own evidence. UX goes last
    because its category (`ux_copy_or_layout`, 298 loops) is the most
-   taste-dependent.
+   taste-dependent. Superseded for D1 by the D1 amendment in section 2.2: direct
+   enforcement on all lanes, safety is a revert by pull request.
 5. D2's shadow job costs a runner slot and nothing else, so the 88-push
    baseline can be compared with live data before the `needs` edges land.
 
@@ -678,7 +685,7 @@ this is the single assignment.
 
 | # | Question | Default if the team has no view |
 |---|---|---|
-| 1 | **D1: option (a) (three tiers plus tag) or option (b) (PASS or BLOCK)?** | (b), after the replay |
+| 1 | **D1: option (a) (three tiers plus tag) or option (b) (PASS or BLOCK)?** | (b), after the replay. Superseded by the D1 amendment in section 2.2: (b), with no replay; direct enforcement on all lanes, safety is a revert by pull request. |
 | 2 | **D1: where does the impact floor sit?** Does a cosmetic but observable wrong outcome (a wrapped label, a wording slip) block, or become a note? | A note, unless the outcome makes something unreadable or unusable |
 | 3 | **D1: do the premise lanes (Design, First Principles, UX) keep their own BLOCK triggers, with Trigger and Outcome written as "the situation" and "the cost carried", or does D1 use a code-lane shape for all?** | Keep their triggers, require both fields |
 | 4 | **D1: the independent-writer rule.** Is 24 hours the right wait before an owner may record `owner-decision`? Can the workflow token read CODEOWNERS team membership (`GET orgs/<org>/teams/<team>/memberships/<login>`)? Unknown today; one call from a workflow would settle it. Who is "owner" when the only available writer is the PR author? | 24 hours; `owner-decision` links a comment and the weekly audit lists it |
