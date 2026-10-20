@@ -448,6 +448,54 @@ creates a key's directory and `sweep_work_root` reclaims idle ones. It is a hidd
 leaf that is precreated, so a sandbox spawned before the first allocation does not watch it
 appear.
 
+`staging` is the large-transfer staging root, `<data home>/staging` (`kiro_crew.staging`):
+snapshot build, snapshot restore and the dashboard state import's EXTRACTION each stage
+hundreds of MB to GB there before producing their final artifact, staged off the system temp
+dir so a tmpfs `/tmp` does not hold the data home in RAM. The import's uploaded
+`.zip` SPOOL is NOT staged here: `dashboard.part_stream` creates and discards it with
+a synchronous `os.open` on the serving event loop under a cancellation-safety
+invariant it shares with two other upload handlers, so pointing it at a data home that may
+be NFS would risk freezing the loop on a stalled metadata op. An off-loop create needs a
+different ownership model in that shared module; this leaf
+stages only the large extraction/build work. Its disposition is `VISIBLE`, and
+the disposition is chosen from the destination rather than by default (AGENTS.md: never add
+a mask a task did not ask for). The rule: a staging copy should be no
+more and no less exposed than the artifact it becomes. The destinations these sites
+produce are all visible — the CLI/dashboard snapshot's archive lands in the `snapshots`
+leaf (fully unfenced: not in `_CREW_HIDDEN_LEAVES`, `_CREW_READONLY_LEAVES` or
+`_CREW_SECRET_LEAVES`), or a user-named path; a restore and an import install into the
+sandbox-visible data home.
+A sibling agent could already read the finished snapshot, so staging the same bytes beside
+it adds no new exposure. The off-host `backup` leaf IS hidden: the AWS nightly backup
+reaches the SAME snapshot builder (`run_snapshot_backup` -> `snapshot_main`) but publishes
+its archive through the masked `aws-control-staging` / `backup` path (`storage.pinned_staging`).
+That masks the archive, not the inner build staging here: the in-the-clear build copy adds
+no exposure the finished visible snapshot does not already carry, so the build-staging leaf
+stays unmasked for that caller too and the hidden destination does not pull staging toward
+`HIDDEN`. The root is therefore left unmasked: it is owner-only
+(0700) and link-checked like every data-home directory, but it is NOT on
+`sandbox._CREW_HIDDEN_LEAVES`, `sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES` or
+`security.paths._CREW_SECRET_LEAVES`.
+
+Because it is unmasked, the caller context forces no fallback. The import
+extraction (a dashboard route), the hourly sweep (`process_entry`) and the nightly backup
+(aws-control backend) run in the gateway; the one caller that can run in-sandbox is an agent
+shelling out to `kirocrew snapshot` / `kirocrew restore`, which runs `snapshot_main` /
+`restore_main` locally in that process (it does not proxy to the gateway). With no mask over
+the leaf, that in-sandbox CLI stages on real disk exactly like the gateway — the
+sandbox-visible data-home root carries it — so there is no tmpfs mask to work around and
+`staging_dir()` returns the real root unconditionally. Because the staging leaf is
+agent-writable (VISIBLE), `staging.sweep_staging` does NOT trust a by-name check of the
+root: it PINS the root by descriptor (`platform_compat.pinned_directory`, `O_NOFOLLOW`)
+before listing it and removes each idle subtree through `pinned_fs.remove_tree_pinned` with
+the parent resolved and the child name literal, so a root or child swapped for a symlink
+mid-sweep cannot redirect a delete onto a governance file (e.g. `security_policy.json`)
+outside the tree. It reclaims a crash orphan — a `TemporaryDirectory` subtree idle past a 6h
+grace; every staging site produces a directory subtree, so a bare top-level file is left
+untouched — on the gateway's hourly maintenance wake; there is no separate boot sweep,
+because a reboot orphan is a visible staging tree no worse than the visible `snapshots`
+archive beside it and the hourly wake clears it within the grace window regardless.
+
 Masking a credential leaf as a FILE leaves its publish temp to account for separately,
 because a mask covers a path and the temp has a different one. The gateway's two auth
 stores — `token_signing.key` and `refresh_chains.json` — publish through

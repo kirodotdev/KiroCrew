@@ -208,6 +208,7 @@ if TYPE_CHECKING:
     from kiro_crew import snapshot_redact
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.staging import staging_dir
 
 try:
     from kiro_crew.config.loader import DASHBOARD_PORT as _DASHBOARD_PORT
@@ -1124,8 +1125,49 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     mc = _mc_dir()
     mode = args.mode or ("merge" if (mc / "memory.db").is_file() else "replace")
 
-    with tempfile.TemporaryDirectory() as work_str:
+    # The archive is opened and bounded by its member headers BEFORE the staging root is
+    # created, so a refused archive leaves the data home exactly as it was.
+    tar: tarfile.TarFile | None = None
+    try:
+        tar = tarfile.open(str(snap_path), "r:gz")
+        # The bound belongs on EVERY path that reads an archive, not just the ones that
+        # crossed a network. A local bundle can be hostile or simply wrong, and on Python
+        # < 3.11.4 the fallback below calls `getmembers()`, which materialises every
+        # entry -- so an archive declaring millions of them exhausts memory first.
+        declared_bytes = _refuse_oversized_archive(tar, max_bytes=archive_bound)
+        if raised_bound:
+            # Past the default bound the operator vouched for the size, not for the disk,
+            # so a raised bound is held to the free space where extraction would land: the
+            # staging root is a direct child of the data home, on the same disk.
+            free = shutil.disk_usage(mc).free
+            if declared_bytes > free:
+                raise _ArchiveTooLarge(
+                    f"This archive declares {declared_bytes / (1024 ** 3):.2f} GiB of "
+                    "uncompressed content, more than the "
+                    f"{free / (1024 ** 3):.2f} GiB free where it would be extracted"
+                )
+    except (_ArchiveTooLarge, tarfile.TarError, OSError, EOFError) as e:
+        if tar is not None:
+            tar.close()
+        too_large = isinstance(e, _ArchiveTooLarge)
+        reason = "archive_too_large" if too_large else "extraction_failed"
+        _audit("state_restore_rejected", f"reason={reason} from={snap_path.name}")
+        if too_large:
+            print(f"❌ {e}.\n   Nothing was restored.")
+        else:
+            print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
+        return 1
+
+    with closing(tar), tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
+        # Staged under the data home's ``staging`` leaf, not the system temp dir: the
+        # extracted bundle can be GBs and would otherwise sit in RAM on a tmpfs /tmp. The
+        # root is a sibling of the install on the same real disk, owner-only and VISIBLE
+        # (unmasked) -- a restore installs into the sandbox-visible data home, so the
+        # staging copy is no more exposed than the artifact it becomes; an in-sandbox
+        # ``kirocrew restore`` stages here on real disk exactly like the gateway. The
+        # context manager removes this subtree on success and failure, and a crash orphan
+        # is reclaimed by ``staging.sweep_staging``.
         # Same reasoning as the staging side: the extracted bundle sits here in the clear
         # before it is installed, so the directory is locked to the owner cross-platform
         # before any member is written into it.
@@ -1139,25 +1181,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # there. A refusal has to read as a refusal — every other rejection on this path
         # reports and exits 1 rather than surfacing a traceback.
         try:
-            with tarfile.open(str(snap_path), "r:gz") as tar:
-                # The bound belongs on EVERY path that reads an archive, not just the
-                # ones that crossed a network. A local bundle can be hostile or simply
-                # wrong, and on Python < 3.11.4 the fallback below calls `getmembers()`,
-                # which materialises every entry — so an archive declaring millions of
-                # them exhausts memory before a single file is written.
-                declared_bytes = _refuse_oversized_archive(tar, max_bytes=archive_bound)
-                if raised_bound:
-                    # Past the default bound the operator vouched for the size, not for
-                    # the disk. Holding a raised bound to the free space of the extraction
-                    # directory keeps the override from turning a hostile or simply wrong
-                    # archive into a full disk; the default bound needs no such check.
-                    free = shutil.disk_usage(work).free
-                    if declared_bytes > free:
-                        raise _ArchiveTooLarge(
-                            f"This archive declares {declared_bytes / (1024 ** 3):.2f} GiB of "
-                            "uncompressed content, more than the "
-                            f"{free / (1024 ** 3):.2f} GiB free where it would be extracted"
-                        )
+            with tar:
                 rejected_entries: list[str] = []
                 _filter = _rejection_recording_filter(rejected_entries)
                 try:
@@ -1189,13 +1213,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                         f"reason=unsafe_archive_entries from={snap_path.name}",
                     )
                     return 1
-        except _ArchiveTooLarge as e:
-            _audit(
-                "state_restore_rejected",
-                f"reason=archive_too_large from={snap_path.name}",
-            )
-            print(f"❌ {e}.\n   Nothing was restored.")
-            return 1
         except (tarfile.TarError, OSError, EOFError) as e:
             _audit(
                 "state_restore_rejected",
