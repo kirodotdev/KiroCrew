@@ -53,7 +53,10 @@ Exit:
     2  environment / state error (not a git repo, no diff, no reviewers, ...)
     40 PARITY FAILURE - a workflow does not have the shape we extract from.
        Deliberately loud: emitting a stale hand-written paraphrase instead is
-       the exact failure mode this script exists to prevent.
+       the exact failure mode this script exists to prevent. When the running
+       copy of this script differs from the base commit's copy (an installed
+       skill older than the base), the message says so and prints the command
+       that runs the base commit's copy instead.
 """
 import argparse
 import importlib.util
@@ -62,6 +65,7 @@ import os
 import posixpath
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -72,6 +76,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EXIT_OK = 0
 EXIT_ENV = 2
 EXIT_PARITY = 40
+
+#: Where this skill lives in the Kiro Crew repository. The copy that runs is
+#: often an installed one outside any checkout, so this is the path the base
+#: commit's copy is looked up under when parity fails.
+SKILL_REPO_PARTS = ("src", "kiro_crew", "builtin_skills", "kirocrew-dev", "kirocrew-prepare-pr")
+SKILL_REPO_DIR = posixpath.join(*SKILL_REPO_PARTS)
+#: This script, relative to the repository root, as path components.
+_SCRIPT_PARTS = SKILL_REPO_PARTS + ("scripts", "local_review.py")
 
 
 class ParityError(Exception):
@@ -1317,8 +1329,14 @@ def assemble(
     base_ref: Optional[str],
     out_dir: str,
     stage_dir: str,
+    resolved: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
-    """Assemble every reviewer brief the profile declares. Raises ParityError."""
+    """Assemble every reviewer brief the profile declares. Raises ParityError.
+
+    ``resolved``, when given, receives ``base_ref`` and ``base_sha`` as soon as
+    they are settled, so a caller handling a ParityError knows which base
+    commit the failing extraction read.
+    """
     resolve_profile = _load_sibling("_lr_resolve_profile", "resolve_profile.py")
     # The ref the profile is READ from is settled BEFORE any profile value is
     # trusted -- the caller's --base, else git's own record of the remote
@@ -1369,6 +1387,8 @@ def assemble(
             "first.".format(base_ref)
         )
     base_sha = base_sha.strip()
+    if resolved is not None:
+        resolved.update(base_ref=base_ref, base_sha=base_sha)
     head_sha = run(["git", "rev-parse", "HEAD"], cwd=worktree)[1].strip()
 
     # Never clear the staging directory: an explicit --stage-dir may hold files
@@ -1576,6 +1596,80 @@ def _pr_number(worktree: str) -> Optional[str]:
     return None if number is None else str(number)
 
 
+def _shell_join(args: list[str]) -> str:
+    """One pasteable command line for this host's shell."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(args)
+    return shlex.join(args)
+
+
+def _read_text(path: str) -> Optional[str]:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def stale_copy_hint(worktree: str, base_sha: str, base_ref: str) -> Optional[list[str]]:
+    """Explain a parity failure caused by running an out-of-date copy of this script.
+
+    The workflows are read from the base commit, but the script that parses
+    them is whichever copy the caller ran - usually the installed skill. When
+    the base changes a workflow and the extractor together, an install from
+    before that commit fails parity against a base its own extractor already
+    handles. Returns the lines that say so and name the commands that run the
+    base commit's copy - creating the empty private directory those commands
+    check the base out into - or None, creating nothing, when the running copy matches the base commit's
+    copy (the extractor really is behind its workflows), when the base has no
+    copy at ``SKILL_REPO_DIR`` (another repository), or when the running copy
+    IS the checkout's copy (the branch under review is changing the extractor).
+    """
+    relpath = posixpath.join(*_SCRIPT_PARTS)
+    # cat-file, not show: `git show <rev>:<path>` also stats the argument as a
+    # filename, which fails with "Filename too long" on Windows for a deep
+    # worktree, and that error would read as "no copy at the base".
+    rc, base_text, _ = run(
+        ["git", "cat-file", "blob", "{}:{}".format(base_sha, relpath)], cwd=worktree
+    )
+    if rc != 0 or not base_text:
+        return None
+    running = os.path.abspath(__file__)
+    running_text = _read_text(running)
+    if running_text is None or running_text == base_text:
+        return None
+    checkout_copy = os.path.join(worktree, *_SCRIPT_PARTS)
+    if os.path.exists(checkout_copy) and os.path.samefile(running, checkout_copy):
+        return None
+    # Never the checkout's copy, even when it matches the base: it loads its
+    # sibling scripts and bundled profile from the branch, so the branch would
+    # choose its own reviewers. A detached worktree of the base supplies all of
+    # them from the base commit. Its directory is created here, empty, private
+    # and unpredictable (mkdtemp), because a fixed name under a shared temp dir
+    # lets another local user plant the code the printed command then runs.
+    # `git worktree add` accepts an existing empty directory.
+    detached = tempfile.mkdtemp(prefix="kirocrew-prepare-pr-base-")
+    commands = [
+        _shell_join(["git", "-C", worktree, "worktree", "add", "--detach", detached, base_sha]),
+        _shell_join(
+            [sys.executable, os.path.join(detached, *_SCRIPT_PARTS),
+             "--worktree", worktree, "--base", base_ref]
+        ),
+        _shell_join(["git", "-C", worktree, "worktree", "remove", detached]),
+    ]
+    return [
+        "The local_review.py running here ({}) is not the base commit's copy "
+        "({} at {}). The workflows come from the base commit, so a copy from "
+        "another release can fail parity on a shape the base's own copy "
+        "handles.".format(running, relpath, base_sha[:12]),
+        "Run the base commit's copy instead:",
+    ] + ["    " + command for command in commands] + [
+        "If the installed skill is older than the base, update Kiro Crew to bring "
+        "it up to date. Do not fall back to the hand-written charters for this "
+        "failure.",
+    ]
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Assemble local pre-push reviewer briefs from CI's own review workflows."
@@ -1609,10 +1703,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         stage_dir = tempfile.mkdtemp(prefix="local-review-stage-")
 
+    resolved: dict[str, str] = {}
     try:
-        summary = assemble(worktree, args.base, out_dir, stage_dir)
+        summary = assemble(worktree, args.base, out_dir, stage_dir, resolved)
     except ParityError as exc:
         err("PARITY FAILURE: {}".format(exc))
+        hint = None
+        if resolved.get("base_sha"):
+            hint = stale_copy_hint(worktree, resolved["base_sha"], resolved["base_ref"])
+        if hint is not None:
+            for line in hint:
+                err(line)
+            return EXIT_PARITY
         err(
             "Refusing to emit a reviewer brief. A hand-written charter is NOT an "
             "acceptable substitute - fix the extractor against the workflow's new shape."

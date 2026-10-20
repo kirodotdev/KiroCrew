@@ -437,7 +437,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
    `rubric`. Local reviewers are read-only, unlike repair subagents.
 
    **Exit 40 is a PARITY FAILURE** — a reviewer workflow no longer has the shape the
-   extractor reads. Only then brief each reviewer from its charter in
+   extractor reads. Unless it names a stale copy, brief each reviewer from its charter in
    `references/fallback-charters.md`, and say so:
    `WARNING: local review ran on hand-written charters, not the extracted CI contract — they may have drifted.` Fix the extractor.
 

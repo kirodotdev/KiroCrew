@@ -408,6 +408,13 @@ the CI workflows they mirror. A silent fallback to those charters reintroduces
 exactly the drift the script prevents, so exit 40 requires a visible WARNING and a
 fix to the extractor rather than a quiet degradation.
 
+The workflows come from the base commit, but the extractor is whichever copy ran,
+usually the installed skill. When the base changes a workflow and the extractor in
+one commit, an install from before it fails parity although the base's own copy
+parses fine. So on a parity failure the script compares itself with the base
+commit's copy: when they differ it still exits 40, but names the base copy and the
+command that runs it. Neither the charters nor an extractor fix is the remedy then.
+
 The charter budgets are hand-copied from CI and that copy is what drifted before —
 the skill claimed ≤2 BLOCKING long after CI moved to 5.
 `test_charter_budgets_match_the_ci_workflows` now pins the wording to
