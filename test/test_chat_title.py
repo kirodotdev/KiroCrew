@@ -20,8 +20,6 @@ from kiro_crew.dashboard import chat_title
 from kiro_crew.dashboard.chat_title import (
     _TITLE_LINE_BUDGET,
     _TITLE_LINE_MIN_KEEP,
-    _TITLE_MAX_ATTACHMENT_FILES,
-    _TITLE_MAX_ATTACHMENT_PATH_LENGTH,
     _TITLE_SOURCE_SCAN_LIMIT,
     _TITLE_TEXT_LIMIT,
     _TITLE_TRUNCATION_MARKER,
@@ -32,6 +30,10 @@ from kiro_crew.dashboard.chat_title import (
     _message_attachment_paths,
     _title_text,
     _validate_title_reply,
+)
+from kiro_crew.dashboard.chat_title_attachments import (
+    _TITLE_MAX_ATTACHMENT_FILES,
+    _TITLE_MAX_ATTACHMENT_PATH_LENGTH,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
@@ -435,6 +437,25 @@ async def test_generate_title_keeps_real_reply(monkeypatch):
         [{"role": "user", "content": "this is the launch blog https://example.com/Intro"}],
     )
     assert title == "Kiro Crew launch blog"
+
+
+@pytest.mark.asyncio
+async def test_manual_title_falls_back_to_the_opening_message_when_the_model_fails(monkeypatch):
+    async def _model_down(*_a, **_kw):
+        raise TimeoutError("titling model timed out")
+
+    async def _no_key(_key):
+        return ""
+
+    monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _model_down)
+    monkeypatch.setattr(chat_title, "_ticket_key_if_enabled", _no_key)
+    slot = _ChatSlot("s")
+    slot.messages.append({"role": "user", "content": "plan the launch blog"})
+
+    title = await chat_title.generate_manual_title(SimpleNamespace(), slot)
+
+    assert title == chat_title._fallback_title_from_messages(slot.messages)
+    assert title
 
 
 @pytest.mark.asyncio
