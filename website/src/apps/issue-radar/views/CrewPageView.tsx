@@ -44,9 +44,10 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText, Undo2 } from 'lucide-react'
+import { Archive, CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText, Undo2 } from 'lucide-react'
 
 import { Badge, Btn, Card, CardTitle, EmptyState, StatCard } from '../../../components/ui'
+import { useConfirm } from '../../../components/ConfirmDialog'
 import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { fmtDate, fmtDateFields, fmtDateTime, fmtNumber, fmtRelative, toDate } from '../../../i18n/format'
@@ -269,6 +270,27 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
     },
   })
   const resumeFailReason = resumeSwitching.error instanceof Error ? resumeSwitching.error.message.trim() : ''
+
+  // "Retire crew": the backend stops the crew for good and drops it from the
+  // roster, keeping its record, work log and name reservation. Refetching the
+  // roster is what moves the page on: the context re-points a selection the
+  // roster no longer holds at the first crew left, or at the empty state.
+  const { confirm, confirmDialog } = useConfirm()
+  const retire = useMutation({
+    mutationFn: () => issueRadarApi.retireCrew(active, crewId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['issue-radar', 'crews', repoScopeKey(active)] })
+    },
+  })
+  const retireFailReason = retire.error instanceof Error ? retire.error.message.trim() : ''
+  const askRetire = async (name: string) => {
+    const ok = await confirm({
+      title: t('apps.issueRadar.views.crews.page.retire_confirm_title', { name }),
+      body: t('apps.issueRadar.views.crews.page.retire_hint'),
+      confirmLabel: t('apps.issueRadar.views.crews.page.retire'),
+    })
+    if (ok) retire.mutate()
+  }
 
   // ── open work items ──
   // `countsTowardOpen` is the same predicate `counts.open` is measured with, so
@@ -665,6 +687,45 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
           </table>
         )}
       </Card>
+
+      {/* ── 6. retire ──
+        * Last on the page and set apart in the danger tint: it is the one action
+        * here that cannot be undone. The hint says what the backend guarantees, so
+        * the confirmation restates a promise rather than making a new one. */}
+      <section
+        className="flex flex-col gap-2 rounded-md border border-danger-subtle bg-danger-subtle p-3"
+        data-testid="crew-retire-zone"
+      >
+        <p className="m-0 text-[12px] leading-relaxed text-muted">
+          {t('apps.issueRadar.views.crews.page.retire_hint')}
+        </p>
+        <div className="flex items-center">
+          <div className="flex-1" />
+          <Btn
+            danger
+            onClick={() => { void askRetire(crew.name) }}
+            disabled={retire.isPending}
+            data-testid="crew-retire"
+          >
+            <Archive className="lucide-inline" />
+            {t('apps.issueRadar.views.crews.page.retire')}
+          </Btn>
+        </div>
+        {/* No draft on this page, so the hand-off loses nothing. */}
+        <ErrorNotice
+          title={retire.isError && retireFailReason !== ''
+            ? t('apps.issueRadar.views.crews.page.retire_failed')
+            : undefined}
+          message={retire.isError
+            ? retireFailReason || t('apps.issueRadar.views.crews.page.retire_failed')
+            : null}
+          messagePlacement="below"
+          variant="inline"
+          askAgent
+          testId="crew-retire-error"
+        />
+      </section>
+      {confirmDialog}
     </div>
   )
 }
