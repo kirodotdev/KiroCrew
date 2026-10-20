@@ -65,6 +65,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
+import { SlotProvider, ReviewSurfaceProvider } from '../providers/SlotContext'
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isComposerSendHeld, useComposerSendHeld } from '../utils/composerSendHolds'
@@ -1009,6 +1010,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             newSlotFailed={newSlotFailed} newSlotMutation={newSlotMutation} setNewSlotFailed={setNewSlotFailed} setSidError={setSidError}
           />
         ) : (
+          /* The single chat's transcript and composer drain inline review
+             drafts (composerSend prepends them to the next normal send), so
+             this subtree alone is a review surface. Split panes and the side
+             panels mount outside it and render diffs without the gutter. */
+          <SlotProvider slotId={activeSlot}>
+          <ReviewSurfaceProvider>
           <SearchHighlightContext.Provider value={searchCtxValue}>
           <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
             <ChatTitleOverlay
@@ -1071,6 +1078,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             />
           </div>
           </SearchHighlightContext.Provider>
+          </ReviewSurfaceProvider>
+          </SlotProvider>
         )}
       </div>
       )}
