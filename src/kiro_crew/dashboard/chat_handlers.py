@@ -34,6 +34,7 @@ from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # n
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
+from kiro_crew.atomic_write import atomic_write  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -1056,7 +1057,9 @@ _MAX_RECENT_PROJECTS = 100
 #
 # Both write verbs are a read-modify-write of one file, run on worker threads, so two
 # overlapping requests (two dashboard tabs) would each write back the snapshot they read
-# and one change would be lost. One lock serialises the whole transaction for both.
+# and one change would be lost. One lock serialises the whole transaction for both, and
+# the display read loads under it too: on Windows a rename cannot replace a file another
+# handle has open, so a read open during a write's rename failed that write.
 _favorite_projects_lock = threading.Lock()
 
 
