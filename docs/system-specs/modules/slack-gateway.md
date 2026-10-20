@@ -339,9 +339,10 @@ registries, the per-thread maps, the voice state, the phase table and the privac
 and auto-title tracker aliases are facade globals, and no owner keeps one. An owner
 imports the facade only under `TYPE_CHECKING`, and the standard-library modules its
 moved code uses by their own `import`, so `scripts/check_sync_io_in_async.py` still reads
-its coroutines. `test/test_slack_handler_composition_contract.py` pins the base surface,
-sweeps every owner function's bytecode for globals the facade does not bind, and replays
-recorded Slack / SEL / session-manager transcripts captured from the one-module file.
+its coroutines. `test/test_slack_handler_composition_contract.py` pins the base surface
+and sweeps every owner function's bytecode for globals the facade does not bind;
+`test/test_slack_handler_composition_contract_golden.py` replays recorded Slack / SEL /
+session-manager transcripts captured from the one-module file.
 Because owners read the facade's imports as their globals, `setup.cfg` turns flake8's
 F401 off for `slack/handler.py`; `test/test_handler_turn.py` asserts what it stood for --
 every facade import is read by the facade or an owner, or is an owner name the facade

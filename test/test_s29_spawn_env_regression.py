@@ -226,7 +226,7 @@ async def _run_worker_spawn(stub, monkeypatch) -> None:
     """Drive the production ``CCWorker._spawn`` against *stub*.
 
     The OS-level launcher is replaced with identity, as the sibling spawn
-    tests in ``test/test_llm_pool.py`` do. Without that these tests require a
+    tests in ``test/test_llm_pool_ccworker.py`` do. Without that these tests require a
     user-namespace backend on the host: ``wrap_argv`` refuses when none is
     available and ``allow_unsandboxed_exec`` is unset, which is every CI
     container, and the refusal decides the outcome before the assertion runs.

@@ -205,7 +205,7 @@
  1 test_listener_guard.py
  4 test_llm_helpers_deny_notice.py
  1 test_llm_helpers_tool_input_offload.py
- 3 test_llm_pool.py
+ 3 test_llm_pool_ccworker.py
  2 test_local_turn_restart_marker.py
  3 test_mcp_apps_call_endpoint.py
  1 test_mcp_apps_e2e.py
@@ -316,7 +316,7 @@
  3 test_slack_gateway_cron_exec_coverage.py
  3 test_slack_gateway_more_coverage.py
  2 test_slack_handler.py
- 2 test_slack_handler_composition_contract.py
+ 2 test_slack_handler_composition_contract_golden.py
  2 test_slack_handler_coverage.py
  1 test_slack_home_tab.py
  1 test_slack_sessions_view.py
