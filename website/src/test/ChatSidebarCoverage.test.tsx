@@ -259,6 +259,10 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(7, '', true))
     fireEvent.click(screen.getByText('1 day'))
     await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(1, '', true))
+    fireEvent.click(screen.getByText('14 days'))
+    await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(14, '', true))
+    fireEvent.click(screen.getByText('30 days'))
+    await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(30, '', true))
   })
 
   it('says so when nothing is stale, and keeps Archive disabled', async () => {
