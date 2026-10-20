@@ -190,6 +190,15 @@ class TestWhichChatsCount:
             slot.model, slot._origin = OLD, origin
             assert follow._slot_model(slot) == "", origin
 
+    def test_a_null_or_absent_origin_is_a_persons_line(self):
+        """A JSON ``null`` origin and an absent key are both an EMPTY (person)
+        origin, so a person's null-origin chat counts toward the default-model
+        follow. The read is ``str(meta.get("origin") or "")`` so ``None`` reads as
+        ``""`` (in ``_PERSON_ORIGINS``), never the string "None" (not in it)."""
+        assert follow._persons_line({"origin": None}) is True
+        assert follow._persons_line({}) is True
+        assert follow._persons_line({"origin": ""}) is True
+
 
 class TestCountAndConfirm:
     @pytest.mark.asyncio
