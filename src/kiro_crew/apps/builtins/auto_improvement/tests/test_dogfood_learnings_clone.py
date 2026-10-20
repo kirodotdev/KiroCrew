@@ -169,10 +169,14 @@ class TestTheStoredPushDestinationIsValidated:
             "https://attacker.example.com/exfil.git",
             "https://evilgithub.com/o/r.git",  # suffix confusion
             "https://github.com.attacker.net/o/r.git",  # subdomain confusion
+            "https://evil-gitlab.com/g/p.git",  # gitlab suffix confusion
+            "https://gitlab.com.attacker.net/g/p.git",  # gitlab subdomain confusion
             "git@evil.com:o/r.git",
+            "git@gitlab.com.attacker.net:g/p.git",
             "http://github.com/o/r.git",  # cleartext is never our transport
             "git://github.com/o/r.git",
             "https://github.com/",  # no repo path
+            "https://github.com/onlyowner",  # one segment: nothing pinnable
             clone_setup.DISABLED_NO_PUSH,  # a marker, not a destination
         ],
     )
@@ -300,6 +304,78 @@ class TestTheAddressDecisionItself:
         """
         self._pin(monkeypatch, OSError("resolver down"))
         assert clone_setup._host_is_blocked("github.com") is True
+
+
+class TestGitLabRemotesFollowTheSameDiscipline:
+    """A GitLab target goes through the same host allowlist and identity pin as GitHub.
+
+    The identity is the HOST plus the FULL project path: GitLab nests groups, so
+    truncating the slug to two segments would let a sibling-group swap pass the pin,
+    and the push allowlist spans several forges, so the same path on another host is
+    a different project.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(clone_setup, "_host_is_blocked", lambda host: False)
+        _floor_monkeypatch.setattr(clone_setup, "_glab_prefers_ssh", lambda host: False)
+
+    def test_a_gitlab_origin_resolves_when_pinned_to_the_same_project(self) -> None:
+        cfg = {
+            "origin_url": "git@gitlab.com:group/sub/proj.git",
+            "target_url": "https://gitlab.com/group/sub/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == "git@gitlab.com:group/sub/proj.git"
+
+    def test_a_sibling_group_swap_is_refused(self) -> None:
+        cfg = {
+            "origin_url": "https://gitlab.com/group/sub/other.git",
+            "target_url": "https://gitlab.com/group/sub/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    @pytest.mark.parametrize(
+        ("origin_url", "target_url"),
+        [
+            # Same path, different forge: the push would land on a host the operator
+            # never chose.
+            ("https://gitlab.com/victim/repo.git", "https://github.com/victim/repo"),
+            ("git@gitlab.com:victim/repo.git", "https://github.com/victim/repo"),
+            ("https://github.com/victim/repo.git", "https://gitlab.com/victim/repo"),
+            ("git@gl.corp.example:victim/repo.git", "https://gitlab.com/victim/repo"),
+            # Same host, different port on a port-carrying self-managed entry.
+            ("https://gl.corp.example:8443/g/p.git", "https://gl.corp.example/g/p"),
+        ],
+    )
+    def test_the_same_path_on_another_host_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, origin_url: str, target_url: str
+    ) -> None:
+        monkeypatch.setattr(
+            clone_setup,
+            "_gitlab_hosts",
+            lambda: frozenset({"gl.corp.example", "gl.corp.example:8443"}),
+        )
+        cfg = {"origin_url": origin_url, "target_url": target_url}
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    def test_www_and_explicit_443_name_the_same_host(self) -> None:
+        cfg = {
+            "origin_url": "https://gitlab.com:443/group/proj.git",
+            "target_url": "https://www.gitlab.com/group/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == "https://gitlab.com:443/group/proj.git"
+
+    def test_a_self_managed_origin_needs_the_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = {
+            "origin_url": "git@gl.corp.example:g/s/p.git",
+            "target_url": "https://gl.corp.example/g/s/p",
+        }
+        monkeypatch.setattr(clone_setup, "_gitlab_hosts", lambda: frozenset())
+        assert clone_setup.resolve_origin_url(cfg) == ""
+        monkeypatch.setattr(clone_setup, "_gitlab_hosts", lambda: frozenset({"gl.corp.example"}))
+        assert clone_setup.resolve_origin_url(cfg) == "git@gl.corp.example:g/s/p.git"
 
 
 class TestANonDefaultBranchIsActuallyCheckedOut:
