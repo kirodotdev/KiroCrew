@@ -159,54 +159,37 @@ precision of self-added findings can be measured separately from survivors'.
 
 ## Step 3 — classify the survivors
 
-Two labels exist, and severity answers exactly ONE question — does this block the
-merge. It never encodes your confidence; confidence was Step 1.
+The verdict is PASS or BLOCK, and nothing between. One kind of item exists:
+**BLOCKING**. A survivor of Step 1 is BLOCKING when its **outcome** reaches a
+user, an operator, data or a security boundary. A preference, a wording choice or
+a style point is not a defect: drop it, or keep it as one `Notes:` bullet (at most
+three, one line each; the gate never reads it). Confidence never sets severity;
+confidence was Step 1.
 
-**BLOCKING** — a survivor that is either:
+Every BLOCKING item carries an **Anchor** that names its class:
 
 1. a violation of an AUTOSDE rule carrying `blocking: true` whose `file-patterns`
-   match a changed file, or this PR weakening/removing such a rule. THE RULE'S
-   FLAG IS AUTHORITATIVE: a rule without `blocking: true` never blocks, no matter
-   how serious the violation looks to you; report it as FINDING.
-2. a reachable, concrete defect of one of these classes on a code path the diff
-   adds or changes: a security hole with a named trigger, a crash, data loss,
-   corruption, or a removed guard with no compensating replacement.
+   match a changed file, or this PR weakening/removing such a rule: the rule id.
+   A violation of a rule WITHOUT `blocking: true` is judged by the Step 1 bar like
+   any other defect (`Anchor: defect`).
+2. a reachable, concrete defect on a code path the diff adds or changes:
+   `residual/security` (a security hole with a named trigger),
+   `residual/crash-data-loss-corruption`, or `residual/guard-removal` (a removed
+   guard with no compensating replacement).
+3. any other defect that passes the Step 1 bar: `Anchor: defect`.
 
-Nothing else blocks. Never extend this list, never reason by analogy, there is no
-"and other serious issues" clause.
+A BLOCKING item is not demoted on fix cost. If the minimal fix needs a new
+function, module, abstraction, config knob, dependency or an edit to an untouched
+file, it stays BLOCKING and the fix clause names that remedy; whether the remedy
+is proportionate is weighed downstream, by the adjudication pass, on the full
+evidence. Reverting the offending hunk counts as a fix only when the hunk is a
+pure addition whose removal leaves the PR's stated purpose intact; for a hunk the
+PR needs, revert abandons the change, and pricing the remedy as a revert makes
+every fix look free.
 
-**FINDING** — every other survivor. Advisory, never blocks.
-
-One override on top of that: if the minimal fix would require editing code this
-PR did not touch — a new function, module, abstraction, config knob, dependency,
-or an edit to an untouched file — report it as **FINDING**, not BLOCKING, even if
-it otherwise meets the BLOCKING list. The author cannot land the remedy inside
-this change, so it must not gate the merge. Say so in the fix clause. **Do not
-drop it**: the signal is real and a human decides what to do with it.
-
-Reverting the offending hunk counts as an in-diff minimal fix — and so defeats
-that override — ONLY when the hunk is a pure addition whose removal leaves the
-PR's stated purpose intact. For a hunk the PR NEEDS, revert is not a remedy the
-author can ship; it is abandoning the change. Pricing the remedy as a revert
-makes every fix look free and is precisely how a demand to build new machinery
-reaches the author stamped BLOCKING. So: a regression this diff introduces stays
-BLOCKING when reverting the hunk really is available, or when the fix-forward
-fits inside the changed lines. When neither holds — the PR needs the hunk AND the
-fix-forward needs new machinery or untouched code — the override stands and it is
-a **FINDING**, with the required remedy named in the fix clause.
-
-ONE exception to that, because its harm has no ceiling for a cost to be weighed
-against: a defect whose consequence is credential/key/token exposure, privilege
-escalation, or silent or irreversible data loss or corruption stays BLOCKING no
-matter what the remedy costs or where it lives.
-
-Reserve the plain demotion for a defect the diff merely exposes, neighbours, or
-inherits — for one the diff caused, work through the two paragraphs above.
-
-At most 5 BLOCKING per review. If you have more, re-examine and demote the
-weakest — you are probably mislabeling. At most 6 advisory FINDINGs per review;
-past that, keep the ones whose consequence chain is most concrete and drop the
-rest silently rather than padding the list.
+At most 5 BLOCKING per review. If you have more, merge those that share a root
+cause and re-examine the weakest. Past that, keep the ones whose consequence chain
+is most concrete and drop the rest silently rather than padding the list.
 
 ## Step 4 — merge and recheck
 
@@ -225,20 +208,21 @@ lines.
 - NO preamble, NO restating the diff, NO methodology narration ("I inspected…",
   "re-scanned…", which candidates you killed), NO praise, NO recap of what the
   change does, NO confidence scores in the output.
-- LINE 1 is ONE bold punchline: either `**No findings.**` or the single reason it
-  blocks.
-- Then findings only, BLOCKING first:
+- LINE 1 is ONE bold line, the REASON, one to three sentences: either
+  `**No findings.**` or the single reason it blocks.
+- Then BLOCKING items only:
   - **BLOCKING** — bold `BLOCKING — file:line`, then on their own lines the
-    quoted offending line(s), a one-line consequence chain (input → call path →
-    observable failure), and `Fix: <minimal change>`. 2–4 lines. Never padded
-    paragraphs.
-  - **FINDING** — ONE compact line: `FINDING — file:line — <consequence in one
-    clause, quoting the offending token> → Fix: <minimal change>`.
+    quoted offending line(s), `Trigger: <the input or condition that occurs in
+    practice, and the call path to the changed line>`, `Outcome: <the observable
+    wrong result>`, `Anchor: <rule id | residual/security |
+    residual/crash-data-loss-corruption | residual/guard-removal | defect>`, and
+    `Fix: <minimal change>`. 3–6 lines. Never padded paragraphs. An item with no
+    Trigger line or no Outcome line is not a complete BLOCK item; with no complete
+    item, CI reads the review as PASS.
 - A finding YOU added rather than inherited from the candidate list ends with
-  `(origin: validation)` — on the `BLOCKING` title line or at the end of the
-  `FINDING` line. This is the one exception to "no methodology narration": it is
-  not a note about your process, it is the reader's only signal that this finding
-  was never independently falsified.
+  `(origin: validation)` on the `BLOCKING` title line. This is the one exception
+  to "no methodology narration": it is not a note about your process, it is the
+  reader's only signal that this finding was never independently falsified.
 - Never emit an empty or "None" group. Never pad. A clean review is the punchline
   plus the marker line and nothing else.
 
@@ -255,11 +239,11 @@ the SHA exactly as given):
   [OPUS-REVIEWED] <HEAD_SHA>
   ```
 
-- ADDITIONALLY, if and ONLY if at least one finding is labelled BLOCKING, include
-  this line directly above it:
+- ADDITIONALLY, if and ONLY if at least one BLOCKING item is complete (it has a
+  Trigger line and an Outcome line), include this line directly above it:
 
   ```
   [BLOCK-MERGE] <HEAD_SHA>
   ```
 
-  Never emit `[BLOCK-MERGE]` for an advisory FINDING.
+  Never emit `[BLOCK-MERGE]` for a `Notes:` bullet.

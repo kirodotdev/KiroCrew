@@ -541,6 +541,7 @@ jobs:
         env:
           REDACTOR: ${{ steps.redactor.outputs.redactor }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           : > claude-review-output.md
           if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
@@ -557,6 +558,30 @@ jobs:
             echo "::error::the base-owned redactor could not scrub claude-review-output.md. Refusing to publish it raw."
             rm -f claude-review-output.md
             exit 1
+          fi
+          # A BLOCK states a trigger and an observable wrong outcome, or it is a
+          # PASS. Dropped here, before the comment and the gate read the marker,
+          # so both and the local loop see the same verdict.
+          # --- block substantiation (copied into every lane; pinned by test_block_substantiation.py) ---
+          block_substantiated() {
+            local text
+            text="$(cat)"
+            grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?Trigger:(\*\*)?[[:space:]]*[^[:space:]*]' <<< "$text" \
+              && grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?Outcome:(\*\*)?[[:space:]]*[^[:space:]*]' <<< "$text"
+          }
+          drop_unsubstantiated_block_marker() {
+            local file="$1" head="$2" kept
+            grep -Fq "[BLOCK-MERGE] $head" "$file" || return 0
+            block_substantiated < "$file" && return 0
+            kept="$(mktemp)"
+            grep -Fv "[BLOCK-MERGE] $head" "$file" > "$kept" || true
+            cat "$kept" > "$file"
+            rm -f "$kept"
+            echo dropped
+          }
+          # --- end block substantiation ---
+          if [ -n "$(drop_unsubstantiated_block_marker claude-review-output.md "$HEAD")" ]; then
+            echo "::warning title=Unsubstantiated BLOCK::Opus 5.5 emitted [BLOCK-MERGE] for $HEAD without a Trigger: line and an Outcome: line, so the BLOCK is treated as PASS."
           fi
 
       # Turn-budget exhaustion is its own outcome (#13296). A stage stopped at
@@ -1214,7 +1239,7 @@ jobs:
       # review text (same contract as codex-review.yml):
       #   - [OPUS-REVIEWED] <sha> — the review ran and produced a verdict for
       #     THIS commit. Absent => fail rather than silently pass.
-      #   - [BLOCK-MERGE] <sha>   — it additionally found a WHAT-BLOCKS issue.
+      #   - [BLOCK-MERGE] <sha>   — it additionally found a complete BLOCKING item.
       #     This is the ONLY thing that blocks the merge. There is deliberately
       #     no label-scanning backstop, so a label the model chooses can never
       #     override the contract.
@@ -1241,7 +1266,7 @@ jobs:
           && steps.post.outputs.retained_verdict_artifact != ''
           )
         # NEVER fatal. A lane's conclusion is read by pr-readiness.yml, and for
-        # the three advisory labels ANY non-success conclusion is reported as
+        # the three whole-design labels ANY non-success conclusion is reported as
         # `<label> (BLOCK)` -- a judged-wrong verdict. So a transport flake here,
         # or an `if-no-files-found: error` on a directory that did not survive,
         # would invent a verdict nobody reached. Retention is evidence ABOUT a
@@ -1321,7 +1346,7 @@ jobs:
             echo "::error::Opus 5.5 review flagged a blocking issue on $HEAD — see the posted review summary."
             exit 1
           fi
-          # Advisory coherence signal (never fails the build): a BLOCKING-labelled
+          # Coherence signal (never fails the build): a BLOCKING-labelled
           # finding without the marker means the model's label and its verdict
           # disagree. Worth tuning the prompt over; not worth blocking a merge.
           if grep -qE '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING\b' claude-review-output.md; then

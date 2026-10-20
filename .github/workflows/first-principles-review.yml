@@ -75,7 +75,7 @@ jobs:
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'First Principles Review' || 'First Principles Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest  # Agentic reviewer reading untrusted PR diff content -- never gets fleet credentials, same isolation as claude-review.yml/codex-review.yml.
     # Consumer counting is grep-heavy, so this lane runs more turns than the
-    # other advisory lanes; keep headroom for the model-latency fat tail.
+    # other whole-design lanes; keep headroom for the model-latency fat tail.
     timeout-minutes: 60
     steps:
       # persist-credentials:false stops actions/checkout from writing the
@@ -326,7 +326,7 @@ jobs:
           # inference profile, no `[1m]` tag) is load-bearing -- see the
           # explanation in design-review.yml; identical here.
           #
-          # --max-turns is HIGHER than the sibling advisory lanes on purpose:
+          # --max-turns is HIGHER than the sibling whole-design lanes on purpose:
           # inventorying a change and counting consumers is one Grep per item, and
           # a turn-starved run silently degrades into the taste-based "this feels
           # over-built" review this lane exists to replace.
@@ -540,7 +540,7 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
               echo
-              echo "_Revision \`$HEAD\` is a Dependabot pull request, which runs with no Bedrock secrets/OIDC, so the first-principles review was skipped. Advisory — does not block merge._"
+              echo "_Revision \`$HEAD\` is a Dependabot pull request, which runs with no Bedrock secrets/OIDC, so the first-principles review was skipped. Does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
             confirm_head
             find_existing
@@ -575,7 +575,7 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Opus 5.5) — ⏭️ no contract on the base commit"
               echo
-              echo "_\`.github/review-prompts/first-principles.md\` does not exist on this PR's base commit, so there is no trusted contract to review \`$HEAD\` against. The contract is deliberately read from the base and never from the head, so a change cannot edit the reviewer that judges it — which also means this lane cannot review the pull request that introduces or moves the contract. Advisory — does not block merge._"
+              echo "_\`.github/review-prompts/first-principles.md\` does not exist on this PR's base commit, so there is no trusted contract to review \`$HEAD\` against. The contract is deliberately read from the base and never from the head, so a change cannot edit the reviewer that judges it — which also means this lane cannot review the pull request that introduces or moves the contract. Does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
             confirm_head
             # The slot read comes last, immediately before the write: this arm creates when
@@ -603,7 +603,7 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
               echo
-              echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
+              echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
             confirm_head
             find_existing
@@ -668,10 +668,48 @@ jobs:
               echo "::warning title=First Principles Review over length::$words words outside the inventory; the contract caps the review at ~180. Findings past the cap are the ones nobody reads."
             fi
           fi
+          # Two verdicts exist. Any other word (the retired CONCERNS included) is
+          # not a verdict, and a BLOCK that states no Trigger and no Outcome cannot
+          # block: both read as the "could not complete" / PASS paths below, which
+          # never fail the gate.
+          unsubstantiated=""
+          case "$verdict" in
+            PASS|BLOCK|UNKNOWN) ;;
+            *) echo "verdict word $verdict is not PASS or BLOCK; treating as UNKNOWN"; verdict="UNKNOWN" ;;
+          esac
+          if [ "$verdict" = "BLOCK" ]; then
+            # --- block substantiation (copied into every lane; pinned by test_block_substantiation.py) ---
+            block_substantiated() {
+              local text
+              text="$(cat)"
+              grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?Trigger:(\*\*)?[[:space:]]*[^[:space:]*]' <<< "$text" \
+                && grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?Outcome:(\*\*)?[[:space:]]*[^[:space:]*]' <<< "$text"
+            }
+            demote_block_verdict() {
+              awk -v prefix="$1" '
+                !done && tolower(substr($0, 1, length(prefix))) == tolower(prefix) {
+                  print substr($0, 1, length(prefix)) " PASS"
+                  done = 1
+                  next
+                }
+                { print }
+              '
+            }
+            # --- end block substantiation ---
+            if ! block_substantiated <<< "$summary"; then
+              verdict="PASS"
+              unsubstantiated=1
+              summary="$(demote_block_verdict "First-Principles-Verdict:" <<< "$summary")"
+              echo "::warning title=Unsubstantiated BLOCK::The BLOCK for $HEAD states no Trigger: line and no Outcome: line, so it is treated as PASS."
+            fi
+          fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           case "$verdict" in
-            PASS) badge="✅ PASS" ;;
-            CONCERNS) badge="🟡 CONCERNS" ;;
+            PASS)
+              badge="✅ PASS"
+              if [ -n "$unsubstantiated" ]; then
+                badge="✅ PASS (a BLOCK with no Trigger and no Outcome does not block)"
+              fi ;;
             BLOCK) badge="🔴 BLOCK" ;;
             *) badge="" ;;
           esac
@@ -681,7 +719,7 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Opus 5.5) — $badge"
               echo
-              echo "_Premise-level review of \`$HEAD\` — why this exists and whether the shipped surface is the smallest honest version. Updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
+              echo "_Premise-level review of \`$HEAD\` — why this exists and whether the shipped surface is the smallest honest version. Updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS does not._"
               echo
               printf '%s\n' "$summary"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
@@ -706,7 +744,7 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Opus 5.5) — ⚠️ could not complete"
               echo
-              echo "_The first-principles review did not produce a verdict for \`$HEAD\` ($why). See the First Principles Review job logs. Advisory — does not block merge._"
+              echo "_The first-principles review did not produce a verdict for \`$HEAD\` ($why). See the First Principles Review job logs. Does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
           fi
           # Defense-in-depth: scrub credential shapes AND AWS account ids / ARNs
@@ -735,12 +773,6 @@ jobs:
           # scratch: a withheld body therefore drops the stamp along with the
           # verdict it belonged to, rather than carrying a description claim on a
           # notice that reports no verdict at all.
-          #
-          # The `### ` heading is load-bearing, not decoration: concerns_digest()
-          # captures to end-of-file once it is inside a `### Watch` section, and
-          # any `### ` heading that is not Watch closes that capture. Without the
-          # heading, a body whose last section is Watch would carry this stamp
-          # into the CONCERNS job annotation.
           if [ -n "$badge" ] && [ -n "${DESCRIPTION_DIGEST:-}" ]; then
             {
               echo
@@ -767,51 +799,8 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Opus 5.5) — ⚠️ output withheld"
               echo
-              echo "_The review of \`$HEAD\` produced text that still matched a credential shape after redaction, so the body was withheld and no verdict is reported. See the job logs. Advisory — does not block merge._"
+              echo "_The review of \`$HEAD\` produced text that still matched a credential shape after redaction, so the body was withheld and no verdict is reported. See the job logs. Does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
-          fi
-          # CONCERNS is where a design/premise/UX risk actually lives, and today
-          # it is invisible: the check reports green and 31 of 57 CONCERNS drew
-          # no human reply at all. Distil the punchline and the Watch section so
-          # the Checks UI itself can carry them -- no new command, no convention
-          # to learn. Reads the ALREADY-REDACTED body, so the redaction and
-          # withhold gates upstream stay the only publish boundary. Caps with a
-          # Bash substring rather than a pipe into `head`: a piped cap SIGPIPEs
-          # the writer, and `pipefail` turns that into a step failure on exactly
-          # the long body the cap exists for.
-          concerns_digest() {
-            local file="$1" header="$2" marker="$3" digest=""
-            [ -f "$file" ] || return 0
-            digest="$(awk -v header="^$header" -v marker="$marker" '
-              index($0, marker) == 1 { exit }
-              !seen && $0 ~ header { seen = 1; next }
-              !seen { next }
-              seen == 1 && NF { print; seen = 2; next }
-              /^### / { watch = ($0 ~ /^### (Watch|Not justified as shipped)[[:space:]]*$/) }
-              watch { print }
-            ' "$file")"
-            printf '%s' "${digest:0:2000}"
-          }
-          # A same-repo job cannot report itself `neutral` the way the fork
-          # lanes' check-runs can, so hand the digest to the status step, which
-          # turns it into a job annotation and a run summary. Multi-line output
-          # uses a random delimiter: the value is model text, so a fixed one
-          # could be closed early by the body itself.
-          if [ "$verdict" = "CONCERNS" ]; then
-            concerns_body="$(concerns_digest "${RUNNER_TEMP:-/tmp}/fp-comment.md" "First-Principles-Verdict:" "[FIRST-PRINCIPLES-REVIEWED]")"
-            if [ -n "$concerns_body" ]; then
-              # Here-string, not `printf | awk`: awk exits on the first line, so a
-              # pipe would SIGPIPE the writer and `pipefail` would read 141 as a
-              # step failure on exactly the long body this exists to summarise.
-              concerns_punchline="$(awk 'NF { print; exit }' <<< "$concerns_body")"
-              printf 'concerns_punchline=%s\n' "$concerns_punchline" >> "$GITHUB_OUTPUT"
-              delim="CONCERNS_DIGEST_${RANDOM}${RANDOM}_EOF"
-              {
-                printf 'concerns_digest<<%s\n' "$delim"
-                printf '%s\n' "$concerns_body"
-                printf '%s\n' "$delim"
-              } >> "$GITHUB_OUTPUT"
-            fi
           fi
           # ONE publication primitive for every marker-comment write in this
           # lane; test_ai_review_workflows_comment_writes.py pins it byte-identical across all
@@ -1473,7 +1462,7 @@ jobs:
       # Converts the verdict into the "First Principles Review" check status. A
       # real BLOCK verdict FAILS the check (emits ::error:: and exits 1) -- the
       # one case where the change's reason for existing is judged not to hold.
-      # Every other outcome stays NON-BLOCKING and exits 0: PASS/CONCERNS, the
+      # Every other outcome stays NON-BLOCKING and exits 0: PASS, the
       # Dependabot skip, the surface-scope skip, and -- critically -- any run
       # that DID NOT COMPLETE (Bedrock overload / throttle / 403 / action error →
       # UNKNOWN or empty verdict). An errored review must NEVER fail this gate;
@@ -1503,7 +1492,7 @@ jobs:
           && steps.post.outputs.retained_verdict_artifact != ''
           )
         # NEVER fatal. A lane's conclusion is read by pr-readiness.yml, and for
-        # the three advisory labels ANY non-success conclusion is reported as
+        # the three whole-design labels ANY non-success conclusion is reported as
         # `<label> (BLOCK)` -- a judged-wrong verdict. So a transport flake here,
         # or an `if-no-files-found: error` on a directory that did not survive,
         # would invent a verdict nobody reached. Retention is evidence ABOUT a
@@ -1537,8 +1526,6 @@ jobs:
           VERDICT: ${{ steps.post.outputs.verdict }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
-          CONCERNS_PUNCHLINE: ${{ steps.post.outputs.concerns_punchline }}
-          CONCERNS_DIGEST: ${{ steps.post.outputs.concerns_digest }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides First Principles Review for $HEAD. Passing gate."
@@ -1555,25 +1542,7 @@ jobs:
             NO_CONTRACT)
               echo "::warning::First-principles review could not run for $HEAD: .github/review-prompts/first-principles.md is absent from the base commit, so there is no trusted contract to review against (this is expected on the PR that introduces or moves it). NOT blocking."
               exit 0 ;;
-            PASS|CONCERNS)
-              # The exit contract is untouched: CONCERNS still exits 0. What
-              # changes is that it stops being SILENT -- a green tick told a
-              # reader nothing was worth reading, and 31 of 57 CONCERNS drew no
-              # reply. A job cannot report itself `neutral` the way the fork
-              # lanes' check-runs can, so the punchline goes on the job as an
-              # annotation and the Watch items go to the run summary, where the
-              # local kirocrew-prepare-pr loop and a human read the same text.
-              if [ "$VERDICT" = "CONCERNS" ]; then
-                punchline="${CONCERNS_PUNCHLINE:-read the Watch items in the First Principles Review comment on this PR}"
-                echo "::warning title=First Principles Review CONCERNS::$punchline"
-                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-                  {
-                    echo "## First Principles Review — 🟡 CONCERNS (advisory)"
-                    echo
-                    printf '%s\n' "${CONCERNS_DIGEST:-$punchline}"
-                  } >> "$GITHUB_STEP_SUMMARY"
-                fi
-              fi
+            PASS)
               echo "First-principles review verdict for $HEAD: $VERDICT (non-blocking)."
               exit 0 ;;
             BLOCK)

@@ -1,5 +1,5 @@
-"""``pr_status.py``: an unanswered whole-design CONCERNS verdict is a local stop, and the
-design items a disposition rules on.
+"""``pr_status.py``: a whole-design lane says PASS or BLOCK, and the design items a
+disposition rules on.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from prepare_pr_status_helpers import (
     _GREEN_CHECKS,
     _HEAD,
     _bot_comment,
-    _disposition,
     _gate_argv,
     _gate_bot_comment,
     _install_fake_gh,
@@ -20,20 +19,17 @@ from prepare_pr_status_helpers import (
 )
 
 # ---------------------------------------------------------------------------
-# An unanswered whole-design CONCERNS is a LOCAL stop condition. SKILL.md said
-# "a green rollup with an unanswered CONCERNS verdict is not converged" while
-# the script returned 0 for exactly that state, so the loop armed auto-merge
-# past a Design review that had named the defect. The repository's required
-# status is deliberately NOT changed: CONCERNS stays advisory for every writer
-# who never runs this loop, which is what the --disposition-gate tests below
-# pin.
+# A whole-design lane says PASS or BLOCK. A BLOCK reds the lane's own check (the
+# rollup and the required status carry that), and there is no unanswered-verdict
+# stop in the local loop any more: CONCERNS is not a verdict, so a body that still
+# says it reads as no verdict at all.
 # ---------------------------------------------------------------------------
 
 _CONCERNS_HEAD = "f" * 40
 
 
 def _design_comment(
-    verdict: str = "CONCERNS",
+    verdict: str = "BLOCK",
     key: str = "design-review",
     stamp: str = "DESIGN",
     head: str = _CONCERNS_HEAD,
@@ -47,9 +43,10 @@ def _design_comment(
             "<!-- {} -->\n"
             "Design-Verdict: {}\n\n"
             "**The win32 predicate depends on a macOS-only settings file.**\n\n"
-            "### Watch\n"
-            "- Absent-file -> False means every classified spawn raises\n"
-            "  SandboxUnavailableError at boot on a default Windows install.\n"
+            "### Blockers\n"
+            "- Absent-file -> False reaches the spawn path\n"
+            "  Trigger: a default Windows install starts a session.\n"
+            "  Outcome: every classified spawn raises SandboxUnavailableError at boot.\n"
             "  Clears when: kiro-cli confirms the key is read on win32.\n"
             "- The deleted pin was the only regression guard.\n\n"
             "[{}-REVIEWED] {}".format(key, verdict, stamp, head)
@@ -57,75 +54,37 @@ def _design_comment(
     }
 
 
-def test_unanswered_design_concerns_blocks_a_green_rollup(capsys) -> None:
+def test_a_retired_concerns_body_is_no_verdict_and_no_stop(capsys) -> None:
+    """CONCERNS is not a verdict. A body that still says it (a comment from before
+    the contract changed) reads as no verdict for the lane: it adds no stop, and
+    the marker row does not print a verdict for it."""
     module = _load_script()
-    _install_fake_gh(
-        module,
-        _pr_payload(_GREEN_CHECKS),
-        comments=json.dumps([_design_comment()]),
-    )
-
-    code = module.main(["pr_status.py", "42", "--json"])
-
-    out = capsys.readouterr().out
-    status = json.loads(out.strip().splitlines()[-1])["progress_key"]["status"]
-    assert code == 20
-    assert "unanswered CONCERNS from DESIGN on current head" in status
-    assert "target=design head=" + _CONCERNS_HEAD in status
-    assert "fix, rebut, or accept-and-defer" in status
-    assert "UNANSWERED: DESIGN reported CONCERNS" in out
-
-
-def test_a_matching_design_disposition_clears_the_concerns_stop() -> None:
-    """The stop is answerable with prose alone -- posting the ruling clears it,
-    no push required."""
-    module = _load_script()
-    ruling = _disposition("alice", "design", "- **rebutted** the item\n> reason")
-    _install_fake_gh(
-        module,
-        _pr_payload(_GREEN_CHECKS),
-        comments=json.dumps([_design_comment(), ruling]),
-        permissions={"alice": "write"},
-    )
+    legacy = _design_comment(verdict="CONCERNS")
+    assert module.design_lane_verdicts(
+        [legacy], _CONCERNS_HEAD, dict(module.DEFAULT_MARKER_BINDINGS)
+    ) == {"DESIGN": ""}
+    _install_fake_gh(module, _pr_payload(_GREEN_CHECKS), comments=json.dumps([legacy]))
 
     assert module.main(["pr_status.py", "42"]) == 0
+    out = capsys.readouterr().out
+    assert "UNANSWERED" not in out
+    assert "verdict=CONCERNS" not in out
 
 
-def test_a_design_disposition_for_an_older_head_does_not_clear_it() -> None:
-    """A ruling names the head it judged; a new head gets a new review, so a
-    stale record cannot answer the current one."""
+def test_a_design_block_prints_its_verdict_and_its_items(capsys) -> None:
     module = _load_script()
-    stale = {
-        "id": 33,
-        "user": {"type": "User", "login": "alice"},
-        "body": (
-            "<!-- ai-review-disposition target=design head=" + "e" * 40 + " -->\n"
-            "- **rebutted** the item\n> reason"
-        ),
-    }
     _install_fake_gh(
         module,
         _pr_payload(_GREEN_CHECKS),
-        comments=json.dumps([_design_comment(), stale]),
-        permissions={"alice": "write"},
+        comments=json.dumps([_design_comment(verdict="BLOCK")]),
     )
 
-    assert module.main(["pr_status.py", "42"]) == 20
+    module.main(["pr_status.py", "42"])
 
-
-def test_a_non_writers_design_disposition_does_not_clear_it() -> None:
-    """Only a repository writer's record holds ruling power, exactly as the
-    adjudication ledger admits records."""
-    module = _load_script()
-    ruling = _disposition("drive-by", "design", "- **rebutted** the item\n> reason")
-    _install_fake_gh(
-        module,
-        _pr_payload(_GREEN_CHECKS),
-        comments=json.dumps([_design_comment(), ruling]),
-        permissions={"drive-by": "read"},
-    )
-
-    assert module.main(["pr_status.py", "42"]) == 20
+    out = capsys.readouterr().out
+    assert "design: fresh" in out.lower() or "DESIGN: fresh" in out
+    assert "verdict=BLOCK" in out
+    assert "read it BEFORE fixing line-level findings" in out
 
 
 def test_a_design_pass_verdict_is_not_a_stop() -> None:
@@ -184,40 +143,9 @@ def test_a_pinned_fleet_redacts_a_token_in_a_whole_design_punchline(capsys) -> N
     assert token not in out
 
 
-def test_a_pinned_fleet_keeps_the_concerns_stop() -> None:
-    """``--reviewers GPT,OPUS`` excludes whole-design lanes from
-    ``marker_eval["verdicts"]``, but the unanswered-CONCERNS gate must still
-    see them via ``design_lane_verdicts()`` so a DESIGN CONCERNS blocks merge."""
-    module = _load_script()
-    comments = json.dumps(
-        [
-            _bot_comment(f"No findings.\n[GPT-REVIEWED] {_HEAD}"),
-            _bot_comment(f"No findings.\n[OPUS-REVIEWED] {_HEAD}", key="claude-ai-review"),
-            _design_comment(),  # Design-Verdict: CONCERNS, stamped for this head
-        ]
-    )
-    _install_fake_gh(module, _pr_payload(_GREEN_CHECKS), comments=comments)
-    assert module.main(["pr_status.py", "42", "--reviewers", "GPT,OPUS"]) == 20
-
-
-def test_every_whole_design_lane_carries_the_concerns_stop() -> None:
-    module = _load_script()
-    lanes = [
-        _design_comment(key="design-review", stamp="DESIGN"),
-        _design_comment(key="ux-review", stamp="UX"),
-        _design_comment(key="first-principles-review", stamp="FIRST-PRINCIPLES"),
-    ]
-    for comment in lanes:
-        module = _load_script()
-        _install_fake_gh(module, _pr_payload(_GREEN_CHECKS), comments=json.dumps([comment]))
-        assert module.main(["pr_status.py", "42"]) == 20
-
-
-def test_a_stale_design_concerns_stamp_is_not_the_concerns_stop(capsys) -> None:
-    """Freshness first: a CONCERNS stamped for an older head is last round's
-    review. It still blocks -- on the pre-existing STALE STAMP reason -- but it
-    must not be reported as an unanswered CONCERNS, because the ruling it would
-    ask for is a ruling on a review the current head never got."""
+def test_a_stale_design_stamp_is_a_stale_stamp_reason(capsys) -> None:
+    """Freshness first: a verdict stamped for an older head is last round's
+    review and blocks on the STALE STAMP reason."""
     module = _load_script()
     _install_fake_gh(
         module,
@@ -228,24 +156,22 @@ def test_a_stale_design_concerns_stamp_is_not_the_concerns_stop(capsys) -> None:
     assert module.main(["pr_status.py", "42"]) == 20
     out = capsys.readouterr().out
     assert "stale reviewer stamp(s)" in out
-    assert "unanswered CONCERNS" not in out
 
 
-def test_the_concerns_stop_never_reaches_the_server_side_gate(capsys) -> None:
-    """--disposition-gate JSON is byte-identical whether or not the body
-    carries a whole-design CONCERNS. The required status must keep treating
-    CONCERNS as advisory -- turning it into a red for every writer is a policy
-    change this local loop does not get to make.
+def test_a_design_verdict_never_changes_the_disposition_gate(capsys) -> None:
+    """--disposition-gate JSON is byte-identical whatever the whole-design
+    verdict word is: the lane's own check carries a BLOCK, and the disposition
+    rule reads findings, never a verdict.
 
     Both arms carry the design slot and differ ONLY in its verdict word. The
     slot's presence is a second variable the gate answers on purpose -- a lane
     that published nothing owes this head a verdict -- so varying it here would
-    test that instead of the CONCERNS stop.
+    test that instead.
     """
     reports = []
-    for verdict in ("PASS", "CONCERNS"):
+    for verdict in ("PASS", "BLOCK"):
         module = _load_script()
-        span = module.span_hash("src/x.py", "gpt/FINDING")
+        span = module.span_hash("src/x.py", "gpt/BLOCKING")
         ruling = {
             "id": 901,
             "user": {"type": "User", "login": "alice"},
@@ -388,24 +314,24 @@ def test_design_items_carry_the_section_kind_and_the_clears_when_line() -> None:
         )
     )
 
-    assert [i["kind"] for i in items] == ["WATCH", "WATCH"]
+    assert [i["kind"] for i in items] == ["BLOCKERS", "BLOCKERS"]
     assert [i["path"] for i in items] == ["(design)", "(design)"]
     assert items[0]["clears_when"] == "kiro-cli confirms the key is read on win32."
+    assert "Trigger: a default Windows install starts a session." in items[0]["text"]
+    assert "Outcome: every classified spawn raises" in items[0]["text"]
     assert items[1]["clears_when"] == ""
-    assert items[0]["block_merge"] is False
+    assert items[0]["block_merge"] is True
 
 
-def test_a_blocking_design_verdict_marks_its_items_block_merge() -> None:
+def test_only_a_block_verdict_marks_its_items_block_merge() -> None:
     module = _load_script()
-    items = list(
-        module.extract_design_items(
-            [_design_comment(verdict="BLOCK")],
-            _CONCERNS_HEAD,
-            dict(module.DEFAULT_MARKER_BINDINGS),
-        )
+    bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+    blocking = list(module.extract_design_items([_design_comment()], _CONCERNS_HEAD, bindings))
+    assert blocking and all(i["block_merge"] for i in blocking)
+    passing = list(
+        module.extract_design_items([_design_comment(verdict="PASS")], _CONCERNS_HEAD, bindings)
     )
-
-    assert items and all(i["block_merge"] for i in items)
+    assert passing and not any(i["block_merge"] for i in passing)
 
 
 def test_the_inventory_and_evidence_sections_are_not_disposable_items() -> None:
@@ -421,12 +347,14 @@ def test_the_inventory_and_evidence_sections_are_not_disposable_items() -> None:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- first-principles-review -->\n"
-            "First-Principles-Verdict: CONCERNS\n\n"
+            "First-Principles-Verdict: BLOCK\n\n"
             "### What this change ships\n"
             "1. the win32 probe - justified\n\n"
             "### Evidence gaps\n"
             "- no Windows screenshot\n\n"
-            "### Subtractions\n"
+            "### Notes\n"
+            "- consider the boolean\n\n"
+            "### Blockers\n"
             "- drop the probe; take the boolean\n\n"
             "[FIRST-PRINCIPLES-REVIEWED] " + _CONCERNS_HEAD
         ),
@@ -436,11 +364,11 @@ def test_the_inventory_and_evidence_sections_are_not_disposable_items() -> None:
         module.extract_design_items([comment], _CONCERNS_HEAD, dict(module.DEFAULT_MARKER_BINDINGS))
     )
 
-    assert [i["kind"] for i in items] == ["SUBTRACTIONS"]
+    assert [i["kind"] for i in items] == ["BLOCKERS"]
     assert items[0]["text"] == "drop the probe; take the boolean"
 
 
-def test_a_prose_watch_section_still_yields_its_items() -> None:
+def test_a_prose_blockers_section_still_yields_its_items() -> None:
     """The templates ask for "one or two lines each" without mandating a
     bullet, and a section that silently yields nothing hides exactly the item
     this extractor exists to surface."""
@@ -452,8 +380,8 @@ def test_a_prose_watch_section_still_yields_its_items() -> None:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- ux-review -->\n"
-            "UX-Verdict: CONCERNS\n\n"
-            "### Watch\n"
+            "UX-Verdict: BLOCK\n\n"
+            "### Blockers\n"
             "The empty state has no label, so a first-run user sees a blank panel.\n\n"
             "A second paragraph names a second risk.\n\n"
             "[UX-REVIEWED] " + _CONCERNS_HEAD
@@ -465,7 +393,7 @@ def test_a_prose_watch_section_still_yields_its_items() -> None:
     )
 
     assert len(items) == 2
-    assert items[0]["kind"] == "WATCH"
+    assert items[0]["kind"] == "BLOCKERS"
     assert items[0]["reviewer"] == "ux"
 
 
@@ -480,8 +408,8 @@ def test_a_lane_cannot_forge_another_lanes_design_items() -> None:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- ux-review -->\n"
-            "UX-Verdict: CONCERNS\n\n"
-            "### Watch\n"
+            "UX-Verdict: BLOCK\n\n"
+            "### Blockers\n"
             "- injected item\n\n"
             "[DESIGN-REVIEWED] " + _CONCERNS_HEAD
         ),

@@ -746,7 +746,7 @@ def harvest(rows_path: Path, corpus_path: Path, surface: str) -> int:
 #: (exit 1 / ``failure``) and to a leak-safe "could not settle" notice rather than
 #: a "confirmed regression" badge. To make EVERY unsettled run resolve neutral
 #: instead -- the other candidate answer -- change this single value to
-#: ``"concerns"``; both lanes already map ``concerns`` to a non-blocking neutral.
+#: ``"nothing-new"``; both lanes already map it to a non-blocking neutral.
 #: Nothing else moves. Note the breadth: this governs every could-not-settle
 #: outcome below, marker-absent included, not only a Bedrock/matrix crash.
 _UNSETTLED_CONCLUSION: str = "error"
@@ -758,19 +758,17 @@ _UNSETTLED_CONCLUSION: str = "error"
 _CONCLUSION_SEVERITY: "dict[str, int]" = {
     "pass": 0,
     "nothing-new": 1,
-    "concerns": 2,
     "error": 3,
     "block": 3,
 }
 
 #: A published check-run conclusion, named as the lane token whose blocking
-#: severity it carries. ``neutral`` is a ``concerns`` -- the stricter of the two
-#: tokens that surface as neutral -- so the monotonic guard reads a neutral as no
-#: softer than it stands. A conclusion absent here (``cancelled``, ``timed_out``,
+#: severity it carries. ``neutral`` is a ``nothing-new``, the only token that
+#: surfaces as neutral. A conclusion absent here (``cancelled``, ``timed_out``,
 #: ``skipped``) is not a lane verdict and sets no floor.
 _CHECKRUN_CONCLUSION_TOKEN: "dict[str, str]" = {
     "success": "pass",
-    "neutral": "concerns",
+    "neutral": "nothing-new",
     "failure": "block",
 }
 
@@ -803,7 +801,6 @@ _SCOPE_FLOOR_UNSETTLED_MARKER = "[scope-floor:unsettled]"
 _TOKEN_CHECKRUN_CONCLUSION: "dict[str, str]" = {
     "pass": "success",
     "nothing-new": "neutral",
-    "concerns": "neutral",
     "block": "failure",
     "error": "failure",
 }
@@ -871,7 +868,7 @@ def _truthy(value: "str | None") -> bool:
 
 
 def _normalize_model(value: "str | None") -> str:
-    """Fold the raw ``Scope-Verdict`` header to one of PASS/CONCERNS/BLOCK/UNKNOWN.
+    """Fold the raw ``Scope-Verdict`` header to one of PASS/BLOCK/UNKNOWN.
 
     Anything the contract does not define -- an empty header, a typo, a value the
     lane could not parse -- is UNKNOWN, which the table treats as unsettled. This
@@ -880,7 +877,7 @@ def _normalize_model(value: "str | None") -> str:
     honoured.
     """
     header = str(value or "").strip().upper()
-    return header if header in {"PASS", "CONCERNS", "BLOCK"} else "UNKNOWN"
+    return header if header in {"PASS", "BLOCK"} else "UNKNOWN"
 
 
 def conclude_lane(
@@ -908,7 +905,7 @@ def conclude_lane(
     """
     # gap_model is MODEL-AUTHORED input to a merge-blocking gate, so it is
     # UNTRUSTED. It is OR-ed in here and read ONLY inside the BLOCK branch below,
-    # where a gap can do exactly one thing: upgrade concerns -> block. It can make
+    # where a gap can do exactly one thing: upgrade a pass -> block. It can make
     # the verdict STRICTER, never clear it -- so honouring it costs no safety while
     # closing the asymmetry (same-repo already honoured it; the fork did not, and a
     # fork is the more hostile source). Both sources feed both lanes now.
@@ -967,12 +964,10 @@ def conclude_lane(
         return _UNSETTLED_CONCLUSION, "no [SCOPE-REVIEWED] marker for this head"
     if model == "PASS":
         return "pass", "adjudicated, zero confirmed regressions"
-    if model == "CONCERNS":
-        return "concerns", "the reviewer's own judgement; no confirmed regression"
     if model == "BLOCK":
         if gap:
             return "block", f"the reviewer's BLOCK stands on a demonstrated platform gap ({gap_src})"
-        return "concerns", "the reviewer wrote BLOCK with no confirmed regression and no demonstrated gap"
+        return "pass", "the reviewer wrote BLOCK with no confirmed regression and no demonstrated gap, which is read as PASS"
     return _UNSETTLED_CONCLUSION, "no parseable Scope-Verdict header carrying a marker for this head"
 
 
@@ -1171,8 +1166,8 @@ def _cmd_conclude(args: argparse.Namespace) -> int:
     # a caller from the token. The fork lane needs the answer to decide whether to
     # stamp `_SCOPE_FLOOR_UNSETTLED_MARKER` on its check-run, and it read the token
     # to get it -- which silently breaks the "flip one constant" contract on
-    # `_UNSETTLED_CONCLUSION`: set that to `"concerns"` and an unsettled run starts
-    # arriving as a token the caller's `concerns` arm treats as settled, so flakes
+    # `_UNSETTLED_CONCLUSION`: set that to `"nothing-new"` and an unsettled run starts
+    # arriving as a token the caller's `nothing-new` arm treats as settled, so flakes
     # would floor the head again with no other edit in sight. The comparison lives
     # next to the constant instead.
     print(f"settled={'no' if conclusion == _UNSETTLED_CONCLUSION else 'yes'}")
@@ -1275,7 +1270,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument(
         "--model",
         default="",
-        help="the parsed Scope-Verdict header (PASS/CONCERNS/BLOCK); anything else reads as UNKNOWN",
+        help="the parsed Scope-Verdict header (PASS/BLOCK); anything else reads as UNKNOWN",
     )
     c.add_argument(
         "--marker",

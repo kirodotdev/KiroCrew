@@ -84,7 +84,7 @@ class TestBlockAdjudicationContract:
         flat = _flat(_review_prompt("gpt-block-adjudication"))
         assert "the gate only ever WIDENS from here" in flat
         assert "You may NEVER add a finding" in flat
-        assert "raise an advisory to blocking" in flat
+        assert "raise a note to blocking" in flat
         assert "no third verdict and no partial verdict" in flat
 
     def test_remedy_cost_is_the_real_fix_not_a_revert(self) -> None:
@@ -315,7 +315,7 @@ class TestBlockAdjudicationContract:
             # ADJUDICABLE section; it reaches the model only inside the
             # separate annotate-only FENCED section.
             script = _step_script(_workflow(lane), ADJ_EXTRACT)
-            fence = script[script.index("if grep -qE -- '->|→'") :]
+            fence = script[script.index('if grep -qE -- "$CHAIN_RE"') :]
             assert fence.index("continue") < fence.index("'=== F%s ==="), lane
             assert "ADJUDICATION_FENCED_BEGIN::%s" in script, lane
             # The fence requires a stated consequence chain AND a
@@ -328,7 +328,7 @@ class TestBlockAdjudicationContract:
             # piped greps must consume all input (no -q downstream): under
             # pipefail a -q short-circuit can SIGPIPE the upstream grep and
             # misread a real security finding as unfenced.
-            chain_line = 'grep -E -- \'->|→\' "$f" | grep -Ei "$SECURITY_RE" >/dev/null'
+            chain_line = 'grep -E -- "$CHAIN_RE" "$f" | grep -Ei "$SECURITY_RE" >/dev/null'
             assert chain_line in fence, lane
             assert "Anchor:" in fence, lane
             # The Anchor branch accepts a bare `security` token: a
@@ -360,9 +360,10 @@ class TestBlockAdjudicationContract:
         if bash is None:
             pytest.skip("the fence executes only under Bash")
         script = _step_script(_workflow(lane), ADJ_EXTRACT)
-        start = script.index("if grep -qE -- '->|→'") + len("if ")
+        start = script.index('if grep -qE -- "$CHAIN_RE"') + len("if ")
         cond = script[start : script.index("; then", start)]
         regex = _step_env(lane, ADJ_EXTRACT)["SECURITY_RE"]
+        chain_re = _step_env(lane, ADJ_EXTRACT)["CHAIN_RE"]
 
         incidental = tmp_path / "incidental.md"
         incidental.write_text(
@@ -460,6 +461,27 @@ class TestBlockAdjudicationContract:
             "No consequence chain stated.\n",
             encoding="utf-8",
         )
+        # The D1 item shape: the chain is its Trigger and Outcome lines, with no
+        # arrow at all. A security-class Outcome fences; an incidental code mention
+        # in the Trigger does not.
+        trigger_outcome = tmp_path / "trigger_outcome.md"
+        trigger_outcome.write_text(
+            "BLOCKING src/auth.py:12 -- the token check is skipped.\n"
+            "Trigger: a request with an expired token reaches the handler.\n"
+            "Outcome: the caller is admitted and keeps a credential past its grant.\n"
+            "Anchor: defect\n"
+            "Fix: verify the expiry.\n",
+            encoding="utf-8",
+        )
+        trigger_outcome_mundane = tmp_path / "trigger_outcome_mundane.md"
+        trigger_outcome_mundane.write_text(
+            "BLOCKING src/ui.py:7 -- the helper spawned via subprocess drops a code.\n"
+            "Trigger: a stale flag reaches the retry loop.\n"
+            "Outcome: the banner renders twice.\n"
+            "Anchor: defect\n"
+            "Fix: reset the flag.\n",
+            encoding="utf-8",
+        )
         pathless = tmp_path / "pathless.md"
         pathless.write_text(
             "BLOCKING src/gate.py:22 -- credential handling looks wrong.\n"
@@ -478,6 +500,8 @@ class TestBlockAdjudicationContract:
             (side_effects, True),
             (event_loop, False),
             (pathless, False),
+            (trigger_outcome, True),
+            (trigger_outcome_mundane, False),
         )
         for path, want in cases:
             out = subprocess.run(
@@ -486,7 +510,7 @@ class TestBlockAdjudicationContract:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                env={**os.environ, "SECURITY_RE": regex},
+                env={**os.environ, "SECURITY_RE": regex, "CHAIN_RE": chain_re},
             )
             fenced = out.returncode == 0
             assert fenced is want, (lane, path.name, out.returncode, out.stderr)
@@ -1269,7 +1293,8 @@ class TestBlockAdjudicationExtraction:
             "A duplicated segment silently corrupts the archive index.",
             "Fix: dedupe by mid.",
             "",
-            "FINDING — kirocrew/util/fmt.py:3 — trailing space → Fix: strip it.",
+            "Notes:",
+            "- kirocrew/util/fmt.py:3 trailing space",
             "",
             "[BLOCK-MERGE] deadbeef",
             "[GPT-REVIEWED] deadbeef",

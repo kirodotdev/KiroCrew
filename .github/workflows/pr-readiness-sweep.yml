@@ -548,7 +548,7 @@ jobs:
                   # ONE status-description read classifies this pending for
                   # both recoveries that depend on it.
                   rs_desc="$(readiness_description "$sha")"
-                  # A pending that an advisory lane owes this head a
+                  # A pending that an whole-design lane owes this head a
                   # verdict it withheld. A recompute of THIS aggregator cannot
                   # fix it -- the lane's check-run is already `success`, so the
                   # recompute re-derives the same named pending -- so instead of

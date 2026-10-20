@@ -532,7 +532,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
             "::error::1 of 1 attachment download(s) from the PR description failed for a "
             "transport reason, so the blind reader cannot see everything the author supplied; "
             "this lane cannot evaluate the change on partial evidence and fails rather than read "
-            "as advisory. Re-run this workflow"
+            "as a pass. Re-run this workflow"
         ) in self._evidence_stdout, self._evidence_stdout
         # The capture step never sees this case, so it has no fetch-failure
         # branch: with no image it writes NOT PERFORMED, and only a pass 1 that
@@ -825,7 +825,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
             "transport reason, so the reviewer cannot see everything the author supplied"
         ) in self._evidence_stdout, self._evidence_stdout
         workflow = _workflow("fork-ux-review.yml")
-        finalize = _step("fork-ux-review.yml", "Finalize check-run (advisory)")
+        finalize = _step("fork-ux-review.yml", "Finalize check-run")
         assert finalize["env"]["UNFETCHED"] == "${{ steps.attachments.outputs.unfetched }}"
         script = finalize["run"]
         assert 'if [ "${UNFETCHED:-}" = "true" ]; then' in script
@@ -833,10 +833,10 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
             'conclusion="failure"; title="cannot evaluate — attachment download(s) failed; '
             're-run this workflow"'
         ) in script
-        # The verdict-driven mapping is untouched underneath: CONCERNS stays
-        # neutral and an incomplete run stays neutral.
-        assert 'conclusion="neutral"; title="CONCERNS — read the Watch items"' in script
-        assert 'conclusion="neutral"; title="review incomplete (advisory)"' in script
+        # The verdict-driven mapping is untouched underneath: an incomplete run
+        # stays neutral, and there is no CONCERNS arm.
+        assert "CONCERNS" not in script
+        assert 'conclusion="neutral"; title="review incomplete"' in script
         post = _step("fork-ux-review.yml", "Post UX review summary")
         assert post["env"]["UNFETCHED"] == "${{ steps.attachments.outputs.unfetched }}"
         assert "could not evaluate" in post["run"]

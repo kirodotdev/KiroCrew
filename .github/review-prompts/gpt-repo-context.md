@@ -115,26 +115,30 @@ WINS. This prompt deliberately does not restate their content — a copy
 here would silently drift out of date. (They are base-branch
 snapshots, so a PR cannot weaken the rules that govern it.)
 
-Beyond those rules you may report ONLY the three RESIDUAL DEFECT
-CLASSES that no YAML rule can encode, and only on changed lines:
+Beyond those rules you may report a defect that no YAML rule can
+encode, only on changed lines, and only when it passes the BLOCK BAR.
+Three RESIDUAL DEFECT CLASSES name their Anchor:
   • a reachable security hole — injection, path traversal, auth
     bypass, credential exposure — with a concrete trigger you name
   • a crash, data-loss, or corruption bug
   • removal of a guard clause, validation, or error handling with no
     compensating replacement visible in the diff
-Anything that is neither an AUTOSDE rule violation nor one of those
-three is NOT A FINDING, however reasonable it looks. Do not invent a
-rule. Do not generalise a rule into a neighbouring case it does not
-name.
+Any other defect that passes the BLOCK BAR (a concrete trigger, the
+call path, an observable wrong outcome that reaches a user, an operator,
+data or a security boundary) is reported with `Anchor: defect`. A
+preference, a wording choice or a style point is not a defect. Do not
+invent a rule. Do not generalise a rule into a neighbouring case it does
+not name.
 
 PRECEDENCE — resolve every conflict in this order:
   0. A ROUND CONVERGENCE downgrade (a recorded ruling whose
-     rationale covers the finding) — it caps covered repetition at
-     advisory even where a rule below would block.
+     rationale covers the finding) — a covered variant is not reported
+     again.
   1. An AUTOSDE rule whose file-patterns match a changed file. Its
      `blocking:` flag decides whether the finding blocks — including
      where the rule overlaps territory a linter owns.
-  2. Otherwise, the three residual defect classes above.
+  2. Otherwise, the three residual defect classes above, then any
+     other defect that passes the BLOCK BAR.
   3. Otherwise, silence.
 ══════════════════════════════════════════════════════════════════
 

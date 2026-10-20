@@ -989,23 +989,27 @@ jobs:
           here would silently drift out of date. (They are base-branch
           snapshots, so a PR cannot weaken the rules that govern it.)
 
-          Beyond those rules you may report ONLY the three RESIDUAL DEFECT
-          CLASSES that no YAML rule can encode, and only on changed lines:
+          Beyond those rules you may report a defect that no YAML rule can
+          encode, only on changed lines, and only when it passes the BLOCK BAR.
+          Three RESIDUAL DEFECT CLASSES name their Anchor:
             • a reachable security hole — injection, path traversal, auth
               bypass, credential exposure — with a concrete trigger you name
             • a crash, data-loss, or corruption bug
             • removal of a guard clause, validation, or error handling with no
               compensating replacement visible in the diff
-          Anything that is neither an AUTOSDE rule violation nor one of those
-          three is NOT A FINDING, however reasonable it looks. Do not invent a
-          rule. Do not generalise a rule into a neighbouring case it does not
-          name.
+          Any other defect that passes the BLOCK BAR (a concrete trigger, the
+          call path, an observable wrong outcome that reaches a user, an operator,
+          data or a security boundary) is reported with `Anchor: defect`. A
+          preference, a wording choice or a style point is not a defect. Do not
+          invent a rule. Do not generalise a rule into a neighbouring case it does
+          not name.
 
           PRECEDENCE — resolve every conflict in this order:
             1. An AUTOSDE rule whose file-patterns match a changed file. Its
                `blocking:` flag decides whether the finding blocks — including
                where the rule overlaps territory a linter owns.
-            2. Otherwise, the three residual defect classes above.
+            2. Otherwise, the three residual defect classes above, then any
+               other defect that passes the BLOCK BAR.
             3. Otherwise, silence.
           ══════════════════════════════════════════════════════════════════
 
@@ -1033,7 +1037,8 @@ jobs:
             echo "  code does — judge behavior from the diff."
             echo "- If the diff MATERIALLY DIVERGES from the stated purpose — it adds"
             echo "  or changes behavior the description never mentions, or omits"
-            echo "  something it promises — FLAG that divergence as an advisory FINDING."
+            echo "  something it promises — that divergence is a BLOCK only when it meets"
+            echo "  the BLOCK BAR (a trigger and an observable wrong outcome); else say nothing."
             echo "- UNDECLARED scope is THE fork attack vector: a plausible stated"
             echo "  change with an unrelated change smuggled in beside it. Look hardest"
             echo "  for a change to a SENSITIVE surface the description does not call"
@@ -1044,10 +1049,9 @@ jobs:
             echo "  change explicitly, naming the surface it touches."
             echo "- Do NOT downgrade an undeclared change for being small or plausible."
             echo "  If it carries a reachable security or data-loss consequence it BLOCKS"
-            echo "  under WHAT BLOCKS (2) exactly as any other such defect — the missing"
-            echo "  description never makes it advisory. Undeclared changes with no such"
-            echo "  reachable consequence stay advisory (do not invent a trigger to"
-            echo "  block a thin description)."
+            echo "  as any other such defect — the missing description never excuses it."
+            echo "  Undeclared changes with no such reachable consequence are not"
+            echo "  reported (do not invent a trigger to block a thin description)."
             echo "PR_INTENT_BEGIN::${NONCE}"
             if [ -s "$INTENT_FILE" ]; then
               cat "$INTENT_FILE"
@@ -1068,7 +1072,7 @@ jobs:
           : > codex-failed-passes
           BASE_PROMPT="$(cat /tmp/fork-codex-prompt.md)"
           PROMPT=$(printf '%s\n\n%s\n' "$BASE_PROMPT" \
-            "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
+            "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the BLOCK BAR. This is candidate generation, not the final verdict.")
 
           rm -f codex-pass-1.md
           rc=0
@@ -1220,6 +1224,29 @@ jobs:
             } > codex-review-output.md
           else
             cp codex-pass-2.md codex-review-output.md
+            # A BLOCK states a trigger and an observable wrong outcome, or it is
+            # a PASS. Mirrors codex-review.yml.
+            # --- block substantiation (copied into every lane; pinned by test_block_substantiation.py) ---
+            block_substantiated() {
+              local text
+              text="$(cat)"
+              grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?Trigger:(\*\*)?[[:space:]]*[^[:space:]*]' <<< "$text" \
+                && grep -Eiq '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?Outcome:(\*\*)?[[:space:]]*[^[:space:]*]' <<< "$text"
+            }
+            drop_unsubstantiated_block_marker() {
+              local file="$1" head="$2" kept
+              grep -Fq "[BLOCK-MERGE] $head" "$file" || return 0
+              block_substantiated < "$file" && return 0
+              kept="$(mktemp)"
+              grep -Fv "[BLOCK-MERGE] $head" "$file" > "$kept" || true
+              cat "$kept" > "$file"
+              rm -f "$kept"
+              echo dropped
+            }
+            # --- end block substantiation ---
+            if [ -n "$(drop_unsubstantiated_block_marker codex-review-output.md "$HEAD")" ]; then
+              echo "::warning title=Unsubstantiated BLOCK::GPT 6.1 emitted [BLOCK-MERGE] for $HEAD without a Trigger: line and an Outcome: line, so the BLOCK is treated as PASS."
+            fi
           fi
 
           # Gate the adjudication pass below on the verdict THIS step produced,
@@ -1309,6 +1336,9 @@ jobs:
           # excluded, and why a fenced match must also STATE its consequence
           # chain (#8693). KEEP IN SYNC with that lane.
           SECURITY_RE: 'residual/security|credential|passwd|password|\bsecret|api[ _-]?key|access[ _-]?key|private[ _-]?key|signing[ _-]?key|AKIA|ASIA|bearer|(access|session|auth|api|security|refresh)[ _-]?token|\bjwt\b|\bcookie|authentic|authoriz|\bauthn\b|\bauthz\b|\bauth\b|privileg|escalat|sandbox|traversal|\.\./|symlink|exfil|\bssrf\b|\bcsrf\b|\bxss\b|injection|subprocess|os\.system|shell=True|\beval\(|\bexec\(|egress|\biam\b|\bkms\b|encrypt|decrypt|\bhmac\b|signature|\bsudo\b|chmod|world-readable|corrupt|data[ _-]?loss|lose[ _-]?data|data[ _-]?destr|irreversib|unrecoverab'
+          # The consequence-chain lines of a BLOCKING item: its Trigger: and
+          # Outcome: lines, or (older bodies) an arrow line.
+          CHAIN_RE: '->|→|^[[:space:]]*[-*]?[[:space:]]*(\*\*)?(Trigger|Outcome):'
         run: |
           set -uo pipefail
           rm -rf "$BLOCK_DIR" .review-adjudication
@@ -1316,11 +1346,10 @@ jobs:
 
           awk -v dir="$BLOCK_DIR" '
             function isblock(l) { return l ~ /^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING([^[:alnum:]]|$)/ }
-            function isfind(l)  { return l ~ /^[[:space:]]*[-*]?[[:space:]]*(\*\*)?FINDING([^[:alnum:]]|$)/ }
-            function ismark(l)  { return l ~ /^[[:space:]]*\[(GPT-REVIEWED|BLOCK-MERGE)\]/ }
+            function ismark(l)  { return l ~ /^[[:space:]]*\[(GPT-REVIEWED|BLOCK-MERGE)\]/ || l ~ /^[[:space:]]*[-*]?[[:space:]]*(\*\*)?Notes:/ }
             {
               if (isblock($0)) { n++; out = sprintf("%s/%03d.md", dir, n); print > out; next }
-              if (out != "" && (isfind($0) || ismark($0))) { close(out); out = ""; next }
+              if (out != "" && ismark($0)) { close(out); out = ""; next }
               if (out != "") print > out
             }
           ' codex-review-output.md
@@ -1404,8 +1433,8 @@ jobs:
             # The piped greps deliberately consume all input (no -q on the
             # downstream): under pipefail a -q short-circuit can SIGPIPE the
             # upstream grep and misread a real security finding as unfenced.
-            if grep -qE -- '->|→' "$f" \
-               && { grep -E -- '->|→' "$f" | grep -Ei "$SECURITY_RE" >/dev/null \
+            if grep -qE -- "$CHAIN_RE" "$f" \
+               && { grep -E -- "$CHAIN_RE" "$f" | grep -Ei "$SECURITY_RE" >/dev/null \
                     || grep -Ei '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?Anchor:' "$f" | grep -Ei "$SECURITY_RE|\bsecurity\b|residual/|harness-parity|no-test-side-effects" >/dev/null; }; then
               fenced=$((fenced + 1))
               fenced_ids="$fenced_ids F$count"
@@ -1693,7 +1722,7 @@ jobs:
                 note="Adjudication upheld $actual_uph of $total blocking finding(s); those must be resolved before merging."
               else
                 decision="cleared"
-                note="Adjudication downgraded all $total blocking finding(s) to advisory: the remedy each one requires is disproportionate to the harm it prevents."
+                note="Adjudication downgraded all $total blocking finding(s): the remedy each one requires is disproportionate to the harm it prevents."
               fi
             fi
           fi
@@ -1761,7 +1790,7 @@ jobs:
               # never from the adjudication prose.
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"; verdict="✅ no blocking findings (all downgraded on adjudication)"
-                note="Opus 5.5 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                note="Opus 5.5 adjudication downgraded every blocking finding. Downgraded: the remedy each one needs is disproportionate to the harm it prevents. ${ADJ_NOTE:-}"
               else
                 kind="blocked"; verdict="🔴 changes requested (blocking)"
                 note="${ADJ_NOTE:-}"
@@ -2583,7 +2612,7 @@ jobs:
       - name: Retain this run's unpublished verdict
         if: always() && steps.pr.outputs.obsolete != 'true' && steps.post.outputs.retained_verdict_artifact != ''
         # NEVER fatal. A lane's conclusion is read by pr-readiness.yml, and for
-        # the three advisory labels ANY non-success conclusion is reported as
+        # the three whole-design labels ANY non-success conclusion is reported as
         # `<label> (BLOCK)` -- a judged-wrong verdict. So a transport flake here,
         # or an `if-no-files-found: error` on a directory that did not survive,
         # would invent a verdict nobody reached. Retention is evidence ABOUT a

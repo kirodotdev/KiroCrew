@@ -715,7 +715,7 @@ class TestDesignReviewPresentation:
     def test_review_has_one_verdict_without_a_blast_radius_rating(self) -> None:
         workflow = _workflow("design-review.yml")
 
-        assert "Design-Verdict: <PASS | CONCERNS | BLOCK>" in workflow
+        assert "Design-Verdict: <PASS | BLOCK>" in workflow
         assert "Design-Blast-Radius:" not in workflow
         assert "· blast radius:" not in workflow
         assert 'blast="$(printf' not in workflow
@@ -731,7 +731,7 @@ class TestFirstPrinciplesReview:
     def test_lane_parses_its_own_verdict_and_proves_the_commit(self) -> None:
         contract = _fp_contract()
         # The verdict header and the proof-of-commit marker are contract terms.
-        assert "First-Principles-Verdict: <PASS | CONCERNS | BLOCK>" in contract
+        assert "First-Principles-Verdict: <PASS | BLOCK>" in contract
         assert "[FIRST-PRINCIPLES-REVIEWED]" in contract
 
         for name in FP_LANES:
@@ -930,9 +930,7 @@ class TestFirstPrinciplesReview:
         # pr-readiness.yml counts ANY non-completed check-run of this name as
         # pending, so one swallowed finalize error would wedge the PR at
         # `checking` with no later event able to clear it.
-        finalize = _step_script(
-            _workflow("fork-first-principles-review.yml"), "Finalize check-run (advisory)"
-        )
+        finalize = _step_script(_workflow("fork-first-principles-review.yml"), "Finalize check-run")
 
         assert "for attempt in 1 2; do" in finalize
         assert "completing stranded check-run" in finalize
@@ -949,7 +947,7 @@ class TestFirstPrinciplesReview:
         # from matching -pr-99).
         workflow = _workflow("fork-first-principles-review.yml")
         opened = _step_script(workflow, "Open check-run (in progress)")
-        finalize = _step_script(workflow, "Finalize check-run (advisory)")
+        finalize = _step_script(workflow, "Finalize check-run")
 
         assert '-f external_id="first-principles-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT"' in opened
         assert 'select(.external_id | startswith(\\"first-principles-pr-$PR-\\"))' in finalize
@@ -1049,7 +1047,7 @@ class TestFirstPrinciplesReview:
         # real review has not posted yet" and keeps the PR pending. The fork
         # lane must therefore finalize a scope skip as SUCCESS.
         workflow = _workflow("fork-first-principles-review.yml")
-        finalize = _step_script(workflow, "Finalize check-run (advisory)")
+        finalize = _step_script(workflow, "Finalize check-run")
 
         assert 'SKIPPED)  conclusion="success"' in finalize
         assert 'BLOCK)    conclusion="failure"' in finalize
@@ -1168,7 +1166,7 @@ class TestFirstPrinciplesReview:
         status = _step_script(same, "First-principles review status (gates on BLOCK)")
         assert "NO_CONTRACT)" in status
         fork_finalize = _step_script(
-            _workflow("fork-first-principles-review.yml"), "Finalize check-run (advisory)"
+            _workflow("fork-first-principles-review.yml"), "Finalize check-run"
         )
         assert 'NO_CONTRACT) conclusion="success"' in fork_finalize
 

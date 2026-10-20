@@ -209,7 +209,7 @@ def test_non_blocking_findings_never_change_the_exit_code() -> None:
     comments = json.dumps(
         [
             _bot_comment(
-                "FINDING -- src/x.py:10 -- could be tighter -> Fix: tighten\n"
+                "BLOCKING -- src/x.py:10 -- could be tighter -> Fix: tighten\n"
                 f"[GPT-REVIEWED] {_HEAD}"
             ),
         ]

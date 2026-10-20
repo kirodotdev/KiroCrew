@@ -17,7 +17,7 @@ Phase 3 step 2 when `gh` cannot update a PR body. Full detail:
 | `Issue Gate` | once enabled | the issue line or its tier (SKILL.md's *Issue first*) |
 | `Opus 5.5 Review`, `GPT 6.1 Review` | Critical/High | line-level findings — Phase 3 (b) |
 | `Security Scope Review` | yes | each row is a legitimate operation your tightening newly refuses; narrow the rule, or override `scope` |
-| `Design Review`, `First Principles Review`, `UX Review` | BLOCK only | CONCERNS is advisory but every item must be answered |
+| `Design Review`, `First Principles Review`, `UX Review` | BLOCK only | PASS needs no reply; every BLOCK item is fixed or answered |
 | CodeQL | yes | a fork head cannot run it: a "Not eligible" note, not a blocker |
 
 A **fork** PR is aggregated the same way and can reach `passed`: its AI reviews

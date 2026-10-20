@@ -305,8 +305,8 @@ def test_gpt_prompt_carries_the_contract_sentinels():
         "SYSTEM RULES",
         "REPO CONTEXT",
         "DIVISION OF LABOUR",
-        "FINDING BAR",
-        "WHAT BLOCKS",
+        "BLOCK BAR",
+        "SENSITIVE CLASSES",
         "OUTPUT STYLE",
         "OUTPUT MARKERS",
     ):
@@ -1233,7 +1233,7 @@ def test_contract_workflow_is_read_from_base_not_from_the_branch(
     brief = Path(summary["tasks"]["gpt"]).read_text(encoding="utf-8")
     assert "TAMPER_SENTINEL" not in brief
     # The base text - which the branch replaced wholesale - is what got lifted.
-    for sentinel in ("WHAT BLOCKS", "OUTPUT MARKERS", "FALSIFICATION PASS"):
+    for sentinel in ("SENSITIVE CLASSES", "OUTPUT MARKERS", "FALSIFICATION PASS"):
         assert sentinel in brief, "{} missing - the brief did not come from base".format(
             sentinel
         )
@@ -1352,7 +1352,7 @@ def test_extraction_still_works_when_head_has_moved_past_base(
     assert summary["base_sha"] == _git(parity_repo, "rev-parse", "main")
     assert summary["head_sha"] != summary["base_sha"]
     brief = Path(summary["tasks"]["gpt"]).read_text(encoding="utf-8")
-    assert "WHAT BLOCKS" in brief
+    assert "SENSITIVE CLASSES" in brief
     assert summary["base_sha"] in brief
     # The later commits are part of what is under review, not of the contract.
     assert "LATER = 1" in Path(summary["diff"]["path"]).read_text(encoding="utf-8")

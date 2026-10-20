@@ -943,7 +943,8 @@ class TestDesignReviewBlocks:
         # including an errored or throttled run -- exits 0.
         wf = _read("design-review.yml")
         gate = wf.split("Design review status (gates on BLOCK)")[1]
-        assert "PASS|CONCERNS)" in gate
+        assert "PASS|CONCERNS)" not in gate
+        assert "PASS)" in gate
         assert "exit 1 ;;" in gate
         # The wildcard (errored / no verdict) branch must not fail.
         tail = gate.split("BLOCK)")[1]
@@ -1029,9 +1030,9 @@ class TestDecidableFindingsExitTheTieBreaker:
     @pytest.mark.parametrize("name", UX_LANES)
     def test_ux_tie_breaker_carries_a_closed_exception_list(self, name):
         wf = _flat(_read(name))
-        assert "Tie-breaker: when torn between BLOCK and CONCERNS" in wf
+        assert "Tie-breaker: when torn between BLOCK and PASS, choose PASS with a note" in wf
         # Five decidable exits: an evidence gap (a control no supplied
-        # screenshot shows -- the lane cannot evaluate it, so CONCERNS would
+        # screenshot shows -- the lane cannot evaluate it, so a pass would
         # misreport an unreached verdict as a mild one), the two notice rules,
         # a primary control the blind reader could not use and a hard element
         # swap. Each is read off the screenshot list, the blind-read report or
@@ -1058,7 +1059,7 @@ class TestDecidableFindingsExitTheTieBreaker:
 
     def test_first_principles_tie_breaker_exempts_the_rider_combination(self):
         contract = _flat(_read_prompt(FP_CONTRACT))
-        assert "Tie-breaker: when torn between BLOCK and CONCERNS" in contract
+        assert "Tie-breaker: when torn between BLOCK and PASS, choose PASS with a note" in contract
         # Three combinations are settled by reading, not by degree: (a) an
         # unverified premise on a core availability path, (b) the rider, (c) a
         # product-shape change with no non-draft RFC on the base and no
@@ -1107,10 +1108,11 @@ class TestMissingEvidenceIsABlockNotAConcern:
 
     def test_fork_ux_lane_keeps_its_own_limitation_out_of_the_block(self):
         # The fork lane has no blind reader. That is the LANE's limitation, not
-        # an evidence gap the author can close, so it must cap at CONCERNS
-        # rather than block a fork contributor for something they cannot fix.
+        # an evidence gap the author can close, so it must be a PASS that names
+        # the limitation rather than block a fork contributor for something they
+        # cannot fix.
         wf = _flat(_read("fork-ux-review.yml"))
-        assert "this lane's limitation, not the author's gap" in wf
+        assert "names this lane's limitation" in wf
         assert "The absent blind read is not this exit" in wf
 
     @pytest.mark.parametrize("name", DESIGN_LANES)

@@ -38,7 +38,7 @@ Which lanes are owed is decided by ``pr_status.py --disposition-gate``'s
 ``unpublished`` array -- the one ``evaluate_reviewer_markers`` predicate that
 both PR Readiness and the local ``pr_status.py`` gate answer from, so this
 script cannot disagree with either about whether a head is reviewed. It is
-scoped to the three whole-design advisory lanes by construction: the required
+scoped to the three whole-design whole-design lanes by construction: the required
 lanes (Opus, GPT, Security Scope) fail CLOSED on a withheld verdict and are
 recovered by their own check-run finalize, never read as a stale ``success``.
 
@@ -86,7 +86,7 @@ _GATE = (
     / "pr_status.py"
 )
 
-# Each advisory lane's reviewer name (as evaluate_reviewer_markers reports it in
+# Each whole-design lane's reviewer name (as evaluate_reviewer_markers reports it in
 # ``unpublished``) mapped to the check-run name and the two workflow files that
 # can own its run -- the same-repo lane and the fork Stage-2 lane. This mirrors
 # the lane table in ai-review-human-override.yml; test_republish_withheld_verdict
@@ -167,7 +167,7 @@ def _gh_json(args: list[str]) -> object | None:
 
 
 def owed_lanes(repo: str, pr: str, head: str) -> list[str] | None:
-    """The advisory lane names that owe ``head`` a verdict and have none, from
+    """The whole-design lane names that owe ``head`` a verdict and have none, from
     the ONE predicate both gates answer from. ``None`` when the gate could not
     read the comments (fail-closed: re-run nothing rather than guess)."""
     try:
@@ -399,7 +399,7 @@ def _resolve_pr_meta(repo: str, pr: str) -> tuple[bool, str, str] | None:
 
 
 def republish(repo: str, pr: str, head: str) -> int:
-    """Re-run every owing advisory lane for ``head``. Returns the number of lanes
+    """Re-run every owing whole-design lane for ``head``. Returns the number of lanes
     re-run; 0 when none was owed or none could be located/re-run."""
     lanes = owed_lanes(repo, pr, head)
     if lanes is None:
@@ -409,7 +409,7 @@ def republish(repo: str, pr: str, head: str) -> int:
         )
         return 0
     if not lanes:
-        print(f"PR #{pr}: no advisory lane owes {head} a verdict; nothing to re-run.")
+        print(f"PR #{pr}: no whole-design lane owes {head} a verdict; nothing to re-run.")
         return 0
     meta = _resolve_pr_meta(repo, pr)
     if meta is None:

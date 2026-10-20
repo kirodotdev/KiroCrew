@@ -1040,7 +1040,7 @@ class TestModelProseCannotForgeTheStateItIsJudgedBy:
 # --------------------------------------------------------------------------- #
 
 _FOLDS = ("clean", "regression", "redacted", "unscrubbable", "error", "no-report")
-_MODELS = ("PASS", "CONCERNS", "BLOCK", "UNKNOWN")
+_MODELS = ("PASS", "BLOCK", "UNKNOWN")
 _BOOLS = (False, True)
 
 #: Blocking severity -- `pass` softest, the two reds hardest. Bound to the ONE
@@ -1102,10 +1102,20 @@ class TestConcludeStricterGapResolution:
         )
         assert conclusion == "block"
 
-    def test_script_gap_blocks_and_no_gap_is_advisory(self) -> None:
+    def test_script_gap_blocks_and_no_gap_reads_as_pass(self) -> None:
         base = dict(fold="clean", model="BLOCK", marker_present=True, nothing_new=False)
         assert scope.conclude_lane(gap_script=True, gap_model=False, **base)[0] == "block"
-        assert scope.conclude_lane(gap_script=False, gap_model=False, **base)[0] == "concerns"
+        # A BLOCK that names no confirmed regression and no demonstrated gap is
+        # unsubstantiated, and an unsubstantiated BLOCK is a PASS.
+        assert scope.conclude_lane(gap_script=False, gap_model=False, **base)[0] == "pass"
+
+    def test_the_retired_concerns_word_is_not_a_verdict(self) -> None:
+        # CONCERNS is not a Scope-Verdict any more: it folds to UNKNOWN, which the
+        # table treats as unsettled (the lane fails closed on a verdict it cannot
+        # parse), not as a soft pass.
+        assert scope._normalize_model("CONCERNS") == "UNKNOWN"
+        assert scope._normalize_model("pass") == "PASS"
+        assert scope._normalize_model("block") == "BLOCK"
 
     def test_the_model_gap_can_only_tighten_never_soften(self) -> None:
         # The untrusted signal is honoured ONLY where it makes the verdict
@@ -1311,15 +1321,15 @@ class TestConcludeCli:
 
         The fork lane decides whether to stamp its check-run unsettled from this
         `settled=` line. Deriving it from the token spelling instead would break
-        that contract silently: flipped to `"concerns"`, an unsettled run would
+        that contract silently: flipped to `"nothing-new"`, an unsettled run would
         arrive as a token every caller treats as settled, and a flake would floor
         the head again with no other edit in sight. So the answer is computed
         against the constant.
         """
-        monkeypatch.setattr(scope, "_UNSETTLED_CONCLUSION", "concerns")
+        monkeypatch.setattr(scope, "_UNSETTLED_CONCLUSION", "nothing-new")
         scope.main(["conclude", "--fold", "error", "--marker", "present"])
         out = capsys.readouterr().out.splitlines()
-        assert "conclusion=concerns" in out, out
+        assert "conclusion=nothing-new" in out, out
         assert "settled=no" in out, out
 
     def test_cli_lowercases_and_normalizes_the_header(self, capsys) -> None:

@@ -468,11 +468,11 @@ class TestForkLaneFinalizeHonoursTheOverride:
     HEAD = "1234567890abcdef1234567890abcdef12345678"
     LANES = (
         # workflow, finalize step, check name, how a BLOCK verdict reaches the step
-        ("fork-design-review.yml", "Finalize check-run (advisory)", "Design Review", "env"),
-        ("fork-ux-review.yml", "Finalize check-run (advisory)", "UX Review", "env"),
+        ("fork-design-review.yml", "Finalize check-run", "Design Review", "env"),
+        ("fork-ux-review.yml", "Finalize check-run", "UX Review", "env"),
         (
             "fork-first-principles-review.yml",
-            "Finalize check-run (advisory)",
+            "Finalize check-run",
             "First Principles Review",
             "env",
         ),

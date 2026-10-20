@@ -1002,7 +1002,7 @@ jobs:
           # a site that does not.
           READ_FAILURE_TOKEN="[read-failed]"
           read_failure=false
-          # ONE stable token marks a pending that an advisory lane owes this
+          # ONE stable token marks a pending that an whole-design lane owes this
           # head a verdict it computed and could not publish -- the
           # `(verdict not published, re-run this lane)` state scored below. It
           # is the opposite of a read-failure pending in what RESOLVES it: a
@@ -1093,7 +1093,7 @@ jobs:
           # `evaluate_reviewer_markers` decides, per bound lane, whether that
           # lane's own slot carries a stamp naming this head: the name binding,
           # the abbreviated and elided stamp forms, the slots left alone for
-          # carrying no stamp of their own (the advisory lanes rewrite theirs to
+          # carrying no stamp of their own (the whole-design lanes rewrite theirs to
           # a stampless "skipped" notice by design, and a lane that published
           # nothing at all is answered by its own conclusion), and the
           # human-override record that stands in for a stamp on the path where
@@ -1107,7 +1107,7 @@ jobs:
           # trusted comments for the disposition rule.
           advisory_unpublished="${ADVISORY_UNPUBLISHED:-}"
 
-          # 1 when this advisory lane owes this head a verdict and has none,
+          # 1 when this whole-design lane owes this head a verdict and has none,
           # which is the state a `success` conclusion cannot express. All this
           # adds to the gate's answer is which reviewer name the board's lane
           # label belongs to.
@@ -1486,7 +1486,7 @@ jobs:
                 esac
               elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
                 # Design, UX and First Principles all BLOCK on a real BLOCK
-                # verdict. The "gates on BLOCK" step exits 0 for PASS/CONCERNS,
+                # verdict. The "gates on BLOCK" step exits 0 for PASS,
                 # the Dependabot skip, and any overloaded/throttled/verdict-less
                 # run, so those never fail the run -- a `failure` conclusion is
                 # therefore almost always a judged-wrong verdict. One residual:

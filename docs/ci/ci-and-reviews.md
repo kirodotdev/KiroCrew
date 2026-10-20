@@ -72,10 +72,10 @@ pull_request
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
   |-- claude-review.yml "Opus 5.5 Review"     line-level, code-only, blocking
   |-- codex-review.yml  "GPT 6.1 Review"    line-level + PR intent, blocking
-  |-- design-review.yml "Design Review"     design shape, advisory
-  |-- ux-review.yml     "UX Review"         rendered experience, advisory
+  |-- design-review.yml "Design Review"     design shape
+  |-- ux-review.yml     "UX Review"         rendered experience
   |-- first-principles-review.yml
-  |                     "First Principles Review"  why it exists, advisory
+  |                     "First Principles Review"  why it exists
   |-- security-scope-review.yml
   |                     "Security Scope Review"  which legit ops a tightening refuses, blocking
   |-- sensitive-change-review.yml
@@ -1911,7 +1911,7 @@ An issue that is closed as not planned, or loses its tier or `triaged` label, af
 last `opened` / `synchronize` / `reopened` / `edited` / `labeled` / `unlabeled` event
 and before merge is not re-read: no issue-side event re-runs a `pull_request`
 lane, and `pr-readiness-sweep.yml` re-fires the readiness recompute, not the
-Issue Gate lane (its advisory-review re-run path, #13100, covers only the three
+Issue Gate lane (its whole-design-review re-run path, #13100, covers only the three
 whole-design lanes). Both reversals are deliberate maintainer writes that no
 workflow in
 `.github/` performs, the window closes on any PR activity, and the remedy is a
@@ -2200,10 +2200,10 @@ Opus 5.5 spend goes to diffs that can actually produce a finding.
 
 A `BLOCK` here fails the lane's own check and `pr-readiness.yml` scores that failure as
 a readiness blocker, exactly as it does for Design Review and UX Review. Every other
-outcome -- `PASS`, `CONCERNS`, an errored or verdict-less run -- exits 0.
+outcome -- `PASS`, an errored or verdict-less run -- exits 0.
 
 Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
-"prefer `CONCERNS`" tie-breaker does not reach them:
+"prefer PASS with a note" tie-breaker does not reach them:
 
 - **Product shape needs a recorded decision (lens 9).** An item that changes a
   default, changes what a first-class loop, monitor, agent, skill or command does by
@@ -2228,9 +2228,9 @@ Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
   Principles lane's *cannot evaluate*: the recorded decision is the one piece of
   evidence this lane requires and cannot produce itself (consumer counts it greps for
   under lens 5; a decision it may not make), so its absence on a product-shape item is
-  the verdict the lane cannot reach, and it is never `CONCERNS`. A shape an accepted
+  the verdict the lane cannot reach, and it is never a pass. A shape an accepted
   RFC already licenses is not relitigated by asking for its grounds. An ordinary fix
-  with thin provenance stays where it was: an `inherited` item, `CONCERNS`.
+  with thin provenance stays where it was: an `inherited` item, a `Notes:` bullet.
 
 A third trigger is read off the diff too: **a deleted pin is a prior decision, and
 silence about it is the same case as mislabelling it.** When the diff deletes or
@@ -2239,22 +2239,21 @@ stated why, and the PR shows no evidence the pin was wrong -- no git history, no
 message, no linked issue -- its framing is contradicted by the diff whether the
 description calls the pin "a gap" or never mentions it at all. Symmetry or
 consistency with a sibling is not that evidence. Before this clause, only the
-mislabelled form reached `BLOCK`; a pin deleted without a word slipped to the
-advisory tier as `undeclared` (#10119 deleted a comment reading "This deliberately
-supersedes the earlier ... pill spec" plus its pin tests, said nothing, and drew
-`CONCERNS`).
+mislabelled form reached `BLOCK`; a pin deleted without a word slipped past as
+`undeclared` (#10119 deleted a comment reading "This deliberately supersedes the
+earlier ... pill spec" plus its pin tests, said nothing, and drew a soft verdict).
 
 **Each finding is stated once.** The lane's output is the verdict header, one bold
-punchline that opens with the problem, a `### Not justified as shipped` list, the
-collapsed inventory, and -- on `BLOCK` only -- `### Blockers`. Every item that is not
-`justified` gets exactly one entry in that list, carrying a `Subtraction:` line where
-one exists and its own `Clears when:` line last (the kirocrew-prepare-pr extractor reads from
-`Clears when:` to the end of the item as the clearance); there is no `### Watch` and
-no `### Subtractions`, because a second and third restatement of the same items
-buries the finding under the text around it. The kirocrew-prepare-pr
-extractor reads `Not justified as shipped` as an item-bearing section, so
-the local loop's per-item dispositions are unchanged; the check-run summary and the
-`::warning` annotation publish that section in place of `Watch`.
+reason (one to three sentences) that opens with the problem, the collapsed
+inventory, an optional `### Notes` list (at most three bullets, never read by the
+gate) and -- on `BLOCK` only -- `### Blockers`. Every Blocker carries a `Trigger:`
+line (the situation that occurs in practice), an `Outcome:` line (the observable
+cost carried), a `Subtraction:` line where one exists and its own `Clears when:`
+line last (the kirocrew-prepare-pr extractor reads from `Clears when:` to the end
+of the item as the clearance). There is no `### Watch`, `### Suggestions` or
+`### Not justified as shipped`: a second restatement of the same items buries the
+finding under the text around it. The kirocrew-prepare-pr extractor reads
+`Blockers` as the only item-bearing section.
 
 Two mechanical guards back the contract in all six whole-design lanes (both First
 Principles, Design and UX workflows). The captured model text is **trimmed to its
@@ -2265,14 +2264,13 @@ reaches the PR; a body with no header is left whole so the existing
 `<details>` inventory is counted**: past twice the lane's cap (180 words for First
 Principles, 150 for Design and UX) the job emits a `::warning` naming the count. It
 is a warning, not a gate -- the verdict and the comment do not move -- because the
-cap is a readability contract, not a correctness one. The Design and UX punchlines
-follow the same problem-first rule as First Principles: for `CONCERNS`/`BLOCK` the
-sentence opens with the problem, never `<what is sound>, but <problem>`; for `PASS`
-it names the one thing a human should still verify, or `Nothing to check.`
+cap is a readability contract, not a correctness one. The Design and UX reasons
+follow the same problem-first rule as First Principles: for `BLOCK` the sentence
+opens with the problem, never `<what is sound>, but <problem>`; for `PASS` it is
+`Nothing to check.` or a few words on why nothing blocks.
 kirocrew-prepare-pr's `pr_findings.py` and `pr_status.py` print that sentence under
 each lane stamped for the head and skip `Nothing to check.` (`lane_punchline` in
-`_review_contract.py`). No item section carries it, and on a `PASS` it is usually
-the lane's only ask.
+`_review_contract.py`). No item section carries it.
 
 **Where it overlaps Design Review, this lane owns the question.** Design Review's own
 rubric asks whether a change fixes a root cause and whether a simpler alternative
@@ -2318,10 +2316,14 @@ surface the lane did not have. The fork lane's checkout *is* the trusted base
 fails closed if one is missing. A finding must state a concrete input or condition that
 occurs in practice, the call path to the changed line, and an observable wrong
 outcome; anything phrased as "could", "might" or "if a caller were to" is **not a
-finding**, and silence is the correct output. Only two labels exist: **BLOCKING**
-(on the closed WHAT BLOCKS list) and **FINDING** (advisory, never blocks). The
-budget in [`gpt-review-core.md`](../../.github/review-prompts/gpt-review-core.md)
-asks for ALL findings that meet WHAT BLOCKS in one review, never staged across
+finding**, and silence is the correct output. The verdict is PASS or BLOCK and one
+kind of item exists, **BLOCKING**: a defect that passes that bar, carrying a
+`Trigger:` line, an `Outcome:` line and an `Anchor:` (a rule id, one of the three
+`residual/` classes, or `defect`). A `[BLOCK-MERGE]` marker with no complete item
+is dropped by `.github/scripts/block-substantiation.sh` and the review reads as
+PASS. The budget in
+[`gpt-review-core.md`](../../.github/review-prompts/gpt-review-core.md)
+asks for ALL defects that pass the BLOCK BAR in one review, never staged across
 rounds, and for candidates past five to be merged by shared root cause rather
 than dropped; the calibration note says "No findings." is the expected output for
 a typical PR.
@@ -2377,12 +2379,13 @@ The markers are the **only** gate:
   security fix whose evidence is a working exploit read as a permanently
   re-runnable crash (#8685). The fork GPT lane (`fork-gpt-review.yml`) still
   reports only the generic incomplete state and is tracked separately.
-- Design and UX emit `Design-Verdict:` / `UX-Verdict: PASS | CONCERNS | BLOCK`,
-  parsed from a header line.
+- Design and UX emit `Design-Verdict:` / `UX-Verdict: PASS | BLOCK`, parsed from a
+  header line. Any other word reads as no verdict, and a `BLOCK` with no `Trigger:`
+  and no `Outcome:` line is published as `PASS`.
 
 A missing reviewed-marker for the current head fails the gate closed, because a
 no-output review must not look clean. A BLOCKING-labelled finding without the
-`[BLOCK-MERGE]` marker is only a non-gating **advisory warning**, since a coherence
+`[BLOCK-MERGE]` marker is only a non-gating **warning**, since a coherence
 check on that pairing mis-fires whenever the model quotes prior text.
 
 The Opus discovery pass has its own marker, `[OPUS-DISCOVERY] <sha>`, and the
@@ -2525,13 +2528,13 @@ adds a record beside the first. The two Security Scope lanes upload it only when
 their scrub step reported `scrub_ok=true`. A warning or error caused by a failed
 comment read appends `Cause of the failed comment read: <cause>`.
 
-#### A withheld advisory verdict is re-run and republished (#13100)
+#### A withheld whole-design verdict is re-run and republished (#13100)
 
 Retaining the verdict (above) keeps it from being lost, but on its own it never
-reaches the pull request: nothing re-ran the lane, so a whole-design advisory
+reaches the pull request: nothing re-ran the lane, so a whole-design
 lane -- Design, UX, First Principles -- that withheld its verdict left the PR
 reading as unreviewed for its own head until a human noticed. The self-heal
-sweep closes that. When an advisory lane completes `success` but its comment
+sweep closes that. When a whole-design lane completes `success` but its comment
 slot still carries an older head's verdict, `pr-readiness.yml` scores the lane as
 a named pending (`<Lane> (verdict not published, re-run this lane)`) and stamps
 `[verdict-unpublished]` first on the readiness status description -- the same
@@ -2544,7 +2547,7 @@ cannot disagree about it.
 re-firing the aggregator (which would only re-derive the same named pending,
 because the lane's own check-run is already `success`), runs
 `.github/scripts/republish_withheld_verdict.py`. That script asks the disposition
-gate which advisory lanes are owed, locates each owing lane's run -- the
+gate which whole-design lanes are owed, locates each owing lane's run -- the
 same-repo `pull_request` run by head, or the fork Stage-2 run via its
 `<!-- ai-review-fork-lane run=<id> -->` check-run marker, exactly as the
 human-override handler does -- and re-runs it (`POST
@@ -2552,7 +2555,7 @@ actions/runs/<id>/rerun`). The re-run recomputes a
 fresh verdict and republishes it through the lanes' own guarded comment upsert,
 whose authority rule is unchanged (it replaces only an older head's occupant and
 stands down on a current-head one), so the recovery adds no new trust surface. It
-is scoped to the three advisory lanes: the required reviewer lanes (Opus, GPT,
+is scoped to the three whole-design lanes: the required reviewer lanes (Opus, GPT,
 Security Scope) fail CLOSED on a withheld verdict and are recovered by their own
 check-run finalize, never read as a stale `success`.
 
@@ -2610,22 +2613,30 @@ still in flight carries an `in_progress` check-run that readiness scores
   of the generic "review incomplete", and a spent stage never passes, even beside
   a verdict stamp. A re-run walks into the same cap.
 
-### Advisory means advisory, with one exception
+### A lane says PASS or BLOCK
 
-Design Review and UX Review are advisory except on `BLOCK`: their suggestions must be
-proportionate ("never recommend extra layers, abstractions or future-proofing the
-problem does not require"), and their tie-breaker is to choose `CONCERNS` over
-`BLOCK` when torn, reaching for `BLOCK` only when the **design** or the **experience**
-is wrong and never merely because the change is large. A genuine `BLOCK` verdict
-fails that workflow's own check and `pr-readiness.yml` scores that failure as a
-readiness blocker; every other outcome exits 0.
+Every review lane prints exactly one of two verdicts and a reason of one to three
+sentences. There is no soft tier: a lane that cannot state a `Trigger:` (the
+situation that occurs in practice) and an `Outcome:` (the observable wrong result)
+for a point either drops it or lists it as a `Notes:` bullet (at most three, never
+read by the gate, no reply required). A `BLOCK` that names neither is read as `PASS`,
+with a `::warning title=Unsubstantiated BLOCK` annotation; the check is on the
+presence of both lines, never on their truth. Design Review and UX Review reach for
+`BLOCK` only when the **design** or the **experience** is wrong, and never merely
+because the change is large; their suggestions stay proportionate ("never recommend
+extra layers, abstractions or future-proofing the problem does not require"). A
+cosmetic but observable point (a wrapped label, a wording slip) is a note unless it
+makes something unreadable or unusable. A genuine `BLOCK` verdict fails that
+workflow's own check and `pr-readiness.yml` scores that failure as a readiness
+blocker; every other outcome exits 0. A lane that cannot run keeps its skipped or
+neutral outcome and never fails the gate.
 
 One class is exempt from the tie-breaker in both lanes and in First Principles:
 **a verdict the lane cannot reach because required evidence is missing is a
-`BLOCK`, never a `CONCERNS`.** A UI diff with no screenshot of the controls it adds
+`BLOCK`, never a pass.** A UI diff with no screenshot of the controls it adds
 (UX lens 12), a persistent-element state change with no recording (UX lens 13), a
 reshaped user-visible surface the Design reviewer has never seen rendered -- each is
-`cannot evaluate: missing <X>`. Filed as `CONCERNS`, an unevaluated change reads as
+`cannot evaluate: missing <X>`. Filed as a pass, an unevaluated change reads as
 "looked and found little" and passes readiness green; PR #5185 shipped 44
 `website/src/` files that way, with the UX lane itself recording that the blind read
 never ran. Absence of evidence is read off the screenshot list, the recording list
@@ -2641,9 +2652,9 @@ and never off a working tree -- one admission path through one set of gates for 
 same-repo PR and a fork PR alike; the two differ only in where the workflow learns
 the head SHA), and writes one evidence file the prompt is told to read; the
 description's text is not the predicate, so a fabricated or dead URL does not count
-as evidence. A transport failure is listed as "presence unconfirmed" and caps the
-Design verdict at `CONCERNS` rather than failing the lane, because the UX lane fails
-its run on the same failure and readiness already holds. An image hosted off a
+as evidence. A transport failure is listed as "presence unconfirmed" and the Design lane
+does not BLOCK on it, because the UX lane fails its run on the same failure and
+readiness already holds. An image hosted off a
 commit outside the PR, or one the description says shows another PR, is not evidence
 of this revision.
 
@@ -2656,10 +2667,12 @@ each reader is one `Reader: <path>:<symbol> -- <entry> -- <why it still works |
 test name>` line, or the section is `Removes nothing: <why>`. A reader a
 `Breaking:` line names counts as listed and accepted. A reader that breaks under
 the patch and is not listed is a `BLOCK` naming it (`Removes nothing` lists no
-reader); a listed reader with a weak reason is `CONCERNS`. A reader a `Compatible:` line names by `<path>:<symbol>` counts as
-listed too. When a description cut at the capture cap is missing the section, or
-the section is the last one before the cut, its list may be past the cut and the
-check caps at `CONCERNS`; a section that ends before the cut is judged on its text.
+reader); a listed reader with a weak reason is a `BLOCK` only when the lane can
+write its `Trigger:` and `Outcome:`, else a note. A reader a `Compatible:` line
+names by `<path>:<symbol>` counts as listed too. When a description cut at the
+capture cap is missing the section, or the section is the last one before the cut,
+its list may be past the cut and the check does not BLOCK on it; a section that
+ends before the cut is judged on its text.
 The same-repo lane runs the PR's own copy of the prompt (`pull_request`), the fork
 lane the default branch's (`workflow_run`), so only a same-repo prompt change
 reviews itself under its own edit. #13273 (apps tree hidden from app
@@ -2759,16 +2772,16 @@ Three rules follow from the split, all read off evidence rather than judged:
   image. One that does not is an *evidence gap*, listed under
   `### Evidence gaps`, and the verdict is `BLOCK` -- `cannot evaluate: missing <the
   control>` -- because a lane that has not seen a control cannot judge it and a
-  verdict it cannot reach must not read as advisory. The same holds for a lens-13
+  verdict it cannot reach must not read as a pass. The same holds for a lens-13
   state change with no recording, and for a blind read not performed because the PR
   supplied no admissible image. A blind read that was *unavailable* -- images admitted
-  and pass 1 itself failed -- is the lane's own failure, not the author's gap: it caps
-  at `CONCERNS` and a re-run of the workflow is the remedy. When *any* attachment
+  and pass 1 itself failed -- is the lane's own failure, not the author's gap: it is a
+  `PASS` whose reason names the re-run of the workflow as the remedy. When *any* attachment
   download from the description fails for a transport reason (5xx, 403/408/429, no
   answer; a definite 404 is the author's URL), the same-repo evidence step **fails the
   run** instead of asking the prompt to cap the verdict or to exempt the controls that
   attachment would have shown: a lane that could not see everything the author
-  supplied must not read as advisory, so the check is red, readiness holds, and a
+  supplied must not read as a pass, so the check is red, readiness holds, and a
   re-run is the remedy -- exactly as a hard model-step error is handled. A download
   that fails the same way on the re-run is the attachment URL itself, which the
   author fixes. The fork
@@ -2786,7 +2799,7 @@ Three rules follow from the split, all read off evidence rather than judged:
   identify, or would not dare to click is a `BLOCK`, quoting the reader's words. A
   correct reading the reader rated only "a guess", secondary misreads, and
   vocabulary collisions ("Pinned turn" next to the existing "Pinned messages") are
-  `CONCERNS`.
+  notes, and a `BLOCK` only when the lane can write a `Trigger:` and an `Outcome:`.
 - **State-transition continuity (lens 13).** When a user action or state flip
   minimizes, collapses, relocates or replaces a *persistent* element the user has
   already identified, the change must animate *one* element between the two states
@@ -2836,8 +2849,8 @@ name and counted, not read -- its bytes show the base's rendering, not this
 revision's -- while a moved file whose bytes changed is read like any other. A control
 no supplied screenshot shows is still an evidence gap, a `BLOCK` (`cannot evaluate`)
 the author closes by attaching *or* committing the image. A control the evidence
-*does* show but no blind reader has read caps the fork PR at `CONCERNS`: that is the
-lane's limitation, not the author's gap, so it does not block. A maintainer who wants
+*does* show but no blind reader has read is a `PASS` whose reason names the missing
+blind read: that is the lane's limitation, not the author's gap, so it does not block. A maintainer who wants
 the blind read pushes the branch to this repository.
 
 **What happens to committed evidence at merge.** It merges. The squash lands the
@@ -3024,11 +3037,11 @@ tokenizer differ per OS.
 
 ### The verdict, and why it fails closed
 
-The review emits `[SCOPE-REVIEWED] <sha>` and a `Scope-Verdict: PASS | CONCERNS |
-BLOCK` header. The header is the model's opinion and never a gate on its own. The
+The review emits `[SCOPE-REVIEWED] <sha>` and a `Scope-Verdict: PASS | BLOCK`
+header with a `Reason:` line. The header is the model's opinion and never a gate on its own. The
 gate is the differential: a script-confirmed newly-refused operation reds the lane
-whatever the model wrote. A model `BLOCK` with no confirmed regression scores
-CONCERNS unless it stands on a demonstrated platform gap; a clean fold with a
+whatever the model wrote. A model `BLOCK` with no confirmed regression reads as
+`PASS` unless it stands on a demonstrated platform gap; a clean fold with a
 `PASS` header and a marker for this head passes.
 
 Every outcome that could not settle a verdict — a fold that errored, a confirmed
@@ -3183,20 +3196,19 @@ status plus one `readiness:` label**.
 - **Design Review, UX Review and First Principles Review are completion-required
   AND block on a genuine `BLOCK`:** the aggregator scores each lane's `failure`
   conclusion as a readiness blocker. Each lane's status step fails the check on a
-  `BLOCK` verdict and exits 0 on `PASS`, `CONCERNS` or a verdict-less run; the
+  `BLOCK` verdict and exits 0 on `PASS` or a verdict-less run; the
   same-repo lanes additionally go red when the model step itself errors (no
   `continue-on-error`, so a review that did not run is an honest red that a re-run
   clears, never a verdict), while the fork lanes resolve such a run to `neutral` --
   with one deliberate exception: the fork UX lane completes as `failure` when an
   attachment download failed for a transport reason, because a change the lane could
-  not evaluate must not read as advisory.
+  not evaluate must not read as a pass.
   So a `failure` means a design judged wrong, an experience judged broken, a surface
   judged unjustified, a change the lane could not evaluate on the evidence supplied,
   or -- same-repo only -- a review that errored before producing a verdict.
   Where this was decided: the aggregator has scored these three lanes' `failure` as a
   readiness blocker since it began reading them (`pr-readiness.yml`, the Design / UX /
-  First Principles branch of the check-run reader), which is what turned them from
-  advisory into gates; the evidence-gap and product-shape rules in the prompts are
+  First Principles branch of the check-run reader), which is what made them gates; the evidence-gap and product-shape rules in the prompts are
   the verdict-side counterpart of that promotion (issue #10476), so that a lane which
   could not evaluate a change reaches the verdict the aggregator already enforces.
   The rollback for those rules is one revert of that change; the aggregator's scoring
@@ -3284,7 +3296,7 @@ status plus one `readiness:` label**.
   adjudication ledger downgrade a REPEATED finding on a later review round, and a
   later review round takes a push, which recomputes readiness and catches the
   violation.
-- **An advisory lane that published no verdict is neither passed nor failed.**
+- **A whole-design lane that published no verdict is neither passed nor failed.**
   Design, UX and First Principles decide their conclusion from their own output
   file, so a lane that computed a verdict and then failed to write its PR comment
   still completes `success` — the publish-failure arms of the shared comment
@@ -3666,7 +3678,7 @@ lane publishes it. An accepted override for this head still passes, through the
 finalize step's own override input. The same-repo lanes already fail their post step
 on a lost write, a taken slot and an earlier run's sample: `codex-review.yml` by
 reading this same `publication` output back after the shared function returns,
-`claude-review.yml` through its own inline arms. The advisory lanes record the
+`claude-review.yml` through its own inline arms. The whole-design lanes record the
 output too and ignore it.
 
 Nothing the fork controls can influence these reviews:
@@ -3709,7 +3721,7 @@ Nothing the fork controls can influence these reviews:
   allowlist carrying only the first still never reaches the model: a green apt phase
   is not evidence the bootstrap resolves. Remove either and the install exits before
   any model call --
-  the blocking lane then goes red, and an **advisory** lane publishes `review
+  the blocking lane then goes red, and a **whole-design** lane publishes `review
   incomplete` as a *neutral* check, which is how three reviewers can stop reviewing
   every fork PR without turning anything red (#12099). The endpoints for both that
   bootstrap and the bun release asset are pinned by tests in
@@ -3910,15 +3922,15 @@ comments whose authors' current collaborator permission is `write`,
 permission API — the same check the override handler applies to its actor).
 Prior review bodies are never injected. The ledger is nonce-delimited,
 capped at 6,000 bytes, and explicitly untrusted data: it can downgrade the
-repetition of an adjudicated finding class to advisory, and it can never
+repetition of an adjudicated finding class, and it can never
 waive a new defect or authorize a green verdict.
 
 GPT makes exactly two GPT calls. Pass 1 discovers candidates across the
 full diff; pass 2 attempts to falsify each candidate and emits the only GPT
 verdict exposed to the comment and gate. Blocking candidates may then receive a
 separate, conditional Opus 5.5 adjudication. Pass 2 also drops or downgrades a
-candidate whose proposed fix violates the FIX BAR, a BLOCKING candidate that
-cannot be anchored to an AUTOSDE rule or residual defect class, and a
+candidate that fails the IMPACT FLOOR, a BLOCKING candidate that lacks a
+Trigger or an Outcome it re-derived, and a
 relocated variant of a ledger-adjudicated class; an adjudication goes stale
 for lines the current head materially changed. A prior disposition never
 hides a currently provable new defect. Any failed call makes the review
@@ -3958,8 +3970,8 @@ the head SHA's check-runs, leaving CodeQL as the only lane explicitly ineligible
 for a fork. Missing or running eligible lanes
 produce `checking`; blocking workflow/check failures produce
 `action required`; drafts remain `checking`.
-Design Review, UX Review, and First Principles Review must complete. `PASS` and
-`CONCERNS` remain advisory, while a genuine `BLOCK` fails the lane and blocks
+Design Review, UX Review, and First Principles Review must complete. `PASS` passes,
+while a genuine `BLOCK` fails the lane and blocks
 readiness; same-repository model execution failures also remain blocking until a
 successful re-run or authorized override. Mergeability and behind-base state
 are not part of this event-driven aggregate because they can change without an
@@ -4006,33 +4018,28 @@ AI-native coding skews toward over-engineering, and a naive AI reviewer compound
 by demanding still more mechanisms, which produces unending review loops. Every layer
 resists this:
 
-- **Both line reviewers share an identical FIX BAR:** every finding must carry a fix
-  expressible as an edit to lines **this PR changed**. If the fix would need a new
-  function, module, abstraction, config knob, dependency, or an edit to untouched
-  code, it is out of scope for the bot. GPT 6.1 drops such a finding; Opus 5.5
-  **demotes it to advisory instead of dropping it** -- the author cannot land the
-  remedy in this PR, so it must not gate the merge, but the signal is real and a
-  human decides. A regression the diff itself introduces still blocks either way,
-  since reverting the hunk is an in-diff fix. **The absence of a
-  mechanism is never a finding.** This makes "add mechanism X" structurally
-  un-reportable: the demand fails the bar before it can become a finding. A scope cap
-  complements it: Opus 5.5 stays within the evident scope of the diff (it is code-only),
-  and GPT 6.1 stays within the PR's stated purpose, flagging a
-  description-versus-diff mismatch as an **advisory** finding rather than a block.
-- **The WHAT BLOCKS list is closed:** exhaustive, never extended, never reasoned about
-  by analogy, with no "and other serious issues" clause. A finding blocks only if it
-  is a `blocking: true` AUTOSDE-rule violation on a changed file (or this PR
-  weakening such a rule), or a **reachable and concrete** residual-class defect: a
-  security hole with a named trigger, a crash or data loss or corruption on a path
-  this diff changes, or a removed guard with no compensating replacement. Style,
-  naming, speculative performance and hypotheticals never block.
+- **Both line reviewers share one BLOCK BAR:** a defect needs a concrete trigger, a
+  call path and an observable wrong outcome that reaches a user, an operator, data or
+  a security boundary, in code the diff adds or changes. A fix that needs new
+  machinery does not demote it; the adjudication pass weighs proportionality, on the
+  full evidence, and prints a `Downgraded:` line with its reason. **The absence of a
+  mechanism is never a defect.** A scope cap complements it: Opus 5.5 stays within the
+  evident scope of the diff (it is code-only), and GPT 6.1 stays within the PR's
+  stated purpose; a description-versus-diff mismatch is reported only when it meets
+  the BLOCK BAR.
+- **The sensitive classes name the Anchor, they do not narrow the bar.** An AUTOSDE
+  rule with `blocking: true`, a security hole, a crash or data loss or corruption on a
+  path this diff changes, and a removed guard with no compensating replacement carry
+  their class in the `Anchor:`; any other defect that passes the bar carries
+  `Anchor: defect`. Style, naming, speculative performance and hypotheticals are not
+  defects.
 - **Design and UX suggestions must be proportionate,** and Design carries the
-  simpler-alternative ethos: actively flag when a materially simpler solution exists,
-  but always advisory.
+  simpler-alternative ethos: flag a materially simpler solution as a `Notes:` bullet,
+  and as a `BLOCK` only when its `Trigger:` and `Outcome:` can be written.
 - **First Principles judges every mechanism against the frozen Goal.** A mechanism
   that goes beyond the Goal's scope, into what `## Not a goal` excludes, or costs
   more than the Goal is worth, and is not justified, is tagged `oversized` under
-  `### Not justified as shipped` with a `Subtraction:` line that shrinks or removes
+  `### Notes` with a `Subtraction:` line that shrinks or removes
   it. It clears when the mechanism is removed or a human amends the Goal (see
   [`first-principles.md`](../../.github/review-prompts/first-principles.md)).
 - **`kirocrew-prepare-pr`'s severity gate closes the loop:** validate each finding's
