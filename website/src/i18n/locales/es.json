@@ -9988,6 +9988,7 @@
       "link_rule_threshold": "regla: {{rule}} · umbral 200",
       "link_tag": "Enlace bloqueado",
       "link_title_host": "Enlaces bloqueados a este host en esta respuesta",
+      "link_title_host_allowed": "Este host está permitido en este espacio de trabajo",
       "link_undo_failed": "No se pudo deshacer. Revócalo en Ajustes → Seguridad → Redacción.",
       "link_undone": "Deshecho — el host ya no está permitido.",
       "link_withheld_credential": "No se conservó la dirección completa: parte de ella parece un secreto, y abrirla enviaría ese secreto.",

@@ -9698,6 +9698,7 @@
       "link_rule_threshold": "규칙: {{rule}} · 임계값 200",
       "link_tag": "차단된 링크",
       "link_title_host": "이 답변에서 이 호스트로 가는 차단된 링크",
+      "link_title_host_allowed": "이 워크스페이스에서 이 호스트는 허용되었습니다",
       "link_undo_failed": "실행 취소하지 못했습니다. 설정 → 보안 → 가리기에서 취소하세요.",
       "link_undone": "실행 취소됨 — 이 호스트는 더 이상 허용되지 않습니다.",
       "link_withheld_credential": "전체 주소는 보관되지 않았습니다. 일부가 비밀 정보처럼 보이며, 이를 열면 그 비밀 정보가 전송되기 때문입니다.",

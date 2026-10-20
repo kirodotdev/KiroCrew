@@ -6039,6 +6039,7 @@
       "link_rule_threshold": "rule: {{rule}} · threshold 200",
       "link_tag": "Blocked link",
       "link_title_host": "Blocked links to this host in this reply",
+      "link_title_host_allowed": "This host is allowed in this workspace",
       "link_undo_failed": "Couldn't undo. Revoke it in Settings → Security → Redaction.",
       "link_undone": "Undone — the host is no longer allowed.",
       "link_withheld_credential": "The full address was not kept: part of it looks like a secret, and opening it would send that secret.",

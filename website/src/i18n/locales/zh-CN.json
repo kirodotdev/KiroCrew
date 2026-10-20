@@ -9698,6 +9698,7 @@
       "link_rule_threshold": "规则：{{rule}} · 阈值 200",
       "link_tag": "被拦截的链接",
       "link_title_host": "此回复中指向此主机的被拦截链接",
+      "link_title_host_allowed": "此工作区中此主机已被允许",
       "link_undo_failed": "无法撤销。请在“设置 → 安全 → 脱敏”中撤销。",
       "link_undone": "已撤销 — 该主机不再被允许。",
       "link_withheld_credential": "完整地址未被保留：其中一部分看起来像密钥，打开它会把该密钥发送出去。",
