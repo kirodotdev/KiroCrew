@@ -1327,7 +1327,14 @@ at once, so the dispatcher (or the runner's `_resume_after_wait` → `admit` →
 `claim`) writes `running` when capacity is actually granted. A crash in the gap
 leaves a claimable row (`retry_wait` is not ACTIVE, so the boot reconciler
 leaves it alone) instead of a dead-owner `running` row that reconciles to
-`unknown_side_effect`. For a LIVE parent whose last child ended,
+`unknown_side_effect`. With the store reachable, a caller cancellation after
+a persisted dependency wake first uses the handle's generation-fenced terminal
+write. If the wake made that generation stale, a second write fenced to
+`retry_wait` and the wake's exact generation ends only that unclaimed handoff;
+a later `retry_wait` epoch, an answered-input handoff, or a row already claimed
+into `admitted`, `starting` or `running` is refused. Pinned by
+`test_taskq_runner_wait_cancel.py`.
+For a LIVE parent whose last child ended,
 `on_child_terminal(defer_wake=True)` records `children_settled` and leaves the
 row `waiting_children` until `resume_grant`. `answer_input` stores the answer
 text on the `wake` event so a crash cannot lose it: `waiting_input` reads the
