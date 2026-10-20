@@ -110,6 +110,7 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
@@ -1407,7 +1408,7 @@ async def _route_message(
         logger.info(
             "Message %s queued for busy session %s (session_obj=%s)", msg_ts, session_key, _queued
         )
-        if orch.slack:
+        if orch.slack and not code_channel_no_reactions(channel):
             try:
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
@@ -1433,7 +1434,7 @@ async def _route_message(
         **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
-        if orch.slack:
+        if orch.slack and not code_channel_no_reactions(channel):
             try:
                 await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:

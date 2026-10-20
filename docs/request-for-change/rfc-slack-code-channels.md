@@ -165,7 +165,7 @@ registers:
 | Switch | Feature block | Bot scopes | Bot events |
 |---|---|---|---|
 | `agent_sessions` | `agent_view` (`agent_description`) | `assistant:write` | `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
-| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites` | `agent_session_stopped` |
+| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` | `agent_session_stopped` |
 
 `channels:read`, `groups:read`, `groups:history` and `message.groups` are already
 in the base manifest. No `slash_command_url` is set: Socket Mode delivers channel
@@ -428,7 +428,7 @@ is private to the security package.
   before any write, so a refused field changes nothing.
 * **Code channels (Phase 2) widen the bot's scopes** (`code_channels:manage`,
   `chat:write.customize`, `canvases:write`, `channels:write.invites`,
-  `groups:write.invites`), visible on Slack's consent screen and
+  `groups:write.invites`, `pins:write`), visible on Slack's consent screen and
   listed before the user reinstalls. The scope-ratchet test pins the exact set
   per switch.
 * **Phase 2 authorization** is the origin conversation's, never the new channel's

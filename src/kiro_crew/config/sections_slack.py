@@ -315,7 +315,7 @@ class SlackConfig:
             "that is one session, with a context bar and a diff tab. Adds "
             "features.code_channels and the code-channel scopes "
             "(code_channels:manage, chat:write.customize, canvases:write, "
-            "channels:write.invites, groups:write.invites) to the generated app "
+            "channels:write.invites, groups:write.invites, pins:write) to the generated app "
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",

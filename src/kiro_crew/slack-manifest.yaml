@@ -67,6 +67,8 @@ oauth_config:
       - im:history
       - im:read
       - im:write
+      # pins.add: the work board pins itself in its code channel.  #@code_channels
+      - pins:write  #@code_channels
       - reactions:write
       - users:read
       # Optional: uncomment for custom workspace emojis in Secretary emoji picker
