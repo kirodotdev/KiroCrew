@@ -15,7 +15,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
 )
-from kiro_crew.computer_use.backend import UnsupportedBackend
+from kiro_crew.computer_use.backend import ComputerUseBackend, UnsupportedBackend
 from kiro_crew.computer_use.linux_driver import LinuxBackend
 from kiro_crew.dashboard.upload_destination import DOCUMENT_CHANNELS
 from kiro_crew.providers.mirrors import mirror_for
@@ -69,8 +69,20 @@ def test_wecom_file_send_cell_follows_the_document_channels():
     assert row["WeCom"] == "✅"
 
 
-def test_linux_computer_use_is_documented_as_unsupported():
-    assert issubclass(LinuxBackend, UnsupportedBackend)
+def test_linux_computer_use_is_documented_as_supported_on_x11():
+    """Linux has an AT-SPI/X11 driver, so the packaged doc must describe it as
+    supported — a stale "not supported on this platform" line would mislead an
+    agent reading it at runtime.
+
+    ``LinuxBackend`` is a real :class:`ComputerUseBackend`, not an
+    ``UnsupportedBackend`` subclass; the no-DISPLAY / Wayland refusal lives in its
+    ``status()`` reason rather than in its type.
+    """
+    assert issubclass(LinuxBackend, ComputerUseBackend)
+    assert not issubclass(LinuxBackend, UnsupportedBackend)
     doc = _read("computer-use.md")
     assert "## Linux" in doc
-    assert '"not\nsupported on this platform" refusal' in doc
+    assert "AT-SPI" in doc
+    assert "Wayland is not supported" in doc
+    # The old unsupported-everywhere claim must be gone.
+    assert "no computer-use driver yet" not in doc

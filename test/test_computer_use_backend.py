@@ -319,10 +319,42 @@ class TestPlatformSelection:
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_WINDOWS
 
-    def test_linux_degradation_on_any_runner(self, monkeypatch):
+    def test_linux_selection_on_any_runner(self, monkeypatch):
+        """How the Linux path is tested off Linux: flip one flag.
+
+        Linux now has a read+input driver, so this mirrors the Windows selection
+        test — the SELECTION is what it owns, not the driver's support verdict.
+        ``status().supported`` is deliberately NOT asserted: the answer depends on
+        whether AT-SPI/X11 actually loads (false on a no-DISPLAY CI runner), which is
+        exactly what ``status`` reports and what
+        ``test_computer_use_linux_driver.py`` pins.
+        """
         self._pin(monkeypatch, linux=True)
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_LINUX
+
+    def test_linux_import_failure_degrades_with_the_partial_install_reason(self, monkeypatch):
+        """A driver module that will not import disables ONE capability, not the process.
+
+        The successful-import path reports the driver's own LIVE reason (no DISPLAY,
+        Wayland, bus down); this is the OTHER case — the module itself fails to
+        import — which falls back to ``LINUX_REASON``, the generic partial-install
+        string, exactly as the macOS and Windows import-failure branches do.
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fail(name, *args, **kwargs):
+            if name == "kiro_crew.computer_use.linux_driver":
+                raise ImportError("AT-SPI/X11 driver module failed to import")
+            return real_import(name, *args, **kwargs)
+
+        self._pin(monkeypatch, linux=True)
+        monkeypatch.setattr(builtins, "__import__", _fail)
+        driver = select_default_backend()
+        assert driver.platform_id == PLATFORM_LINUX
+        assert driver.status().supported is False
         assert driver.status().reason == LINUX_REASON
 
     def test_unknown_platform_degrades(self, monkeypatch):
