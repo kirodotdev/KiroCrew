@@ -858,7 +858,7 @@ def test_a_second_wrap_up_survives_the_first_ones_failed_delivery(
     calls: list[str] = []
     second: list[str] = []
 
-    async def deliver(_orch: Any, _r: Any, _e: Any, text: str, _u: Any) -> bool:
+    async def deliver(_orch: Any, _r: Any, _e: Any, text: str, _u: Any, **_kw: Any) -> bool:
         calls.append(text)
         if len(calls) == 1:
             # While the first is still being delivered, a second /wrap-up arrives.

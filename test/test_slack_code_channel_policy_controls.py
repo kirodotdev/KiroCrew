@@ -203,7 +203,9 @@ def test_every_owner_control_meets_the_policy_at_entry_and_commit() -> None:
     assert src(interactions.dispatch).count("channel_refusal(channel") >= 2  # pick, Archive
     assert "channel_refusal(channel" in src(wa.dispatch_card_click)
     assert "channel_refusal(channel" in src(agent_picker._still_admitted)
-    assert "channel_policy_refusal" in src(commands.handle_slash)
+    # handle_slash and the context bar's Create PR both run their gates in run_command.
+    assert "run_command(" in src(commands.handle_slash)
+    assert "channel_policy_refusal" in src(commands.run_command)
     assert "channel_policy_refusal" in src(agent_picker.authorize)
     assert "channel_policy_refusal" in src(agent_picker._sync_gates)
     # Each control: authorize first, then a commit fence through _sync_gates.

@@ -29,7 +29,7 @@ import os
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -941,6 +941,34 @@ async def _route_to_slot(
     return routed
 
 
+#: Asked right before a bind or a route with the binding it acts on (None: no
+#: binding yet): ``""`` admits it,
+#: else why not (:func:`.surface.act_refusal`).
+Admit = Callable[[Binding | None], Awaitable[str]]
+
+
+async def admitted(binding: Binding, admit: Admit) -> bool:
+    """Whether a route to *binding*'s session may start NOW (fails closed).
+
+    The linked slot's window is loaded first: a sidebar row restored after a
+    restart reads its transcript off the loop inside the route, an await that
+    would otherwise fall between *admit* and the turn. Then *admit* is asked, so
+    the caller routes right after it with no await between.
+    """
+    try:
+        from kiro_crew.dashboard.state import load_window_off_loop
+
+        state = _dashboard_state()
+        get_linked = getattr(state, "get_linked_slot", None)
+        slot = get_linked(binding.anchor_ts) if callable(get_linked) else None
+        if slot is not None:
+            await load_window_off_loop(slot)
+        return not await admit(binding)
+    except Exception:
+        logger.debug("code channel %s: route gate failed", binding.channel_id, exc_info=True)
+        return False
+
+
 UNROUTED_TEXT = (
     "I could not reach this channel's session just now. Open it in your dashboard, "
     "or try again in a moment."
@@ -999,13 +1027,21 @@ async def _dispatch_directed(
 
 
 async def deliver_directed(
-    orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
+    orch: Any,
+    result: InboundResult,
+    event: dict[str, Any],
+    clean_text: str,
+    sender_id: str,
+    *,
+    admit: Admit | None = None,
 ) -> bool:
     """Deliver a DIRECTED message to the channel's session; True when it reached it.
 
     A message the gate admitted is never handed back to the normal path, which
     would answer it in a thread session the channel does not belong to; when it
-    cannot be delivered, the sender is told so in the channel.
+    cannot be delivered, the sender is told so in the channel. *admit* (a
+    channel command's live fences) is asked right before the route, after the
+    awaits here; a refusal returns False with nothing posted (the caller says why).
     """
     channel = str(event.get("channel") or "")
     if _asks_for_privacy(clean_text):
@@ -1040,6 +1076,13 @@ async def deliver_directed(
             refused = bool(
                 surface.channel_policy_refusal(channel, operation=operation, caller=sender_id)
             )
+            needs_bind = not (archived or refused) and (
+                binding is None or bound_slot(_dashboard_state(), binding) is None
+            )
+            if needs_bind and admit is not None and await admit(binding):
+                # A bind posts the kickoff and makes a session: a command's own
+                # fences are asked right before it, after the lock's wait.
+                return False
             if archived or refused:
                 pass  # nothing is adopted, rebound or prepared for these
             elif binding is None:
@@ -1100,7 +1143,11 @@ async def deliver_directed(
 
     if surface.channel_policy_refusal(channel, operation=operation, caller=sender_id):
         return False
+    if admit is not None and await admit(binding):
+        return False  # preparing may cut a worktree: a command's fences right before it
     await prepare_workspace(binding)
+    if admit is not None and not await admitted(binding, admit):
+        return False  # asked again after the preparation's awaits, right before the route
     if surface.channel_policy_refusal(channel, operation=operation, caller=sender_id):
         return False  # and again after the worktree's own awaits, before the turn
     if not await _route_to_slot(orch, binding, clean_text, sender_id, sender=slack_sender(event)):
@@ -1682,15 +1729,17 @@ async def _stop_bound(
     *,
     source: str,
     say_idle: bool = True,
+    settle: bool = True,
 ) -> str:
     state = _dashboard_state()
     slot = bound_slot(state, binding) if binding is not None else None
     if state is None or slot is None or not getattr(slot, "running", False):
         _audit(sender_id, source, "allowed", f"channel={channel} result=idle")
-        # Nothing to stop, but Slack never clears "processing" by itself.
-        from kiro_crew.slack.code_channels.status import settle_after_stop
+        if settle:
+            # Nothing to stop, and no Stop of Slack's to settle the status.
+            from kiro_crew.slack.code_channels.status import settle_after_stop
 
-        await settle_after_stop(channel)
+            await settle_after_stop(channel)
         if say_idle:
             await _post(orch, channel, "Nothing running.", None)
         return "idle"
@@ -1750,7 +1799,30 @@ async def handle_session_stopped(orch: Any, event: dict[str, Any], user: str) ->
             "origin activation does not admit a code channel",
         )
         return CHANNEL_STOP_DENIED
-    await _stop_bound(
-        orch, binding, user, channel, source="slack.code_channel.stop", say_idle=False
+    # Slack's own Stop button: Slack updates the session status itself, and the
+    # app must make no further agents.* call for the channel (code channel
+    # lifecycle, agent_session_stopped) until a new turn starts. The context
+    # bar's Stop (actions.py) is the app's own, so it settles the status as
+    # ``!stop`` does.
+    native = not str(event.get("event_ts") or "").startswith("code_channel_action:")
+    if native:
+        from kiro_crew.slack.code_channels.status import quiet_after_stop
+
+        quiet_after_stop(channel)
+    outcome = await _stop_bound(
+        orch,
+        binding,
+        user,
+        channel,
+        source="slack.code_channel.stop",
+        say_idle=False,
+        settle=not native,
     )
+    if native and outcome == "compacting":
+        # Declined: the session is compacting and its turn goes on, so the
+        # channel is not silenced for it (the thread path keeps a declined Stop
+        # audible the same way). Its tools, status and turn-end publishing work.
+        from kiro_crew.slack.code_channels.status import lift_quiet
+
+        lift_quiet(channel)
     return CHANNEL_STOP_STOPPED

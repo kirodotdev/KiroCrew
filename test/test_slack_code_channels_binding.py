@@ -44,7 +44,10 @@ def bound(tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         binding_mod,
         "live_config",
-        lambda _orch=None: SimpleNamespace(slack=SimpleNamespace(code_channels=toggle["on"])),
+        lambda _orch=None: SimpleNamespace(
+            slack=SimpleNamespace(code_channels=toggle["on"]),
+            channel_config=lambda _channel: SimpleNamespace(activation="mention"),
+        ),
     )
     yield toggle
     set_store(None)

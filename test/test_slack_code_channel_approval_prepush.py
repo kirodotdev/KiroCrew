@@ -177,7 +177,9 @@ def test_a_worker_card_is_not_posted_where_the_channel_is_silent(
     elif gate == "activation_off":
         monkeypatch.setattr(routing, "channel_and_origin_permit", lambda *_a: False)
     else:
-        monkeypatch.setattr(surface, "channel_stopped", lambda _c: True)
+        # Slack's Stop of the channel's turn, still unwinding (a later worker
+        # card posts again: test_a_worker_approval_still_posts_after_slacks_stop...).
+        monkeypatch.setattr(surface, "turn_unwinding", lambda _c: True)
     before = len(relay.slack.blocks_posts)
 
     async def go() -> Any:

@@ -3,8 +3,10 @@
 One small JSON document, ``routing/slack-code-channel-surface.json`` under the
 Kiro Crew data home, keyed by channel id. It holds pointers and
 digests only: the agent's own context-bar items, the plan canvas id, the digest of
-the command set last registered, which message is the current wrap-up, and the
-pinned work board's ts, digest and already-sent alert tokens. The
+the command set last registered, which message is the current wrap-up, the
+pinned work board's ts, digest and already-sent alert tokens, the view tabs this
+gateway opened, the plan-canvas comment ids already delivered, the message last
+recorded as the live summary and the refusals already told. The
 wrap-up and archive STAMPS live on the binding (``Binding.wrapped_up_at`` /
 ``archived_at``), not here. Never message
 content beyond the agent's short context-bar labels.
@@ -77,14 +79,32 @@ class SurfaceRecord:
     board_digest: str = ""
     board_pinned: bool = False
     board_alerts: tuple[str, ...] = ()
+    #: The board message's permalink (``chat.getPermalink``) and the ts it was
+    #: read for: read once per board message, which the context bar links to.
+    board_link: str = ""
+    board_link_ts: str = ""
     #: Worker sessions already filed into the channel's folder once.
     board_filed: tuple[str, ...] = ()
+    #: The view tabs this gateway opened (``key``/``view_id``/``type``/``at``):
+    #: the only views it may ever remove to make room (:mod:`.views`).
+    views: tuple[dict[str, str], ...] = ()
+    #: Plan-canvas comments and replies already handed to the session
+    #: (``<comment id>`` / ``<comment id>:<reply ts>``, newest last, bounded).
+    canvas_seen: tuple[str, ...] = ()
+    #: The plan canvas whose comments are read from its first one (set when this
+    #: gateway creates it); a canvas from before comment read-back is baselined.
+    canvas_baseline: str = ""
+    #: The message last recorded as the channel's ``summary_message`` live.
+    summary_message_ts: str = ""
+    #: Channel-level Slack refusals the people were already told about (once each).
+    notices: tuple[str, ...] = ()
     updated_at: float = field(default=0.0)
 
 
 _FIELDS = {f.name for f in fields(SurfaceRecord)}
+_STRING_TUPLES = ("board_alerts", "board_filed", "canvas_seen", "notices")
 #: Fields read apart from the scalar check: the lists, and the work board's one bool.
-_NON_SCALAR = frozenset({"context_bar", "board_alerts", "board_filed", "board_pinned"})
+_NON_SCALAR = frozenset({"context_bar", "views", "board_pinned", *_STRING_TUPLES})
 #: The type each scalar field must have on disk (the fields above are checked apart).
 _SCALAR_TYPES: dict[str, type | tuple[type, ...]] = {
     f.name: ((int, float) if f.type in ("float", float) else str)
@@ -104,20 +124,25 @@ def _from_dict(raw: Any) -> SurfaceRecord | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("channel_id"), str):
         return None
     data = {k: v for k, v in raw.items() if k in _FIELDS}
-    bar = data.get("context_bar", [])
-    # A bar this build can't read in full is an unreadable row, never a
-    # silently shortened one that the next write would make permanent.
-    if not isinstance(bar, list) or not all(
-        isinstance(item, dict) and all(isinstance(v, str) for v in item.values()) for item in bar
-    ):
+    for list_name in ("context_bar", "views"):
+        items = data.get(list_name, [])
+        # A list this build can't read in full is an unreadable row, never a
+        # silently shortened one that the next write would make permanent.
+        if not isinstance(items, list) or not all(
+            isinstance(item, dict) and all(isinstance(v, str) for v in item.values())
+            for item in items
+        ):
+            return None
+        data[list_name] = tuple({str(k): v for k, v in item.items()} for item in items)
+    # A view entry needs its key and view id (views.make_room reads both).
+    if not all(item.get("key") and item.get("view_id") for item in data["views"]):
         return None
-    data["context_bar"] = tuple({str(k): v for k, v in item.items()} for item in bar)
     for name, kinds in _SCALAR_TYPES.items():
         if name in data and (not isinstance(data[name], kinds) or isinstance(data[name], bool)):
             return None  # a wrong-typed value is an unreadable row, never written back
     if not isinstance(data.get("board_pinned", False), bool):
         return None  # a wrong-typed value is an unreadable row, never written back
-    for name in ("board_alerts", "board_filed"):
+    for name in _STRING_TUPLES:
         values = data.get(name, [])
         if not isinstance(values, list) or not all(isinstance(a, str) for a in values):
             return None  # an unreadable row, never silently shortened
@@ -232,9 +257,10 @@ class SurfaceStore:
         unknown = set(changes) - _FIELDS
         if unknown:
             raise TypeError(f"unknown surface fields: {sorted(unknown)}")
-        if "context_bar" in changes:
-            changes["context_bar"] = tuple(dict(i) for i in changes["context_bar"])
-        for name in ("board_alerts", "board_filed"):
+        for name in ("context_bar", "views"):
+            if name in changes:
+                changes[name] = tuple(dict(i) for i in changes[name])
+        for name in _STRING_TUPLES:
             if name in changes:
                 changes[name] = tuple(str(a) for a in changes[name])
         with self._lock:

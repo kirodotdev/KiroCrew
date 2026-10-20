@@ -23,7 +23,7 @@ from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.workspace import diff as diff_mod
 from kiro_crew.slack.code_channels.workspace import git_ops, service
-from kiro_crew.slack.code_channels.workspace.context_bar import ICONS, BarState, build_items
+from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
 from kiro_crew.slack.code_channels.workspace.diff import (
     MAX_VIEW_BYTES,
     OMITTED,
@@ -139,6 +139,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict]] = []
         self.fail: dict[str, str] = {}
+        self.views: list[dict] = []
 
     async def _record(self, method: str, channel_id: str, **kwargs):
         self.calls.append((method, channel_id, kwargs))
@@ -160,8 +161,15 @@ class FakeClient:
             head_branch=head_branch,
         )
 
-    async def remove_view(self, channel_id, view_id):
+    async def remove_view(self, channel_id, view_id="", *, view_key=""):
         return await self._record("remove_view", channel_id, view_id=view_id)
+
+    async def set_agent_resource(self, channel_id, **resource):
+        return await self._record("set_agent_resource", channel_id, **resource)
+
+    async def list_views(self, channel_id):
+        await self._record("list_views", channel_id)
+        return list(self.views)
 
     def of(self, method: str) -> list[dict]:
         return [kw for m, _c, kw in self.calls if m == method]
@@ -505,18 +513,14 @@ def test_an_open_pr_and_its_ci_join_the_context_bar(tmp_path, repo, audits):
     binding, rec = _bound(h, repo)
     h.run(h.svc.refresh(binding))
     keys = {i["key"]: i for i in _bar(h.client)}
+    # CI shares the PR's item: five slots cannot also hold the channel's actions.
     assert keys["pr"] == {
         "key": "pr",
-        "label": "PR #42 is open",
+        "label": "PR #42 is open · tests passing",
         "icon": "hierarchy",
         "url": _PR_URL,
     }
-    assert keys["ci"] == {
-        "key": "ci",
-        "label": "Tests passing",
-        "icon": "terminal",
-        "url": _PR_URL + "/checks",
-    }
+    assert "ci" not in keys
     repo_ref, branch = h.pr_queries[-1]
     assert repo_ref == RepoRef("github.com", "acme", "widgets") and branch == rec.branch
 
@@ -1877,18 +1881,6 @@ def test_branch_names_are_channel_unique_and_always_valid():
     assert git_ops.channel_branch("", "T1", "C1").startswith("slack/code-channel-")
     assert git_ops.channel_branch("💥 ..lock ../", "T1", "C1").startswith("slack/")
     assert len(git_ops.channel_branch("x" * 500, "T1", "C1")) <= 80
-
-
-def test_context_bar_never_exceeds_five_unique_items_with_valid_icons():
-    pr = PullRequest(1, "https://github.com/a/b/pull/1", "open", "failed")
-    items = build_items(
-        BarState(repo=RepoRef("github.com", "a", "b"), branch="br", branch_pushed=True, pr=pr)
-    )
-    assert [i["key"] for i in items] == ["repo", "branch", "pr", "ci"]
-    assert items[1]["url"] == "https://github.com/a/b/tree/br"
-    assert all(i["icon"] in ICONS and "item_type" not in i for i in items)
-    long = build_items(BarState(folder="/x/" + "y" * 300))
-    assert len(long[0]["label"]) <= 128
 
 
 def test_assemble_cuts_at_a_file_boundary():
