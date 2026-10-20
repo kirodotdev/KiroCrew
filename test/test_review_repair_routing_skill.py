@@ -190,9 +190,11 @@ def test_babysit_separates_provider_facts_from_comment_and_reporting_work():
         "typed provider observes every fact",
         "On Webex, use the finite legacy path",
         "generic issue/pull-request comments or advisory review findings",
-        "call the finite legacy path directly with `gate=false`",
+        "call the finite legacy path directly;",
         "terminal success uses zero model turns",
         "final report or notification",
+        "use the finite legacy path with `gate=false`",
+        "A merge or close ends a gated loop with a notice",
     ):
         assert contract in text
     assert "token cap applies only when usage is reported" in text
@@ -217,7 +219,7 @@ def test_arm_acknowledgement_requires_a_later_turn_not_an_immediate_retry(name):
     assert "check BEFORE ending the turn" not in text
 
 
-def test_comment_aware_recipes_are_finite_ungated_and_keep_repair_routing():
+def test_comment_aware_recipes_are_finite_gated_with_the_judge_off_and_keep_repair_routing():
 
     babysit = _text(SKILLS / "babysit" / "SKILL.md")
     legacy, _ = json.JSONDecoder().raw_decode(babysit.split("monitor_start(", 1)[1])
@@ -230,7 +232,10 @@ def test_comment_aware_recipes_are_finite_ungated_and_keep_repair_routing():
     assert isinstance(call, ast.Call)
     prepare = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
     for recipe in (legacy, prepare):
-        assert recipe["gate"] is False
+        # Gated (the default), with the judge off: an unchanged pull request costs no
+        # turn and every change to its reading wakes the loop once.
+        assert recipe.get("gate", True) is True
+        assert recipe["judge"] is False
         assert recipe["interval_secs"] > 0
         assert recipe["max_cycles"] > 0
         # The runtime, not the cycle cap, ends the loop.

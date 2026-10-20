@@ -1267,8 +1267,11 @@ corner case: a pull request reaches `readiness: passed` only once every non-PASS
 whole-design verdict carries a disposition, and those verdicts live in comment
 bodies. The digest wakes the owner when such a body changes, but a green typed
 board with an unanswered advisory finding whose text never changed is still
-indistinguishable to a probe, which is why the prompt loop keeps `gate=false` for
-that evidence in both positions of this key.
+indistinguishable to a probe, which is why that evidence stays on the prompt loop,
+whose agent turn reads the bodies, in both positions of this key. The comment-aware
+recipes arm that loop gated with `judge: false`: a finding's arrival changes its
+reading (a body digest, or the lane's check run finishing) and wakes it, and the
+quiet floor re-delivers a turn for one the woken turn left unanswered.
 
 The PR-level comment-body digest is carried as one condition,
 `review_comment_bodies:<digest>`, with severity `WAKE` and `resets_on` `NEVER`:

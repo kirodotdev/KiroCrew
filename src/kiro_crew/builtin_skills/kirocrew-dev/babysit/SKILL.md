@@ -27,7 +27,8 @@ On Webex, use the finite legacy path even for a supported pull request.
 |---|---|
 | User is waiting, total work under 30 minutes | Bounded in-turn `wait` + poll |
 | One supported pull request, readiness decided by typed provider facts | `monitor_watch` |
-| Generic comments/advisory findings, or a required final report or notification | Finite `monitor_start` with `gate=false` |
+| PR comments/advisory findings | Finite `monitor_start`, `judge: false` |
+| A required final turn, or acting on silence | Finite `monitor_start`, `gate=false` |
 | Act on a schedule, multiple subjects, unsupported ticket or deployment | Finite `monitor_start` |
 | Fresh-session work needing no approval-bound tools | `cron_add` |
 | Post-merge cleanup after verified merge | Script cron, roughly every 5 minutes |
@@ -48,9 +49,8 @@ this gateway's default for a supported pull request and the prompt loop is the
 exception; off (the default) the table reads as written. The setting changes what
 the two tool descriptions say and refuses neither tool, so the row that matters
 never moves: evidence the typed provider cannot see -- generic comments, advisory
-findings, a required final report -- is `monitor_start` with `gate=false` in
-either position. Read the descriptions you were given rather than assuming a
-position.
+findings, a required final report -- stays on `monitor_start` in either
+position. Read the descriptions you were given rather than assuming a position.
 
 ### Structured pull-request watch
 
@@ -94,12 +94,12 @@ Its retained session-bound state is authoritative.
 
 A terminal success uses zero model turns, so a structured watch does not create
 a final reporting turn. If the user requires a final report or notification even
-when no action is needed, use the finite legacy path.
+when no action is needed, use the finite legacy path with `gate=false`.
 
 Typed providers do not observe generic issue/pull-request comments or advisory
 review findings outside their canonical review and check facts. When readiness
-depends on those, call the finite legacy path directly with `gate=false`; a typed
-fingerprint cannot stand in for missing evidence.
+depends on those, call the finite legacy path directly; a typed fingerprint
+cannot stand in for missing evidence.
 
 Use `monitor_update` without an id for cadence, positive budgets or
 `wake_instructions`: these preserve the comparison baseline. Changing `target`
@@ -118,17 +118,17 @@ monitor_start({
   "interval_secs": 300,
   "max_cycles": 48,
   "max_runtime_secs": 14400,
-  "gate": false
+  "judge": false
 })
 ```
 
-Replace the example URL with the real target. Keep `gate: false`: provider-fact
-gating cannot observe generic comments or advisory findings and could suppress
-a cycle while that evidence waits. All three limits must be positive and finite;
-never use `0` for unlimited work. Every delivered legacy cycle is a full model
-turn even if nothing changed. Name the readiness conditions below by reference
-rather than copying their text into the message: a copy inside the instruction
-drifts from the list it duplicates while still reading as authoritative.
+Replace the example URL with the real target. Gated, an unchanged pull request
+costs no turn; a change to its reading, comments included, wakes it once. All
+three limits must be positive and finite; never use `0` for unlimited work.
+Every delivered cycle is a full model turn. Name the readiness conditions below
+by reference rather than copying their text into the message: a copy inside the
+instruction drifts from the list it duplicates while still reading as
+authoritative.
 Follow the execution steps below.
 
 ### Same-session timer
@@ -147,10 +147,11 @@ security. Fix, commit and push only within the user's authorization.
 - Name ONE public GitHub PR by full URL in `message` to select gating. A
   bare `PR <n>` gates only if this session already named its URL.
 - `gate=true` is the default. Quiet subjects avoid turns, with eventual delivery
-  after enough quiet intervals. Use `gate=false` for generic comments/advisory
-  scans and duties that act despite silence, such as chasing a missing reviewer
-  or tracking a moving base. `max_cycles` counts DELIVERED turns, including
-  quiet-floor deliveries and fallbacks, not just useful changes.
+  after enough quiet intervals. A merge or close ends a gated loop with a notice,
+  no turn. Use `gate=false` for a required final turn or for acting on silence,
+  such as chasing a missing reviewer or tracking a moving base. `max_cycles`
+  counts DELIVERED turns, including quiet-floor deliveries and fallbacks, not
+  just useful changes.
 - A short `banner` keeps a long instruction out of stored transcript rows while
   the model receives it whole. Dashboard only; channel loops refuse it with 400.
   `monitor_update(banner="")` clears it.

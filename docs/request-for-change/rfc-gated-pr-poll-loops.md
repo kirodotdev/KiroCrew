@@ -1,12 +1,12 @@
 ---
 title: Gated PR poll loops -- the prepare-pr and babysit recipes arm their pull-request loop gated, with the judge off
-status: draft
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-20
-last-audited: 2026-10-20
-audited-at: 6432cad9ea
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-10-21
+audited-at: 098bc0a174
+doc-pr: 22440
+implementation-prs: [22442]
 tracking-issues: [22418]
 supersedes: []
 superseded-by: []
@@ -14,11 +14,10 @@ superseded-by: []
 
 # RFC: Gated PR poll loops
 
-- Status: draft. The decision belongs to the operator who owns the
-  `kirocrew-prepare-pr` and `babysit` skills (iamwhatever), and it is pending.
-  This document lands on its own first, because the First Principles lane reads
-  an RFC's status off the base branch, and the implementation changes what both
-  skills' pull-request poll loops do by default.
+- Status: implemented. Maintainer Joe Guo (@iamwhatever), who owns the
+  `kirocrew-prepare-pr` and `babysit` skills, accepted this design on
+  2026-10-21 (§ 10), and
+  [#22442](https://github.com/kirodotdev/KiroCrew/pull/22442) implements it.
 - Related: [rfc-wake-judge.md](rfc-wake-judge.md) § 8, PR F ("skills: `babysit`
   and `goal-conductor` author `wake_when` / `quiet_when` when arming"), which is
   still outstanding. This document arms the same loops gated, but with the judge
@@ -27,7 +26,7 @@ superseded-by: []
   [#22165](https://github.com/kirodotdev/KiroCrew/pull/22165) (legacy-loop pull
   request reads, kept agent stops, declared waits); § 5 says how.
 - Tracking issue: [#22418](https://github.com/kirodotdev/KiroCrew/issues/22418).
-  Code references were read at `6432cad9ea`.
+  Code references were read at `6432cad9ea` and re-checked at `098bc0a174`.
 
 ## 1. Problem
 
@@ -198,10 +197,12 @@ prepare-pr loop, and the gate's own counters on the loop record
 
 ## 6. Later: a judge brief
 
-Once [#22290](https://github.com/kirodotdev/KiroCrew/issues/22290) lands (every
-judge call on that gateway timed out) and the judge's latency and miss rate are
-measured on a loaded host, a brief written by these recipes could also hold
-lane-by-lane progress. That is rfc-wake-judge § 8 PR F. It is a separate change.
+[#22290](https://github.com/kirodotdev/KiroCrew/issues/22290) (every judge call
+on that gateway timed out) is fixed by
+[#22448](https://github.com/kirodotdev/KiroCrew/pull/22448). Once the judge's
+latency and miss rate are measured on a loaded host, a brief written by these
+recipes could also hold lane-by-lane progress. That is rfc-wake-judge § 8 PR F.
+It is a separate change.
 
 ## 7. Risks
 
@@ -216,16 +217,18 @@ lane-by-lane progress. That is rfc-wake-judge § 8 PR F. It is a separate change
 - **Keep `gate=false`.** One turn every 5 minutes on an unchanged pull request
   (§ 1).
 - **Gate with the default judge.** On the measured gateway every judge call
-  timed out (#22290), so each changed tick cost a judge call and the turn. Once
-  the judge answers, it may hold a change these recipes act on, and no test can
-  pin that answer.
+  timed out (#22290, since fixed by #22448), so each changed tick cost a judge
+  call and the turn. A judge that answers may hold a change these recipes act
+  on, and no test can pin that answer.
 - **Read edits of old comments** with one more `gh api` call per tick. Not
   needed: a lane's check carries its edit (§ 3.2).
 
 ## 9. Rollout
 
-One implementation PR, opened beside this one and rebased after this one merges.
-It edits the two `SKILL.md` files inside their byte budgets (the reasons move to
+One implementation PR,
+[#22442](https://github.com/kirodotdev/KiroCrew/pull/22442), opened beside this
+one and rebased after this one merged. It edits the two `SKILL.md` files inside
+their byte budgets (the reasons move to
 prepare-pr's `references/rationale.md`), the two spec passages that state the old
 reason (`learn-cron-dashboard.md`, `monitor-architecture.md`) and the
 `monitor_update` description, and re-pins the recipe tests. A new test arms each
@@ -233,5 +236,4 @@ recipe's own `monitor_start` call and drives it through the real gate.
 
 ## 10. Decision
 
-Pending. The operator who owns both skills records it here by setting `status`
-to `accepted`.
+2026-10-21: maintainer Joe Guo (@iamwhatever) accepted this design; implemented by #22442.

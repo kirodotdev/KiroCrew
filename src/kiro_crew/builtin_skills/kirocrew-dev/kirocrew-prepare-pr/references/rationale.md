@@ -639,6 +639,29 @@ merge does not come back. Rewriting the live loop's message in place with
 `monitor_update(message=...)` on the turn the hold is heard puts the hold where every
 later cycle reads it.
 
+## Why the poll loop is gated, with `judge=False`
+
+A gated tick reads the whole pull request (`probes/gh_pr.py`): its state, head,
+mergeability, review decision, every check, and the newest comments and reviews by a
+digest of each whole body. A tick whose reading matches the last one starts no turn.
+Any change starts one turn, and only one: a pull-request reading never raises the
+kernel wake that buys a follow-up tick. `judge=False` keeps that rule exact, since no
+judge call can hold a change back or time out into a turn.
+
+What the reading cannot see waits for the quiet floor, a turn after 10 quiet ticks
+(about 50 minutes at 300 s): main moving in this PR's files without a conflict
+(`green_age.py` exit 30), a lane that never posts, and a finding the turn that
+carried it left unanswered. A lane edits its verdict comment in place, so an old one
+falls out of the reading, but the lane's check run finishes with the edit and wakes
+the loop. Comments from the loop's own account are left out, so a posted disposition
+does not wake it again.
+
+A merge or close ends a gated dashboard loop with the bell notice and no turn; only
+a Slack or Discord loop gets one last turn. So the Report goes out on the converged
+turn, and the `Merged` step runs only where that last turn exists. The decision is
+recorded in the `rfc-gated-pr-poll-loops` RFC
+([#22440](https://github.com/kirodotdev/KiroCrew/pull/22440)).
+
 ## How the profile resolves, and what its JSON carries
 
 Most-specific-wins: repo-root `.prepare-pr.toml` → Kiro Crew markers (auto-loads

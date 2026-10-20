@@ -557,7 +557,7 @@ comes after a record, never instead of one:
                "Merged, terminal state, user stop, blocker or spent budget: "
                "report the outcome, overrides and open findings, then call "
                "autonudge_stop.",
-       interval_secs=300, max_cycles=288, max_runtime_secs=86400, gate=False,
+       interval_secs=300, max_cycles=288, max_runtime_secs=86400, judge=False,
        banner="kirocrew-prepare-pr: polling PR #123")
      ```
 
@@ -565,7 +565,8 @@ comes after a record, never instead of one:
      `Exit 0` clause to `Exit 0: report review-ready and keep watching; do NOT arm
      auto-merge` — the message is re-injected verbatim every cycle and outlives
      the turn that heard the hold. A hold heard after arming goes in with
-     `monitor_update(message=...)` that turn (`references/rationale.md`). Keep `gate=False`: comments are outside the typed provider's evidence. Omit `banner` on
+     `monitor_update(message=...)` that turn (`references/rationale.md`). The loop
+     is gated: an unchanged PR costs no turn and any change wakes it. Omit `banner` on
      Slack/Discord/Webex. Loop mechanics belong to the `babysit` skill.
 
      A create-only refusal means a loop may already be active: inspect it on a
@@ -599,9 +600,10 @@ outside author asks a maintainer to merge.
   fix it, or rerun it once after *Before you rerun a red test*, then re-arm.
 - **Merged** → report and call `autonudge_stop`.
 
-**Report:** the full PR URL, one-line status, commit SHA, whether auto-merge armed
-or why not, **every override** (lane, span, SHA, reason), every red-main fix PR
-opened, and any Low/nit left on purpose **plus how each was answered**.
+**Report** on the converged turn: the full PR URL, one-line status, commit SHA,
+whether auto-merge armed or why not, **every override** (lane, span, SHA,
+reason), every red-main fix PR opened, and any Low/nit left on purpose **plus
+how each was answered**.
 
 **Escalate** only on the four pause reasons under "Iteration budget", or on a spent
 budget with the PR still open. Hand over: what is red and why, unresolved

@@ -5433,10 +5433,12 @@ advisory review findings that are not represented by the provider's canonical
 review or check facts remain outside its completion predicate; a babysit
 objective routes directly to a finite legacy loop instead of asking the
 structured tool to represent an evidence scope it cannot enforce. The fallback
-recipe sets `gate: false` so provider-fact gating cannot
-suppress cycles that must inspect unobserved comments or advisory feedback.
+recipe arms that loop gated with `judge: false`. Its gated reading carries the pull
+request's comments and reviews by body digest beside its checks, head and
+mergeability, so an unchanged pull request costs no turn, any change wakes the loop
+once, and the quiet floor still delivers a turn for what the reading cannot see.
 Its 48 cycles at 300 seconds cover its 14,400-second runtime.
-The kirocrew-prepare-pr recipe likewise disables provider gating and pairs its 288-cycle
+The kirocrew-prepare-pr recipe arms its poll loop the same way and pairs its 288-cycle
 poll budget with an explicit 24-hour runtime cap, so the four-hour default does
 not truncate its longer review loop. Both recipes keep interval x `max_cycles` at
 or above `max_runtime_secs`, so the runtime, not the cycle cap, ends the loop.

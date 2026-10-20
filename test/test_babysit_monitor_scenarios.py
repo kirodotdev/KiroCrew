@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew import mcp_core, session_directive
+from kiro_crew import mcp_core, session_directive, validation
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop, runtime_budget_exceeded
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.mcp_tools import control
@@ -62,7 +62,10 @@ def test_babysit_keeps_finite_legacy_path_for_unobserved_review_evidence() -> No
     assert legacy_args["max_runtime_secs"] == 14_400
     # The runtime, not the cycle cap, ends the loop.
     assert legacy_args["idle_secs"] * legacy_args["max_cycles"] >= legacy_args["max_runtime_secs"]
-    assert legacy_args["gate"] is False
+    # Gated, with the judge off: an unchanged pull request costs no turn and any
+    # change to its reading, comments included, wakes the loop.
+    assert legacy_args["gate"] is True
+    assert validation.judge_is_off(legacy_args["judge"])
     assert "call the finite legacy path directly" in skill
 
 
@@ -74,7 +77,7 @@ def test_babysit_keeps_finite_legacy_path_when_terminal_success_must_report() ->
     assert "use the finite legacy path" in skill
 
 
-def test_prepare_pr_recipe_covers_its_poll_budget_without_provider_gating() -> None:
+def test_prepare_pr_recipe_covers_its_poll_budget_gated_with_the_judge_off() -> None:
     skill_path = _BABYSIT_SKILL.parent.parent / "kirocrew-prepare-pr/SKILL.md"
     skill = skill_path.read_text(encoding="utf-8")
     recipe = next(
@@ -103,7 +106,8 @@ def test_prepare_pr_recipe_covers_its_poll_budget_without_provider_gating() -> N
     # Every cycle spent means the runtime is spent too, so the cycle cap never
     # ends the loop before the 24 hours the skill states.
     assert runtime_budget_exceeded(loop, now=loop.created_ts + loop.idle_secs * loop.max_cycles)
-    assert applied["gate"] is False
+    assert applied["gate"] is True
+    assert validation.judge_is_off(applied["judge"])
 
 
 def test_babysit_routes_webex_sessions_to_the_finite_legacy_path() -> None:
