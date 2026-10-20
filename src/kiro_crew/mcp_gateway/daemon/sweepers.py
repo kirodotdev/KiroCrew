@@ -60,6 +60,31 @@ async def _idle_sweeper(
         pass
 
 
+async def _telemetry_consent_sweeper(interval: float, stop_event: asyncio.Event) -> None:
+    """Touch the recorder once per ``interval`` so a consent change is applied.
+
+    The recorder re-reads ``telemetry.enabled`` only from inside
+    ``get_recorder()``, and in this daemon that is otherwise called only when a
+    backend is acquired. The observable gauges keep exporting from the reader's
+    own thread, so an idle daemon would never notice a withdrawal. One call per
+    interval is the fast path (a monotonic comparison); a due recheck is handed to
+    the provider's worker thread, never run on the loop.
+    """
+    try:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+            try:
+                facade.get_recorder()
+            except Exception:  # telemetry must never break the daemon
+                logger.debug("telemetry consent recheck failed", exc_info=True)
+    except asyncio.CancelledError:
+        pass
+
+
 async def _backend_tmp_sweeper() -> None:
     """Reclaim per-process backend temp dirs whose owner is dead AND whose content is idle.
 

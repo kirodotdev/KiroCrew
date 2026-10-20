@@ -61,6 +61,7 @@ import logging
 import os
 import site  # noqa: F401 - tests patch user-site probing through gatewayd.site
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -262,6 +263,7 @@ from kiro_crew.mcp_gateway.daemon.sweepers import (  # noqa: F401
     _idle_sweeper,
     _owner_liveness_sweeper,
     _socket_liveness_sweeper,
+    _telemetry_consent_sweeper,
 )
 from kiro_crew.mcp_gateway.daemon.warm_pool import (  # noqa: F401
     _CREDENTIAL_WATCH_INTERVAL_SECS,
@@ -322,7 +324,9 @@ from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_u
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts  # noqa: F401
+from kiro_crew.metrics import mcp_gateway_gauges
 from kiro_crew.metrics.provider import get_recorder  # noqa: F401
+from kiro_crew.metrics.provider import _CONSENT_RECHECK_SECS
 from kiro_crew.peer_resolve import resolve_peer_identity  # noqa: F401 - not a seam
 from kiro_crew.platform_compat import _UTF8_PROCESS_ENV, IS_WINDOWS
 from kiro_crew.platform_compat import count_open_fds as _shared_count_open_fds  # noqa: F401
@@ -557,6 +561,10 @@ async def run_gatewayd(
     # spawns so the stub falls back to per-session exec instead of churning.
     breaker = CircuitBreaker()
     pool = BackendPool(max_backends=max_backends, breaker=breaker)
+    # The pool gauges (backends.live / sessions.attached / backends.rss_bytes /
+    # process.rss_bytes) read this pool at metric collection; unbound below once
+    # the pool is torn down.
+    mcp_gateway_gauges.bind_pool(pool)
     # One admission state for the daemon: the global spawn gate (bounds
     # spawn+initialize windows in flight, FIFO past that) and the host budget
     # (charges every process this daemon is answerable for). Built beside the
@@ -691,6 +699,7 @@ async def run_gatewayd(
     owner_liveness: Optional[asyncio.Task[None]] = None
     diagnostic: Optional[asyncio.Task[None]] = None
     heartbeat: Optional[asyncio.Task[None]] = None
+    consent_sweeper: Optional[asyncio.Task[None]] = None
     flush_sweeper: Optional[asyncio.Task[None]] = None
     topup_sweeper: Optional[asyncio.Task[None]] = None
     credential_watchers: list[asyncio.Task[None]] = []
@@ -808,6 +817,15 @@ async def run_gatewayd(
             name="mcp-gateway-heartbeat-sweeper",
         )
 
+        # Telemetry consent: nothing else in this daemon calls get_recorder() on a
+        # timer, and the observable gauges export from the reader's own thread,
+        # so without this an idle daemon would keep exporting after
+        # ``telemetry.enabled`` is turned off.
+        consent_sweeper = asyncio.create_task(
+            _telemetry_consent_sweeper(_CONSENT_RECHECK_SECS, stop_event),
+            name="mcp-gateway-telemetry-consent",
+        )
+
         # Warm-pool prewarming (optional): persist observed hot keys and keep the
         # hottest backends warm. All prewarm tasks are background tasks created
         # AFTER the socket is listening, so none delays the daemon becoming
@@ -906,6 +924,7 @@ async def run_gatewayd(
             owner_liveness,
             diagnostic,
             heartbeat,
+            consent_sweeper,
             topup_sweeper,
             *credential_watchers,
         ):
@@ -928,6 +947,7 @@ async def run_gatewayd(
                 await asyncio.to_thread(hot_keys.flush)
 
         await pool.shutdown_all(timeout=POOL_SHUTDOWN_SECS)
+        mcp_gateway_gauges.unbind_pool(pool)
         # Clean shutdown drained every backend; drop the out-of-band reap list
         # so a supervising manager never killpg's now-dead pids.
         with contextlib.suppress(OSError):
@@ -1316,6 +1336,107 @@ async def _acquire_backend(
     return backend, was_spawned
 
 
+def _compose_telemetry_provider() -> object:
+    """The edition's telemetry provider for this daemon (see ``_prepare_telemetry``)."""
+    from kiro_crew.platform.bootstrap import compose_telemetry_provider
+
+    return compose_telemetry_provider(KiroCrewConfig.load())
+
+
+class _NoDestinations:
+    """Telemetry provider stand-in while the edition's is not composed: no egress."""
+
+    def otlp_destinations(self, cfg: object) -> tuple:
+        return ()
+
+
+def _provider_before_composition() -> object:
+    """The provider the startup build uses: the context's when one resolves.
+
+    A standalone host resolves the lazy default context here, so its configured
+    ``telemetry.otlp_endpoint`` is live from the first build exactly as before. A
+    non-standalone host has no context in this process and gets no destinations
+    until :func:`_compose_and_apply` lands, without logging a failure for it.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
+
+    try:
+        return current_context().telemetry
+    except PlatformCompositionError:
+        return _NoDestinations()
+
+
+def _compose_and_apply() -> None:
+    """Compose the edition provider OFF the startup path, then route egress to it.
+
+    Runs on its own daemon thread. Composing builds the edition's whole context
+    (admission gate, plugin load, its providers), which can take as long as the
+    edition needs, so nothing on gatewayd's boot path or event loop waits for it.
+    Only when composition adds a destination the startup build lacked is the
+    recorder dropped and rebuilt (``shutdown`` flushes the old one to the local
+    sink; the rebuild runs on the provider's own worker thread). Counters and
+    histograms recorded before that swap stay local; the pool gauges are read
+    live, so they lose nothing.
+    """
+    from kiro_crew.metrics import provider as metrics_provider
+
+    try:
+        cfg = KiroCrewConfig.load().telemetry
+        had_egress = metrics_provider.otlp_egress_active(cfg)
+        composed = _compose_telemetry_provider()
+    except Exception:
+        logger.warning(
+            "gatewayd telemetry provider unavailable; OTLP egress disabled (local-only)",
+            exc_info=True,
+        )
+        # A later rebuild (a consent or telemetry config change) retries.
+        metrics_provider.use_telemetry_provider(_compose_telemetry_provider)
+        return
+    metrics_provider.use_telemetry_provider(lambda: composed)
+    try:
+        if not had_egress and metrics_provider.otlp_egress_active(cfg):
+            metrics_provider.shutdown()
+            metrics_provider.get_recorder()  # schedules the rebuild off this thread
+    except Exception:
+        logger.warning("gatewayd telemetry rebuild failed", exc_info=True)
+
+
+def _prepare_telemetry() -> None:
+    """Build this daemon's recorder now, and send its metrics where the edition's go.
+
+    gatewayd never boots the platform, so on a non-standalone profile
+    ``current_context()`` raises, and a recorder resolving destinations through it
+    builds local-only: every metric the daemon emits (backend acquire, lazy load,
+    warm pool, its process gauges) stays in the local sink.
+
+    The first build runs HERE, before the event loop starts, so the pool gauges
+    exist from startup rather than from the first metric call. It composes
+    nothing: a consenting host then composes ONLY the edition's telemetry
+    provider on a background thread (:func:`_compose_and_apply`), installing no
+    context, so no other ``current_context()`` reader here changes and a slow
+    edition never delays the daemon. An off-consent host composes nothing; if it
+    opts in later, the provider's off-loop rebuild composes lazily. Best-effort:
+    a failure costs telemetry, never the daemon.
+    """
+    try:
+        from kiro_crew.metrics import provider as metrics_provider
+
+        # Before the first build, so every resource this daemon exports carries
+        # kirocrew.process.role=gatewayd and its kirocrew.process.* gauges can be
+        # told apart from the main process's without a join.
+        metrics_provider.set_process_role(metrics_provider.PROCESS_ROLE_GATEWAYD)
+        metrics_provider.use_telemetry_provider(_provider_before_composition)
+        recorder = metrics_provider.get_recorder()
+        if recorder.enabled:
+            threading.Thread(
+                target=_compose_and_apply, name="gatewayd-telemetry-compose", daemon=True
+            ).start()
+        else:
+            metrics_provider.use_telemetry_provider(_compose_telemetry_provider)
+    except Exception:
+        logger.warning("gatewayd telemetry setup failed; metrics disabled", exc_info=True)
+
+
 def main() -> None:
     """Sync entry point for ``python -m kiro_crew.mcp_gateway.gatewayd``."""
     # Resolve (and, on first launch of an upgraded install, MIGRATE) the data home
@@ -1332,6 +1453,7 @@ def main() -> None:
     from kiro_crew.config.paths import ensure_data_home
 
     ensure_data_home()
+    _prepare_telemetry()
     try:
         rc = asyncio.run(_amain())
     except KeyboardInterrupt:

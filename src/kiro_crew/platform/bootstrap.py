@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Sequence
 
 from kiro_crew.platform.context import (
     CONTRACT_VERSION,
@@ -66,6 +66,7 @@ from kiro_crew.platform.security_authority import PolicyAuthority, assert_securi
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform.interfaces import TelemetryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,60 @@ def boot_platform(cfg: "KiroCrewConfig") -> PlatformContext:
         ctx = bootstrap_context(cfg)
         _BOOTED = True
         return ctx
+
+
+def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
+    """Compose ONLY the edition's telemetry provider, installing no context.
+
+    For a Kiro Crew process that deliberately does not boot the platform -- the
+    MCP gateway daemon -- but must still send its metrics where the edition's
+    collector is. Without it such a process resolves OTLP destinations through
+    ``current_context()``, which on a non-standalone profile raises
+    ``PlatformCompositionError`` (nothing was installed), so its metrics stay in
+    the local sink and never reach the edition's collector.
+
+    Nothing is installed: ``set_context`` is not called, so every other
+    ``current_context()`` reader in the calling process keeps exactly the
+    behavior it had (fail-closed on a non-standalone profile). Discovery still
+    runs the fleet admission gate before any companion code loads, and the
+    contract version is checked, so this composes only what boot itself would.
+
+    Raises ``PlatformCompositionError`` the same way boot does; the caller
+    decides what that means for it (the daemon degrades to local-only).
+    """
+    eps = plugin_entry_points()
+    profile = resolve_profile(cfg, entry_points=eps)
+    if profile == PROFILE_STANDALONE:
+        return DefaultTelemetryProvider()
+    return _checked_companion(profile, cfg, eps).telemetry
+
+
+def _checked_companion(
+    profile: str, cfg: "KiroCrewConfig", eps: "Sequence[Any]"
+) -> PlatformContext:
+    """Discover the companion for a non-standalone *profile* and check its contract.
+
+    The one copy of these steps, shared by :func:`bootstrap_context` and
+    :func:`compose_telemetry_provider` so the two cannot drift. Discovery runs the
+    fleet admission gate before any companion code loads and builds the
+    companion's full context; it raises ``PlatformCompositionError`` fail-closed.
+    """
+    companion = discover_companion_context(
+        profile, cfg, entry_points=eps
+    )  # may raise (fail-closed)
+    if companion is None:
+        # Defense in depth: discovery is expected to raise rather than return
+        # None for a non-standalone profile.  If it ever returns None (e.g. a
+        # future "present but disabled" path), refuse to boot here too -- never
+        # silently install an edition-labeled context with open defaults and no
+        # security overlay.  The fail-closed guarantee must not depend solely
+        # on discovery's raising behavior.
+        raise PlatformCompositionError(
+            f"profile={profile!r} resolved no companion context; refusing to "
+            "boot with open-source defaults (fail-closed)."
+        )
+    _assert_contract(companion)
+    return companion
 
 
 def _reset_boot_state() -> None:
@@ -190,21 +245,7 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     ctx = build_default_context(cfg, profile=profile)
 
     if profile != PROFILE_STANDALONE:
-        companion = discover_companion_context(
-            profile, cfg, entry_points=eps
-        )  # may raise (fail-closed)
-        if companion is None:
-            # Defense in depth: discovery is expected to raise rather than return
-            # None for a non-standalone profile.  If it ever returns None (e.g. a
-            # future "present but disabled" path), refuse to boot here too — never
-            # silently install an amazon-labeled context with open defaults and no
-            # security overlay.  The fail-closed guarantee must not depend solely
-            # on discovery's raising behavior.
-            raise PlatformCompositionError(
-                f"profile={profile!r} resolved no companion context; refusing to "
-                "boot with open-source defaults (fail-closed)."
-            )
-        _assert_contract(companion)
+        companion = _checked_companion(profile, cfg, eps)
         assert_security_floor(companion.security)
         ctx = companion
         logger.info("Composed %r platform context from companion", profile)

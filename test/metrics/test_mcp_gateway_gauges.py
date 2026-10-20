@@ -1,0 +1,400 @@
+"""MCP gateway pool gauges and the gatewayd export path.
+
+Drives the production paths, not copies of them:
+
+* the three pool gauges, through ``register_mcp_gateway_gauges`` on a real SDK
+  pipeline, reading a real ``BackendPool`` via ``BackendPool.all_backends``;
+* gatewayd's recorder init (``gatewayd._prepare_telemetry``), composing the
+  edition telemetry provider through ``platform.bootstrap.compose_telemetry_provider``
+  on a non-standalone profile, and checking that the edition's destination gets a
+  reader carrying the same resource attributes as any other process;
+* the off-consent case, which must compose nothing and export nothing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import os
+import sys
+import threading
+
+import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+import kiro_crew.platform.context as context_mod
+from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
+from kiro_crew.mcp_gateway.pool import BackendPool
+from kiro_crew.metrics import mcp_gateway_gauges as gauges
+from kiro_crew.metrics import provider as provider_mod
+from kiro_crew.platform import bootstrap, build_default_context
+from kiro_crew.platform.context import PlatformCompositionError, reset_context
+from kiro_crew.platform.interfaces import OtlpDestination
+from kiro_crew.testing.wait import async_wait_until, wait_until
+
+ENDPOINT = "https://collector.example.test:4318/v1/metrics"
+
+
+class _Key:
+    def __init__(self, server_name):
+        self.server_name = server_name
+
+
+class _FakeBackend:
+    """The fields the gauges read from a ``Backend``."""
+
+    def __init__(self, server_name, *, pid, refcount, alive=True):
+        self.pool_key = _Key(server_name)
+        self.pid = pid
+        self.refcount = refcount
+        self.is_alive = alive
+
+
+def _pool(*backends):
+    pool = BackendPool(max_backends=8)
+    for i, b in enumerate(backends):
+        pool._backends[f"digest-{i}"] = b
+    return pool
+
+
+def _collect(register=gauges.register_mcp_gateway_gauges):
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    register(meter_provider.get_meter("test"))
+    data = reader.get_metrics_data()
+    meter_provider.shutdown()
+    out: dict[str, dict] = {}
+    if data is None:
+        return out
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                out[metric.name] = {
+                    dp.attributes.get("class"): dp.value for dp in metric.data.data_points
+                }
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _unbound():
+    gauges._pool = None
+    yield
+    gauges._pool = None
+
+
+# ---------------------------------------------------------------------------
+# Pool gauges
+# ---------------------------------------------------------------------------
+
+
+def test_two_sessions_on_one_backend():
+    """Two attachments sharing one live backend: attached > live, RSS summed."""
+    pool = _pool(_FakeBackend("some-user-server", pid=os.getpid(), refcount=2))
+    gauges.bind_pool(pool)
+    got = _collect()
+
+    assert got[gauges.GAUGE_BACKENDS_LIVE] == {"first_party": 0, "third_party": 1}
+    assert got[gauges.GAUGE_SESSIONS_ATTACHED] == {"first_party": 0, "third_party": 2}
+    assert (
+        got[gauges.GAUGE_SESSIONS_ATTACHED]["third_party"]
+        > got[gauges.GAUGE_BACKENDS_LIVE]["third_party"]
+    )
+    rss = got[gauges.GAUGE_BACKENDS_RSS]
+    assert rss["first_party"] == 0
+    # Linux and Windows have a per-pid RSS probe; macOS does not (a gap).
+    if sys.platform in ("linux", "win32"):
+        assert rss["third_party"] > 0
+    else:
+        assert "third_party" not in rss
+
+
+def test_attributes_are_closed_and_carry_no_name():
+    """Only class=first_party/third_party/other; never a server name or pid."""
+    pool = _pool(
+        _FakeBackend("kirocrew-core", pid=os.getpid(), refcount=3),
+        _FakeBackend("secret-internal-tool", pid=os.getpid(), refcount=1),
+        _FakeBackend("", pid=None, refcount=1),
+    )
+    gauges.bind_pool(pool)
+    got = _collect()
+    for name in (gauges.GAUGE_BACKENDS_LIVE, gauges.GAUGE_SESSIONS_ATTACHED):
+        assert set(got[name]) == {"first_party", "third_party", "other"}
+    assert got[gauges.GAUGE_BACKENDS_LIVE] == {"first_party": 1, "third_party": 1, "other": 1}
+    assert got[gauges.GAUGE_SESSIONS_ATTACHED] == {
+        "first_party": 3,
+        "third_party": 1,
+        "other": 1,
+    }
+    # The pid-less backend gave no RSS reading, so its class is a gap, not 0.
+    assert "other" not in got[gauges.GAUGE_BACKENDS_RSS]
+
+
+def test_dead_backend_is_not_counted():
+    pool = _pool(
+        _FakeBackend("a", pid=os.getpid(), refcount=1),
+        _FakeBackend("b", pid=os.getpid(), refcount=5, alive=False),
+    )
+    gauges.bind_pool(pool)
+    data = gauges.read_pool()
+    assert data["live"]["third_party"] == 1
+    assert data["attached"]["third_party"] == 1
+
+
+def test_unreadable_rss_is_a_gap_and_dead_pid_adds_zero():
+    """A pid with no reading adds 0 and is skipped; all-unreadable -> no point."""
+    pool = _pool(
+        _FakeBackend("a", pid=101, refcount=1),
+        _FakeBackend("b", pid=102, refcount=1),
+    )
+    gauges.bind_pool(pool)
+    readings = {101: 4096, 102: None}
+    data = gauges.read_pool(rss_for_pid=readings.get)
+    assert data["rss"]["third_party"] == 4096
+    data = gauges.read_pool(rss_for_pid=lambda pid: None)
+    assert "third_party" not in data["rss"]
+    assert data["rss"]["first_party"] == 0
+
+
+def test_unbound_process_publishes_nothing():
+    """Every other process registers the gauges and publishes no series."""
+    assert _collect() == {}
+
+
+def test_unbind_only_clears_own_pool():
+    first, second = _pool(), _pool()
+    gauges.bind_pool(second)
+    gauges.unbind_pool(first)
+    assert gauges._pool is second
+    gauges.unbind_pool(second)
+    assert gauges._pool is None
+
+
+def test_classify_unknown_maps_to_other():
+    assert gauges.classify(None) == "other"
+    assert gauges.classify("") == "other"
+    assert gauges.classify("kirocrew-cron") == "first_party"
+    assert gauges.classify("anything-else") == "third_party"
+
+
+# ---------------------------------------------------------------------------
+# gatewayd recorder init and export path
+# ---------------------------------------------------------------------------
+
+
+class _EditionTelemetry:
+    def __init__(self):
+        self.calls = 0
+
+    def record_event(self, event_type, data):
+        return None
+
+    def frontend_rum_config(self):
+        return None
+
+    def otlp_destinations(self, cfg):
+        self.calls += 1
+        return (OtlpDestination(name="edition", endpoint=ENDPOINT, signals=frozenset({"metrics"})),)
+
+
+def _join_compose_thread():
+    for t in threading.enumerate():
+        if t.name == "gatewayd-telemetry-compose":
+            t.join(30)
+
+
+@pytest.fixture
+def gatewayd_env(monkeypatch, tmp_path):
+    """A host whose edition supplies one OTLP destination; non-standalone by default."""
+    from kiro_crew.mcp_gateway import gatewayd
+
+    edition = _EditionTelemetry()
+    composed = []
+    release = threading.Event()
+    release.set()
+    state = {"profile": "enterprise", "release": release}
+
+    def _discover(profile, cfg, *, entry_points=None, policy=None):
+        # A test can hold composition open to see what the daemon does meanwhile.
+        assert release.wait(30)
+        composed.append(profile)
+        base = build_default_context(cfg)
+        return dataclasses.replace(base, profile=profile, telemetry=edition)
+
+    monkeypatch.setattr(bootstrap, "plugin_entry_points", lambda: [])
+    monkeypatch.setattr(
+        bootstrap, "resolve_profile", lambda cfg, entry_points=None: state["profile"]
+    )
+    monkeypatch.setattr(bootstrap, "discover_companion_context", _discover)
+    reset_context()
+
+    def _context():
+        # As in a real daemon: nothing is installed, so a non-standalone host
+        # fails closed here and a standalone one gets the lazy default.
+        if state["profile"] != "standalone":
+            raise PlatformCompositionError("not booted")
+        return build_default_context(KiroCrewConfig.load())
+
+    monkeypatch.setattr(context_mod, "current_context", _context)
+    monkeypatch.setattr(provider_mod, "current_context", _context)
+
+    readers: list = []
+
+    def _reader_for(dest, cfg):
+        reader = InMemoryMetricReader()
+        reader.dest_name = dest.name
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(provider_mod, "_build_otlp_reader", _reader_for)
+
+    def _config(enabled, **extra):
+        fake = KiroCrewConfig(
+            telemetry=TelemetryConfig(
+                enabled=enabled,
+                local_dir=str(tmp_path / "metrics"),
+                export_interval_seconds=3600,
+                **extra,
+            )
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
+
+    monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
+    provider_mod.reset_for_testing()
+    yield gatewayd, edition, composed, readers, _config, state
+    release.set()
+    _join_compose_thread()
+    provider_mod.use_telemetry_provider(None)
+    provider_mod.reset_for_testing()
+    reset_context()
+
+
+def _exported(reader):
+    data = reader.get_metrics_data()
+    names, resource = set(), None
+    for rm in data.resource_metrics:
+        resource = dict(rm.resource.attributes)
+        for sm in rm.scope_metrics:
+            names.update(m.name for m in sm.metrics)
+    return names, resource
+
+
+def test_gatewayd_init_exports_to_edition_destination(gatewayd_env):
+    gatewayd, edition, composed, readers, set_config, state = gatewayd_env
+    set_config(True)
+    state["release"].clear()  # composition is slow: it has not finished yet
+
+    gatewayd._prepare_telemetry()
+
+    # The startup build returned without waiting for composition and is live at
+    # once (local sink and gauges), with no egress yet.
+    assert composed == []
+    assert provider_mod.get_recorder().enabled
+    assert readers == []
+    state["release"].set()
+
+    # Composition lands on its own thread and the recorder is rebuilt with the
+    # edition's destination, through the real compose path.
+    _join_compose_thread()
+    assert composed == ["enterprise"]
+    wait_until(
+        lambda: provider_mod.get_recorder().enabled and readers,
+        describe=lambda: f"readers={readers!r}",
+    )
+    assert [r.dest_name for r in readers] == ["edition"]
+
+    gauges.bind_pool(_pool(_FakeBackend("x", pid=os.getpid(), refcount=2)))
+    gatewayd._emit_backend_acquire_metric(1.0, warm=True)
+    names, resource = _exported(readers[0])
+    for expected in (*gauges.ALL_METRIC_NAMES, "kirocrew.mcp.backend.acquire.duration"):
+        assert expected in names, expected
+    # Same resource attributes the main process exports.
+    assert resource is not None
+    expected_attrs = provider_mod._resource_attributes()
+    for key in ("service.name", "service.version", "os.type", "host.cpu.logical_count"):
+        assert resource[key] == expected_attrs[key]
+    assert resource["process.pid"] == os.getpid()
+    # The daemon's series are told apart from the main process's by role, not
+    # only by pid: the main process builds no kirocrew.process.role at all.
+    assert resource[provider_mod.RESOURCE_ATTR_PROCESS_ROLE] == "gatewayd"
+
+    # Nothing was installed: every other context reader in the daemon keeps the
+    # behavior it had before this change.
+    assert context_mod._ACTIVE is None
+
+
+def test_gatewayd_standalone_exports_from_the_first_build(gatewayd_env):
+    """A standalone host's configured endpoint is live at once; no rebuild."""
+    gatewayd, edition, composed, readers, set_config, state = gatewayd_env
+    state["profile"] = "standalone"
+    set_config(True, otlp_endpoint=ENDPOINT)
+
+    gatewayd._prepare_telemetry()
+    assert [r.dest_name for r in readers] == ["telemetry.otlp_endpoint"]
+    _join_compose_thread()
+    assert composed == []  # standalone composes no companion
+    assert len(readers) == 1  # same destination either way: nothing rebuilt
+
+
+def test_gatewayd_off_consent_composes_and_exports_nothing(gatewayd_env):
+    gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
+    set_config(False)
+
+    gatewayd._prepare_telemetry()
+    _join_compose_thread()
+    rec = provider_mod.get_recorder()
+    gauges.bind_pool(_pool(_FakeBackend("x", pid=os.getpid(), refcount=2)))
+    gatewayd._emit_backend_acquire_metric(1.0, warm=True)
+
+    assert composed == []
+    assert edition.calls == 0
+    assert readers == []
+    assert not rec.enabled  # no-op recorder: no provider, no reader, no export
+    # A later opt-in composes lazily on the provider's own rebuild, off the loop.
+    assert provider_mod._provider_factory is gatewayd._compose_telemetry_provider
+
+
+def test_failing_composition_degrades_to_local_only(gatewayd_env, monkeypatch):
+    gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
+    set_config(True)
+
+    def _boom(profile, cfg, *, entry_points=None, policy=None):
+        raise PlatformCompositionError("companion missing")
+
+    monkeypatch.setattr(bootstrap, "discover_companion_context", _boom)
+    gatewayd._prepare_telemetry()
+    _join_compose_thread()
+    rec = provider_mod.get_recorder()
+    assert readers == []
+    assert rec.enabled  # still collecting locally
+
+
+def test_idle_daemon_stops_exporting_after_consent_is_withdrawn(gatewayd_env, monkeypatch):
+    """The consent sweeper alone, with no acquire, applies a withdrawal."""
+    from kiro_crew.mcp_gateway.daemon.sweepers import _telemetry_consent_sweeper
+
+    gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
+    set_config(True)
+    gatewayd._prepare_telemetry()
+    _join_compose_thread()
+    wait_until(lambda: provider_mod.get_recorder().enabled and readers)
+    built = provider_mod._provider
+    assert built is not None
+
+    set_config(False)
+    monkeypatch.setattr(provider_mod, "_CONSENT_RECHECK_SECS", 0.0)
+
+    async def _run():
+        stop = asyncio.Event()
+        task = asyncio.create_task(_telemetry_consent_sweeper(0.01, stop))
+        try:
+            await async_wait_until(
+                lambda: provider_mod._provider is None,
+                describe=lambda: f"provider={provider_mod._provider!r}",
+            )
+        finally:
+            stop.set()
+            await task
+
+    asyncio.run(_run())
+    assert not provider_mod.get_recorder().enabled

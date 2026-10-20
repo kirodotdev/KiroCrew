@@ -278,3 +278,17 @@ def test_exported_shard_carries_the_resource(tmp_path, monkeypatch):
         assert "service.instance.id" in resource_attrs
     finally:
         reset_for_testing()
+
+
+def test_process_role_is_absent_unless_a_process_sets_it():
+    """Only the MCP gateway daemon stamps a role; every other resource is unchanged."""
+    provider.set_process_role(None)
+    assert provider.RESOURCE_ATTR_PROCESS_ROLE not in provider._resource_attributes()
+    try:
+        provider.set_process_role(provider.PROCESS_ROLE_GATEWAYD)
+        attrs = provider._resource_attributes()
+        assert attrs[provider.RESOURCE_ATTR_PROCESS_ROLE] == "gatewayd"
+        provider.set_process_role("some-free-text")
+        assert provider._resource_attributes()[provider.RESOURCE_ATTR_PROCESS_ROLE] == "other"
+    finally:
+        provider.set_process_role(None)
