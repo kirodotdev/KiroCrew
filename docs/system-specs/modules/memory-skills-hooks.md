@@ -1808,8 +1808,17 @@ a link, a file that changed shape between the walk and the open -- is likewise l
 out unread: the snapshot names it in one core
 `essential-context#unreadable-skipped:<template>` note, and the KAS document reader and `kiro_launch_documents` skip it with a
 warning. The read itself is unchanged, so the file is never opened through the
-second name. Any other declared source the read refuses still refuses the turn,
-and an oversized or non-UTF-8 steering file still raises. There is no mtime-only content cache or automatic
+second name. A steering document on those same paths that is over the per-file
+read cap (`_MAX_SOURCE_BYTES`, 256,000 bytes) is left out the same way, whatever its
+`inclusion` mode, because the read comes before the frontmatter is parsed: nothing
+past the cap is read, the snapshot names the file with its size and the cap in one
+core `essential-context#oversized-skipped:<template>` note, and the KAS document
+reader and `kiro_launch_documents` skip it with a warning. It is never truncated:
+a file that size could not fit the 64,000-character envelope whole, and a prefix
+would present partial rules as complete. Any other declared source the read refuses
+still refuses the turn; an over-cap declared source, `AGENTS.md` or `SOUL.md` still
+raises, with the file, its size and the cap in bytes in the message, and a non-UTF-8
+steering file still raises. There is no mtime-only content cache or automatic
 retrieval on the warm path.
 
 Structural-marker scanning copies contiguous ASCII segments without per-character

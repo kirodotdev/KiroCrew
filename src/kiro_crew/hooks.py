@@ -1244,7 +1244,14 @@ MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB safety cap
 
 
 class FileTooLargeError(Exception):
-    """Raised when a file exceeds MAX_FILE_BYTES."""
+    """Raised when a file exceeds MAX_FILE_BYTES or a caller's own byte cap.
+
+    *size* is the measured size in bytes when the raiser knows it, else ``None``.
+    """
+
+    def __init__(self, *args: object, size: int | None = None) -> None:
+        super().__init__(*args)
+        self.size = size
 
 
 # ---------------------------------------------------------------------------

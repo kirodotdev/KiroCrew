@@ -491,7 +491,12 @@ def safe_read_file_bytes_nolink(
             # never handed back as a prefix the admission did not see.
             if allow_truncate and not hardlinked:
                 return data[:read_limit]
-            raise FileTooLargeError(f"File exceeds {read_limit // (1024 * 1024)} MB safety cap")
+            # In bytes: a caller cap under 1 MiB would print as "0 MB". The
+            # stat size can lag a file still growing, so the read is a floor.
+            size = max(st.st_size, len(data))
+            raise FileTooLargeError(
+                f"File is {size:,} bytes, over the {read_limit:,}-byte safety cap", size=size
+            )
         if hardlinked and not (admit_hardlinked is not None and admit_hardlinked(path, data)):
             return None
         return data
