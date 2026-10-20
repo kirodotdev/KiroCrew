@@ -21,6 +21,7 @@ export interface TreePayload {
   hiddenOnlyDirectories?: string[]
   unreadableDirectories?: string[]
   linkedDirectories?: string[]
+  nestedRepoDirectories?: string[]
 }
 
 /** One folder's listing: the payload plus the folder it lists. */
@@ -83,6 +84,13 @@ export function mergeFolderListings(base: TreePayload, listings: readonly Folder
     hiddenOnlyDirectories: union(base.hiddenOnlyDirectories, ...own.map(listing => listing.hiddenOnlyDirectories)),
     unreadableDirectories: union(base.unreadableDirectories, ...own.map(listing => listing.unreadableDirectories)),
     linkedDirectories: union(base.linkedDirectories, ...own.map(listing => listing.linkedDirectories)),
+    // A nested repository is listed on its own when opened, so a folder whose
+    // listing is loaded is no longer one to load; a repository inside a loaded
+    // listing is named by that listing.
+    nestedRepoDirectories: union(
+      base.nestedRepoDirectories,
+      ...own.map(listing => listing.nestedRepoDirectories),
+    ).filter(dir => !listed.has(dir)).sort(),
   }
 }
 
