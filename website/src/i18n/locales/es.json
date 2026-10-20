@@ -19702,6 +19702,7 @@
     "sections_aria": "Secciones de ajustes del compañero",
     "builtfrom_sections_aria": "Secciones de Basado en",
     "memory_sections_aria": "Secciones de Memoria",
+    "section_locked_hint": "Guarda o descarta tu borrador para cambiar de sección.",
     "state_disabled_word": "desactivado",
     "switch_own_copy_title": "¿Cambiar de la copia propia de este mate?",
     "switch_own_copy_body": "Este mate se basa en su propia copia personalizada. Cambiar a otra plantilla descarta esa copia: no se puede volver a seleccionar."

@@ -19702,6 +19702,7 @@
     "sections_aria": "Sezioni delle impostazioni del compagno",
     "builtfrom_sections_aria": "Sezioni Basato su",
     "memory_sections_aria": "Sezioni Memoria",
+    "section_locked_hint": "Salva o annulla la bozza per cambiare sezione.",
     "state_disabled_word": "disattivato",
     "switch_own_copy_title": "Abbandonare la copia propria di questo mate?",
     "switch_own_copy_body": "Questo mate si basa su una propria copia personalizzata. Passare a un altro modello scarta quella copia: non potrà essere riselezionata."

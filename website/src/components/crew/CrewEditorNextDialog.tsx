@@ -667,6 +667,7 @@ export default function CrewEditorNextDialog({
               locked={navBlocked}
               dangerKey="danger"
               ariaLabel={i18nT("crewEditorNext.sections_aria")}
+              lockedHint={i18nT("crewEditorNext.section_locked_hint")}
               segments={[
                 { key: 'general', label: i18nT('crewEditorNext.section_general'), ...uiLocation('agents.section-model') },
                 { key: 'danger', label: i18nT('crewEditorNext.section_danger'), ...uiLocation('agents.section-danger') },

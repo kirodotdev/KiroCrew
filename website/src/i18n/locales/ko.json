@@ -19120,6 +19120,7 @@
     "sections_aria": "크루메이트 설정 섹션",
     "builtfrom_sections_aria": "기반 섹션",
     "memory_sections_aria": "메모리 섹션",
+    "section_locked_hint": "섹션을 전환하려면 초안을 저장하거나 삭제하세요.",
     "state_disabled_word": "비활성화됨",
     "switch_own_copy_title": "이 메이트 전용 복사본에서 전환할까요?",
     "switch_own_copy_body": "이 메이트는 전용 맞춤 복사본으로 만들어졌습니다. 다른 템플릿으로 바꾸면 그 복사본은 폐기되어 다시 선택할 수 없습니다."

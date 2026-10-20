@@ -19120,6 +19120,7 @@
     "sections_aria": "クルーメイト設定のセクション",
     "builtfrom_sections_aria": "「ベース」のセクション",
     "memory_sections_aria": "「メモリ」のセクション",
+    "section_locked_hint": "セクションを切り替えるには、下書きを保存または破棄してください。",
     "state_disabled_word": "無効",
     "switch_own_copy_title": "このメイト専用のコピーから切り替えますか？",
     "switch_own_copy_body": "このメイトは専用のカスタマイズ済みコピーから作られています。別のテンプレートに切り替えるとそのコピーは破棄され、再び選択できなくなります。"

@@ -9542,6 +9542,7 @@
     "sections_aria": "Crewmate settings sections",
     "builtfrom_sections_aria": "Built From sections",
     "memory_sections_aria": "Memory sections",
+    "section_locked_hint": "Save or discard your draft to switch sections.",
     "memory_empty": "This mate has no private memory store yet.",
     "memory_profile_frame": "Notes this mate writes about you and its work as it learns — carried into every session. You can read and edit them; the mate keeps updating them. Each box saves on its own — the footer “Save changes” does not cover them.",
     "state_disabled_word": "disabled",

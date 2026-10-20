@@ -19411,6 +19411,7 @@
     "sections_aria": "Einstellungsbereiche des Crew-Kameraden",
     "builtfrom_sections_aria": "Bereiche von Basiert auf",
     "memory_sections_aria": "Bereiche von Gedächtnis",
+    "section_locked_hint": "Speichere oder verwirf deinen Entwurf, um den Bereich zu wechseln.",
     "state_disabled_word": "deaktiviert",
     "switch_own_copy_title": "Von der eigenen Kopie dieses Mates wechseln?",
     "switch_own_copy_body": "Dieser Mate basiert auf einer eigenen angepassten Kopie. Der Wechsel zu einer anderen Vorlage verwirft diese Kopie – sie kann nicht erneut ausgewählt werden."

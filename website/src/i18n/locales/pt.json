@@ -19702,6 +19702,7 @@
     "sections_aria": "Seções de configurações do colega",
     "builtfrom_sections_aria": "Seções de Baseado em",
     "memory_sections_aria": "Seções de Memória",
+    "section_locked_hint": "Salve ou descarte seu rascunho para trocar de seção.",
     "state_disabled_word": "desativado",
     "switch_own_copy_title": "Sair da cópia própria deste mate?",
     "switch_own_copy_body": "Este mate baseia-se na sua própria cópia personalizada. Mudar para outro modelo descarta essa cópia: ela não pode ser selecionada de novo."

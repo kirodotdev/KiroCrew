@@ -8456,8 +8456,8 @@
       "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
     "lessonSaved": {
-      "saved": "Leçon enregistrée\u202f: {{rule}}",
-      "updated": "Leçon mise à jour\u202f: {{rule}}",
+      "saved": "Leçon enregistrée : {{rule}}",
+      "updated": "Leçon mise à jour : {{rule}}",
       "review": "Voir les leçons"
     },
     "selfChange": {
@@ -19702,6 +19702,7 @@
     "sections_aria": "Sections des réglages du coéquipier",
     "builtfrom_sections_aria": "Sections Basé sur",
     "memory_sections_aria": "Sections Mémoire",
+    "section_locked_hint": "Enregistre ou supprime ton brouillon pour changer de section.",
     "state_disabled_word": "désactivé",
     "switch_own_copy_title": "Quitter la copie propre de ce mate ?",
     "switch_own_copy_body": "Ce mate est fondé sur sa propre copie personnalisée. Passer à un autre modèle supprime cette copie  : elle ne pourra plus être sélectionnée."

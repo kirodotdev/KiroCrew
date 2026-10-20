@@ -19120,6 +19120,7 @@
     "sections_aria": "队友设置分区",
     "builtfrom_sections_aria": "构建来源分区",
     "memory_sections_aria": "记忆分区",
+    "section_locked_hint": "保存或放弃草稿后才能切换分区。",
     "state_disabled_word": "已禁用",
     "switch_own_copy_title": "要离开此伙伴的专属副本吗？",
     "switch_own_copy_body": "此伙伴基于其专属的定制副本。切换到其他模板会丢弃该副本——之后无法再次选择它。"
