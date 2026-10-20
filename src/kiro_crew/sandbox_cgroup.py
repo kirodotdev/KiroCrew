@@ -20,6 +20,11 @@ import urllib.parse
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 
+# The single source of the agents-slice name is sandbox_tiers (beside
+# _IN_SANDBOX_MARKER, in the lowest sandbox layer); re-exported below so this
+# module's public _CGROUP_AGENTS_SLICE name and every reader of it stay unchanged.
+from kiro_crew.sandbox_tiers import _CGROUP_AGENTS_SLICE  # noqa: F401
+
 # Logged under the sandbox's name, which operator log filters, level settings
 # and the tests' caplog scopes key on.
 logger = logging.getLogger("kiro_crew.sandbox")
@@ -66,11 +71,6 @@ _CGROUP_MEMORY_FRACTION = 0.65
 # missing/unknown). The cgroup path is Linux-only, where SC_PHYS_PAGES exists,
 # so this is a belt-and-suspenders default, not the normal path.
 _CGROUP_FALLBACK_MAX_MEMORY_MB = 8192
-
-# The slice every agent scope nests under (systemd dash-hierarchy places it at
-# kirocrew.slice/kirocrew-agents.slice inside the user manager). It is also
-# the aggregate enforcement boundary — see ensure_agents_slice_limits().
-_CGROUP_AGENTS_SLICE = "kirocrew-agents.slice"
 
 
 def _instance_slice_token() -> str:

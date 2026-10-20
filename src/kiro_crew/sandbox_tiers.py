@@ -1074,6 +1074,14 @@ def configured_sandbox_mode() -> str:
 # ``sandboxed_spawn_argv``.
 _IN_SANDBOX_MARKER = "KIROCREW_SANDBOX_ACTIVE"
 
+# Companion to ``_IN_SANDBOX_MARKER``: the single name for the systemd slice every
+# agent scope nests under (``kirocrew.slice/kirocrew-agents.slice`` inside the user
+# manager), and the aggregate enforcement boundary (``ensure_agents_slice_limits``).
+# It lives here, in the lowest sandbox layer, so BOTH the confinement-evidence probe
+# in ``sandbox_unavailable`` and the scope machinery in ``sandbox_cgroup`` read one
+# constant rather than repeating the literal — a renamed slice moves in one place.
+_CGROUP_AGENTS_SLICE = "kirocrew-agents.slice"
+
 # Companion to ``_IN_SANDBOX_MARKER``: records WHICH tier the outer sandbox was
 # built at (``standard``/``cc``/``strict``), exported at the same two launcher
 # sites and with the same non-droppable placement (after each platform's env
