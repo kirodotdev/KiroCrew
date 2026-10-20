@@ -28,8 +28,9 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   a gateway restart), an ownerless directory is never deleted, and a garbled
   owner file is left for a human. A reclaimed directory that holds a git
   repository is moved into the quarantine (:data:`QUARANTINE_DIRNAME`) rather
-  than deleted, and is deleted from there only after
-  :data:`QUARANTINE_TTL_SECONDS`.
+  than deleted, stripped there of what tools rebuild (package installs,
+  virtual environments, caches, pytest basetemps), and deleted from there only
+  after :data:`QUARANTINE_TTL_SECONDS`.
 
 The WORK directory follows the session tree, not the process. The scratch
 root is masked for every sandboxed process and each spawn is handed back only
@@ -142,6 +143,19 @@ _QUARANTINED_NAME = re.compile(r"(\d{8}T\d{6}Z)-(.+)")
 #: worktree's directory carries. Any two of them in one directory make it a
 #: repository for the sweep (:func:`holds_git_repository`).
 _GIT_DIR_ENTRIES = ("HEAD", "objects", "refs", "commondir")
+#: Directories a tool rebuilds from the work itself: package installs, bytecode
+#: and tool caches. The sweep neither looks for repositories inside them nor
+#: keeps them in the quarantine (:func:`_regenerable`).
+_REGENERABLE_DIRNAMES = frozenset(
+    {"node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox"}
+)
+#: The file every Python virtual environment holds at its top.
+_VENV_MARKER = "pyvenv.cfg"
+#: pytest's per-user basetemp, made directly under ``$TMPDIR`` -- which is the
+#: scratch directory. Test suites ``git init`` throwaway repositories there by
+#: the hundred, so it is judged only at the top of a scratch tree, where pytest
+#: puts it, and never as a name deeper down.
+_BASETEMP_PREFIX = "pytest-of-"
 
 _LABEL_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -1051,15 +1065,23 @@ def holds_git_repository(tree: Path) -> bool:
 
     A ``.git`` directory holding only ``objects`` is residue git does not open,
     such as the read-only object files a partial delete strands on Windows.
+    A regenerable subtree (:func:`_regenerable`) is not searched: the
+    repositories test suites create in a pytest basetemp, or a package manager
+    leaves in ``node_modules``, are not work, and a tree whose only
+    repositories sit in such subtrees is deleted at once.
     Entries are read with ``lstat``; no link is followed or descended into, no
     file is opened and no git runs. A tree that cannot be listed answers True.
     """
+    return _search(tree, basetemp_at_top=True)
+
+
+def _search(tree: Path, *, basetemp_at_top: bool) -> bool:
+    """Search once per directory; only a scratch root permits top-level basetemps."""
     stack = [tree]
     try:
         while stack:
             current = stack.pop()
-            present = sum(os.path.lexists(current / name) for name in _GIT_DIR_ENTRIES)
-            if present >= 2:
+            if _is_git_directory(current):
                 return True
             for entry in os.scandir(current):
                 path = current / entry.name  # name-composed: cannot escape the tree
@@ -1068,11 +1090,123 @@ def holds_git_repository(tree: Path) -> bool:
                     if not is_dir or any(name != "objects" for name in os.listdir(path)):
                         return True
                     continue
-                if is_dir:
+                if not is_dir:
+                    continue
+                top_level = basetemp_at_top and current == tree
+                # Search venvs in place, without resetting the scratch root or
+                # searching nested venvs again through _regenerable.
+                if _searched_venv(path, top_level=top_level) or not _regenerable(
+                    path, top_level=top_level
+                ):
                     stack.append(path)
     except (OSError, ValueError):
         return True
     return False
+
+
+def _searched_venv(path: Path, *, top_level: bool) -> bool:
+    """Whether :func:`_regenerable` judges *path* by searching it: a venv that is not a repository.
+
+    A regenerable name wins over the venv marker, and a venv that is itself a
+    repository is never regenerable, so neither is searched as a venv.
+    """
+    if _regenerable_name(path.name, top_level=top_level):
+        return False
+    if not _is_regular_file(path / _VENV_MARKER):
+        return False
+    return not (os.path.lexists(path / ".git") or _is_git_directory(path))
+
+
+def _is_git_directory(path: Path) -> bool:
+    """Whether *path* holds at least two of :data:`_GIT_DIR_ENTRIES`, of any kind."""
+    return sum(os.path.lexists(path / name) for name in _GIT_DIR_ENTRIES) >= 2
+
+
+def _regenerable(path: Path, *, top_level: bool) -> bool:
+    """Whether the plain directory *path* holds only what a tool rebuilds.
+
+    That is a directory named in :data:`_REGENERABLE_DIRNAMES`, a Python
+    virtual environment (a directory holding a REGULAR file named
+    :data:`_VENV_MARKER`), or -- when *top_level*, a direct child of a scratch
+    tree -- a pytest basetemp named ``pytest-of-*``. A directory named
+    ``.venv`` that holds no such file is somebody's work, not a venv.
+
+    A directory that is itself a repository -- one holding a ``.git`` entry,
+    or a git directory -- is never regenerable, whatever its name: a clone
+    called ``node_modules`` holds work like any other. A venv is judged by
+    what it holds, not by a name a tool gave it, so it is regenerable only
+    when no repository sits anywhere below it either: a venv used as a
+    project folder, or the clones ``pip install -e git+...`` puts in its
+    ``src``, keep it whole.
+    """
+    named = _regenerable_name(path.name, top_level=top_level)
+    if not (named or _is_regular_file(path / _VENV_MARKER)):
+        return False
+    if os.path.lexists(path / ".git") or _is_git_directory(path):
+        return False
+    return named or not _search(path, basetemp_at_top=False)
+
+
+def _regenerable_name(name: str, *, top_level: bool) -> bool:
+    """Whether *name* alone marks a regenerable directory (see :func:`_regenerable`)."""
+    return name in _REGENERABLE_DIRNAMES or (top_level and name.startswith(_BASETEMP_PREFIX))
+
+
+def _is_regular_file(path: Path) -> bool:
+    """A regular file, read with ``lstat``: a link named like one is not."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _strip_regenerable(tree: Path) -> None:
+    """Delete the regenerable subtrees of the quarantined *tree*, in place.
+
+    The quarantine keeps a tree for the repositories in it; package installs,
+    virtual environments, caches and pytest basetemps beside them are rebuilt
+    from the work and can be most of its size. Only a tree the sweep moved
+    into the quarantine reaches here, so nothing else is using it. Running it
+    again on a stripped tree changes nothing.
+
+    The walk reads entries with ``lstat``, composes every path from names
+    under *tree*, and never enters a ``.git`` entry or a git directory. A
+    link or junction is neither removed nor followed, whatever its name: it
+    holds no bytes of its own. Each entry fails open: one that cannot be read or removed is
+    logged and skipped, and the next sweep tries again.
+    """
+    stripped = 0
+    stack = [tree]
+    while stack:
+        current = stack.pop()
+        try:
+            if _is_git_directory(current):
+                continue
+            names = [entry.name for entry in os.scandir(current)]
+        except OSError:
+            logger.debug("agent-scratch: could not list %s", current, exc_info=True)
+            continue
+        top_level = current == tree
+        for name in names:
+            if name == ".git":
+                continue
+            path = current / name  # name-composed: cannot escape the tree
+            try:
+                info = os.lstat(path)
+            except OSError:
+                continue
+            # A link (a junction too) holds no bytes of its own: kept, never followed.
+            if not stat.S_ISDIR(info.st_mode) or platform_compat.lstat_is_name_surrogate(info):
+                continue
+            if not _regenerable(path, top_level=top_level):
+                stack.append(path)
+            elif platform_compat.rmtree_force(path):
+                stripped += 1
+            else:
+                logger.warning("agent-scratch: could not fully remove %s; will retry", path)
+    if not stripped:
+        return
+    logger.info("agent-scratch: removed %d rebuildable dir(s) from %s", stripped, tree)
 
 
 def _quarantine(child: Path, now: float) -> bool:
@@ -1088,7 +1222,8 @@ def _quarantine(child: Path, now: float) -> bool:
     repository is never deleted from the root.
 
     Each move logs one INFO line naming where the tree went and when it is
-    deleted from there.
+    deleted from there. The same sweep's quarantine pass
+    (:func:`_expire_quarantine`) then strips the moved tree, outside the lock.
     """
     holding = quarantine_dir()
     target = holding / f"{time.strftime(_QUARANTINE_STAMP, time.gmtime(now))}-{child.name}"
@@ -1150,6 +1285,12 @@ def _quarantined_at(name: str) -> float | None:
 def _expire_quarantine(now: float) -> int:
     """Delete quarantined trees older than :data:`QUARANTINE_TTL_SECONDS`.
 
+    A younger one is stripped of its regenerable subtrees instead
+    (:func:`_strip_regenerable`): a tree the sweep has just moved here, and on
+    every later sweep one whose strip was cut short or that was quarantined
+    before the strip existed. This runs outside :data:`_SWEEP_LOCK`, since
+    deleting a large install takes a while and no spawn joins a tree here.
+
     Only a plain directory whose name this module wrote is judged, and one
     that something wrote into within the grace window is kept until it has
     been idle that long. Only a write defers the delete: reading or copying
@@ -1175,6 +1316,7 @@ def _expire_quarantine(now: float) -> int:
         if moved_at is None or not _is_plain_dir(path):
             continue
         if now - moved_at < QUARANTINE_TTL_SECONDS:
+            _strip_regenerable(path)
             continue
         if now - _tree_newest_mtime(path, fallback=now) < _UNOWNED_GRACE_SECONDS:
             continue
@@ -1211,7 +1353,11 @@ def sweep_dead_scratch(now: float | None = None) -> int:
       (:func:`_expire_quarantine`). A dead owner says the PROCESS ended, not
       that the work is saved: a session outlives its processes, a clone is
       where an agent is told to work, and nothing the agent wrote can prove
-      its work is saved, so the sweep does not try to tell.
+      its work is saved, so the sweep does not try to tell. What the
+      quarantine keeps is the work: the moved tree loses its package
+      installs, virtual environments, caches and pytest basetemps
+      (:func:`_strip_regenerable`), and repositories found only inside those
+      do not count (:func:`holds_git_repository`).
 
     Returns the number of directories deleted, from the root or the quarantine;
     a tree moved into the quarantine is not counted.
