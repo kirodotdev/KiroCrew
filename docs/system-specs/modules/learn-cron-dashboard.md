@@ -2088,9 +2088,10 @@ specified compatibility change.
   internal path sets, `_OWN_HOST_WARM_TASKS`, the tailnet awake cache, the
   constants) stays a facade global. Nothing but `server.py` imports an owner, and an
   owner imports project modules only under `TYPE_CHECKING` or inside a function.
-  `test/test_dashboard_server_composition_contract.py` pins the surface, the
-  composition, the patch reach, both middleware orders, the lifecycle hooks, the MCP
-  route table and the boot call sequence.
+  `test/test_dashboard_server_composition_contract.py` pins the surface and the
+  composition, and `test/test_dashboard_server_composition_contract_reach.py` the patch
+  reach, both middleware orders, the lifecycle hooks, the MCP route table and the boot
+  call sequence.
 
   What stays in `server.py`: both entrypoints, with the constructs repository guards
   read in that file by path (the `_STRICT_INTERNAL_API_PATHS` literal, both runner
@@ -2107,7 +2108,8 @@ specified compatibility change.
   calling an owner when it is more than a few lines. Every name an owner function
   reads must be bound in `server.py`. A new owner module is imported in its import
   block (the module alias and its by-name re-exports), appended to the `compose(...)`
-  call at the end of the file and to the contract test's `_BASE_OWNERS`.
+  call at the end of the file and to `_BASE_OWNERS` in
+  `test/dashboard_server_composition_contract_helpers.py`.
 
 ### Security
 

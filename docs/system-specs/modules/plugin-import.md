@@ -1,7 +1,8 @@
 # Plugin import
 
 Owner: `kiro_crew.apps.plugin_import`. CLI: `kirocrew app import`. Tests:
-`test/test_plugin_import.py`.
+`test/test_plugin_import.py`, `test/test_plugin_import_bounds.py` and
+`test/test_plugin_import_refusals.py`.
 
 Converts a manifest-declared plugin package into an installable Kiro Crew app.
 The input format is the one Codex reads and the one the published plugin

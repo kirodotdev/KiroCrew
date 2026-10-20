@@ -28,7 +28,7 @@ class TestLogout:
         # path and refuse first. Route the owner-verified secret transport
         # through the stubbed loopback_urlopen so the send works without a real
         # unix socket; the transport's own proof is covered in
-        # test_cli_server_more_coverage.
+        # test_cli_server_more_coverage_client.
         _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
         import kiro_crew.cli_server as _cs
 

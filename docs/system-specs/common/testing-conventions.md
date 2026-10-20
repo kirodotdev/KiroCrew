@@ -3500,7 +3500,7 @@ that survives neither is the probe's.
 
 #### What not to re-derive
 
-`test_plugin_import.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
+`test_plugin_import_bounds.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
 took 101 s once (round 1) and 30-41 s after: a nested-pytest test on a loaded host, the
 same shape as the ipv6 one, left as is.
 `test_instances_proxy.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`
