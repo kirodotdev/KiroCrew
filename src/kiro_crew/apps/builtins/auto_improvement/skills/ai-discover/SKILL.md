@@ -9,7 +9,7 @@ triggers: auto-improvement discovery, find hotspots, profile discovery, discover
 
 This skill drives Phase A (discovery) of an auto-improvement cycle. It is
 **discovery only**: it never applies a change, never runs the keep-or-revert A/B,
-and never decides whether a finding is kept or drafted as a pull request. Those
+and never decides whether a finding is kept or drafted as a pull/merge request. Those
 are the spine's **deterministic Python** gate / keeper / pipeline, which no model
 can argue past. That separation is the point — the measurement is the product.
 
@@ -46,7 +46,7 @@ whole app exists to prevent.
 - Never edits the ruler, the measurement harness, the tests-of-record, or
   anything outside the active target profile's **edit allowlist**. Those paths
   are mechanically rejected, so an edit there wastes the whole cycle.
-- Never publishes or merges a pull request. Survivors are drafted as GitHub
-  draft PRs by the spine, and a human publishes them.
+- Never publishes or merges a pull/merge request. Survivors are drafted by the
+  spine as GitHub draft PRs or GitLab draft MRs, and a human publishes them.
 - Never fabricates a measured number. A fabricated win is the worst possible
   reward-hack, because it corrupts the record the loop reasons from.

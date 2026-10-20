@@ -1374,6 +1374,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _COMMAND_WRAPPERS,
         _FORBIDDEN_BINARIES,
         _FORBIDDEN_SUBCOMMANDS,
+        _GLAB_ALLOWED_SUBCOMMANDS,
         _MAX_UNWRAP_DEPTH,
         _SHELL_BINARIES,
         _VALUE_TAKING_OPTIONS,
