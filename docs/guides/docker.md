@@ -255,7 +255,8 @@ ways to let agent commands through. See
 ### Option A — Kiro Crew seccomp profile (recommended)
 
 The repo ships `docker/seccomp/kirocrew-seccomp.json`: the Docker default
-allow-list extended with unconditional `unshare`, `clone`, and `mount` rules.
+allow-list extended with unconditional `unshare`, `clone`, `mount`, and
+`umount2` rules.
 This is strictly less permissive than `--security-opt seccomp=unconfined` or
 `--privileged` — all other Docker default restrictions apply.
 
