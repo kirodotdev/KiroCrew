@@ -767,6 +767,7 @@ async def save_slot_off_loop(
     turn_timeout_override: tuple[int | None] | None = None,
     retired_rows: list[dict] | None = None,
     takeover_basis: TakeoverBasis | None = None,
+    verdict_source: str | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -818,6 +819,15 @@ async def save_slot_off_loop(
 
     ``expected_disk_older_count``: the ``slot._disk_older_count`` read together
     with *messages*; see :func:`_save_slot_to_history`. A drift refuses the save.
+
+    ``verdict_source``: a transcript key whose stored display verdicts
+    (``display_verdicts``) the save's redaction may reuse. Fork passes its parent,
+    because the child's rows are copies of the parent's. Verdicts are keyed by the
+    text and the rules, not by the session, so a reused verdict is the one a scan
+    would return. The scope opens inside the worker thread, because
+    ``run_in_executor`` does not carry the caller's context. It only helps when
+    the source's tags were stored under the same exempt-host set the save judges
+    with, so fork passes it only for a workspace with no allowed link hosts.
 
     ``rows_only``: write the window but leave the metadata line's slot-owned
     fields as they stand on disk when the line was published by ANOTHER slot --
@@ -903,28 +913,36 @@ async def save_slot_off_loop(
 
     def _do() -> bool:
         try:
-            return _save_slot_to_history(
-                state,
-                slot,
-                messages,
-                closed=closed,
-                closed_at=closed_at,
-                force=force,
-                rewrite=rewrite,
-                expected_history_key=expected_history_key,
-                expected_slot_name=expected_slot_name,
-                expected_disk_older_count=expected_disk_older_count,
-                rows_only=rows_only,
-                pending_mode_slot=pending_mode_slot,
-                mutes_opened_override=mutes_opened_override,
-                muted_override=muted_override,
-                after_commit_under_lock=after_commit_under_lock,
-                turn_timeout_override=turn_timeout_override,
-                retired_rows=retired_rows,
-                takeover_basis=_basis,
-            )
+            if verdict_source is None:
+                return _save()
+            # Not preloaded: on a warm process cache the read scope never parses
+            # the sidecar, and on a cold one it loads after a few misses.
+            with _display_verdicts.session(verdict_source):
+                return _save()
         finally:
             SlotRegistry.close_takeover_basis(state, _owned_basis)
+
+    def _save() -> bool:
+        return _save_slot_to_history(
+            state,
+            slot,
+            messages,
+            closed=closed,
+            closed_at=closed_at,
+            force=force,
+            rewrite=rewrite,
+            expected_history_key=expected_history_key,
+            expected_slot_name=expected_slot_name,
+            expected_disk_older_count=expected_disk_older_count,
+            rows_only=rows_only,
+            pending_mode_slot=pending_mode_slot,
+            mutes_opened_override=mutes_opened_override,
+            muted_override=muted_override,
+            after_commit_under_lock=after_commit_under_lock,
+            turn_timeout_override=turn_timeout_override,
+            retired_rows=retired_rows,
+            takeover_basis=_basis,
+        )
 
     def _begin_guarded_metadata_write() -> None:
         inflight = getattr(slot, "_metadata_persist_inflight", 0)
