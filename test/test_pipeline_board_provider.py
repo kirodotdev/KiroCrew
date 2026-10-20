@@ -431,7 +431,9 @@ def test_every_sentinel_becomes_null_in_the_payload() -> None:
     payload = panel_payload(_build(_view([_item("it_0")])))
     assert payload["lede"] is None
     assert payload["columns"][0]["cards"][0]["of"] is None
-    assert UNSAID not in repr(payload), "a sentinel survived into the island payload"
+    rendered = repr(payload)
+    assert repr(UNSAID) not in rendered, "a sentinel survived into the island payload"
+    assert UNSAID.value not in rendered, "a sentinel survived into the island payload"
 
 
 def test_the_payload_carries_the_contract_version() -> None:
