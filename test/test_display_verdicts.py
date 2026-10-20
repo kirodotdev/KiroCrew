@@ -52,9 +52,9 @@ def battery(monkeypatch):
     calls = {"n": 0}
     real = display_battery.redact_exfiltration_urls
 
-    def counted(text):  # type: ignore[no-untyped-def]
+    def counted(text, **kwargs):  # type: ignore[no-untyped-def]
         calls["n"] += 1
-        return real(text)
+        return real(text, **kwargs)
 
     monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted)
     return calls

@@ -321,9 +321,13 @@ _NO_BASE = object()
 
 
 def _display_redaction_cache_key(
-    text: str, base: object = _NO_BASE
+    text: str, base: object = _NO_BASE, exempt_hosts: frozenset[str] | None = None
 ) -> tuple[_DisplayRedactionKey, int]:
     """Digest the exact string entering the battery together with the exempt sets it reads.
+
+    ``exempt_hosts`` is the caller's one read of the platform set and the scoped
+    override, the same snapshot it hands the battery, so the key names the set
+    the output is computed under. ``None`` reads the set here.
 
     The key is fixed-size: a 32-byte digest and the input byte length. The host set
     is sorted and folded into the MAC input behind a NUL separator (a host never
@@ -336,9 +340,9 @@ def _display_redaction_cache_key(
     hash per lookup, so the cache stays cheaper than the battery it fronts.
     """
     raw = text.encode("utf-8", errors="surrogatepass")
-    hosts = "\0".join(sorted(_exempt_exact_hosts() | current_scoped_exempt_hosts())).encode(
-        "utf-8", errors="surrogatepass"
-    )
+    if exempt_hosts is None:
+        exempt_hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    hosts = "\0".join(sorted(exempt_hosts)).encode("utf-8", errors="surrogatepass")
     prefixes = _token_param_exempt_prefixes()
     tail = hosts
     if prefixes:
@@ -467,10 +471,16 @@ def _redact_for_display(text: str) -> str:
     Inside a scope that changes the battery's answer
     (:func:`_display_scope_changes_battery`) the battery runs uncached: no cache
     and no stored verdict is read or written.
+
+    The exempt-host set is read ONCE and that snapshot feeds both the key and
+    the battery. A second read inside the battery could see another set (the
+    platform read moves mid-process and degrades a failure to the empty set),
+    and the cache would store one set's output under another set's key.
     """
     scoped = _display_scope_changes_battery()
     stored, base = (None, None) if scoped else _display_verdicts.active()
-    key, input_bytes = _display_redaction_cache_key(text, base)
+    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    key, input_bytes = _display_redaction_cache_key(text, base, hosts)
     ck = _clean_verdict_key(key)
     tag = key[0]
     if not scoped:
@@ -499,7 +509,7 @@ def _redact_for_display(text: str) -> str:
             _remember_redacted(key, input_bytes, verdict)
             return verdict
 
-    redacted = display_battery(text)
+    redacted = display_battery(text, exempt_hosts=hosts)
     if scoped:
         return redacted
     if redacted == text:

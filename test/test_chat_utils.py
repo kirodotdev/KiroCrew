@@ -238,9 +238,9 @@ class TestRedactForDisplay:
         calls = {"n": 0}
         real = chat_utils.redact_exfiltration_urls
 
-        def counted(value):
+        def counted(value, **kwargs):
             calls["n"] += 1
-            return real(value)
+            return real(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted)
         monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted)
@@ -266,9 +266,9 @@ class TestRedactForDisplay:
         real_credentials = chat_utils.redact_credentials
         calls = {"exfiltration": 0, "credentials": 0}
 
-        def counted_exfiltration(value):
+        def counted_exfiltration(value, **kwargs):
             calls["exfiltration"] += 1
-            return real_exfiltration(value)
+            return real_exfiltration(value, **kwargs)
 
         def counted_credentials(value):
             calls["credentials"] += 1
@@ -355,9 +355,9 @@ class TestRedactForDisplay:
         real_credentials = chat_utils.redact_credentials
         calls = {"exfiltration": 0, "credentials": 0}
 
-        def counted_exfiltration(value):
+        def counted_exfiltration(value, **kwargs):
             calls["exfiltration"] += 1
-            return real_exfiltration(value)
+            return real_exfiltration(value, **kwargs)
 
         def counted_credentials(value):
             calls["credentials"] += 1
@@ -414,9 +414,9 @@ class TestRedactForDisplay:
         real_credentials = chat_utils.redact_credentials
         calls = {"n": 0}
 
-        def counted_exfiltration(value):
+        def counted_exfiltration(value, **kwargs):
             calls["n"] += 1
-            return real_exfiltration(value)
+            return real_exfiltration(value, **kwargs)
 
         def counted_credentials(value):
             calls["n"] += 1
