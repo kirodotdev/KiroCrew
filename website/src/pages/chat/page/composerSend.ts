@@ -8,8 +8,9 @@ import type { CapacityResponse } from '../../../api/sharedCrew'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { store, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
-import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type PasteBlock } from '../../../utils/pasteTokens'
-import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
+import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, missingBackedBlocks, type PasteBlock } from '../../../utils/pasteTokens'
+import { mergeSessionRefs, sanitizeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
+import { sanitizePasteBlocks } from '../../../utils/chatPasteDrafts'
 import type { PickedFileTokens } from './composerFileMentions'
 import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
 import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectPendingTurn, selectSendConfirmed, selectSlotRunEpoch, selectSlotStreamState, markSendUnconfirmed, confirmOptimisticSend, resolveOptimisticSteer, recordSendAttempt, ageFolderSuggestion } from '../../../store/chatSlice'
@@ -17,7 +18,7 @@ import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
 import { announceIfRemovedSendDelivered } from '../../../components/useDeliveryWarningStrip'
 import { mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
-import { prependQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
+import { prependQuote, readMessageQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { isEmptyTurn, buildOutgoingTurn } from '../../../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../../../chat-core/composer/composerPastes'
 import { clearDictated, markDictated, takeDictated, wantsDictationNote } from '../../../chat-core/composer/dictationProvenance'
@@ -134,6 +135,44 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
   }
 }
 
+const isKnowledgeResult = (v: unknown): v is KnowledgeResult => {
+  if (!v || typeof v !== 'object') return false
+  const k = v as Record<string, unknown>
+  return typeof k.id === 'string' && typeof k.title === 'string' && typeof k.content === 'string'
+    && typeof k.summary === 'string' && typeof k.match_type === 'string' && typeof k.tokens === 'number'
+    && (k.source === null || typeof k.source === 'string')
+}
+
+/** A page payload an earlier page load persisted, or `null` when it holds nothing to put back.
+ *
+ *  Restorable on the same terms `isEmptyTurn` lets a send through: typed text, a quote or session
+ *  refs. The quote comes back inside the text rather than on the stage, because the stage is not
+ *  saved with the draft and a second reload would lose it. */
+export function parseSentTurn(v: unknown): SentTurnRestore | null {
+  if (!v || typeof v !== 'object') return null
+  const r = v as Record<string, unknown>
+  if (typeof r.inlined !== 'string') return null
+  const quote = readMessageQuote({ quote: r.quote })
+  const sessionRefs = sanitizeSessionRefs(r.sessionRefs) ?? []
+  if (!r.inlined.trim() && !quote && !sessionRefs.length) return null
+  const tokens: Record<string, string[]> = {}
+  if (r.slotTokens && typeof r.slotTokens === 'object') {
+    for (const [k, list] of Object.entries(r.slotTokens as Record<string, unknown>)) {
+      if (Array.isArray(list)) tokens[k] = list.filter((t): t is string => typeof t === 'string')
+    }
+  }
+  const knowledge = Array.isArray(r.knowledge) ? r.knowledge.filter(isKnowledgeResult) : []
+  return {
+    inlined: quote ? prependQuote(r.inlined, quote) : r.inlined,
+    pastes: sanitizePasteBlocks(r.pastes) ?? [],
+    sessionRefs,
+    quote: null,
+    ...(Object.keys(tokens).length ? { slotTokens: tokens } : {}),
+    ...(knowledge.length ? { knowledge } : {}),
+    ...(r.dictated === true ? { dictated: true } : {}),
+  }
+}
+
 /**
  * send(): the main composer's whole turn submission, from slash interception and the
  * outgoing turn through session creation, delivery receipts and every recovery path,
@@ -176,10 +215,19 @@ export function useComposerSend({
   const modeRef = useRef(mode)
   modeRef.current = mode
 
+  // The selection this tab last injected, keyed by the render's selection it was built on: two
+  // merges in one batch both see the same pre-render `pendingKnowledge`, so the second must build
+  // on the first's result or it drops it.
+  const knowledgeBack = useRef<{ base: unknown; items: readonly KnowledgeResult[] } | null>(null)
+  // Only bridges merges inside one batch: once a render commits, `pendingKnowledge` is current again.
+  useEffect(() => { knowledgeBack.current = null })
   const mergeKnowledgeBack = useCallback((items: readonly KnowledgeResult[]) => {
-    const newer = knowledgeFetchRef.current.pendingKnowledge?.items ?? []
+    const live = knowledgeFetchRef.current.pendingKnowledge
+    const newer = knowledgeBack.current && knowledgeBack.current.base === live ? knowledgeBack.current.items : (live?.items ?? [])
     const newerIds = new Set(newer.map(i => i.id))
-    knowledgeFetchRef.current.inject([...items.filter(i => !newerIds.has(i.id)), ...newer])
+    const next = [...items.filter(i => !newerIds.has(i.id)), ...newer]
+    knowledgeFetchRef.current.inject(next)
+    knowledgeBack.current = { base: live, items: next }
   }, [knowledgeFetchRef])
 
   /**
@@ -213,6 +261,29 @@ export function useComposerSend({
    * literal. Shares the create-failure path's merge rule so a reference
    * staged while the send was in flight is not clobbered.
    */
+  /** File aliases and the selected knowledge, which the composer's saved draft does not hold
+   *  (knowledge only the live composer can take). */
+  const restoreSentContext = useCallback((slot: string, sent: SentTurnRestore) => {
+    if (sent.slotTokens) mergeSlotTokens(slot, sent.slotTokens)
+    if (sent.knowledge?.length && composerSlotRef.current === slot) mergeKnowledgeBack(sent.knowledge)
+  }, [mergeSlotTokens, mergeKnowledgeBack, composerSlotRef])
+
+  /** For a send whose text survived: its context, and any paste block its surviving token still
+   *  shows but the saved paste drafts lost (they are capped and evicted apart from the text). */
+  const restoreSentAside = useCallback((slot: string, sent: SentTurnRestore) => {
+    if (sent.dictated) markDictated(slot)
+    restoreSentContext(slot, sent)
+    if (!sent.pastes.length) return
+    const onScreenNow = composerSlotRef.current === slot
+    const held = onScreenNow ? readPasteBlocks() : (pasteDrafts.current[slot] ?? [])
+    const missing = missingBackedBlocks(onScreenNow ? inputRef.current : (drafts.current[slot] ?? ''), held, sent.pastes)
+    if (!missing.length) return
+    const pastesBack = [...held, ...missing]
+    setPasteDraft(pasteDrafts.current, slot, pastesBack)
+    saveDrafts()
+    if (onScreenNow) installPasteBlocks(pastesBack)
+  }, [restoreSentContext, composerSlotRef, readPasteBlocks, pasteDrafts, inputRef, drafts, saveDrafts, installPasteBlocks])
+
   const restoreSentTurn = useCallback((slot: string, sent: SentTurnRestore) => {
     // Ownership of the live composer state, not the active tab: see the
     // steer receipt's `onScreenNow` for the mid-switch window this closes.
@@ -258,8 +329,7 @@ export function useComposerSend({
     // Aliases come back with the text they describe -- MERGE, never
     // overwrite, so a file picked while the send was in flight keeps its
     // fresh bookkeeping (fork GPT review; same rule as the text above).
-    if (sent.slotTokens) mergeSlotTokens(slot, sent.slotTokens)
-    if (sent.knowledge?.length && onScreenNow) mergeKnowledgeBack(sent.knowledge)
+    restoreSentContext(slot, sent)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messageQuote.recoverInto])
 
@@ -1034,6 +1104,6 @@ export function useComposerSend({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSlot, dispatch, connected, forkUnavailable, messageQuote.consume, messageQuote.restage, setPendingAgent, setPendingModel])
   return {
-    send, restoreSentTurn,
+    send, restoreSentTurn, restoreSentAside,
   }
 }
