@@ -64,6 +64,28 @@ def test_dashboard_annotation_names_an_agent_mapping_the_app_wildcard(tmp_path):
     assert _agent_loads_skill(specs["other"], agent_path, flat_row) is False
 
 
+def test_agent_scoped_filter_keeps_a_flat_row_through_the_app_wildcard(tmp_path):
+    """The ``?agent=`` picker filter applies the annotation's alias fallback.
+
+    The catalog keeps only an app skill's flat link when its name sorts before
+    the app's, and that row carries no other spelling. An agent mapping the
+    app's ``<app>/*/SKILL.md`` loads it at runtime, so the agent-scoped listing
+    must keep it too, as the ``loaded_by_agents`` badge does.
+    """
+    from kiro_crew.dashboard.handlers._shared import skill_rows_for_globs
+
+    skills_root, _target, _pattern = _app_case(tmp_path, skills_dir())
+    rows = [
+        {"key": "a-first", "source": "kirocrew", "path": str(skills_root / "a-first" / "SKILL.md")}
+    ]
+
+    kept = skill_rows_for_globs(rows, [f"{skills_root}/app/*/SKILL.md"])
+    other = skill_rows_for_globs(rows, [f"{skills_root}/other-app/*/SKILL.md"])
+
+    assert [r["key"] for r in kept] == ["a-first"]
+    assert other == []
+
+
 def test_dashboard_alias_never_resolves_a_row_outside_the_skills_root(tmp_path, monkeypatch):
     """A project row sharing a leaf with an app skill is not resolved or matched."""
     import os

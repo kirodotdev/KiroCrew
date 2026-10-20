@@ -59,6 +59,7 @@ from ._shared import (
     read_bounded_json,
     read_skill_file,
     requesting_slot_project,
+    skill_rows_for_globs,
 )
 
 # Concurrent readers of the catalog share ONE scan. Nothing is stored and nothing
@@ -402,16 +403,32 @@ async def api_skills(request: web.Request) -> web.Response:
     result = await _assemble_skills_catalog(skills, project_dir)
     agent = request.query.get("agent") or None
     if agent:
-        # Resolved from the parsed-specs snapshot in agent_discovery (the
-        # annotation pass inside the catalog assembly warms it), so the warm
-        # path costs one scandir signature check instead of re-parsing every
-        # agent JSON. Still off-loop: the cold path walks and parses
-        # ~/.kiro/agents.
+        # Resolve the agent's skill globs against the SAME project the catalog
+        # was assembled for. ``agent_skill_globs`` reads the winning spec
+        # ``list_agents(project_dir=…)`` picks (project scope shadows user), so
+        # a custom agent's workspace-relative ``skill://`` glob anchors at the
+        # project exactly as ``session_skill_globs`` does on the runtime path.
+        # Off-loop either way: the warm path costs one scandir signature check,
+        # the cold path walks and parses ~/.kiro/agents.
         globs = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), agent_skill_globs, agent
+            discovery_executor(),
+            functools.partial(agent_skill_globs, agent, project_dir=project_dir),
         )
         if globs:
-            result = [s for s in result if agent in (s.get("loaded_by_agents") or [])]
+            # Filter by the agent's OWN resolved globs, not the catalog's
+            # ``loaded_by_agents`` field: that field is annotated from the
+            # user-level specs, so for a project spec that shadows a user one it
+            # would disagree with the winner ``agent_skill_globs`` just resolved.
+            # Matching the rows against these globs keeps ``list_agents`` the
+            # single owner of which spec wins. Off-loop: ``skill_rows_for_globs``
+            # delegates to ``_agents_loading_skill`` (the annotation's own
+            # matcher), whose resolved-path retry and alias fallback touch the
+            # filesystem per non-matching row, so on a large network-backed
+            # catalog it must not run on the event loop.
+            result = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(),
+                functools.partial(skill_rows_for_globs, result, globs, project_dir=project_dir),
+            )
             return web.json_response({"skills": result, "agent_scoped": True, "agent": agent})
     return web.json_response(result)
 

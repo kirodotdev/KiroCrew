@@ -29,6 +29,7 @@ from skill_browser_helpers import (  # noqa: F401 -- the fixture is requested by
     fake_home_fixture,
 )
 
+from conftest import make_dir_link
 from kiro_crew.dashboard.handlers._shared import (
     SKILL_FILE_MAX_BYTES,
     SKILL_TREE_MAX_ENTRIES,
@@ -46,6 +47,7 @@ from kiro_crew.dashboard.handlers._shared import (
     list_kiro_skills,
     list_skill_tree,
     read_skill_file,
+    skill_rows_for_globs,
 )
 
 # ── _parse_skill_description ──
@@ -672,6 +674,170 @@ class TestExpandAgentGlobs:
         annotate_skills_with_agents(skills)
         for p, s in zip(paths, skills):
             assert s["loaded_by_agents"] == _resolve_loaded_by_agents(p)
+
+
+class TestProjectRelativeGlobAnchorsOnProjectDir:
+    """The picker's agent filter must resolve a workspace-relative
+    ``skill://.kiro/skills/*`` glob against the requesting slot's project,
+    the way ``session_skill_globs`` does on the runtime path. Without the
+    project, a user-dir agent's relative glob collapses onto ``~`` and never
+    matches a ``kiro-workspace`` row, so the agent-scoped listing drops every
+    project skill — the reported symptom.
+    """
+
+    def test_expand_resource_uri_prefers_project_dir(self, fake_home, tmp_path):
+        # A user-dir spec: with no project the relative glob falls back three
+        # levels above the spec file (onto ``~``); with a project it anchors there.
+        agent_path = fake_home / ".kiro" / "agents" / "generalist.json"
+        proj = tmp_path / "proj"
+        without = _expand_resource_uri("skill://.kiro/skills/*/SKILL.md", agent_path)
+        withp = _expand_resource_uri(
+            "skill://.kiro/skills/*/SKILL.md", agent_path, project_dir=proj
+        )
+        assert withp == str(proj / ".kiro" / "skills" / "*" / "SKILL.md")
+        assert without != withp
+
+    def test_expand_agent_globs_threads_project_dir(self, fake_home, tmp_path):
+        proj = tmp_path / "proj"
+        parsed = [(
+            "generalist",
+            {"resources": ["skill://.kiro/skills/*/SKILL.md"]},
+            fake_home / ".kiro" / "agents" / "generalist.json",
+        )]
+        out = dict(_expand_agent_globs(parsed, project_dir=proj))
+        assert out["generalist"] == [str(proj / ".kiro" / "skills" / "*" / "SKILL.md")]
+
+    def test_annotation_anchors_workspace_row_only_with_project(self, fake_home, tmp_path):
+        # A custom agent in the USER dir mapping only the relative glob.
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "generalist.json").write_text(json.dumps({
+            "name": "generalist",
+            "resources": ["skill://.kiro/skills/*/SKILL.md"],
+        }))
+        proj = tmp_path / "proj"
+        ws_md = _write_skill(proj / ".kiro" / "skills", "ws-one") / "SKILL.md"
+        row = {"key": "kiro-workspace/ws-one", "name": "ws-one", "path": str(ws_md)}
+
+        skills_without = [dict(row)]
+        annotate_skills_with_agents(skills_without)
+        assert skills_without[0]["loaded_by_agents"] == []
+
+        skills_with = [dict(row)]
+        annotate_skills_with_agents(skills_with, project_dir=proj)
+        assert skills_with[0]["loaded_by_agents"] == ["generalist"]
+
+    def test_rows_for_globs_matches_project_anchored_glob(self, fake_home, tmp_path):
+        """``skill_rows_for_globs`` keeps the rows whose path matches the
+        owner-resolved globs, the way the ``?agent=`` filter scopes the list."""
+        proj = tmp_path / "proj"
+        ws_md = _write_skill(proj / ".kiro" / "skills", "ws-one") / "SKILL.md"
+        other = _write_skill(fake_home / ".kiro" / "skills", "user-one") / "SKILL.md"
+        rows = [
+            {"key": "kiro-workspace/ws-one", "path": str(ws_md)},
+            {"key": "kiro-user/user-one", "path": str(other)},
+        ]
+        globs = [str(proj / ".kiro" / "skills" / "*" / "SKILL.md")]
+        kept = skill_rows_for_globs(rows, globs)
+        assert [r["key"] for r in kept] == ["kiro-workspace/ws-one"]
+
+    def test_rows_for_globs_matches_through_resolved_symlink(self, fake_home, tmp_path):
+        """A row whose listed path is a symlink still matches a glob written
+        against the resolved target, via ``_matches_any``'s resolved-path retry
+        — the link-vs-resolved-path disagreement a bare fnmatch would miss."""
+        real_dir = tmp_path / "real-skills" / "linked-one"
+        real_dir.mkdir(parents=True)
+        (real_dir / "SKILL.md").write_text("---\nname: linked-one\n---\n")
+        link_root = tmp_path / "proj" / ".kiro" / "skills"
+        link_root.mkdir(parents=True)
+        link = link_root / "linked-one"
+        # make_dir_link falls back to a junction on Windows (no privilege
+        # needed), so the resolved-path retry stays exercised on every host
+        # rather than skipped (a-ratchet-may-only-tighten).
+        make_dir_link(link, real_dir)
+        rows = [{"key": "kiro-workspace/linked-one", "path": str(link / "SKILL.md")}]
+        globs = [str(real_dir.parent / "*" / "SKILL.md")]
+        kept = skill_rows_for_globs(rows, globs)
+        assert [r["key"] for r in kept] == ["kiro-workspace/linked-one"]
+
+    def test_rows_for_globs_matches_a_collapsed_duplicate_spelling(self, tmp_path):
+        """A skill listed twice -- a crew skill also symlinked into
+        ``~/.kiro/skills`` -- collapses to the crew row, whose path is the
+        real file. An agent glob naming only the ``~/.kiro/skills`` spelling
+        must still keep it: the dedup carries the dropped row's path in
+        ``alias_paths`` and the filter matches every spelling, as the
+        ``loaded_by_agents`` union it replaced did."""
+        crew_dir = tmp_path / "crew" / "skills" / "dup-one"
+        crew_dir.mkdir(parents=True)
+        (crew_dir / "SKILL.md").write_text("---\nname: dup-one\n---\n")
+        user_root = tmp_path / "home" / ".kiro" / "skills"
+        user_root.mkdir(parents=True)
+        link = user_root / "dup-one"
+        make_dir_link(link, crew_dir)
+        rows = _one_row_per_skill_file([
+            {"key": "dup-one", "source": "kirocrew", "owned": True,
+             "path": str(crew_dir / "SKILL.md")},
+            {"key": "kiro-user/dup-one", "source": "kiro-user",
+             "path": str(link / "SKILL.md")},
+        ])
+        assert [r["key"] for r in rows] == ["dup-one"]
+        assert rows[0]["alias_paths"] == [str(link / "SKILL.md")]
+
+        globs = [str(user_root / "*" / "SKILL.md")]
+        kept = skill_rows_for_globs(rows, globs)
+        assert [r["key"] for r in kept] == ["dup-one"]
+
+    def test_project_spec_shadows_user_spec_via_owner(self, fake_home, tmp_path):
+        """A project agent spec shadowing a same-named user spec decides the
+        filter's scope, because the filter resolves ``agent_skill_globs(
+        project_dir=…)`` — whose winner ``list_agents`` picks — and matches rows
+        against it. The user spec maps nothing; the project spec maps the
+        project skill, so the project spec must win and the row is kept.
+        """
+        from kiro_crew.agent_discovery import agent_skill_globs
+
+        user_agents = fake_home / ".kiro" / "agents"
+        user_agents.mkdir(parents=True)
+        (user_agents / "generalist.json").write_text(json.dumps({
+            "name": "generalist",
+            "resources": ["skill://~/.kiro/skills/none/SKILL.md"],
+        }))
+        proj = tmp_path / "proj"
+        proj_agents = proj / ".kiro" / "agents"
+        proj_agents.mkdir(parents=True)
+        (proj_agents / "generalist.json").write_text(json.dumps({
+            "name": "generalist",
+            "resources": ["skill://.kiro/skills/*/SKILL.md"],
+        }))
+        ws_md = _write_skill(proj / ".kiro" / "skills", "ws-one") / "SKILL.md"
+        rows = [{"key": "kiro-workspace/ws-one", "path": str(ws_md)}]
+
+        globs = agent_skill_globs("generalist", project_dir=str(proj))
+        kept = skill_rows_for_globs(rows, globs)
+        assert [r["key"] for r in kept] == ["kiro-workspace/ws-one"]
+
+    def test_collect_blocking_anchors_project_skill_for_badge(self, fake_home, tmp_path):
+        """The ``loaded_by_agents`` badge counts a project row for a user-dir
+        agent's relative glob once the catalog is assembled with the project."""
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "generalist.json").write_text(json.dumps({
+            "name": "generalist",
+            "resources": ["skill://.kiro/skills/*/SKILL.md"],
+        }))
+        proj = tmp_path / "proj"
+        ws_md = _write_skill(proj / ".kiro" / "skills", "ws-one") / "SKILL.md"
+
+        loader = MagicMock()
+        loader.list_skills.return_value = []
+        loader.catalog_project_skills.return_value = [
+            {"key": "ws-one", "name": "ws-one", "path": str(ws_md)}
+        ]
+
+        result = collect_skills_blocking(loader, [], project_dir=proj)
+        by_key = {s["key"]: s for s in result}
+        assert "kiro-workspace/ws-one" in by_key
+        assert by_key["kiro-workspace/ws-one"]["loaded_by_agents"] == ["generalist"]
 
 
 # ── list_skill_tree ──
