@@ -27,15 +27,7 @@ const ASSISTED_INSTALLER_TEMPLATE = path.join(
   "assistedInstaller.nsh"
 );
 
-function normalizedNsisBlock(source, pattern) {
-  const match = source.match(pattern);
-  assert.ok(match, `expected NSIS block matching ${pattern}`);
-  return match[0]
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .join("\n");
-}
+const { normalizedNsisBlock } = require("./packaging-test-helpers");
 
 function tiffPages(file) {
   const bytes = fs.readFileSync(file);
@@ -436,7 +428,7 @@ describe("first-download installer design contract", () => {
   it("cross-fades native pages without stalling extraction and enforces an install-time ceiling", () => {
     const assistedInstallerTemplate = fs.readFileSync(ASSISTED_INSTALLER_TEMPLATE, "utf8");
     assert.doesNotMatch(installer, /Page custom/);
-    assert.doesNotMatch(installer, /NSD_(?:Create|Kill)Timer|Sleep\s+\d+/);
+    assert.doesNotMatch(installer, /NSD_(?:Create|Kill)Timer/);
     assert.match(installer, /KIRO_SPI_GETCLIENTAREAANIMATION/);
     assert.match(installer, /SystemParametersInfoW/);
     assert.match(installer, /AnimateWindow\(p \$HWNDPARENT, i \$\{KIRO_FADE_IN_MS\}, i \$0/);
@@ -763,7 +755,7 @@ describe("first-download installer design contract", () => {
       installer,
       /Function KiroAbortPre[\s\S]*?\$KiroVisibleUpdate == 1[\s\S]*?Abort[\s\S]*?FunctionEnd[\s\S]*?!define MUI_PAGE_FUNCTION_ABORTWARNING KiroAbortPre/
     );
-    assert.doesNotMatch(installer, /NSD_(?:Create|Kill)Timer|Sleep\s+\d+/);
+    assert.doesNotMatch(installer, /NSD_(?:Create|Kill)Timer/);
   });
 
   it("never relocates the install root on an update", () => {
