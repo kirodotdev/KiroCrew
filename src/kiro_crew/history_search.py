@@ -40,12 +40,15 @@ from kiro_crew.history_index import (
 )
 from kiro_crew.history_search_listing import (  # noqa: F401 - facade re-exports
     _CREW_CATALOG_FIELDS,
+    _FALLBACK_SCAN_CHARS,
+    _FALLBACK_TITLE_CHARS,
     _MALFORMED,
     _NOT_LOOKED_UP,
     _UNREADABLE,
     ListingRow,
     _apply_metadata,
     _cached_head,
+    _catalog_title,
     _parse_metadata_line,
     _project_crew_fields,
     _unreadable_session_files_lock,
@@ -368,7 +371,8 @@ class SessionCatalogProjection:
     def _scan_head_title(path: "str | Path") -> tuple[object, bool | None]:
         """``(title, has_messages)`` from the first 21 lines of the transcript.
 
-        The title is the first user message's content[:80], ``None`` when the head
+        The title is the first user message read by ``_catalog_title`` (plain text
+        for a Slack session, then cut to 80 characters), ``None`` when the head
         holds none, ``_UNREADABLE`` when reading the head raised an I/O error, or
         ``_MALFORMED`` when reading or interpreting it raised anything else (a JSON
         line that is not an object). Neither outcome is cached; only the I/O error is
@@ -413,7 +417,7 @@ class SessionCatalogProjection:
                     continue
                 content = content or d.get("_type") != "metadata"
                 if d.get("role") == "user" and d.get("content"):
-                    return d["content"][:80], True
+                    return _catalog_title(Path(f.name).stem, d["content"], cut=True), True
         except OSError:
             return _UNREADABLE, None
         except Exception:

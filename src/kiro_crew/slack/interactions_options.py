@@ -266,6 +266,7 @@ def import_refusal(exc: Exception) -> tuple[str, str]:
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
     """Fetch a Slack thread, redact messages, and import into a new dashboard slot."""
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+    from kiro_crew.mrkdwn_title import SLACK_TEXT_META_KEY
     from kiro_crew.slack.handler import (
         _SLACK_TS_META,
         _THINKING,
@@ -354,12 +355,16 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
         text_content, _ = redact_exfiltration_urls(text_content)
         text_content, _ = redact_credentials(text_content)
         # Each row names its Slack message, so a turn still running when the thread
-        # was read can give the slot its answer (``_backfill_late_link``).
+        # was read can give the slot its answer (``_backfill_late_link``). A user
+        # row is Slack mrkdwn as fetched: the tab's fallback title reads it as text.
+        row_meta: dict = {_SLACK_TS_META: m.get("ts", "")}
+        if not is_bot:
+            row_meta[SLACK_TEXT_META_KEY] = True
         slot.append(
             role,
             text_content,
             f"msg msg-{'a' if is_bot else 'u'}",
-            meta={_SLACK_TS_META: m.get("ts", "")},
+            meta=row_meta,
         )
     ds.link_slack(slot.key, thread_ts, channel)
     await save_slot_off_loop(ds, slot)

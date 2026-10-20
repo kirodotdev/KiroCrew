@@ -660,6 +660,7 @@ from kiro_crew.memory_startup import (  # noqa: F401
 )
 from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F401
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key  # noqa: F401
+from kiro_crew.mrkdwn_title import SLACK_TEXT_META_KEY
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (  # noqa: F401
@@ -752,6 +753,8 @@ _SESSION_RELOAD_NOTICE = (
 #: caller-supplied one would show a message as another session's.
 #: ``CARD_ORIGIN_META_KEY`` marks a row a dashboard card sent (``card_send``), so a
 #: caller-supplied one would label typed text as a page's, or the reverse.
+#: ``SLACK_TEXT_META_KEY`` is the gateway's record that a row was copied in from a
+#: Slack thread, which the fallback title reads as Slack mrkdwn.
 RESERVED_ROW_META_KEYS = frozenset(
     {
         "decisions_strip",
@@ -765,6 +768,7 @@ RESERVED_ROW_META_KEYS = frozenset(
         "noteId",
         "noteRowFor",
         CARD_ORIGIN_META_KEY,
+        SLACK_TEXT_META_KEY,
     }
 )
 

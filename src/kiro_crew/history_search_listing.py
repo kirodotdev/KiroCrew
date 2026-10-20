@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import IO, TYPE_CHECKING, NamedTuple
 
 from kiro_crew.history_search_query import logger
+from kiro_crew.mrkdwn_title import is_slack_session_key, slack_title_text
 from kiro_crew.shared_crew.attribution import public_attribution_from_meta
 
 if TYPE_CHECKING:
@@ -38,6 +39,30 @@ _UNREADABLE = object()
 _MALFORMED = object()
 #: :func:`listing_row`'s marker for a head-cache lookup it has not made yet.
 _NOT_LOOKED_UP = object()
+
+#: Longest title the catalog derives from a session's first user message.
+_FALLBACK_TITLE_CHARS = 80
+#: How much of a Slack first message is read to make that title.
+_FALLBACK_SCAN_CHARS = 2000
+
+
+def _catalog_title(key: str, title: str, *, cut: bool) -> str:
+    """*title* as the catalog lists it for session *key*.
+
+    A Slack conversation's text is Slack mrkdwn, so its title is read as plain
+    text first (``mrkdwn_title``) and only then, when *cut*, bounded: cutting
+    first splits a ``<url|label>`` and leaves a raw half-link. Read on every
+    listing rather than rewritten on disk, so a title persisted raw by an earlier
+    build lists cleanly with no migration. Every other session's title is its
+    own words and is only bounded.
+    """
+    if is_slack_session_key(key):
+        # A first message can be long and is read on every listing: only a
+        # bounded head can reach the cut, and a construct the bound opens is
+        # read like any other cut-open one.
+        title = slack_title_text(title[:_FALLBACK_SCAN_CHARS] if cut else title)
+    return title[:_FALLBACK_TITLE_CHARS] if cut else title
+
 
 #: Session files whose stat failed with something other than ENOENT, already
 #: warned about. One such file marks every listing incomplete, which keeps the
@@ -143,7 +168,7 @@ def _cached_head(
         # prove an empty file, since an unparseable line is content too.
         for m in msg_cached[2]:
             if m.get("role") == "user" and m.get("content"):
-                return m["content"][:80], True
+                return _catalog_title(key, m["content"], cut=True), True
         return None, (True if msg_cached[2] else None)
     scanned = log._title_scan_cache.get(key)
     if (
@@ -236,6 +261,10 @@ def listing_row(
             reusable = False
             volatile = volatile or isinstance(exc, OSError)
     meta.setdefault("memory_mode", "persistent")
+    if "title" in meta and is_slack_session_key(key):
+        # A stored title may be one an earlier build wrote raw (often a
+        # cut-open link): listed as plain text, nothing rewritten on disk.
+        meta["title"] = _catalog_title(key, meta["title"], cut=False)
     # A session with no readable metadata line predates attribution: it reads as the
     # owner's, unless its key is a messaging channel's (Unattributed).
     if "attribution" not in meta:

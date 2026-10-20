@@ -168,6 +168,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
     trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
