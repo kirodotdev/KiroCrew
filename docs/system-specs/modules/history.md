@@ -1745,6 +1745,16 @@ and a caller deleting "the session" removes one half and leaves the other behind
 
 - `set_title(key, title)` — persists a title into the session's metadata line (first line of JSONL)
 
+### A crewmate's own DM thread is never auto-titled
+
+A slot with `mode == "member"` is one long-lived conversation with one
+crewmate, and the sidebar names its row after the crewmate (its display name,
+else its name), derived from the member binding at render time
+(`lib/memberThreadTitle.ts`). `chat_title.py` therefore skips it on
+every background path: `_maybe_auto_title`, the refresh (`_refresh_blocked`) and
+`generate_manual_title`, which answers `""`. Sessions a crewmate opens for its
+workers are ordinary slots and are titled as usual.
+
 ### Session titling is independent of `memory_mode`
 
 Auto-titling (`dashboard/chat_title.py:_maybe_auto_title`) runs for **every**

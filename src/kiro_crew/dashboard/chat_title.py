@@ -32,6 +32,7 @@ from kiro_crew.label_guard import (
     unspaced_script_chars,
 )
 from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1172,6 +1173,17 @@ def _with_ticket_prefix(summary: str, key: str) -> str:
 RESTORED_TURN_META_KEY = "turnProvenanceRestored"
 
 
+def _is_member_thread(slot: Any) -> bool:
+    """Whether *slot* is a crewmate's own DM thread (``mode == "member"``).
+
+    That thread is one long-lived conversation with one crewmate, and the
+    sidebar names it after the crewmate, so no background path may produce or
+    overwrite a title for it. A session a crewmate opens for its workers is an
+    ordinary slot (its mode is not ``member``) and is titled as usual.
+    """
+    return getattr(slot, "mode", "") == DM_SLOT_MODE
+
+
 def _counts_as_user_turn(slot: _ChatSlot, message: dict[str, Any]) -> bool:
     """Whether *message* is a turn of the session's own user, for titling.
 
@@ -1230,6 +1242,8 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     already writes ``meta_line["title"]`` for temporary slots regardless of
     this path — those sessions keep a transcript on disk for tab recovery.
     """
+    if _is_member_thread(slot):
+        return
     if slot._titled:
         return
     if slot._title_in_flight:
@@ -1412,7 +1426,12 @@ def _refresh_blocked(slot: _ChatSlot) -> bool:
     It needs an AUTO title (a manual rename locks it out) and no attempt already
     in flight.
     """
-    return not slot._titled or slot._title_origin != _TITLE_ORIGIN_AUTO or slot._title_in_flight
+    return (
+        _is_member_thread(slot)
+        or not slot._titled
+        or slot._title_origin != _TITLE_ORIGIN_AUTO
+        or slot._title_in_flight
+    )
 
 
 async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
@@ -1699,8 +1718,11 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
     Shared by the sidebar route and the ``session_generate_title`` verb. Makes
     one titling-model call and changes nothing on the slot. ``""`` means the
     model and the heuristic fallback both had nothing better than the
-    placeholder, so the caller keeps the current title.
+    placeholder, so the caller keeps the current title. A crewmate's own DM
+    thread always answers ``""``: its name is the crewmate's, not generated.
     """
+    if _is_member_thread(slot):
+        return ""
     try:
         # Window the RECENT conversational tail: the user reaches for
         # "Regenerate title" when the current name no longer fits, so the

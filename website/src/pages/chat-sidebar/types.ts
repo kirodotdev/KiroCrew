@@ -182,6 +182,8 @@ export interface AgentInfo {
   session_color?: string
   /** The roster namespace (`/api/agents/catalog`); `member` is a crewmate. */
   selection_kind?: 'member' | 'template'
+  /** A crewmate's presentation label, shown in place of `name`. */
+  display_name?: string
 }
 
 export type SessionFilterKey = 'unread' | 'running' | 'pinned' | 'recent'

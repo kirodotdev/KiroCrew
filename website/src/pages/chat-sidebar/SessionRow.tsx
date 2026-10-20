@@ -41,6 +41,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel, withMemorySource } from '../../utils/agentLabel'
 import { sessionMemoryTag } from '../../lib/agentMemorySource'
 import { sameRowView, type SessionRowView } from './rows'
+import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
@@ -303,6 +304,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // same reason: this sidebar does not own the slot's lifecycle. They differ only
   // in what a click does (open a window vs. navigate), which the handlers below decide.
   const foreignRow = !!peerId || onOpenElsewhere != null
+  // A crewmate's own DM thread is named after the crewmate, never after a generated
+  // topic (`memberThreadTitle`). Local rows only: a peer's roster is not ours.
+  const memberTitle = peerId ? null : memberThreadTitle(s, installedAgents)
+  const namedByCrewmate = memberTitle !== null
+  const shownTitle = memberTitle ?? (s.title && s.title !== s.key ? s.title : s.key)
   // Inside a crew group the header already names the machine, so the row
   // drops its own crew chip.
   const inCrewGroup = scope.startsWith('crew:')
@@ -1001,8 +1007,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const rowMenuProps = useMemo(() => ({
       slotKey: rowKey,
       mode,
-      onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
-      onAutoTitle: () => onAutoTitle(rowKey),
+      // A crewmate's thread is named after the crewmate, so a rename or a regenerated
+      // title would change nothing the row shows: neither item is offered.
+      onRename: namedByCrewmate ? undefined : () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
+      onAutoTitle: namedByCrewmate ? undefined : () => onAutoTitle(rowKey),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
       // A row menu opens from inside this panel, where the folder-order banner
       // (when there is one) sits over the tree -- the menu need not repeat it.
@@ -1015,7 +1023,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // Removing an adopted remote-crew copy is reversible (the session stays on
       // its peer), so its menu item renders neutral, not destructive-red.
       closeNeutral: releaseLocally,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
+    }), [rowKey, mode, namedByCrewmate, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
         <DropdownMenu>
@@ -1254,7 +1262,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
-            if (foreignRow) return
+            if (foreignRow || namedByCrewmate) return
             if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
             if (renamingHere) return
             e.preventDefault()
@@ -1559,7 +1567,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <div
               data-session-title
               className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
-              title={s.title && s.title !== s.key ? s.title : s.key}
+              title={shownTitle}
             >
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
@@ -1583,7 +1591,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {titleGenerating && (
                     <Loader size={ROW_ICON_PX} className="lucide-inline mr-1 shrink-0 text-accent animate-spin" role="img" aria-label={i18nT('pages.chatPage.regenerating_title')} data-testid="row-title-generating" />
                   )}
-                  {s.title && s.title !== s.key ? s.title : s.key}
+                  {shownTitle}
                 </>
               )}
             </div>
