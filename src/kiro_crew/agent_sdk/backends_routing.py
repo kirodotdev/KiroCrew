@@ -104,7 +104,7 @@ from kiro_crew.agent_sdk.backends import (
 # no kiro agent spec at all. A side turn on it therefore runs ``REJECT_ALL`` until a
 # read-only posture is expressed in the harness's own permission vocabulary.
 #
-# goose is a member on measurement, on goose 1.50.1. With the user's own
+# goose is a member on measurement, measured on goose 1.50.1. With the user's own
 # ``permission.yaml`` listing ``shell``, ``tree``, ``analyze`` and ``read_image``
 # under ``always_allow``, a session on the separate home raised
 # ``session/request_permission`` for every tool the model called (``tree``,

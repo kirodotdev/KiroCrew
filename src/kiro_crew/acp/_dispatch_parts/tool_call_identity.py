@@ -324,10 +324,10 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # in the vocabulary module, and the coverage pin measures each member through
         # these readers rather than through a per-row claim.
     ),
-    # goose 1.50.1: ``_meta.goose.toolCall.{extensionName,toolName}``, captured live in
-    # ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl``. Its ``toolName`` is
-    # the fused ``<extension>__<tool>`` form it also puts in the title, so the extension
-    # prefix is stripped to leave the bare tool the deny set spells.
+    # goose (measured on 1.50.1): ``_meta.goose.toolCall.{extensionName,toolName}``,
+    # captured live in ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl``. Its
+    # ``toolName`` is the fused ``<extension>__<tool>`` form it also puts in the title, so
+    # the extension prefix is stripped to leave the bare tool the deny set spells.
     _MetaIdentityChannel(
         key="goose",
         server_field="extensionName",

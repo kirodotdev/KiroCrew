@@ -150,7 +150,7 @@ PROTOCOL_VERSION_OPENCODE = launch_for(ACP_BACKEND_OPENCODE).protocol_version
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
-# goose answers ``initialize`` with an integer ``protocolVersion`` of 1, captured off
+# goose answers ``initialize`` with an integer ``protocolVersion`` of 1, measured on
 # goose 1.50.1's own wire (``test/fixtures/acp_frames/goose/handshake-live.jsonl``);
 # its own literal for the same H10 reason.
 PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version

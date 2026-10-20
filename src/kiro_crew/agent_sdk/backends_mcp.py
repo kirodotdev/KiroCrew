@@ -64,7 +64,7 @@ from kiro_crew.agent_sdk.backends import (
 # the stdio servers Crew puts in it. ACP's ``McpCapabilities`` schema has exactly
 # two boolean fields, ``http`` and ``sse``, and NO stdio field, so a conforming
 # agent cannot advertise stdio at all and that answer is what full support looks
-# like. Absence of a flag that cannot exist is not evidence. Driven against
+# like. Absence of a flag that cannot exist is not evidence. Measured on
 # opencode 1.18.30, the element ``acp.session_mcp.acp_server_element`` already
 # emits is accepted, the named child is spawned, its tools are listed and the
 # element's ``env`` reaches it -- so the excluded harness had in fact been serving
@@ -90,7 +90,7 @@ from kiro_crew.agent_sdk.backends import (
 # or a trusted project's) outranks an extension's registration, so the extension
 # refuses that name's tools.
 # goose is the fourth member and it joins on a ROUND TRIP rather than on an accepted
-# element, which is the distinction pi's exclusion exists to draw. Driven against
+# element, which is the distinction pi's exclusion exists to draw. Measured on
 # goose 1.50.1: one element shaped as ``acp.session_mcp.acp_server_element`` emits is
 # placed on ``session/new``, and goose asks the named stdio child ``initialize``,
 # ``notifications/initialized``, ``tools/list`` and ``tools/call``, with the tool's

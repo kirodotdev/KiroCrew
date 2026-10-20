@@ -30,7 +30,7 @@ from kiro_crew.agent_sdk.backends import (
 # claude-agent-acp does not implement it, so a steer sent there is answered with
 # method-not-found rather than reaching the turn. It takes a user's steer over
 # ``_session/steering`` instead (see ``ACP_BACKENDS_STEERING_REQUEST``).
-# codex-acp (1.11.0) has a steering channel, but not this one and not usable for
+# codex-acp (measured on 1.11.0) has a steering channel, but not this one and not usable for
 # what membership buys. Measured against a real adapter: it is a different method
 # (``_session/steering``, ``{sessionId, prompt: [ContentBlock]}``, answered with
 # ``{outcome: injected|startedNewTurn|failed}``, advertised as
@@ -187,7 +187,7 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # claude-agent-acp, codex-acp, opencode, goose and pi finish the whole compaction inside
 # the ``session/prompt`` turn.
 #
-# opencode is a member on a LIVE capture against opencode 1.18.30, and it joins
+# opencode is a member on a LIVE capture, measured on opencode 1.18.30, and it joins
 # despite advertising nothing: its ``available_commands_update`` lists only
 # ``customize-opencode``, ``init`` and ``review``. That silence was read here as "no
 # compaction capability of any kind", and it is not one -- the harness serves
@@ -205,8 +205,8 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # retaken on the Real Adapter Contract lane's pin
 # (``test/real_adapters/package.json``).
 #
-# codex is a member on a capture rather than on its documentation. codex-acp 1.11.0
-# driven over stdio advertises ``compact`` in its ``available_commands_update``
+# codex is a member on a capture rather than on its documentation. Measured on
+# codex-acp 1.11.0 over stdio, it advertises ``compact`` in its ``available_commands_update``
 # ("Summarize conversation to avoid hitting the context limit"), intercepts the
 # ``/compact`` prompt as that command, and answers the same ``session/prompt``
 # request once the compaction is done. On 1.11.0 the frames are a MARKED tool-call
@@ -223,7 +223,7 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # configured it. That capture is on 1.11.0 and is not re-measured on the Real
 # Adapter Contract lane's pin (``test/real_adapters/package.json``).
 #
-# goose is a member on a LIVE capture against goose 1.50.1. Driven over three turns,
+# goose is a member on a LIVE capture, measured on goose 1.50.1. Driven over three turns,
 # its ``usage_update.used`` climbed 1529 -> 1991 -> 2453. A ``/compact`` prompt then
 # answered ``Compaction complete`` inside the turn, read ``used: 224``, and returned
 # ``stopReason: end_turn`` with no status frame after it. The next ORDINARY turn read

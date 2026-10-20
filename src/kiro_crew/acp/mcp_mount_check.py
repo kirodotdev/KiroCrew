@@ -1,7 +1,7 @@
 """Session-open MCP mount check for the session-array harnesses.
 
 A harness in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` can drop an ``mcpServers``
-element whose command does not start and still create the session (goose 1.50.1,
+element whose command does not start and still create the session (measured on goose 1.50.1,
 ``test/fixtures/acp_frames/goose/mcp-stdio-dropped-live.jsonl``). Nothing it
 sends afterwards tells that session from a healthy one.
 

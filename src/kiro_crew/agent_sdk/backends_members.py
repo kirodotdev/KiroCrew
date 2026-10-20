@@ -168,7 +168,7 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
 #
 #   * the per-session mount exists, on a RECORDED ROUND TRIP rather than on an
 #     advertisement -- ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl``
-#     (goose 1.50.1) carries one ``session/new`` element shaped as
+#     (measured on goose 1.50.1) carries one ``session/new`` element shaped as
 #     ``acp.session_mcp`` emits, and the named child is asked ``initialize``,
 #     ``notifications/initialized``, ``tools/list`` and ``tools/call`` with the tool's
 #     own result coming back. So the element is MOUNTED and its tools are REACHABLE,
