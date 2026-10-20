@@ -313,3 +313,21 @@ particular:
   claim it shares with this note — the missing evict-but-keep verb — was
   re-verified. Its other conclusions were not, and at least one is known to have
   since been fixed, so nothing in this note is taken from it.
+
+## Since this note
+
+KAS now has the verb. Engines 0.66.22 and 0.66.26 advertise
+`sessionCapabilities: {list, close, delete, fork}` in their `initialize` answer and serve
+the standard `session/close`, which disposes the session in memory and leaves its record on
+disk. Measured against KAS 0.66.22 and 0.66.26, through kiro-cli 2.27.1 and 2.29.0, with
+this note's acceptance steps: after a turn, the close answers `{}` and `session.json` and
+`messages.jsonl` stay; a later prompt on the same process makes the engine log
+`session.hydrate_on_demand` and load the session from disk, so the close had released it; a
+restarted process loads the session, replays the turn and answers from it; and the negative
+control, a delete followed by a load, gives an empty session. The committed capture
+(`test/fixtures/acp_frames/kas/session.jsonl`, engine 0.63.3) predates the verb.
+
+Crew uses it, so far, only to keep a finished task-runner or workflow session's record for
+`session.kas_delete_delay_secs` before deleting it
+([session.md](../../system-specs/modules/session.md#released-kas-session-records)). The five
+changes listed above, which would let KAS subagents share a process, are still open.

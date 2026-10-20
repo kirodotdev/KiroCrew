@@ -1147,3 +1147,21 @@ class TestEmptyResponseMaxContinuesWiring:
     def test_above_range_clamps_to_max(self) -> None:
         cfg = _load_from_dict({"session": {"empty_response_max_continues": 999}})
         assert cfg.session.empty_response_max_continues == 10
+
+
+class TestKasDeleteDelaySecs:
+    """session.kas_delete_delay_secs: 0 by default, which deletes a finished session's
+    record at once, and a hand-edited delay is capped at one day."""
+
+    def test_the_default_deletes_at_once(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.session.kas_delete_delay_secs == 0
+
+    @pytest.mark.parametrize(
+        "stored, loaded",
+        [(1800, 1800), (0, 0), (-5, 0), (86400, 86400), (10**9, 86400), ("abc", 0)],
+        ids=["thirty-minutes", "zero", "negative", "one-day", "beyond-a-day", "not-a-number"],
+    )
+    def test_the_loader_bounds_the_delay(self, stored: object, loaded: int) -> None:
+        cfg = _load_from_dict({"session": {"kas_delete_delay_secs": stored}})
+        assert cfg.session.kas_delete_delay_secs == loaded

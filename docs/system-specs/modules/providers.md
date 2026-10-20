@@ -770,7 +770,11 @@ restore: codex resolves a load from the sessionId alone.
 KAS answers no, and that is the whole of its exclusion: `_kiro/session/delete`
 REMOVES the persisted record, so there is nothing for a load to restore and a
 shared subagent would strand `spawn_continue` on `conversation_gone`. A different
-gap, owned by whoever gives KAS a non-destroying teardown. The invariants governing what an
+gap, owned by whoever gives KAS a non-destroying teardown. A KAS engine that advertises
+`sessionCapabilities.close` now has one, `session/close`, and Crew sends it only to keep a
+finished task-runner or workflow session's record for `session.kas_delete_delay_secs`
+([session.md](session.md#released-kas-session-records)); the sharing membership is
+unchanged. The invariants governing what an
 added harness may and may not change are in
 [harness-parity.md](harness-parity.md).
 

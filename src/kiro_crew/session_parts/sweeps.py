@@ -186,6 +186,7 @@ def _cleanup_boundary(self: SessionManager) -> SessionCleanup:
                     CleanupHook("rss_threshold", self._rss_threshold_check),
                     CleanupHook("stuck_turn", self._stuck_turn_check),
                     CleanupHook("bg_drain_reap", self._bg_drain_reap_hook),
+                    CleanupHook("released_sessions", self._released_sessions_hook),
                 ]
             )
         service = SessionCleanup(
@@ -279,6 +280,11 @@ async def _expire_idle_hook(self: SessionManager) -> None:
 async def _bg_drain_reap_hook(self: SessionManager) -> None:
     """Reap drained background runtimes during a cleanup tick."""
     await self._cleanup_boundary()._bg_drain_reap_hook()
+
+
+async def _released_sessions_hook(self: SessionManager) -> None:
+    """Delete the released sessions' records that are due."""
+    await self._cleanup_boundary()._released_sessions_hook()
 
 
 async def _orphan_mcp_hook(self: SessionManager) -> None:

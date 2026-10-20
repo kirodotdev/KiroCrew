@@ -365,7 +365,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
-    EXPECTED: dict[str, int] = {"standard": 284, "cc": 291, "strict": 292}
+    #:
+    #: One more root-level leaf, three more entries per tier:
+    #:
+    #: * ``released-sessions`` -- the gateway's pending deletes of released
+    #:   engine records. An entry has the gateway delete the record it names, so
+    #:   a forged one would delete a conversation. It sits at the root, masked,
+    #:   rather than under the sandbox read-write ``trust/``, and is leaf-only for
+    #:   the reason ``panel-dismissals`` is.
+    EXPECTED: dict[str, int] = {"standard": 287, "cc": 294, "strict": 295}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
