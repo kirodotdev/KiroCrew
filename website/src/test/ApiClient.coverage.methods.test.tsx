@@ -604,6 +604,7 @@ describe('every api method issues one well-formed /api request', () => {
     // The creator filter takes one query object (server-side filter and page).
     sharedCrewSessions: [{ creator: 'mine', q: 'sw-1', cursor: 'sw-2', limit: 50 }],
     sharedCrewCancelWork: ['sw-1', 3],
+    sessionArchiveRead: ['sw-1', CALLER_SIGNAL],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {
