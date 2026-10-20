@@ -1716,6 +1716,27 @@ async def refresh_forked_title(state: DashboardState, slot: _ChatSlot) -> None:
         slot._title_in_flight = False
 
 
+async def _model_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
+    # Window the RECENT conversational tail: the user reaches for
+    # "Regenerate title" when the current name doesn't fit, so the
+    # prompt must be built from what the session is about NOW, not its
+    # opening turns. Filter to the roles the prompt builder keeps BEFORE
+    # slicing — the raw list interleaves tool/permission/status rows, so
+    # a raw tail over a tool-heavy turn could window every usable line
+    # out and leave the click a silent no-op. The prompt builder's head
+    # slice is a no-op on this pre-windowed tail, so the initial
+    # auto-title path (which passes the full list and wants the opening
+    # messages) is unaffected.
+    convo = [m for m in slot.messages if m.get("role") in _TITLE_PROMPT_ROLES]
+    # Same label as the automatic paths: the key the title already leads
+    # with, else the opening message's.
+    key = await _ticket_key_if_enabled(_current_ticket_key(slot.title, convo))
+    title = await _generate_title_via_kiro(
+        state, convo[-_TITLE_PROMPT_WINDOW:], session_key=effective_session_key(slot)
+    )
+    return _with_ticket_prefix(title, key)
+
+
 async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
     """The title "Regenerate title" would give *slot* now, or ``""`` for none.
 
@@ -1728,24 +1749,7 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
     if _is_member_thread(slot):
         return ""
     try:
-        # Window the RECENT conversational tail: the user reaches for
-        # "Regenerate title" when the current name no longer fits, so the
-        # prompt must be built from what the session is about NOW, not its
-        # opening turns. Filter to the roles the prompt builder keeps BEFORE
-        # slicing — the raw list interleaves tool/permission/status rows, so
-        # a raw tail over a tool-heavy turn could window every usable line
-        # out and leave the click a silent no-op. The prompt builder's head
-        # slice is a no-op on this pre-windowed tail, so the initial
-        # auto-title path (which passes the full list and wants the opening
-        # messages) is unaffected.
-        convo = [m for m in slot.messages if m.get("role") in _TITLE_PROMPT_ROLES]
-        # Same label as the automatic paths: the key the title already leads
-        # with, else the opening message's.
-        key = await _ticket_key_if_enabled(_current_ticket_key(slot.title, convo))
-        title = await _generate_title_via_kiro(
-            state, convo[-_TITLE_PROMPT_WINDOW:], session_key=effective_session_key(slot)
-        )
-        return _with_ticket_prefix(title, key)
+        return await _model_manual_title(state, slot)
     except Exception:
         logger.debug("Title generation failed for slot %s", slot.key, exc_info=True)
         title = _fallback_title_from_messages(slot.messages)
