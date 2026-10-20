@@ -33,11 +33,12 @@ const GATEWAY_TOOLS_LABEL_KEY: Record<GatewayToolsState, string> = {
   pending: 'components.chatInput.gateway_tools_pending',
   not_sent: 'components.chatInput.gateway_tools_not_sent',
   failed: 'components.chatInput.gateway_tools_failed',
+  no_tools: 'components.chatInput.gateway_tools_no_tools',
 }
 
 /** A session that did not receive Kiro Crew's own tools: the agent chip warns. */
-export function gatewayToolsMissing(state: GatewayToolsState | null | undefined): state is 'not_sent' | 'failed' {
-  return state === 'not_sent' || state === 'failed'
+export function gatewayToolsMissing(state: GatewayToolsState | null | undefined): state is 'not_sent' | 'failed' | 'no_tools' {
+  return state === 'not_sent' || state === 'failed' || state === 'no_tools'
 }
 
 /* The context shelf under the composer: its measured width (which collapses
@@ -354,10 +355,12 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                     )}
                   </div>
                 )}
-                {gatewayTools === 'not_sent' && (
+                {(gatewayTools === 'not_sent' || gatewayTools === 'no_tools') && (
                   <div className="mt-2 pt-2 border-t border-border">
                     {/* Not an ErrorNotice: nothing failed. The agent's tools list or a
-                        project settings file withheld them, so this wears the warn status. */}
+                        project settings file withheld them, or the server started but
+                        another server's tool names took its place, so this wears the
+                        warn status. */}
                     <div role="status" data-testid="context-gateway-tools-missing" className="flex items-start gap-1.5 rounded-md border border-warn/20 bg-warn-subtle px-2 py-1.5 text-[12px] text-warn-text">
                       <AlertTriangle size={14} className="shrink-0 mt-px" aria-hidden="true" />
                       <span className="min-w-0 [overflow-wrap:anywhere]">{i18nT(GATEWAY_TOOLS_LABEL_KEY[gatewayTools])}</span>

@@ -6720,6 +6720,7 @@
       "gateway_tools_failed": "Die {{productName}}-Tools konnten in dieser Sitzung nicht starten. Starte eine neue Sitzung, um es erneut zu versuchen.",
       "gateway_tools_sent": "Übergeben, nicht bestätigt",
       "gateway_tools_not_sent": "Die {{productName}}-Tools wurden dieser Sitzung nicht übergeben. Füge unter Anpassen → Benutzerdefinierte Agenten @kirocrew-core zu den Tools dieses Agenten hinzu und starte dann eine neue Sitzung.",
+      "gateway_tools_no_tools": "Die {{productName}}-Tools sind in dieser Sitzung gestartet, haben ihr aber keine Tools gegeben, oft weil ein anderer Server dieselben Tool-Namen verwendet. Schalte diesen Server aus und starte dann eine neue Sitzung.",
       "gateway_tools_pending": "Noch nicht gemeldet",
       "gateway_tools_missing": "Diese Sitzung hat keine {{productName}}-Tools",
       "gateway_tools_missing_short": "Keine {{productName}}-Tools",

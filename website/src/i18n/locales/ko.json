@@ -6555,6 +6555,7 @@
       "gateway_tools_failed": "이 세션에서 {{productName}} 도구를 시작하지 못했습니다. 새 세션을 시작해 다시 시도하세요.",
       "gateway_tools_sent": "전달됨, 확인 안 됨",
       "gateway_tools_not_sent": "이 세션에는 {{productName}} 도구가 전달되지 않았습니다. 맞춤 설정 → 커스텀 에이전트에서 이 에이전트의 도구에 @kirocrew-core를 추가한 다음 새 세션을 시작하세요.",
+      "gateway_tools_no_tools": "이 세션에서 {{productName}} 도구가 시작되었지만 도구를 제공하지 않았습니다. 다른 서버가 같은 도구 이름을 쓰는 경우가 많습니다. 그 서버를 끈 다음 새 세션을 시작하세요.",
       "gateway_tools_pending": "아직 보고 없음",
       "gateway_tools_missing": "이 세션에는 {{productName}} 도구가 없습니다",
       "gateway_tools_missing_short": "{{productName}} 도구 없음",

@@ -245,10 +245,7 @@ function ChatInput({
   modelIsInheritedDefault,
   modelIsAutoChosen,
   modelIsJevRouted,
-  agentSource,
-  sessionBackend,
-  gatewayTools,
-  modelSelected,
+  agentSource, sessionBackend, gatewayTools, modelSelected,
   modelName,
   onAgentClick,
   agentBadge,
@@ -507,9 +504,7 @@ function ChatInput({
   const [listHintDismissed, setListHintDismissed] = useState(() => safeGetItem(LIST_HINT_DISMISSED_KEY) === '1')
   const [listHintSaveError, setListHintSaveError] = useState<string | null>(null)
   const { shelfRef, shelfHeight, shelfCompact, shelfTiny } = useShelfMeasure()
-  // A spelled-out missing-tools warning keeps its width: where it does not fit
-  // beside the context and model chips (a phone), those wrap to a row below it.
-  const toolsWarningRow = !!onAgentClick && !!agentName && gatewayToolsMissing(gatewayTools)
+  const toolsWarningRow = !!onAgentClick && !!agentName && gatewayToolsMissing(gatewayTools) // the warning takes the shelf's whole line (`basis-full`; `min-w-max` overflowed at 390px); the chips wrap below
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
   // previously discoverable is lost, and names the branch even when the label
@@ -1918,10 +1913,6 @@ function ChatInput({
           {!!sessionControls?.length && (
             <SessionControlChips sessionControls={sessionControls} shelfCompact={shelfCompact} onSessionControlClick={onSessionControlClick} />
           )}
-          {/* `basis-full`, not `min-w-max`: both take the whole line so the context and
-              model chips wrap below, but max-content also refuses to shrink, and at 390px —
-              wide enough to keep the labels — a long crew and project name then ran past
-              the shelf's right edge, clipping the project and branch controls. */}
           <div className={`flex items-center gap-2 min-w-0 ${toolsWarningRow ? 'basis-full' : 'flex-1'}`}>
           {!onAgentClick && agentBadge}
           {onAgentClick && agentName && (

@@ -138,9 +138,9 @@ async def test_claude_effort_is_the_level_the_adapter_answers_with(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_an_oversized_answer_leaves_the_cached_options(tmp_path) -> None:
-    # The answer replaces the cached options and its effort rides every slots snapshot,
-    # so one past the size bound is not kept: this 70 KB level would ride each one.
+async def test_an_oversized_reported_level_never_reaches_the_slot(tmp_path) -> None:
+    # The effort rides every slots snapshot, so a 70 KB value the harness writes back
+    # reads as no level: only an effort name is reported, never the raw value.
     provider = AcpProvider(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
     client = provider._client
     client._session_id = "sid"
@@ -151,8 +151,7 @@ async def test_an_oversized_answer_leaves_the_cached_options(tmp_path) -> None:
 
     await client.set_config_option("effort", "max")
 
-    assert client.acp_config_options == [_effort_option("high")]
-    assert provider.applied_effort == "high"
+    assert provider.applied_effort is None
 
 
 def test_a_reported_effort_that_is_no_effort_name_reads_as_none(tmp_path) -> None:

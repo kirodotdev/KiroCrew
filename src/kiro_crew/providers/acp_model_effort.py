@@ -39,7 +39,6 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
-    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     effort_config_option_id,
@@ -334,35 +333,33 @@ def _reported_effort(level: str) -> str | None:
     return level if level and cap_effort_capability_levels([level], source="reported") else None
 
 
-def applied_effort(self: AcpProvider) -> str | None:
-    """The reasoning effort this session runs at (public — see LLMProvider).
+def applied_effort(provider: AcpProvider) -> str | None:
+    """The reasoning effort *provider*'s session runs at (public — see LLMProvider).
 
-    On the config-option channel it is the effort option's value as the
-    harness last reported it, so a level the adapter refused or never got
-    does not read as applied. kiro-cli reports no level: it reads effort from
-    the ``cli.json`` overlay (``ACP_BACKENDS_EFFORT_OVERLAY``) at spawn and takes
-    a live change as ``/effort``, so there it is Crew's own record, the level
-    last pushed live, else the level written for the current model. A pair-id
-    harness that advertises no effort option carries the level in its current
-    model id (``<model>[<effort>]``). ``""`` is the harness's own default;
-    ``None`` means this harness has no effort channel or reported no level, or
-    none that is an effort name.
+    Where the harness advertises an effort config option, it is that option's
+    value as the harness last reported it, so a level the adapter refused or
+    never got does not read as applied. A pair-id harness that advertises no
+    effort option carries the level in its current model id
+    (``<model>[<effort>]``). kiro-cli reports no level: it reads effort from the
+    ``cli.json`` overlay (``ACP_BACKENDS_EFFORT_OVERLAY``) at spawn and takes a
+    live change as ``/effort``, so there it is Crew's own record, the level last
+    pushed live, else the level written for the current model. ``""`` is the
+    harness's own default; ``None`` means this harness has no effort channel or
+    reported no level, or none that is an effort name.
     """
-    backend = self._client.backend
-    if backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
-        option_id = effort_config_option_id(backend)
-        for option in self._client.acp_config_options:
-            if isinstance(option, dict) and option.get("id") == option_id:
-                value = option.get("currentValue")
-                if isinstance(value, str):
-                    return "" if value == _HARNESS_DEFAULT_EFFORT else _reported_effort(value)
-        if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
-            return _reported_effort(model_registry.split_effort_suffix(self.served_model)[1])
-        return None
+    backend = provider._client.backend
+    option_id = effort_config_option_id(backend)
+    for option in provider._client.acp_config_options:
+        if isinstance(option, dict) and option.get("id") == option_id:
+            value = option.get("currentValue")
+            if isinstance(value, str):
+                return "" if value == _HARNESS_DEFAULT_EFFORT else _reported_effort(value)
+    if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        return _reported_effort(model_registry.split_effort_suffix(provider.served_model)[1])
     if backend in ACP_BACKENDS_EFFORT_OVERLAY:
-        if self._live_effort is not None:
-            return self._live_effort
-        return self._resolve_effort() or ""
+        if provider._live_effort is not None:
+            return provider._live_effort
+        return provider._resolve_effort() or ""
     return None
 
 

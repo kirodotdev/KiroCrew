@@ -30,11 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
 from kiro_crew.acp import launch_tuning, runtime_models
-from kiro_crew.acp._dispatch import (
-    bounded_config_options,
-    build_session_new_params,
-    parse_session_modes,
-)
+from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpProcessDied
@@ -991,11 +987,8 @@ async def set_config_option(self: AcpClient, config_id: str, value: str) -> None
         {"sessionId": self._session_id, "configId": config_id, "value": value},
     )
     result = await self._wait_for_response(req_id, timeout=10.0)
-    # The response carries every option's value after the write, which is how
-    # the level the adapter actually accepted becomes readable. It rides every
-    # slots snapshot, so it is kept only within its size bound.
-    config_options = bounded_config_options(result)
-    if config_options is not None:
+    config_options = result.get("configOptions") if isinstance(result, dict) else None
+    if isinstance(config_options, list):
         self._acp_config_options = config_options
         self._sync_effort_levels()
 

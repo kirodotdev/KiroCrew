@@ -198,7 +198,7 @@ def read_reported_turn_model(source: object) -> str:
     Never raises.
     """
     try:
-        for node in _wrapper_chain(source):
+        for node in wrapper_chain(source):
             reported = getattr(node, "turn_model", "")
             if isinstance(reported, str) and reported:
                 return reported

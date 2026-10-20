@@ -27,7 +27,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry
-from kiro_crew.acp._dispatch import bounded_config_options, set_mode_params, set_model_params
+from kiro_crew.acp._dispatch import set_mode_params, set_model_params
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpClient,
@@ -551,11 +551,9 @@ async def set_config_option(self: AcpSessionHandle, config_id: str, value: str) 
         {"sessionId": self._session_id, "configId": config_id, "value": value},
     )
     msg = await self._wait_for_response(req_id, timeout=10.0)
-    # The response carries every option's value after the write, which is how
-    # the level the adapter actually accepted becomes readable. It rides every
-    # slots snapshot, so it is kept only within its size bound.
-    config_options = bounded_config_options(getattr(msg, "result", None))
-    if config_options is not None:
+    result = getattr(msg, "result", None)
+    config_options = result.get("configOptions") if isinstance(result, dict) else None
+    if isinstance(config_options, list):
         self._config_options = config_options
         self._sync_effort_levels()
 

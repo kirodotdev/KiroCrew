@@ -6555,6 +6555,7 @@
       "gateway_tools_failed": "{{productName}} 工具未能在此会话中启动。请新建会话后重试。",
       "gateway_tools_sent": "已发送，未确认",
       "gateway_tools_not_sent": "{{productName}} 工具未发送到此会话。请在 自定义 → 自定义代理 中把 @kirocrew-core 添加到此代理的工具里，然后新建会话。",
+      "gateway_tools_no_tools": "{{productName}} 工具已在此会话中启动，但没有提供任何工具，通常是因为另一个服务器使用了相同的工具名称。请关闭那个服务器，然后新建会话。",
       "gateway_tools_pending": "尚未报告",
       "gateway_tools_missing": "此会话没有 {{productName}} 工具",
       "gateway_tools_missing_short": "无 {{productName}} 工具",
