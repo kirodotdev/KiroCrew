@@ -46,15 +46,17 @@ rerun.
 ## Shape
 
 CI is a **fan-out of independent workflows that one aggregator folds into a single
-verdict**, with exactly one ordering edge inside it: the cheap blocking
+verdict**, with two ordering edges inside it: the cheap blocking
 gates run in their own workflow, and both the expensive matrix and the fork
-reviewers wait for its verdict rather than racing it.
+reviewers wait for its verdict rather than racing it; then the two lint jobs
+run before the heavy jobs start (see [Lint first](#lint-first)).
 
 ```
 pull_request
   |-- fast-gate.yml     "Fast Gate"    the cheap blocking gates
   |     |
-  |     |-- ci.yml's `await-fast-gate` job releases the heavy jobs
+  |     |-- ci.yml's `await-fast-gate` job releases the lint jobs, then
+  |     |     `lint-gate` (both lint jobs green) releases the heavy jobs
   |     '-- the fork-*-review.yml lanes trigger on its completion
   |
   |-- internal-content-scan-gate.yml
@@ -128,9 +130,10 @@ Three structural facts explain most of the rest:
   did. `merge-queue-readiness.yml` -- a `merge_group`-only workflow whose
   single job is named `PR Readiness`, the ruleset's required check -- waits for
   those six runs on the group's commit and passes only when all six did, within
-  a 180-minute budget covering `ci.yml`'s 160-minute longest chain of job caps
-  (`backend-test` counts twice: `max-parallel: 4` runs its 8 shards in two
-  rounds) plus pickup slack. The first verdict is final: a run that concludes without
+  a 200-minute budget covering `ci.yml`'s 190-minute longest chain of job caps
+  (`backend-lint` and `lint-gate` come before the shards, and `backend-test`
+  counts twice: `max-parallel: 4` runs its 8 shards in two rounds) plus pickup
+  slack. The first verdict is final: a run that concludes without
   success fails the check on the tick that reads it, with no rerun and no wait
   for the lanes still running, and the job holds only `actions: read`. A rerun
   inside the queue would hold every group queued behind this one for the
@@ -444,8 +447,8 @@ supported environment before running the checks. Local checks do not establish
 which patch release executes in CI; retain the setup action's actual runtime log.
 
 They live in their own workflow for two reasons that both come down to who has to
-wait for them. `ci.yml`'s heavy jobs now wait through `await-fast-gate`, so a red
-gate skips ~220 job-minutes of tests it was previously running beside. And the
+wait for them. `ci.yml`'s heavy jobs now wait through `await-fast-gate` (and then `lint-gate`, see [Lint first](#lint-first)),
+so a red gate skips ~220 job-minutes of tests it was previously running beside. And the
 `fork-*-review.yml` lanes need SOME trusted workflow to vouch for a fork's head
 commit before they start (see [Fork PRs](#fork-prs)); waiting for all of `CI` put a
 fork PR's AI verdict ~54 minutes out, when the gates that verdict actually needs are
@@ -532,7 +535,44 @@ the recorded identity omits the line number and a reflow keeps it.
 ## `ci.yml`: correctness
 
 Every job here is blocking. Every job that costs real runner time also `needs:`
-`await-fast-gate`, so on a red gate it does not run at all.
+`await-fast-gate`, so on a red gate it does not run at all. The heavy ones also
+`need:` `lint-gate`, so on a red lint job they do not run either.
+
+### Lint first
+
+`backend-lint` ("Backend Lint & Type Check") and `frontend-lint` ("Frontend Lint &
+Type Check") start as soon as `await-fast-gate` passes. The small `lint-gate` job ("Lint Gate") `needs:` both of them, and the heavy
+jobs `need:` `lint-gate`: the test shards, the Windows, IPv6, kernel-lock and
+sandbox lanes, Electron, `frontend-test`, `bundle-size`, `i18n-render`, `e2e`,
+`integration`, the Linux packaging and wheel-closure builds, and the boot matrix.
+A push that fails lint therefore does not spend their runner minutes. The RFC
+"Fewer review loops and fewer escaped bugs" (D2) put the avoidable share at up to
+38,691 of 57,613 job-minutes in a 10.5-day window; 25,571 heavy job-minutes sat in
+pushes whose red jobs included a lint job.
+
+- **One red.** `lint-gate` runs only when both lint jobs ended `success` or
+  `skipped` (each skips on a diff that cannot change its verdict) and
+  `await-fast-gate` and `changes` succeeded. When a lint job FAILED or was
+  cancelled, `lint-gate` is SKIPPED, not failed: the lint job is the red check and
+  the heavy jobs skip behind `lint-gate` exactly as they skip behind a red
+  `await-fast-gate`.
+- **Coverage Gate names lint.** It fails closed on skipped shards, and now reads
+  `backend-lint` and `frontend-lint` first: when either failed or was cancelled it
+  fails with "lint did not pass ... Fix 'Backend Lint & Type Check' / 'Frontend Lint
+  & Type Check' first" instead of blaming a skipped shard.
+- **Not behind lint:** `lockfile-engines-floor` and `cfn-lint` (10-minute checks,
+  so waiting for lint would delay their verdict for no saving), `changes`,
+  `await-fast-gate` and `cancel-superseded-run`.
+- **Push to `main` with the merge queue on** skips `changes`, `await-fast-gate`
+  and `lint-gate` together; the macOS boot leg is admitted by its own condition.
+  A merge group runs the same chain, so a queued group waits for lint first too.
+- **Cost.** A push whose heavy jobs would run starts them after the lint jobs
+  finish: a median 8.1 minutes later (p90 18.1) for Backend Lint, per the RFC.
+  The merge-queue poll budget grew with it (next section).
+- **Revert.** Remove `lint-gate` from the `needs:` lists; the job can stay.
+- **A lint job red for a reason outside the diff** (a runner or network fault
+  during `uv pip install`) holds every heavy job until a re-run, as a red Fast Gate
+  does.
 
 The test jobs install with `uv pip install -e ... --group dev` and no lock
 file, so a transitive dev dependency can change between two runs of the same
@@ -549,6 +589,7 @@ yet decided: install from a committed constraints file, or set
 |---|---|
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one whose conclusion is a decided non-success. `action_required` is not one of them: GitHub reports a fork run still awaiting maintainer approval as `completed`/`action_required`, so the barrier polls it as pending under the 720s budget rather than letting approval order decide whether the matrix runs. A listing read that errors is not a run that never appeared: the error is logged, it spends only the 720s budget, and the barrier fails closed there with a message saying the code was never judged. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One exception concludes `cancelled` rather than `failure`: on a push to `main`, a Fast Gate run evicted from its concurrency group before it started judged nothing, so when the barrier proves that (the run's attempt has no jobs, and another Fast Gate push run on the branch started between its creation and its cancellation) it waits up to 150s while `cancel-superseded-run` cancels the CI run, the outcome a CI run evicted from its own group gets. It never releases the matrix on that path, and a failed read, an unproven eviction or a cancel that does not land still fails closed. It holds only `actions: read`. One extra ~1-minute job buys the whole matrix the right to not start |
+| `lint-gate` | "Lint Gate". Aggregates `backend-lint` and `frontend-lint` for the heavy jobs (see [Lint first](#lint-first)). Runs when both ended `success` or `skipped`; SKIPPED when either failed or was cancelled, so the lint job is the one red and the heavy jobs skip behind it |
 | `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and only while `MERGE_QUEUE_ENABLED` is unset, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml` — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed. All five baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback |
@@ -1593,7 +1634,9 @@ Details worth knowing:
   `frontend-test`, and without this step a required Coverage Gate would skip with
   them and be reported as satisfied — so the barrier that exists to save runner time
   would also have quietly removed the coverage floor. The `if: !cancelled()` is what
-  makes it emit a real verdict, and the first step is what makes that verdict red. A
+  makes it emit a real verdict, and the first step is what makes that verdict red.
+  A failed or cancelled lint job skips `lint-gate` and the shards the same way, so
+  the first step checks the two lint results before the shards and names lint. A
   run the workflow itself cancelled (a superseded revision) emits none, while a job
   that hit its own timeout is cancelled alone and still turns the gate red.
   `frontend-coverage-merge` carries the other half of the same problem and solves it

@@ -81,6 +81,19 @@ _PUSH_GROUP_EXPR = (
     " || format('{0}-{1}', github.workflow, github.ref) }}"
 )
 
+#: The lint aggregate the heavy jobs wait for (RFC D2, "lint first").
+_LINT_GATE = "lint-gate"
+_BARRIER_PASSED = "needs.await-fast-gate.result == 'success'"
+#: The two jobs the lint gate aggregates.
+_LINT_JOBS = ("backend-lint", "frontend-lint")
+#: Cheap jobs that deliberately do NOT wait for lint: lint-first saves the minutes
+#: of heavy jobs, and holding a 10-minute check behind an 8-minute lint adds
+#: latency to its own verdict for no saving.
+_NOT_BEHIND_LINT: dict[str, str] = {
+    "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
+    "cfn-lint": "10-minute template lint; gives its own early verdict",
+}
+
 # DENY-BY-DEFAULT: every job in ci.yml must wait for the barrier unless it is
 # exempt here for a reason that is not about cost. An enumeration of the jobs that
 # MUST carry the edge goes stale the moment someone adds a job -- the new one would
@@ -243,6 +256,12 @@ def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
             "could reach it after those jobs skip"
         )
         guard = str(spec.get("if", ""))
+        if name == _LINT_GATE:
+            # `!cancelled()` is what lets the gate run when a lint job is skipped,
+            # so it must name the two skipped-on-push needs itself.
+            for clause in ("needs.changes.result == 'success'", _BARRIER_PASSED):
+                assert clause in guard, f"{name} can run on push without {clause!r}"
+            continue
         assert (
             "always()" not in guard and "!cancelled()" not in guard
         ), f"{name} overrides the skipped dependency with {guard!r} and can run on push"
@@ -251,6 +270,8 @@ def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
     boot_guard = str(boot["if"])
     assert _PUSH_ADMIT_CLAUSE in boot_guard
     assert "!cancelled()" in boot_guard
+    # Off the push path the boot leg waits for the lint gate like every heavy job.
+    assert "needs.lint-gate.result == 'success'" in boot_guard
     # The admission is the whole conjunction, never a bare push: with the
     # variable unset a push must go through the needs like every other event.
     assert boot_guard.count("github.event_name == 'push'") == 1
@@ -939,3 +960,114 @@ class TestTheConclusionArmsBehaveOnRealConclusions:
         assert "::error::" in proc.stdout
         assert self._POLLING not in proc.stdout
         assert self._STATUS not in proc.stdout
+
+
+class TestLintRunsBeforeTheHeavyJobs:
+    """RFC D2: a push that fails lint must not start the heavy jobs."""
+
+    @staticmethod
+    def _needs(ci: dict, job: str) -> list[str]:
+        needs = ci["jobs"][job].get("needs") or []
+        return [needs] if isinstance(needs, str) else list(needs)
+
+    @classmethod
+    def _reaches(cls, ci: dict, job: str, target: str) -> bool:
+        seen: set[str] = set()
+        frontier = [job]
+        while frontier:
+            for parent in cls._needs(ci, frontier.pop()):
+                if parent == target:
+                    return True
+                if parent not in seen and parent in ci["jobs"]:
+                    seen.add(parent)
+                    frontier.append(parent)
+        return False
+
+    def test_the_gate_aggregates_exactly_the_two_lint_jobs_behind_the_barrier(
+        self, ci: dict
+    ) -> None:
+        gate = ci["jobs"][_LINT_GATE]
+        assert gate["name"] == "Lint Gate"
+        assert set(self._needs(ci, _LINT_GATE)) == {
+            "changes",
+            "await-fast-gate",
+            *_LINT_JOBS,
+        }
+        for lint in _LINT_JOBS:
+            assert _LINT_GATE not in self._needs(ci, lint), "a lint job cannot wait on its gate"
+            assert not self._reaches(ci, lint, _LINT_GATE), lint
+
+    def test_the_gate_runs_only_when_both_lint_jobs_passed_or_were_not_needed(
+        self, ci: dict
+    ) -> None:
+        guard = str(ci["jobs"][_LINT_GATE]["if"])
+        for lint in _LINT_JOBS:
+            assert (
+                f"""contains(fromJSON('["success","skipped"]'), needs.{lint}.result)""" in guard
+            ), (lint, guard)
+        # A failed or cancelled lint job SKIPS the gate (one red: the lint job),
+        # it never turns the gate itself red.
+        assert "failure" not in guard
+        assert "exit 1" not in json.dumps(ci["jobs"][_LINT_GATE]["steps"])
+
+    def test_every_heavy_job_waits_for_the_gate(self, ci: dict) -> None:
+        # Jobs that must NOT wait: the barrier and surface detection feed the gate,
+        # the lint jobs are what it waits for, the cancel job is a push-only helper,
+        # and the two cheap checks are named in _NOT_BEHIND_LINT.
+        exempt = {
+            "changes",
+            "await-fast-gate",
+            "cancel-superseded-run",
+            *_LINT_JOBS,
+            *_NOT_BEHIND_LINT,
+        }
+        # Reporters that consume the shards reach the gate through them.
+        reporters = {"coverage-combine", "coverage-gate", "frontend-coverage-merge"}
+        unguarded = [
+            job
+            for job in ci["jobs"]
+            if job not in exempt
+            and job not in reporters
+            and job != _LINT_GATE
+            and _LINT_GATE not in self._needs(ci, job)
+        ]
+        assert not unguarded, (
+            f"job(s) start without waiting for the lint gate: {sorted(unguarded)}. Add "
+            f"`{_LINT_GATE}` to their `needs:`, or list them in _NOT_BEHIND_LINT with the reason."
+        )
+        for job in reporters:
+            assert self._reaches(ci, job, _LINT_GATE), job
+        for job in _NOT_BEHIND_LINT:
+            assert job in ci["jobs"], f"_NOT_BEHIND_LINT names a job that is gone: {job}"
+            assert _LINT_GATE not in self._needs(ci, job), job
+
+    def test_the_heavy_jobs_do_not_override_the_skip(self, ci: dict) -> None:
+        # A heavy job carrying `always()` / `!cancelled()` would run on a skipped
+        # gate. Only the jobs that fail closed on skips may, and each is checked.
+        allowed = {
+            _LINT_GATE,
+            "e2e-boot-matrix",
+            "coverage-gate",
+            "frontend-coverage-merge",
+        }
+        for job, spec in ci["jobs"].items():
+            guard = str(spec.get("if", ""))
+            if "always()" in guard or "!cancelled()" in guard:
+                assert job in allowed, f"{job} can run behind a skipped lint gate: {guard!r}"
+
+    def test_the_coverage_gate_names_lint_when_lint_is_why_the_shards_are_skipped(
+        self, ci: dict
+    ) -> None:
+        gate = ci["jobs"]["coverage-gate"]
+        assert {"backend-lint", "frontend-lint"} <= set(self._needs(ci, "coverage-gate"))
+        step = gate["steps"][0]
+        assert step["env"]["BACKEND_LINT"] == "${{ needs.backend-lint.result }}"
+        assert step["env"]["FRONTEND_LINT"] == "${{ needs.frontend-lint.result }}"
+        body = step["run"]
+        lint_at = body.index("lint did not pass")
+        # The lint message comes before any check that would blame a skipped shard,
+        # and after the surface-detection check (a lint result means nothing without it).
+        assert body.index("surface detection (changes) never reported") < lint_at
+        assert lint_at < body.index("frontend-test=$FE -- failing closed")
+        assert lint_at < body.index("backend-test=$BE -- failing closed")
+        assert "Backend Lint & Type Check" in body and "Frontend Lint & Type Check" in body

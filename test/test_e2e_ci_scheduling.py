@@ -456,7 +456,7 @@ raise SystemExit(m['main']())
         job = jobs["i18n-render"]
         # A fork PR cannot be routed to the fleet, so this job must fit a hosted
         # runner on its own: default size, its own timeout, no gateway boundary.
-        self.assertEqual(job["needs"], ["changes", "await-fast-gate"])
+        self.assertEqual(job["needs"], ["changes", "await-fast-gate", "lint-gate"])
         self.assertEqual(job["if"], "needs.changes.outputs.only_backend != 'true'")
         self.assertNotIn("defaults", job)
         self.assertLessEqual(job["timeout-minutes"], 20)

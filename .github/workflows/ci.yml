@@ -411,7 +411,7 @@ jobs:
   # exists to prevent: a package that builds green and refuses to install.
   linux-packaging:
     name: Linux Packaging (build + smoke-install)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     if: ${{ needs.changes.outputs.linux_packaging == 'true' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -453,7 +453,7 @@ jobs:
   # not a required check and not part of any review gate.
   wheel-closure:
     name: Install Requires Wheel Closure (${{ matrix.machine }})
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     if: ${{ needs.changes.outputs.wheel_closure == 'true' }}
     # Hosted, not the fleet: two short pip downloads that need only PyPI.
     runs-on: ubuntu-latest
@@ -619,6 +619,39 @@ jobs:
           # This run's own id, the only run the script ever cancels.
           RUN_ID: ${{ github.run_id }}
         run: bash .github/scripts/cancel-superseded-run.sh
+
+  # ── Lint first (RFC "Fewer review loops and fewer escaped bugs", D2) ──
+  # The heavy jobs below `need` this one, so a push that fails Backend Lint or
+  # Frontend Lint does not start the test shards, Windows legs, e2e or builds.
+  # It runs only when both lint jobs ended `success` or `skipped` (each skips on a
+  # diff that cannot change its verdict) and the Fast Gate barrier passed. When a
+  # lint job FAILED or was cancelled this job is SKIPPED, not failed: the lint job
+  # is the one red, and the heavy jobs skip behind this job the way they skip
+  # behind a red `await-fast-gate`. Coverage Gate, which fails closed on skipped
+  # upstream jobs, reads the lint results itself and names lint in its message.
+  #
+  # It reaches the barrier directly (`await-fast-gate`) and gates on it in the
+  # `if:`, because `!cancelled()` is what lets it run when a lint job is skipped;
+  # without the explicit `await-fast-gate` and `changes` clauses it would run on
+  # the queue-on push to main, where both are skipped.
+  lint-gate:
+    name: Lint Gate
+    needs: [changes, await-fast-gate, backend-lint, frontend-lint]
+    if: >-
+      ${{ !cancelled()
+      && needs.changes.result == 'success'
+      && needs.await-fast-gate.result == 'success'
+      && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
+      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: Backend and Frontend Lint passed or were not needed
+        env:
+          BACKEND_LINT: ${{ needs.backend-lint.result }}
+          FRONTEND_LINT: ${{ needs.frontend-lint.result }}
+        run: |
+          echo "backend-lint=$BACKEND_LINT frontend-lint=$FRONTEND_LINT -- releasing the heavy jobs."
 
   backend-lint:
     name: Backend Lint & Type Check
@@ -792,7 +825,7 @@ jobs:
 
   backend-test:
     name: Backend Tests
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     # All eight shards use large compute and the measured non-root boundary.
     # Forks, non-admitted actors and absent resolver output stay hosted.
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
@@ -1036,7 +1069,7 @@ jobs:
   # claim equal durations across files or platforms.
   backend-test-windows:
     name: Backend Tests (Windows)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     # Skipped only on a fork head the `changes` job judged Windows-neutral;
     # `!= 'false'` keeps an absent output running the suite.
     if: needs.changes.outputs.windows_tests != 'false'
@@ -1157,7 +1190,7 @@ jobs:
   # Keep both OS contracts, including Windows' real IPv6 listener discovery.
   backend-test-ipv6:
     name: Backend Tests (IPv6, ${{ matrix.os }})
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -1244,7 +1277,7 @@ jobs:
   # ordinary shards keep running both tests in their own environment.
   backend-test-kernel-lock-owner:
     name: Backend Tests (Kernel Lock Owner, hosted)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -1355,7 +1388,7 @@ jobs:
   # test/test_pod_scenario_matrix.py pins both shapes.
   pod-boot-windows:
     name: Pod Boot Canary (Windows)
-    needs: [await-fast-gate]
+    needs: [await-fast-gate, lint-gate]
     # Hosted, and it cannot move. The Windows fleet is a CONTAINER
     # (`ContainerAdministrator`), where `schtasks /Create` exits 1 on its own
     # `/ST is earlier than current time` warning -- so the runner user cannot
@@ -1566,7 +1599,7 @@ jobs:
   # RAN, not the only place it runs.
   backend-test-windows-fail-closed:
     name: Windows Fail-Closed Sandbox Contract
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Keep the real gateway/ACP contract and its existing timeout unchanged.
     timeout-minutes: 25
@@ -1688,7 +1721,7 @@ jobs:
   #
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
-    needs: [await-fast-gate]
+    needs: [await-fast-gate, lint-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1882,7 +1915,7 @@ jobs:
 
   backend-test-crew-container:
     name: Backend Tests (crew container)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
@@ -1980,7 +2013,7 @@ jobs:
   # minutes with the install cached.
   real-adapter-contract:
     name: Real Adapter Contract Tests
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     # Skipped on a frontend-only diff, like every other backend lane: nothing the
     # frontend surface can change moves an adapter contract, and the install is a
     # registry download this job should not make to prove that. Deliberately NOT a
@@ -2258,7 +2291,7 @@ jobs:
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
-    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes]
+    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint]
     # Single source of truth for the floors -- referenced by the check steps,
     # their names, and the summary table so the three can never drift apart.
     #
@@ -2350,12 +2383,24 @@ jobs:
           KERNEL_LOCK_OWNER: ${{ needs.backend-test-kernel-lock-owner.result }}
           ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          BACKEND_LINT: ${{ needs.backend-lint.result }}
+          FRONTEND_LINT: ${{ needs.frontend-lint.result }}
         run: |
-          echo "coverage-combine=$CC  frontend-test=$FE  frontend-coverage-merge=$FCM  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND"
+          echo "coverage-combine=$CC  frontend-test=$FE  frontend-coverage-merge=$FCM  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND  backend-lint=$BACKEND_LINT  frontend-lint=$FRONTEND_LINT"
           # Empty flags mean the surface-detection job never reported (it failed
           # or was cancelled) -- its verdict can't be trusted, so fail closed.
           if [ -z "$ONLY_BACKEND" ] || [ -z "$ONLY_FRONTEND" ]; then
             echo "::error::surface detection (changes) never reported -- failing closed."
+            exit 1
+          fi
+          # Lint runs first: a failed or cancelled lint job skips `lint-gate`
+          # and with it every test shard, so the checks below would all report
+          # `skipped` and name the shards. Say the cause instead. This is still
+          # a failure (a skipped required check reads as satisfied), but the
+          # one that tells the author to fix the lint job, not the coverage.
+          if [ "$BACKEND_LINT" = "failure" ] || [ "$BACKEND_LINT" = "cancelled" ] \
+            || [ "$FRONTEND_LINT" = "failure" ] || [ "$FRONTEND_LINT" = "cancelled" ]; then
+            echo "::error::lint did not pass (backend-lint=$BACKEND_LINT, frontend-lint=$FRONTEND_LINT), so the test shards never started -- failing closed. Fix 'Backend Lint & Type Check' / 'Frontend Lint & Type Check' first; coverage was not measured."
             exit 1
           fi
           # Both test jobs always RUN (only their scope narrows), so both must
@@ -2903,7 +2948,7 @@ jobs:
   # packaging/installer-assets/* references it pins.
   electron-test:
     name: Electron Shell Tests
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -2946,7 +2991,7 @@ jobs:
   # host. No npm ci: the two modules under test require only the Node stdlib.
   electron-test-windows:
     name: Electron Shell Tests (Windows port identity)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
     timeout-minutes: 10
     steps:
@@ -2968,7 +3013,7 @@ jobs:
 
   frontend-test:
     name: Frontend Tests
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     # CodeBuild-hosted runner (pilot, second wave). `instance-size:large` for the
     # vitest --coverage shards' memory; routing and rollback as for cfn-lint. See
     # docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
@@ -3211,7 +3256,7 @@ jobs:
 
   bundle-size:
     name: Bundle Size Gate
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     # The analyze build reserves a 6 GiB Node heap; use the large memory tier.
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 25
@@ -3305,7 +3350,7 @@ jobs:
   # flags false and still run it -- this job's own config lives in that bucket.
   i18n-render:
     name: i18n Render Gate (en-XA, head vs base)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     if: needs.changes.outputs.only_backend != 'true'
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -3400,7 +3445,7 @@ jobs:
   # and the specs (runner, HOME=/home/runner) resolve the same directory.
   e2e:
     name: E2E (stub ACP backend, offline)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 25
     defaults:
@@ -3665,7 +3710,7 @@ jobs:
   # `test_e2e_private_namespace_budget.py` enforces both.
   e2e-private-namespace:
     name: E2E (private member namespace, hosted)
-    needs: [await-fast-gate]
+    needs: [await-fast-gate, lint-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -3716,7 +3761,7 @@ jobs:
   # a ratchet -- raise it a little under what main measures, never above.
   integration:
     name: Integration (in-process gateway)
-    needs: [changes, await-fast-gate]
+    needs: [changes, await-fast-gate, lint-gate]
     runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -3779,18 +3824,19 @@ jobs:
   # token, no network and no cost. See docs/ci/e2e-gate.md.
   e2e-boot-matrix:
     name: E2E Gateway Boot (${{ matrix.os }})
-    needs: [changes, await-fast-gate]
-    # On a pull request or merge group this runs behind the barrier like every
-    # heavy job. On a push to main with the repository variable
-    # MERGE_QUEUE_ENABLED set to 'true' it is the ONLY job that runs: `changes`
-    # and `await-fast-gate` are skipped there, so the condition admits that push
-    # outright. Any other event, including a push with the variable unset,
-    # requires both needs to have succeeded.
+    needs: [changes, await-fast-gate, lint-gate]
+    # On a pull request or merge group this runs behind the barrier and the
+    # lint gate like every heavy job. On a push to main with the repository
+    # variable MERGE_QUEUE_ENABLED set to 'true' it is the ONLY job that runs:
+    # `changes`, `await-fast-gate` and `lint-gate` are skipped there, so the
+    # condition admits that push outright. Any other event, including a push
+    # with the variable unset, requires all three needs to have succeeded.
     if: >-
       ${{ !cancelled()
       && ((github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true')
           || (needs.changes.result == 'success'
-              && needs.await-fast-gate.result == 'success')) }}
+              && needs.await-fast-gate.result == 'success'
+              && needs.lint-gate.result == 'success')) }}
     strategy:
       max-parallel: 4
       # Each OS is its own verdict. A Windows-only regression must not hide

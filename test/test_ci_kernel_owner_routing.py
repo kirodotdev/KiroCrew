@@ -47,7 +47,7 @@ def _junit_check(run_body):
 def test_the_lane_is_a_hosted_vm_running_exactly_the_two_strict_cases(jobs, run_body):
     job = jobs[JOB]
     assert job["runs-on"] == "ubuntu-latest"
-    assert job["needs"] == ["changes", "await-fast-gate"]
+    assert job["needs"] == ["changes", "await-fast-gate", "lint-gate"]
     for forbidden in ("if", "container", "continue-on-error", "strategy"):
         assert forbidden not in job
     assert job["defaults"]["run"]["shell"] == "bash"
