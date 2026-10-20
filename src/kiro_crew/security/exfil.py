@@ -55,6 +55,7 @@ from .exfil_url_rules import (
     _HARD_CREDENTIAL_RE,
     _MAX_URL_DECODE_PASSES,
     _URL_RE,
+    _heavy_percent_encoding,
     _is_safe_presigned,
 )
 from .redaction import (
@@ -347,8 +348,9 @@ def _exfil_url_warning(
 
     # Heavy percent-encoding is always suspicious, including inside a standard
     # OAuth parameter at an approved endpoint. It runs before either
-    # host-sensitive heuristic exemption below.
-    if _EXFIL_PERCENT_RE.search(path_and_query):
+    # host-sensitive heuristic exemption below. Words encoded in the PATH are
+    # not counted, except on the OAuth admission gate, which stays strict.
+    if _heavy_percent_encoding(path_and_query, allow_path_text=not allow_oauth_entropy):
         trace("exfil_percent_encoding")
         return f"Suspicious URL with credential-like query data: {domain}"
 
@@ -1565,6 +1567,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SIGNATURE_RE,
         _STRUCTURAL_VALIDATORS,
         _STS_TOKEN_RE,
+        _is_encoded_path_text,
         exfil_query_min_len,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes

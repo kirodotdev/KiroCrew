@@ -157,7 +157,7 @@ class TestTheFullAddressIsKeptSoItCanBeOpened:
 
     def test_a_cjk_title_link_keeps_its_whole_address(self) -> None:
         title = "%E6%B5%8B%E8%AF%95%E9%A1%B5%E9%9D%A2%E6%A0%87%E9%A2%98%E6%96%87"
-        url = f"https://wiki.example.com/view/{title}"
+        url = f"https://wiki.example.com/view?title={title}"
 
         _, warnings, records = redact_exfiltration_urls_with_records(f"see {url}")
 

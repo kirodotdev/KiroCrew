@@ -13,6 +13,7 @@ through. The classifier that applies them, ``_exfil_url_warning``, stays in
 from __future__ import annotations
 
 import re
+import unicodedata
 from urllib.parse import parse_qs
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
@@ -79,6 +80,39 @@ _EXFIL_PERCENT_RE = re.compile(
     r"%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}",
     re.IGNORECASE,
 )
+
+
+def _is_encoded_path_text(run: str) -> bool:
+    """True when a percent run is UTF-8 words (a CJK headline is 3 octets a char).
+
+    Every octet must be non-ASCII and decode as strict UTF-8, and every char
+    must be a letter, mark, number or punctuation whose NFKC form is not an
+    ASCII letter or digit, so encoded ASCII or fullwidth ``A``-``Z`` stays flagged.
+    """
+    raw = bytes.fromhex(run.replace("%", ""))
+    try:
+        text = raw.decode("utf-8") if min(raw) >= 0x80 else ""
+    except UnicodeDecodeError:
+        return False
+    folds = [unicodedata.normalize("NFKC", char) for char in text]
+    return bool(text) and all(
+        unicodedata.category(char)[0] in "LMNP" and not (fold.isascii() and fold.isalnum())
+        for char, fold in zip(text, folds)
+    )
+
+
+def _heavy_percent_encoding(path_and_query: str, *, allow_path_text: bool) -> bool:
+    """Whether a heavy percent run is present, not counting words in the PATH.
+
+    The path gets no base64 or length heuristic, so the same words written
+    unencoded already pass; the query keeps the strict rule.
+    """
+    path_end = (path_and_query + "?").find("?")
+    return any(
+        not (allow_path_text and m.end() <= path_end and _is_encoded_path_text(m.group()))
+        for m in _EXFIL_PERCENT_RE.finditer(path_and_query)
+    )
+
 
 # Percent-decoding passes applied when re-scanning a URL for encoded
 # credentials. More than one is required because a double-encoded payload
