@@ -1203,3 +1203,22 @@ class TestRendererApprovalPause:
         await renderer.on_prompt_choice([{"id": "allow", "label": "Allow"}], 1, tool_title="bash")
         assert [m for m in web.methods() if "status" in m.lower()] == []
         await renderer.close()
+
+
+def test_a_closed_gate_still_settles_a_suspended_this_driver_set() -> None:
+    """GPT on #21993: a session left ``suspended`` when the gate closed is handed back.
+
+    The gate-closed settle was let through only for an owned ``processing``; an owned
+    ``suspended`` (a worker waiting on a person) stayed on Slack for good. A working
+    state is still never written gate-closed.
+    """
+    open_gate = {"on": True}
+    client, web = make_client(gate=lambda: open_gate["on"])
+    driver = client.agent_sessions
+    assert asyncio.run(driver.set_status("C1", None, SESSION_STATUS_SUSPENDED))
+    open_gate["on"] = False
+    assert not asyncio.run(driver.set_status("C2", None, SESSION_STATUS_SUSPENDED))
+    before = len(web.calls)
+    assert asyncio.run(driver.set_status("C1", None, SESSION_STATUS_ACTIVE))
+    assert len(web.calls) == before + 1
+    assert web.calls[-1][1].get("status") == SESSION_STATUS_ACTIVE

@@ -26,19 +26,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
 import os
 import subprocess
+import time
+from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.slack.code_channels.models import CodeChannelApiError, CodeChannelError
 from kiro_crew.slack.code_channels.workspace import folders, git_ops
+from kiro_crew.slack.code_channels.workspace.board_cache import BoardCache
 from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
 from kiro_crew.slack.code_channels.workspace.diff import (
     CLEAN,
@@ -46,18 +50,29 @@ from kiro_crew.slack.code_channels.workspace.diff import (
     MAX_VIEW_BYTES,
     OMITTED,
     WITHHOLD,
+    DiffGroup,
     assemble,
+    assemble_groups,
     render_untracked,
     screen_tracked,
 )
-from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest, find_pull_request
-from kiro_crew.slack.code_channels.workspace.remote import parse_remote
+from kiro_crew.slack.code_channels.workspace.pr import (
+    PrLookup,
+    PullRequest,
+    find_pull_request,
+    pull_request_by_number,
+)
+from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import (
     REPAIRED,
     WorkspaceRecord,
     WorkspaceStore,
     record_key,
 )
+from kiro_crew.slack.code_channels.workspace.worker_prs import WorkerPrs
+
+if TYPE_CHECKING:
+    from kiro_crew.slack.code_channels.board.model import BoardSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +86,10 @@ _SCAN_BYTES = 8 * MAX_VIEW_BYTES
 #: How often the folder watcher reads which sessions in a channel's folder are
 #: running (an in-memory read of the dashboard's slots; no git, no Slack call).
 _WATCH_SECS = 15.0
+#: While a board row is working or waiting, the longest the board goes without a
+#: refresh: the watcher's backstop for whatever the event triggers missed (and
+#: what keeps the board's "Updated" stamp and elapsed times current).
+BOARD_BACKSTOP_SECS = 60.0
 
 #: Slack answers that mean "this channel cannot take views or properties": the
 #: workspace stops publishing for the channel instead of retrying every turn.
@@ -127,6 +146,18 @@ ProjectSetter = Callable[[str, str], Awaitable[bool]]
 #: Reads the project a dashboard session currently has ("" when unknown).
 ProjectReader = Callable[[str], Awaitable[str]]
 PrFinder = Callable[..., Awaitable[PrLookup]]
+#: Reads the channel conductor's work board (``None``: no board for this channel).
+BoardReader = Callable[[Any], Awaitable["BoardSnapshot | None"]]
+#: Publishes the board message; gets the binding and the PR-filled snapshot.
+BoardPublisher = Callable[[Any, "BoardSnapshot"], Awaitable[Any]]
+
+#: How long a worker's PR reading is reused before ``gh`` is asked again: a live
+#: PR's CI moves, a merged or closed one does not.
+_PR_TTL_LIVE = 60.0
+_PR_TTL_SETTLED = 900.0
+#: Debounce for refreshes the board's triggers arm (turn starts, approvals,
+#: ledger writes), so a burst of reports costs one publish.
+BOARD_DEBOUNCE_SECS = 3.0
 
 
 def _audit(operation: str, outcome: str, resources: str, error: str = "") -> None:
@@ -169,6 +200,21 @@ def _turn_ended(before: tuple[bool, int] | None, now: tuple[bool, int], observed
     if before is None:
         return observed and generation > 0
     return before[0] or before[1] != generation
+
+
+def _turn_started(before: tuple[bool, int] | None, now: tuple[bool, int], observed: bool) -> bool:
+    """Whether a session is running a turn it was not running at the last watch pass.
+
+    Idle then running is the plain case; a new generation while still running is
+    a later turn that started after the last one ended between two passes. Like
+    :func:`_turn_ended`, the first pass after a restart only records what it sees.
+    """
+    running, generation = now
+    if not running:
+        return False
+    if before is None:
+        return observed
+    return not before[0] or before[1] != generation
 
 
 def _digest(*parts: object) -> str:
@@ -239,6 +285,54 @@ def _archived(binding: Any) -> bool:
     except Exception:
         current = None
     return bool(getattr(current if current is not None else binding, "archived_at", 0))
+
+
+#: Refused status hand-backs in a row after which the watch stops re-sending one.
+_STATUS_RETRIES = 4
+
+
+def _activation_admits(binding: Any) -> bool:
+    """The channel and its origin admit the bot (Off or Review refuse); fails closed."""
+    from kiro_crew.slack.code_channels import surface
+    from kiro_crew.slack.code_channels.binding import live_config
+
+    try:
+        return bool(surface.channel_admits(live_config(), binding))
+    except Exception:
+        return False
+
+
+def _clear_aggregate(binding: Any) -> None:
+    """Clear the conductor slot's ``work_aggregate`` (its board is not shown). Never raises."""
+    try:
+        from kiro_crew.slack.code_channels import board as board_pkg
+        from kiro_crew.slack.code_channels import surface
+
+        board_pkg.clear_aggregate(
+            surface.dashboard_state(), str(getattr(binding, "session_key", "") or "")
+        )
+    except Exception:
+        logger.debug("code channel: work aggregate not cleared", exc_info=True)
+
+
+def _sharing_unknown(channel_id: str) -> bool:
+    """Whether the channel's "is it shared?" reading is missing or stale (being re-read)."""
+    from kiro_crew.slack.code_channels import audience
+
+    try:
+        return bool(channel_id) and audience.channel_shared(channel_id) is None
+    except Exception:
+        return False
+
+
+def _board_refused_permanently(channel_id: str) -> bool:
+    """Whether Slack's last answer to the channel's board was one no retry cures."""
+    from kiro_crew.slack.code_channels.board import publisher
+
+    try:
+        return publisher.refused_permanently(channel_id)
+    except Exception:
+        return False
 
 
 async def _set_status(channel_id: str, status: str) -> bool:
@@ -351,6 +445,123 @@ def _remember_root(channel: str, root: str, worktree: str, branch: str, team: st
         logger.warning("code channel %s: workspace root not remembered", channel, exc_info=True)
 
 
+def _worker_header(index: int, total: int, row: Any) -> str:
+    from kiro_crew.slack.code_channels.board import model
+    from kiro_crew.slack.code_channels.board.render import pr_text
+
+    parts = [f"Worker {index} of {total}: {row.title}", f"branch {row.branch}"]
+    pr = pr_text(row)
+    if pr:
+        parts.append(pr)
+    parts.append(model.row_label(row))
+    return redact_via_context(" · ".join(parts))
+
+
+def _worker_groups(cwd: str, board: Any, channel_branch: str) -> list[DiffGroup]:
+    """Blocking: one diff group per worker branch with commits of its own.
+
+    Each worker's change is ``merge-base(channel HEAD, worker) .. worker``, read
+    from git's object database in the channel's checkout (worktrees of one
+    repository share it), so nothing in the worker's own worktree is opened. The
+    merge base is taken against the channel's HEAD: a worker branch cut from the
+    channel branch shows only its own commits, and one already merged into the
+    channel shows nothing (its change is in the channel's group). The branch name
+    is worker-reported, so only a valid name under ``refs/heads/`` or
+    ``refs/remotes/origin/`` is looked up (:func:`git_ops.branch_commit`).
+    """
+    rows = list(getattr(board, "rows", ()))
+    # The workers the board's plan shows (all of them up to Slack's task cap);
+    # the raw-scan budget below bounds the reads, not a row cap.
+    # Settled workers beyond the board's own view cost git calls for changes
+    # that are usually merged already: they are left out (and said so).
+    view = {id(r) for r in getattr(board, "shown", rows)}
+    shown = {
+        id(r)
+        for r in getattr(board, "plan_rows", rows)
+        if id(r) in view or not getattr(r, "settled", False)
+    }
+    groups: list[DiffGroup] = []
+    spent = 0  # screened bytes, the view's share
+    scanned = 0  # raw whole-file bytes read, the refresh's work
+    lost = False
+    # Numbered by board position, so "Worker 2 of 5" is the board's second row.
+    for index, row in enumerate(rows, start=1):
+        if not row.branch or row.branch == channel_branch:
+            continue
+        if id(row) not in shown:
+            # A worker the plan leaves out ("+N more"): its change is not read,
+            # and the view says something was left out rather than hiding it.
+            lost = True
+            continue
+        if spent > MAX_VIEW_BYTES or scanned >= _SCAN_BYTES:
+            # Either budget spent: the view would be cut anyway, and every
+            # refresh would repeat the reads. The rest are left out, and said so.
+            lost = True
+            break
+        head = git_ops.branch_commit(cwd, row.branch)
+        if not head:
+            continue
+        fork = git_ops.merge_base(cwd, "HEAD", head)
+        if not fork or fork == head:
+            continue
+        got = git_ops.commit_range_diff(cwd, fork, head, cap=_SCAN_BYTES - scanned)
+        if got is None:
+            lost = True  # git failed on a branch with commits of its own
+            continue
+        scanned += len(got[0])
+        # The same whole-file screen as the channel's own diff: a hunk from the
+        # middle of a key has neither marker, so line-level redaction alone
+        # would miss it. A withheld file or an unreadable section shows as cut.
+        body, cut = screen_tracked(
+            got[0],
+            truncated=got[1],
+            classify=_classify_version,
+            mask=redact_via_context,
+            sensitive=lambda rel: is_sensitive_path(os.path.join(cwd, rel)),
+        )
+        spent += len(body)
+        groups.append(
+            DiffGroup(
+                header=_worker_header(index, len(rows), row),
+                tracked=_redact_bytes(body),
+                tracked_truncated=cut,
+            )
+        )
+    if lost:
+        # An empty group that was cut: the assembly drops its header and adds
+        # the truncation note, so a left-out worker is never silently absent.
+        groups.append(DiffGroup(header="", tracked=b"", tracked_truncated=True))
+    return groups
+
+
+def _bindings_by_channel() -> dict[str, Any]:
+    """Every stored code-channel binding by channel id (blocking: run off the loop).
+
+    An unreadable store reads as no bindings, so the watch skips every channel
+    rather than refreshing one from a stand-in.
+    """
+    try:
+        from kiro_crew.slack.code_channels.store import store
+
+        return {b.channel_id: b for b in store().bindings()}
+    except Exception:
+        logger.debug("code channel watch: bindings unreadable", exc_info=True)
+        return {}
+
+
+async def _stored_binding(binding: Any) -> Any:
+    """The channel store's current binding for *binding*'s channel and team, else *binding*."""
+    from kiro_crew.slack.code_channels.store import store
+
+    try:
+        stored = await asyncio.to_thread(store().get_binding, str(binding.channel_id or ""))
+    except Exception:
+        return binding
+    if stored is None or stored.team_id != binding.team_id:
+        return binding
+    return stored
+
+
 def _find_slot(state: Any, session_key: str) -> Any | None:
     """The dashboard slot for a slot key or a linked/effective session key."""
     if state is None or not session_key:
@@ -415,7 +626,7 @@ def dashboard_project_setter(state_getter: Callable[[], Any]) -> ProjectSetter:
     return _set
 
 
-class WorkspaceService:
+class WorkspaceService(BoardCache, WorkerPrs):
     """Owns every code channel's workspace. One instance per gateway."""
 
     def __init__(
@@ -427,6 +638,10 @@ class WorkspaceService:
         project_of: ProjectReader | None = None,
         find_pr: PrFinder = find_pull_request,
         create_folder: folders.FolderCreator = folders.create_channel_folder,
+        find_pr_number: PrFinder = pull_request_by_number,
+        read_board: BoardReader | None = None,
+        publish_board: BoardPublisher | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         #: Returns the core's ``CodeChannelsClient`` (``None`` before Slack connects).
         self._client = client
@@ -435,16 +650,51 @@ class WorkspaceService:
         #: Per channel: ``slot key -> (turn running, turn generation)`` at the last
         #: watch pass.
         self._seen: dict[str, dict[str, tuple[bool, int]]] = {}
-        self._working: set[str] = set()
+        #: Per channel: the status the watcher last set for its workers.
+        self._working: dict[str, str] = {}
+        #: Per channel: until when (monotonic) the watcher leaves that status alone,
+        #: because its board was dropped only while the sharing reading was re-read.
+        self._status_hold: dict[str, float] = {}
+        #: Per channel: the conductor slot the watch last followed (cleared on forget).
+        self._conductor_of: dict[str, str] = {}
+        #: Per channel: status hand-backs Slack refused in a row (see _status_gave_up).
+        self._status_failures: dict[str, int] = {}
+        #: Per channel: the conductor slot's turn generation at the last watch pass.
+        self._conductor_gen: dict[str, int] = {}
+        #: Per channel: the keys of the workspace's own bar items last built.
+        self._bar_base_keys: dict[str, list[str]] = {}
         self._crowded: set[str] = set()
         self._store = store or WorkspaceStore()
         self._set_project = set_project
         self._project_of = project_of
         self._find_pr = find_pr
+        self._find_pr_number = find_pr_number
+        self._read_board = read_board
+        self._publish_board = publish_board
+        self._clock = clock or time.monotonic
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[str, asyncio.Future[None]] = {}
         self._binds: dict[str, asyncio.Future[WorkspaceRecord | None]] = {}
         self._again: set[str] = set()
+        self._again_delay: dict[str, float] = {}
+        #: The newest binding a trigger handed :meth:`schedule_refresh`, per channel:
+        #: each pass refreshes it, not the first trigger's (a rebind meanwhile).
+        self._latest_binding: dict[str, Any] = {}
+        #: Channels with a conductor-turn refresh pending (as opposed to board-only).
+        self._full: set[str] = set()
+        #: When each channel's own PR was last read (monotonic), for :data:`_PR_TTL_LIVE`.
+        self._channel_pr_read: dict[str, float] = {}
+        #: The last board each channel published, PR-filled (the bar and the diff
+        #: read it between refreshes).
+        self._boards: dict[str, BoardSnapshot] = {}
+        #: The conductor session each cached board was read for (see _cached_board).
+        self._board_owner: dict[str, str] = {}
+        #: When each channel's board was last read and published (monotonic).
+        self._board_refreshed: dict[str, float] = {}
+        #: ``worker project folder -> (read at, repository)`` (see _foreign_workers).
+        self._project_repos: dict[str, tuple[float, RepoRef | None]] = {}
+        #: ``(host, repo slug, branch, number) -> (read at, lookup)`` for worker PRs.
+        self._worker_prs: dict[tuple[str, str, str, int], tuple[float, PrLookup]] = {}
 
     def _lock(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -501,7 +751,8 @@ class WorkspaceService:
                     if current is None:
                         return None
                     before = (current.bar_hash, current.slack_off)
-                    await self._publish_bar(current)
+                    self._drop_board_unless_admitted(binding, key)
+                    await self._publish_bar(current, binding)
                     if (current.bar_hash, current.slack_off) != before:
                         await asyncio.to_thread(self._store.put, current)
                     record = current
@@ -781,7 +1032,8 @@ class WorkspaceService:
         turn hooks never see their turns end. Every :data:`_WATCH_SECS` the
         watcher reads, in memory, which sessions are filed under each channel's
         folder and whether a turn is running in them; a turn that ended
-        schedules the same refresh a bound turn does, and while only workers
+        schedules the same refresh a bound turn does, a turn that started does
+        too (debounced) for a channel with a work board, and while only workers
         are running the channel shows Slack's working status.
         """
         if self._watch is not None and not self._watch.done():
@@ -795,37 +1047,100 @@ class WorkspaceService:
                 except Exception:
                     logger.warning("code channel folder watch failed", exc_info=True)
 
-        self._watch = asyncio.ensure_future(_loop())
+        # A fresh context: the loop outlives the turn that started it, so it must
+        # not inherit that turn's write fence (the status driver would tie its
+        # writes to a turn that has ended).
+        self._watch = asyncio.get_running_loop().create_task(_loop(), context=contextvars.Context())
 
     async def watch_tick(self, state: Any) -> None:
-        """One pass of :meth:`start_watch` over every channel with a folder."""
-        if state is None or not _gate_open():
+        """One pass of :meth:`start_watch` over every bound channel.
+
+        Two kinds of session are watched per channel. The sessions filed in its
+        folder (the channel's worktree is theirs, so their turns change the diff).
+        And the conductor's WORKERS, by lineage, wherever they are filed and
+        whatever worktree they run in: the code-channel store's worker records
+        for the bound session plus every session the channel's last board names
+        (one level only: a worker's own sessions are in neither). A worker that
+        started fresh from main in its own worktree is still on the board and in
+        the channel's status.
+        """
+        if state is None:
             return
+        if not _gate_open():
+            # Code channels were switched off: nothing is watched any more, so
+            # nothing the watch set may outlive it (status, sidebar aggregate).
+            for key in sorted(self._known_channels()):
+                await self._forget_channel(key, state)
+            return
+        bound = await asyncio.to_thread(_bindings_by_channel)
+        live: set[str] = set()
         for record in await asyncio.to_thread(self._store.all):
-            if not record.worktree or record.slack_off:
+            # The channel's stored binding, not a stand-in: the board's scope
+            # check reads its archive stamp and anchor. An unbound or archived
+            # channel is not watched (and is forgotten below).
+            binding = bound.get(record.channel_id)
+            if binding is None or binding.archived_at:
                 continue
             if await asyncio.to_thread(_archived, record):
                 continue  # Slack refuses every write there until it is unarchived
-            if not record.folder_id and not await self._recover_folder(state, record):
+            if not _activation_admits(binding):
+                # Off or Review: the watch writes nothing there. It is forgotten
+                # below, which only hands back the one status the watch itself set.
                 continue
+            # A ``slack_off`` record (Slack refused its bar or Code tab) is still
+            # watched: only those two writes check it, while its board keeps
+            # publishing, so its workers' turns must still refresh it.
+            if binding.session_key and binding.session_key != record.session_key:
+                # The record learns a replacement session only when it points
+                # a worktree at it; the binding names the current conductor.
+                record = replace(record, session_key=binding.session_key)
             key = record.key
-            seen = folders.sessions_in(state, folders.subtree_ids(state, record.folder_id))
+            live.add(key)
+            if record.session_key:
+                self._conductor_of[key] = record.session_key
+            # The cached board decides the status and the workers watched: a
+            # channel that turned shared or stopped since loses it here, within
+            # one pass, not only at its next refresh, which is armed now so the
+            # board comes back as soon as the scope admits it again.
+            if self._drop_board_unless_admitted(binding, key):
+                self.schedule_refresh(binding, delay=BOARD_DEBOUNCE_SECS)
+            if record.worktree and not record.folder_id:
+                # A record rebuilt after it was lost has no folder: find it again
+                # (the base's recovery). A channel with none is still watched by
+                # its workers' lineage below.
+                await self._recover_folder(state, record)
+            folder = (
+                folders.sessions_in(state, folders.subtree_ids(state, record.folder_id))
+                if record.folder_id and record.worktree
+                else {}
+            )
+            workers = self._lineage_of(state, record)
+            seen = {**workers, **folder}
             observed = key in self._seen
             before = self._seen.get(key, {})
             self._seen[key] = seen
             now = {k: run for k, (run, _gen) in seen.items()}
             ended = [k for k, entry in seen.items() if _turn_ended(before.get(k), entry, observed)]
-            ended += [k for k, (run, _gen) in before.items() if run and k not in seen]
+            # A session that vanished since the last pass, running or idle: an
+            # idle worker the owner closed must leave the board too (an idle
+            # board has no backstop to notice it).
+            ended += [k for k in before if k not in seen]
+            started = [
+                k for k, entry in seen.items() if _turn_started(before.get(k), entry, observed)
+            ]
+            channel = binding
             if ended:
-                self.schedule_refresh(
-                    SimpleNamespace(
-                        team_id=record.team_id,
-                        channel_id=record.channel_id,
-                        session_key=record.session_key,
-                        project_dir=record.project_dir,
-                    )
-                )
-            running = sorted(k for k, run in now.items() if run)
+                self.schedule_refresh(channel)
+            elif started and (self._cached_board(key) is not None or workers):
+                # A worker picked work up: the channel's work board shows it.
+                self.schedule_refresh(channel, delay=BOARD_DEBOUNCE_SECS)
+            elif not observed and await self._has_board(record):
+                # The first pass since the gateway started: a board it posted
+                # before the restart is read again, which re-arms the backstop.
+                self.schedule_refresh(channel, delay=BOARD_DEBOUNCE_SECS)
+            elif self._board_due(key, workers):
+                self.schedule_refresh(channel, delay=BOARD_DEBOUNCE_SECS)
+            running = sorted(k for k, (run, _gen) in folder.items() if run)
             if len(running) > 1 and key not in self._crowded:
                 self._crowded.add(key)
                 logger.warning(
@@ -837,7 +1152,87 @@ class WorkspaceService:
                 )
             elif len(running) <= 1:
                 self._crowded.discard(key)
+            # A folderless channel's watch holds only workers: the conductor's
+            # own running turn still owns the status (it shows Slack's Stop).
+            conductor = _find_slot(state, record.session_key)
+            if record.session_key:
+                now.setdefault(record.session_key, bool(getattr(conductor, "turn_running", False)))
+            self._note_conductor_turns(key, conductor)
+            if not self._board_still_admitted(binding):
+                # The board's scope refuses this channel (shared, relinked ...):
+                # the conductor's workers, known by lineage, drive no status
+                # there. What the watch set for them is handed back by
+                # _worker_status, never over the conductor's own running turn.
+                # Lineage decides, not location: a worker the board filed into the
+                # channel's folder is still the conductor's worker.
+                now = {k: run for k, run in now.items() if k not in workers}
+                # The cached board's waiting rows must not set ``suspended`` either
+                # (the scope can refuse here after admitting it earlier this pass).
+                self._forget_board(key, binding.channel_id)
+                if not _sharing_unknown(binding.channel_id):
+                    self._status_hold.pop(key, None)  # a confirmed refusal holds nothing
             await self._worker_status(record, now)
+        # Archived, unbound or Slack-refused channels: whatever the watch set for
+        # them (status, caches, timers, the sidebar aggregate) is let go.
+        for key in sorted(self._known_channels() - live):
+            await self._forget_channel(key, state)
+
+    def _known_channels(self) -> set[str]:
+        """Every channel the watch holds state for."""
+        return (
+            set(self._seen)
+            | set(self._boards)
+            | set(self._working)
+            | set(self._status_hold)
+            | set(self._conductor_of)
+            | set(self._channel_pr_read)
+            | set(self._conductor_gen)
+        )
+
+    async def _forget_channel(self, key: str, state: Any) -> None:
+        """Let go of everything the watch holds for a channel it no longer watches.
+
+        A status the watch set (``processing`` / ``suspended``) is handed back as
+        ``active`` once, the conductor slot's ``work_aggregate`` is cleared, and
+        the board package's per-channel triggers, timers and publish state go too.
+        Never raises.
+        """
+        channel = key.split(":", 1)[1] if ":" in key else key
+        for table in (
+            self._seen,
+            self._boards,
+            self._board_owner,
+            self._board_refreshed,
+            self._status_hold,
+            self._channel_pr_read,
+            self._conductor_gen,
+            self._bar_base_keys,
+        ):
+            table.pop(key, None)
+        self._crowded.discard(key)
+        conductor = self._conductor_of.get(key, "")
+        if key in self._working:
+            slot = _find_slot(state, conductor) if conductor else None
+            if bool(getattr(slot, "turn_running", False)):
+                # The conductor's own live turn owns the status now: leave it.
+                self._working.pop(key, None)
+                self._status_failures.pop(key, None)
+            elif await _set_status(channel, "active"):
+                self._working.pop(key, None)
+                self._status_failures.pop(key, None)
+            elif self._status_gave_up(key):
+                self._working.pop(key, None)
+            # Otherwise kept (with its conductor): the next pass hands it back again.
+        if key not in self._working:
+            self._conductor_of.pop(key, None)
+            self._status_failures.pop(key, None)
+        try:
+            from kiro_crew.slack.code_channels import board as board_pkg
+
+            board_pkg.clear_aggregate(state, conductor)
+            board_pkg.forget_channel(channel)
+        except Exception:
+            logger.debug("code channel %s: board state not forgotten", channel, exc_info=True)
 
     async def _recover_folder(self, state: Any, record: WorkspaceRecord) -> bool:
         """A record rebuilt after it was lost has no ``folder_id`` (only
@@ -867,30 +1262,109 @@ class WorkspaceService:
         return True
 
     async def _worker_status(self, record: WorkspaceRecord, now: dict[str, bool]) -> None:
-        """Slack's working status while only the channel's workers are running.
+        """The channel's Slack status while only its workers are moving.
 
-        The bound session's own turns already drive the status (the core's
-        hooks); this covers the rest, and hands the status back the moment the
-        bound session runs again or nothing runs.
+        The bound session's own turns drive the status (the core's hooks); between
+        them it follows the workers: ``suspended`` while one waits on you (or the
+        conductor's last turn left it waiting), ``processing`` while one runs, and
+        back to what the conductor's turn end showed once none does.
         """
+        from kiro_crew.slack.code_channels import status as channel_status
+        from kiro_crew.slack.code_channels.board.model import WAITING_ON_YOU
+
         bound_running = now.get(record.session_key, False)
-        workers = any(run for k, run in now.items() if k != record.session_key)
         key = record.key
-        want = "processing" if workers and not bound_running else ""
-        if want and key not in self._working:
-            if await _set_status(record.channel_id, "processing"):
-                self._working.add(key)
-        elif not want and key in self._working:
-            self._working.discard(key)
-            if not bound_running:
-                await _set_status(record.channel_id, "active")
+        if bound_running:
+            # The bound session's own turn drives the status (the core's hooks).
+            self._working.pop(key, None)
+            self._status_hold.pop(key, None)
+            self._status_failures.pop(key, None)
+            return
+        hold = self._status_hold.get(key)
+        if hold is not None:
+            if self._cached_board(key) is None and self._clock() < hold:
+                # The board was dropped only while the channel's sharing reading
+                # is re-read: the status it set stays until the board is back
+                # (or the hold runs out), instead of flapping off and on.
+                return
+            self._status_hold.pop(key, None)
+        workers = any(run for k, run in now.items() if k != record.session_key)
+        board = self._cached_board(key)
+        waiting = board is not None and any(r.state == WAITING_ON_YOU for r in board.rows)
+        conductor_waits = channel_status.after_turn(record.channel_id) == "suspended"
+        if waiting or (conductor_waits and (workers or key in self._working)):
+            want = "suspended"
+        elif workers:
+            want = "processing"
+        else:
+            want = ""
+        sent = self._working.get(key, "")
+        if want == "processing" and sent == want:
+            # Slack ends ``processing`` after an hour and a code channel's driver
+            # arms no keepalive, so a worker running longer would lose the loader.
+            # The driver is asked again each pass; its own refresh window
+            # (PROCESSING_REFRESH_SECS) decides when a write actually goes out.
+            await _set_status(record.channel_id, want)
+        elif want and want != sent:
+            if await _set_status(record.channel_id, want):
+                self._working[key] = want
+        elif not want and sent:
+            # Hand back what the conductor's turn end left (suspended or active).
+            # Forgotten only once Slack took it: a failed hand-back is sent again
+            # on the next pass, never left showing the workers' status.
+            if await _set_status(record.channel_id, "suspended" if conductor_waits else "active"):
+                self._working.pop(key, None)
+                self._status_failures.pop(key, None)
+            elif self._status_gave_up(key):
+                self._working.pop(key, None)
+
+    def _note_conductor_turns(self, key: str, conductor: Any) -> None:
+        """Forget the status the watch set once a conductor turn ran since the last pass.
+
+        The conductor's turn hooks set the channel status themselves (``processing``,
+        then what its end leaves) without telling the watch. A turn that started
+        and ended between two passes is seen only as a new turn generation; the
+        watch's own record is then stale, so it is dropped and the workers' status
+        (``suspended`` for one still waiting on you) is sent again.
+        """
+        generation = getattr(conductor, "_turn_generation", None) if conductor else None
+        if not isinstance(generation, int):
+            return
+        before = self._conductor_gen.get(key)
+        self._conductor_gen[key] = generation
+        if before is not None and before != generation:
+            self._working.pop(key, None)
+            self._status_failures.pop(key, None)
+            self._status_hold.pop(key, None)  # the status it held was overwritten too
+
+    def _status_gave_up(self, key: str) -> bool:
+        """Count one refused hand-back; True once :data:`_STATUS_RETRIES` were refused.
+
+        Bounded, so a refusal Slack keeps giving (the app left the channel) is
+        not re-sent every pass forever; the conductor's next turn sets it again.
+        """
+        count = self._status_failures.get(key, 0) + 1
+        if count < _STATUS_RETRIES:
+            self._status_failures[key] = count
+            return False
+        self._status_failures.pop(key, None)
+        logger.info(
+            "code channel %s: status hand-back refused %d times; left to the next turn",
+            key,
+            count,
+        )
+        return True
 
     # ── turn end ────────────────────────────────────────────────────────────
 
     def _forget_worker_status(self, binding: Any) -> None:
         """The bound session's turn drives the channel status itself, so the
-        watcher's record of having written ``processing`` is stale after it."""
-        self._working.discard(record_key(binding.team_id or "", binding.channel_id or ""))
+        watcher's record of the status it wrote (``processing`` / ``suspended``),
+        its refused hand-backs and any hold are stale after it."""
+        key = record_key(binding.team_id or "", binding.channel_id or "")
+        self._working.pop(key, None)
+        self._status_failures.pop(key, None)
+        self._status_hold.pop(key, None)
 
     @property
     def store(self) -> WorkspaceStore:
@@ -911,9 +1385,51 @@ class WorkspaceService:
             record = await asyncio.to_thread(self._store.get, team, channel)
             if record is None:
                 return None
-            published = await self._publish_bar(record)
+            self._drop_board_unless_admitted(binding, f"{team}:{channel}")
+            published = await self._publish_bar(record, binding)
             await asyncio.to_thread(self._store.put, record)
             return "" if published else (record.slack_off or "publish_failed")
+
+    def _drop_board_unless_admitted(self, binding: Any, key: str) -> bool:
+        """Forget the cached board when the channel may no longer be shown it.
+
+        The context bar lists the cached board's workers; a bar sent outside a
+        refresh (which re-reads the board under the scope check) checks the
+        same scope first, so a channel that turned shared or archived since is
+        never re-sent worker titles or PR links from the cache. True when a
+        cached board was dropped.
+        """
+        self._note_conductor(binding)
+        if self._cached_board(key) is None:
+            return False
+        from kiro_crew.slack.code_channels import surface
+        from kiro_crew.slack.code_channels.board import source
+
+        if source.scope_admits(surface.dashboard_state(), binding):
+            return False
+        return self._forget_board(key, str(getattr(binding, "channel_id", "") or ""))
+
+    def _board_still_admitted(self, binding: Any) -> bool:
+        """The scope check again, after a refresh's gh and git work (it takes seconds)."""
+        from kiro_crew.slack.code_channels import surface
+        from kiro_crew.slack.code_channels.board import source
+
+        return source.scope_admits(surface.dashboard_state(), binding)
+
+    def _forget_board(self, key: str, channel_id: str, *, hold: bool = True) -> bool:
+        """Drop the channel's cached board; True when there was one.
+
+        When the only doubt is a sharing reading gone stale (it is re-read on the
+        refusal), the status the watch set for the board's workers is held for
+        up to :data:`BOARD_BACKSTOP_SECS` rather than dropped and set again.
+        ``hold=False`` (the conductor was replaced: not a sharing doubt) arms none.
+        """
+        had = self._boards.pop(key, None) is not None
+        self._board_owner.pop(key, None)
+        self._board_refreshed.pop(key, None)
+        if hold and had and key in self._working and _sharing_unknown(channel_id):
+            self._status_hold.setdefault(key, self._clock() + BOARD_BACKSTOP_SECS)
+        return had
 
     @contextlib.asynccontextmanager
     async def channel_quiet(self, team_id: str, channel_id: str) -> AsyncIterator[None]:
@@ -948,21 +1464,50 @@ class WorkspaceService:
         self._forget_worker_status(binding)
         self.schedule_refresh(binding)
 
-    def schedule_refresh(self, binding: Any) -> None:
+    def schedule_refresh(self, binding: Any, *, delay: float = 0.0) -> None:
+        """Run :meth:`refresh` for the channel soon; coalesces with one in flight.
+
+        *delay* is a debounce: the first run waits that long, so the triggers
+        that arrive together (several workers reporting at once) share it.
+        """
         key = f"{binding.team_id or ''}:{binding.channel_id or ''}"
+        self._latest_binding[key] = binding
+        if delay <= 0:
+            self._full.add(key)  # a turn end: re-read the channel's own PR
         if key in self._tasks:
             self._again.add(key)
+            # A rerun keeps the longest debounce asked of it, so a burst of
+            # starts, approvals and ledger moves mid-refresh costs one more pass.
+            self._again_delay[key] = max(self._again_delay.get(key, 0.0), delay)
             return
 
         async def _run() -> None:
             try:
+                wait = delay
                 while True:
+                    if wait > 0:
+                        await asyncio.sleep(wait)
                     self._again.discard(key)
-                    await self.refresh(binding)
+                    # This pass absorbs every trigger so far, their debounce too.
+                    self._again_delay.pop(key, None)
+                    full = key in self._full
+                    self._full.discard(key)
+                    # The channel's binding as the store holds it now, else the
+                    # newest trigger's: the scope check refuses a stale one, so a
+                    # rebind mid-loop (or a late trigger carrying the old copy)
+                    # must not drop every rerun.
+                    current = await _stored_binding(self._latest_binding.get(key, binding))
+                    if full:
+                        await self.refresh(current)
+                    else:
+                        await self.refresh(current, recheck_pr=False)
                     if key not in self._again:
                         return
+                    wait = self._again_delay.pop(key, 0.0)
             finally:
                 self._tasks.pop(key, None)
+                self._again_delay.pop(key, None)
+                self._latest_binding.pop(key, None)
 
         self._tasks[key] = asyncio.ensure_future(_run())
 
@@ -971,8 +1516,32 @@ class WorkspaceService:
         while self._tasks:
             await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
-    async def refresh(self, binding: Any) -> None:
-        """Republish the context bar and the diff after a turn, each only on change."""
+    def bar_base_keys(self, team_id: str, channel_id: str) -> list[str] | None:
+        """The keys the workspace's own bar items took at the last bar build, or ``None``."""
+        keys = self._bar_base_keys.get(f"{team_id}:{channel_id}")
+        return list(keys) if keys is not None else None
+
+    async def _board_for(self, binding: Any) -> BoardSnapshot | None:
+        if self._read_board is None:
+            return None
+        try:
+            return await self._read_board(binding)
+        except Exception:
+            logger.warning("code channel %s: board read failed", binding.channel_id, exc_info=True)
+            return None
+
+    async def refresh(self, binding: Any, *, recheck_pr: bool = True) -> None:
+        """Republish the context bar, the diff and the work board, each only on change.
+
+        A refresh only the board triggered (``recheck_pr=False``: a worker's turn
+        start, a tool approval, a ledger write) re-reads the channel's own PR at
+        most once per :data:`_PR_TTL_LIVE`, so a busy board does not cost two
+        ``gh`` calls a report; any turn END in the channel (the conductor's or a
+        worker's) always re-reads it.
+
+        Callers go through :meth:`schedule_refresh`: it is what keeps refreshes
+        of one channel serial, which the board's post-and-pin needs.
+        """
         team, channel = str(binding.team_id or ""), str(binding.channel_id or "")
         if not channel or not _gate_open():
             return
@@ -980,24 +1549,73 @@ class WorkspaceService:
             # Slack refuses every write to an archived channel; an unarchive
             # (``lifecycle``) clears the stamp and the next turn publishes again.
             return
+        if not _activation_admits(binding):
+            # The operator set the channel or its origin to Off or Review: worker
+            # activity refreshes nothing there (no bar, no diff tab, no board),
+            # the same rule the message path and the agent's own writes obey.
+            self._forget_board(f"{team}:{channel}", channel)
+            self._status_hold.pop(f"{team}:{channel}", None)
+            _clear_aggregate(binding)
+            return
         if await asyncio.to_thread(self._store.get, team, channel) is None:
             await self.ensure(binding)
-        # The gh, git and Slack work runs on a snapshot WITHOUT the channel lock,
-        # which a turn start's ensure() takes: a reply right after a turn must not
-        # wait on the last turn's refresh. Refreshes of one channel are already
-        # serial (schedule_refresh), and the store has its own thread lock; the
-        # channel lock is held only to merge the result back.
+        # The gh, git and Slack work -- the board's ledger read, the worker PR
+        # lookups and the board message included -- runs on a snapshot WITHOUT
+        # the channel lock, which a turn start's ensure() takes: a reply right
+        # after a turn must not wait on the last turn's refresh. Refreshes of one
+        # channel are already serial (schedule_refresh), and the store has its
+        # own thread lock; the channel lock is held only to merge the result back.
         record = await asyncio.to_thread(self._store.get, team, channel)
         if record is None:
             return
+        key = f"{team}:{channel}"
+        self._note_conductor(binding)
         start = (record.bar_hash, record.diff_hash, record.view_id)
+        board = read = await self._board_for(binding)
+        if board is None:
+            # Refused or gone: forget it now, so a failure below never leaves
+            # the last admitted board cached for the bar to re-send.
+            self._forget_board(key, channel)
         try:
-            await self._refresh_pr(record)
-            await self._publish_bar(record)
-            await self._publish_diff(record)
+            now = self._clock()
+            last = self._channel_pr_read.get(key)
+            if recheck_pr or last is None or now - last >= _PR_TTL_LIVE:
+                await self._refresh_pr(record)
+                self._channel_pr_read[key] = now
+            if board is not None:
+                board = await self._fill_worker_prs(record, board)
+                if not self._board_still_admitted(binding):
+                    # The channel turned shared (or its slot was relinked) during
+                    # the gh work: neither the bar nor the board shows it.
+                    self._forget_board(key, channel)
+                    board = None
+            if board is not None:
+                self._boards[key] = board
+                self._board_owner[key] = str(binding.session_key or "")
+                self._board_refreshed[key] = self._clock()
+                self._status_hold.pop(key, None)
+            await self._publish_bar(record, binding)
+            await self._publish_diff(record, binding)
+            if board is not None and key not in self._boards:
+                # The diff's re-check refused the channel after the bar went out
+                # with the workers on it: the bar is sent again without them, and
+                # the board is not published.
+                await self._publish_bar(record, binding)
+                board = None
+            if read is not None and board is None:
+                # The board read was admitted but a later re-check refused it: the
+                # sidebar summary (published with the board) is cleared instead.
+                _clear_aggregate(binding)
+            if board is not None and self._publish_board is not None:
+                # The board's pointers live on the channel's surface record,
+                # not this one, so nothing here merges back for it.
+                await self._publish_board(binding, board)
         except Exception:
             logger.warning("code channel %s: refresh failed", channel, exc_info=True)
-        key = f"{team}:{channel}"
+            if read is not None:
+                # The board this pass read was never published: the sidebar
+                # summary of the pass before is not left standing for it.
+                _clear_aggregate(binding)
         async with self._lock(key):
             current = await asyncio.to_thread(self._store.get, team, channel)
             if current is None:
@@ -1005,13 +1623,15 @@ class WorkspaceService:
             if (current.worktree, current.branch) != (record.worktree, record.branch):
                 # Rebound meanwhile: what this pass sent described the old tree,
                 # so the new tree's bar and diff are sent again, and a tab this
-                # pass opened stays removable.
+                # pass opened stays removable. The PR read was the old branch's,
+                # so the rerun reads the new one's whatever its trigger.
                 current.bar_hash, current.diff_hash = "", ""
                 # The tab is the channel's, one per channel: when this pass
                 # opened or removed it and nothing has touched it since, this
                 # pass's id is what Slack shows; otherwise the stored one is.
                 if record.view_id != start[2] and current.view_id == start[2]:
                     current.view_id = record.view_id
+                self._channel_pr_read.pop(key, None)
                 raced = True
             else:
                 # Someone else published while this pass ran (a turn start's
@@ -1077,10 +1697,18 @@ class WorkspaceService:
             branch=branch,
             branch_pushed=pushed,
             pr=pr,
+            board=self._cached_board(record.key),
         )
 
-    async def _publish_bar(self, record: WorkspaceRecord) -> bool:
-        """Publish the bar when it changed; False when a needed write failed."""
+    async def _publish_bar(self, record: WorkspaceRecord, binding: Any = None) -> bool:
+        """Publish the bar when it changed; False when a needed write failed.
+
+        With *binding*, a bar that lists the board's workers is judged by the
+        scope check again right before it is sent (the git reads before it take
+        a moment): a refused channel gets the bar without them.
+        """
+        if binding is not None:
+            self._note_conductor(binding)  # every bar path: refresh, ensure, republish
         if record.slack_off:
             return False
         try:
@@ -1090,7 +1718,20 @@ class WorkspaceService:
         from kiro_crew.slack.code_channels.agent_bar import merge_for_channel
 
         # The agent's own items (code_channel_set_context_bar) ride after these.
-        items = await asyncio.to_thread(merge_for_channel, build_items(state), record.channel_id)
+        base = build_items(state)
+        items = await asyncio.to_thread(merge_for_channel, base, record.channel_id)
+        if (
+            state.board is not None
+            and binding is not None
+            and not self._board_still_admitted(binding)
+        ):
+            self._forget_board(record.key, record.channel_id)
+            state = replace(state, board=None)
+            base = build_items(state)
+            items = await asyncio.to_thread(merge_for_channel, base, record.channel_id)
+        # The keys the workspace's own items took (worker items included), so the
+        # agent's set_context_bar reply names exactly which of its items fit.
+        self._bar_base_keys[record.key] = [str(i.get("key") or "") for i in base]
         digest = _digest(items)
         if digest == record.bar_hash or (not items and not record.bar_hash):
             return True
@@ -1099,7 +1740,9 @@ class WorkspaceService:
             return True
         return False
 
-    async def _publish_diff(self, record: WorkspaceRecord) -> None:
+    async def _publish_diff(self, record: WorkspaceRecord, binding: Any = None) -> None:
+        if binding is not None:
+            self._note_conductor(binding)
         if record.slack_off:
             return
         if not record.worktree:
@@ -1110,7 +1753,19 @@ class WorkspaceService:
             return
         if not record.base_sha:
             return
-        built = await asyncio.to_thread(self._build_diff, record)
+        board = self._cached_board(record.key)
+        built = await asyncio.to_thread(self._build_diff, record, board)
+        if board is not None and binding is not None and not self._board_still_admitted(binding):
+            # The build took seconds of git work: a channel that turned shared, or
+            # was set to Off or Review, meanwhile gets no worker titles, branches
+            # or committed code. Only the channel's own diff is rebuilt and sent.
+            self._forget_board(record.key, record.channel_id)
+            built = await asyncio.to_thread(self._build_diff, record, None)
+            if built is None:
+                # No channel-only diff to send in its place: the tab published
+                # earlier may list workers, so it is taken down, not left up.
+                await self._clear_diff(record)
+                return
         if built is None:
             return
         content, base_label, head_label = built
@@ -1141,8 +1796,16 @@ class WorkspaceService:
         if await self._call("remove_view", record, record.view_id) is not None:
             record.diff_hash, record.view_id = "", ""
 
-    def _build_diff(self, record: WorkspaceRecord) -> tuple[str, str, str] | None:
-        """Blocking: the worktree's diff against its base, capped (see :mod:`.diff`)."""
+    def _build_diff(
+        self, record: WorkspaceRecord, board: BoardSnapshot | None = None
+    ) -> tuple[str, str, str] | None:
+        """Blocking: the worktree's diff against its base, capped (see :mod:`.diff`).
+
+        With a work board whose workers have commits on their own branches, the
+        tab shows the COMBINED change: the channel's own diff first, then each
+        worker's committed changes under a header naming the worker, its branch
+        and its PR (:func:`_worker_groups`).
+        """
         cwd = record.worktree
         if not os.path.isdir(cwd):
             return None
@@ -1201,18 +1864,29 @@ class WorkspaceService:
                 remaining -= len(section)
             names_cut = names_cut or len(names) > _MAX_UNTRACKED
             branch = git_ops.current_branch(cwd) or record.branch
+            workers = _worker_groups(cwd, board, branch) if board is not None else []
         except git_ops.SandboxUnavailable:
             return None
         # Every byte bound for Slack goes through the gateway's outbound
         # redaction (credentials + exfiltration URLs) BEFORE it is sized, cut
         # and hashed: a key the agent wrote into a file must never reach the
         # channel, and the size cap must hold for what is actually sent.
-        built = assemble(
-            _redact_bytes(body),
-            tracked_truncated=body_cut,
-            untracked=[_redact_bytes(chunk) for chunk in chunks],
-            untracked_truncated=names_cut,
-        )
+        if workers:
+            channel_group = DiffGroup(
+                header=redact_via_context(f"Channel branch {branch} (conductor)"),
+                tracked=_redact_bytes(body),
+                tracked_truncated=body_cut,
+                untracked=tuple(_redact_bytes(chunk) for chunk in chunks),
+                untracked_truncated=names_cut,
+            )
+            built = assemble_groups([channel_group, *workers])
+        else:
+            built = assemble(
+                _redact_bytes(body),
+                tracked_truncated=body_cut,
+                untracked=[_redact_bytes(chunk) for chunk in chunks],
+                untracked_truncated=names_cut,
+            )
         base_label = (git_ops.default_branch_name(cwd) if record.base_ref else "") or base[:12]
         return built.content, redact_via_context(base_label), redact_via_context(branch)
 

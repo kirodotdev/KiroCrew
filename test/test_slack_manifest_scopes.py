@@ -52,6 +52,7 @@ _CODE_CHANNEL_SCOPES = [
     "chat:write.customize",
     "code_channels:manage",
     "groups:write.invites",
+    "pins:write",
 ]
 
 _BASE_BOT_EVENTS = [
