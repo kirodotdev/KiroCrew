@@ -608,5 +608,6 @@
   "components.chatHistorySearch.image_count",
   "components.chatHistorySearch.file_count",
   "pages.chat.subagentProgressBar.older_runs_not_shown",
-  "memoryPage.strength_rate_outrank"
+  "memoryPage.strength_rate_outrank",
+  "pages.chatSidebar.bulk_titles_started"
 ]
