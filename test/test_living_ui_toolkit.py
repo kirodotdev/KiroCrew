@@ -32,6 +32,7 @@ HELPERS = (
     "tour",
     "readout",
     "focusOne",
+    "explode",
     "css",
 )
 _REMEDY = "Run `python3 scripts/copy_living_ui_blocks.py` and commit SKILL.md."
