@@ -118,7 +118,7 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
         "no kept model: a heartbeat delivery appends one assistant row and runs no turn, so "
         "slot.model stays '' until a person picks one"
     ),
-    ("slack/interactions.py", "_import_thread_to_slot"): (
+    ("slack/interactions_options.py", "_import_thread_to_slot"): (
         "person: an allowed Slack user's !link-to-dashboard command or Link button importing "
         "their own thread; no model= is passed"
     ),
