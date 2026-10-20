@@ -397,9 +397,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # name the manifest validated as a bare object name and whose bytes were
         # sha256-pinned before extraction; `_probe_node` runs the just-extracted Node
         # with `--version` from the gateway-owned staging directory. No agent input
-        # reaches either argv.
+        # reaches either argv. `_run_tool` runs `lipo -create`/`lipo -archs` for
+        # `make_universal_node`, called only by packaging/build-desktop.sh at build
+        # time: the paths are the installed Node and the other arch's sha256-pinned
+        # Node, both under the build's own staging root.
         "acp/kas_bundle.py::_open_tar",
         "acp/kas_bundle.py::_probe_node",
+        "acp/kas_bundle.py::_run_tool",
         "browser_cli/launcher.py::_run_cli",
         "browser_cli/view.py::_spawn",
         # The offline run of an authored dashboard page (``dashboard_verify``). The argv

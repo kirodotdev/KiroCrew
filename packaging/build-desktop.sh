@@ -8,7 +8,7 @@
 #   4. Stage the dashboard into the package's static dir
 #   5. Prune caches/tests/unused stdlib to shrink the bundle
 #   6. (opt-in, BUNDLE_KIRO_CLI=1) Stage a pinned kiro-cli into backend-dist/kiro-cli/
-#   6b. Stage the pinned KAS engine bundle into backend-dist/kas[-<arch>]/
+#   6b. Stage the pinned KAS engine bundle into backend-dist/kas/
 #   7. Package the desktop app with electron-builder -> DMG / AppImage / NSIS
 #
 # The result is a double-clickable app that embeds the whole Python backend +
@@ -1447,14 +1447,22 @@ fi
 # the same code `kirocrew kas install` runs, so the staged tree is byte-for-byte
 # what an install would lay down and the backend reads it with the same reader.
 #
-# Layout mirrors the backend trees: one root per architecture on a universal
-# macOS build (backend-dist/kas-arm64/, backend-dist/kas-x64/: Node ships no
-# universal binary, the engine's own JS is shared), backend-dist/kas/ otherwise.
-# Each root holds <version>/{bundle,node,install.json} plus a BUNDLED-VERSION
-# provenance file beside it, which the Electron shell reads to know which
-# version directory's record to check (gateway-env.js, bundledKasEnvironment)
-# before it exports KIROCREW_BUNDLED_KAS_DIR. The backend ranks the data home's own
-# install ahead of this root, so `kirocrew kas install` keeps working in the app.
+# One root, backend-dist/kas/, on every build. It holds
+# <version>/{bundle,node,install.json} plus a BUNDLED-VERSION provenance file
+# beside it, which the Electron shell reads to know which version directory's
+# record to check (gateway-env.js, bundledKasEnvironment) before it exports
+# KIROCREW_BUNDLED_KAS_DIR. The backend ranks the data home's own install ahead
+# of this root, so `kirocrew kas install` keeps working in the app.
+#
+# A universal macOS build stages the engine ONCE: the engine tarball is already
+# darwin-universal, and make_universal_node `lipo -create`s the arm64 and x64
+# Node builds into one Mach-O at the record's node_bin path, probing each slice
+# through `arch`. Every build then trims the tree to what runs
+# (trim_for_shipping): Node's binary and license, the engine minus its C
+# sources, headers, source maps and web-tree-sitter's debug build. The staged
+# tree holds only regular files and directories -- no symlink, no hardlink
+# (the macOS signing service refuses a bundle with shared trees); the gate
+# after the installer fails the build on either.
 #
 # BUNDLE_KAS=0 opts a build out; the switch then needs `kirocrew kas install`
 # first, exactly as a pip install does. Fetches from KAS_BUNDLE_URL (default:
@@ -1462,8 +1470,9 @@ fi
 # the manifest digest is the pin, so nothing stale can be reused by mistake.
 #   $1 = backend tree (its python runs the installer)   $2 = dest root
 #   $3 = platform.system() name   $4 = platform.machine() name
+#   $5 = "universal" to lipo both Mac Node builds into one binary (Darwin only)
 stage_kas_bundle() {
-  local tree="$1" dest="$2" system="$3" machine="$4" py
+  local tree="$1" dest="$2" system="$3" machine="$4" universal="${5:-}" py links
   if [ -x "$tree/bin/python3.12" ]; then
     py="$tree/bin/python3.12"
   elif [ -x "$tree/python.exe" ]; then
@@ -1477,7 +1486,7 @@ stage_kas_bundle() {
   # Paths and names reach Python via argv, never string splicing. -I (isolated):
   # no user site, no PYTHONPATH, no PYTHON* env, so `kiro_crew` resolves to the
   # backend this build just installed and nothing else on the build host.
-  "$py" -I - "$dest" "$system" "$machine" "${KAS_BUNDLE_URL:-}" <<'PY'
+  "$py" -I - "$dest" "$system" "$machine" "${KAS_BUNDLE_URL:-}" "$universal" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1486,31 +1495,51 @@ from kiro_crew.acp.kas_pin import KAS_PIN_MANIFEST_SHA256, KAS_PIN_VERSION
 from kiro_crew.config.sections import KAS_BUNDLE_DEFAULT_URL
 
 dest, system, machine, base = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+universal = sys.argv[5] == "universal"
 base = base or KAS_BUNDLE_DEFAULT_URL
-print(f"    KAS {KAS_PIN_VERSION} for {system}/{machine} from {base}")
+print(f"    KAS {KAS_PIN_VERSION} for {system}/{machine}{' + universal Node' if universal else ''} from {base}")
 manifest, url = kas_bundle.fetch_manifest(
     base, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
 )
 installed = kas_bundle.install_bundle(
     manifest, source=url, root=dest, system=system, machine=machine
 )
+if universal:
+    installed = kas_bundle.make_universal_node(manifest, installed, source=url)
+freed = kas_bundle.trim_for_shipping(installed)
+print(f"    trimmed {freed / 1048576:.0f} MiB the engine never runs")
 # Re-read through the same reader the gateway will use: a tree the reader
 # rejects is a build error here, not a refusal on the user's first prompt.
 again = kas_bundle.installed_bundle(root=dest, version=KAS_PIN_VERSION)
 assert again is not None and again.acp_server == installed.acp_server, "staged tree does not read back"
+assert again.node_bin == installed.node_bin, "staged Node does not read back"
 (dest / "BUNDLED-VERSION").write_text(KAS_PIN_VERSION + "\n", encoding="utf-8")
 print(f"    engine: {installed.acp_server.relative_to(dest)}")
 print(f"    node:   {installed.node_bin.relative_to(dest)} (v{installed.node_version})")
 PY
   kiro_cli_layout_gate "$dest"
+  if [ "$system" = "Darwin" ]; then
+    # Only regular files and directories: a symlink or a hardlinked file inside
+    # the app is what the macOS signing service refuses.
+    links="$(find "$dest" \( -type l -o \( -type f -links +1 \) \) -print 2>/dev/null | head -5)"
+    if [ -n "$links" ]; then
+      echo "ERROR: the staged KAS tree carries a symlink or hardlink the signer refuses:" >&2
+      printf '       %s\n' "$links" >&2
+      exit 1
+    fi
+  fi
+  if [ "$universal" = "universal" ]; then
+    echo "    node slices: $(lipo -archs "$dest/$(cat "$dest/BUNDLED-VERSION")"/node/*/bin/node)"
+  fi
   echo "    staged KAS bundle -> backend-dist/$(basename "$dest")/ ($(du -sh "$dest" 2>/dev/null | cut -f1))"
 }
 
 if [ "${BUNDLE_KAS:-1}" = "1" ]; then
   log "Staging the pinned KAS engine bundle…"
   if [ "$UNIVERSAL" = "1" ]; then
-    stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64" "$ELECTRON_DIR/backend-dist/kas-arm64" Darwin arm64
-    stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64" "$ELECTRON_DIR/backend-dist/kas-x64" Darwin x86_64
+    # The arm64 tree's interpreter runs the installer natively; the x64 Node
+    # slice is probed under Rosetta, as the x64 backend gate is.
+    stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64" "$ELECTRON_DIR/backend-dist/kas" Darwin arm64 universal
   else
     case "$OS" in
       darwin)  KAS_SYSTEM=Darwin ;;
@@ -1716,6 +1745,35 @@ if [ "$OS" = "darwin" ] && { [ "$UNIVERSAL" = "1" ] || [ -n "${TARGET_ARCH:-}" ]
     echo "    $APP_BIN: $LIPO_ARCHS"
   else
     echo "ERROR: shell binary is not ${TARGET_ARCH}-only (lipo -archs: $LIPO_ARCHS)" >&2
+    exit 1
+  fi
+fi
+
+# macOS universal update-zip size gate. The zip is the update payload, and the
+# Squirrel.Mac inside every INSTALLED app (Electron 43 and 44.0-44.6) downloads
+# it into one NSData whose capacity doubles as it grows: past 1 GiB it asks for
+# 2 GiB, which Electron's PartitionAlloc refuses by design, and the running app
+# dies mid-update. The install is performed by the OLD app's Squirrel, so a
+# newer Electron in THIS build does not help the users receiving it; only the
+# artifact's size does.
+#
+# 1000 MiB leaves 24 MiB below the 1024 MiB cliff for the bytes signing and
+# notarization add (sign-and-notarize.yml rebuilds the zip with ditto after
+# signing). Lowering the ceiling is fine; raising it past 1024 MiB ships the crash.
+if [ "$OS" = "darwin" ] && [ "$UNIVERSAL" = "1" ]; then
+  MAC_ZIP_MAX_MIB=1000
+  MAC_ZIP="$(find "$ELECTRON_DIR/dist" -maxdepth 1 -name '*-mac.zip' -print -quit 2>/dev/null)"
+  if [ -z "$MAC_ZIP" ]; then
+    echo "ERROR: no *-mac.zip under $ELECTRON_DIR/dist to size-check" >&2
+    exit 1
+  fi
+  MAC_ZIP_BYTES="$(stat -f%z "$MAC_ZIP")"
+  MAC_ZIP_MIB=$(( MAC_ZIP_BYTES / 1048576 ))
+  echo "    $(basename "$MAC_ZIP"): ${MAC_ZIP_BYTES} bytes, ${MAC_ZIP_MIB} MiB (ceiling ${MAC_ZIP_MAX_MIB} MiB; the installed updater's cliff is 1024 MiB)"
+  if [ "$MAC_ZIP_MIB" -ge "$MAC_ZIP_MAX_MIB" ]; then
+    echo "ERROR: the universal update zip is ${MAC_ZIP_MIB} MiB, at or over the ${MAC_ZIP_MAX_MIB} MiB ceiling." >&2
+    echo "       Every installed app's Squirrel.Mac crashes on a zip past 1 GiB." >&2
+    echo "       Shrink the payload (du -sh backend-dist/* names the trees); do not raise the ceiling." >&2
     exit 1
   fi
 fi

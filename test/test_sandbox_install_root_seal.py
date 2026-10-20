@@ -112,11 +112,11 @@ def test_the_bundled_kas_root_is_sealed_in_both_spellings(
     # write the tree would choose a program the operator never installed. The shell
     # exports the directory only when the build staged it, so this is the one path
     # by which it reaches the seal.
-    real = tmp_path / "Resources" / "backend-dist" / "kas-arm64"
+    real = tmp_path / "Resources" / "backend-dist" / "kas"
     real.mkdir(parents=True)
     link = tmp_path / "app-current"
     link.symlink_to(tmp_path / "Resources", target_is_directory=True)
-    exported = link / "backend-dist" / "kas-arm64"
+    exported = link / "backend-dist" / "kas"
     monkeypatch.setenv(BUNDLED_KAS_DIR_ENV, f" {exported} ")
     sandbox_tiers._bundled_kas_targets_cached.cache_clear()
     targets = sandbox._resolved_install_root_targets()
@@ -131,7 +131,7 @@ def test_the_bundled_kas_root_is_sealed_in_both_spellings(
 
 @_POSIX_ONLY
 def test_the_bundled_kas_root_is_read_only_on_both_launchers() -> None:
-    kas_root = "/Applications/Kiro Crew.app/Contents/Resources/backend-dist/kas-arm64"
+    kas_root = "/Applications/Kiro Crew.app/Contents/Resources/backend-dist/kas"
     host = _host(install_root_targets=(INSTALL, kas_root))
     for backend in (BACKEND_NAMESPACE, BACKEND_SEATBELT):
         plan = plan_confinement(SandboxRequest(tier="standard", backend=backend), host)

@@ -262,40 +262,41 @@ function kasResources(files) {
 
 const KAS_RECORD = JSON.stringify({ node_bin: "node/node-v22.23.3-linux-x64/bin/node" });
 
-test("a staged KAS engine is exported as its arch root, read from BUNDLED-VERSION", () => {
+test("a staged KAS engine is exported as its one root, read from BUNDLED-VERSION", () => {
   // The shell carries no pin: the version it probes is whatever the build staged.
   const fs = kasResources({
-    "/res/backend-dist/kas-arm64/BUNDLED-VERSION": "0.66.33\n",
-    "/res/backend-dist/kas-arm64/0.66.33/install.json": KAS_RECORD,
-  });
-  const env = bundledKasEnvironment(fs, path.posix, "/res", { arch: "arm64" });
-  assert.deepStrictEqual(env, { KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas-arm64" });
-});
-
-test("a single-arch build's unsuffixed KAS root is found after the arch-suffixed one", () => {
-  const fs = kasResources({
-    "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33",
+    "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33\n",
     "/res/backend-dist/kas/0.66.33/install.json": KAS_RECORD,
   });
-  const env = bundledKasEnvironment(fs, path.posix, "/res", { arch: "x64" });
+  const env = bundledKasEnvironment(fs, path.posix, "/res", {});
   assert.deepStrictEqual(env, { KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas" });
 });
 
-test("a KAS root for another architecture is never exported", () => {
-  // A universal build that stages kas-x64 only is not a bundle for an arm64 shell:
-  // the wrong-arch Node must not be handed to the gateway.
+test("a universal build's one KAS root serves both architectures", () => {
+  // The universal Node holds both slices, so the arm64 and the x64 shell export
+  // the same root; arch-suffixed roots are not read.
   const fs = kasResources({
-    "/res/backend-dist/kas-x64/BUNDLED-VERSION": "0.66.33",
-    "/res/backend-dist/kas-x64/0.66.33/install.json": KAS_RECORD,
+    "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33",
+    "/res/backend-dist/kas/0.66.33/install.json": JSON.stringify({
+      node_bin: "node/node-v22.23.3-darwin-arm64/bin/node",
+      node_key: "darwin-universal",
+    }),
   });
-  assert.deepStrictEqual(bundledKasEnvironment(fs, path.posix, "/res", { arch: "arm64" }), {});
+  assert.deepStrictEqual(bundledKasEnvironment(fs, path.posix, "/res"), {
+    KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas",
+  });
+  const suffixedOnly = kasResources({
+    "/res/backend-dist/kas-arm64/BUNDLED-VERSION": "0.66.33",
+    "/res/backend-dist/kas-arm64/0.66.33/install.json": KAS_RECORD,
+  });
+  assert.deepStrictEqual(bundledKasEnvironment(suffixedOnly, path.posix, "/res"), {});
 });
 
 test("no KAS payload, a source checkout, or a root without its record exports nothing", () => {
-  assert.deepStrictEqual(bundledKasEnvironment(kasResources({}), path.posix, "/res", { arch: "x64" }), {});
-  assert.deepStrictEqual(bundledKasEnvironment(kasResources({}), path.posix, undefined, { arch: "x64" }), {});
+  assert.deepStrictEqual(bundledKasEnvironment(kasResources({}), path.posix, "/res", {}), {});
+  assert.deepStrictEqual(bundledKasEnvironment(kasResources({}), path.posix, undefined, {}), {});
   const noRecord = kasResources({ "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33" });
-  assert.deepStrictEqual(bundledKasEnvironment(noRecord, path.posix, "/res", { arch: "x64" }), {});
+  assert.deepStrictEqual(bundledKasEnvironment(noRecord, path.posix, "/res", {}), {});
 });
 
 test("the staged Node is never run at boot, even when a spawnSync is handed in", () => {
@@ -307,7 +308,6 @@ test("the staged Node is never run at boot, even when a spawnSync is handed in",
     "/res/backend-dist/kas/0.66.33/install.json": KAS_RECORD,
   });
   const env = bundledKasEnvironment(fs, path.posix, "/res", {
-    arch: "x64",
     spawnSync: () => assert.fail("bundledKasEnvironment executed the staged Node"),
   });
   assert.deepStrictEqual(env, { KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas" });
@@ -317,7 +317,7 @@ test("a staged record whose node_bin or version could leave the staged tree is n
   // The backend seals the staged root read-only for sandboxed children; this is the
   // shell's own fence over the same two fields, so a rewritten record cannot make
   // the (unsandboxed) gateway run a file outside what the build staged.
-  const probe = { arch: "x64", log: () => {} };
+  const probe = { log: () => {} };
   for (const nodeBin of ["../../../tmp/evil", "/tmp/evil", "C:\\evil\\node.exe", "node/./bin/node", "", "node//bin"]) {
     const fs = kasResources({
       "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33",

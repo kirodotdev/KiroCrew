@@ -238,15 +238,22 @@ back at build time through the same reader the gateway uses
 (`installed_bundle(root=…)`), so a tree the reader would reject is a build
 error, not a refusal on the user's first prompt.
 
-Layout mirrors the backend trees. A universal macOS build stages one root per
-architecture, `backend-dist/kas-arm64/` and `backend-dist/kas-x64/` (Node ships
-no universal binary; the engine's own JS is shared), a single-arch build stages
-`backend-dist/kas/`. Each root holds `<version>/{bundle,node,install.json}` plus
-a `BUNDLED-VERSION` file beside the version directory. The Electron shell
-(`gateway-env.js`, `bundledKasEnvironment`) reads that file and the install
-record beside it, and exports the root as `KIROCREW_BUNDLED_KAS_DIR` — the
-arch-suffixed root first, the unsuffixed one second, never a root for another
-architecture. It runs nothing at boot: the route is off by default, the build
+Every build stages one root, `backend-dist/kas/`, holding
+`<version>/{bundle,node,install.json}` plus a `BUNDLED-VERSION` file beside the
+version directory. A universal macOS build stages the engine once: its tarball
+is already `darwin-universal`, and `kas_bundle.make_universal_node` fetches the
+other architecture's pinned Node build and `lipo -create`s both into one Mach-O
+at the record's `node_bin` path, probing each slice through `arch -arm64` /
+`arch -x86_64`. Every build then runs `kas_bundle.trim_for_shipping`: the Node
+distribution keeps only its binary and `LICENSE` (the engine never spawns the
+distribution's npm, npx or corepack), and the engine loses its C/C++ sources,
+headers, source maps and web-tree-sitter's debug build. No reader re-hashes the
+extracted tree, so the record stays valid. The staged tree holds only regular
+files and directories; the build fails on a symlink or hardlink in it on macOS,
+because the signing service refuses a universal bundle with shared trees.
+The Electron shell (`gateway-env.js`, `bundledKasEnvironment`) reads
+`BUNDLED-VERSION` and the install record beside it, and exports the root as
+`KIROCREW_BUNDLED_KAS_DIR` for either architecture. It runs nothing at boot: the route is off by default, the build
 already probed the staged Node, and a copy that cannot run on this machine
 fails at session spawn, only for a user who turned the switch on. A build
 without the payload or a source checkout exports nothing, and the backend then
@@ -425,6 +432,15 @@ x64 gate doubles as proof the bundle runs under Rosetta. In
 `backend-dist/**` (single-arch Mach-O files inside a universal app are
 intentional there), and `extraResources` ships the `backend-dist/` directory
 wholesale so single- and dual-backend layouts both package.
+
+**The universal update zip must stay under 1 GiB.** The Squirrel.Mac inside every
+installed app (Electron 43 and 44.0–44.6) downloads the update zip into one
+buffer that doubles as it grows; past 1 GiB it asks for 2 GiB, Electron's
+allocator refuses, and the app dies mid-update. The installed app's updater does
+the install, so only the artifact's size protects its users. `build-desktop.sh`
+logs the universal `*-mac.zip` size and fails the build at or over 1000 MiB,
+leaving room for what signing and notarization add. Shrink the payload rather
+than raise the ceiling.
 
 > **Renaming `backend-dist/` is load-bearing at runtime.** The backend detects
 > "am I the bundled interpreter?" via

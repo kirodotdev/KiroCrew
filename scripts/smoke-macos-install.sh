@@ -13,6 +13,9 @@
 #     resource forks and permissions the way Finder's drag does).
 #   * The universal layout the shell resolves at launch (find-bin.js): a
 #     per-arch backend tree for THIS runner's arch, with an executable launcher.
+#   * The bundled KAS engine (BUNDLE_KAS=0 skips): one backend-dist/kas/ root,
+#     no symlink or hardlink in it, its Node runs here and, on a universal
+#     app, carries both architecture slices.
 #   * The REAL app, launched from its own executable, boots the packaged gateway
 #     and that gateway answers /api/health.
 #   * Only for a build made with BUNDLE_KIRO_CLI=1 (off by default; the shipped
@@ -147,6 +150,45 @@ for required in "$BACKEND" "$LAUNCHER" "$PYTHON"; do
 done
 launcher_version="$(bounded "$MAX_CLI_SECONDS" "installed launcher --version" "$LAUNCHER" --version | tail -1)"
 echo "▶ Installed launcher reports: $launcher_version"
+
+# --- 2b. The bundled KAS engine, in the INSTALLED tree (BUNDLE_KAS=0 skips). ---
+# One root for every build (gateway-env.js, bundledKasEnvironment). On a
+# universal app its Node carries both slices, and the tree holds only regular
+# files and directories: the macOS signing service refuses symlinks and
+# hardlinks inside the bundle.
+KAS_ROOT="$RESOURCES/backend-dist/kas"
+if [ "${BUNDLE_KAS:-1}" = "0" ]; then
+  echo "▶ Bundled KAS engine: not part of this build (BUNDLE_KAS=0)"
+else
+  for stale in "$RESOURCES/backend-dist/kas-arm64" "$RESOURCES/backend-dist/kas-x64"; do
+    test -e "$stale" && { echo "ERROR: installed tree carries a per-arch KAS root $stale; the app stages one root" >&2; exit 1; }
+  done
+  test -f "$KAS_ROOT/BUNDLED-VERSION" || { echo "ERROR: installed tree carries no bundled KAS engine at $KAS_ROOT" >&2; exit 1; }
+  KAS_VERSION="$(tr -d '[:space:]' < "$KAS_ROOT/BUNDLED-VERSION")"
+  KAS_NODE_REL="$(/usr/bin/plutil -extract node_bin raw -o - "$KAS_ROOT/$KAS_VERSION/install.json")"
+  KAS_NODE="$KAS_ROOT/$KAS_VERSION/$KAS_NODE_REL"
+  test -x "$KAS_NODE" || { echo "ERROR: bundled KAS Node missing or not executable: $KAS_NODE" >&2; exit 1; }
+  kas_links="$(find "$KAS_ROOT" \( -type l -o \( -type f -links +1 \) \) -print | head -5)"
+  if [ -n "$kas_links" ]; then
+    echo "ERROR: bundled KAS tree carries a symlink or hardlink:" >&2
+    printf '  %s\n' "$kas_links" >&2
+    exit 1
+  fi
+  kas_node_archs="$(lipo -archs "$KAS_NODE")"
+  if [ -d "$RESOURCES/backend-dist/kirocrew-backend-arm64" ] && [ -d "$RESOURCES/backend-dist/kirocrew-backend-x64" ]; then
+    case "$kas_node_archs" in
+      *x86_64*arm64*|*arm64*x86_64*) ;;
+      *) echo "ERROR: universal app's KAS Node is not universal (lipo -archs: $kas_node_archs)" >&2; exit 1 ;;
+    esac
+  fi
+  kas_node_version="$(bounded "$MAX_CLI_SECONDS" "bundled KAS node --version" \
+    env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin "$KAS_NODE" --version | tail -1)"
+  echo "▶ Bundled KAS $KAS_VERSION: Node $kas_node_version ($kas_node_archs), $(du -sh "$KAS_ROOT" | cut -f1)"
+  case "$kas_node_version" in
+    v*) ;;
+    *) echo "ERROR: bundled KAS Node did not report a version: '$kas_node_version'" >&2; exit 1 ;;
+  esac
+fi
 
 # --- 3. The bundled kiro-cli, in the INSTALLED tree (BUNDLE_KIRO_CLI=1 only). --
 BUNDLED_DIR="$RESOURCES/backend-dist/kiro-cli"
