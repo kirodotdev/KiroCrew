@@ -201,6 +201,11 @@ def _stalled_campaign_verdict(
       completed campaign whose status was later reset to RUNNING (resume paths
       allow terminal→RUNNING): with no new files the count never advances, so
       the count>prev COMPLETE branch can never re-fire.
+    - An AutoNudge failure stand-down (``consecutive_failures`` or
+      ``session_start_failures``) → FAILED, "Resume to try again". It ranks
+      below a verified finding and above the tombstone and the marker: a
+      ``worker_done.json`` left by an earlier turn does not turn a worker that
+      kept failing into a deliberate finish.
     - A source-owned ``autonudge_stop`` tombstone, or as a fallback the
       worker-written ``worker_done.json`` marker, plus a READABLE latest
       finding → the worker ended the run on purpose → STOPPED. The tombstone
@@ -212,7 +217,7 @@ def _stalled_campaign_verdict(
       deliberately NOT used as the signal: the nudge fire path also removes
       loops for unreachable (deleted/closed) worker sessions, which is a
       failure, not a finish.
-    - Otherwise → FAILED (genuine stall), unchanged.
+    - Otherwise → FAILED (genuine stall).
     """
     if cycle_files:
         latest = storage._read_finding_file(cycle_files[-1])
