@@ -416,7 +416,12 @@ def _url_payload_command(n: int) -> str:
 #: paragraphs, glue comments, owner imports, owner list, install, class swap and ``__all__``; and
 #: their ``TYPE_CHECKING`` manifests (two each in ``redaction`` and ``exfil``, one in
 #: ``denied_rules``). Every moved statement is unchanged; no rule, threshold or pass changed.
-_PACKAGE_LINE_BUDGET = 31_509
+#:
+#: Raised again, from 31,509, for ``exfil._exfil_blob_hit``: the base64-blob
+#: heuristic judged through one helper that skips a maximal match which is exactly
+#: a SHA-1 git object name (40 lowercase hex digits), so a commit permalink with
+#: the hash in its query renders. No pattern moved and no other alternative changed.
+_PACKAGE_LINE_BUDGET = 31_533
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

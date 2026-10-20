@@ -57,7 +57,8 @@ _AWS_KEY_SAMPLES = tuple(prefix + _AWS_KEY_BODY for prefix in _cred.AWS_KEY_ID_P
 #: A destination only the URL scanner objects to: the credential scanners clear it
 #: (probed above the assertion in ``test_the_two_scanners_are_distinguished``), so
 #: it is what separates the two scrub categories rather than doubling the first.
-_EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
+# ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
+_EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "x" * 40
 
 POINT = "skills.select"
 QUESTIONS = [Choice(id="verdict", prompt="Which skill?", options=["NONE", "DUP"])]

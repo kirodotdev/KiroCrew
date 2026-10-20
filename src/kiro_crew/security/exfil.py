@@ -69,6 +69,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# A SHA-1 git object name -- 40 lowercase hex digits -- is a 40+ char run of the
+# base64 class in ``_EXFIL_PATTERNS``, so a commit permalink that carries one in
+# its QUERY (``?commit=<sha>``, ``?changes=pkg/main:<sha>``) trips the blob
+# branch. It is not a base64 blob: hex is a 16-symbol alphabet, the reasoning
+# ``redaction.py``'s bare-secret detector already applies to all-hex runs. The
+# carve-out is that exact length, lowercase as git prints it, judged on the
+# MAXIMAL match: 41+ digits, mixed case, ``=`` padding, or a hash glued to any
+# other base64 character is a longer or wider run and keeps firing. 64 hex
+# (SHA-256) is NOT carved out: it is the shape of this product's own secrets
+# (``token_hex(32)``, e.g. ``generate_app_secret()``). Residual, stated: a 40-hex
+# token in a query passes THIS heuristic; the fixed credential markers key on
+# provider prefixes, and the length gate still bounds the query.
+_GIT_OBJECT_NAME_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _exfil_blob_hit(value: str) -> bool:
+    """True when ``_EXFIL_PATTERNS`` matches ``value`` on anything but a bare git
+    object name. Every other alternative (AWS key id, SSH/PEM header, Slack
+    token, heavy percent encoding) is reported unchanged."""
+    for match in _EXFIL_PATTERNS.finditer(value):
+        if _GIT_OBJECT_NAME_RE.fullmatch(match.group(0)):
+            continue
+        return True
+    return False
+
+
 def _exempt_exact_hosts() -> frozenset[str]:
     """Exact-match hosts that skip ONLY the exfil base64/length heuristics.
 
@@ -430,9 +456,7 @@ def _exfil_url_warning(
                 f"Suspicious URL with long query params ({len(heuristic_query)} chars): "
                 f"{domain}{path_and_query[:60]}..."
             )
-        if _EXFIL_PATTERNS.search(heuristic_query) or _EXFIL_PATTERNS.search(
-            unquote_plus(heuristic_query)
-        ):
+        if _exfil_blob_hit(heuristic_query) or _exfil_blob_hit(unquote_plus(heuristic_query)):
             trace("exfil_query_pattern")
             return f"Suspicious URL with credential-like query data: {domain}"
     return None
@@ -1205,12 +1229,12 @@ def diagnose_oauth_url_credential(
         return _oauth_query_diagnostic(rule, heuristic_query)
     if rule == "exfil_query_pattern":
         query_decoder: Callable[[str], str] | None = (
-            None if _EXFIL_PATTERNS.search(heuristic_query) else unquote_plus
+            None if _exfil_blob_hit(heuristic_query) else unquote_plus
         )
         return _oauth_query_diagnostic(
             rule,
             heuristic_query,
-            predicate=lambda value: bool(_EXFIL_PATTERNS.search(value)),
+            predicate=_exfil_blob_hit,
             decoder=query_decoder,
         )
     if rule == "exfil_hard_credential":
