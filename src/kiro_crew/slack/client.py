@@ -20,6 +20,8 @@ from slack_sdk.http_retry.response import HttpResponse
 from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
+from kiro_crew.slack.team_ids import use_channel_team_store
+
 logger = logging.getLogger(__name__)
 
 # conversations.list pagination limits
@@ -377,6 +379,9 @@ class RealSlackClient(SlackClientOps):
         # never feed this cache. Empty for non-org-wide installs —
         # _inject_team becomes a no-op in that case.
         self._channel_team: dict[str, str] = {}
+        # The agent child env (KIROCREW_SLACK_TEAM_ID) reads this same store, so
+        # there is one channel -> home-workspace answer, not two to keep in step.
+        use_channel_team_store(self._channel_team)
         # Channels whose home team could not be resolved this process. One
         # failed lookup must not become one extra API call per inbound
         # message for the rest of the run; a gateway restart clears the set
@@ -399,6 +404,7 @@ class RealSlackClient(SlackClientOps):
         if cache is None:
             cache = {}
             self._channel_team = cache
+            use_channel_team_store(cache)
         cache[channel] = team_id
 
     async def ensure_channel_team(self, channel: str) -> None:

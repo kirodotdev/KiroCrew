@@ -41,6 +41,7 @@ from typing import Any, Mapping
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.slack.team_ids import SLACK_TEAM_ID_ENV, slack_team_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,11 @@ def control_plane_identity_env(
         env["KIROCREW_SESSION_KEY"] = session_key
     if channel_id:
         env["KIROCREW_CHANNEL_ID"] = channel_id
+        # Beside the channel, its Slack workspace (slack/team_ids.py); absent
+        # when unknown or when the channel is not a Slack conversation.
+        team_id = slack_team_id_for(channel_id)
+        if team_id:
+            env[SLACK_TEAM_ID_ENV] = team_id
     try:
         env["KIROCREW_BOUND_PORT"] = str(resolve_serving_port())
     except Exception:  # pragma: no cover - defensive
