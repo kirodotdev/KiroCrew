@@ -40,7 +40,12 @@ from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRuntimeDead,
     AcpRuntimeError,
 )
-from kiro_crew.acp.types import EVENT_MCP_SERVER_INITIALIZED, METHOD_KAS_MCP_STATUS, JsonRpcMessage
+from kiro_crew.acp.types import (
+    EVENT_MCP_SERVER_INIT_FAILURE,
+    EVENT_MCP_SERVER_INITIALIZED,
+    METHOD_KAS_MCP_STATUS,
+    JsonRpcMessage,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -165,6 +170,15 @@ _MCP_DRAIN_REPORT_ACTIONS = frozenset(
 )
 _SENTINEL = object()
 
+#: How long a declared-governed start waits before it may start without Crew's
+#: managed servers: the same bound the init drain gives a first report.
+GOVERNED_SETTLE_SECS = 6.0
+#: Failure text on the MCP report for a managed server a governed start skipped.
+GOVERNED_DROP_REASON = (
+    "not started by the host: registry mode is on and a governed MCP profile drops "
+    "Crew's servers. This session runs without it."
+)
+
 
 def _remote_flat_launches(self: AcpSessionHandle) -> dict[str, tuple[tuple[str, ...], ...]] | None:
     """The launch roster declared to the oracle's socket scan, or None while
@@ -284,28 +298,57 @@ async def wait_mcp_ready(
     stale_report_frames: int = 0,
     tool_policy: dict[str, Any] | None = None,
     injected: frozenset[str] = frozenset(),
+    governed: bool = False,
 ) -> None:
     """Wait for KAS's active managed roster and catalog, or fail before prompting.
 
     ``injected`` is the subset of ``required`` that travelled in the request's
     own ``mcpServers`` array; see :class:`KasMcpReadiness`.
+
+    *governed* means the operator declared registry mode. Then at
+    :data:`GOVERNED_SETTLE_SECS`, and again at the deadline, if every pending
+    server is one the host never named (:attr:`KasMcpReadiness.never_reported`),
+    the session starts: each such server is recorded failed with
+    :data:`GOVERNED_DROP_REASON`. ``kas_agents`` already logs the drop when it
+    projects the agent, so nothing more is logged here. A server the host did name keeps the
+    full *timeout*, so a cold server still connecting is not cut short. Every
+    other guard is unchanged: a failed, disabled, auth-failed or provenance-less
+    server still raises, a foreign same-named entry or a server still connecting
+    still times out at the deadline, and runtime death still raises.
     """
     readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
     self._mcp_report.include_configured(required)
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
+    # The governed checkpoint: the first moment the never-named check may start
+    # the session. Past it (or without a reason) only the deadline remains.
+    checkpoint = (
+        start + GOVERNED_SETTLE_SECS if governed and GOVERNED_SETTLE_SECS < timeout else None
+    )
     stale = max(0, stale_report_frames)
     while readiness.pending:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise AcpRequestTimeout(
-                f"KAS managed MCP readiness timed out after {timeout:g}s: {readiness.pending}"
-            )
+        now = time.monotonic()
+        if checkpoint is not None and now >= checkpoint:
+            checkpoint = None
+            if _record_dropped(self._mcp_report, readiness, governed):
+                return
+        remaining = (checkpoint if checkpoint is not None else deadline) - now
+        if checkpoint is None and remaining <= 0:
+            if _record_dropped(self._mcp_report, readiness, governed):
+                return
+            raise _readiness_timeout(readiness, timeout)
         try:
-            msg = await asyncio.wait_for(self._queue.get(), remaining)
+            msg = await asyncio.wait_for(self._queue.get(), max(0.0, remaining))
         except asyncio.TimeoutError as exc:
-            raise AcpRequestTimeout(
-                f"KAS managed MCP readiness timed out after {timeout:g}s: {readiness.pending}"
-            ) from exc
+            # The wait itself ends the stage it was bounded by, so the loop never
+            # re-waits on a clock that has not moved.
+            stage_was_checkpoint = checkpoint is not None
+            checkpoint = None
+            if _record_dropped(self._mcp_report, readiness, governed):
+                return
+            if stage_was_checkpoint:
+                continue
+            raise _readiness_timeout(readiness, timeout) from exc
         if msg is None:
             self._queue.put_nowait(None)
             raise AcpRuntimeDead("Runtime exited while waiting for managed MCP readiness")
@@ -324,6 +367,43 @@ async def wait_mcp_ready(
             raise AcpRuntimeError(f"KAS managed MCP initialization failed: {readiness.failure}")
     for name in required:
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+
+
+def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, governed: bool) -> bool:
+    """On a governed start, record the never-named servers dropped; False otherwise.
+
+    Ready servers are recorded initialized, as a satisfied barrier does.
+    """
+    absent = readiness.never_reported if governed else ()
+    if not absent:
+        return False
+    for name in readiness.required:
+        if name in absent:
+            report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, name, GOVERNED_DROP_REASON)
+        else:
+            report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+    return True
+
+
+def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequestTimeout:
+    """The deadline error, pointing at the doctor when the host never named a server.
+
+    A server the host never named at all is what a governed MCP profile produces
+    when registry mode is not declared (a declared install starts instead, see
+    :func:`_record_dropped`). Silence alone is not proof of
+    that, so the start still fails; the message points at ``kirocrew doctor``,
+    whose MCP Governance section checks the account's identity before it advises
+    the setting, rather than advising a setting that withholds every agent-spec
+    server.
+    """
+    message = f"KAS managed MCP readiness timed out after {timeout:g}s: {readiness.pending}"
+    if readiness.never_reported:
+        message += (
+            ". The host never reported these servers; run `kirocrew doctor` and read its "
+            "MCP Governance section to see whether an admin MCP registry applies to this "
+            "account."
+        )
+    return AcpRequestTimeout(message)
 
 
 async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple[str, ...]:

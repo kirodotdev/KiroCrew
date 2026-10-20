@@ -1912,6 +1912,34 @@ idle-success shortcut or extra sleep. `failed`, `disabled`, failed
 authorization, and `connected without provenance` terminate startup with
 `AcpRuntimeError`; connecting, missing
 reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
+
+While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
+the init drain's first-report bound) inside the full start budget. The KAS
+customAgents wire has no slot for the registry marker, so a governed host's
+catalog filter drops Crew's managed servers and never reports them; the full
+wait would only be spent, fail, and meet the same filter on the retry, so the
+chat would never start. At the checkpoint, and again at the deadline, when
+every pending server is one the host never named for this session in any
+status entry (any state or origin) or `@name/` tag, the session starts, as the
+kiro-cli backend does on such an account: each such server is recorded in the MCP report as failed with
+the reason and ready ones as initialized (the spec projection already warns of
+the drop, so no second warning is logged); a later frame still moves a failed
+name to ready. Every other guard is unchanged on this
+path: a server the host did name keeps the full budget, a failed, disabled,
+auth-failed or provenance-less server still raises, and a foreign same-named
+entry or a server still connecting still times out at the deadline.
+An unreadable or half-read config reads as off here, the opposite of the
+spec-server ceiling, because this reading loosens readiness rather than
+withholding.
+
+With registry mode off the wait and its timeout stand. Silence alone is not
+proof of a governed drop (a slow or quiet ungoverned host looks the same), so
+when every pending server is one the host never named for this session in any
+status entry (any state or origin) or `@name/` tag, the timeout message only
+adds a pointer to `kirocrew doctor`, whose MCP Governance section checks the
+account's identity before advising the setting. A server the host did report
+(still connecting, or a same-named entry that is not `client` origin) gets the
+plain timeout.
 Errors name the required server and sanitize backend failure text. On failure,
 runtime death, or cancellation, no handle escapes. A failed fresh `session/new`
 is terminated through the bounded per-session teardown, freeing its resident state

@@ -243,6 +243,12 @@ class KasMcpReadiness:
     advertised_by_catalog: set[str] = field(default_factory=set)
     advertised_by_tag: set[str] = field(default_factory=set)
     intentionally_hidden: set[str] = field(default_factory=set)
+    #: Required names the host has named for this session in ANY form: a status
+    #: entry of any state or origin (a same-named global server included) or an
+    #: ``@name/`` MCP tag. Only ever grows. A name outside it was never mounted
+    #: under that name here, which is what :attr:`never_reported` reads; a
+    #: foreign same-named server counts as mentioned, so it never reads as absent.
+    seen: set[str] = field(default_factory=set)
 
     @property
     def advertised(self) -> set[str]:
@@ -314,6 +320,7 @@ class KasMcpReadiness:
                 name = server.get("name")
                 if not isinstance(name, str) or name not in self.required:
                     continue
+                self.seen.add(name)
                 source = _server_source(server)
                 if provenance and (source is None or source.get("origin") != "client"):
                     # A same-named inherited global server is not the private
@@ -372,6 +379,7 @@ class KasMcpReadiness:
                     for tag in tags
                 )
             }
+            self.seen.update(self.advertised_by_tag)
 
     @property
     def failure(self) -> str:
@@ -388,6 +396,16 @@ class KasMcpReadiness:
         return ""
 
     @property
+    def pending_names(self) -> tuple[str, ...]:
+        """Required servers not yet ready, in required order."""
+        return tuple(
+            name
+            for name in self.required
+            if self.states.get(name) != "connected"
+            or (name not in self.advertised and name not in self.intentionally_hidden)
+        )
+
+    @property
     def pending(self) -> str:
         return ", ".join(
             f"{name}: "
@@ -396,10 +414,25 @@ class KasMcpReadiness:
                 if self.states.get(name) == "connected"
                 else self.states.get(name, "unreported")
             )
-            for name in self.required
-            if self.states.get(name) != "connected"
-            or (name not in self.advertised and name not in self.intentionally_hidden)
+            for name in self.pending_names
         )
+
+    @property
+    def never_reported(self) -> tuple[str, ...]:
+        """Pending servers the host never named for this session, or ``()``.
+
+        Non-empty only when EVERY pending server is unseen (see :attr:`seen`).
+        That is what a governed MCP profile produces: the host filters Crew's
+        managed servers out before it starts them and never reports them at all.
+        Under declared registry mode a non-empty answer starts the session without
+        them; otherwise the barrier still times out and this only adds a
+        ``kirocrew doctor`` pointer to its message. One pending server the host did
+        report (connecting, a foreign same-named entry, a tag) answers ``()``.
+        """
+        pending = self.pending_names
+        if not pending or any(name in self.seen for name in pending):
+            return ()
+        return pending
 
 
 def _command_data(result: object) -> dict[str, Any] | None:

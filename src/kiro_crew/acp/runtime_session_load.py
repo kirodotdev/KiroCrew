@@ -475,6 +475,28 @@ async def load_session(
     return handle
 
 
+def _declared_governed() -> bool:
+    """Whether the operator declared registry mode; an unreadable answer is ``False``.
+
+    Deliberately NOT ``session_mcp._registry_mode``, which reads an unreadable
+    config as governed: that is the safe direction for WITHHOLDING spec servers,
+    but here governed LOOSENS readiness (the session starts without waiting for
+    Crew's servers), so the safe direction is the opposite one.
+    """
+    try:
+        # Function-local: the loader closes an import cycle through the config plane.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        # A half-read config (an unreadable base or overlay) is not a declaration.
+        if cfg._base_unreadable or cfg._overlay_unreadable:
+            return False
+        return cfg.agent.mcp_registry_mode is True
+    except Exception:
+        logger.debug("registry mode unreadable; keeping the readiness timeout", exc_info=True)
+        return False
+
+
 async def _wait_managed_mcp(
     self: AcpRuntime,
     handle: AcpSessionHandle,
@@ -487,6 +509,8 @@ async def _wait_managed_mcp(
     wire_agent = kas_wire_agent_id(agent)
     required = required_managed_servers(params, wire_agent)
     try:
+        # Read off the loop: the declaration is config I/O.
+        governed = bool(required) and await asyncio.to_thread(_declared_governed)
         if required:
             await handle.wait_mcp_ready(
                 required,
@@ -497,6 +521,14 @@ async def _wait_managed_mcp(
                 # the one declaration site a provenance-less backend is
                 # known to honour over a same-named global server.
                 injected=frozenset(roster_names(params.get("mcpServers"))) & set(required),
+                # Declared registry mode: the KAS customAgents wire has no slot for
+                # the registry marker (see ``kas_agents._project_mcp_servers``), so
+                # a governed host's catalog filter drops Crew's managed servers and
+                # never reports them. The full budget would only be spent and then
+                # fail, and the retry meets the same filter. After a short settle
+                # with nothing named, the session starts instead; a server the host
+                # did name keeps the full budget and every readiness guard.
+                governed=governed,
             )
         else:
             # An external-only agent still needs the ordinary OAuth/config
