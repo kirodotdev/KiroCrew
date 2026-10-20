@@ -13,7 +13,7 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``_available_models_captured_at``, ``_available_models_probe_confirmed``,
 ``_entitlement_probe_inflight``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_model``, ``_modes_advertised``, ``_resolved_model_id``,
-``model_pin_partial``, ``model_pin_refused``.
+``model_pin_partial``, ``model_pin_refused``, ``turn_model``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
 ``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_mcp_gateway_overlay``,
@@ -30,7 +30,11 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
 from kiro_crew.acp import launch_tuning, runtime_models
-from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
+from kiro_crew.acp._dispatch import (
+    bounded_config_options,
+    build_session_new_params,
+    parse_session_modes,
+)
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpProcessDied
@@ -230,6 +234,8 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         )
     self._model = model_id
     self.model_pin_refused = ""
+    # The last turn's report names the model before this switch.
+    self.turn_model = ""
     self._resolved_model_id = self._last_substitution_model or model_id
     # The switch is what the session runs next, so the next prompt must not
     # restore the model the last turn's engine hop moved off.
@@ -985,8 +991,11 @@ async def set_config_option(self: AcpClient, config_id: str, value: str) -> None
         {"sessionId": self._session_id, "configId": config_id, "value": value},
     )
     result = await self._wait_for_response(req_id, timeout=10.0)
-    config_options = result.get("configOptions") if isinstance(result, dict) else None
-    if isinstance(config_options, list):
+    # The response carries every option's value after the write, which is how
+    # the level the adapter actually accepted becomes readable. It rides every
+    # slots snapshot, so it is kept only within its size bound.
+    config_options = bounded_config_options(result)
+    if config_options is not None:
         self._acp_config_options = config_options
         self._sync_effort_levels()
 
@@ -1011,6 +1020,8 @@ def _store_session_config(self: AcpClient, resp: dict) -> None:
     # Assigned unconditionally so a re-init that omits `modes` clears any
     # stale state rather than guarding on it.
     self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
+    # A new or reloaded session has not reported a turn yet.
+    self.turn_model = ""
 
 
 def _handle_config_option_update(self: AcpClient, msg: JsonRpcMessage) -> None:

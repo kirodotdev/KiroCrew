@@ -8,7 +8,8 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_between_turn_credits``, ``_codex_compaction_pending``,
-``_compact_result``, ``_compaction_failed_at``, ``last_compaction_transient``.
+``_compact_result``, ``_compaction_failed_at``, ``last_compaction_transient``,
+``turn_model``.
 
 Instance fields read: ``_cancelled``, ``_compaction_terminal_seen``,
 ``_kas_compact_turn``, ``_last_stop_reason``, ``_model``, ``_queue``,
@@ -26,6 +27,7 @@ from kiro_crew.acp._dispatch import (
     parse_codex_compaction_update,
     parse_metadata,
     parse_prompt_token_usage,
+    parse_prompt_turn_model,
     parse_refusal,
     redact_text,
 )
@@ -373,6 +375,9 @@ def _track_prompt_usage(self: AcpSessionHandle, result: Any) -> None:
     tokens = parse_prompt_token_usage(result)
     if tokens is not None:
         self.last_prompt_stats.apply_prompt_token_usage(*tokens)
+    model = parse_prompt_turn_model(result)
+    if model:
+        self.turn_model = model
 
 
 def _track_metadata(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:

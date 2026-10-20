@@ -3,6 +3,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer, { sseMcpReportUpdate, sseSlots } from '../store/dashboardSlice'
 import McpToolsPanel, { DOT_CLASS, SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 import {
+  gatewayToolsState,
   mcpSessionExtraNoTools,
   mcpSessionExtraServers,
   mcpSessionFailureReason,
@@ -258,6 +259,31 @@ describe('mcpSessionGaveNoTools / mcpSessionExtraNoTools', () => {
     expect(mcpSessionGaveNoTools('a', report())).toBe(false)
     expect(mcpSessionExtraNoTools(['a'], r)).toEqual(['b'])
     expect(mcpSessionExtraNoTools(['a'], null)).toEqual([])
+  })
+})
+
+describe('gatewayToolsState', () => {
+  const controlPlane = ['kirocrew-core', 'kirocrew-cron']
+
+  // kiro-cli and KAS mount the spec's servers themselves and report them, so an
+  // empty roster there is no verdict; claude and codex get only what was sent.
+  it.each([
+    ['claude', report(), 'not_sent'],
+    ['claude', report({ configured: controlPlane }), 'sent'],
+    // A spec may leave out kirocrew-cron on purpose, as the conductors do.
+    ['claude', report({ configured: ['kirocrew-core'] }), 'sent'],
+    ['kiro', report({ ready: controlPlane }), 'connected'],
+    ['kiro', report({ ready: ['kirocrew-core'] }), 'connected'],
+    ['kiro', report({ ready: ['kirocrew-cron'] }), 'pending'],
+    ['kas', report(), 'pending'],
+    ['kiro', report({ failed: ['kirocrew-core'] }), 'failed'],
+  ] as const)('reads backend %j with %j as %s', (backend, r, expected) => {
+    expect(gatewayToolsState(r, backend)).toBe(expected)
+  })
+
+  it('says nothing until a session has reported its harness and a report', () => {
+    expect(gatewayToolsState(null, 'claude')).toBeNull()
+    expect(gatewayToolsState(report(), null)).toBeNull()
   })
 })
 

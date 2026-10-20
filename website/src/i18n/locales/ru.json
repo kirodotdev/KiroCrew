@@ -7043,7 +7043,17 @@
       "composer_action_footer_host": "{{productName}} проверил черновик. {{app}} по-прежнему его не видит.",
       "composer_action_needs_empty": "{{app}} может вставлять только в пустое сообщение. Сначала очисти черновик.",
       "composer_action_would_resolve": "Текст {{app}} начинается с /, ! или @ либо содержит $skill, файл или изображение, поэтому выполнился бы, а не отправился как текст. Он не вставлен.",
-      "composer_action_footer": "{{app}} не видит твой черновик. Его текст вставляется как есть, а отправлять ли — решаешь ты."
+      "composer_action_footer": "{{app}} не видит твой черновик. Его текст вставляется как есть, а отправлять ли — решаешь ты.",
+      "agent_backend": "Оболочка агента",
+      "gateway_tools": "Инструменты {{productName}}",
+      "gateway_tools_connected": "Доступны",
+      "gateway_tools_failed": "Инструменты {{productName}} не запустились в этой сессии. Начни новую сессию, чтобы повторить попытку.",
+      "gateway_tools_sent": "Переданы, без подтверждения",
+      "gateway_tools_not_sent": "Инструменты {{productName}} не переданы в эту сессию. Добавь @kirocrew-core в инструменты этого агента в разделе Кастомизация → Пользовательские агенты, затем начни новую сессию.",
+      "gateway_tools_pending": "Пока нет отчёта",
+      "gateway_tools_missing": "В этой сессии нет инструментов {{productName}}",
+      "gateway_tools_missing_short": "Нет инструментов {{productName}}",
+      "model_selected": "Выбрано: {{name}}"
     },
     "chatPane": {
       "agent_list": "Список агентов",

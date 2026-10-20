@@ -6878,7 +6878,17 @@
       "composer_action_footer_host": "{{productName}} ha controllato la bozza. {{app}} continua a non vederla.",
       "composer_action_needs_empty": "{{app}} può inserire solo in un messaggio vuoto. Svuota prima la bozza.",
       "composer_action_would_resolve": "Il testo di {{app}} inizia con /, ! o @, o contiene un $skill, un file o un'immagine, quindi verrebbe eseguito invece di essere inviato come testo. Non è stato inserito.",
-      "composer_action_footer": "{{app}} non vede la tua bozza. Il suo testo viene inserito così com'è e sei tu a decidere se inviarlo."
+      "composer_action_footer": "{{app}} non vede la tua bozza. Il suo testo viene inserito così com'è e sei tu a decidere se inviarlo.",
+      "agent_backend": "Harness dell’agente",
+      "gateway_tools": "Strumenti di {{productName}}",
+      "gateway_tools_connected": "Disponibili",
+      "gateway_tools_failed": "Gli strumenti di {{productName}} non si sono avviati in questa sessione. Avvia una nuova sessione per riprovare.",
+      "gateway_tools_sent": "Inviati, non confermati",
+      "gateway_tools_not_sent": "Gli strumenti di {{productName}} non sono stati inviati a questa sessione. Aggiungi @kirocrew-core agli strumenti di questo agente in Personalizza → Agenti personalizzati, poi avvia una nuova sessione.",
+      "gateway_tools_pending": "Non ancora segnalati",
+      "gateway_tools_missing": "Questa sessione non ha gli strumenti di {{productName}}",
+      "gateway_tools_missing_short": "Nessuno strumento di {{productName}}",
+      "model_selected": "Selezionato: {{name}}"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",

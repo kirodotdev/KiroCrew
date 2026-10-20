@@ -6878,7 +6878,17 @@
       "composer_action_footer_host": "{{productName}} revisó el borrador. {{app}} sigue sin poder verlo.",
       "composer_action_needs_empty": "{{app}} solo puede insertar en un mensaje vacío. Vacía primero el borrador.",
       "composer_action_would_resolve": "El texto de {{app}} empieza por /, ! o @, o contiene un $skill, un archivo o una imagen, así que se ejecutaría en vez de enviarse como texto. No se insertó.",
-      "composer_action_footer": "{{app}} no puede ver tu borrador. Su texto se inserta tal cual y tú decides si lo envías."
+      "composer_action_footer": "{{app}} no puede ver tu borrador. Su texto se inserta tal cual y tú decides si lo envías.",
+      "agent_backend": "Harness del agente",
+      "gateway_tools": "Herramientas de {{productName}}",
+      "gateway_tools_connected": "Disponibles",
+      "gateway_tools_failed": "Las herramientas de {{productName}} no se iniciaron en esta sesión. Inicia una nueva sesión para intentarlo de nuevo.",
+      "gateway_tools_sent": "Enviadas, sin confirmar",
+      "gateway_tools_not_sent": "Las herramientas de {{productName}} no se enviaron a esta sesión. Añade @kirocrew-core a las herramientas de este agente en Personalizar → Agentes personalizados y luego inicia una nueva sesión.",
+      "gateway_tools_pending": "Aún sin informe",
+      "gateway_tools_missing": "Esta sesión no tiene las herramientas de {{productName}}",
+      "gateway_tools_missing_short": "Sin herramientas de {{productName}}",
+      "model_selected": "Seleccionado: {{name}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

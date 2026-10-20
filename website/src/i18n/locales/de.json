@@ -6713,7 +6713,17 @@
       "composer_action_footer_host": "{{productName}} hat den Entwurf geprüft. {{app}} sieht ihn weiterhin nicht.",
       "composer_action_needs_empty": "{{app}} kann nur in eine leere Nachricht einfügen. Leere zuerst den Entwurf.",
       "composer_action_would_resolve": "Der Text von {{app}} beginnt mit /, ! oder @ oder enthält einen $skill, eine Datei oder ein Bild und würde daher ausgeführt statt als Text gesendet. Er wurde nicht eingefügt.",
-      "composer_action_footer": "{{app}} kann deinen Entwurf nicht sehen. Sein Text wird wörtlich eingefügt, und du entscheidest, ob du ihn sendest."
+      "composer_action_footer": "{{app}} kann deinen Entwurf nicht sehen. Sein Text wird wörtlich eingefügt, und du entscheidest, ob du ihn sendest.",
+      "agent_backend": "Agent-Harness",
+      "gateway_tools": "{{productName}}-Tools",
+      "gateway_tools_connected": "Verfügbar",
+      "gateway_tools_failed": "Die {{productName}}-Tools konnten in dieser Sitzung nicht starten. Starte eine neue Sitzung, um es erneut zu versuchen.",
+      "gateway_tools_sent": "Übergeben, nicht bestätigt",
+      "gateway_tools_not_sent": "Die {{productName}}-Tools wurden dieser Sitzung nicht übergeben. Füge unter Anpassen → Benutzerdefinierte Agenten @kirocrew-core zu den Tools dieses Agenten hinzu und starte dann eine neue Sitzung.",
+      "gateway_tools_pending": "Noch nicht gemeldet",
+      "gateway_tools_missing": "Diese Sitzung hat keine {{productName}}-Tools",
+      "gateway_tools_missing_short": "Keine {{productName}}-Tools",
+      "model_selected": "Ausgewählt: {{name}}"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",

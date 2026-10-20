@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Trans } from 'react-i18next'
-import { Bot } from 'lucide-react'
+import { AlertTriangle, Bot } from 'lucide-react'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
 import ErrorNotice from '../ErrorNotice'
+import HarnessMark from '../HarnessMark'
 import { Btn, Slider } from '../ui'
+import { acpBackendName } from '../../api/acpBackend'
+import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
 import { effortLabel } from '../../lib/effort'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
+import type { GatewayToolsState } from '../../lib/mcpSessionReport'
 import type { ComposerControl } from '../composerControl'
 import { usePressActivation } from '../../hooks/usePressActivation'
 import { useActionShortcutHint } from '../../hooks/useActionShortcutHint'
@@ -18,6 +23,22 @@ import { withMemorySource } from '../../utils/agentLabel'
 import type { useAutoCompactThreshold } from './autoCompact'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuidePredicate } from '../../guide/guidePredicates'
+
+/** Catalog KEY per gateway-tools state, a flat Record of full literal keys
+ *  indexed inline at the `i18nT()` call so the key checker can resolve it
+ *  (the `EFFORT_LABEL_KEY` shape). A missing state's key is its notice's sentence. */
+const GATEWAY_TOOLS_LABEL_KEY: Record<GatewayToolsState, string> = {
+  connected: 'components.chatInput.gateway_tools_connected',
+  sent: 'components.chatInput.gateway_tools_sent',
+  pending: 'components.chatInput.gateway_tools_pending',
+  not_sent: 'components.chatInput.gateway_tools_not_sent',
+  failed: 'components.chatInput.gateway_tools_failed',
+}
+
+/** A session that did not receive Kiro Crew's own tools: the agent chip warns. */
+export function gatewayToolsMissing(state: GatewayToolsState | null | undefined): state is 'not_sent' | 'failed' {
+  return state === 'not_sent' || state === 'failed'
+}
 
 /* The context shelf under the composer: its measured width (which collapses
    the chips to icons) and the controls that stand on it -- app session
@@ -160,12 +181,13 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
  *  would pin `var(--mono)`, which Settings → Display → Font Family writes only
  *  for OpenDyslexic, so for every other family it would make the shelf ignore
  *  the user's typeface. */
-export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agentMemory, agentSource, isRunning, shelfCompact, onAgentClick }: {
+export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agentMemory, agentSource, gatewayTools, isRunning, shelfCompact, onAgentClick }: {
   agentName: string
   agentLabel?: string
   agentIsInheritedDefault?: boolean
   agentMemory?: MemorySource | null
   agentSource?: string
+  gatewayTools?: GatewayToolsState | null
   isRunning: boolean
   shelfCompact: boolean
   onAgentClick: NonNullable<ChatInputProps['onAgentClick']>
@@ -198,24 +220,33 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
   const cycleLine = !isRunning && nextHint?.isFactory && prevHint?.isFactory
     ? i18nT(IS_MAC ? 'components.chatInput.agent_cycle_hint_mac' : 'components.chatInput.agent_cycle_hint')
     : null
+  // A session without Kiro Crew's own tools fails every tool the agent is told
+  // it has, so the chip says so before the first turn rather than after it.
+  const toolsMissing = gatewayToolsMissing(gatewayTools)
+  const chipName = toolsMissing
+    ? `${label} · ${i18nT('components.chatInput.gateway_tools_missing')}`
+    : label
   return (
     <button
       className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
       {...press}
       disabled={isRunning}
-      title={cycleLine ? `${label}\n${cycleLine}` : label}
-      aria-label={label}
+      title={cycleLine ? `${chipName}\n${cycleLine}` : chipName}
+      aria-label={chipName}
       aria-keyshortcuts={!isRunning && nextHint ? nextHint.ariaKeyshortcuts : undefined}
     >
       <Bot size={13} className="shrink-0 opacity-70" />
       {!shelfCompact && <span className="truncate max-w-[160px]">{withMemorySource(agentLabel ?? agentName, agentMemory ?? null)}</span>}
+      {toolsMissing && <AlertTriangle size={12} className="shrink-0 text-warn" aria-hidden="true" data-testid="agent-chip-tools-missing" />}
+      {/* Spelled out on every shelf width: a phone has no hover to read the title. */}
+      {toolsMissing && <span className="shrink-0 text-warn" aria-hidden="true">{i18nT('components.chatInput.gateway_tools_missing_short')}</span>}
     </button>
   )
 }
 
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, sessionBackend, gatewayTools, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
   contextPct: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -224,6 +255,8 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   showContextTokens?: boolean
   shelfCompact: boolean
   modelName?: string
+  sessionBackend?: string | null
+  gatewayTools?: GatewayToolsState | null
   ctxPopoverOpen: boolean
   setCtxPopoverOpen: (update: (open: boolean) => boolean) => void
   ctxWrapRef: React.RefObject<HTMLDivElement>
@@ -263,11 +296,29 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   // `useContextPopover`'s outside-press dismiss skips `ctxWrapRef`, which holds
   // this button, so a press while open toggles it closed.
   const bindPress = usePressActivation()
+  const [ctxRect, setCtxRect] = useState<DOMRect | null>(null)
+  const measureCtx = useCallback(() => {
+    if (ctxWrapRef.current) setCtxRect(ctxWrapRef.current.getBoundingClientRect())
+  }, [ctxWrapRef])
+  // The popover is placed from its chip's rect, which a rotation or the mobile
+  // keyboard moves while it is open.
+  useAnchorRemeasure(ctxPopoverOpen, measureCtx)
+  // Right-aligned to the chip, then kept 8px inside the viewport: on a phone the
+  // chip can sit at the shelf's left edge, where a right-aligned box opens off-screen.
+  const popoverWidth = Math.min(208, window.innerWidth - 16)
+  const popoverLeft = ctxRect
+    ? Math.max(8, Math.min(ctxRect.right - popoverWidth, window.innerWidth - popoverWidth - 8)) - ctxRect.left
+    : undefined
+  // A wrapped served id breaks after its routing prefix rather than mid-name.
+  const routingPrefix = modelName?.match(ROUTING_PREFIX_RE)?.[0] ?? ''
   return (
   <div ref={ctxWrapRef} className="relative flex items-center">
     <button
       className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
-      {...bindPress(() => setCtxPopoverOpen(o => !o))}
+      {...bindPress(() => {
+        if (!ctxPopoverOpen) measureCtx()
+        setCtxPopoverOpen(o => !o)
+      })}
       title={contextTip(effectivePct)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}
@@ -276,7 +327,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
     </button>
     {ctxPopoverOpen && (
-      <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
+      <div className="absolute bottom-full mb-1 z-[60] rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up" style={{ width: popoverWidth, left: popoverLeft }} data-testid="context-usage-popover">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
                   <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
@@ -286,9 +337,41 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(remaining)}</span></div>
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
                 </div>
-                {modelName && (
-                  <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
-                    <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
+                {(modelName || sessionBackend != null || gatewayTools) && (
+                  <div className="mt-2 pt-2 border-t border-border flex flex-col gap-1 text-[11px] font-mono">
+                    {modelName && (
+                      // A phone has no hover for a title, so the full id wraps instead of truncating.
+                      <div className="flex justify-between gap-2" data-testid="context-model"><span className="text-muted shrink-0">{i18nT('components.chatInput.model')}</span><span className="text-text text-right min-w-0 [overflow-wrap:anywhere]">{routingPrefix}<wbr />{modelName.slice(routingPrefix.length)}</span></div>
+                    )}
+                    {/* What the live session reports, so a config switch or a
+                        member route that moved the backend reads here. A value
+                        too long for its label's line wraps under it, never cut. */}
+                    {sessionBackend != null && (
+                      <div className="flex flex-wrap justify-between gap-x-2" data-testid="context-session-backend"><span className="text-muted whitespace-nowrap">{i18nT('components.chatInput.agent_backend')}</span><span className="ml-auto text-right text-text">{acpBackendName({ id: sessionBackend })}</span></div>
+                    )}
+                    {gatewayTools && !gatewayToolsMissing(gatewayTools) && (
+                      <div className="flex flex-wrap justify-between gap-x-2" data-testid="context-gateway-tools"><span className="text-muted whitespace-nowrap">{i18nT('components.chatInput.gateway_tools')}</span><span className="ml-auto text-right text-text">{i18nT(GATEWAY_TOOLS_LABEL_KEY[gatewayTools])}</span></div>
+                    )}
+                  </div>
+                )}
+                {gatewayTools === 'not_sent' && (
+                  <div className="mt-2 pt-2 border-t border-border">
+                    {/* Not an ErrorNotice: nothing failed. The agent's tools list or a
+                        project settings file withheld them, so this wears the warn status. */}
+                    <div role="status" data-testid="context-gateway-tools-missing" className="flex items-start gap-1.5 rounded-md border border-warn/20 bg-warn-subtle px-2 py-1.5 text-[12px] text-warn-text">
+                      <AlertTriangle size={14} className="shrink-0 mt-px" aria-hidden="true" />
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{i18nT(GATEWAY_TOOLS_LABEL_KEY[gatewayTools])}</span>
+                    </div>
+                  </div>
+                )}
+                {gatewayTools === 'failed' && (
+                  <div className="mt-2 pt-2 border-t border-border">
+                    {/* No hand-off: the composer draft below is unsaved. */}
+                    <ErrorNotice
+                      variant="inline"
+                      testId="context-gateway-tools-missing"
+                      message={i18nT(GATEWAY_TOOLS_LABEL_KEY[gatewayTools])}
+                    />
                   </div>
                 )}
                 {autoCompactQuery.isLoading && (
@@ -368,8 +451,10 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
 /** The model chip. It names the level in force beside the model; the level is
  *  CHANGED inside the model picker the chip opens (model and effort are one
  *  control, docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md). */
-export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
+export function ModelChip({ modelName, modelSelected, sessionBackend, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
   modelName: string
+  modelSelected?: string
+  sessionBackend?: string | null
   modelIsJevRouted?: boolean
   modelIsInheritedDefault?: boolean
   modelIsAutoChosen?: boolean
@@ -400,6 +485,15 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   const effortSuffix = hasEffort
     ? ` · ${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortShown}`
     : ''
+  // The backend the live session runs on, named on the chip so a session that
+  // kept its harness through a config switch does not read as the new one.
+  const backendName = sessionBackend != null ? acpBackendName({ id: sessionBackend }) : ''
+  const backendSuffix = backendName
+    ? ` · ${i18nT('components.chatInput.agent_backend')}: ${backendName}`
+    : ''
+  const selectedSuffix = modelSelected
+    ? ` · ${i18nT('components.chatInput.model_selected', { name: modelSelected })}`
+    : ''
   const modelChipName = modelIsJevRouted
     ? i18nT('pages.chatPage.model_auto_jev_description')
     : modelIsInheritedDefault
@@ -409,7 +503,7 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         : i18nT('components.chatInput.model_2', { name: modelName })
   // While a response runs the name is followed by the one line that matters
   // then: a pick applies from the next message, as the project chip says.
-  const modelChipLabel = `${modelChipName}${effortSuffix}${isRunning
+  const modelChipLabel = `${modelChipName}${selectedSuffix}${effortSuffix}${backendSuffix}${isRunning
     ? `\n${i18nT('components.chatInput.model_switch_applies_next_turn')}`
     : ''}`
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
@@ -443,8 +537,13 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
     title={modelChipLabel}
     aria-label={modelChipLabel}
   >
+    {/* The harness leads as its logo, which fits every shelf width, a
+        phone's included; the logo's own name and tooltip say which. */}
+    {sessionBackend != null && <HarnessMark backend={sessionBackend} />}
+    {/* The routing prefix of a wire id (`global.anthropic.`) is dropped from
+        the visible name only, as the turn footer does; the title keeps it. */}
     <span className="truncate max-w-[180px]">
-      {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}
+      {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName.replace(ROUTING_PREFIX_RE, '')}
     </span>
     {/* Outside the truncating span: a long provider-prefixed id must
         ellipsize its own tail, never the marker beside it. A routed chip

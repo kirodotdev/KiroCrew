@@ -2248,7 +2248,17 @@
       "composer_action_footer_host": "{{productName}} checked the draft. {{app}} still can't see it.",
       "composer_action_needs_empty": "{{app}} can only insert into an empty message. Clear the draft first.",
       "composer_action_would_resolve": "{{app}}'s text starts with /, ! or @, or holds a $skill, a file or an image, so it would run instead of being sent as text. It was not inserted.",
-      "composer_action_footer": "{{app}} can't see your draft. Its text goes in as written, and you choose to send it."
+      "composer_action_footer": "{{app}} can't see your draft. Its text goes in as written, and you choose to send it.",
+      "agent_backend": "Agent harness",
+      "gateway_tools": "{{productName}} tools",
+      "gateway_tools_connected": "Available",
+      "gateway_tools_failed": "{{productName}} tools failed to start in this session. Start a new session to try again.",
+      "gateway_tools_sent": "Sent, not confirmed",
+      "gateway_tools_not_sent": "{{productName}} tools were not sent to this session. Add @kirocrew-core to this agent's tools under Customize → Custom agents, then start a new session.",
+      "gateway_tools_pending": "Not reported yet",
+      "gateway_tools_missing": "This session has no {{productName}} tools",
+      "gateway_tools_missing_short": "No {{productName}} tools",
+      "model_selected": "Selected: {{name}}"
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",

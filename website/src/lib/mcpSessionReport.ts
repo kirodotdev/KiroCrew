@@ -1,4 +1,14 @@
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO } from '../api/acpBackend'
 import type { McpSessionReport } from '../types'
+
+/** The server that carries Kiro Crew's tools, one of `CONTROL_PLANE_SERVERS` in
+ *  `mcp_cleanup.py` (`test_session_facts.py` pins it there). A spec may leave out
+ *  `kirocrew-cron` on purpose, as the conductors do, so this server alone decides. */
+const CREW_TOOLS_SERVER = 'kirocrew-core'
+
+/** Harnesses that mount a spec's servers themselves, so the `session/new` array is
+ *  not the whole delivery: `ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE`, pinned the same way. */
+const SPEC_SERVERS_OFF_WIRE = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
 
 /**
  * Per-server state derived from ONE session's MCP report.
@@ -26,6 +36,30 @@ export function mcpSessionServerState(
   if (report.failed?.includes(name)) return 'failed'
   if (report.awaiting_auth?.includes(name)) return 'awaiting_auth'
   return 'no_report'
+}
+
+/** Whether a session received Kiro Crew's own MCP servers. */
+export type GatewayToolsState = 'connected' | 'failed' | 'sent' | 'not_sent' | 'pending'
+
+/**
+ * Whether ``backend``'s session received `kirocrew-core`, read off its report.
+ *
+ * `connected` / `failed` when the harness reported it started, or failed.
+ * Otherwise it depends on the harness: one that mounts its spec's servers itself
+ * reports them, so silence is `pending`; on any other the `session/new` array is
+ * the whole delivery, so it was `sent`, or `not_sent` when the spec's tools list
+ * left it out. `null` until a session has reported both its backend and a report.
+ */
+export function gatewayToolsState(
+  report: McpSessionReport | null | undefined,
+  backend: string | null | undefined,
+): GatewayToolsState | null {
+  if (!report || backend == null) return null
+  const state = mcpSessionServerState(CREW_TOOLS_SERVER, report)
+  if (state === 'failed') return 'failed'
+  if (state === 'started') return 'connected'
+  if (SPEC_SERVERS_OFF_WIRE.includes(backend)) return 'pending'
+  return report.configured?.includes(CREW_TOOLS_SERVER) ? 'sent' : 'not_sent'
 }
 
 /** The reported failure reason for ``name``, or '' when none was reported. */

@@ -6713,7 +6713,17 @@
       "composer_action_footer_host": "{{productName}} খসড়াটি দেখেছে। {{app}} এখনও এটি দেখতে পায় না।",
       "composer_action_needs_empty": "{{app}} শুধু খালি বার্তায় লেখা যোগ করতে পারে। আগে খসড়াটি মুছে ফেলো।",
       "composer_action_would_resolve": "{{app}}-এর লেখা /, ! বা @ দিয়ে শুরু, অথবা এতে $skill, ফাইল বা ছবি আছে, তাই এটি লেখা হিসেবে না গিয়ে চলত। এটি যোগ করা হয়নি।",
-      "composer_action_footer": "{{app}} তোমার খসড়া দেখতে পায় না। এর লেখা যেমন আছে তেমনই যোগ হয়, আর পাঠাবে কিনা তুমি ঠিক করো।"
+      "composer_action_footer": "{{app}} তোমার খসড়া দেখতে পায় না। এর লেখা যেমন আছে তেমনই যোগ হয়, আর পাঠাবে কিনা তুমি ঠিক করো।",
+      "agent_backend": "এজেন্ট হারনেস",
+      "gateway_tools": "{{productName}} টুল",
+      "gateway_tools_connected": "উপলব্ধ",
+      "gateway_tools_failed": "এই সেশনে {{productName}} টুল চালু হয়নি। আবার চেষ্টা করতে নতুন সেশন শুরু করো।",
+      "gateway_tools_sent": "পাঠানো হয়েছে, নিশ্চিত হয়নি",
+      "gateway_tools_not_sent": "এই সেশনে {{productName}} টুল পাঠানো হয়নি। কাস্টমাইজ → কাস্টম এজেন্ট থেকে এই এজেন্টের টুলে @kirocrew-core যোগ করো, তারপর নতুন সেশন শুরু করো।",
+      "gateway_tools_pending": "এখনও জানানো হয়নি",
+      "gateway_tools_missing": "এই সেশনে {{productName}} টুল নেই",
+      "gateway_tools_missing_short": "{{productName}} টুল নেই",
+      "model_selected": "নির্বাচিত: {{name}}"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",

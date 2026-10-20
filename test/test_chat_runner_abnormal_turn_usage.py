@@ -70,6 +70,7 @@ def _stub_accessors(monkeypatch, *, usage):
     """
     monkeypatch.setattr(chat_runner, "provider_last_turn_usage", lambda c, *, since=None: usage)
     monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+    monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
     monkeypatch.setattr(chat_runner, "read_context_tokens", lambda c: (1234, 200000))
     monkeypatch.setattr(chat_runner, "read_effective_agent", lambda c: "kirocrew")
     monkeypatch.setattr(chat_runner, "telemetry_channel_of", lambda sk: "dashboard")
@@ -508,6 +509,7 @@ class TestStoppedTurnFooter:
     ) -> None:
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="stop-footer-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         # Last attempt billed 1.0; the turn's accumulated total is 3.25.
@@ -539,6 +541,7 @@ class TestStoppedTurnFooter:
         # rendered as zero, and no usage row is written for an unbilled turn.
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "")
         state, slot, client = _drive_state_and_slot(tmp_path, name="stop-unbilled-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         self._stop_mid_stream(slot, client, credits=0.0)
@@ -562,6 +565,7 @@ class TestStoppedTurnFooter:
         # Whatever ended it: the gate is the boundary, not the reason.
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="pre-dispatch-stop-slot")
         prior_stats = {"elapsed_ms": 5000, "credits": 9.0}
         slot.append(
@@ -592,6 +596,7 @@ class TestStoppedTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="sweep-cancel-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
 
@@ -669,6 +674,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         monkeypatch.setattr(
             td, "resolve_turn_limit", lambda slot=None: (60.0, td.TURN_LIMIT_GLOBAL)
         )
@@ -789,6 +795,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="flushed-footer-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         real_pick = chat_runner._last_reply_row
@@ -833,6 +840,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="capped-window-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         cap = 12
@@ -865,6 +873,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="shutdown-footer-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         state.sessions.final_drain_started = True
@@ -906,6 +915,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="shutdown-segment-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         state.sessions.final_drain_started = True
@@ -952,6 +962,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name=f"late-{late_end}-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         late = (
@@ -1016,6 +1027,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         monkeypatch.setattr(chat_runner, "_recovery_delay", AsyncMock())
         state, slot, client = _drive_state_and_slot(tmp_path, name="unbilled-arm-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
@@ -1060,6 +1072,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="cancelled-save-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         state.sessions.final_drain_started = True
@@ -1108,6 +1121,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         monkeypatch.setattr(chat_runner, "_recovery_delay", AsyncMock())
         state, slot, client = _drive_state_and_slot(tmp_path, name="live-footer-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
@@ -1175,6 +1189,7 @@ class TestErrorEndTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="compaction-notice-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
 
@@ -1255,6 +1270,7 @@ class TestAbnormalEndFooter:
     def _wire(self, tmp_path, monkeypatch, name, stream):
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name=name)
         client.last_prompt_stats = _RealStats(credits=0.0)
         client.stream = stream(client)

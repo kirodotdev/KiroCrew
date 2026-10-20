@@ -13,7 +13,7 @@ Instance fields written: ``_advertised_models_changed``, ``_available_models``,
 ``_available_models_probe_confirmed``, ``_available_models_read_probe_at``,
 ``_config_options``, ``_kas_auto_fallback``, ``_mode_model_unjudged``, ``_model``,
 ``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``model_pin_partial``,
-``model_pin_refused``.
+``model_pin_refused``, ``turn_model``.
 
 Instance fields read: ``_engine_fallback``, ``_runtime``, ``_session_id``,
 ``last_prompt_stats``, ``request_vault_identity``.
@@ -27,7 +27,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry
-from kiro_crew.acp._dispatch import set_mode_params, set_model_params
+from kiro_crew.acp._dispatch import bounded_config_options, set_mode_params, set_model_params
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpClient,
@@ -410,6 +410,8 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
             return
     self._model = resolved
     self.model_pin_refused = ""
+    # The last turn's report names the model before this switch.
+    self.turn_model = ""
     if getattr(self, "_mode_model_unjudged", False):
         # The session runs this model now, not the one an earlier set_mode
         # activation put it on, so that activation's frame is not judged.
@@ -549,9 +551,11 @@ async def set_config_option(self: AcpSessionHandle, config_id: str, value: str) 
         {"sessionId": self._session_id, "configId": config_id, "value": value},
     )
     msg = await self._wait_for_response(req_id, timeout=10.0)
-    result = getattr(msg, "result", None)
-    config_options = result.get("configOptions") if isinstance(result, dict) else None
-    if isinstance(config_options, list):
+    # The response carries every option's value after the write, which is how
+    # the level the adapter actually accepted becomes readable. It rides every
+    # slots snapshot, so it is kept only within its size bound.
+    config_options = bounded_config_options(getattr(msg, "result", None))
+    if config_options is not None:
         self._config_options = config_options
         self._sync_effort_levels()
 
@@ -627,6 +631,8 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     self.active_agent = (
         self._crew_agent_name(current_agent) if isinstance(current_agent, str) else ""
     )
+    # A new or reloaded session has not reported a turn yet.
+    self.turn_model = ""
     config_options = resp.get("configOptions")
     if isinstance(config_options, list):
         self._config_options = config_options

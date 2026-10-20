@@ -33,7 +33,7 @@ def _run_with_usage(gateway, job, result: str) -> None:
             "kiro_crew.slack.gateway.provider_last_turn_usage",
             return_value=TurnUsage(credits=1.23456, duration_ms=4200),
         ),
-        patch("kiro_crew.slack.gateway.read_turn_model", return_value="claude-sonnet-4.5"),
+        patch("kiro_crew.slack.gateway.read_reported_turn_model", return_value="claude-sonnet-4.5"),
         patch("kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock),
     ):
         _run_callback(gateway, job, stream_result=result)
