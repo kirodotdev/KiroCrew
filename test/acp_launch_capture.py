@@ -56,7 +56,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
-    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.config import paths as config_paths
@@ -513,7 +513,7 @@ def _reset_bin_caches() -> None:
 #: keeps a client arm for the per-session path, so it is captured through ``_spawn``
 #: like every other harness; a runtime-only host has no client arm to drive, and its
 #: launch is the plan its harness resolves at Seam 1.
-RUNTIME_ONLY_BACKENDS = frozenset(ACP_BACKENDS_ACP_RUNTIME - ACP_BACKENDS_KIRO_SLASH_COMMANDS)
+RUNTIME_ONLY_BACKENDS = frozenset(ACP_BACKENDS_ACP_RUNTIME - ACP_BACKENDS_KIRO_FAMILY)
 
 
 class _Captured(Exception):

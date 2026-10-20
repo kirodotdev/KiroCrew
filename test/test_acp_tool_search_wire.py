@@ -25,7 +25,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_CLIENT_META_SETTINGS,
-    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     KAS_CLIENT_CAPABILITIES,
@@ -170,9 +170,9 @@ class TestMembership:
         assert ACP_BACKENDS_CLIENT_META_SETTINGS <= ACP_BACKENDS_KNOWN
         assert not (ACP_BACKENDS_TOOL_SEARCH_OVERLAY & ACP_BACKENDS_CLIENT_META_SETTINGS)
 
-    def test_the_overlay_is_narrower_than_the_slash_dialect(self):
-        """KAS speaks the slash dialect but never reads the Tool Search overlay."""
-        assert ACP_BACKENDS_TOOL_SEARCH_OVERLAY < ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    def test_the_overlay_is_narrower_than_the_kiro_family(self):
+        """KAS is in the kiro family but never reads the Tool Search overlay."""
+        assert ACP_BACKENDS_TOOL_SEARCH_OVERLAY < ACP_BACKENDS_KIRO_FAMILY
         assert ACP_BACKEND_KIRO in ACP_BACKENDS_TOOL_SEARCH_OVERLAY
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_TOOL_SEARCH_OVERLAY
         assert ACP_BACKEND_KAS in ACP_BACKENDS_CLIENT_META_SETTINGS

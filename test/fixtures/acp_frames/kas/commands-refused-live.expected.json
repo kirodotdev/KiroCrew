@@ -1,0 +1,134 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/memory/list",
+            "_kiro/memory/get",
+            "_kiro/memory/create",
+            "_kiro/memory/update",
+            "_kiro/memory/delete",
+            "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/configuration/getState",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "~/.kiro/logs/20261020T063552560/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T063552560/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T063552560/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "~/.kiro/logs/20261020T063552560"
+          },
+          "modelFallbackReporting": true,
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "[PersistenceClassification] Ext method \"_kiro.dev/commands/execute\" has no persistence classification. Add it to KnownExtMethod in persistence-classification.ts."
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "[PersistenceClassification] Ext method \"_kiro.dev/commands/execute\" has no persistence classification. Add it to KnownExtMethod in persistence-classification.ts."
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "[PersistenceClassification] Ext method \"_kiro.dev/commands/execute\" has no persistence classification. Add it to KnownExtMethod in persistence-classification.ts."
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 5
+  }
+]

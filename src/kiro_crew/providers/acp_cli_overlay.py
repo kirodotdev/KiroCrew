@@ -342,8 +342,8 @@ def _apply_tool_search_overlay(self: AcpProvider) -> None:
 
     Tool Search is read from this file at spawn by kiro-cli's Rust engine
     only, so the write is scoped to ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY`` --
-    narrower than ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, because KAS shares
-    the slash-command dialect but takes this setting over the wire instead
+    narrower than ``ACP_BACKENDS_KIRO_FAMILY``, because KAS is in the kiro
+    family but takes this setting over the wire instead
     (:meth:`_tool_search_settings`). A no-op as well when no toggle value was
     supplied (``self._tool_search is None``). Called before every (re)spawn
     so resume/restart keeps the same setting.

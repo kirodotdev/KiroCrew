@@ -181,7 +181,8 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     #
     # Membership rather than "not claude": the RPC is the narrow capability
     # here, so a harness added later must opt in to it, not inherit it and
-    # hard-error on every slash command a user types.
+    # hard-error on every slash command a user types. KAS is the case in point:
+    # kiro-family, yet it answers the RPC with -32603.
     # /compact and /clear discard native history; invalidate before dispatch
     # so the next warm turn resends the complete snapshot even when the
     # status receipt is missing or arrives late.

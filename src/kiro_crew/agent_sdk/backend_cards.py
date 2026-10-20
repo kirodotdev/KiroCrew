@@ -226,9 +226,9 @@ NOTE_HARNESS_MODEL_LIST = "harness_model_list"
 #: Off the card, on the same terms: which channel carries a slash command. A
 #: non-member is not command-less -- opencode and pi publish their own built-ins as
 #: an ``available_commands_update`` -- so the difference is the channel rather than
-#: the feature. Its input set stays a capability-line input (it is the kiro-family
-#: marker), which is why the decision is recorded here rather than in
-#: :data:`OFF_CARD_SETS`.
+#: the feature. Its input set stays a capability-line input (the reasoning-effort
+#: line's slash-command channel), which is why the decision is recorded here rather
+#: than in :data:`OFF_CARD_SETS`.
 NOTE_CREW_COMMAND_CHANNEL = "crew_command_channel"
 
 #: The auth declaration, rather than a membership set, decides a line.
@@ -265,13 +265,11 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     # harness in NEITHER has none of Crew's tools in its sessions, which is the
     # single most consequential thing this card says.
     #
-    # ``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` is the kiro-family marker and stands for
-    # that family here. The runtime set does NOT: codex is served by the shared
-    # runtime for TRANSPORT reasons while reading none of Crew's agent spec, so a
-    # line keyed on it would hand codex this claim by the wrong route.
-    _LineSpec(
-        LINE_CREW_TOOLS, ("ACP_BACKENDS_SESSION_MCP_ARRAY", "ACP_BACKENDS_KIRO_SLASH_COMMANDS")
-    ),
+    # ``ACP_BACKENDS_KIRO_FAMILY`` names that family here. The runtime set does
+    # NOT: codex is served by the shared runtime for TRANSPORT reasons while reading
+    # none of Crew's agent spec, so a line keyed on it would hand codex this claim
+    # by the wrong route.
+    _LineSpec(LINE_CREW_TOOLS, ("ACP_BACKENDS_SESSION_MCP_ARRAY", "ACP_BACKENDS_KIRO_FAMILY")),
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
     _LineSpec(LINE_SIDE_CHAT_TOOLS, ("ACP_BACKENDS_SIDE_READONLY",)),
     # Three verbs carry a user's mid-turn message: kiro-cli's ``_session/steer``,
@@ -289,20 +287,21 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     _LineSpec(LINE_MANUAL_COMPACT, ("ACP_BACKENDS_COMPACT",)),
     # Effort travels down one of two channels, and neither set alone answers the
     # question a user asks. The config-option members advertise an ``effort``
-    # option; the kiro family changes effort by slash command and is absent from
-    # that set entirely, so reading the config set alone would report the default
-    # harness as unable to do what it has always done.
+    # option; kiro-cli changes effort by the ``/effort`` slash command and is absent
+    # from that set entirely, so reading the config set alone would report the
+    # default harness as unable to do what it has always done. KAS takes effort as
+    # a config option, so it answers through the first set.
     _LineSpec(
         LINE_REASONING_EFFORT,
         ("ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"),
     ),
     # Same shape for the model: the config-option members take a switch as
     # ``session/set_config_option``, and the kiro family takes it as the native
-    # set-model request no membership set names positively -- so the kiro-family
-    # marker stands for it, as on the first line above.
+    # set-model request -- so the kiro-family set stands for it, as on the first
+    # line above.
     _LineSpec(
         LINE_MODEL_SWITCH,
-        ("ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"),
+        ("ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_FAMILY"),
     ),
 )
 
@@ -611,10 +610,11 @@ MEMBERSHIP_FLOOR_SET = "ACP_BACKENDS_KNOWN"
 #: The set that marks the kiro family, for the union lines that stand on it.
 #:
 #: Two lines read it as "the family that loads Crew's agent spec and takes the
-#: native set-model request", and no set says that positively. The runtime set
-#: cannot stand in for it: it is a TRANSPORT property, and codex sits in it while
-#: reading no agent spec of Crew's. A test holds both lines to reading THIS set.
-KIRO_FAMILY_MARKER_SET = "ACP_BACKENDS_KIRO_SLASH_COMMANDS"
+#: native set-model request". The runtime set cannot stand in for it: it is a
+#: TRANSPORT property, and codex sits in it while reading no agent spec of Crew's.
+#: Nor can the command-verb set: KAS refuses that verb but is in the family. A test
+#: holds both lines to reading THIS set.
+KIRO_FAMILY_MARKER_SET = "ACP_BACKENDS_KIRO_FAMILY"
 
 #: A capability the harness's own source says it serves, which no live run has
 #: confirmed -- the evidence CLASS the deciding set holds its members to.

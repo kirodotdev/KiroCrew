@@ -158,7 +158,7 @@ class SessionCapabilities:
     #: Whether this harness interprets ``/todos`` as its native task-list command.
     #:
     #: This is deliberately narrower than general slash-command transport: the
-    #: kiro family has a native slash RPC but does not implement this command.
+    #: kiro-cli has a native slash RPC but does not implement this command.
     #: Unknown and newly registered backends remain False until they opt in.
     supports_native_todos: bool
 
@@ -204,13 +204,11 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         model_id_namespace=model_registry_namespace(backend),
         resolves_model_from_advertised_list=backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
-        # The config option wins for a member of both sets: KAS sits in the
-        # kiro-family set but answers ``_kiro.dev/commands/execute`` with -32603
-        # (kiro-cli 2.28.0), so its effort travels only as ``effortLevel``.
-        effort_via_slash_command=(
-            backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
-            and backend not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
-        ),
+        # The two effort channels are disjoint sets, so a harness is told to use
+        # at most one. KAS is in neither the command set nor this answer: it
+        # refuses ``_kiro.dev/commands/execute`` with -32603, and its effort
+        # travels only as ``effortLevel``.
+        effort_via_slash_command=backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS,
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,

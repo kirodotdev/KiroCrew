@@ -328,8 +328,8 @@ ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset({ACP_BACKEND_GOOSE, ACP_BACKEND_D
 ACP_BACKENDS_EFFORT_OVERLAY = frozenset({ACP_BACKEND_KIRO})
 
 # Backends that read the MCP Tool Search setting from the workspace ``cli.json``
-# overlay (``toolSearch.*`` keys). Only kiro-cli's Rust engine does. KAS shares
-# the ``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` dialect but never opens that file: on the relay path
+# overlay (``toolSearch.*`` keys). Only kiro-cli's Rust engine does. KAS is in
+# ``ACP_BACKENDS_KIRO_FAMILY`` but never opens that file: on the relay path
 # nothing forwards it, so a Tool Search value written there for a KAS session is
 # dead -- the setting looks on in the dashboard while the engine runs with it off.
 # KAS takes the setting from the handshake instead (the set below).

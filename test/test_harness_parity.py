@@ -65,6 +65,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
@@ -693,12 +694,12 @@ def test_effort_channel_is_opt_in() -> None:
     """
     assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
     assert ACP_BACKENDS_KIRO_SLASH_COMMANDS <= ACP_BACKENDS_KNOWN
-    # A harness in both sets is told to push effort down ONE channel: KAS is
-    # kiro-family for its other slash commands but takes effort only as a config
-    # option, so the capability answers never name both channels.
-    assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS == {
-        ACP_BACKEND_KAS
-    }
+    # The two channels are disjoint, so no harness is told to push effort down
+    # both. KAS is kiro-family but refuses the command verb with -32603
+    # (kas/commands-refused-live.jsonl), so its effort is a config option only.
+    assert not ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_KIRO_FAMILY
+    assert ACP_BACKEND_KAS not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
     caps = capabilities_for(ACP_BACKEND_KAS)
     assert caps.effort_via_config_option and not caps.effort_via_slash_command
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_KIRO_SLASH_COMMANDS
@@ -727,8 +728,8 @@ def test_only_overlay_readers_are_written_to() -> None:
     later clear can reach — and the overlay names an effort level, so a harness
     that DOES read the file later inherits a level nobody set for it.
 
-    Each overlay key names its own reader set. Both are narrower than the slash
-    dialect: KAS speaks it but never opens this file. Tool Search reaches KAS over
+    Each overlay key names its own reader set. Both are narrower than the kiro
+    family: KAS is in it but never opens this file. Tool Search reaches KAS over
     the wire (measured: the relay forwards no ``toolSearch.*`` key from this file),
     so a write gated on the wider set is a dead file that makes the dashboard's
     "deferred" badge lie. Effort reaches KAS as ``effortLevel``, and the file is
@@ -745,7 +746,7 @@ def test_only_overlay_readers_are_written_to() -> None:
             membership in source
         ), f"{fn.__name__}: overlay write is not scoped to the overlay's readers"
     for readers in (ACP_BACKENDS_EFFORT_OVERLAY, ACP_BACKENDS_TOOL_SEARCH_OVERLAY):
-        assert readers < ACP_BACKENDS_KIRO_SLASH_COMMANDS
+        assert readers < ACP_BACKENDS_KIRO_FAMILY
         assert ACP_BACKEND_KAS not in readers
 
 

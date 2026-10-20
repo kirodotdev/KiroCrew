@@ -436,17 +436,35 @@ ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
 # slash commands go through ``session/prompt`` and are interpreted by the adapter
 # (or degrade to prompt text) instead of returning -32601 for the whole call.
 #
-# This membership does NOT decide who reads the workspace ``cli.json`` overlay: KAS
-# speaks this dialect but never opens that file, so its effort keys and its Tool
-# Search keys each have their own, narrower sets, ``ACP_BACKENDS_EFFORT_OVERLAY``
-# and ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``.
+# Membership means "Crew may SEND this verb", and nothing wider: the kiro-family
+# reads (Crew's agent spec, the native set-model request, the effort live path)
+# stand on ``ACP_BACKENDS_KIRO_FAMILY`` below.
+# KAS is not a member: it refuses the verb with -32603 "has no persistence
+# classification" for every command tried (``tools``, ``context``, ``effort``),
+# captured in ``test/fixtures/acp_frames/kas/commands-refused-live.jsonl``. Its
+# effort travels as the ``effortLevel`` config option, and the dashboard answers
+# its other harness commands itself.
 # opencode is not a member: it has no ``_kiro.dev`` verb, and it publishes its own
 # command list as an ``available_commands_update`` on ``session/update`` instead.
 # pi is not a member for the same reason: pi-acp publishes its built-ins the same
 # way and has no ``_kiro.dev`` verb.
 # deepseek is not a member and publishes no command list either: it carries commands
 # internally and its ACP surface rejects them, so it exposes none over the wire.
-ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO})
+
+# The kiro family: kiro-cli and KAS, the two harnesses Crew spawns through
+# ``kiro-cli``. Membership is not a capability of its own. It is the family the
+# readers below mean when they mean "kiro-cli or KAS", so none of them stands on a
+# capability set (the command verb above, or the runtime set, which codex shares
+# for TRANSPORT reasons) that happens to hold the same two members today:
+#
+# - the card's crew-tools, reasoning-effort and model-switch lines, where the
+#   family loads Crew's agent spec and takes the native set-model request;
+# - ``AcpProvider``'s effort live path, which re-applies an unpinned level and
+#   pushes a cleared default down whichever channel the capability layer names;
+# - the gate in front of the workspace ``cli.json`` overlay writers, each of which
+#   is scoped again to its own narrower reader set.
+ACP_BACKENDS_KIRO_FAMILY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that interpret ``/todos`` as a native prompt command. This is separate
 # from ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``: that set names the private RPC used by

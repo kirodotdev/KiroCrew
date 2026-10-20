@@ -2,7 +2,8 @@
 
 The defect these pin: ``AcpSessionHandle.stream_command`` runs a command natively
 only on kiro-cli (``_kiro.dev/commands/execute``). On KAS — the other member of
-``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` — it falls back to ``session/prompt``, so
+``ACP_BACKENDS_KIRO_FAMILY``, which refuses that verb — it falls back to
+``session/prompt``, so
 ``/clear`` arrives as plain user text. A live KAS session showed it: context usage
 stayed at 8.42% -> 8.44% across ``/clear`` while the model replied "Context
 cleared." The conversation was never dropped.

@@ -37,7 +37,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
-    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_KIRO_FAMILY,
     effort_config_option_id,
     effort_config_option_value,
 )
@@ -169,7 +169,7 @@ async def _bind_unbound_effort(self: AcpProvider) -> None:
 
         self._effort_per_model[model] = level
         if self._resolve_effort():
-            if stored != level and self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            if stored != level and self._client.backend in ACP_BACKENDS_KIRO_FAMILY:
                 # change_effort stores the level itself once the overlay
                 # write and the live push have both landed, and rolls back
                 # to the entry it found when either fails. That entry must
@@ -403,9 +403,9 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
 
     Persists the slot override and (``ACP_BACKENDS_EFFORT_OVERLAY``) rewrites the
     overlay so a later respawn keeps the level, then pushes the change to the running
-    session: the ``/effort`` slash command for
-    ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option`` for
-    ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
+    session down the channel ``SessionCapabilities`` names: the ``/effort`` slash
+    command for ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option``
+    for ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
     model does not support effort, or when this harness is in neither set and
     so has no effort channel at all.
     """
@@ -417,8 +417,8 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             model,
         )
         return False
-    # The capability answers, not raw set membership: KAS sits in both sets
-    # and the capability layer is where the config option wins for it.
+    # The capability answers, not raw set membership: the capability layer is the
+    # one place that names a harness's effort channel.
     via_config_option = self.capabilities.effort_via_config_option
     via_slash_command = self.capabilities.effort_via_slash_command
     if not (via_config_option or via_slash_command):
@@ -608,7 +608,7 @@ async def clear_effort(self: AcpProvider) -> bool | None:
     if not self.supports_effort():
         return False
     cleared = self._effort_per_model.pop(model, None)
-    if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+    if self._client.backend not in ACP_BACKENDS_KIRO_FAMILY:
         # No live "reset to default" — caller must reset the session. Scoped
         # by membership so a harness that reads neither the overlay nor the
         # slash command is not sent down the kiro path below, which would

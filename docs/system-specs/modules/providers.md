@@ -727,10 +727,11 @@ That predicate answers ONLY the transport question: which start path a session
 takes. It does **not** answer who reads the kiro-family workspace `cli.json`
 overlay. Codex runs on the shared runtime, reads no such file, and takes effort
 over `session/set_config_option`, so the two sites that keyed overlay work off
-the runtime predicate key off `ACP_BACKENDS_KIRO_SLASH_COMMANDS` instead — the
-set that owns that question (harness-parity H6). A harness author looking for
-"the one gate" is looking at the frozensets themselves; `harness_for()` serves a
-host whether or not a capability set names it.
+the runtime predicate key off `ACP_BACKENDS_KIRO_FAMILY` instead, and each
+overlay writer is scoped again to its own reader set (harness-parity H6). A
+harness author looking for "the one gate" is looking at the frozensets
+themselves; `harness_for()` serves a host whether or not a capability set names
+it.
 
 **A provider switch on codex is process-wide, not per session.** codex-acp's
 `providers/set` restarts the shared `codex app-server`: it waits on every active

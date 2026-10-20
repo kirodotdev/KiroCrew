@@ -432,7 +432,6 @@ X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
     ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"): "KAS markdown agent spec session",
     ("ACP_BACKENDS_KIRO_SLASH_COMMANDS", "kiro"): "kiro-cli _kiro.dev/commands turn",
-    ("ACP_BACKENDS_KIRO_SLASH_COMMANDS", "kas"): "KAS _kiro.dev/commands turn",
     ("ACP_BACKENDS_MEMBER_DISPATCH", "kas"): "KAS member thread-tools session",
 }
 

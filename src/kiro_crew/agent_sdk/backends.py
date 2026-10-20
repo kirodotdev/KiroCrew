@@ -163,6 +163,9 @@ with no row here.
    * - ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.effort_via_slash_command``), and
        driver-internal everywhere else (whether ``_kiro.dev/commands/execute`` exists)
+   * - ``ACP_BACKENDS_KIRO_FAMILY``
+     - driver-internal (whether the effort live path and the overlay gate take
+       the kiro-cli / KAS branch), and the card's kiro-family marker
    * - ``ACP_BACKENDS_NATIVE_TODOS``
      - semantic question (``SessionCapabilities.supports_native_todos``)
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
@@ -875,6 +878,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
     ACP_BACKENDS_INLINE_COMPACTION,
+    ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_NATIVE_TODOS,

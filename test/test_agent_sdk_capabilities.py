@@ -811,17 +811,16 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     assert capabilities_for(ACP_BACKEND_DEEPSEEK).effort_via_slash_command is False
 
 
-def test_effort_via_slash_command_membership_is_the_kiro_family() -> None:
+def test_effort_via_slash_command_membership_is_the_command_verb_set() -> None:
     """``effort_via_slash_command`` translates ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
-    minus the config-option channel's members for every known backend, and no
-    backend carries effort down both channels: a change sent down the one the
-    harness does not implement is answered with method-not-found (KAS, which sits
-    in both sets, answers ``_kiro.dev/commands/execute`` with -32603)."""
+    for every known backend, and no backend carries effort down both channels: a
+    change sent down the one the harness does not implement is refused. KAS is
+    kiro-family but outside that set, because it answers
+    ``_kiro.dev/commands/execute`` with -32603 (``kas/commands-refused-live.jsonl``)."""
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         caps = capabilities_for(backend)
         assert caps.effort_via_slash_command == (
             backend in sdk_backends.ACP_BACKENDS_KIRO_SLASH_COMMANDS
-            and backend not in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
         ), backend
         assert not (caps.effort_via_slash_command and caps.effort_via_config_option), backend
     assert capabilities_for(sdk_backends.ACP_BACKEND_KAS).effort_via_slash_command is False
