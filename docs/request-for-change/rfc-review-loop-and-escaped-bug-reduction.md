@@ -1,6 +1,6 @@
 ---
 title: Fewer review loops and fewer escaped bugs -- a PASS/BLOCK review gate, lint first, and six smaller changes
-status: draft
+status: accepted
 author: unattributed (blameless study write-up)
 created: 2026-10-19
 last-audited: 2026-10-19
@@ -14,10 +14,9 @@ superseded-by: []
 
 # RFC: Fewer review loops and fewer escaped bugs
 
-- Status: draft. Acceptance is requested from the maintainers who own the AI
-  review lanes, CI, and the `kirocrew-prepare-pr` skill. Each of the eight
-  decisions in section 2 is separable: accept, reject or amend any one without
-  the others. Section 2.2 is the place to record the outcome.
+- Status: accepted. The repository owner recorded all eight decisions on
+  2026-10-20 in section 2.2: D1 with an amendment, D2 to D8 as written. Each of
+  the eight decisions in section 2 is separable. Nothing is built yet.
 - This document changes no code. The merged pull request adds this file and one
   row in [README.md](README.md).
 - Measured at `origin/main` commit `2cf3d0d69` (2026-10-19). Every repository
@@ -80,14 +79,14 @@ rules in [README.md](README.md).
 
 | # | Outcome (accept / reject / amend) | Recorded by (role) | Date | Amendment text |
 |---|---|---|---|---|
-| D1 | pending | | | |
-| D2 | pending | | | |
-| D3 | pending | | | |
-| D4 | pending | | | |
-| D5 | pending | | | |
-| D6 | pending | | | |
-| D7 | pending | | | |
-| D8 | pending | | | |
+| D1 | amend | repository owner | 2026-10-20 | Amended 2026-10-20: the rollout in section 4.1 (the replay on history, the shadow period with its kill rule and the `REVIEW_VERDICT_ENFORCED` switch, and enforcement one lane at a time) is replaced by direct enforcement on all lanes from the first merge. No replay, no shadow mode, no kill switch, no auto-rollback. The safety is a revert by pull request. The change is observed for one week after the merge. |
+| D2 | accept | repository owner | 2026-10-20 | None. |
+| D3 | accept | repository owner | 2026-10-20 | None. |
+| D4 | accept | repository owner | 2026-10-20 | None. |
+| D5 | accept | repository owner | 2026-10-20 | None. The RFC text already matches: class sweep every fix round, strategy switch on the 3rd fix of one span, narrow or defer with an issue forced on the 5th, no human stop. |
+| D6 | accept | repository owner | 2026-10-20 | None. |
+| D7 | accept | repository owner | 2026-10-20 | None. The RFC text already matches: optional and advisory, no `require` mode. |
+| D8 | accept | repository owner | 2026-10-20 | None. |
 
 ### 2.3 Dependencies between decisions
 
@@ -252,7 +251,9 @@ and the success metric with its baseline.
 
 **Decision asked.** Replace the lane vocabulary PASS / CONCERNS / BLOCK and
 BLOCKING / FINDING with exactly two verdicts, PASS and BLOCK. This is the
-headline of the RFC and can be accepted or rejected without D2 to D8.
+headline of the RFC and can be accepted or rejected without D2 to D8. The
+repository owner accepted D1 with an amendment on 2026-10-20 (section 2.2):
+the rollout described below is replaced by direct enforcement on all lanes.
 
 #### 4.1.1 What happens today
 
