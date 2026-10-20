@@ -36,19 +36,35 @@ def install(slack_provider: Callable[[], Any]) -> WorkspaceService:
     global _SERVICE
     if _SERVICE is not None:
         return _SERVICE
-    from kiro_crew.slack.code_channels import hooks
+    from kiro_crew.slack.code_channels import board, hooks
     from kiro_crew.slack.code_channels.client import CodeChannelsClient
     from kiro_crew.slack.code_channels.routing import _dashboard_state
 
-    service = WorkspaceService(
+    svc = WorkspaceService(
         lambda: CodeChannelsClient.from_slack(slack_provider()),
         set_project=dashboard_project_setter(_dashboard_state),
         project_of=dashboard_project_reader(_dashboard_state),
+        read_board=board.read,
+        publish_board=board.publish,
     )
-    register(hooks, service)
+    register(hooks, svc)
     hooks.on_turn_start(_watch_on_turn)
-    _SERVICE = service
-    return service
+    _SERVICE = svc
+    # At gateway start (the core installs on the running loop): watch at once,
+    # so a board a restart interrupted is read again and kept current even when
+    # no channel turn ever starts again. Inert while the feature's gate is shut.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        start_watch()
+    return svc
+
+
+def service() -> WorkspaceService | None:
+    """The gateway's workspace service (``None`` before :func:`install`)."""
+    return _SERVICE
 
 
 async def _watch_on_turn(_binding: Any, _event: Any = None) -> None:
@@ -114,8 +130,12 @@ def start_watch() -> None:
     """Start watching the sessions filed in each channel's folder (idempotent)."""
     if _SERVICE is None:
         return
+    from kiro_crew.slack.code_channels import board
     from kiro_crew.slack.code_channels.routing import _dashboard_state
 
+    # The ledger trigger listens from the first bound turn, not the first board:
+    # a code channel's first dispatch is what POSTS its board.
+    board.subscribe()
     _SERVICE.start_watch(_dashboard_state)
 
 
@@ -132,6 +152,10 @@ async def prepare(binding: Any) -> None:
     """
     if _SERVICE is None:
         return
+    from kiro_crew.slack.code_channels import board
+
+    # A new binding: a conductor key earlier found bound to no channel may be now.
+    board.forget_unbound()
     start_watch()
     try:
         await _SERVICE.ensure(binding)

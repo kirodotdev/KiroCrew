@@ -101,6 +101,7 @@ _TO_DICT_KEYS = (
     "origin",
     "created_by",
     "lineage_minted",
+    "work_aggregate",
 )
 
 

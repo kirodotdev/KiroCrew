@@ -346,11 +346,13 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     session_key = turn.session_key
     _agent = turn._agent
 
+    from kiro_crew.slack.code_channels.binding import no_reactions
+
     status_ctrl = StatusReactionController(
         slack,
         channel,
         msg_ts,
-        enabled=KiroCrewConfig.load().slack.reactions_enabled,
+        enabled=KiroCrewConfig.load().slack.reactions_enabled and not no_reactions(channel),
     )
     status_ctrl.set_phase("queued")
     _had_error = False

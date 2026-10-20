@@ -310,6 +310,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: ``parent`` -- ``_created_by`` alone is restored for authorization, never
     #: promoted to lineage.
     self._lineage_minted = False
+    #: A code-channel conductor's work at a glance (``work_aggregate``), written by
+    #: the channel's work board on each refresh; ``None`` when it has no workers.
+    self._work_aggregate = None
     #: Slot key of the session-control caller that REVIVED this slot from
     #: history, or "". Cap attribution only: ``creator_slot_count`` counts it
     #: beside ``_created_by`` for the per-caller slot cap, since a revive keeps

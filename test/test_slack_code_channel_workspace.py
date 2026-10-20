@@ -1142,15 +1142,26 @@ class FakeDashboard:
 
     def add_slot(self, key: str, folder_id: str, *, running: bool = False) -> SimpleNamespace:
         slot = SimpleNamespace(
-            folder_id=folder_id, turn_running=running, project="", _turn_generation=0
+            key=key, folder_id=folder_id, turn_running=running, project="", _turn_generation=0
         )
         self._slots[key] = slot
         return slot
 
 
 def _conductor_harness(tmp_path, monkeypatch):
+    from kiro_crew.slack.code_channels import store as cc_store
+
     h = Harness(tmp_path)
     dash = FakeDashboard()
+    # The channel's stored binding: the folder watch reads it for every record.
+    bound = cc_store.CodeChannelStore(tmp_path / "slack-code-channels-bound.json")
+    bound.load()
+    monkeypatch.setattr(cc_store, "_STORE", bound)
+    bound.put_binding(
+        cc_store.Binding(
+            channel_id="C1", team_id="T1", session_key="chat-conductor", anchor_ts="1.0"
+        )
+    )
     made: list[tuple[str, str, str]] = []
 
     async def create_folder(state, parent_id, name, project_dir):

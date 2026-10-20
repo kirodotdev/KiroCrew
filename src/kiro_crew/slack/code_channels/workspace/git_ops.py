@@ -53,6 +53,8 @@ BRANCH_PREFIX = "slack/"
 _MAX_TITLE_SLUG = 40
 
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
+#: A full object id (SHA-1 or SHA-256), the only thing a range diff accepts.
+_SHA_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 
 def run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
@@ -331,6 +333,65 @@ def tracked_diff(cwd: str, base: str, *, cap: int) -> tuple[bytes, bool] | None:
             "--ignore-submodules=all",
             "--end-of-options",
             base,
+            "--",
+        ],
+        cwd,
+        cap=cap,
+    )
+    if rc != 0 and not truncated:
+        return None
+    return out, truncated
+
+
+def branch_commit(cwd: str, branch: str) -> str:
+    """The commit a branch name points at, local first, then ``origin``'s; ``""`` else.
+
+    Only a name :func:`is_valid_followup_branch` accepts is looked up, and only
+    under ``refs/heads/`` or ``refs/remotes/origin/``: a worker-reported branch
+    can never name an option, a sha, ``HEAD`` or another ref namespace.
+    """
+    if not branch or not is_valid_followup_branch(branch):
+        return ""
+    return resolve_commit(cwd, f"refs/heads/{branch}") or resolve_commit(
+        cwd, f"refs/remotes/origin/{branch}"
+    )
+
+
+def commit_range_diff(cwd: str, base: str, head: str, *, cap: int) -> tuple[bytes, bool] | None:
+    """Unified diff between two COMMITS (``git diff base head``), capped.
+
+    Reads git's object database only -- no working tree, so nothing outside the
+    channel's own checkout is opened, whichever worktree made the commits. Both
+    arguments must be full shas the caller resolved. The read has the same shape
+    as :func:`tracked_diff` (pinned config, whole-file context, renames off), so
+    :func:`.diff.screen_tracked` can check it the same way.
+    """
+    if not (_SHA_RE.match(base) and _SHA_RE.match(head)):
+        return None
+    rc, out, truncated = run_git_capped(
+        [
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "-c",
+            "diff.suppressBlankEmpty=false",
+            "-c",
+            "diff.interHunkContext=0",
+            "diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            f"--unified={_WHOLE_FILE_CONTEXT}",
+            "--ignore-submodules=all",
+            "--end-of-options",
+            base,
+            head,
             "--",
         ],
         cwd,
