@@ -83,6 +83,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "clear_mirror_link_if": ("function", False, "1dd34978d404", "session_map_links"),
     "clear_mirror_links_at": ("function", False, "daeb9edbe83d", "session_map_links"),
     "clear_native_fork": ("function", False, "958babeb61c8", "session_map"),
+    "clear_cwd": ("function", False, "958babeb61c8", "session_map"),
     "clear_sid": ("function", False, "1eda252b53bd", "session_map"),
     "clear_sid_unlanded": ("function", False, "1eda252b53bd", "session_map"),
     "clear_slack_link": ("function", False, "1eda252b53bd", "session_map_links"),

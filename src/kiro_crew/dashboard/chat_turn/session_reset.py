@@ -198,6 +198,10 @@ async def _consume_pending_reset(
                 # the next consume lands it, at worst costing one redundant
                 # cold start after the reset tears down an already-correct
                 # idle session.
+                if not slot.project and slot._pending_reset_clears_cwd:
+                    # Again here: a cold start already in flight when the project was
+                    # cleared stores the old directory as it registers.
+                    state.sessions.retract_cwd(pending_key)
                 reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
             except Exception:
                 # A teardown that raised leaves the session in a state this
@@ -223,6 +227,7 @@ async def _consume_pending_reset(
                     torn_down = True
                     if slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
+                        slot._pending_reset_clears_cwd = False
                     # Freshness push for open tabs; verdict-driven (see
                     # _broadcast_expired_oauth_banners).
                     _broadcast_expired_oauth_banners(state, slot)
