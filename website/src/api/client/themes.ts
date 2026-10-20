@@ -8,7 +8,7 @@ import type { ClientTransport } from './transport'
 
 export function createThemesEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const branding = {
-    branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
+    branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean; remote_editor?: { editor?: string; host?: string } }>,
   }
 
   const themeList = {

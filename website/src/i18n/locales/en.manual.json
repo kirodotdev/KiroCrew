@@ -1686,7 +1686,9 @@
   "components": {
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",
-      "show_folder_in_side_panel": "Show folder in side panel"
+      "show_folder_in_side_panel": "Show folder in side panel",
+      "open_in_remote_editor": "Open in {{editor}}",
+      "remote_editor_sent": "Sent to {{editor}}. Nothing opened? Check it’s installed and can reach the SSH host."
     },
     "fileChangeChips": {
       "diff_unavailable_file_exceeds_snapshot_limit": "Diff unavailable: file is too large to compare (over {{limit}} characters).",
@@ -7967,7 +7969,17 @@
         "installed_themes_refresh_failed_after_install": "The theme was installed, but the theme list could not be refreshed. Press Retry to refresh the list and apply it, or pick it from the theme list once it refreshes.",
         "retry_theme_list": "Retry",
         "retrying_theme_list": "Retrying…",
-        "recent_tint_save_failed": "Could not save the recent-session highlight count."
+        "recent_tint_save_failed": "Could not save the recent-session highlight count.",
+        "remote_editor": "Remote editor",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "For a gateway on another machine: adds an option to file menus that opens the gateway's file in your local editor over your own SSH session.",
+        "remote_editor_off": "Off",
+        "remote_editor_host": "SSH host",
+        "remote_editor_host_desc": "The name you'd use with ssh to reach the gateway: a hostname or ~/.ssh/config alias, with no port or path. The alias must exist on every machine you open this dashboard from.",
+        "remote_editor_host_required": "Set an SSH host to show “Open in {{editor}}” in file menus.",
+        "remote_editor_save_failed": "Couldn’t save the editor choice.",
+        "remote_editor_host_save_failed": "Couldn’t save the SSH host. Use a hostname or ~/.ssh/config alias only, without a port, path or scheme; put a port in ~/.ssh/config.",
+        "remote_editor_host_save_error": "Couldn’t save the SSH host."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

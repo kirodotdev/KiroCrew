@@ -594,6 +594,9 @@ class TestTerminalReuseCurrent:
             assert resp.status == 400
 
 
+# ── Remote editor (dashboard.remote_editor.{editor,host}) ─────────────────
+
+
 class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_unknown_field_returns_400(self, tmp_config) -> None:

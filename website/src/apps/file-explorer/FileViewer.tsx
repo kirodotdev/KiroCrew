@@ -1,4 +1,4 @@
-import { FileText, FileQuestion, RefreshCw, Download, Copy, ExternalLink, FolderOpen, MoreHorizontal, ShieldAlert } from 'lucide-react'
+import { FileText, FileQuestion, RefreshCw, Download, Copy, ExternalLink, FolderOpen, MoreHorizontal, ShieldAlert, Code2 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import MarkdownRenderer, { BasePathCtx } from '../../components/MarkdownRenderer'
 import { EmptyState, Skeleton } from '../../components/ui'
@@ -10,7 +10,7 @@ import { IMAGE_EXTS, LANG_BY_EXT } from './constants'
 import { extOf, basename, formatBytes, formatTime, isSensitivePath } from './utils'
 import { copyToClipboard } from '../../utils/clipboard'
 import { highlightLanguageForExtension } from '../../utils/highlightLanguages'
-import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile } from '../../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile, useRemoteEditorOpen, RemoteEditorSentStatus } from '../../components/FilePathMenu'
 import { useBranding } from '../../hooks/useBranding'
 import type { FileMeta } from './types'
 
@@ -56,6 +56,10 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
   // files, so no kind is passed. Reveal keeps the laxer directLocal-only gate.
   const canOpen = useCanOpenFile()
   const revealLabel = useRevealLabel()
+  // Shared remote-editor row (see FilePathMenu.useRemoteEditorOpen): the
+  // configured "Open in <editor>" link. Called before the early returns like the
+  // gates above; null path yields null (row hidden).
+  const remoteEditorAction = useRemoteEditorOpen(filePath ?? '')
   // A failed open/reveal from the ⋯ menu renders under the viewer bar;
   // askAgent on — the viewer is read-only.
   const reveal = useRevealFailure(filePath ?? undefined)
@@ -95,8 +99,13 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
           {/* Overflow, not a third peer button: the row caps at two controls, and
               the file-location actions are the ones a user reaches for least
               often. Mirrors the markdown panel's file viewer, whose own ⋯ menu
-              holds the same reveal/download pair. */}
-          <DropdownMenu>
+              holds the same reveal/download pair. Closing ends the remote-editor
+              "Sent to …" hint (it has no timer of its own); that is the only
+              effect of opening, so the guide probe may still open this menu. */}
+          <DropdownMenu
+            guideProbe
+            onOpenChange={(next) => { if (!next) remoteEditorAction?.reset() }}
+          >
             <DropdownMenuTrigger asChild>
               <button className="mc-fe-iconbtn" title={i18nT('apps.fileExplorer.fileViewer.more_options')} aria-label={i18nT('apps.fileExplorer.fileViewer.more_options')}><MoreHorizontal size={12} /></button>
             </DropdownMenuTrigger>
@@ -117,6 +126,25 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
                   <FolderOpen size={13} className="shrink-0 text-muted" />
                   <span>{revealLabel}</span>
                 </DropdownMenuItem>
+              )}
+              {/* Open in the user's local editor over SSH (configured editor +
+                  SSH host — see useRemoteEditorOpen). A remote user editing a file the
+                  read-only viewer cannot change reaches for this. preventDefault keeps
+                  the menu open: the scheme handoff reports nothing back, so the row's
+                  "Sent to …" label swap is the only acknowledgment, and `sent` lets
+                  that longer hint wrap instead of widening the menu. The sibling
+                  live region announces the swap to a screen reader. */}
+              {remoteEditorAction && (
+                <>
+                  <DropdownMenuItem
+                    onSelect={(e) => { e.preventDefault(); remoteEditorAction.open() }}
+                    className={remoteEditorAction.sent ? 'whitespace-normal max-w-[260px]' : undefined}
+                  >
+                    <Code2 size={13} className="shrink-0 text-muted" />
+                    <span>{remoteEditorAction.label}</span>
+                  </DropdownMenuItem>
+                  <RemoteEditorSentStatus action={remoteEditorAction} />
+                </>
               )}
               <DropdownMenuItem onSelect={onDownload}>
                 <Download size={13} className="shrink-0 text-muted" />

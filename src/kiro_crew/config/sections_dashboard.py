@@ -5,6 +5,7 @@ An owner of the :mod:`kiro_crew.config.sections` facade; it never imports the fa
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass, field
 from typing import overload
 
@@ -147,6 +148,24 @@ def normalize_verbosity(raw: object) -> object:
     if isinstance(raw, str):
         return LEGACY_VERBOSITY_ALIASES.get(raw, raw)
     return raw
+
+
+# ── Remote editor (dashboard.remote_editor.*) ─────────────────────────────────
+# Defined HERE (re-exported by config.sections) and imported by the branding
+# clamp and `_EDITABLE_CONFIG` in handlers/core.py so the schema, the write
+# gate and the read path cannot drift.
+#: The editors whose URL scheme the "Open in <editor>" row may build. Each is a
+#: VS Code-family app that keeps the ``vscode-remote`` authority, so the link is
+#: ``<id>://vscode-remote/ssh-remote+<host><path>``. "" (off) is NOT a member;
+#: the schema enum and the write gate prepend it.
+REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode", "kiro")
+#: Charset for ``dashboard.remote_editor.host``: an FQDN or a ``~/.ssh/config``
+#: alias. Anchored full-match so a host carrying URL structure (``/``, ``:``,
+#: ``?``, ``#``, whitespace) is rejected rather than injected into the generated
+#: link (the host is placed straight after ``ssh-remote+``). The string is the
+#: JSON-Schema ``pattern``; the compiled form serves the Python clamp.
+REMOTE_EDITOR_HOST_PATTERN = r"^[A-Za-z0-9._@+-]*$"
+REMOTE_EDITOR_HOST_RE = _re.compile(REMOTE_EDITOR_HOST_PATTERN)
 
 
 @dataclass
@@ -723,6 +742,62 @@ class DashboardConfig:
                                 ),
                             },
                         },
+                    },
+                },
+            },
+        ),
+    )
+    remote_editor: dict = field(
+        default_factory=lambda: {"editor": "", "host": ""},
+        metadata=_meta(
+            "Remote editor",
+            "Open a file from the dashboard's file-path menus in your LOCAL "
+            "editor over your own SSH session, for a gateway running on a "
+            "remote/headless host. Off by default.",
+            # Sub-keys flatten into first-class schema entries
+            # (dashboard.remote_editor.<key>) the same way dashboard.terminal.*
+            # does, so a Settings control can reference them by configKey and
+            # `kirocrew config set` accepts them. The field stays a plain dict so
+            # a key a future release adds still round-trips via
+            # additionalProperties.
+            properties={
+                # An ENUM, never a free string: the value is interpolated into a
+                # clickable custom-scheme URL in the browser, so an arbitrary
+                # string would let a config write mint a link to any registered
+                # protocol handler. "" = off (the default). A value outside this
+                # set is kept by the loader (it is three segments deep, past the
+                # repair depth cap) but the branding endpoint clamps an unknown
+                # editor back to "" before it can reach a link.
+                "editor": {
+                    "type": "string",
+                    "enum": ["", *REMOTE_EDITOR_IDS],
+                    "default": "",
+                    "x-meta": {
+                        "label": "Editor",
+                        "help": (
+                            "Which local editor to open remote files in. VS Code "
+                            "and Kiro both use the vscode-remote SSH authority. "
+                            "Empty disables the menu row."
+                        ),
+                    },
+                },
+                # The SSH authority the generated link connects over: an FQDN or
+                # the user's ~/.ssh/config alias. Charset-restricted (see
+                # REMOTE_EDITOR_HOST_PATTERN) so it cannot inject
+                # path/query/authority structure into the URL the browser builds
+                # around it.
+                "host": {
+                    "type": "string",
+                    "default": "",
+                    "maxLength": 256,
+                    "pattern": REMOTE_EDITOR_HOST_PATTERN,
+                    "x-meta": {
+                        "label": "SSH host",
+                        "help": (
+                            "SSH authority the gateway runs on — a hostname or a "
+                            "~/.ssh/config alias. Used verbatim after "
+                            "ssh-remote+ in the editor link."
+                        ),
                     },
                 },
             },

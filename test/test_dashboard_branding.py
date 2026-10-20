@@ -181,6 +181,59 @@ class TestBrandingEndpoint:
         body = json.loads(resp.body)
         assert body["bot_name"] == "Jarvis"
 
+    @pytest.mark.asyncio
+    async def test_branding_remote_editor_default_off(self):
+        from kiro_crew.dashboard.handlers import api_branding
+
+        cfg = KiroCrewConfig()
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
+            resp = await api_branding(req)
+        body = json.loads(resp.body)
+        assert body["remote_editor"] == {"editor": "", "host": ""}
+
+    @pytest.mark.asyncio
+    async def test_branding_remote_editor_forwards_configured(self):
+        from kiro_crew.dashboard.handlers import api_branding
+
+        cfg = KiroCrewConfig(
+            dashboard=DashboardConfig(remote_editor={"editor": "kiro", "host": "dev.example.com"})
+        )
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
+            resp = await api_branding(req)
+        body = json.loads(resp.body)
+        assert body["remote_editor"] == {"editor": "kiro", "host": "dev.example.com"}
+
+    @pytest.mark.asyncio
+    async def test_branding_clamps_unknown_editor_and_dirty_host(self):
+        # A three-segment key is KEPT by the loader even when it fails schema
+        # validation, so a hand-edited config could hold junk; the branding
+        # endpoint must not forward it to a link.
+        from kiro_crew.dashboard.handlers import api_branding
+
+        cfg = KiroCrewConfig(
+            dashboard=DashboardConfig(remote_editor={"editor": "emacs", "host": "bad/host?x=1"})
+        )
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
+            resp = await api_branding(req)
+        body = json.loads(resp.body)
+        assert body["remote_editor"] == {"editor": "", "host": ""}
+
+    @pytest.mark.asyncio
+    async def test_branding_clamps_dirty_host_but_keeps_valid_editor(self):
+        from kiro_crew.dashboard.handlers import api_branding
+
+        cfg = KiroCrewConfig(
+            dashboard=DashboardConfig(remote_editor={"editor": "vscode", "host": "has space"})
+        )
+        req = MagicMock()
+        with patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=cfg):
+            resp = await api_branding(req)
+        body = json.loads(resp.body)
+        assert body["remote_editor"] == {"editor": "vscode", "host": ""}
+
 
 class TestLogoAssetInvariant:
     """The dashboard-served logo and the PWA 512 icon are the same image.

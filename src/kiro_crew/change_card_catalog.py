@@ -202,6 +202,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.mcp_probe_timeout_secs",
         "dashboard.prevent_sleep",
         "dashboard.recent_tint_count",
+        # Display only: the editor is clamped to a closed allowlist of local
+        # editor schemes, so no value changes what an agent may run or reach.
+        # (``dashboard.remote_editor.host`` is ``code_exec``, below.)
+        "dashboard.remote_editor.editor",
         "dashboard.session_sort",
         # Stored only: the edition's login handler re-checks every flag against
         # its own allowlist before it runs anything.
@@ -272,10 +276,14 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
 #: Kiro Crew's own pinned engine bundle, ``acp.harness.kas.KasHarness.resolve_spawn``); a
 #: different binary with its own update cadence is a different program, so a
 #: bool flip here is code exec, not a widen or tighten.
+#: ``dashboard.remote_editor.host`` picks the SSH destination the user's own
+#: local editor connects to with the user's credentials, so an agent that sets
+#: it chooses where those keys are presented.
 _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
     {
         "agent.acp_backend",
         "agent.kas_bundle",
+        "dashboard.remote_editor.host",
         "dashboard.terminal.shell",
         "session.pool_agent",
     }

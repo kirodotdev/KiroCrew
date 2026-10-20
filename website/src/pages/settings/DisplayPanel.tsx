@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Code2, Palette, PanelLeft } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -39,6 +39,7 @@ import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../.
 import { i18nT } from '../../i18n/t'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import ErrorNotice from '../../components/ErrorNotice'
+import { REMOTE_EDITORS } from '../../components/FilePathMenu'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
@@ -213,6 +214,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     dashboard?: {
       recent_tint_count?: number
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
+      remote_editor?: { editor?: string; host?: string }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -341,6 +343,103 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onFailure: () => setReuseCurrentError(i18nT('pages.settings.displayPanel.terminal_reuse_current_save_failed')),
     onSupersede: () => setReuseCurrentError(null),
   }))
+  // ── Remote editor (dashboard.remote_editor.{editor,host}) ──
+  // Open a remote gateway's files in the user's LOCAL editor over their own SSH
+  // session. Persisted server-side because the branding endpoint reads it to
+  // gate the file-path menus' "Open in <editor>" row; the write rides SSH, so no
+  // new write surface is added here. Both fields use the same per-path overlay
+  // as the terminal fields above so a slow save cannot roll back its sibling.
+  // Hand-edited config may carry any JSON type; branding clamps only the menu path.
+  // Off first, then every editor the menus can target, so the select and the
+  // menus' allowlist (REMOTE_EDITORS) cannot drift apart.
+  const editorOptions = ['', ...Object.keys(REMOTE_EDITORS)]
+  const editorOptionLabels = [
+    i18nT('pages.settings.displayPanel.remote_editor_off'),
+    ...Object.values(REMOTE_EDITORS).map(e => e.label),
+  ]
+  const safeRemoteEditorString = (value: unknown, allowed?: readonly string[]) =>
+    typeof value === 'string' && (!allowed || allowed.includes(value)) ? value : ''
+  const serverEditor = safeRemoteEditorString(
+    mcQ.data?.dashboard?.remote_editor?.editor,
+    editorOptions,
+  )
+  const shownEditor = overlay.shown('dashboard.remote_editor.editor', serverEditor)
+  const [editorError, setEditorError] = useState<string | null>(null)
+  const editorOpts = overlay.mutationOpts<string>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: string) => api.patchConfig('dashboard.remote_editor.editor', value),
+    path: () => 'dashboard.remote_editor.editor',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.remote_editor.editor', value),
+    onFailure: () => setEditorError(i18nT('pages.settings.displayPanel.remote_editor_save_failed')),
+    onSupersede: () => setEditorError(null),
+  })
+  const editorMut = useMutation({
+    ...editorOpts,
+    // Rapid picks fire one PATCH each; a shared scope runs them in pick order,
+    // so a delayed earlier request cannot land last and revert the choice.
+    scope: { id: 'dashboard.remote_editor.editor' },
+    // Also refetch ['branding']: that endpoint reads dashboard.remote_editor to
+    // gate the file-path menus' "Open in <editor>" row, so without this an open
+    // menu keeps the stale editor until a reload. Runs alongside the
+    // ['kirocrewConfig'] invalidation the overlay's onSuccess already returns.
+    onSuccess: (data: unknown, value: string, token: number) =>
+      Promise.all([
+        editorOpts.onSuccess(data, value, token),
+        qc.invalidateQueries({ queryKey: ['branding'] }),
+      ]),
+  })
+
+  // Host is free text committed on blur, mirroring the shell field: an FQDN or
+  // ~/.ssh/config alias the browser cannot enumerate. The backend enforces the
+  // charset, so a rejected value stays in the field (no draft hand-off) for the
+  // user to fix.
+  const serverHost = safeRemoteEditorString(mcQ.data?.dashboard?.remote_editor?.host)
+  const shownHost = overlay.shown('dashboard.remote_editor.host', serverHost)
+  const [hostDraft, setHostDraft] = useState<string | null>(null)
+  const [hostError, setHostError] = useState<string | null>(null)
+  const hostOpts = overlay.mutationOpts<string>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: string) => api.patchConfig('dashboard.remote_editor.host', value),
+    path: () => 'dashboard.remote_editor.host',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.remote_editor.host', value),
+    // Only a 400 is the write gate refusing the value's format; any other
+    // failure (network, server) gets the plain notice, not the format rule.
+    onFailure: e => setHostError(i18nT(
+      e instanceof ApiError && e.status === 400
+        ? 'pages.settings.displayPanel.remote_editor_host_save_failed'
+        : 'pages.settings.displayPanel.remote_editor_host_save_error',
+    )),
+    onSupersede: () => setHostError(null),
+  })
+  const hostMut = useMutation({
+    ...hostOpts,
+    // Same ordering guarantee as the editor picker: blur commits run in order.
+    scope: { id: 'dashboard.remote_editor.host' },
+    onSuccess: (data: unknown, value: string, token: number) => {
+      setHostDraft(null)
+      setHostError(null)
+      // Also refetch ['branding']: the host feeds the "Open in <editor>" link
+      // the same way the editor does, alongside the overlay's ['kirocrewConfig'].
+      return Promise.all([
+        hostOpts.onSuccess(data, value, token),
+        qc.invalidateQueries({ queryKey: ['branding'] }),
+      ])
+    },
+  })
+  const commitHost = () => {
+    if (hostDraft === null) return
+    const value = hostDraft.trim()
+    if (value === shownHost) {
+      setHostDraft(null)
+      setHostError(null)
+      return
+    }
+    hostMut.mutate(value)
+  }
 
   // The terminal app "Open in external terminal" starts
   // (dashboard.terminal.external_app; "" = none, the default). Desktop app
@@ -490,6 +589,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'view', label: i18nT('pages.settings.displayPanel.view'), icon: <Eye size={16} /> },
     { key: 'zoom', label: i18nT('pages.settings.displayPanel.zoom_font'), icon: <Type size={16} /> },
     { key: 'terminal', label: i18nT('pages.settings.displayPanel.terminal'), icon: <SquareTerminal size={16} /> },
+    { key: 'remote-editor', label: i18nT('pages.settings.displayPanel.remote_editor'), icon: <Code2 size={16} /> },
     { key: 'theme', label: i18nT('pages.settings.displayPanel.theme'), icon: <Palette size={16} /> },
     { key: 'sidebar', label: i18nT('pages.settings.displayPanel.sidebar_colors'), icon: <PanelLeft size={16} /> },
   ]
@@ -824,6 +924,65 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               )}
             </>
           )}
+        </SettingsCard>
+      </SettingsSection>
+          )
+
+        // Remote editor: open a remote gateway's files in the user's LOCAL editor
+        // over their own SSH session. Its own rail pane beside Terminal rather
+        // than a card inside it: it configures the file-path menus, not the
+        // terminal. When on (an editor picked) and the session is remote, the
+        // file-path menus grow an "Open in <editor>" row that builds a
+        // `<scheme>://vscode-remote/ssh-remote+<host>` link — no new write
+        // surface: the edit rides the user's SSH creds.
+        case 'remote-editor':
+          return (
+      <SettingsSection title={i18nT('pages.settings.displayPanel.remote_editor')}>
+        <SettingsCard>
+          <SettingsSelect
+            label={i18nT('pages.settings.displayPanel.remote_editor_editor')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_editor_desc')}
+            value={shownEditor}
+            options={editorOptions}
+            optionLabels={editorOptionLabels}
+            onChange={v => editorMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="dashboard.remote_editor.editor"
+          />
+          {/* No hand-off: the editor select saves on change (no draft of its
+              own), but `hostDraft` below is unsaved local state the hand-off's
+              navigation would unmount and discard. Same rule as the completion
+              notice. */}
+          <ErrorNotice message={editorError} variant="inline" />
+          {/* Free text with commit-on-blur, mirroring the shell field: the SSH
+              authority cannot be enumerated from the browser, and the backend
+              validates the charset before persisting. No placeholder — a raw
+              hostname is Latin the en-XA render gate flags, and it is not
+              translatable copy; the description carries the guidance. */}
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_host_desc')}
+            value={hostDraft ?? shownHost}
+            onChange={setHostDraft}
+            onBlur={commitHost}
+            disabled={hostMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.remote_editor.host"
+            aria-label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+          />
+          {/* An editor without a host builds no link, so the menu row never
+              appears; say so here rather than leaving the setting looking
+              broken. Hidden while a host is being typed. shownEditor is
+              normalized to a known id above, so the label lookup cannot miss. */}
+          {shownEditor !== '' && shownHost === '' && hostDraft === null && (
+            <div className="text-[12px] text-muted py-1" data-testid="remote-editor-host-required">
+              {i18nT('pages.settings.displayPanel.remote_editor_host_required', {
+                editor: REMOTE_EDITORS[shownEditor].label,
+              })}
+            </div>
+          )}
+          {/* No hand-off: hostDraft is uncommitted — a rejected host stays in the
+              field for the user to fix, and a hand-off would navigate away. */}
+          <ErrorNotice message={hostError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
           )

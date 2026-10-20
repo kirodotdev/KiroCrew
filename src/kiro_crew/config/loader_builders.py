@@ -1003,6 +1003,14 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
         terminal=section.get("terminal"),
+        # A non-object value (a hand-edited string, a list) falls back to the
+        # field's own default rather than reaching the branding clamp as a
+        # non-dict it would have to special-case.
+        remote_editor=(
+            raw_remote_editor
+            if isinstance(raw_remote_editor := section.get("remote_editor"), dict)
+            else section.default("remote_editor")
+        ),
         default_project=section.get("default_project"),
         session_folder_root=_session_folder_root_or_empty(section.get("session_folder_root")),
         theme_mode=section.get("theme_mode"),
