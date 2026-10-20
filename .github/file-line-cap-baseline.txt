@@ -37,7 +37,6 @@
 2631 test/test_llm_pool.py
 2096 test/test_monitor_directive_apply.py
 12647 test/test_security.py
-9530 test/test_session.py
 3082 test/test_skills.py
 2650 test/test_slack_handler_composition_contract.py
 2629 test/test_slack_handler_coverage.py

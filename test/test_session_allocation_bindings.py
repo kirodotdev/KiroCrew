@@ -468,7 +468,7 @@ _TEST_TREE = Path(__file__).resolve().parents[1] / "test"
 
 #: The patches the test trees make through the facade at the split, and where they are.
 _KNOWN_PATCHES = {
-    "ENDING_FENCE_WAIT_SECS": "test_session.py",
+    "ENDING_FENCE_WAIT_SECS": "test_session_get_or_create.py",
     "record_session_started": "test_compaction_stop_declined.py",
     "resolve_project_profile": "test_aws_project_profiles.py",
     "wake_other_drains": "test_compaction_stop_declined.py",
