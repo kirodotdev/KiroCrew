@@ -781,6 +781,7 @@ class TestDrift:
             "chat:write.customize",
             "code_channels:manage",
             "groups:write.invites",
+            "pins:write",
         )
 
     def test_switch_turned_off_reports_extra_scopes_only(self) -> None:
@@ -793,6 +794,7 @@ class TestDrift:
             "chat:write.customize",
             "code_channels:manage",
             "groups:write.invites",
+            "pins:write",
         )
 
     def test_unreadable_scopes(self) -> None:

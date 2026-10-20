@@ -166,3 +166,40 @@ def test_the_conductor_guidance_reads_steers_before_deciding_and_never_overrules
     lead = (skills / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
     assert "A person's steer outranks your decision" in goal
     assert "The person's steer outranks you" in lead
+
+
+# ── the code-channel work board reads a steer as an answer ───────────────────
+
+
+def test_a_steer_after_a_question_marks_the_board_row_answered():
+    """#21993: the work board and the Crew page agree that a person's steer answers it.
+
+    The board's ledger read marks a ``question`` the steer answered, and the row
+    then reads as the worker's move again instead of "waiting on you".
+    """
+    import asyncio
+
+    from kiro_crew.dashboard.handlers import work_ledger_board
+    from kiro_crew.slack.code_channels.board import model, source
+
+    item_id = _bound_item()
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="which key?", reason="needs_human"
+    )
+
+    def row():
+        _record, items = asyncio.run(work_ledger_board.own_worker_records(CONDUCTOR))
+        (item,) = [i for i in items if i.item_id == item_id]
+        return item, model.row_state(
+            item_state=item.state,
+            status=item.status,
+            reason=item.reason,
+            live=model.LIVE_IDLE,
+            handed_back=source._handed_back(item),
+        )
+
+    item, state = row()
+    assert item.answered_by_event is False and state == model.WAITING_ON_YOU
+    assert wl.apply_person_steer(CONDUCTOR, item_id, "use the staging key") is not None
+    item, state = row()
+    assert item.answered_by_event is True and state == model.IDLE

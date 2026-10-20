@@ -87,8 +87,10 @@ async def test_backoff_values():
 async def test_logging_with_exc_info():
     gw = _make_gateway()
     gw.slack.open_dm.side_effect = [_slack_error(429), "D123"]
-    with patch("kiro_crew.slack.retry.asyncio.sleep", new_callable=AsyncMock), \
-         patch("kiro_crew.slack.retry.logger") as mock_logger:
+    with (
+        patch("kiro_crew.slack.retry.asyncio.sleep", new_callable=AsyncMock),
+        patch("kiro_crew.slack.retry.logger") as mock_logger,
+    ):
         await gw._open_dm_with_retry("U1", "job1")
     mock_logger.warning.assert_called_once()
     _, kwargs = mock_logger.warning.call_args
@@ -195,3 +197,18 @@ async def test_a_5xx_ignores_a_retry_after_header():
     with sleeping:
         await gw._open_dm_with_retry("U1", "job1")
     mock_sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.parametrize("code", ["internal_error", "fatal_error", "request_timeout"])
+def test_slacks_own_try_again_answers_are_retryable_on_a_200(code):
+    """Slack sends these as an ``ok: false`` body on an HTTP 200, not as a 5xx."""
+    from kiro_crew.slack.retry import is_retryable_slack_error
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.get = lambda key, default=None: code if key == "error" else default
+    assert is_retryable_slack_error(SlackApiError(message=code, response=resp))
+    refused = MagicMock()
+    refused.status_code = 200
+    refused.get = lambda key, default=None: "channel_not_found" if key == "error" else default
+    assert not is_retryable_slack_error(SlackApiError(message="nope", response=refused))
