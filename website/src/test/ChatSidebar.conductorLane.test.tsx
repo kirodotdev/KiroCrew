@@ -1129,7 +1129,7 @@ describe('chat sidebar — conductor lane', () => {
       const anchor = getByTestId('conductor-view-lane').querySelector('[data-session-row="member-pipeline"]') as HTMLElement
       const title = anchor.querySelector('[data-session-title]') as HTMLElement
       expect(title.textContent).toBe('kirocrew-pipeline-conductor')
-      expect(title.getAttribute('title')).toBe('kirocrew-pipeline-conductor')
+      expect(title.getAttribute('title')).toBe('kirocrew-pipeline-conductor: Pipeline Work Focus On Issues')
       // A listed worker beside it keeps its own title.
       const worker = getByTestId('conductor-view-lane').querySelector('[data-session-row="k-fix-1"] [data-session-title]') as HTMLElement
       expect(worker.textContent).toBe('issue-fix: #1')

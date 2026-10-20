@@ -136,6 +136,10 @@ describe('session row: a crewmate\'s own thread', () => {
     const row = document.querySelector(`[data-session-row="${MEMBER_KEY}"]`) as HTMLElement
     expect(row.querySelector('[data-session-title]')?.textContent).toBe('team-lead')
     expect(within(row).queryByText('A stored generated topic')).toBeNull()
+    // The title keeps the topic stored before the thread was named, on hover only.
+    expect(row.querySelector('[data-session-title]')?.getAttribute('title')).toBe('team-lead: A stored generated topic')
+    // The chip does not print the name a second time.
+    expect(within(row).getAllByText('team-lead')).toHaveLength(1)
     expect(within(row).queryByRole('button', { name: 'More options' })).toBeNull()
     expect(generateTitleMock).not.toHaveBeenCalled()
   })

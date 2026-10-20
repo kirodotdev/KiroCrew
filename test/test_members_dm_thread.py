@@ -630,6 +630,103 @@ class TestMemberRoutes:
         assert slot.mode == DM_SLOT_MODE
 
     @pytest.mark.asyncio
+    async def test_thread_is_titled_with_the_crewmate_name_as_a_final_title(self, tmp_path):
+        """A member thread has no background title, so opening it names it."""
+        state = _make_state(tmp_path)
+        cfg = _fake_config([CREW])
+        cfg.agents[CREW].display_name = "Code Reviewer"
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+                slot = state._slots["member-code-reviewer"]
+                assert slot.title == "Code Reviewer"
+                assert slot.display_title == "Code Reviewer"
+                assert slot._titled is True
+                # Final: the refresh is locked out, and a second open changes nothing.
+                assert slot._title_origin == "member"
+                epoch = slot._title_epoch
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+                assert slot._title_epoch == epoch
+
+    @pytest.mark.asyncio
+    async def test_reopening_keeps_a_title_a_person_set(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _member_slot(state)
+        slot.title = "My own name for this thread"
+        slot._titled = True
+        slot._title_origin = "user"
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+        assert slot.title == "My own name for this thread"
+        assert slot._title_origin == "user"
+
+    @pytest.mark.asyncio
+    async def test_reopening_replaces_an_old_generated_topic_with_the_name(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _member_slot(state)
+        slot.title = "Crew page text colour check"
+        slot._titled = True
+        slot._title_origin = "auto"
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+        assert slot.title == CREW
+        assert slot._title_origin == "member"
+
+    @pytest.mark.asyncio
+    async def test_reopening_follows_a_renamed_crewmate(self, tmp_path):
+        state = _make_state(tmp_path)
+        cfg = _fake_config([CREW])
+        cfg.agents[CREW].display_name = "Code Reviewer"
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+                slot = state._slots["member-code-reviewer"]
+                assert slot.title == "Code Reviewer"
+                cfg.agents[CREW].display_name = "Senior Reviewer"
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+        assert slot.title == "Senior Reviewer"
+        assert slot._title_origin == "member"
+
+    @pytest.mark.asyncio
+    async def test_reopening_keeps_a_user_title_that_equals_the_slot_key(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _member_slot(state)
+        slot.title = slot.key
+        slot._titled = True
+        slot._title_origin = "user"
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+        assert slot.title == "member-code-reviewer"
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shaped_display_name_is_redacted_before_it_is_stored_or_pushed(
+        self, tmp_path
+    ):
+        state = _make_state(tmp_path)
+        pushed = []
+        state.push_slot_title = lambda key, title, **kw: pushed.append(title)  # type: ignore[method-assign]
+        cfg = _fake_config([CREW])
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        cfg.agents[CREW].display_name = f"Reviewer {secret}"
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/code-reviewer/thread")).status == 200
+        slot = state._slots["member-code-reviewer"]
+        assert secret not in slot.title
+        assert pushed and all(secret not in t for t in pushed)
+
+    @pytest.mark.asyncio
+    async def test_the_first_crewmate_without_a_display_name_is_titled_mate(self, tmp_path):
+        state = _make_state(tmp_path)
+        with _patched_config(["mate"], default="mate"):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                assert (await client.post("/api/members/mate/thread")).status == 200
+        assert state._slots["member-mate"].title == "Mate"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("private", [False, True])
     @pytest.mark.parametrize("workspace", ["team-a", "missing"])
     async def test_thread_create_honors_member_workspace_and_project(
