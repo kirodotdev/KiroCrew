@@ -91,6 +91,10 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/follow-default", chat_follow_default.api_chat_slots_follow_default
     )
+    app.router.add_post("/api/chat/slots/generate-titles", chat.api_chat_slots_generate_titles)
+    app.router.add_get(
+        "/api/chat/slots/generate-titles", chat.api_chat_slots_generate_titles_status
+    )
     # Static segment BEFORE the ``/api/chat/slots/{slot}`` GET below, for the reason
     # the import route's own note gives: aiohttp resolves in registration order, so a
     # later wildcard would shadow this path and answer it as a slot detail read.
