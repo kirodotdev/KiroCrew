@@ -18,4 +18,4 @@ A crewmate's own chat runs on its conductor, which only dispatches: it hands wor
 
 - `docs/request-for-change/rfc-mate-owned-agent-config.md` -- the conductor/worker design this applies.
 - [#22443](https://github.com/kirodotdev/KiroCrew/pull/22443) -- accepts that RFC as the product owner's decision of 2026-10-20.
-- The owner restates this decision on the pull request that adds this entry, and a maintainer listed in `MAINTAINERS.md` restates it there; those comments are the on-record artifacts this entry rests on.
+- [The owner's restatement](https://github.com/kirodotdev/KiroCrew/pull/22444#issuecomment-6286548646) on the pull request that adds this entry. A maintainer listed in `MAINTAINERS.md` restates it there too; that comment is the other on-record artifact this entry rests on.
