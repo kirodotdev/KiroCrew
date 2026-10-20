@@ -40,17 +40,18 @@ def _stub_remote_probe_ssrf_vet(_floor_monkeypatch):
 
     ``_probe_remote`` now routes ``server.url`` through
     ``link_unfurl.vet_unfurl_url`` and pins the connection before it POSTs, so a
-    configured server at an internal / link-local / private address is refused.
+    configured server at a link-local or cloud metadata address is refused.
     The probe-remote cases in these modules mock ``aiohttp.ClientSession`` and use
     public hostnames, so the vet must approve those WITHOUT a real
     ``getaddrinfo`` (determinism floor D10): the DNS seam
     (``link_unfurl._default_resolve``) is answered from one public address,
     exactly as the link-preview and OAuth-discovery suites stub the same vet. An
     IP LITERAL still reaches the real address checks (the resolver is consulted
-    only for a name), so the refusal cases pass loopback / link-local /
-    private literals through the REAL policy. ``pinned_connector`` returns None
-    because the mocked session never dials; a test that wants a private NAME
-    refused overrides ``_default_resolve`` itself.
+    only for a name), so the refusal cases pass link-local and metadata literals
+    through the REAL policy. ``pinned_connector`` returns None because the mocked
+    session never dials; a test that wants a NAME refused overrides
+    ``_default_resolve`` itself, and a live loopback case restores the real
+    connector.
 
     Requests ``_floor_monkeypatch`` (not ``monkeypatch``) so a test calling
     ``monkeypatch.undo()`` mid-body cannot lift this stub (testing-conventions

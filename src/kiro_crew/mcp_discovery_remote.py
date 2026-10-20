@@ -5,9 +5,9 @@
 sends the ``initialize`` and ``tools/list`` handshake over HTTP with the server's
 headers expanded, tells a server that needs authorization from one that failed,
 and reads the bearer challenge and the runtime grant that decide which. The vet is
-why a server url naming an internal / link-local / private address is refused
-before the handshake instead of having the gateway POST to it and reflect the
-reply onto the dashboard row.
+why a server url naming a link-local or cloud metadata address is refused before
+the handshake instead of having the gateway POST to it and reflect the reply onto
+the dashboard row; a public, loopback or private server is probed as before.
 
 :mod:`kiro_crew.mcp_discovery` stays the import path and the patch surface for
 every name here; that module's comment lists the owners.
@@ -264,24 +264,34 @@ async def _probe_remote(
 
     # SSRF vet before any connection. ``server.url`` comes from the configured
     # MCP entry, and a sandboxed process can append one to
-    # ``~/.kiro/crew/mcp.json``; without a host check a url naming a link-local /
-    # loopback / private address (169.254.169.254, 127.0.0.1, 10.0.0.0/8, ::1,
-    # ...) would have the gateway POST this handshake there and reflect the reply
-    # back onto the dashboard row. Reuse ``link_unfurl``'s vet -- the one the link
-    # preview, calendar, WeCom and OAuth-discovery fetches already share -- and
-    # dial only the address it approved, so a legitimate PUBLIC remote server
-    # still connects while an internal target is refused by that one policy.
+    # ``~/.kiro/crew/mcp.json``; unvetted, a url naming the cloud metadata
+    # endpoint would have the gateway POST this handshake there and reflect the
+    # reply onto the dashboard row, past the IMDS floor that fences the agent's
+    # own shell. Reuse ``link_unfurl``'s vet -- the one the link preview,
+    # calendar, WeCom and OAuth-discovery fetches already share -- and dial only
+    # the address it approved, so a DNS answer cannot change under the probe.
+    # Two opt-ins fit it to an operator-configured MCP endpoint:
+    # ``allow_any_port`` (servers run on :8443 / :8000 / :3000) and
+    # ``allow_private`` (an app backend on 127.0.0.1 or a LAN dev server is a
+    # normal target, one kiro-cli itself connects to). So a link-local or metadata
+    # address is refused, and a public, loopback or private one is probed.
     # Imported function-locally for the same reason ``_expand_header_placeholders``
     # defers its import: to keep ``link_unfurl`` off the import graph of the many
     # consumers that never probe a remote server.
     from kiro_crew.link_unfurl import UnfurlRejected, pinned_connector, vet_unfurl_url
 
     try:
+        probe_timeout = _get_probe_timeout()
         # Blocking getaddrinfo, so off the event loop -- the offload the
-        # link-preview and OAuth-discovery fetches use for the same vet. The
+        # link-preview and OAuth-discovery fetches use for the same vet -- and
+        # inside the probe timeout, as aiohttp's own lookup was: a stalled
+        # resolver reports ``timeout`` instead of holding the probe's slot. The
         # vetted result carries the approved addresses the connector is pinned to
         # below, so there is no second lookup for a rebind to poison.
-        vetted = await asyncio.to_thread(vet_unfurl_url, server.url)
+        vetted = await asyncio.wait_for(
+            asyncio.to_thread(vet_unfurl_url, server.url, allow_any_port=True, allow_private=True),
+            timeout=probe_timeout,
+        )
         init_body = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -305,14 +315,22 @@ async def _probe_remote(
             "Accept": "application/json, text/event-stream",
         }
 
-        timeout = aiohttp.ClientTimeout(total=_get_probe_timeout())
+        timeout = aiohttp.ClientTimeout(total=probe_timeout)
         # Pin the connection to the vetted address(es): the Host header and TLS
         # SNI still come from ``server.url`` (a public server's cert keeps
         # verifying), but the socket can only reach what the vet approved.
         async with aiohttp.ClientSession(
             timeout=timeout, connector=pinned_connector(vetted)
         ) as session:
-            async with session.post(server.url, json=init_body, headers=hdrs) as resp:
+            # Redirects are not followed, on every POST below. aiohttp would
+            # follow a 307/308 with the body, and a Location naming an IP literal
+            # is dialed without asking the pinned resolver, so a vetted public
+            # host could hand the handshake to an unvetted address. The L1 smoke
+            # probe (``connections/l1_smoke.py``) refuses redirects for the same
+            # handshake; a redirect here reports as its HTTP status.
+            async with session.post(
+                server.url, json=init_body, headers=hdrs, allow_redirects=False
+            ) as resp:
                 if resp.status != 200:
                     # The CHALLENGE is recorded on both outcomes. A rejected
                     # static credential is still an OAuth server, and that is
@@ -374,7 +392,9 @@ async def _probe_remote(
             # surfaces on the tools/list call right after.
             initialized_body = {"jsonrpc": "2.0", "method": "notifications/initialized"}
             try:
-                async with session.post(server.url, json=initialized_body, headers=hdrs):
+                async with session.post(
+                    server.url, json=initialized_body, headers=hdrs, allow_redirects=False
+                ):
                     pass
             except aiohttp.ClientError:
                 logger.debug(
@@ -383,7 +403,9 @@ async def _probe_remote(
                 )
 
             list_body = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-            async with session.post(server.url, json=list_body, headers=hdrs) as resp:
+            async with session.post(
+                server.url, json=list_body, headers=hdrs, allow_redirects=False
+            ) as resp:
                 if resp.status != 200:
                     # An initialize that succeeds and a tools/list that does
                     # not is a server no session can get a tool out of — the
@@ -415,14 +437,20 @@ async def _probe_remote(
                 ]
 
         server.status = "ok"
-    except UnfurlRejected:
+    except UnfurlRejected as exc:
         # Refused by the SSRF vet before contact. Logged by server NAME, never
         # the url: a user-typed url can carry a credential in its userinfo or
         # query string.
         server.sent_headers, server.resolved_header_values = None, []
         server.status = "error"
-        server.error = "URL is not a public address"
-        logger.warning("MCP probe refused [%s]: url is not a public address", server.name)
+        # ``blocked_url`` also covers a host that does not resolve: the vet fails
+        # closed on an address it could not check.
+        server.error = (
+            "URL is malformed or carries credentials"
+            if exc.code == "invalid_url"
+            else "URL host is a link-local or metadata address, or does not resolve"
+        )
+        logger.warning("MCP probe refused [%s]: %s", server.name, exc.code)
     except asyncio.TimeoutError:
         server.status = "error"
         server.error = "timeout"

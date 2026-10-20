@@ -511,12 +511,17 @@ Probes run from `POST /api/mcp/probe`:
   followed by `tools/list`.
 - **HTTP** servers get the same two JSON-RPC calls over POST. The configured url
   is first SSRF-vetted off the event loop through `link_unfurl.vet_unfurl_url`
-  (the policy the link preview, calendar, WeCom and OAuth-discovery fetches share)
+  (the vet the link preview, calendar, WeCom and OAuth-discovery fetches share)
   and the connection is pinned to the vetted address, so a server url resolving to
-  an internal / link-local / private address is refused (`URL is not a public
-  address`) before any POST — a configured entry cannot make the gateway reach
-  `169.254.169.254` and reflect the reply onto the row, while a public remote
-  server still connects. The remote probe
+  a link-local address or the cloud metadata endpoint (`fd00:ec2::254` included)
+  is refused before any POST — a configured entry cannot make the gateway reach
+  the metadata service the agent's own shell is fenced from and reflect the reply
+  onto the row. Two opt-ins fit the vet to a configured endpoint: `allow_any_port`
+  (a server on `:8443` / `:8000` / `:3000` probes) and `allow_private` (a loopback
+  or LAN server, such as an app backend on `127.0.0.1`, probes, as kiro-cli itself
+  connects to it). Redirects are not followed, so a server cannot hand the
+  handshake to an address the vet never checked; a redirect reports as its status.
+  The remote probe
   offers `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) in `initialize`. A `-32602`
   refusal of that offer whose `data.supported` lists an older revision makes it
   retry once with the newest such revision. Every request after `initialize`
