@@ -520,6 +520,22 @@ Probes run from `POST /api/mcp/probe`:
 - **Disabled servers are never spawned.** `probe_all()` returns a muted row as
   an unprobed `status: "disabled"` placeholder with no error text, keeping the
   tools of its last real probe, and writes nothing to the probe cache.
+- **Names that start the same process are probed one at a time.** One server is
+  often configured under several names, and probing them together starts the
+  same heavy process several times at once; the copies can each miss the probe
+  timeout and build a quarantine streak against a server that works.
+  `probe_all()` keys every local row by `_spawn_fingerprint` (command plus args;
+  env is left out, because a different token still starts the same package) and
+  holds one lock per key, taken before the shared `PROBE_MAX_CONCURRENCY` slot,
+  so rows with different keys still run in parallel. Remote rows get no key.
+  Each name still gets its own probe, env and verdict, and the quarantine rule
+  is unchanged. The cost: a pass with *n* names of one slow server takes up to
+  *n* full probe durations for that server instead of one, and one probe of a
+  stdio server can last nearly two timeouts (`initialize` and `tools/list`
+  each get a fresh one) plus teardown. The boot gate in
+  `service_boot.py` waits `mcp_probe_timeout_secs + 15` for the first pass and
+  then starts sessions anyway, so a large alias group of a slow server can
+  outlast it; the pass still finishes in the background and fills the cache.
 - **Both calls must succeed for `ok`.** An initialize that answers and a
   `tools/list` that does not (no response, an error reply, a non-200) is a
   server no session can get a tool out of — the badge certifies "tools usable",
