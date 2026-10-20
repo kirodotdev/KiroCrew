@@ -125,9 +125,34 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     tiered_first_hit,
 )
 from kiro_crew.jsonl_util import bounded_records
+from kiro_crew.mrkdwn_title import is_slack_session_key, slack_title_text
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+
+#: Longest title the catalog derives from a session's first user message.
+_FALLBACK_TITLE_CHARS = 80
+#: How much of a Slack first message is read to make that title.
+_FALLBACK_SCAN_CHARS = 2000
+
+
+def _catalog_title(key: str, title: str, *, cut: bool) -> str:
+    """*title* as the catalog lists it for session *key*.
+
+    A Slack conversation's text is Slack mrkdwn, so its title is read as plain
+    text first (``mrkdwn_title``) and only then, when *cut*, bounded: cutting
+    first splits a ``<url|label>`` and leaves a raw half-link. Read on every
+    listing rather than rewritten on disk, so a title persisted raw by an earlier
+    build lists cleanly with no migration. Every other session's title is its
+    own words and is only bounded.
+    """
+    if is_slack_session_key(key):
+        # A first message can be long and is read on every listing: only a
+        # bounded head can reach the cut, and a construct the bound opens is
+        # read like any other cut-open one.
+        title = slack_title_text(title[:_FALLBACK_SCAN_CHARS] if cut else title)
+    return title[:_FALLBACK_TITLE_CHARS] if cut else title
+
 
 #: ``_scan_head_title`` outcome for a head that raised while being read; never cached.
 _UNREADABLE = object()
@@ -281,7 +306,7 @@ class SessionCatalogProjection:
 
     @staticmethod
     def _scan_head_title(path: "str | Path") -> object:
-        """The first user message's content[:80] within the first 21 lines.
+        """The first user message's title (``_catalog_title``) within the first 21 lines.
 
         Returns the title, ``None`` when the head holds none, or ``_UNREADABLE``
         when reading or interpreting the head raised -- that outcome is not
@@ -301,7 +326,7 @@ class SessionCatalogProjection:
                     except json.JSONDecodeError:
                         continue
                     if d.get("role") == "user" and d.get("content"):
-                        return d["content"][:80]
+                        return _catalog_title(Path(path).stem, d["content"], cut=True)
         except Exception:
             return _UNREADABLE
         return None
@@ -479,6 +504,10 @@ class SessionCatalogProjection:
                     pass
             # Ensure memory_mode is always present (old sessions lack it)
             meta.setdefault("memory_mode", "persistent")
+            if "title" in meta and is_slack_session_key(key):
+                # A stored title may be one an earlier build wrote raw (often a
+                # cut-open link): listed as plain text, nothing rewritten on disk.
+                meta["title"] = _catalog_title(key, meta["title"], cut=False)
             # Extract first user message as title fallback
             if "title" not in meta:
                 msg_cached = self._log._msg_cache.get(key)
@@ -489,7 +518,7 @@ class SessionCatalogProjection:
                 ):
                     for m in msg_cached[2]:
                         if m.get("role") == "user" and m.get("content"):
-                            meta["title"] = m["content"][:80]
+                            meta["title"] = _catalog_title(key, m["content"], cut=True)
                             break
                 else:
                     scanned = self._log._title_scan_cache.get(key)
