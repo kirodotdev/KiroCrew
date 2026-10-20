@@ -5,7 +5,8 @@ import { createSlot, appendSlotMessage, startLocalTurn, endLocalTurn } from '../
 import { mintSendId } from '../../utils/sendDelivery'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { api } from '../../api/client'
-import { FEATURE_REQUEST_PROMPT_FALLBACK, FEATURE_REQUEST_ROW_META_KEY } from '../../prompts/featureRequest'
+import { FEATURE_REQUEST_ROW_META_KEY } from '../../prompts/featureRequest'
+import { feedbackTracker } from '../../feedbackTracker'
 import { i18nT } from '../../i18n/t'
 
 /** The top bar's "Request a Feature": a new session that files the request as an agent turn. */
@@ -88,8 +89,10 @@ export function useRequestFeature(colorTheme: string) {
       // maxAge bounds the seed's lifetime: if the visible send below fails,
       // the queued instructions expire server-side (drain_pending_context
       // discards expired entries) instead of silently attaching the
-      // feature-request workflow to a later, unrelated message.
-      await api.chatSlotContext(slot, FEATURE_REQUEST_PROMPT_FALLBACK, { source: 'feature-request', maxAge: 60 })
+      // feature-request workflow to a later, unrelated message. The prompt is
+      // the tracker's own (`feedbackTracker`): the public one files on GitHub
+      // with `gh`; an edition's names its tracker and its filing steps.
+      await api.chatSlotContext(slot, feedbackTracker().prompt, { source: 'feature-request', maxAge: 60 })
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
     // The chat-core transport owns the receipt contract (`?ws=1` JSON receipt,
     // HTTP 4xx/5xx RESOLVE rather than reject, deadline) and never rejects.

@@ -26,6 +26,7 @@ import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
+import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
 import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
@@ -125,14 +126,13 @@ const HERO_BG: React.CSSProperties = {
 }
 
 /**
- * Where the prerelease note sends a bug report.
- *
- * Same endpoint as `prompts/featureRequest.ts` FEATURE_REQUEST_URL, deliberately
- * NOT imported from it: that constant is named for (and used by) the guided
- * feature-request flow, and a rename or a redirect to an in-app form there must
- * not silently retarget this link.
+ * Where the prerelease note sends a bug report: the feedback tracker's blank
+ * new-issue page (`feedbackTracker().issueUrl`). Read through the seam, not
+ * from the guided flow's own constants: an edition retargets every feedback
+ * surface in one call, and the guided flow's prompt can change shape without
+ * touching this link.
  */
-const REPORT_ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
+const reportIssueUrl = (): string => feedbackTracker().issueUrl
 
 /**
  * Last-resort prerelease test for an info payload with NO channel fields.
@@ -1266,7 +1266,7 @@ export function AboutPanel() {
                 i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
                 components={{
                   // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
-                  report: <a href={REPORT_ISSUE_URL} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
                 }}
               />
             </span>

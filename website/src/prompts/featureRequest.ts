@@ -1,3 +1,10 @@
+/**
+ * The PUBLIC feedback tracker. The three constants below are the stock build's
+ * values for the `feedbackTracker` seam (`src/feedbackTracker.ts`); the surfaces
+ * that send a user to the tracker read the seam, not these constants, so an
+ * edition can retarget them in one call. Only `FEATURE_REQUEST_ROW_META_KEY`
+ * and `isFeatureRequestRow` below are tracker-independent.
+ */
 export const FEATURE_REQUEST_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
 
 /**
@@ -40,8 +47,9 @@ export function isFeatureRequestRow(meta: unknown): boolean {
  * that checked the `feature-request` skill was installed; the
  * ``$feature-request`` token would be resolved server-side by the chat runner
  * (``resolve_dollar_skills``). The "Request a Feature" button
- * (`shell/topbar/requestFeature.ts`) now always seeds
- * {@link FEATURE_REQUEST_PROMPT_FALLBACK}, so the skill does not drive it.
+ * (`shell/topbar/requestFeature.ts`) now always seeds the tracker's prompt
+ * ({@link FEATURE_REQUEST_PROMPT_FALLBACK} in the stock build), so the skill
+ * does not drive it.
  */
 export const FEATURE_REQUEST_PROMPT_WITH_SKILL = [
   'The user clicked "Request a Feature".',
@@ -50,10 +58,12 @@ export const FEATURE_REQUEST_PROMPT_WITH_SKILL = [
 
 /**
  * The self-contained prompt the "Request a Feature" button seeds as hidden
- * slot context on EVERY click, whether or not the `feature-request` skill is
- * installed. It carries the full conversational workflow inline, so the agent
- * never needs to probe for the skill. `featureRequestLabels.test.ts` keeps its
- * label rules in step with the skill's copy.
+ * slot context on EVERY click in the stock build, whether or not the
+ * `feature-request` skill is installed (an edition that set its own tracker
+ * seeds that tracker's prompt instead). It carries the full conversational
+ * workflow inline, so the agent never needs to probe for the skill.
+ * `featureRequestLabels.test.ts` keeps its label rules in step with the
+ * skill's copy.
  */
 export const FEATURE_REQUEST_PROMPT_FALLBACK = [
   'The user clicked "Request a Feature".',

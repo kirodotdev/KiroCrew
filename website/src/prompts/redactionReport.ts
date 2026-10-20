@@ -1,7 +1,8 @@
-import { FEATURE_REQUEST_URL } from './featureRequest'
+import { feedbackTracker } from '../feedbackTracker'
 
 /**
- * A new issue on the project tracker, prefilled with the rule that fired and
+ * A new issue on the project tracker (`feedbackTracker().issueUrl`, the
+ * edition's when one is set), prefilled with the rule that fired and
  * nothing else: no removed value, no URL, no message text. The reader sees the
  * whole issue before sending it, and it goes nowhere until they do. The text is
  * addressed to the maintainers, so it stays in the tracker's language.
@@ -20,5 +21,5 @@ export function falsePositiveIssueUrl(rule: string, kind: 'credential' | 'link')
     '',
   ].join('\n')
   const q = new URLSearchParams({ title, body })
-  return `${FEATURE_REQUEST_URL}?${q.toString()}`
+  return `${feedbackTracker().issueUrl}?${q.toString()}`
 }

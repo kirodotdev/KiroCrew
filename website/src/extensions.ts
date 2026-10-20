@@ -28,6 +28,13 @@
  *
  *   import { suppressOverviewBuiltin }   from '@/pages/overviewBuiltins'
  *
+ * and two SETTERS for a value the core consumes itself (nothing to enumerate,
+ * so no registry): the rendered product name, and the feedback tracker the
+ * Request-a-Feature, About and redaction-report surfaces send a user to:
+ *
+ *   import { setProductName }            from '@/i18n'
+ *   import { setFeedbackTracker }        from '@/feedbackTracker'
+ *
  * Syntax-highlighting languages are the one contribution that is NOT a
  * registrar here: the highlight.js worker must load them too, and it never
  * imports this module. The edition ships them as a data module,

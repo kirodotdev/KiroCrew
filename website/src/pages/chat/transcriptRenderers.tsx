@@ -40,7 +40,8 @@ import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState } from './ErrorCard'
-import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
+import { isFeatureRequestRow } from '../../prompts/featureRequest'
+import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
@@ -657,10 +658,11 @@ export function createTranscriptRenderers(
         // never went out, so a retry CAN help); a usage limit under a user row
         // the pill did not stamp is some other turn's; and a limit hit after
         // the user typed on in the same slot belongs to THAT turn, so it keeps
-        // today's card, Continue included. The route is a constant of the flow,
-        // never read from the row: the stamp only selects it.
+        // today's card, Continue included. The route is the tracker's, fixed
+        // for the page load (`feedbackTracker`), never read from the row: the
+        // stamp only selects it.
         const featureRequestFormUrl =
-          offersFeatureRequestForm(m) && isFeatureRequestRefusal(ctx.messages, ctx.index) ? FEATURE_REQUEST_FORM_URL : undefined
+          offersFeatureRequestForm(m) && isFeatureRequestRefusal(ctx.messages, ctx.index) ? feedbackTracker().formUrl : undefined
         const newest = ctx.index === lastErrorIndex(ctx.messages)
         // The same session start failed twice in a row (Resume between them
         // re-issued it): a third press would fail the same way, and the server

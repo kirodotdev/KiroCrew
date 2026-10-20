@@ -38,9 +38,11 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 | Remote-instance provisioner forms | `components/remoteProvisionerRenderers.tsx` | `registerRemoteProvisionerRenderer()` to `getRemoteProvisionerRenderer()` / `canRenderRemoteProvisionerKind()` |
 | Bare-token autolink rules | `utils/autolinkRules.ts` | `registerAutolinkRules()` to `getAutolinkRules()` |
 
-Plus one **exported-transport** seam for edition-owned API methods and one
-**data-module** seam for syntax-highlighting languages. Neither is a registry; see
-"API methods" and "Highlighting languages" below.
+Plus two **exported-setter** seams for a value the core consumes itself (the
+product name and the feedback tracker), one **exported-transport** seam for
+edition-owned API methods and one **data-module** seam for syntax-highlighting
+languages. None is a registry; see "Product name", "Feedback tracker", "API
+methods" and "Highlighting languages" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets) are core-internal wiring, not edition
@@ -683,6 +685,50 @@ Scope: catalog strings only, and which catalog keys keep the literal name is
 [i18n-catalog](i18n-catalog.md#the-product-name-is-an-interpolation-variable)'s
 rule. The shell logo and welcome mark are the theme-branding seam's job; the chat
 bot display name stays `dashboard.bot_name`.
+
+## Feedback tracker: exported setter, not a registry
+
+Three surfaces send a user to the project's issue tracker, and the stock build
+points every one of them at the public GitHub repository: the top bar's **Request
+a Feature** (the hidden prompt it seeds, which tells the agent to search, label
+and file with `gh`; the copy/paste route that prompt offers; and the
+non-inference form link the `usage_limit` row shows when the plan is spent,
+#13342), the prerelease **report it** link in Settings › About, and the
+false-positive report a redaction card offers. On an edition where that
+repository is unreachable each of them dead-ends, and the agent, handed `gh`
+instructions it cannot follow, improvises a fallback nobody designed.
+
+`setFeedbackTracker({ prompt, issueUrl? })` (exported from
+`src/feedbackTracker.ts`) retargets them in one call from the composition root.
+The readers go through `feedbackTracker()`, which answers `{ prompt, issueUrl,
+formUrl }`; the public values stay as constants in `src/prompts/featureRequest.ts`,
+so the stock build is byte-identical. The seam seals on its first read: a later
+call throws in dev and is ignored in production, because a set that landed after
+one surface had rendered would retarget some surfaces and not others.
+
+Two rules a caller must know:
+
+- **The prompt is the fix, and it is replaced wholesale, never templated.** The
+  public prompt already carries its own tracker URL and its own filing steps
+  (`gh issue list` for duplicates, `gh label list` for the live taxonomy, `gh
+  issue create`, the 200-character pre-filled-URL rule), all GitHub's; an
+  edition's tracker has its own, so the edition writes the whole prompt, URL
+  included, in the agent's language. `featureRequestLabels.test.ts` pins the
+  PUBLIC prompt's label rules only.
+- **`issueUrl` is optional** and only moves the three links that do not go
+  through a prompt: the About link, the redaction report, and the spent-plan exit
+  (`formUrl`, which becomes `issueUrl` since an edition tracker has no public-repo
+  template form). Without it those links keep the public tracker.
+
+Validation runs through `reportSeamCollision`: `prompt` must be non-empty and
+`issueUrl`, when given, an absolute `http(s)` URL (a relative path or a
+`javascript:` URL is refused). A refused call leaves the stock tracker in place,
+so the surfaces keep working. `src/test/feedbackTrackerSeam.test.ts` exercises
+the seam on a fresh module per test, since the seal is a module singleton.
+
+Out of scope: the **Report a Problem** flow's issue link is built by the
+gateway (`diagnostics.github_issue_url`), so it is a backend Composed Platform
+Provider's to retarget, not this seam's.
 
 ## API methods: exported transport, not a registry
 
