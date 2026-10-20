@@ -67,6 +67,7 @@ from ..model import (
     QUEUED,
     RECOVERING,
     RECOVERY_MAX_ATTEMPTS,
+    RETRY_WAIT,
     RUNNING,
     SIDE_EFFECT_IDEMPOTENT_KEY,
     SIDE_EFFECT_NONE,
@@ -911,6 +912,31 @@ class RunnerAdmission:
             self.on_wake(task_id)
         return woken
 
+    @staticmethod
+    def _cancel_woken_dependency(
+        store: TaskStore, task_id: str, generation: int, reason: str
+    ) -> None:
+        """End a dependency wake left unclaimed in ``retry_wait``.
+
+        A wake advances the handle's generation exactly once before its
+        coroutine reclaims the row. The state and generation fences identify
+        that handoff without reaching a later ``retry_wait`` epoch or a row an
+        admission moved to ``admitted``, ``starting`` or ``running``.
+        """
+        try:
+            store.cancel(
+                task_id,
+                reason=reason,
+                only_from=frozenset({RETRY_WAIT}),
+                generation=generation,
+            )
+        except Exception:  # noqa: BLE001 - the caller's cancellation must propagate
+            logger.warning(
+                "taskq runner: %s stayed in retry_wait after a cancelled dependency wait",
+                task_id,
+                exc_info=True,
+            )
+
     async def yield_dependency(
         self,
         handle: Admitted,
@@ -928,17 +954,19 @@ class RunnerAdmission:
         False: the row is already ``failed``/``cancelled`` and the step must
         not retry.
 
-        A CALLER cancel delivered while the row is parked ends it: the awaiting
-        coroutine IS this incarnation's only wake path, so the wait it leaves
-        behind is one nothing can resume.
+        With the store reachable, a CALLER cancel delivered while the row is
+        parked ends it: the awaiting coroutine IS this incarnation's only wake
+        path, so the wait it leaves behind is one nothing can resume.
         """
         store = self.store
         handle.release_slot()
         ev = self._wake_event(handle.task_id)
         ev.clear()
         parked = True
+        owns_dependency_wake = False
         try:
             if self._coordinator is not None:
+                owns_dependency_wake = signal.retryable
                 verdict = await self._db(
                     self._coordinator.report,
                     handle.task_id,
@@ -946,11 +974,13 @@ class RunnerAdmission:
                     generation=handle.generation,
                     from_state=RUNNING,
                 )
+                owns_dependency_wake = verdict.outcome == "wait"
                 if verdict.outcome != "wait":
                     self.forget(handle.task_id)
                     await handle.reacquire_slot()
                     return False
             elif store is not None:
+                owns_dependency_wake = True
                 record = WaitRecord.dependency(
                     signal.dependency_scope,
                     since=self.now(),
@@ -969,6 +999,7 @@ class RunnerAdmission:
                     )
                 except TaskStoreUnavailable:
                     parked = False
+                owns_dependency_wake = parked
             if store is None or not parked:
                 # Nothing persisted: honour the signal's own retry instant locally.
                 wait = (
@@ -987,7 +1018,10 @@ class RunnerAdmission:
             # persisted on the row's wake event and the claimable row is
             # re-attached by ``accept``, so ending it would make the resumed
             # step ask the operator a second time.
-            handle.cancel("dependency wait cancelled")
+            reason = "dependency wait cancelled"
+            wake_generation = handle.generation + 1
+            if not handle.cancel(reason) and store is not None and owns_dependency_wake:
+                self._cancel_woken_dependency(store, handle.task_id, wake_generation, reason)
             raise
 
     async def _resume_after_wait(self, handle: Admitted) -> bool:
