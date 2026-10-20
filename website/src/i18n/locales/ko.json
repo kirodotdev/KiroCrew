@@ -2640,7 +2640,11 @@
             "triage_model_change": "분류 모델 변경",
             "triage_model_unavailable": "{{model}} 사용 불가: 이 계정에서 실행할 수 없어 모든 확인을 ‘모델’({{workModel}})에서 실행합니다. 다른 분류 모델을 고르거나 끄세요.",
             "work_log": "작업 기록",
-            "work_log_hint": "최근 24시간 강조"
+            "work_log_hint": "최근 24시간 강조",
+            "retire": "크루 은퇴",
+            "retire_hint": "은퇴한 크루는 작업을 영구히 멈추고 크루 목록에서 빠집니다. 기록, 작업 로그, 이름 예약은 유지되므로 그 이름은 다시 쓸 수 없습니다.",
+            "retire_confirm_title": "{{name}}을(를) 은퇴시킬까요?",
+            "retire_failed": "크루를 은퇴시키지 못했습니다. 다시 시도하세요."
           },
           "rail_section": "크루",
           "status_idle": "유휴",

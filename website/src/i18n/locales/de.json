@@ -2704,7 +2704,11 @@
             "triage_model_change": "Triage-Modell ändern",
             "triage_model_unavailable": "{{model}} nicht verfügbar: Dieses Konto kann es nicht ausführen, daher läuft jede Prüfung auf dem „Modell“ ({{workModel}}). Wähle ein anderes Triage-Modell oder schalte es aus.",
             "work_log": "Arbeitsprotokoll",
-            "work_log_hint": "24 h hervorgehoben"
+            "work_log_hint": "24 h hervorgehoben",
+            "retire": "Crew stilllegen",
+            "retire_hint": "Eine stillgelegte Crew arbeitet dauerhaft nicht mehr und verschwindet aus der Crew-Liste. Ihr Datensatz, ihr Arbeitsprotokoll und ihre Namensreservierung bleiben erhalten, daher kann ihr Name nicht wiederverwendet werden.",
+            "retire_confirm_title": "{{name}} stilllegen?",
+            "retire_failed": "Die Crew konnte nicht stillgelegt werden. Versuch es noch einmal."
           },
           "rail_section": "Crews",
           "status_idle": "Leerlauf",

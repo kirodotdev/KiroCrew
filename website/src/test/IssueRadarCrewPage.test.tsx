@@ -31,6 +31,7 @@ const api = {
   crew: vi.fn(),
   setCrewPaused: vi.fn(),
   resumeCrewModelSwitching: vi.fn(),
+  retireCrew: vi.fn(),
 }
 
 // Only `issueRadarApi` is stubbed: `TERMINAL_PHASES` / `EDITING_PHASES` /
@@ -532,5 +533,61 @@ describe('CrewPageView — pause', () => {
     await waitFor(() => {
       expect(api.setCrewPaused).toHaveBeenCalledWith({ owner: 'o', repo: 'r' }, 'crew-andromeda', false)
     })
+  })
+})
+
+describe('CrewPageView — retire', () => {
+  it('retires this crew in this repo only after the confirmation, then refetches the roster', async () => {
+    api.retireCrew.mockResolvedValue({ crew: crew({ retired_at: ago(0) }) })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { queryClient } = renderPage()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    // The zone states what the backend keeps before anything is pressed.
+    expect(await screen.findByTestId('crew-retire-zone')).toHaveTextContent(copy('retire_hint'))
+    await user.click(screen.getByTestId('crew-retire'))
+
+    // The click alone retires nothing: the dialog names the crew first.
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(copy('retire_confirm_title', { name: 'Andromeda' }))
+    expect(api.retireCrew).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: copy('retire') }))
+
+    await waitFor(() => {
+      expect(api.retireCrew).toHaveBeenCalledWith({ owner: 'o', repo: 'r' }, 'crew-andromeda')
+    })
+    // The roster refetch is what moves the page off a crew that has left it.
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['issue-radar', 'crews', expect.any(String)] })
+    })
+  })
+
+  it('retires nothing when the confirmation is cancelled', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: i18next.t('components.confirmDialog.cancel') as string }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    expect(api.retireCrew).not.toHaveBeenCalled()
+  })
+
+  it('says why a retire failed, with the gateway’s reason', async () => {
+    api.retireCrew.mockRejectedValue(new Error('crew_not_found'))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    renderPage()
+
+    await user.click(await screen.findByTestId('crew-retire'))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: copy('retire') }))
+
+    const notice = await screen.findByTestId('crew-retire-error')
+    expect(notice).toHaveTextContent(copy('retire_failed'))
+    expect(notice).toHaveTextContent('crew_not_found')
   })
 })

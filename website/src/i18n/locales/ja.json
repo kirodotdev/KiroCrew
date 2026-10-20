@@ -2646,7 +2646,11 @@
             "triage_model_change": "トリアージモデルを変更",
             "triage_model_unavailable": "{{model}} は利用不可：このアカウントでは実行できないため、すべての確認を「モデル」（{{workModel}}）で実行します。別のトリアージモデルを選ぶか、オフにしてください。",
             "work_log": "作業ログ",
-            "work_log_hint": "直近 24h をハイライト"
+            "work_log_hint": "直近 24h をハイライト",
+            "retire": "クルーを引退させる",
+            "retire_hint": "引退したクルーは作業を完全に停止し、クルー一覧から外れます。記録、作業ログ、名前の予約は残るため、その名前は再利用できません。",
+            "retire_confirm_title": "{{name}} を引退させますか？",
+            "retire_failed": "クルーを引退させられませんでした。もう一度お試しください。"
           },
           "rail_sort": "ソート",
           "rail_filters": "フィルター"
