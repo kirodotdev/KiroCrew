@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.agent_discovery import warm_agent_specs
 from kiro_crew.agent_scratch import SharedScratchJoinError
+from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
@@ -359,6 +360,9 @@ class BackgroundSessionRuntime:
         # Create outside lock
         if not self._owner._provider_factory:
             return
+        # Before the permit: a defaulted KAS waits (bounded) for the kiro-cli
+        # floor, so this session starts on the backend the verdict chose.
+        await await_kas_floor_verdict()
         # The factory resolves the background agent's model pin SYNCHRONOUSLY
         # on the loop from the agent-spec snapshot, which at gateway start has
         # not been published yet (the first ``mc-discovery`` refresh is still
@@ -739,6 +743,7 @@ class BackgroundSessionRuntime:
                 "session manager is closing; no background session"
             )
 
+        await await_kas_floor_verdict()
         if not self._owner._bg_backend_supports_runtime():
             # A cached runtime spawned under a previous runtime-capable backend
             # is unreachable from the branch below, so finish any deferred

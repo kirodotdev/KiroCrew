@@ -146,6 +146,21 @@ thread's history.
 
 ## Architecture
 
+The KAS kiro-cli floor is a background task, never a boot dependency. The gateway
+arms main/member spawn waits before yielding, using resolved in-memory
+backend fields only; the bundle route is not armed. The task reads stored backend
+declarations off-loop, then releases explicitly chosen roles before running the
+probe off-loop. That same declaration read supplies the notice wording: KAS is
+named the default only when every resolved KAS role is undeclared; an explicit
+choice or failed read keeps the selected wording. The floor receives this verdict
+as `kas_defaulted` and does not reread declarations. A defaulted role waits until
+the floor task finishes, including
+failure or cancellation. Every wait shares the deadline set at arm time, bounded
+by the probe timeout; releasing another role does not reset it. Waiter cancellation
+or timeout never cancels the floor task, and a gate from another event loop is
+ignored. Session allocation, background starts, pooled starts and task-run bootstrap
+await the gate before selecting their provider backend.
+
 Channel startup diagnostics receive setting names and boolean presence checks,
 never credential values. Each channel keeps its existing enablement predicate;
 missing settings are named once, and configured or disabled channels stay silent.

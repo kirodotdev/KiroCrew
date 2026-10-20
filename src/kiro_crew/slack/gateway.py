@@ -521,6 +521,7 @@ from kiro_crew.slack.gateway_runtime.nudge_channel_fire import (
 from kiro_crew.slack.gateway_runtime.process_entry import (
     _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
     BOOT_RESTART_HINT,
+    _kas_floor_gates_spawns,
     _live_session_agents,
     _live_session_work_dirs,
     _run_signing_key_preflight_bounded,

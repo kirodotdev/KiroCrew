@@ -346,8 +346,15 @@ KAS_CLI_FLOOR_NOTICE = (
     "Update kiro-cli and restart Kiro Crew to use KAS."
 )
 
+#: The same notice when KAS is only the default (no backend field that names KAS is
+#: stored): the user never chose KAS, so the notice must not say they did.
+KAS_CLI_FLOOR_DEFAULT_NOTICE = (
+    "KAS is the default backend, but {reason}. Kiro Crew is using kiro-cli instead. "
+    "Update kiro-cli and restart Kiro Crew to use KAS."
+)
 
-def apply_kas_cli_floor(cfg: "KiroCrewConfig") -> str | None:
+
+def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -> str | None:
     """Fall back to kiro-cli when KAS is configured but this kiro-cli cannot serve it.
 
     The same ``acp --help`` probe ``kirocrew doctor`` reports from, turned into a
@@ -394,6 +401,7 @@ def apply_kas_cli_floor(cfg: "KiroCrewConfig") -> str | None:
         return None
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
-    notice = KAS_CLI_FLOOR_NOTICE.format(reason=reason)
+    template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
+    notice = template.format(reason=reason)
     logger.warning(notice)
     return notice

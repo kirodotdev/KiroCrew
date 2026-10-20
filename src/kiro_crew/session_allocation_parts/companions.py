@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 from kiro_crew.start_priority import START_QUEUE_COMPANION, StartPriority, notify_start_queue
@@ -280,6 +281,11 @@ async def _get_or_bootstrap_run_runtime(
             parent_session_key, agent=agent, start_priority=start_priority
         )
 
+    # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so a task
+    # run started at boot gets the backend the verdict decided.
+    from kiro_crew.members import is_member_session_key
+
+    await await_kas_floor_verdict(member=is_member_session_key(parent_session_key))
     if parent_session_key not in self._subagent_runtime_locks:
         self._subagent_runtime_locks[parent_session_key] = asyncio.Lock()
     lock = self._subagent_runtime_locks[parent_session_key]

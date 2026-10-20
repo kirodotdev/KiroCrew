@@ -93,7 +93,17 @@ def acp_backend_declared() -> bool:
     so every caller answers the same question about one host instead of trusting
     an in-memory value that already holds the RESOLVED harness.
     """
-    value = _stored_agent_value("acp_backend")
+    return _backend_choice_declared("acp_backend")
+
+
+def member_acp_backend_declared() -> bool:
+    """:func:`acp_backend_declared` for ``agent.member_acp_backend``."""
+    return _backend_choice_declared("member_acp_backend")
+
+
+def _backend_choice_declared(key: str) -> bool:
+    """Whether the stored ``agent.<key>`` holds a value other than absent or ``""``."""
+    value = _stored_agent_value(key)
     return value is not _ABSENT_AGENT_KEY and value != ""
 
 

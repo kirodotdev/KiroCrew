@@ -34,6 +34,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
     bound_profile_env,
@@ -851,6 +852,9 @@ async def _get_or_create_impl(
             owner._dispatch_hard_kill(provider)
             raise
     else:
+        # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
+        # the factory below picks the backend the verdict decided.
+        await await_kas_floor_verdict(member=_is_member_key(key))
         provider = factory(
             key,
             agent=agent,

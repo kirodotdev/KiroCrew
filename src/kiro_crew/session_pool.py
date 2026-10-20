@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.config.loader import resolve_agent_identity
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
@@ -408,6 +409,9 @@ class WarmSessionPool:
                 # identity change is discarded at the enqueue re-check below
                 # rather than seeded behind the drain, and refused on age at
                 # claim time, whatever order it and the teardown run in.
+                # A defaulted KAS waits (bounded) for the kiro-cli floor first, so a
+                # pooled process is never KAS on a kiro-cli that rejects it.
+                await await_kas_floor_verdict()
                 async with self._pool_fill_lock:
                     factory = self._owner._provider_factory
                     if factory is None or self._warm_pool.qsize() >= self._pool_size:

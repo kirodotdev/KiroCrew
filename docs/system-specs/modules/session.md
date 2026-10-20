@@ -488,6 +488,12 @@ persistence alone cannot claim application.
 
 ## Background Session
 
+`get_bg_session()` awaits the bounded KAS floor verdict for the main backend
+before selecting the shared-runtime or provider-backed path, outside its runtime
+lock and start admission. Background one-liners use `agent.acp_backend`, not the
+member backend. The persistent provider path also waits before its start permit
+and provider factory.
+
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight
 background work. It is:
 
