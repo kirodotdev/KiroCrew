@@ -113,6 +113,21 @@ def test_a_worker_approval_posts_top_level_in_the_channel(relay: Any) -> None:
     assert any("result=posted" in r["resources"] for r in _rows(relay))
 
 
+def test_a_worker_approval_still_posts_after_slacks_stop_of_the_channel(relay: Any) -> None:
+    """Slack's Stop stopped the channel's own session, not its workers: a worker
+    waiting on a person still gets its card, or it would wait unseen until the
+    channel's next turn."""
+    from kiro_crew.slack.code_channels import status
+
+    status.quiet_after_stop(CH)
+    try:
+        card, fut = asyncio.run(_run_relay(relay))
+    finally:
+        status._quiet.discard(CH)
+    assert card is not None and not fut.done()
+    assert relay.slack.blocks_posts[-1][0] == CH
+
+
 def test_the_worker_title_cannot_ping_the_channel(relay: Any) -> None:
     relay.worker.title = "Fix it <!channel> *now*"
     asyncio.run(_run_relay(relay))

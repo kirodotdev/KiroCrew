@@ -116,6 +116,8 @@ ACK_TEXT = "Running `/{name}`…"
 WRAP_UP_FAILED_TEXT = (
     "I couldn't start `/wrap-up` just now. Nothing was run; try again in a moment."
 )
+#: How the prompt names a command the context bar ran.
+ACTION_LABELS = {CREATE_PR: "Create PR"}
 
 
 def _lock(channel_id: str) -> asyncio.Lock:
@@ -229,12 +231,17 @@ async def sync_commands(binding: Binding) -> None:
             client = surface.client()
             if client is None:
                 return
+            if await surface.write_refusal(channel, binding, activation=True):
+                return  # refused right before the write; the next turn start re-syncs
             try:
                 await client.set_commands(channel, commands)
             except CodeChannelApiError as exc:
                 if exc.code in _DISABLING:
                     await surface_update(channel, commands_off=exc.code)
                     logger.info("code channel %s: commands off (%s)", channel, exc.code)
+                    from kiro_crew.slack.code_channels.notices import notify_refusal
+
+                    await notify_refusal(channel, exc.code, session_key=binding.session_key)
                 else:
                     logger.info("code channel %s: commands not set: %s", channel, exc.code)
                 return
@@ -280,9 +287,19 @@ async def _pr_target(binding: Binding) -> tuple[str, str]:
 
 
 def _prompt(
-    name: str, user: str, text: str, *, worktree: str = "", branch: str = "", tag: str = ""
+    name: str,
+    user: str,
+    text: str,
+    *,
+    worktree: str = "",
+    branch: str = "",
+    tag: str = "",
+    via: str = "command",
 ) -> str:
-    asked = f"<@{user}> ran /{name} in this Slack code channel."
+    if via == "action":
+        asked = f"<@{user}> pressed {ACTION_LABELS.get(name, name)} on this Slack code channel's context bar."
+    else:
+        asked = f"<@{user}> ran /{name} in this Slack code channel."
     if tag:
         asked += f" ({tag})"
     extra = f"\nThey added: {text}" if text else ""
@@ -354,17 +371,47 @@ async def handle_slash(
         # `/kirocrew agent` / `trust` anywhere but a code channel is the app's
         # own command: left to it, before any gate or side effect here.
         return False
-    operation = "slack.code_channel.command"
-    resources = f"channel={channel} command=/{command}"
     if not _first_delivery(payload):
         logger.info("code channel command /%s redelivered in %s; ignored", command, channel)
         return True
-    team = str(payload.get("team_id") or "")
+    await run_command(
+        orch,
+        command=command,
+        channel=channel,
+        user=user,
+        team=str(payload.get("team_id") or ""),
+        text=text,
+        respond=respond,
+    )
+    return True
+
+
+async def run_command(
+    orch: Any,
+    *,
+    command: str,
+    channel: str,
+    user: str,
+    team: str,
+    text: str,
+    respond: Callable[[str], Awaitable[None]],
+    via: str = "command",
+) -> None:
+    """Every gate and effect of one channel command, after its de-duplication.
+
+    The context bar's Create PR action (:mod:`.actions`) runs this same function
+    with ``via="action"``, so a click is authorized, audited and delivered exactly
+    as ``/create-pr`` is.
+    """
+    operation = "slack.code_channel.command"
+    resources = f"channel={channel} command=/{command}" + (
+        "" if via == "command" else f" via={via}"
+    )
     if not surface.workspace_admitted(team):
         surface.audit(
             user, operation, "denied", f"{resources} team_id={team}", "enterprise_origin_mismatch"
         )
-        return True
+        return
     from kiro_crew.messaging.identity import channel_inbound_permitted
     from kiro_crew.slack.channel_policy import channel_refusal
 
@@ -378,12 +425,12 @@ async def handle_slash(
         # Dropped without a reply, as every other inbound gate drops: the
         # response_url is Slack egress, and the transport may be the one refused.
         surface.audit(user, operation, "denied", resources, "channels governance policy")
-        return True
+        return
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
     if binding is None:
         surface.audit(user, operation, "denied", resources, "not a bound code channel")
         await respond(NOT_A_CODE_CHANNEL_TEXT)
-        return True
+        return
     if command in _APP_SUBCOMMANDS:
         # `/kirocrew agent` and `/kirocrew trust`: one owner gate, one handler
         # shape (``authorize`` / ``handle_command``), each module's own audit.
@@ -391,19 +438,19 @@ async def handle_slash(
 
         picker = agent_picker if command == AGENT else approval_picker
         refusal = await picker.authorize(
-            orch, binding, user, team, f"channel={channel} user={user} via=command"
+            orch, binding, user, team, f"channel={channel} user={user} via={via}"
         )
         if refusal is not None:
             surface.audit(user, operation, "denied", resources, _REFUSED_REASON[command])
             if refusal:
                 await respond(refusal)
-            return True
+            return
         surface.audit(user, operation, "allowed", resources)
         if command == AGENT:
             await agent_picker.handle_command(orch, binding, user, text, respond, team=team)
         else:
             await approval_picker.handle_command(orch, binding, user, text, respond, team=team)
-        return True
+        return
     from kiro_crew.slack.code_channels.routing import (
         Gate,
         InboundResult,
@@ -416,7 +463,7 @@ async def handle_slash(
     if not is_allowed_user(user):
         surface.audit(user, operation, "denied", resources, "unauthorized sender")
         await respond(NOT_AUTHORIZED_TEXT)
-        return True
+        return
     origin = _origin_of(channel, binding, None)
     # The code channel's own activation applies on top of its origin's, exactly
     # as on the message path (routing.inbound_gate).
@@ -429,27 +476,54 @@ async def handle_slash(
             "channel or origin does not admit the bot",
         )
         await respond(NOT_AUTHORIZED_TEXT)
-        return True
+        return
     if await surface.is_archived(binding):
         surface.audit(user, operation, "denied", resources, "archived")
         await respond(ARCHIVED_TEXT)
-        return True
+        return
     target = ("", "")
     if command == CREATE_PR:
         can_pr, reason = await pr_capability(binding)
         if not can_pr:
             surface.audit(user, operation, "allowed", f"{resources} result={reason}")
-            _spawn(sync_commands(binding))  # the set offered /create-pr: correct it
+            if not surface.channel_stopped(binding.channel_id):
+                # The set offered /create-pr: correct it (after Slack's Stop, no
+                # agents.* call: the next turn start re-syncs).
+                _spawn(sync_commands(binding))
             await respond(NO_PR_TEXT.get(reason, NO_PR_TEXT["not_a_repo"]))
-            return True
+            return
         target = await _pr_target(binding)
     if surface.channel_policy_refusal(channel, operation=operation, caller=user):
         # Again at the commit point: the policy may have changed during the
         # awaits above, and nothing is armed or run until it still admits.
         await respond(NOT_AUTHORIZED_TEXT)
-        return True
+        return
     surface.audit(user, operation, "allowed", resources)
     from kiro_crew.slack.code_channels import wrapup
+
+    # The gates above were read before awaits (the archive read, the PR check,
+    # the reply): asked again live right before each act. A person's command is
+    # not held back by Slack's Stop (it starts the next turn).
+    refusals: list[str] = []
+
+    async def admit(current: Binding | None) -> str:
+        # deliver_directed asks it right before the route, after its own awaits
+        # (a rebind, the session window's read), on the binding it routes to.
+        code = await surface.act_refusal(channel, current, team=team, stop=False)
+        if code:
+            refusals.append(code)
+        return code
+
+    async def tell_refused(refusal: str, *, armed: bool) -> None:
+        if armed:
+            # This call's own request (its tag), before the reply's await: never
+            # one another /wrap-up armed meanwhile.
+            wrapup._forget_request(channel, tag)
+        surface.audit(user, operation, "denied", resources, f"refused: {refusal}")
+        if refusal == "channel_off":
+            await respond(NOT_AUTHORIZED_TEXT)
+        elif refusal == "archived":
+            await respond(ARCHIVED_TEXT)
 
     delivered = False
     # This request's own tag, minted before any await: every cancel below
@@ -457,6 +531,10 @@ async def handle_slash(
     tag = wrapup.new_request_tag() if command == WRAP_UP else ""
     try:
         if command == WRAP_UP:
+            refusal = await surface.act_refusal(channel, binding, team=team, stop=False)
+            if refusal:
+                await tell_refused(refusal, armed=False)
+                return
             # Armed before delivery: the turn it starts may begin before the call returns.
             try:
                 await wrapup.request_wrap_up(channel, user, tag)
@@ -465,16 +543,25 @@ async def handle_slash(
                 logger.warning("code channel %s: /wrap-up not armed", channel, exc_info=True)
                 surface.audit(user, operation, "error", resources, "wrap-up not recorded")
                 await respond(WRAP_UP_FAILED_TEXT)
-                return True
-        await respond(ACK_TEXT.format(name=command))
+                return
+        if via == "action":
+            await respond(f"Running {ACTION_LABELS.get(command, command)}…")
+        else:
+            await respond(ACK_TEXT.format(name=command))
         event = {"channel": channel, "team": binding.team_id}
         delivered = await deliver_directed(
             orch,
             InboundResult(Gate.DIRECTED, binding=binding),
             event,
-            _prompt(command, user, text, worktree=target[0], branch=target[1], tag=tag),
+            _prompt(
+                command, user, text, worktree=target[0], branch=target[1], tag=tag, via=via
+            ),
             user,
+            admit=admit,
         )
+        if refusals:
+            # Refused: nothing was delivered, and an armed wrap-up is disarmed below.
+            await tell_refused(refusals[-1], armed=command == WRAP_UP)
     except BaseException:
         # A raise or a cancel must not leave the request armed: the next
         # ordinary turn end would post a wrap-up nobody asked for.
@@ -486,4 +573,3 @@ async def handle_slash(
         raise
     if command == WRAP_UP and not delivered:
         await wrapup.cancel_wrap_up(channel, tag)
-    return True

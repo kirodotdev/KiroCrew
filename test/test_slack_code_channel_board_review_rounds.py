@@ -119,8 +119,10 @@ def test_the_bar_records_the_workspace_keys_its_workers_took(tmp_path, repo):
     h.svc.store.put(stored)
     asyncio.run(h.svc.republish_bar(binding))
     keys = h.svc.bar_base_keys("T1", "C1")
-    assert keys is not None and len(keys) == 5
-    assert keys == [i["key"] for i in _bar_labels_items(h)]
+    # The workers take the bar's Workers item (one tally, not one item each); the
+    # dashboard link only takes a slot the agent's items leave free.
+    assert keys is not None and "workers" in keys
+    assert keys == [i["key"] for i in _bar_labels_items(h) if i["key"] != "dashboard"]
 
 
 def _bar_labels_items(h):
