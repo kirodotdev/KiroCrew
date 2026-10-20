@@ -272,7 +272,10 @@ def _channel_egress_open(state: Any, binding: Binding, creator: str) -> bool:
     The channel session's mirror is not paused, the code channel and its origin
     still admit the bot (not off, not in review), and Slack's Stop has not
     silenced the channel's turn. A worker's card posts where its channel's
-    would, and nowhere the owner asked for silence.
+    would, and nowhere the owner asked for silence. Only the stopped turn's own
+    unwinding holds it back (:func:`.surface.turn_unwinding`): a worker goes on
+    after Slack's Stop of the channel session, and a card held until the
+    channel's next turn would leave it waiting unseen.
     """
     from kiro_crew.dashboard.chat_utils import effective_session_key, slack_mirror_is_paused
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
@@ -285,7 +288,7 @@ def _channel_egress_open(state: Any, binding: Binding, creator: str) -> bool:
     origin = _origin_of(binding.channel_id, binding, None)
     if not channel_and_origin_permit(live_config(), binding.channel_id, origin):
         return False
-    return not surface.channel_stopped(binding.channel_id)
+    return not surface.turn_unwinding(binding.channel_id)
 
 
 def _blocks(header: str, request_id: str, title: str, tool_input: str) -> list[dict[str, Any]]:

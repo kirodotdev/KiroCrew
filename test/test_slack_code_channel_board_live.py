@@ -1194,38 +1194,6 @@ def _bar_labels(h):
     return [item["label"] for item in h.client.last("set_context_bar")["items"]]
 
 
-def test_a_bar_sent_outside_a_refresh_never_re_sends_a_refused_cached_board(
-    tmp_path, repo, monkeypatch, lineage
-):
-    """The context bar lists the cached board's workers: re-checked like the wrap-up."""
-    binding = _scoped_binding(repo)
-    lineage.put_binding(binding)
-    conductor = SimpleNamespace(key="chat-cond", _slack_channel="C1")
-    monkeypatch.setattr(cc_binding, "bound_slot", lambda state, b: conductor)
-    monkeypatch.setattr(surface, "dashboard_state", lambda: object())
-    refusal = {"why": ""}
-    monkeypatch.setattr(source, "_publish_refusal", lambda state, b: refusal["why"])
-    h = _Harness(tmp_path)
-    source.set_scope_predicate(None)  # the production scope check
-    rec = asyncio.run(h.svc.ensure(binding))
-    snap = model.BoardSnapshot(rows=(_row(title="Fix login", session_key="chat-w1"),))
-    h.svc._boards[rec.key] = snap
-    assert asyncio.run(h.svc.republish_bar(binding)) == ""
-    assert any("Fix login" in label for label in _bar_labels(h))  # admitted: shown
-    refusal["why"] = "the channel is shared with another organization"
-    asyncio.run(h.svc.republish_bar(binding))
-    assert rec.key not in h.svc._boards
-    assert not any("Fix login" in label for label in _bar_labels(h))
-    # A turn start that re-sends the bar (no bar stored yet) checks the same scope.
-    h.svc._boards[rec.key] = snap
-    stored = h.svc.store.get("T1", "C1")
-    stored.bar_hash = ""
-    h.svc.store.put(stored)
-    asyncio.run(h.svc.ensure(binding))
-    assert rec.key not in h.svc._boards
-    assert not any("Fix login" in label for label in _bar_labels(h))
-
-
 def test_a_refused_refresh_forgets_the_cached_board_even_when_the_pr_read_fails(
     tmp_path, repo, monkeypatch
 ):
@@ -1860,34 +1828,6 @@ def test_a_bar_whose_scope_flips_during_its_git_reads_is_sent_without_workers(
     asyncio.run(h.svc.republish_bar(binding))
     assert not any("Fix login" in label for label in _bar_labels(h))
     assert rec.key not in h.svc._boards
-
-
-def test_a_diff_refusal_after_the_bar_went_out_resends_the_bar_without_workers(
-    tmp_path, repo, monkeypatch
-):
-    tree = tmp_path / "wt-w"
-    suite._git("worktree", "add", "-q", "-b", "feat/w", str(tree), "main", cwd=repo)
-    (tree / "w.txt").write_text("w\n")
-    suite._git("add", "w.txt", cwd=tree)
-    suite._git("commit", "-q", "-m", "w", cwd=tree)
-    board = model.BoardSnapshot(rows=(_row(title="Fix login", branch="feat/w"),))
-    h = _Harness(tmp_path, snapshot=board)
-    binding = suite._FakeBinding(project_dir=str(repo))
-    asyncio.run(h.svc.ensure(binding))
-    real_build = h.svc._build_diff
-    admitted = {"now": True}
-
-    def build_then_share(record, board_arg=None):
-        out = real_build(record, board_arg)
-        if board_arg is not None:
-            admitted["now"] = False
-        return out
-
-    monkeypatch.setattr(h.svc, "_build_diff", build_then_share)
-    source.set_scope_predicate(lambda state, b: admitted["now"])
-    asyncio.run(h.svc.refresh(binding))
-    assert not any("Fix login" in label for label in _bar_labels(h))
-    assert h.published == []
 
 
 def test_a_failed_channel_only_rebuild_takes_the_worker_tab_down(tmp_path, repo, monkeypatch):

@@ -18,7 +18,7 @@ from kiro_crew.config.loader import ACTIVATION_MENTION, ChannelConfig
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import agent_picker
 from kiro_crew.slack.code_channels import binding as binding_mod
-from kiro_crew.slack.code_channels import recognition, routing, status
+from kiro_crew.slack.code_channels import recognition, routing, status, views
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
 
@@ -160,6 +160,12 @@ def _reset_routing() -> None:
     routing._bind_locks.clear()
     routing._follow_up_locks.clear()
     routing._PENDING_TEMPS.clear()
+    status._quiet.clear()
+    status._ended.clear()
+    # asyncio locks bind to the loop that first waits on one: never carried over.
+    status._status_locks.clear()
+    views._locks.clear()
+    views._record_locks.clear()
 
 
 class Env:
