@@ -25,6 +25,7 @@ import { isComposerSendHeld } from '../../../utils/composerSendHolds'
 import type { ComposerHandle } from '../../../chat-core/composer/Composer'
 import { mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
+import { NO_SLOT_TOKEN_KEY } from '../../../utils/chatFileTokenDrafts'
 import { setPasteDraft } from '../../../utils/chatPasteDrafts'
 import { setSessionRefDraft } from '../../../utils/chatSessionRefDrafts'
 import { extractKnowledgeQuery, type KnowledgeResult } from '../useKnowledgeFetch'
@@ -459,8 +460,13 @@ export function useComposerSend({
       // Drops only THIS slot's own token sub-map (`pickedFileTokens` is
       // slot-scoped -- see useFileMentionTokens), never another slot's: a
       // DIFFERENT, still-open slot's attachment is untouched regardless of
-      // what this send just carried.
-      setInput(''); setPendingFiles([]); if (uiSlot) delete pickedFileTokens.current[uiSlot]; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      // what this send just carried. With no slot yet (a send straight from
+      // the new-chat composer) the aliases live in the reserved no-slot bucket
+      // instead, so clear THAT -- otherwise a file picked and mentioned in the
+      // new-chat composer leaves its aliases behind to revive on the next draft
+      // (#14571). The text/file/paste drafts stay slot-gated: they are never
+      // written without a slot.
+      setInput(''); setPendingFiles([]); delete pickedFileTokens.current[uiSlot ?? NO_SLOT_TOKEN_KEY]; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
