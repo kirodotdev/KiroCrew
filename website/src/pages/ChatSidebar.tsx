@@ -51,6 +51,7 @@ import { crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnabl
 import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
 import { useSessionRename, useSessionAutoTitle, useFolderRename } from './chat-sidebar/rename'
 import { useSidebarLane, useLaneCycle, renderedLane } from './chat-sidebar/lanes'
+import { CODEBASE_COLLAPSED_LS_KEY } from './chat-sidebar/persistence'
 import { useHistoryPane } from './chat-sidebar/history'
 import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorder } from './chat-sidebar/pinnedOrder'
 import { useManualSessionOrder, useManualKeyboardReorder } from './chat-sidebar/manualOrder'
@@ -78,6 +79,7 @@ import { createLaneRows } from './chat-sidebar/laneRows'
 export { SIDEBAR_DISPLACEMENT_WINDOW } from './chat-sidebar/laneRows'
 import { createFolderBlocks } from './chat-sidebar/folderBlocks'
 import { createListLanes } from './chat-sidebar/listLanes'
+import { sessionCodebase } from './chat-sidebar/codebaseGroups'
 import { createBoardLane } from './chat-sidebar/boardLane'
 import ErrorNotice from '../components/ErrorNotice'
 import { renderSidebarHeader } from './chat-sidebar/SidebarHeader'
@@ -385,6 +387,50 @@ function ChatSidebar({
     slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree,
   } = useFolderVisibility({ folders, localSlots, filterHiddenFolders })
 
+  // Group-by-codebase: slot key -> its codebase (project directory), resolved
+  // from the slot's own `project` or, failing that, the folder's `project_dir`
+  // (nearest ancestor). A map so the row model reads it the same origin-checked
+  // way it reads `folderOf`; rebuilt only when the slots or the folder tree move.
+  // `allRows` carries live peer rows too, but a peer row has no local
+  // `folder_id`/`project` here, so it resolves to no codebase and lands in the
+  // "No codebase" bucket, like every local session with neither.
+  // The gateway fills `slot.project` on every new slot (the workspace default,
+  // or a per-session directory under `session_folder_root`); those are not
+  // codebases the person chose, so `sessionCodebase` treats them as "no
+  // codebase" via this context, and the folder's `project_dir` is the fallback.
+  const codebaseCtx = useMemo(() => ({
+    defaultProject: mcCfg?.dashboard?.default_project,
+    sessionFolderRoot: mcCfg?.dashboard?.session_folder_root,
+    // Gateway-resolved (realpath'd) anchors, preferred over the raw strings so a
+    // ~/... or symlinked setting — and an unset default_project, where the
+    // gateway uses the workspace dir — still match the realpath'd slot.project.
+    defaultProjectResolved: mcCfg?.dashboard?.default_project_resolved,
+    sessionFolderRootResolved: mcCfg?.dashboard?.session_folder_root_resolved,
+  }), [
+    mcCfg?.dashboard?.default_project,
+    mcCfg?.dashboard?.session_folder_root,
+    mcCfg?.dashboard?.default_project_resolved,
+    mcCfg?.dashboard?.session_folder_root_resolved,
+  ])
+  const codebaseByKey = useMemo(() => {
+    // Object.create(null): a session named `__proto__` must not resolve a
+    // codebase through Object.prototype (that returns a non-string and crashes
+    // `codebaseLabel`). A null-proto map has no such keys.
+    const out: Record<string, string> = Object.create(null)
+    for (const slot of localSlots) {
+      const path = sessionCodebase(slot, folders, codebaseCtx)
+      if (path) out[slot.key] = path
+    }
+    return out
+  }, [localSlots, folders, codebaseCtx])
+  // The codebase lane only renders when at least one session resolves to one:
+  // with none, the lane would be a single "No codebase" group, i.e. the flat
+  // list with a header, so a persisted preference falls back to the tree.
+  const codebasesAvailable = useMemo(() => Object.keys(codebaseByKey).length > 0, [codebaseByKey])
+  const codebaseOf = useCallback((slot: { key: string; peer_id?: string }) =>
+    (slot.peer_id ? undefined : codebaseByKey[slot.key]), [codebaseByKey])
+  const noCodebaseLabel = i18nT('pages.chatSidebar.no_codebase')
+
   useStaleMoveWatcher({ foldersLoaded, localSlots, slotFolders, setStaleRecentlyMoved })
 
   const {
@@ -454,10 +500,11 @@ function ChatSidebar({
   // group holds. `shownCrewRows` is each crew group's rows, the folder hide applied.
   const {
     main: laneSlots, crew: shownCrewRows, crewRowCount: shownCrewRowCount,
-    flat: flatSlots, ungrouped: ungroupedSlots, boardPeerCount,
+    flat: flatSlots, ungrouped: ungroupedSlots, codebase: codebaseSlots, boardPeerCount,
   } = sidebarRows.lanes
   const filterCounts = sidebarRows.statusCounts
   const [collapsedCrews, toggleCrewCollapsed, expandCrew] = useCollapsedCrews()
+  const [collapsedCodebases, toggleCodebaseCollapsed] = useCollapsedCrews(CODEBASE_COLLAPSED_LS_KEY)
   const [collapsedSpaces, toggleSpaceCollapsed, expandSpaces] = useCollapsedCrewSpaces()
   const enableCrew = useCallback((id: string) => setCrewEnabled(dispatch, id, true)
     .finally(() => { void queryClient.invalidateQueries({ queryKey: ['instances'] }) }), [dispatch, queryClient])
@@ -488,9 +535,10 @@ function ChatSidebar({
   // button is not drawn at all, and an ungated lane would render a layout the user has
   // no control to leave. The folder filter applies to the flat lane and the tree, NOT
   // to the board.
-  const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable })
+  const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable, codebasesAvailable })
   const boardLaneActive = shownLane === 'board' || shownLane === 'board-flat'
   const flatLaneActive = shownLane === 'flat'
+  const codebaseLaneActive = shownLane === 'codebase'
   const conductorLaneActive = shownLane === 'conductor'
   // Whether any folder ROW is on screen to drag: the tree, and the board unless
   // flat view empties its columns of folders (`relevantFolders`). The flat lane
@@ -521,11 +569,11 @@ function ChatSidebar({
     setLaneRowWindowRoot(el)
   }, [setLaneRowWindowRoot])
   const laneScrollMemory = useLaneScrollMemory(
-    boardLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
+    boardLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : codebaseLaneActive ? 'codebase' : flatLaneActive ? 'flat' : 'tree'}`,
     laneScrollRef,
   )
 
-  useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots: laneSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns })
+  useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots: laneSlots, boardLaneActive, flatLaneActive, conductorLaneActive, codebaseLaneActive, orderedColumns })
 
   useStaleNarrowBridge({ listNarrowed, filteredSlots: laneSlots, staleCollapseMs, sortKey, isStaleExempt, setStaleExpanded, slotFolders })
   // Reduced motion disables every row. Otherwise renderSessionRow enrolls only
@@ -669,7 +717,7 @@ function ChatSidebar({
 
   const {
     crewPreview, openCrewMembers, remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createChatInCodebase,
   } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, onSelectSlot, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
   // A conductor-lane member anchor opens on the Members page (see renderSessionRow).
   const navigate = useNavigate()
@@ -778,9 +826,9 @@ function ChatSidebar({
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
-    closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
+    closeRefused, collapsedCodebases, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
     columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
-    conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
+    codebaseLaneActive, codebaseOf, codebaseSlots, conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInCodebase, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, crewPreview, cycleLane, defaultAgent, deleteColumnWithConfirm,
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
@@ -794,7 +842,7 @@ function ChatSidebar({
     hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchResults,
     hoverPinRef, ime, installedAgents, instanceSessions, instantCloseId, isActiveRow, isFolderFilteredOut,
-    isFolderHidden, isMobile, isStaleExempt, lane, laneRowWindow, laneScrollMemory, laneSlots,
+    isFolderHidden, isMobile, isStaleExempt, lane, setLanePersisted, codebasesAvailable, laneRowWindow, laneScrollMemory, laneSlots,
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
     moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane,
     onDropSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot, openCrewMembers,
@@ -814,9 +862,9 @@ function ChatSidebar({
     showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
     subagentApprovalCounts, suppressMenuRestoreRef, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
-    tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
+    tagsQueryFailed, tintAgents, toggleCodebaseCollapsed, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
-    toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
+    toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, noCodebaseLabel, ungroupedSlots, unreadSet, updateColumnMutation,
     updateFolderMutation, visibleRootFolders, warmCrews }
   const laneRows = createLaneRows(scope)
   const folderBlocks = createFolderBlocks({ ...scope, ...laneRows })
@@ -922,6 +970,8 @@ function ChatSidebar({
       <LayoutGroup id="chat-slots">
         {conductorLaneActive ? (
           lanes.renderConductorLane()
+        ) : codebaseLaneActive ? (
+          lanes.renderCodebaseLane()
         ) : flatLaneActive ? (
           lanes.renderFlatLane()
         ) : orderedColumns.length === 0 ? (

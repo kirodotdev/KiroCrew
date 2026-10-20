@@ -13158,7 +13158,12 @@
       "broadcast_col_result": "Résultat",
       "broadcast_open_unknown": "Non confirmé · ouvrir",
       "broadcast_delivery_hint": "Aucun travail en cours n’est interrompu : un tour actif le lit après l’appel d’outil en cours ; une session inactive commence un nouveau tour.",
-      "broadcast_retry": "Réessayer {{n}} en échec"
+      "broadcast_retry": "Réessayer {{n}} en échec",
+      "group_by_codebase": "Grouper par base de code",
+      "no_codebase": "Aucune base de code",
+      "codebase_2": "Base de code : {{name}}",
+      "expand_codebase_name": "Développer la base de code {{name}}",
+      "collapse_codebase_name": "Réduire la base de code {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

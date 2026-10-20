@@ -44,14 +44,23 @@ export type RenderedLane = SidebarLane | 'board' | 'board-flat'
  *  and the lane would be the flat list with a chevron nowhere), and `flat` a folder to
  *  explode. A preference whose condition is missing falls back to the folder tree, the
  *  one lane that can always render. */
-export function renderedLane({ lane, boardColumns, folders, lineageAvailable }: {
+export function renderedLane({ lane, boardColumns, folders, lineageAvailable, codebasesAvailable }: {
   lane: SidebarLane
   boardColumns: number
   folders: number
   lineageAvailable: boolean
+  /** Whether at least one session resolves to a codebase. Without one the
+   *  `codebase` lane would render a single "No codebase" group, which is just the
+   *  flat list with a header, so a persisted preference falls back to the tree. */
+  codebasesAvailable: boolean
 }): RenderedLane {
+  // The board still preempts a codebase preference, exactly as it does flat and
+  // conductor: a configured board is the view, and the flat flag only decides
+  // whether folders show inside its columns. A codebase preference reads as the
+  // plain (non-flat) board.
   if (boardColumns > 0) return lane === 'flat' ? 'board-flat' : 'board'
   if (lane === 'conductor' && lineageAvailable) return 'conductor'
+  if (lane === 'codebase' && codebasesAvailable) return 'codebase'
   if (lane === 'flat' && folders > 0) return 'flat'
   return 'tree'
 }

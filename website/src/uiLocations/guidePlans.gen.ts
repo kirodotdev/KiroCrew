@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:7f7baa40aba433a67d5e5a9c1499766dc1648957af748480fc2f8b5e777519c0"
+export const GUIDE_BUILD_DIGEST = "sha256:59e8e4507e4b07ea8f364b9c691eb1bce8bbae7f2b35f45eadf213caebf5dbb7"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -120,6 +120,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "sessions.list-menu.add-lanes",
   "sessions.list-menu.clean-up",
   "sessions.list-menu.dashboards",
+  "sessions.list-menu.group-by-codebase",
   "sessions.list-menu.manage-tags",
   "sessions.list-menu.switch-model",
   "sessions.list-menu.view",

@@ -120,6 +120,7 @@ from kiro_crew.dashboard.file_api.channel_upload import (  # noqa: F401
     api_slack_upload_file,
 )
 from kiro_crew.dashboard.file_api.dashboard_config import (  # noqa: F401
+    _resolved_codebase_anchors,
     api_dashboard_config,
 )
 from kiro_crew.dashboard.file_api.desktop import (  # noqa: F401

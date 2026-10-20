@@ -12730,7 +12730,12 @@
       "broadcast_col_result": "结果",
       "broadcast_open_unknown": "未确认 · 打开",
       "broadcast_delivery_hint": "不会打断正在进行的工作：运行中的会话在当前工具调用结束后读到；空闲的会话开始新一轮。",
-      "broadcast_retry": "重试 {{n}} 个失败的"
+      "broadcast_retry": "重试 {{n}} 个失败的",
+      "group_by_codebase": "按代码库分组",
+      "no_codebase": "无代码库",
+      "codebase_2": "代码库：{{name}}",
+      "expand_codebase_name": "展开代码库 {{name}}",
+      "collapse_codebase_name": "折叠代码库 {{name}}"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

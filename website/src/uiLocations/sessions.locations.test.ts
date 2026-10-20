@@ -67,6 +67,7 @@ const EXPECTED: Record<string, Expect> = {
   'sessions.list-menu.clean-up': { kind: 'menu-item', labelKey: 'pages.chatSidebar.clean_up_sessions', placements: menuPair('sessions.list-menu') },
   'sessions.list-menu.switch-model': { kind: 'menu-item', labelKey: 'pages.chatSidebar.switch_all_to_model', placements: menuPair('sessions.list-menu') },
   'sessions.list-menu.manage-tags': { kind: 'menu-item', labelKey: 'pages.chatSidebar.manage_tags', placements: menuPair('sessions.list-menu') },
+  'sessions.list-menu.group-by-codebase': { kind: 'menu-item', labelKey: 'pages.chatSidebar.group_by_codebase', aliasKeys: ['pages.chatSidebar.switch_to_folder_view'], placements: menuPair('sessions.list-menu', [cond('sessions_list_view')]) },
   'sessions.create-menu': {
     kind: 'button', labelKey: 'pages.chatSidebar.more_create_options',
     aliasKeys: ['pages.chatSidebar.create'], placements: sidebarPair('toolbar'),

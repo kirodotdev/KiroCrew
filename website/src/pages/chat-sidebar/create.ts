@@ -389,8 +389,40 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     },
     onError: onNewChatError,
   })
+
+  // New chat scoped to a CODEBASE group's project directory (the Group-by-Codebase
+  // lane's header action). Unlike `createChatInFolder` this carries no `folder_id`
+  // — a codebase group is a derived path, not a folder — only the `project`, so the
+  // new session resolves back into the same codebase group. Reuses the plain
+  // create's error surface (`newChatError`). The tab gestures mirror the header
+  // New button: plain click creates and switches; a modifier opens a tab.
+  const createChatInCodebaseMutation = useMutation({
+    mutationFn: ({ project, inNewTab }: { project: string; inNewTab: NewTabMode }) => {
+      setNewChatError('')
+      return createSlotWithOrigin(dispatch, { mode: mode || '', project, activate: !inNewTab })
+    },
+    onSuccess: ({ slot, originSlot }, { inNewTab: requested }) => {
+      const inNewTab = settledTabMode(store, requested, originSlot)
+      if (inNewTab && onOpenSlotInNewTab) {
+        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background' })
+        if (inNewTab === 'background') return
+      }
+      // Plain create activated the new slot: leave Split View so it shows,
+      // guarded on the live activeSlot exactly as the header and ephemeral
+      // create paths do (see createChatMutation).
+      if (slot?.key && store.getState().chat.activeSlot === slot.key) onSelectSlot?.(slot.key)
+      focusComposer()
+    },
+    onError: onNewChatError,
+  })
+  const createChatInCodebase = useCallback(
+    (project: string, opts?: { inNewTab?: NewTabMode }) =>
+      createChatInCodebaseMutation.mutate({ project, inNewTab: opts?.inNewTab ?? false }),
+    [createChatInCodebaseMutation],
+  )
+
   return {
     crewPreview, openCrewMembers, remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createChatInCodebase,
   }
 }

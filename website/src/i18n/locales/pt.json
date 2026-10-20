@@ -13158,7 +13158,12 @@
       "broadcast_col_result": "Resultado",
       "broadcast_open_unknown": "Não confirmado · abrir",
       "broadcast_delivery_hint": "Nenhum trabalho em andamento é interrompido: um turno ativo lê a mensagem após a chamada de ferramenta atual; uma sessão ociosa começa um novo turno.",
-      "broadcast_retry": "Tentar de novo {{n}} com falha"
+      "broadcast_retry": "Tentar de novo {{n}} com falha",
+      "group_by_codebase": "Agrupar por base de código",
+      "no_codebase": "Sem base de código",
+      "codebase_2": "Base de código: {{name}}",
+      "expand_codebase_name": "Expandir base de código {{name}}",
+      "collapse_codebase_name": "Recolher base de código {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

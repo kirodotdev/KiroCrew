@@ -12730,7 +12730,12 @@
       "broadcast_col_result": "結果",
       "broadcast_open_unknown": "未確認・開く",
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
-      "broadcast_retry": "失敗した {{n}} 件を再試行"
+      "broadcast_retry": "失敗した {{n}} 件を再試行",
+      "group_by_codebase": "コードベースでグループ化",
+      "no_codebase": "コードベースなし",
+      "codebase_2": "コードベース: {{name}}",
+      "expand_codebase_name": "コードベース {{name}} を展開",
+      "collapse_codebase_name": "コードベース {{name}} を折りたたむ"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

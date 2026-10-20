@@ -122,6 +122,12 @@ const LANE_COVERAGE: Record<string, { lanePref: string; columns: boolean }> = {
   tree: { lanePref: 'tree', columns: false },
   flat: { lanePref: 'flat', columns: false },
   conductor: { lanePref: 'conductor', columns: false },
+  // Group-by-codebase: a list-view lane that buckets by project directory. It
+  // renders `codebaseSlots`, which the shell builds with the same folder-hide
+  // rule the flat lane uses, so it must prove the hide here like every lane. The
+  // fixture folders below carry `project_dir`, so every session resolves to a
+  // codebase and the lane actually renders (otherwise it falls back to the tree).
+  codebase: { lanePref: 'codebase', columns: false },
   board: { lanePref: 'tree', columns: true },
   'board-flat': { lanePref: 'flat', columns: true },
 }
@@ -135,9 +141,11 @@ const SHOWN_FOLDER = 'folder-shown'
 const NESTED_FOLDER = 'folder-nested'
 
 const FOLDERS: ChatFolder[] = [
-  { id: HIDDEN_FOLDER, name: 'hidden folder', collapsed: false, order: 0 },
-  { id: SHOWN_FOLDER, name: 'shown folder', collapsed: false, order: 1 },
-  { id: NESTED_FOLDER, name: 'nested folder', collapsed: false, order: 2, parent_id: SHOWN_FOLDER },
+  // Each folder carries a project_dir so a session filed in it resolves to a
+  // codebase — the codebase lane needs at least one to render at all.
+  { id: HIDDEN_FOLDER, name: 'hidden folder', collapsed: false, order: 0, project_dir: '/p/hidden' },
+  { id: SHOWN_FOLDER, name: 'shown folder', collapsed: false, order: 1, project_dir: '/p/shown' },
+  { id: NESTED_FOLDER, name: 'nested folder', collapsed: false, order: 2, parent_id: SHOWN_FOLDER, project_dir: '/p/nested' },
 ] as unknown as ChatFolder[]
 
 /**
@@ -241,7 +249,9 @@ describe('sidebar lanes honour the folder hide — enumerated from source', () =
       for (const boardColumns of [0, 2]) {
         for (const folders of [0, 3]) {
           for (const lineageAvailable of [false, true]) {
-            drawn.add(renderedLane({ lane: lane as SidebarLane, boardColumns, folders, lineageAvailable }))
+            for (const codebasesAvailable of [false, true]) {
+              drawn.add(renderedLane({ lane: lane as SidebarLane, boardColumns, folders, lineageAvailable, codebasesAvailable }))
+            }
           }
         }
       }
@@ -254,7 +264,7 @@ describe('sidebar lanes honour the folder hide — enumerated from source', () =
     // configured, no preference -- not even a conductor lane that could draw -- shows
     // anything but the board, which only the flat pref switches to its flat mode.
     for (const lane of DECLARED_LANES) {
-      expect(renderedLane({ lane: lane as SidebarLane, boardColumns: 1, folders: 3, lineageAvailable: true }), lane)
+      expect(renderedLane({ lane: lane as SidebarLane, boardColumns: 1, folders: 3, lineageAvailable: true, codebasesAvailable: true }), lane)
         .toBe(lane === 'flat' ? 'board-flat' : 'board')
     }
   })
@@ -267,7 +277,7 @@ describe('sidebar lanes honour the folder hide — enumerated from source', () =
     for (const [name, setup] of Object.entries(LANE_COVERAGE)) {
       expect(renderedLane({
         lane: setup.lanePref as SidebarLane, boardColumns: setup.columns ? 1 : 0,
-        folders: FOLDERS.length, lineageAvailable: true,
+        folders: FOLDERS.length, lineageAvailable: true, codebasesAvailable: true,
       }), name).toBe(name)
     }
   })

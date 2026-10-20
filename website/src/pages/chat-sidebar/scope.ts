@@ -223,10 +223,21 @@ export interface SidebarScope {
   shownCrewRowCount: SidebarRows['lanes']['crewRowCount']
   flatSlots: SidebarRows['lanes']['flat']
   ungroupedSlots: SidebarRows['lanes']['ungrouped']
+  codebaseSlots: SidebarRows['lanes']['codebase']
+  /** slot -> its codebase path, undefined for none; for the codebase lane's grouping. */
+  codebaseOf: (slot: Slot) => string | undefined
+  /** The i18n 'No codebase' bucket header, resolved in the shell. */
+  noCodebaseLabel: string
+  /** Collapsed codebase group paths (Group-by-Codebase lane), and the per-path toggle. */
+  collapsedCodebases: ReadonlySet<string>
+  toggleCodebaseCollapsed: (path: string) => void
+  /** New chat scoped to a codebase group's project directory (the lane header action). */
+  createChatInCodebase: (project: string, opts?: { inNewTab?: import('./create').NewTabMode }) => void
   boardPeerCount: SidebarRows['lanes']['boardPeerCount']
   filterCounts: SidebarRows['statusCounts']
   boardLaneActive: boolean
   flatLaneActive: boolean
+  codebaseLaneActive: boolean
   folderRowsDrawn: boolean
   setLaneScrollEl: (el: HTMLDivElement | null) => void
   rowAnimEnabled: boolean
@@ -278,7 +289,10 @@ export interface SidebarScope {
 
   // From `useSidebarLane`
   lane: ReturnType<typeof useSidebarLane>['lane']
+  setLanePersisted: ReturnType<typeof useSidebarLane>['setLanePersisted']
   setFlatView: ReturnType<typeof useSidebarLane>['setFlatView']
+  /** Whether at least one session resolves to a codebase (gates the menu toggle). */
+  codebasesAvailable: boolean
 
   // From `useSessionFilterState`
   activeFilters: ReturnType<typeof useSessionFilterState>['activeFilters']

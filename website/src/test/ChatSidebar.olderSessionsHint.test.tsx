@@ -206,4 +206,24 @@ describe('sidebar in-flow "Show all older sessions" row', () => {
     await waitFor(() => expect(footer().getAttribute('aria-expanded')).toBe('true'))
     expect(screen.queryByTestId('older-sessions-hint-flat')).toBeNull()
   })
+
+  it('also closes the codebase lane (decision 2026-09-05 covers every lane)', async () => {
+    // The codebase lane renders only when a session resolves to a codebase; a
+    // folder with a project_dir gives its sessions one, so the lane has groups
+    // to draw. The in-flow "Show all older sessions" row must end this lane too.
+    localStorage.setItem('mc-sidebar-lane', 'codebase')
+    // The codebase of a session is its own `project` (preferred) or its folder's
+    // project_dir. Set `project` on the slots so they resolve to a codebase
+    // without needing folder membership, which these FRESH fixtures do not carry.
+    const withProject = FRESH.map(sl => ({ ...sl, project: '/p/alpha' }))
+    renderSidebar(withProject, [{ id: 'f1', name: 'Alpha', order: 0 }])
+    const hint = await screen.findByTestId('older-sessions-hint-codebase')
+    expect(hint.parentElement).toHaveAttribute('data-testid', 'codebase-view-lane')
+    expect(screen.queryByTestId('older-sessions-hint-root')).toBeNull()
+    expect(screen.queryByTestId('older-sessions-hint-flat')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('older-sessions-hint-codebase'))
+    await waitFor(() => expect(footer().getAttribute('aria-expanded')).toBe('true'))
+    expect(screen.queryByTestId('older-sessions-hint-codebase')).toBeNull()
+  })
 })

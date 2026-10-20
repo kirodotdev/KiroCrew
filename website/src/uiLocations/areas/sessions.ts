@@ -120,6 +120,26 @@ export const LOCATIONS = {
     },
     placements: inMenu('sessions.list-menu'),
   },
+  // Group by codebase: a list-view menu toggle that groups sessions by their
+  // project directory. Shown only in list view (board preempts it) and only
+  // when a session resolves to a codebase, so it is conditionally present; the
+  // list-view condition is the one the index can express, matching the board
+  // toggle's gate.
+  'sessions.list-menu.group-by-codebase': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'pages.chatSidebar.group_by_codebase' },
+    // The label flips to "Switch to folder view" while the lane is active (the
+    // next click returns to the tree), so both keys name this one control.
+    aliasKeys: ['pages.chatSidebar.switch_to_folder_view'],
+    terms: {
+      en: [
+        'group sessions by codebase', 'group chats by project',
+        'group by project directory', 'group by repo', 'group sessions by project',
+      ],
+      'zh-CN': ['按项目分组', '按项目目录分组', '按仓库分组', '将会话按代码库分组'],
+    },
+    placements: inMenu('sessions.list-menu', [{ kind: 'condition', id: 'sessions_list_view' }]),
+  },
   'sessions.list-menu.manage-tags': {
     kind: 'menu-item',
     terms: {

@@ -23,6 +23,12 @@ import { sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
 import { COLLAPSE_FLOOR_ATTR } from './collapseFloor'
 import { PinnedSessionDivider, dateSegment } from './chrome'
+import { groupByCodebase } from './codebaseGroups'
+import { FolderBody } from '../../components/FolderBody'
+import FolderGlyph from '../../components/FolderGlyph'
+import { FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, createTabModeForClick } from './chrome'
+import { MessageSquarePlus } from 'lucide-react'
+import { offlineProps } from '../../utils/offline'
 import type { LaneRows } from './laneRows'
 import type { FolderBlocks } from './folderBlocks'
 import type { SidebarScope } from './scope'
@@ -63,6 +69,12 @@ const offsetSessionDragGhost: Modifier = ({
 }
 const SESSION_DRAG_GHOST_MODIFIERS = [offsetSessionDragGhost]
 
+/** Collapse / layout key for the codebase lane's "No codebase" bucket (path null).
+ *  A NUL-prefixed sentinel no real project directory can equal; it is an internal
+ *  key, never shown, so it is an ALL-CAPS const (the i18n rule's allowed form for a
+ *  non-user-facing literal) rather than a catalog string. */
+const NO_CODEBASE_KEY = '\u0000none'
+
 /** The list lane renderers for one shell render. */
 export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
   const { activeDrag, activeSlot, allHiddenFolders, chatDropTarget, citedCreatorExists, conductorExpanded,
@@ -75,7 +87,9 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
     sidebarRows, slotFilter, slotFolders, sortKey, splitStale, staleExpanded, startsAutomaticSection,
-    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders } = shell
+    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders,
+    codebaseSlots, codebaseOf, noCodebaseLabel, collapsedCodebases, toggleCodebaseCollapsed,
+    createChatInCodebase, connected, onOpenSlotInNewTab } = shell
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -519,5 +533,121 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
           </motion.div>
           </SessionRowWindowContext.Provider>
   )
-  return { renderConductorLane, renderFlatLane, renderTreeLane }
+  const renderCodebaseLane = (): React.ReactNode => {
+    // Group-by-codebase: every chat under its project directory, grouped by
+    // `groupByCodebase` with the "No codebase" bucket last. The pool is the flat
+    // lane's rows, grouped rather than flattened. This lane has NO drag and drop:
+    // `SessionRow` enables dnd-kit only for the `list` and `flat` scopes, so a
+    // `codebase:` row never registers a draggable and there is nothing for a
+    // `DndContext` here to carry — position is a function of which codebase a row
+    // resolves to, so a drop inside has nothing to land on and a drop onto the
+    // chat pane never reaches a handler. So, like the conductor lane, it renders
+    // no DndContext, drop zone or overlay.
+    const groups = groupByCodebase(codebaseSlots, codebaseOf, noCodebaseLabel)
+    return (
+          <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
+            <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="codebase-view-lane">
+              {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
+              {localGroupHeader}
+              {groups.map(group => {
+                // Namespace per group so a layoutId stays unique and the paint-order
+                // stamp is scoped to this header. The "No codebase" bucket (path null)
+                // uses the fixed sentinel so it never collides with a real path.
+                const scope = `codebase:${group.path ?? NO_CODEBASE_KEY}`
+                // Collapse is keyed by the codebase PATH; the "No codebase" bucket is
+                // keyed by the same sentinel so it folds independently and stably.
+                const collapseKey = group.path ?? NO_CODEBASE_KEY
+                const collapsed = collapsedCodebases.has(collapseKey)
+                // Only a real codebase has a project directory to create a chat in;
+                // the "No codebase" bucket shows no new-chat control and no path title.
+                const hasPath = group.path != null
+                const headerLabel = hasPath
+                  ? i18nT('pages.chatSidebar.codebase_2', { name: group.label })
+                  : group.label
+                return (
+                  <Fragment key={scope}>
+                    {/* Folder-style group header: the codebase glyph (its open/closed
+                     *  shape is the collapse affordance), the basename and a count,
+                     *  with a single + control on hover that starts a chat scoped to
+                     *  the group's project directory. A codebase group is NOT a folder,
+                     *  so there is no ⋯ menu: the one action a derived path has is the
+                     *  + button already provides, and a one-item menu beside it is the
+                     *  redundancy First Principles review flagged.
+                     *  `folder-row-sticky` (not bare `folder-row`) is load-bearing: it
+                     *  carries the opaque background and height that let the header pin
+                     *  at the top without rows scrolling visibly through it; the top
+                     *  inset matches a depth-0 folder header. */}
+                    <div
+                      data-codebase-group={collapseKey}
+                      data-testid="codebase-group-header"
+                      role="group"
+                      aria-label={headerLabel}
+                      style={{ top: 'calc(0px - var(--folder-row-sticky-inset))', zIndex: FOLDER_ROW_STICKY_Z }}
+                      className="folder-row folder-row-sticky group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all hover:text-text hover:bg-bg-hover"
+                    >
+                      <button
+                        type="button"
+                        aria-expanded={!collapsed}
+                        aria-label={collapsed
+                          ? i18nT('pages.chatSidebar.expand_codebase_name', { name: group.label })
+                          : i18nT('pages.chatSidebar.collapse_codebase_name', { name: group.label })}
+                        title={group.path ?? undefined}
+                        data-testid={`codebase-collapse-${collapseKey}`}
+                        onClick={() => toggleCodebaseCollapsed(collapseKey)}
+                        className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none text-left text-inherit p-0 cursor-pointer"
+                      >
+                        <FolderGlyph size={14} open={!collapsed} />
+                        <span className="flex-1 text-[13px] font-medium text-text truncate text-left">{group.label}</span>
+                        <span className="text-[11px] text-muted tabular-nums shrink-0">{group.slots.length}</span>
+                      </button>
+                      {hasPath && (
+                        // One control, hover-revealed (static+visible on touch): a new
+                        // chat scoped to this codebase's project directory. Same three
+                        // tab gestures as the folder header's + button.
+                        <div className="transition-all flex items-center gap-0.5 rounded-md group-focus-within:opacity-100 absolute top-1/2 -translate-y-1/2 right-1.5 p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(hover:none)]:static [@media(hover:none)]:translate-y-0 [@media(hover:none)]:shrink-0 [@media(hover:none)]:-my-1 [@media(hover:none)]:p-0 [@media(hover:none)]:bg-transparent [@media(hover:none)]:border-transparent [@media(hover:none)]:shadow-none">
+                          <button type="button" data-testid={`codebase-new-chat-${collapseKey}`} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: group.label })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: group.label })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: group.label }))}
+                            onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
+                            onAuxClick={onOpenSlotInNewTab ? (e => { if (e.button !== 1) return; e.preventDefault(); e.stopPropagation(); createChatInCodebase(group.path!, { inNewTab: 'background' }) }) : undefined}
+                            onClick={e => { e.stopPropagation(); createChatInCodebase(group.path!, { inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}><MessageSquarePlus size={12} /></button>
+                        </div>
+                      )}
+                    </div>
+                    {/* Body collapses under the header like a folder's. Rows go through
+                     *  `heldLane` (per-group container) exactly as the flat lane and
+                     *  tree root do, so a background re-sort cannot slide a row out from
+                     *  under a hovering pointer; `startsAutomaticSection` draws the
+                     *  pinned divider where it falls, as every list lane does. */}
+                    <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!collapsed}>
+                      <div className={FOLDER_BODY_CLS}>
+                        {(() => {
+                          const { rows: heldRows, navScope: cbScope, container: cbContainer } = heldLane(group.slots, scope, scope)
+                          return heldRows.map((s, i) => {
+                            const next = i < heldRows.length - 1 ? heldRows[i + 1] : null
+                            const isActive = isActiveRow(s)
+                            const showDivider = next != null && !isActive && !isActiveRow(next)
+                              && !startsAutomaticSection(heldRows, i + 1)
+                            return (
+                              <Fragment key={sessionRowIdentity(s)}>
+                                {startsAutomaticSection(heldRows, i) && <PinnedSessionDivider />}
+                                {renderSessionRow(s, 0, showDivider, cbScope, cbScope, cbContainer)}
+                              </Fragment>
+                            )
+                          })
+                        })()}
+                      </div>
+                    </FolderBody>
+                  </Fragment>
+                )
+              })}
+              {codebaseSlots.length === 0 && shownCrewRowCount === 0 && (
+                <div className="px-3 py-4 text-[12px] text-muted">{i18nT('pages.chatSidebar.no_sessions_match')}</div>
+              )}
+              {renderHiddenReveal('codebase', allHiddenFolders, 0)}
+              {renderOlderSessionsHint('codebase')}
+              {renderCrewGroups()}
+            </motion.div>
+          </SessionRowWindowContext.Provider>
+    )
+  }
+  return { renderConductorLane, renderFlatLane, renderTreeLane, renderCodebaseLane }
 }

@@ -12944,7 +12944,12 @@
       "broadcast_col_result": "ফলাফল",
       "broadcast_open_unknown": "নিশ্চিত নয় · খোলো",
       "broadcast_delivery_hint": "চলমান কাজ থামে না: চালু টার্ন বর্তমান টুল কলের পরে এটি পড়ে; অলস সেশন নতুন টার্ন শুরু করে।",
-      "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও"
+      "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও",
+      "group_by_codebase": "কোডবেস অনুসারে গোষ্ঠীভুক্ত করুন",
+      "no_codebase": "কোনো কোডবেস নেই",
+      "codebase_2": "কোডবেস: {{name}}",
+      "expand_codebase_name": "কোডবেস {{name}} প্রসারিত করুন",
+      "collapse_codebase_name": "কোডবেস {{name}} সংকুচিত করুন"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

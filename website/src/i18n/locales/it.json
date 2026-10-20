@@ -13158,7 +13158,12 @@
       "broadcast_col_result": "Esito",
       "broadcast_open_unknown": "Non confermato · apri",
       "broadcast_delivery_hint": "Nessun lavoro in corso viene interrotto: un turno attivo lo legge dopo la chiamata allo strumento in corso; una sessione inattiva avvia un nuovo turno.",
-      "broadcast_retry": "Riprova {{n}} non riusciti"
+      "broadcast_retry": "Riprova {{n}} non riusciti",
+      "group_by_codebase": "Raggruppa per codebase",
+      "no_codebase": "Nessun codebase",
+      "codebase_2": "Codebase: {{name}}",
+      "expand_codebase_name": "Espandi codebase {{name}}",
+      "collapse_codebase_name": "Comprimi codebase {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

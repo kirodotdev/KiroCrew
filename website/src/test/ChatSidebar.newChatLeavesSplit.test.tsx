@@ -31,6 +31,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { setActiveSlot } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatSlot, ChatFolder } from '../types'
+import { SIDEBAR_LANE_LS_KEY } from '../pages/chat-sidebar/persistence'
 
 // IS_MAC is frozen at module load; read the platform through a mutable getter,
 // the same shape ChatSidebar.newChatInTab.test uses.
@@ -74,10 +75,12 @@ function renderSidebar(opts: {
   onSelectSlot?: (key: string) => void
   onOpenSlotInNewTab?: (key: string, o?: { background?: boolean }) => void
   folders?: ChatFolder[]
+  slots?: ChatSlot[]
 } = {}) {
+  const slots = opts.slots ?? SLOTS
   const store = createTestStore({
     dashboard: {
-      status: { platform: 'linux' }, connected: true, slots: SLOTS, slotsLoaded: true,
+      status: { platform: 'linux' }, connected: true, slots, slotsLoaded: true,
       approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -101,7 +104,7 @@ function renderSidebar(opts: {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={SLOTS} activeSlot={ORIGIN} unreadSlots={[]}
+              slots={slots} activeSlot={ORIGIN} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="kirocrew" installedAgents={[]}
               onSelectSlot={opts.onSelectSlot}
               onOpenSlotInNewTab={opts.onOpenSlotInNewTab}
@@ -225,6 +228,23 @@ describe('ChatSidebar – a plain create leaves Split View (#21935)', () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
     expect(onSelectSlot).not.toHaveBeenCalled()
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  // (6) The codebase group header's "new chat here" button is a plain create
+  // too: after the rebase onto main's onSelectSlot plain-create fix, it must
+  // fire onSelectSlot so Split View yields to the new session, the same as the
+  // header New and folder New paths (create.ts createChatInCodebaseMutation).
+  it('a codebase group "new chat here" fires onSelectSlot with the new key', async () => {
+    localStorage.setItem(SIDEBAR_LANE_LS_KEY, 'codebase')
+    const onSelectSlot = vi.fn()
+    // A slot with a real project path resolves to a codebase group, so the
+    // codebase lane renders a group header with its create button.
+    const PROJECT = '/work/myrepo'
+    const codebaseSlot = { ...SLOTS[0], project: PROJECT } as unknown as ChatSlot
+    renderSidebar({ onSelectSlot, slots: [codebaseSlot] })
+    fireEvent.click(await screen.findByTestId(`codebase-new-chat-${PROJECT}`))
+    await created()
+    await waitFor(() => expect(onSelectSlot).toHaveBeenCalledWith(NEW_KEY))
   })
 
   // Switched-away guard (#21959 review): if the user moves to another session

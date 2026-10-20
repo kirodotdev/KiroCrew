@@ -2,7 +2,7 @@
  *  toggle, cleanup, model switch, tags) and the split New button with its create
  *  menu (private chats, import, Crew Members, folders, chat in a folder or on a
  *  crew). */
-import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Users, Server, Megaphone } from 'lucide-react'
+import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, FolderGit2, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Users, Server, Megaphone } from 'lucide-react'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { LIST_HEADER_CLS, LIST_TITLE_CLS } from '../../components/listShell'
@@ -23,6 +23,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
     createRemoteChatMutation, creatingSlot, crewPreview, folderCleanupOpen, folderCompare, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab, openCrewMembers,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
+    lane, setLanePersisted, codebasesAvailable,
     restorePreBoardWidth, seedStateLanesMutation, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
     setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setRemoteCrewError, setSeedError, setToggleSaveFailed,
     tagColumnsEnabled, warmCrews } = shell
@@ -84,6 +85,23 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <Columns3 size={14} className={tagColumnsEnabled && rawColumns.length > 0 ? 'text-accent' : 'text-muted'} />
                 {tagColumnsEnabled && rawColumns.length > 0 ? i18nT('pages.chatSidebar.switch_to_list_view') : i18nT('pages.chatSidebar.switch_to_board_view')}
               </DropdownMenuItem>
+              {/* Group by codebase: a menu toggle (not a cycle-button position),
+               *  matching the board toggle's shape. It flips the persisted lane to
+               *  'codebase' and back to the folder tree; the accent icon marks it
+               *  active. Hidden when no session resolves to a codebase, since the
+               *  lane would then render a single "No codebase" group — the flat list
+               *  with a header. The board preempts it (renderedLane), so it is
+               *  withheld while a board is configured, like the lane cycle. */}
+              {codebasesAvailable && !(tagColumnsEnabled && rawColumns.length > 0) && (
+                <DropdownMenuItem onClick={() => setLanePersisted(lane === 'codebase' ? 'tree' : 'codebase')} {...uiLocation('sessions.list-menu.group-by-codebase')}>
+                  <FolderGit2 size={14} className={lane === 'codebase' ? 'text-accent' : 'text-muted'} />
+                  {/* Like the board toggle beside it, the label names the action the
+                   *  NEXT click performs: while the lane is active, clicking returns
+                   *  to the folder tree, so the row says so rather than always reading
+                   *  "Group by codebase". */}
+                  {lane === 'codebase' ? i18nT('pages.chatSidebar.switch_to_folder_view') : i18nT('pages.chatSidebar.group_by_codebase')}
+                </DropdownMenuItem>
+              )}
               {tagColumnsEnabled && rawColumns.length > 0 && missingLanes.length > 0 && (
                 <DropdownMenuItem
                   data-testid="add-state-lanes"

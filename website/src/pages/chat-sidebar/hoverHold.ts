@@ -141,13 +141,14 @@ export function useHoverHold() {
 }
 
 /** Releases the hover hold once its row leaves the rendered scope. */
-export function useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns }: {
+export function useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots, boardLaneActive, flatLaneActive, conductorLaneActive, codebaseLaneActive, orderedColumns }: {
   hoverPinRef: MutableRefObject<HoverPin | null>
   releaseHoverPin: () => void
   filteredSlots: Slot[]
   boardLaneActive: boolean
   flatLaneActive: boolean
   conductorLaneActive: boolean
+  codebaseLaneActive: boolean
   orderedColumns: TagColumn[]
 }) {
   // A pin survives only while its row is still rendered IN THE PINNED SCOPE. Slot
@@ -160,5 +161,5 @@ export function useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlot
       && (el.dataset.sessionScope ?? '') === pin.scope
       && el.closest('[inert]') === null)
     if (!live) releaseHoverPin()
-  }, [filteredSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns, releaseHoverPin, hoverPinRef])
+  }, [filteredSlots, boardLaneActive, flatLaneActive, conductorLaneActive, codebaseLaneActive, orderedColumns, releaseHoverPin, hoverPinRef])
 }

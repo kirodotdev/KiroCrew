@@ -13372,7 +13372,12 @@
       "broadcast_col_result": "Итог",
       "broadcast_open_unknown": "Не подтверждено · открыть",
       "broadcast_delivery_hint": "Текущая работа не прерывается: активный ход прочитает сообщение после текущего вызова инструмента, простаивающая сессия начнёт новый ход.",
-      "broadcast_retry": "Повторить неудавшиеся ({{n}})"
+      "broadcast_retry": "Повторить неудавшиеся ({{n}})",
+      "group_by_codebase": "Группировать по кодовой базе",
+      "no_codebase": "Нет кодовой базы",
+      "codebase_2": "Кодовая база: {{name}}",
+      "expand_codebase_name": "Развернуть кодовую базу {{name}}",
+      "collapse_codebase_name": "Свернуть кодовую базу {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

@@ -6093,7 +6093,12 @@
       "muted": "Muted: no chime, toast or badge",
       "chat_with_folder": "Chat with {{folder}} folder",
       "chat_with_folder_desc": "The chat that started this folder's other chats",
-      "conductor_tag": "conductor"
+      "conductor_tag": "conductor",
+      "group_by_codebase": "Group by codebase",
+      "no_codebase": "No codebase",
+      "codebase_2": "Codebase: {{name}}",
+      "expand_codebase_name": "Expand codebase {{name}}",
+      "collapse_codebase_name": "Collapse codebase {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

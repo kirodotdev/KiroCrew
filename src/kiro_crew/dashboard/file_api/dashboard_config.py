@@ -19,12 +19,70 @@ if TYPE_CHECKING:
         _body_err_code,
         _sel,
         bytes_to_mb_figure,
+        is_sensitive_path,
         knowledge_ceiling_bytes,
         link_pattern_url_ok,
         logger,
         read_bounded_json,
         validate_session_folder_root,
     )
+
+
+def _resolved_codebase_anchors(cfg) -> tuple[str, str]:
+    """The realpath'd default-project and session-folder-root a new dashboard slot
+    resolves against, for the sidebar's "group by codebase" rule.
+
+    The gateway assigns ``slot.project`` on create from ``dashboard.default_project``
+    (or the workspace default when empty) and mints per-session dirs under
+    ``dashboard.session_folder_root`` — both ``realpath``'d. The browser stores only
+    the raw config strings, so a ``~/...`` or symlinked setting never matches the
+    resolved ``slot.project`` and those sessions are mis-grouped as real codebases.
+    Exposing the resolved anchors lets the frontend compare like against like.
+
+    Returns ``(default_project_resolved, session_folder_root_resolved)``; either is
+    ``""`` when the corresponding setting is unset/ineligible. Filesystem-touching
+    (realpath/isdir/sensitive-path scan): callers run it off the event loop.
+    """
+    import os
+
+    # default_project_dir is re-exported from kiro_crew.config.loader (the one
+    # loader import the facade already makes lazily); is_sensitive_path and
+    # validate_session_folder_root are facade globals this function reads through
+    # the composed namespace, not its own imports (see the file_api composition
+    # contract).
+    from kiro_crew.config.loader import default_project_dir
+
+    # Mirror slot_create's default-project resolution for the default workspace:
+    # a configured path wins when it realpaths to a usable, non-sensitive dir,
+    # else the workspace default dir. The voice-runtime-conflict eligibility check
+    # slot_create also applies is a spawn-time refusal, not part of the stable
+    # grouping anchor, so it is deliberately not reproduced here.
+    default_resolved = ""
+    cfg_proj = cfg.dashboard.default_project if cfg else ""
+    if isinstance(cfg_proj, str) and cfg_proj:
+        try:
+            rp = os.path.realpath(os.path.expanduser(cfg_proj))
+            if os.path.isdir(rp) and not is_sensitive_path(rp):
+                default_resolved = rp
+        except Exception:
+            default_resolved = ""
+    if not default_resolved:
+        try:
+            default_resolved = default_project_dir()
+        except Exception:
+            default_resolved = ""
+
+    root_resolved = ""
+    raw_root = cfg.dashboard.session_folder_root if cfg else ""
+    if isinstance(raw_root, str) and raw_root.strip():
+        try:
+            resolved, err = validate_session_folder_root(raw_root)
+            if not err:
+                root_resolved = resolved
+        except Exception:
+            root_resolved = ""
+
+    return default_resolved, root_resolved
 
 
 async def api_dashboard_config(request: web.Request) -> web.Response:
@@ -116,6 +174,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "model_picker_configured",
             "upload_max_mb",
             "knowledge_upload_max_mb",
+            "default_project_resolved",
+            "session_folder_root_resolved",
         }
         body = {
             k: v
@@ -644,6 +704,9 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     # Both rows evaluated in one hop, each audited once, never short-circuited.
     hosted_denied, local_denied = await asyncio.to_thread(denied_sides)
     decisions_denied = hosted_denied and local_denied
+    default_project_resolved, session_folder_root_resolved = await asyncio.to_thread(
+        _resolved_codebase_anchors, cfg
+    )
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -659,6 +722,13 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
+            # Read-only: the realpath'd anchors the "group by codebase"
+            # sidebar lane compares each slot.project against. The gateway
+            # realpaths both settings when it assigns slot.project; the raw
+            # strings above would miss a ~/... or symlinked value, so these
+            # resolved forms are exposed alongside them.
+            "default_project_resolved": default_project_resolved,
+            "session_folder_root_resolved": session_folder_root_resolved,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,

@@ -152,6 +152,12 @@ export const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 /** Lane preference. Replaces the `FLAT_VIEW_LS_KEY` boolean. */
 export const SIDEBAR_LANE_LS_KEY = 'mc-sidebar-lane'
 
+/** Codebase groups the user has COLLAPSED in the Group-by-Codebase lane, as a JSON
+ *  array of project-directory paths. Open is the default (a codebase this browser has
+ *  never seen shows its sessions), so it is stored the same way as the crew-collapse
+ *  set and read through the shared `readCollapsedCrews` reader. */
+export const CODEBASE_COLLAPSED_LS_KEY = 'mc-sidebar-codebase-collapsed'
+
 /** Crew groups the user has COLLAPSED, as a JSON array of instance ids. Open is the
  *  default, so a crew this browser has never seen shows its rows. */
 export const CREW_COLLAPSED_LS_KEY = 'mc-sidebar-crew-collapsed'
@@ -190,7 +196,7 @@ const CONDUCTOR_SUPERSEDED_COLLAPSED_LS_KEY = 'mc-sidebar-conductor-collapsed'
  */
 export function readStoredLane(): SidebarLane {
   const stored = localStorage.getItem(SIDEBAR_LANE_LS_KEY)
-  if (stored === 'tree' || stored === 'flat' || stored === 'conductor') return stored
+  if (stored === 'tree' || stored === 'flat' || stored === 'conductor' || stored === 'codebase') return stored
   return localStorage.getItem(FLAT_VIEW_LS_KEY) === '1' ? 'flat' : 'tree'
 }
 

@@ -353,6 +353,11 @@ export interface SidebarRows {
     flat: Slot[]
     /** The tree lane's root bucket: every `Local` row filed in no local folder. */
     ungrouped: Slot[]
+    /** The codebase lane: the `Local` rows the folder filter does not conceal, in
+     *  lane order. The grouping into codebase buckets happens at the render owner
+     *  (`groupByCodebase`), which needs the i18n "No codebase" label; this is the
+     *  filtered, ordered pool it groups. */
+    codebase: Slot[]
     /** The board's pool: the `Local` LOCAL-origin rows the folder filter does not
      *  conceal. A board column writes tags and state, which no peer row can take, and a
      *  column has no reveal row, so the hide is absolute there. */
@@ -864,6 +869,10 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
       crewRowCount: crewRowCount.value,
       flat: flat.value,
       ungrouped: ungrouped.value,
+      // The codebase lane groups the SAME rows as the flat lane (same
+      // folder-hide rule); it reuses that pool and differs only in how the
+      // render owner groups them.
+      codebase: flat.value,
       board: board.value,
       boardPeerCount: boardPeerCount.value,
     },

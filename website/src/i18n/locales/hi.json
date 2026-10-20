@@ -12944,7 +12944,12 @@
       "broadcast_col_result": "नतीजा",
       "broadcast_open_unknown": "पुष्टि नहीं · खोलो",
       "broadcast_delivery_hint": "चल रहा काम नहीं रुकता: चालू टर्न इसे मौजूदा टूल कॉल के बाद पढ़ता है; खाली सेशन नया टर्न शुरू करता है।",
-      "broadcast_retry": "{{n}} विफल फिर से भेजो"
+      "broadcast_retry": "{{n}} विफल फिर से भेजो",
+      "group_by_codebase": "कोडबेस के अनुसार समूहित करें",
+      "no_codebase": "कोई कोडबेस नहीं",
+      "codebase_2": "कोडबेस: {{name}}",
+      "expand_codebase_name": "कोडबेस {{name}} विस्तृत करें",
+      "collapse_codebase_name": "कोडबेस {{name}} संक्षिप्त करें"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

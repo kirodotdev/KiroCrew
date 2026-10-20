@@ -13158,7 +13158,12 @@
       "broadcast_col_result": "Resultado",
       "broadcast_open_unknown": "Sin confirmar · abrir",
       "broadcast_delivery_hint": "No se interrumpe ningún trabajo en curso: un turno activo lo lee tras la llamada de herramienta actual; una sesión inactiva empieza un turno nuevo.",
-      "broadcast_retry": "Reintentar {{n}} fallidos"
+      "broadcast_retry": "Reintentar {{n}} fallidos",
+      "group_by_codebase": "Agrupar por código base",
+      "no_codebase": "Sin código base",
+      "codebase_2": "Código base: {{name}}",
+      "expand_codebase_name": "Expandir código base {{name}}",
+      "collapse_codebase_name": "Contraer código base {{name}}"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

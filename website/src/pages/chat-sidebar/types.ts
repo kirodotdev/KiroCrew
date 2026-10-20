@@ -106,6 +106,10 @@ export interface Slot {
   // simply never declared on this local view of the type.
   messages?: number
   workspace?: string
+  /** The session's project directory (the wire `ChatSlot.project`), for the
+   *  codebase lane's grouping. Absent on a peer row and on a session the backend
+   *  set no project for; the lane then falls back to the folder's `project_dir`. */
+  project?: string
   /** Remote-execution binding — see `ChatSlot` in ../../types. Declared on this
    *  narrowed view too: the row reads `executor` to decide whether to render the
    *  crew chip, and a field absent from this interface is invisible to it no
@@ -187,19 +191,21 @@ export interface AgentInfo {
 export type SessionFilterKey = 'unread' | 'running' | 'pinned' | 'recent'
 
 /**
- * Which session lane the list renders. One persisted preference, three values.
+ * Which session lane the list renders. One persisted preference, four values.
  *
  * `tree` is the folder hierarchy. `flat` explodes every chat out of its folder into
  * one recency-sorted lane. `conductor` nests each session under the session that
  * OPENED it (`session_create`), which is a different axis from folders entirely: a
  * conductor and the workers it spawned are one unit of work wherever their folders
- * put them.
+ * put them. `codebase` groups every chat under its project directory (the session's
+ * own `project`, else the folder's `project_dir`), which is a fifth axis again: the
+ * same codebase can hold sessions filed in different folders.
  *
- * An enum rather than two booleans because the lanes are mutually exclusive, and two
- * independent flags would have a fourth state ("flat AND conductor") that means
- * nothing and that every render site would have to decide about.
+ * An enum rather than independent booleans because the lanes are mutually exclusive,
+ * and combining flags would create meaningless states ("flat AND conductor") that
+ * every render site would have to decide about.
  */
-export type SidebarLane = 'tree' | 'flat' | 'conductor'
+export type SidebarLane = 'tree' | 'flat' | 'conductor' | 'codebase'
 
 /** One filter dimension that can hide a reveal target: whether it hides THIS
  *  row, and how to drop it. `clear` receives the row because the folder filter
