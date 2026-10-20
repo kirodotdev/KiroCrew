@@ -5080,6 +5080,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "编写、运行并观察动态工作流",
         "budget": "预算",
+        "couldn_t_load_the_example_workflows": "无法加载示例工作流",
         "couldn_t_start_the_run": "无法启动运行",
         "couldn_t_validate_the_script": "无法校验脚本",
         "invalid_fix_before_running": "无效 — 运行前请先修复：",

@@ -5258,6 +5258,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Dynamische Workflows erstellen, ausführen und beobachten",
         "budget": "Budget",
+        "couldn_t_load_the_example_workflows": "Beispiel-Workflows konnten nicht geladen werden",
         "couldn_t_start_the_run": "Ausführung konnte nicht gestartet werden",
         "couldn_t_validate_the_script": "Skript konnte nicht validiert werden",
         "invalid_fix_before_running": "Ungültig — vor der Ausführung beheben:",

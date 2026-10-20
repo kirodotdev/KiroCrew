@@ -17,12 +17,16 @@
  * event schema in docs/system-specs/modules/workflows.md.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Workflow as WorkflowIcon, Play, FileCode, ListTree } from 'lucide-react'
 import { PageHeader } from '../../components/ui'
 import SegmentedControl from '../../components/SegmentedControl'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
+import { AppDisabledNotice, AppsButton } from '../../components/AppDisabledPage'
+import { isAppNotEnabledError, toApiError, type ApiError } from '../../api/apiError'
+import { retryPolicy } from '../../api/queryClient'
+import { attachReport, parseErrorCode, recordError } from '../../utils/errorReport'
 import WorkflowsRuns from './WorkflowsRuns'
 import WorkflowRunTree from './WorkflowRunTree'
 import { groupByPhase, latestBudget, type WfEvent, type AgentRow, type PhaseGroup } from './runModel'
@@ -35,12 +39,28 @@ export { groupByPhase, latestBudget }
 export type { WfEvent, AgentRow, PhaseGroup }
 
 // Proxied base for the workflows builtin-app backend (KiroCrew reverse-proxies
-// /apps/workflows/api/* to the app's HTTP server).
+// /apps/workflows/api/* to the app's HTTP server). A refusal throws the shared
+// ApiError, which keeps the gateway's body so the page can read its `code`.
 const API_BASE = '/apps/workflows/api'
+
+/** The ApiError for a failed call, with its report journaled and pinned to it as the dashboard
+ *  client does (`api/client.ts`), so a notice that hands the failure to the agent carries the
+ *  endpoint, status and code rather than only the sentence on screen. */
+async function failure(r: Response, path: string): Promise<ApiError> {
+  const error = await toApiError(r)
+  return attachReport(error, recordError({
+    source: 'api',
+    message: error.message,
+    status: error.status,
+    code: parseErrorCode(error.body),
+    endpoint: `${API_BASE}${path}`,
+    detail: error.body,
+  }))
+}
 
 async function apiGet<T>(path: string): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin' })
-  if (!r.ok) throw new Error(`GET ${path} → ${r.status}`)
+  if (!r.ok) throw await failure(r, path)
   return r.json() as Promise<T>
 }
 
@@ -51,7 +71,7 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`POST ${path} → ${r.status}`)
+  if (!r.ok) throw await failure(r, path)
   return r.json() as Promise<T>
 }
 
@@ -88,6 +108,9 @@ async def workflow(ctx):
 
 type WorkflowsView = 'author' | 'runs'
 
+/** The example-scripts query: read as the page opens, and asked again by `reaskHeldRefusal`. */
+const EXAMPLES_KEY = ['workflow-examples']
+
 /** Stable stand-in for "no run yet". A fresh `[]` per render would give every
  *  hook keyed on the event list a new identity on every render. */
 const NO_EVENTS: WfEvent[] = []
@@ -95,21 +118,47 @@ const NO_EVENTS: WfEvent[] = []
 export default function WorkflowsPage() {
   const [view, setView] = useState<WorkflowsView>('author')
   const [source, setSource] = useState<string>(STARTER)
+  // Set when the author first focuses the editor: from then on the editor is where a script is
+  // being started, so a refusal no longer replaces it.
+  const [engaged, setEngaged] = useState(false)
 
-  // Shipped example workflows for the author to start from (cached, deduped).
-  const { data: examples = [] } = useQuery({
-    queryKey: ['workflow-examples'],
+  // Shipped example workflows for the author to start from (cached, deduped). The disabled-app
+  // refusal is not retried: it is the app's state rather than a blip, and a retry only keeps the
+  // editor on screen for the retry delay before the page gives way.
+  const { data: examples = [], error: examplesError } = useQuery({
+    queryKey: EXAMPLES_KEY,
     queryFn: () => apiGet<ExampleScript[]>('/examples'),
+    retry: (count, error) => !isAppNotEnabledError(error) && retryPolicy(count, error),
   })
+
+  // A Validate or Run the backend answered proves the app is on again, so an example refusal
+  // still held from before is stale: ask for the examples again, which also takes its notice
+  // down. Once per answer, and read from the cache when the answer lands rather than from the
+  // render that started the call.
+  const queryClient = useQueryClient()
+  const reaskHeldRefusal = () => {
+    if (isAppNotEnabledError(queryClient.getQueryState(EXAMPLES_KEY)?.error)) {
+      void queryClient.invalidateQueries({ queryKey: EXAMPLES_KEY })
+    }
+  }
 
   // Validate + run are imperative actions → useMutation (loading/error/data
   // managed by react-query; no manual running/error/run state).
   const validateMutation = useMutation({
     mutationFn: (src: string) => apiPost<ValidateResponse>('/validate', { source: src }),
+    onSuccess: () => {
+      // An answered Validate takes down a Run refusal held from before too, which only Run's
+      // next click would otherwise clear. Not in `reaskHeldRefusal`, which Run's own onSuccess
+      // shares: that one is built from a render that still holds the refusal this Run replaces,
+      // and resetting there would drop the run that just answered.
+      if (isAppNotEnabledError(runMutation.error)) runMutation.reset()
+      reaskHeldRefusal()
+    },
   })
   const runMutation = useMutation({
     mutationFn: (src: string) =>
       apiPost<RunResponse>('/run', { source: src, run_id: `wf_ui_${Date.now()}` }),
+    onSuccess: reaskHeldRefusal,
   })
 
   const validation = validateMutation.data ?? null
@@ -147,6 +196,30 @@ export default function WorkflowsPage() {
   const events = run?.events ?? NO_EVENTS
   const budget = useMemo(() => latestBudget(events), [events])
 
+  // The gateway refuses every call to this app's backend while the app is off, and any of the
+  // three can be the first to meet that refusal. The example fetch is asked as the page opens:
+  // until the author has focused the editor or changed the starter script nothing can be lost,
+  // so the Author view gives way to the disabled-app notice. Only that view does. The page keeps
+  // its header and its Author/Runs switch, because the Runs view reads the gateway's run registry
+  // (`/api/workflows/*`) rather than the app's proxied API and works with the app off, and it
+  // keeps the fields of its Save form in its own state, so a refusal that lands while it is open
+  // must not unmount it. Validate and Run are answered over a script the author may have written,
+  // and it lives only in `source`, while the notice's one button unmounts this page. So their
+  // refusal is a notice beside the editor, which stays, and so is an example refusal that lands
+  // once the author is in the editor.
+  const examplesOff = isAppNotEnabledError(examplesError)
+  const validateOff = isAppNotEnabledError(validateMutation.error)
+  const runOff = isAppNotEnabledError(runMutation.error)
+  const authorOff = examplesOff && !engaged && source === STARTER
+  // No hand-off: the workflow `source` in the editor is unsaved local state.
+  const appOffNotice = (
+    <ErrorNotice
+      title={i18nT('components.appHost.this_app_is_disabled')}
+      message={i18nT('components.appHost.enable_this_app_from_apps_to_use_it')}
+      footer={<AppsButton />}
+    />
+  )
+
   return (
     <div>
       <PageHeader title={i18nT('apps.workflows.workflowsPage.workflows')} subtitle={i18nT('apps.workflows.workflowsPage.author_run_and_watch_dynamic_workflows')} />
@@ -164,7 +237,9 @@ export default function WorkflowsPage() {
 
       {view === 'runs' && <WorkflowsRuns />}
 
-      {view === 'author' && (
+      {view === 'author' && authorOff && <AppDisabledNotice refusal={examplesError} />}
+
+      {view === 'author' && !authorOff && (
       <div className="px-4 md:px-6 pb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ----- Author ----- */}
         <div className="flex flex-col gap-3">
@@ -174,6 +249,7 @@ export default function WorkflowsPage() {
           <textarea
             value={source}
             onChange={e => setSource(e.target.value)}
+            onFocus={() => setEngaged(true)}
             spellCheck={false}
             className="font-mono text-[12px] leading-relaxed h-72 p-3 rounded border border-border bg-card resize-y"
             aria-label={i18nT('apps.workflows.workflowsPage.workflow_source')}
@@ -215,15 +291,28 @@ export default function WorkflowsPage() {
               />
             )}
           </div>
+          {/* A failed example fetch that is not the disabled-app refusal: without this the
+              "Load example…" control is simply absent. Titled for what failed, since the
+              editor beside it still works. No hand-off: the workflow `source` in the editor
+              is unsaved local state. */}
+          <ErrorNotice
+            title={i18nT('apps.workflows.workflowsPage.couldn_t_load_the_example_workflows')}
+            message={examplesOff ? null : errText(examplesError)}
+            messagePlacement="below"
+          />
           {/* The validator's rejection, one line per problem; below it, the
-              validator being unreachable at all.
+              validator being unreachable at all, or the app being switched off.
               No hand-off: the workflow `source` in the editor is unsaved local state. */}
           <ErrorNotice
             title={i18nT('apps.workflows.workflowsPage.invalid_fix_before_running')}
             message={validation && !validation.ok ? validation.errors.join('\n') : null}
             messageClassName="font-mono whitespace-pre-line"
           />
-          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script')} message={validateError} />
+          {(validateOff || examplesOff) && appOffNotice}
+          <ErrorNotice
+            title={i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script')}
+            message={validateOff ? null : validateError}
+          />
         </div>
 
         {/* ----- Live run view ----- */}
@@ -238,7 +327,11 @@ export default function WorkflowsPage() {
           </div>
 
           {/* No hand-off: the workflow `source` in the editor is unsaved local state. */}
-          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_start_the_run')} message={error} />
+          {runOff && appOffNotice}
+          <ErrorNotice
+            title={i18nT('apps.workflows.workflowsPage.couldn_t_start_the_run')}
+            message={runOff ? null : error}
+          />
 
           {events.length === 0 && !error && (
             <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">

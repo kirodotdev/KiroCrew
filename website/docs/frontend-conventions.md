@@ -1027,6 +1027,31 @@ register and then never resolve. The same constraint and the reasoning behind it
 are in [extension-seams](extension-seams.md), which covers registering routes and
 icons from a downstream edition instead of editing the seed maps.
 
+A builtin page that calls its app's proxied API (`/apps/<name>/api/*`) throws the
+`ApiError` from `toApiError` rather than a status-only `Error`, so the gateway's
+body survives to the page. While the app is off, the proxy answers 403 with
+`code: "app_not_enabled"`. `isAppNotEnabledError` (`src/api/apiError.ts`) reads
+that code. An app whose routes the gateway mounts itself (`/api/apps/<name>/*`)
+answers `code: "app_disabled"` from its own guard instead, so a page of such an
+app that adopts this adds that code to the predicate along with its first caller.
+The page renders `AppDisabledNotice` (the body of the page `AppHost` shows for an
+installed app that is off) in place of the view that call feeds, when the call it
+makes as it opens is refused, instead of printing `POST /path → 403`. Keep the
+page's own header and view switch: another view may not depend on the app at all
+(the Workflows Runs view reads the gateway's run registry) and stays reachable
+while the app is off. Pass the refusal as `refusal`: it is an error, so the notice
+shows it through `ErrorNotice` with the agent hand-off, which is safe because the
+view it replaced held no input. Do not retry that call on the refusal (it is the
+app's state, and a retry only delays the notice). Replace only the view that
+depends on the call while it is the one open, and stop once the user has focused
+an input: a refusal that lands while the user is in another view of the page, one
+that keeps form state of its own, must not unmount it. A refusal of a later call
+over input the user typed (Validate, Run) keeps the view:
+the notice sits beside the input, because the notice's button leaves
+the page and the input lives only in its state. Key on the code and not the 403:
+the same routes answer 403 to a caller who is not the owner, and that is a failure
+to show, not an app to enable.
+
 ## Crew capability drafts
 
 The Crew editor's Capabilities pane and its draft, preview and save contract are

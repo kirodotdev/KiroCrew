@@ -1,4 +1,4 @@
-import { ApiError, friendlyErrText, toApiError, isTerminalApprovalRefusal } from '../api/apiError'
+import { ApiError, friendlyErrText, toApiError, isTerminalApprovalRefusal, isAppNotEnabledError } from '../api/apiError'
 
 /** A minimal Response stand-in: only what toApiError reads. */
 const res = (status: number, body: string, headers: Record<string, string> = {}): Response =>
@@ -102,6 +102,26 @@ describe('isTerminalApprovalRefusal', () => {
     ['a non-object rejection', 'nope', false],
   ])('classifies %s', (_label, err, terminal) => {
     expect(isTerminalApprovalRefusal(err)).toBe(terminal)
+  })
+})
+
+describe('isAppNotEnabledError', () => {
+  const refusal = JSON.stringify({ code: 'app_not_enabled', error: "app 'zzq' is not enabled" })
+
+  it.each([
+    ['the proxy\'s 403 refusal', new ApiError(403, "app 'zzq' is not enabled", refusal), true],
+    ['the same code on another status', new ApiError(404, "app 'zzq' is not enabled", refusal), true],
+    ['a 403 that carries a different code', new ApiError(403, 'owner only', JSON.stringify({ code: 'dashboard_owner_required' })), false],
+    ['the same sentence with no code', new ApiError(403, "app 'zzq' is not enabled", JSON.stringify({ error: "app 'zzq' is not enabled" })), false],
+    ['a body that is not JSON', new ApiError(403, 'nope', 'app_not_enabled'), false],
+    ['an error that carries no response', new Error('Failed to fetch'), false],
+    ['a non-object rejection', 'nope', false],
+  ])('classifies %s', (_label, err, off) => {
+    expect(isAppNotEnabledError(err)).toBe(off)
+  })
+
+  it('reads the refusal off the error toApiError builds from a response', async () => {
+    expect(isAppNotEnabledError(await toApiError(res(403, refusal)))).toBe(true)
   })
 })
 

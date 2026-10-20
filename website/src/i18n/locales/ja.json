@@ -5168,6 +5168,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "動的ワークフローを作成、実行、監視",
         "budget": "予算",
+        "couldn_t_load_the_example_workflows": "ワークフローの例を読み込めませんでした",
         "couldn_t_start_the_run": "実行を開始できませんでした",
         "couldn_t_validate_the_script": "スクリプトを検証できませんでした",
         "invalid_fix_before_running": "無効 — 実行前に修正してください：",

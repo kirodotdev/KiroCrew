@@ -3729,6 +3729,7 @@
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Author, run, and watch dynamic workflows",
         "budget": "budget",
+        "couldn_t_load_the_example_workflows": "Couldn't load the example workflows",
         "couldn_t_start_the_run": "Couldn't start the run",
         "couldn_t_validate_the_script": "Couldn't validate the script",
         "invalid_fix_before_running": "Invalid — fix before running:",

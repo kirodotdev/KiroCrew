@@ -86,6 +86,14 @@ const errorBodyCode = (body: string): string => {
   }
 }
 
+/**
+ * True for the gateway's refusal of a call to an app that is switched off: the
+ * `app_not_enabled` body the app reverse proxy answers with. Keyed on the code,
+ * not on the 403, because the same routes also answer 403 to a caller who is not
+ * the owner, and that is a failure to diagnose rather than an app to enable.
+ */
+export const isAppNotEnabledError = (e: unknown): boolean => apiErrorCode(e) === 'app_not_enabled'
+
 /** True when an approval refusal is terminal — the approval itself is gone (404,
  *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */
 export const isTerminalApprovalRefusal = (e: unknown): boolean => {
