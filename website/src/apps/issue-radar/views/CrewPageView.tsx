@@ -44,7 +44,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { Archive, CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText, Undo2 } from 'lucide-react'
+import { CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText, Undo2 } from 'lucide-react'
 
 import { Badge, Btn, Card, CardTitle, EmptyState, StatCard } from '../../../components/ui'
 import { useConfirm } from '../../../components/ConfirmDialog'
@@ -220,7 +220,7 @@ export interface CrewPageViewProps {
 
 export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
   const { t } = useTranslation()
-  const { active, refreshPrefs } = useIssueRadar()
+  const { active, refreshPrefs, setRetiredCrew } = useIssueRadar()
   const qc = useQueryClient()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -274,22 +274,37 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
   // "Retire crew": the backend stops the crew for good and drops it from the
   // roster, keeping its record, work log and name reservation. Refetching the
   // roster is what moves the page on: the context re-points a selection the
-  // roster no longer holds at the first crew left, or at the empty state.
+  // roster no longer holds at the first crew left, or at the empty state, and the
+  // crews column then says which crew was retired.
+  //
+  // The repo and crew are captured when the button is pressed and travel as the
+  // mutation's variables. This view is not keyed by crew, so while the dialog is
+  // open a roster poll can re-point it at another crew (this one retired from a
+  // second tab, say); reading `crewId` when the request goes out would then retire
+  // a crew the dialog never named.
   const { confirm, confirmDialog } = useConfirm()
   const retire = useMutation({
-    mutationFn: () => issueRadarApi.retireCrew(active, crewId),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['issue-radar', 'crews', repoScopeKey(active)] })
+    mutationFn: (target: { ref: typeof active, id: string, name: string }) =>
+      issueRadarApi.retireCrew(target.ref, target.id),
+    onSuccess: (_res, target) => {
+      setRetiredCrew({ name: target.name, ref: target.ref })
+      void qc.invalidateQueries({ queryKey: ['issue-radar', 'crews', repoScopeKey(target.ref)] })
     },
   })
+  // The mutation outlives a change of crew for the same reason, so its pending
+  // and failed states are shown only on the page of the crew it was for.
+  const retireIsThisCrew = retire.variables?.id === crewId
+    && repoScopeKey(retire.variables.ref) === repoScopeKey(active)
+  const retirePending = retire.isPending && retireIsThisCrew
+  const retireFailed = retire.isError && retireIsThisCrew
   const retireFailReason = retire.error instanceof Error ? retire.error.message.trim() : ''
-  const askRetire = async (name: string) => {
+  const askRetire = async (target: { ref: typeof active, id: string, name: string }) => {
     const ok = await confirm({
-      title: t('apps.issueRadar.views.crews.page.retire_confirm_title', { name }),
+      title: t('apps.issueRadar.views.crews.page.retire_confirm_title', { name: target.name }),
       body: t('apps.issueRadar.views.crews.page.retire_hint'),
       confirmLabel: t('apps.issueRadar.views.crews.page.retire'),
     })
-    if (ok) retire.mutate()
+    if (ok) retire.mutate(target)
   }
 
   // ── open work items ──
@@ -696,27 +711,33 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
         className="flex flex-col gap-2 rounded-md border border-danger-subtle bg-danger-subtle p-3"
         data-testid="crew-retire-zone"
       >
-        <p className="m-0 text-[12px] leading-relaxed text-muted">
+        <p className="m-0 text-[12px] leading-relaxed text-text">
           {t('apps.issueRadar.views.crews.page.retire_hint')}
         </p>
         <div className="flex items-center">
           <div className="flex-1" />
           <Btn
             danger
-            onClick={() => { void askRetire(crew.name) }}
+            onClick={() => { void askRetire({ ref: active, id: crewId, name: crew.name }) }}
+            /* One retire at a time across crews: a second one would take over the
+               shared mutation and drop the first one's failure unreported. */
             disabled={retire.isPending}
+            aria-busy={retirePending}
             data-testid="crew-retire"
           >
-            <Archive className="lucide-inline" />
-            {t('apps.issueRadar.views.crews.page.retire')}
+            {/* No icon: the archive glyph reads as "can be restored", and nothing
+                restores a retired crew. */}
+            {retirePending
+              ? t('apps.issueRadar.views.crews.page.retiring')
+              : t('apps.issueRadar.views.crews.page.retire')}
           </Btn>
         </div>
         {/* No draft on this page, so the hand-off loses nothing. */}
         <ErrorNotice
-          title={retire.isError && retireFailReason !== ''
+          title={retireFailed && retireFailReason !== ''
             ? t('apps.issueRadar.views.crews.page.retire_failed')
             : undefined}
-          message={retire.isError
+          message={retireFailed
             ? retireFailReason || t('apps.issueRadar.views.crews.page.retire_failed')
             : null}
           messagePlacement="below"

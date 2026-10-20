@@ -941,8 +941,10 @@
             "work_log_hint": "24h highlighted",
             "retire": "Retire crew",
             "retire_hint": "Retiring stops this crew for good and removes it from the crews list. Its record, work log and name reservation are kept, so its name can’t be reused.",
-            "retire_confirm_title": "Retire {{name}}?",
-            "retire_failed": "Couldn’t retire the crew. Try again."
+            "retire_confirm_title": "Retire “{{name}}”?",
+            "retire_failed": "Couldn’t retire the crew. Try again.",
+            "retiring": "Retiring…",
+            "retired_notice": "“{{name}}” was retired. Its record and work log are kept."
           },
           "rail_section": "Crews",
           "status_idle": "idle",

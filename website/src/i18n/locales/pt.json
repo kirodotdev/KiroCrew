@@ -2681,8 +2681,10 @@
             "work_log_hint": "últimas 24h destacadas",
             "retire": "Aposentar crew",
             "retire_hint": "Uma crew aposentada para de trabalhar de vez e sai da lista de crews. O registro, o log de trabalho e a reserva do nome dela são mantidos, então o nome não pode ser reutilizado.",
-            "retire_confirm_title": "Aposentar {{name}}?",
-            "retire_failed": "Não foi possível aposentar a crew. Tente de novo."
+            "retire_confirm_title": "Aposentar “{{name}}”?",
+            "retire_failed": "Não foi possível aposentar a crew. Tente de novo.",
+            "retiring": "Aposentando…",
+            "retired_notice": "“{{name}}” foi aposentada. O registro e o log de trabalho dela são mantidos."
           },
           "rail_section": "Crews",
           "status_idle": "inativo",

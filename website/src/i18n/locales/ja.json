@@ -2649,8 +2649,10 @@
             "work_log_hint": "直近 24h をハイライト",
             "retire": "クルーを引退させる",
             "retire_hint": "引退したクルーは作業を完全に停止し、クルー一覧から外れます。記録、作業ログ、名前の予約は残るため、その名前は再利用できません。",
-            "retire_confirm_title": "{{name}} を引退させますか？",
-            "retire_failed": "クルーを引退させられませんでした。もう一度お試しください。"
+            "retire_confirm_title": "「{{name}}」を引退させますか？",
+            "retire_failed": "クルーを引退させられませんでした。もう一度お試しください。",
+            "retiring": "引退処理中…",
+            "retired_notice": "「{{name}}」を引退させました。記録と作業ログは残っています。"
           },
           "rail_sort": "ソート",
           "rail_filters": "フィルター"

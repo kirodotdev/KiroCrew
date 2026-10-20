@@ -2681,8 +2681,10 @@
             "work_log_hint": "ultime 24h evidenziate",
             "retire": "Ritira crew",
             "retire_hint": "Una crew ritirata smette di lavorare per sempre ed esce dall’elenco delle crew. Il suo record, il registro di lavoro e la prenotazione del nome restano conservati, quindi il nome non può essere riutilizzato.",
-            "retire_confirm_title": "Ritirare {{name}}?",
-            "retire_failed": "Impossibile ritirare la crew. Riprova."
+            "retire_confirm_title": "Ritirare «{{name}}»?",
+            "retire_failed": "Impossibile ritirare la crew. Riprova.",
+            "retiring": "Ritiro in corso…",
+            "retired_notice": "«{{name}}» è stata ritirata. Il record e il registro di lavoro restano conservati."
           },
           "rail_section": "Crew",
           "status_idle": "inattiva",

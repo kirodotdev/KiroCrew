@@ -2707,8 +2707,10 @@
             "work_log_hint": "24 h hervorgehoben",
             "retire": "Crew stilllegen",
             "retire_hint": "Eine stillgelegte Crew arbeitet dauerhaft nicht mehr und verschwindet aus der Crew-Liste. Ihr Datensatz, ihr Arbeitsprotokoll und ihre Namensreservierung bleiben erhalten, daher kann ihr Name nicht wiederverwendet werden.",
-            "retire_confirm_title": "{{name}} stilllegen?",
-            "retire_failed": "Die Crew konnte nicht stillgelegt werden. Versuch es noch einmal."
+            "retire_confirm_title": "„{{name}}“ stilllegen?",
+            "retire_failed": "Die Crew konnte nicht stillgelegt werden. Versuch es noch einmal.",
+            "retiring": "Wird stillgelegt…",
+            "retired_notice": "„{{name}}“ wurde stillgelegt. Datensatz und Arbeitsprotokoll bleiben erhalten."
           },
           "rail_section": "Crews",
           "status_idle": "Leerlauf",
