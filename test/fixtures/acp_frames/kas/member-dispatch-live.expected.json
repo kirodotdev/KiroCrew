@@ -1,0 +1,438 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/memory/list",
+            "_kiro/memory/get",
+            "_kiro/memory/create",
+            "_kiro/memory/update",
+            "_kiro/memory/delete",
+            "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/configuration/getState",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "~/.kiro/logs/20261020T064122510/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T064122510/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T064122510/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "~/.kiro/logs/20261020T064122510"
+          },
+          "modelFallbackReporting": true,
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "vibe",
+      "ids": [
+        "probe"
+      ]
+    },
+    "session_id": "kas-member-session-1"
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Fetching your cloud config",
+        "tool_call_id": "synthetic-id-1",
+        "tool_kind": "other",
+        "wire_title": "Fetching your cloud config"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "synthetic-id-1",
+        "tool_final": true,
+        "tool_output": "{\"kind\": \"upToDate\"}",
+        "tool_output_bytes": 20,
+        "tool_output_digest": "58ee84bfe48ca4ea914c7e6a8228e8938bb5054a3f602fa21dfdbfb18b139ccc",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "I'll load"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I'll load",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " and"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " and",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " call the session"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " call the session",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "_status tool."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "_status tool.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_018sSifLJTzmNKv53xmYwgyA",
+        "tool_final": true,
+        "tool_output": "{\n  \"loaded\": [\n    {\n      \"tool_id\": \"kirocrew-dashboard::session_status\",\n      \"description\": \"List the sessions YOU stood up and what each one is doing right now — the roster a conductor patrols. Each row is `working` (a turn is in flight, wait), `queued` (idle with messages waiting), `idle` (open and doing nothing — this is the one that needs a decision), `closed` (the crew log recorded a DELIBERATE tab close and the dashboard no longer holds it: a worker that FINISHED and closed its tab — ignore it, it carries `closed_at`), `lost` (the crew log remembers the session, the dashboard no longer holds it, and it did NOT close cleanly — a turn was still open, a process recycle or destroy tore it down, or its lifecycle could not be read: treat it as lost with the process that ran it and re-dispatch it), or `unknown` (birth metadata records that you created it, but neither a live session nor an attested crew-log edge exists — it was created and its fate is not recorded, so read it before you re-dispatch it). A row with `pending_approval: true` is parked on a tool approval a person must answer (`pending_approval_tool` names the tool when known): it still reads `working`, but waiting will not move it. `closed` and `lost` are the reason to use this instead of reading sessions one at a time: a worker that vanished is absent from any live list, so a live list cannot tell a worker that finished from one lost mid-task from one you never dispatched. Read both quality fields before trusting the count: `tree` describes the crew-log roster and `history` describes transcript birth metadata. For either one, `readable` means that source was read completely, `incomplete` means its rows may be missing, and `unreadable` means that durable source was unavailable. `roster_omitted` is separate again: it counts rows this reply dropped because the three sources' union exceeded the row bound, which no source's quality field describes. The result caveats each gap under its own source name. READ-only.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"not_found\": [],\n  \"note\": \"These tools are now loaded for the rest of this session. To RUN one, call tool_call with { \\\"tool_id\\\": \\\"namespace::tool\\\", \\\"arguments\\\": { ... } } (use the tool_id shown for each result, and arguments matching its input_schema). Do not call tool_load again for tools you have already loaded.\"\n}",
+        "tool_output_bytes": 2444,
+        "tool_output_digest": "e9fbaa2e4d84c47f8953e17397b28bff455121a3ec02fca86a11625b92f13605",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "tool_ids": [
+            "kirocrew-dashboard::session_status"
+          ]
+        },
+        "title": "Tool Load",
+        "tool_call_id": "toolu_bdrk_018sSifLJTzmNKv53xmYwgyA",
+        "tool_input": "{\n  \"tool_ids\": [\n    \"kirocrew-dashboard::session_status\"\n  ]\n}",
+        "wire_title": "Tool Load"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_server_name": "kirocrew-dashboard",
+        "raw_tool_params": {
+          "arguments": {},
+          "tool_id": "kirocrew-dashboard::session_status"
+        },
+        "title": "@kirocrew-dashboard/session_status",
+        "tool_call_id": "toolu_bdrk_01YUF9BL36Kj6sSYdtNjr5gB",
+        "tool_input": "{\n  \"tool_id\": \"kirocrew-dashboard::session_status\",\n  \"arguments\": {}\n}",
+        "tool_kind": "other",
+        "wire_title": "@kirocrew-dashboard/session_status"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "arguments": {},
+          "tool_id": "kirocrew-dashboard::session_status"
+        },
+        "tool_call_id": "toolu_bdrk_01YUF9BL36Kj6sSYdtNjr5gB",
+        "tool_input": "{\n  \"tool_id\": \"kirocrew-dashboard::session_status\",\n  \"arguments\": {}\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01YUF9BL36Kj6sSYdtNjr5gB",
+        "tool_final": true,
+        "tool_output": "Error: tool 'session_status' is unavailable because this server could not prove which session it acts for (identity_unattested): the gateway refused the tool-policy read for session probe-member-key because the request carried no session token, or one that does not vouch for that session. Refusing the call rather than ignoring an operator's exclusion list.",
+        "tool_output_bytes": 358,
+        "tool_output_digest": "1538ce2eaa5c6c12358330d771dba270f3e68fd07caef13a40bec51ff8ab3609",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "arguments": {},
+          "tool_id": "kirocrew-dashboard::session_status"
+        },
+        "title": "@kirocrew-dashboard/session_status",
+        "tool_call_id": "toolu_bdrk_01YUF9BL36Kj6sSYdtNjr5gB",
+        "tool_input": "{\n  \"tool_id\": \"kirocrew-dashboard::session_status\",\n  \"arguments\": {}\n}",
+        "wire_title": "@kirocrew-dashboard/session_status"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "It fail"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "It fail",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ed:"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ed:",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " the session_status tool returned"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " the session_status tool returned",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " an ident"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " an ident",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ity_unattested error because the"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ity_unattested error because the",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " server"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " server",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " couldn't prove which"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " couldn't prove which",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " session it acts"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " session it acts",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " for."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " for.",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  }
+]

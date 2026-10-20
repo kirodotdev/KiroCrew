@@ -94,6 +94,8 @@ ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 # deepseek is excluded on the same grounds: its whole home is ``DSH_HOME``, which its
 # auth declaration names, so the floor re-anchors the declared leaf under the
 # override and a ``$HOME`` relocation reaches nothing the override does not.
+# KAS is excluded although Crew spawns it through ``kiro-cli`` too: where KAS keeps
+# its MCP OAuth grants is not measured, so it stays out under the rule above.
 ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 
 

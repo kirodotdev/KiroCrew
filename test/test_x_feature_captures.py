@@ -21,8 +21,8 @@ sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
 # The ceiling only moves down. Raising it is the change this test exists to stop.
-X_CAPTURE_CEILING = 18
-KIRO_KAS_PAIR_CEILING = 3
+X_CAPTURE_CEILING = 10
+KIRO_KAS_PAIR_CEILING = 0
 
 
 def test_tree_passes() -> None:
@@ -54,6 +54,57 @@ def test_kas_citing_a_kiro_capture_fails() -> None:
     assert "kiro-cli is not KAS" in gaps[(name, "kas")]
 
 
+def _relabeled(tmp_path, src_dir: str, dst_dir: str, header_from: str, header_to: str) -> str:
+    """Copy ``<src_dir>/steering-live`` into a scratch corpus as ``<dst_dir>/``, relabeled."""
+    import shutil
+
+    for d in ("kiro", "kas"):
+        (tmp_path / gate._FIXTURES / d).mkdir(parents=True)
+    src = os.path.join(gate.REPO_ROOT, gate._FIXTURES, src_dir, "steering-live")
+    dst = tmp_path / gate._FIXTURES / dst_dir / "steering-live"
+    with open(src + ".jsonl", encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    assert header_from in lines[0]
+    lines[0] = lines[0].replace(header_from, header_to, 1)
+    (dst.parent / "steering-live.jsonl").write_text("\n".join(lines) + "\n")
+    shutil.copy(src + ".expected.json", str(dst) + ".expected.json")
+    return str(tmp_path)
+
+
+def test_a_kiro_capture_relabeled_kas_fails(tmp_path) -> None:
+    """The kiro-cli steer capture, header rewritten to ``backend: kas``, cited for KAS."""
+    root = _relabeled(tmp_path, "kiro", "kas", '"backend": ""', '"backend": "kas"')
+    # The name check alone would refuse it; drop the header name to reach the handshake.
+    path = os.path.join(root, gate._FIXTURES, "kas", "steering-live.jsonl")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read().replace(', "agent_name": "Kiro CLI Agent"', "", 1)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    gaps = gate.check_x_captures(gate.live_sets(), gate.set_comments(), root=root)
+    assert "holds no KAS initialize" in gaps[("ACP_BACKENDS_STEER", "kas")]
+
+
+def test_a_kas_capture_relabeled_kiro_fails(tmp_path) -> None:
+    """The KAS steer capture, header rewritten to ``backend: ""``, cited for kiro-cli."""
+    root = _relabeled(tmp_path, "kas", "kiro", '"backend": "kas"', '"backend": ""')
+    gaps = gate.check_x_captures(gate.live_sets(), gate.set_comments(), root=root)
+    assert "holds no kiro-cli initialize" in gaps[("ACP_BACKENDS_STEER", "kiro")]
+
+
+def test_every_cited_kiro_and_kas_capture_carries_its_own_handshake() -> None:
+    comments = gate.set_comments()
+    cited = {
+        (d, f)
+        for name in gate.X_FEATURE_SETS
+        for d, f in gate._CITE.findall(comments.get(name, ""))
+        if d in gate.HANDSHAKE_IDENTITY
+    }
+    assert {d for d, _ in cited} == {"kiro", "kas"}
+    for d, f in sorted(cited):
+        meta, _ = gate.read_capture(gate.REPO_ROOT, f"{d}/{f}")
+        assert gate.handshake_matches(d, meta), f"{d}/{f}"
+
+
 def test_a_capture_is_read_with_its_replay_snapshot() -> None:
     meta, name = gate.read_capture(gate.REPO_ROOT, "kas/steering-live.jsonl")
     assert meta["recorded"] == "live" and meta["backend"] == "kas" and meta["replayed"]
@@ -68,7 +119,7 @@ def test_the_self_test_passes() -> None:
 
 def test_an_added_allowlist_entry_is_refused(monkeypatch) -> None:
     entries = set(gate.X_CAPTURE_ALLOWLIST)
-    entries.discard(("ACP_BACKENDS_STEER", "kiro"))
+    entries.discard(("ACP_BACKENDS_SIDE_READONLY", "kiro"))
     pairs, x_sets = set(gate.KIRO_KAS_PAIR_ALLOWLIST), dict(gate.X_FEATURE_SETS)
     monkeypatch.setattr(gate, "_base_allowlists", lambda base: (entries, pairs, x_sets))
     assert gate.enforce_x_captures("base") == 1
@@ -121,11 +172,7 @@ def test_narrowing_an_x_set_scope_is_refused(monkeypatch) -> None:
 def test_an_emptied_allowlist_is_read_back_as_empty(monkeypatch) -> None:
     with open(_GATE_PATH, encoding="utf-8") as fh:
         source = fh.read()
-    start = source.index("KIRO_KAS_PAIR_ALLOWLIST: frozenset[str] = frozenset(")
-    end = source.index("\n)\n", start) + 3
-    source = (
-        source[:start] + "KIRO_KAS_PAIR_ALLOWLIST: frozenset[str] = frozenset()\n" + source[end:]
-    )
+    assert "KIRO_KAS_PAIR_ALLOWLIST: frozenset[str] = frozenset()\n" in source
     monkeypatch.setattr(gate, "git", lambda args: source)
     _, pairs, _ = gate._base_allowlists("base")
     assert pairs == set()

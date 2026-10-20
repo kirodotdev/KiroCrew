@@ -1,0 +1,351 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.32.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "subagent_activity",
+    "events": [],
+    "frame": "_kiro.dev/session/update",
+    "session_update": "tool_call_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested sleep command and capture its output.",
+          "command": "sleep 12 && echo first-done"
+        },
+        "title": "sleep 12 && echo first-done",
+        "tool_call_id": "toolu_bdrk_01FjSvVFDXG4xRwo1tptfTXS",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested sleep command and capture its output.\",\n  \"command\": \"sleep 12 && echo first-done\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "shell",
+        "tool_purpose": "Run the requested sleep command and capture its output.",
+        "wire_title": "Running: sleep 12 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested sleep command and capture its output.",
+          "command": "sleep 12 && echo first-done"
+        },
+        "request_id": "synthetic-id-1",
+        "shell_classified": true,
+        "title": "Running: sleep 12 && echo first-done",
+        "tool_call_id": "toolu_bdrk_01FjSvVFDXG4xRwo1tptfTXS",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested sleep command and capture its output.\",\n  \"command\": \"sleep 12 && echo first-done\"\n}",
+        "tool_name": "shell",
+        "tool_purpose": "Run the requested sleep command and capture its output."
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01FjSvVFDXG4xRwo1tptfTXS",
+        "tool_output": "first-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "8419772cb50b484dc040b44ee1d2a934abb576428ee71104ffd0656b256bf14f"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01FjSvVFDXG4xRwo1tptfTXS",
+        "tool_final": true,
+        "tool_output": "first-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "8419772cb50b484dc040b44ee1d2a934abb576428ee71104ffd0656b256bf14f",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested sleep command and capture its output.",
+          "command": "sleep 12 && echo first-done"
+        },
+        "title": "sleep 12 && echo first-done",
+        "tool_call_id": "toolu_bdrk_01FjSvVFDXG4xRwo1tptfTXS",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested sleep command and capture its output.\",\n  \"command\": \"sleep 12 && echo first-done\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Run the requested sleep command and capture its output.",
+        "wire_title": "Running: sleep 12 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionSteeringInjected"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "The"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " command"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " command",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " output was"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " output was",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " `first-done`."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " `first-done`.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " pineapple\n\n[ST"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " pineapple\n\n[ST",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "EERING steer-5657"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "EERING steer-5657",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ec825aac40df8"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ec825aac40df8",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "c96a5ee088ed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "c96a5ee088ed",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "c4e: Applied the"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "c4e: Applied the",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " steering by"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " steering by",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " ending my"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " ending my",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " answer with the word \"pine"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " answer with the word \"pine",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "apple\" as requested.]"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "apple\" as requested.]",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

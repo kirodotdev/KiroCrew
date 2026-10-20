@@ -1,5 +1,104 @@
 [
   {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/memory/list",
+            "_kiro/memory/get",
+            "_kiro/memory/create",
+            "_kiro/memory/update",
+            "_kiro/memory/delete",
+            "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/configuration/getState",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "~/.kiro/logs/20261020T071153035/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T071153035/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T071153035/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "~/.kiro/logs/20261020T071153035"
+          },
+          "modelFallbackReporting": true,
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
     "frame": "response",
     "id": 3
   },
@@ -44,7 +143,7 @@
           "path": "/work/note.txt"
         },
         "title": "Read File",
-        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_call_id": "toolu_bdrk_01KR24DAp5zoPCzQ4JzYa7BU",
         "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}",
         "tool_kind": "read",
         "wire_title": "Read File"
@@ -87,7 +186,7 @@
         "request_id": 1,
         "shell_classified": true,
         "title": "Read File",
-        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_call_id": "toolu_bdrk_01KR24DAp5zoPCzQ4JzYa7BU",
         "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}",
         "tool_name": "read_file"
       }
@@ -109,7 +208,7 @@
           "offset": null,
           "path": "/work/note.txt"
         },
-        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_call_id": "toolu_bdrk_01KR24DAp5zoPCzQ4JzYa7BU",
         "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}"
       }
     ],
@@ -121,7 +220,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_call_id": "toolu_bdrk_01KR24DAp5zoPCzQ4JzYa7BU",
         "tool_final": true,
         "tool_output": "<file name=\"/work/note.txt\" language=\"plaintext\" >\n<content>\nhello from the probe\n\n</content>\n</file>",
         "tool_output_bytes": 101,
@@ -136,7 +235,7 @@
           "path": "/work/note.txt"
         },
         "title": "Read File",
-        "tool_call_id": "toolu_bdrk_012v1iJkvPvd3fyehGz15zsH",
+        "tool_call_id": "toolu_bdrk_01KR24DAp5zoPCzQ4JzYa7BU",
         "tool_input": "{\n  \"path\": \"/work/note.txt\",\n  \"offset\": null,\n  \"limit\": null\n}",
         "wire_title": "Read File"
       }
@@ -173,7 +272,7 @@
           "query": "hello"
         },
         "title": "Grep Search",
-        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_call_id": "toolu_bdrk_019vqKqFSASeVNZ1uZipfHYh",
         "tool_input": "{\n  \"query\": \"hello\"\n}",
         "tool_kind": "search",
         "wire_title": "Grep Search"
@@ -214,7 +313,7 @@
         "request_id": 2,
         "shell_classified": true,
         "title": "Grep Search",
-        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_call_id": "toolu_bdrk_019vqKqFSASeVNZ1uZipfHYh",
         "tool_input": "{\n  \"query\": \"hello\"\n}",
         "tool_name": "grep_search"
       }
@@ -234,7 +333,7 @@
         "raw_tool_params": {
           "query": "hello"
         },
-        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_call_id": "toolu_bdrk_019vqKqFSASeVNZ1uZipfHYh",
         "tool_input": "{\n  \"query\": \"hello\"\n}"
       }
     ],
@@ -246,7 +345,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_call_id": "toolu_bdrk_019vqKqFSASeVNZ1uZipfHYh",
         "tool_final": true,
         "tool_output": "You searched for hello and received the following results:\nnote.txt\n1:hello from the probe",
         "tool_output_bytes": 90,
@@ -259,7 +358,7 @@
           "query": "hello"
         },
         "title": "Grep Search",
-        "tool_call_id": "toolu_bdrk_01PGmU6pGavxvkncEqS8trKE",
+        "tool_call_id": "toolu_bdrk_019vqKqFSASeVNZ1uZipfHYh",
         "tool_input": "{\n  \"query\": \"hello\"\n}",
         "wire_title": "Grep Search"
       }
@@ -295,14 +394,14 @@
         "kind": "tool_call",
         "raw_tool_params": {
           "command": "ls",
-          "description": "List files in current directory",
+          "description": "List files in the workspace",
           "run_in_background": false
         },
-        "title": "List files in current directory",
-        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
-        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in current directory\",\n  \"run_in_background\": false\n}",
+        "title": "List files in the workspace",
+        "tool_call_id": "run_command_toolu_bdrk_01NCMXs1JfJhUr21WHVpb2k4",
+        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in the workspace\",\n  \"run_in_background\": false\n}",
         "tool_kind": "execute",
-        "wire_title": "List files in current directory"
+        "wire_title": "List files in the workspace"
       }
     ],
     "frame": "session/update",
@@ -337,14 +436,14 @@
         "raw_params_trusted": true,
         "raw_tool_params": {
           "command": "ls",
-          "description": "List files in current directory",
+          "description": "List files in the workspace",
           "run_in_background": false
         },
         "request_id": 3,
         "shell_classified": true,
         "title": "ls",
-        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
-        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in current directory\",\n  \"run_in_background\": false\n}",
+        "tool_call_id": "run_command_toolu_bdrk_01NCMXs1JfJhUr21WHVpb2k4",
+        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in the workspace\",\n  \"run_in_background\": false\n}",
         "tool_name": "run_command"
       }
     ],
@@ -360,7 +459,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
+        "tool_call_id": "run_command_toolu_bdrk_01NCMXs1JfJhUr21WHVpb2k4",
         "tool_output": "Output:\nThe user rejected this tool call.\n\nExit Code: -1",
         "tool_output_bytes": 56,
         "tool_output_digest": "42c14274a2ff27d26d6457d5f4c10e253e375f040cc1e19b80cd81bec315dbd0",
@@ -371,13 +470,13 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "ls",
-          "description": "List files in current directory",
+          "description": "List files in the workspace",
           "run_in_background": false
         },
-        "title": "List files in current directory",
-        "tool_call_id": "run_command_toolu_bdrk_01VTZkMEKg5BQo1EQh6JaLay",
-        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in current directory\",\n  \"run_in_background\": false\n}",
-        "wire_title": "List files in current directory"
+        "title": "List files in the workspace",
+        "tool_call_id": "run_command_toolu_bdrk_01NCMXs1JfJhUr21WHVpb2k4",
+        "tool_input": "{\n  \"command\": \"ls\",\n  \"description\": \"List files in the workspace\",\n  \"run_in_background\": false\n}",
+        "wire_title": "List files in the workspace"
       }
     ],
     "frame": "session/update",
@@ -413,7 +512,7 @@
           "text": "x"
         },
         "title": "Write File",
-        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_call_id": "toolu_bdrk_01PuMripQuZLD8hpRFMd1VTr",
         "tool_input": "{\n  \"path\": \"/work/created.txt\",\n  \"text\": \"x\"\n}",
         "tool_kind": "edit",
         "wire_title": "Write File"
@@ -431,7 +530,7 @@
           "path": "/work/created.txt",
           "text": "x"
         },
-        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_call_id": "toolu_bdrk_01PuMripQuZLD8hpRFMd1VTr",
         "tool_input": "{\n  \"path\": \"/work/created.txt\",\n  \"text\": \"x\"\n}"
       }
     ],
@@ -471,7 +570,7 @@
         "request_id": 4,
         "shell_classified": true,
         "title": "Write File",
-        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_call_id": "toolu_bdrk_01PuMripQuZLD8hpRFMd1VTr",
         "tool_input": "{\n  \"path\": \"/work/created.txt\",\n  \"text\": \"x\"\n}",
         "tool_name": "fs_write"
       }
@@ -488,7 +587,7 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_call_id": "toolu_bdrk_01PuMripQuZLD8hpRFMd1VTr",
         "tool_output": "{\"message\": \"The user rejected this tool call.\"}",
         "tool_output_bytes": 48,
         "tool_output_digest": "e4c3568fed02ff306cf000b822ce58c1d6c60d0e57da6864566a1933ca4fcc20",
@@ -502,7 +601,7 @@
           "text": "x"
         },
         "title": "Write File",
-        "tool_call_id": "toolu_bdrk_01VcTYVGT5JgYxWn14grRYhb",
+        "tool_call_id": "toolu_bdrk_01PuMripQuZLD8hpRFMd1VTr",
         "tool_input": "--- /work/created.txt\n+++ /work/created.txt\n@@ -0,0 +1 @@\n+x",
         "wire_title": "Write File"
       }

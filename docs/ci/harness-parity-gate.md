@@ -81,6 +81,7 @@ A non-standard (X) capability — an underscore method, a `_meta` field, a harne
 | for KAS, cite `kas/` | a KAS member citing only `kiro/` — kiro-cli is not KAS |
 | point at a file that exists, whose header says `recorded: live`, the member's `backend`, and an `agent_version` | a missing or synthesized capture |
 | carry an agent name, when it has one (`_meta.agent_name`, else `initialize.agentInfo.name`), listed in `EXPECTED_AGENT_NAMES` | a capture of another package, such as `@openma/pi-acp` for pi |
+| for kiro-cli and KAS (`HANDSHAKE_IDENTITY`), hold its own `initialize` response: KAS with `agentCapabilities._meta.kiro.extensionMethods` and no `agentInfo`, kiro-cli with `agentInfo` "Kiro CLI Agent" and no such list | a kiro-cli capture relabeled `backend: kas`, or a KAS capture relabeled `backend: ""` |
 | have its `.expected.json` snapshot | a capture `test_acp_frame_replay.py` does not replay through the dispatch parsers |
 
 A second check covers kiro-cli and KAS drifting apart: every `ACP_BACKENDS_*` set holding exactly one of them must name the other in its comment, so the reader sees the split was decided, not assumed.

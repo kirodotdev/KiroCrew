@@ -1,0 +1,120 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.32.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "probe",
+      "ids": [
+        "probe"
+      ]
+    },
+    "session_id": "kiro-spec-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "raw_tool_params": {
+          "__tool_use_purpose": "User asked for the codeword."
+        },
+        "title": "Running: @probe/probe_codeword",
+        "tool_call_id": "toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"__tool_use_purpose\": \"User asked for the codeword.\"\n}",
+        "tool_kind": "unknown",
+        "tool_name": "probe_codeword",
+        "tool_purpose": "User asked for the codeword.",
+        "wire_title": "Running: @probe/probe_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv",
+        "tool_final": true,
+        "tool_output": "tangerine-42",
+        "tool_output_bytes": 12,
+        "tool_output_digest": "97f42a964cc23ac07aa1f3e17d127e3e69a6baeb9c04d55a6a4be384ed66d960",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "User asked for the codeword."
+        },
+        "title": "Running: @probe/probe_codeword",
+        "tool_call_id": "toolu_bdrk_01UH1EFFgmZ9kJD2zNmRFuXv",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"User asked for the codeword.\"\n}",
+        "tool_kind": "other",
+        "tool_purpose": "User asked for the codeword.",
+        "wire_title": "Running: @probe/probe_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "t"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "t",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "angerine-42"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "angerine-42",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

@@ -61,6 +61,12 @@ from kiro_crew.agent_sdk.backends import (
 # kind under ``_meta.kiro``), and the model obeyed it before that turn's
 # ``stopReason``. No lane re-runs it, so a later kiro-cli is not re-measured.
 #
+# kiro-cli is a member on a LIVE capture against kiro-cli 2.32.0:
+# ``test/fixtures/acp_frames/kiro/steering-live.jsonl``. The same steer, sent while a
+# shell call ran, was answered ``{queued: true}``, echoed as
+# ``AgentExecutionUserMessageQueued`` then ``AgentExecutionSteeringInjected`` (on
+# ``_kiro.dev/session/update``), and obeyed before that turn's ``stopReason``.
+#
 # This set answers the DENY-NOTICE question as well as the user one: a member's
 # steer can carry a refusal reason into the turn that was refused. A backend that
 # can take a USER's mid-turn message but not a deny notice belongs in
@@ -342,6 +348,9 @@ ACP_BACKENDS_COMPACT = frozenset(
 # louder. What such a harness gets instead is a WARNING from the gate naming both
 # memberships it lacks, and the refusal arm that promises nothing -- so the leak is
 # reported rather than either denied or answered by ending the conversation.
+#
+# kiro-cli is not a member: no capture shows it compacting on its own, and its
+# ``/compact`` is served through ``ACP_BACKENDS_COMPACT``.
 ACP_BACKENDS_HARNESS_MANAGED_COMPACTION = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose FULL context is answered by recycling the session, because no
@@ -450,6 +459,10 @@ ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
 # way and has no ``_kiro.dev`` verb.
 # deepseek is not a member and publishes no command list either: it carries commands
 # internally and its ACP surface rejects them, so it exposes none over the wire.
+#
+# kiro-cli is a member on a LIVE capture against kiro-cli 2.32.0:
+# ``test/fixtures/acp_frames/kiro/commands-execute-live.jsonl``, where the object form
+# ``{command: effort, args: {level: high}}`` answered ``{success: true}``.
 ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO})
 
 # The kiro family: kiro-cli and KAS, the two harnesses Crew spawns through

@@ -414,36 +414,49 @@ EXPECTED_AGENT_NAMES: dict[str, frozenset[str]] = {
     "deepseek": frozenset({"deepseek-harness-acp"}),
 }
 
+# kiro-cli and KAS are one binary speaking one ``_kiro`` dialect, and KAS's
+# ``initialize`` carries no ``agentInfo``, so a header cannot tell them apart. Every
+# capture either one cites must hold its own ``initialize`` response, read off the
+# wire: KAS 0.66.43 answers with ``agentCapabilities._meta.kiro.extensionMethods`` and
+# no ``agentInfo``; kiro-cli 2.32.0 with ``agentInfo`` "Kiro CLI Agent" and no such
+# list. A capture of either relabeled as the other fails here.
+HANDSHAKE_IDENTITY: dict[str, str] = {
+    "kiro": "kiro-cli initialize (agentInfo 'Kiro CLI Agent', no _meta.kiro.extensionMethods)",
+    "kas": "KAS initialize (agentCapabilities._meta.kiro.extensionMethods, no agentInfo)",
+}
+
+
+def handshake_matches(d: str, meta: dict) -> bool:
+    """Whether a capture's own ``initialize`` names the engine its directory claims."""
+    if d == "kas":
+        return bool(meta.get("wire_marked")) and meta.get("agent_info") is None
+    if d == "kiro":
+        info = meta.get("agent_info")
+        return not meta.get("wire_marked") and info in EXPECTED_AGENT_NAMES["kiro"]
+    return True
+
+
 # (set, fixture dir) -> the capture that is missing. Shrink-only: an entry not on
 # the base ref fails, and an entry whose member now passes fails until removed.
 X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("ACP_BACKENDS_STEER", "kiro"): "kiro-cli _session/steer turn",
     ("ACP_BACKENDS_STEERING_REQUEST", "claude"): "claude _session/steering turn",
     ("ACP_BACKENDS_STEERING_REQUEST", "codex"): "codex _session/steering turn",
     ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
     ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", "opencode"): "opencode second session/prompt",
-    ("ACP_BACKENDS_SIDE_READONLY", "kiro"): "kiro-cli side session read-only turn",
+    ("ACP_BACKENDS_SIDE_READONLY", "kiro"): "live capture pending",
     ("ACP_BACKENDS_SIDE_READONLY", "claude"): "claude side session read-only turn",
-    ("ACP_BACKENDS_SIDE_READONLY", "deepseek"): "cite deepseek/side-read-only-live.jsonl",
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
-    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "kiro"): "kiro-cli saved member spec session",
-    ("ACP_BACKENDS_MEMBER_CAPABILITIES", "kas"): "KAS saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "codex"): "codex saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
-    ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"): "KAS markdown agent spec session",
-    ("ACP_BACKENDS_KIRO_SLASH_COMMANDS", "kiro"): "kiro-cli _kiro.dev/commands turn",
-    ("ACP_BACKENDS_MEMBER_DISPATCH", "kas"): "KAS member thread-tools session",
+    ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"): (
+        "live KAS 0.66.43 registers a markdown agent but ignores its prompt; "
+        "membership decided separately"
+    ),
 }
 
 # Sets holding exactly one of kiro-cli and KAS whose comment does not name the
 # other. Same shrink-only contract.
-KIRO_KAS_PAIR_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION",
-        "ACP_BACKENDS_HOOKS_LIST",
-        "ACP_BACKENDS_POD_HOME_REMAP",
-    }
-)
+KIRO_KAS_PAIR_ALLOWLIST: frozenset[str] = frozenset()
 
 _CITE = re.compile(r"acp_frames/([\w.-]+)/([\w.-]+\.jsonl)")
 _NAMES_KAS = re.compile(r"\bKAS\b|\bkas\b")
@@ -496,6 +509,9 @@ def read_capture(root: str, rel: str) -> tuple[dict, str | None] | None:
     The ``replayed`` key says whether the capture has its ``.expected.json``
     snapshot: ``test_acp_frame_replay`` replays every corpus file through the
     real dispatch parsers and fails without one, so a snapshot is the replay.
+    ``wire_marked`` says whether an ``initialize`` response carries
+    ``agentCapabilities._meta.kiro.extensionMethods``, and ``agent_info`` is the name
+    in its ``agentInfo`` (header names never count; see ``HANDSHAKE_IDENTITY``).
     """
     import json
 
@@ -504,6 +520,8 @@ def read_capture(root: str, rel: str) -> tuple[dict, str | None] | None:
         return None
     meta: dict = {}
     name = None
+    info_name = None
+    marked = False
     replayed = os.path.isfile(path[: -len(".jsonl")] + ".expected.json")
     with open(path, encoding="utf-8") as fh:
         for n, line in enumerate(fh):
@@ -516,14 +534,18 @@ def read_capture(root: str, rel: str) -> tuple[dict, str | None] | None:
             if n == 0 and isinstance(frame.get("_meta"), dict) and "jsonrpc" not in frame:
                 meta = frame["_meta"]
                 name = meta.get("agent_name")
-            info = (
-                (frame.get("result") or {}).get("agentInfo")
-                if isinstance(frame.get("result"), dict)
-                else None
-            )
-            if name is None and isinstance(info, dict):
-                name = info.get("name")
-    return dict(meta, replayed=replayed), name
+            result = frame.get("result") if isinstance(frame.get("result"), dict) else {}
+            info = result.get("agentInfo")
+            if isinstance(info, dict):
+                info_name = info.get("name") if info_name is None else info_name
+                name = info.get("name") if name is None else name
+            # Only the initialize response carries both of these.
+            caps = result.get("agentCapabilities") if "protocolVersion" in result else None
+            caps_meta = caps.get("_meta") if isinstance(caps, dict) else None
+            kiro = caps_meta.get("kiro") if isinstance(caps_meta, dict) else None
+            if isinstance(kiro, dict) and isinstance(kiro.get("extensionMethods"), list):
+                marked = True
+    return dict(meta, replayed=replayed, wire_marked=marked, agent_info=info_name), name
 
 
 def check_x_captures(
@@ -567,6 +589,8 @@ def check_x_captures(
                     why.append(f"{d}/{f} header has no agent_version")
                 elif agent is not None and expected and agent not in expected:
                     why.append(f"{d}/{f} is a capture of {agent!r}, not {sorted(expected)}")
+                elif d in HANDSHAKE_IDENTITY and not handshake_matches(d, meta):
+                    why.append(f"{d}/{f} holds no {HANDSHAKE_IDENTITY[d]}")
                 elif not meta.get("replayed"):
                     why.append(f"{d}/{f} has no .expected.json, so no test replays it")
                 else:
@@ -899,8 +923,19 @@ def _x_capture_self_test() -> int:
     synthesized = {
         "pi/steer-live.jsonl": (dict(live, backend="pi", recorded="synthesized"), "pi-acp")
     }
-    kas_capture = {"kas/steering-live.jsonl": (dict(live, backend="kas"), None)}
-    kiro_capture = {"kiro/compaction-live.jsonl": (dict(live, backend=""), "Kiro CLI Agent")}
+    kas_capture = {"kas/steering-live.jsonl": (dict(live, backend="kas", wire_marked=True), None)}
+    kas_unmarked = {"kas/steering-live.jsonl": (dict(live, backend="kas"), None)}
+    kiro_info = dict(live, agent_info="Kiro CLI Agent")
+    kiro_relabeled = {"kas/steering-live.jsonl": (dict(kiro_info, backend="kas"), "Kiro CLI Agent")}
+    kiro_capture = {"kiro/compaction-live.jsonl": (dict(kiro_info, backend=""), "Kiro CLI Agent")}
+    kas_relabeled = {"kiro/compaction-live.jsonl": (dict(live, backend="", wire_marked=True), None)}
+    # One clause each: a kas capture that also names kiro-cli, a kiro capture that also marks KAS.
+    kas_with_info = {
+        "kas/steering-live.jsonl": (dict(kiro_info, backend="kas", wire_marked=True), None)
+    }
+    kiro_with_marker = {
+        "kiro/compaction-live.jsonl": (dict(kiro_info, backend="", wire_marked=True), None)
+    }
     steer_req = "ACP_BACKENDS_STEERING_REQUEST"
     cite_pi = "proof: ``test/fixtures/acp_frames/pi/steer-live.jsonl``."
     probes = (
@@ -932,6 +967,54 @@ def _x_capture_self_test() -> int:
             "``acp_frames/kiro/compaction-live.jsonl``",
             kiro_capture,
             ("ACP_BACKENDS_STEER", "kas"),
+        ),
+        (
+            "kas-capture-without-its-initialize",
+            "ACP_BACKENDS_STEER",
+            {"kas"},
+            "``acp_frames/kas/steering-live.jsonl``",
+            kas_unmarked,
+            ("ACP_BACKENDS_STEER", "kas"),
+        ),
+        (
+            "kiro-capture-relabeled-kas",
+            "ACP_BACKENDS_STEER",
+            {"kas"},
+            "``acp_frames/kas/steering-live.jsonl``",
+            kiro_relabeled,
+            ("ACP_BACKENDS_STEER", "kas"),
+        ),
+        (
+            "kas-capture-relabeled-kiro",
+            "ACP_BACKENDS_STEER",
+            {""},
+            "``acp_frames/kiro/compaction-live.jsonl``",
+            kas_relabeled,
+            ("ACP_BACKENDS_STEER", "kiro"),
+        ),
+        (
+            "kas-capture-with-an-agentinfo",
+            "ACP_BACKENDS_STEER",
+            {"kas"},
+            "``acp_frames/kas/steering-live.jsonl``",
+            kas_with_info,
+            ("ACP_BACKENDS_STEER", "kas"),
+        ),
+        (
+            "kiro-capture-with-the-kas-marker",
+            "ACP_BACKENDS_STEER",
+            {""},
+            "``acp_frames/kiro/compaction-live.jsonl``",
+            kiro_with_marker,
+            ("ACP_BACKENDS_STEER", "kiro"),
+        ),
+        (
+            "kiro-proven",
+            "ACP_BACKENDS_STEER",
+            {""},
+            "``acp_frames/kiro/compaction-live.jsonl``",
+            kiro_capture,
+            None,
         ),
         ("pi-proven", steer_req, {"pi"}, cite_pi, pi_capture, None),
         (
