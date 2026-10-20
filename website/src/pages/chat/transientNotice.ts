@@ -56,6 +56,21 @@ function shapeOf(m: ChatMessage): Shape | null {
   return null
 }
 
+/**
+ * True for a PENDING link of the transient ladder — the gateway has already
+ * re-queued the turn and nothing is asked of the person. A crewmate's chat
+ * drops these rows (`components/chat/crewmateBubbles`): routine recovery is the
+ * runtime's own machinery, and a patrolling crewmate otherwise stacks one
+ * "Connection restored" card per retried wake with no message of its own
+ * between them. The terminal give-up is NOT pending: it is the one shape where
+ * the person must act, and it keeps drawing everywhere.
+ */
+export function isPendingTransientNotice(m: ChatMessage): boolean {
+  if (m.role !== 'error') return false
+  const shape = shapeOf(m)
+  return shape === 'retrying' || shape === 'resuming'
+}
+
 export type TransientNotice =
   | {
       /**

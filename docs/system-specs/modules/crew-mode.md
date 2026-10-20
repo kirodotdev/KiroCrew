@@ -3240,7 +3240,14 @@ therefore a turn whose final assistant text is empty: the model's own silence
 is the signal, and no heuristic over the words decides for it — a row with
 visible words is always shown, so a finding or a question can never be
 filtered away. No "N quiet patrols" divider is drawn in their place. Rows the
-user must see or act on stay: `user`, `error`, `file`, `mcp_oauth`,
+user must see or act on stay: `user`, `error` — except the PENDING links of the
+gateway's transient-5xx ladder (`meta.notice` of `transient_retrying` /
+`transient_resuming`, `isPendingTransientNotice` in
+`pages/chat/transientNotice.ts`), which are runtime notices in all but role:
+the turn is already re-queued, and on a patroller they otherwise stack one
+"Connection restored" card per retried wake with nothing of the crewmate's
+between them; the terminal `transient_give_up` keeps drawing because the person
+must act on it — `file`, `mcp_oauth`,
 `permission` (pending native and background-spawn approvals remain actionable),
 question cards, change cards, the stop card (a `system` row of kind
 `stop_event`, the record of the person's own Stop press, which breaks a run like
@@ -3412,9 +3419,12 @@ starts that turn seconds later): `awaitingCrewmateReply` holds while the
 pane's newest send still has its row (sent, queued or drained), its delivery
 is not in doubt (`deliveryUnconfirmed`), and nothing after it has answered --
 no assistant row (speech or the say-nothing row of a quiet end), error, stop
-card, pending approval or change card. A refused send's bubble is gone, so it
-waits on nothing. A live turn that ends while the send is not parked in the
-queue ends the wait too (the turn that answers it wrote no row); a turn that
+card, pending approval or change card. A pending link of the transient-5xx
+ladder (`isPendingTransientNotice`) is not an answer: its card is hidden in a
+crewmate's chat and the turn is already re-queued, so the bubble holds until
+the retried turn answers or the ladder's give-up row lands. A refused send's
+bubble is gone, so it waits on nothing. A live turn that ends while the send
+is not parked in the queue ends the wait too (the turn that answers it wrote no row); a turn that
 ends while the send is still queued is the one before it. So does a slots
 frame, while the slot is not live, naming a different turn than the one
 current at Send (`turn`, or `turn_gen` after a gateway restart): the answering
