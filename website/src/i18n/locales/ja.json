@@ -12284,6 +12284,7 @@
       "older": "以前",
       "older_sessions": "以前のセッション",
       "older_sessions_2": "以前のセッション",
+      "older_sessions_tip": "タブとして開いていない保存済みのセッションをすべて表示します。たった今閉じたものも、Slack や Discord のチャットも含まれます。セッションを開くと、タブとして戻ります。",
       "bulk_switch_keeps_conversation": "すべてのセッションのモデルを選択します。会話は保持され、新しいモデルで続きます。",
       "bulk_switch_stops_running_reply": "実行中のセッションも切り替わり、現在の応答は中断されます。",
       "pinned": "固定済み",

@@ -12283,6 +12283,7 @@
       "older": "更早",
       "older_sessions": "较早的会话",
       "older_sessions_2": "较早的会话",
+      "older_sessions_tip": "列出所有未作为标签页打开的已保存会话，包括刚刚关闭的会话以及 Slack、Discord 聊天。打开某个会话即可将其恢复为标签页。",
       "open_source_link_in_side_panel": "在侧边面板中打开 {{url}} ({{modifier}} 在浏览器中打开)",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}}：在侧边面板中打开 {{url}} ({{modifier}} 在浏览器中打开)",
       "bulk_switch_keeps_conversation": "为所有会话选择一个模型。对话会保留，并在新模型上继续。",

@@ -12667,6 +12667,7 @@
       "older": "Mais antigas",
       "older_sessions": "Sessões antigas",
       "older_sessions_2": "Sessões antigas",
+      "older_sessions_tip": "Lista todas as sessões salvas que não estão abertas como aba, incluindo as que você acabou de fechar e os chats do Slack ou do Discord. Abra uma para trazê-la de volta como aba.",
       "open_source_link_in_side_panel": "Abrir {{url}} no painel lateral ({{modifier}} para abrir no navegador)",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: abrir {{url}} no painel lateral ({{modifier}} para abrir no navegador)",
       "bulk_switch_keeps_conversation": "Escolha um modelo para todas as sessões. A conversa é mantida e continua no novo modelo.",

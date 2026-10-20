@@ -12475,6 +12475,7 @@
       "older": "Älter",
       "older_sessions": "Ältere Sitzungen",
       "older_sessions_2": "Ältere Sitzungen",
+      "older_sessions_tip": "Listet jede gespeicherte Sitzung, die nicht als Tab geöffnet ist, einschließlich gerade erst geschlossener Sitzungen und Chats aus Slack oder Discord. Öffne eine, um sie wieder als Tab zu holen.",
       "open_source_link_in_side_panel": "{{url}} im Seitenpanel öffnen ({{modifier}} zum Öffnen im Browser)",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: {{url}} im Seitenpanel öffnen ({{modifier}} zum Öffnen im Browser)",
       "bulk_switch_keeps_conversation": "Wähle ein Modell für alle Sitzungen. Die Unterhaltung bleibt erhalten und läuft mit dem neuen Modell weiter.",

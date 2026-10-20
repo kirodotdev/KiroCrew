@@ -6991,6 +6991,7 @@
       "no_sessions_match": "No sessions match",
       "older_sessions": "Older sessions",
       "older_sessions_2": "Older Sessions",
+      "older_sessions_tip": "Lists every saved session not open as a tab, including ones you just closed and Slack or Discord chats. Open one to bring it back as a tab.",
       "only_show_sessions_that_have_no_tags": "Only show sessions that have no tags",
       "bulk_switch_keeps_conversation": "Pick a model for every session. The conversation is kept and continues on the new model.",
       "bulk_switch_stops_running_reply": "Running sessions switch too, and their current reply is stopped.",

@@ -12667,6 +12667,7 @@
       "older": "Plus anciens",
       "older_sessions": "Sessions plus anciennes",
       "older_sessions_2": "Sessions plus anciennes",
+      "older_sessions_tip": "Liste toutes les sessions enregistrées qui ne sont pas ouvertes dans un onglet, y compris celles que tu viens de fermer et les chats Slack ou Discord. Ouvre une session pour la rouvrir dans un onglet.",
       "open_source_link_in_side_panel": "Ouvrir {{url}} dans le panneau latéral ({{modifier}} pour l'ouvrir dans le navigateur)",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}} : ouvrir {{url}} dans le panneau latéral ({{modifier}} pour l'ouvrir dans le navigateur)",
       "bulk_switch_keeps_conversation": "Choisis un modèle pour toutes les sessions. La conversation est conservée et se poursuit avec le nouveau modèle.",

@@ -12475,6 +12475,7 @@
       "older": "পুরোনো",
       "older_sessions": "পুরোনো সেশন",
       "older_sessions_2": "পুরোনো সেশন",
+      "older_sessions_tip": "ট্যাব হিসেবে খোলা নেই এমন সব সংরক্ষিত সেশন দেখায়, এর মধ্যে এইমাত্র বন্ধ করা সেশন আর Slack বা Discord-এর চ্যাটও রয়েছে। কোনো একটি খুললে সেটি আবার ট্যাব হিসেবে ফিরে আসবে।",
       "open_source_link_in_side_panel": "সাইড প্যানেলে {{url}} খুলুন (ব্রাউজারে খুলতে {{modifier}})",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: সাইড প্যানেলে {{url}} খোলো (ব্রাউজারে খুলতে {{modifier}})",
       "bulk_switch_keeps_conversation": "প্রতিটি সেশনের জন্য একটি মডেল বাছো। কথোপকথন থেকে যায় এবং নতুন মডেলে চলতে থাকে।",

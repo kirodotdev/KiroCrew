@@ -12283,6 +12283,7 @@
       "older": "이전",
       "older_sessions": "이전 세션",
       "older_sessions_2": "이전 세션",
+      "older_sessions_tip": "탭으로 열려 있지 않은 저장된 세션을 모두 표시합니다. 방금 닫은 세션과 Slack이나 Discord 채팅도 포함됩니다. 하나를 열면 다시 탭으로 돌아옵니다.",
       "open_source_link_in_side_panel": "{{url}}을(를) 사이드 패널에서 열기 ({{modifier}}(으)로 누르면 브라우저에서 열기)",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: {{url}}을(를) 사이드 패널에서 열기 ({{modifier}}(으)로 누르면 브라우저에서 열기)",
       "bulk_switch_keeps_conversation": "모든 세션의 모델을 선택합니다. 대화는 유지되며 새 모델로 이어집니다.",

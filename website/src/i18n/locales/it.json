@@ -12667,6 +12667,7 @@
       "older": "Più vecchie",
       "older_sessions": "Sessioni più vecchie",
       "older_sessions_2": "Sessioni più vecchie",
+      "older_sessions_tip": "Elenca tutte le sessioni salvate che non sono aperte in una scheda, comprese quelle appena chiuse e le chat di Slack o Discord. Aprine una per riportarla in una scheda.",
       "open_source_link_in_side_panel": "Apri {{url}} nel pannello laterale ({{modifier}} per aprirlo nel browser)",
       "open_named_source_link_in_side_panel": "{{provider}} {{ref}}: apri {{url}} nel pannello laterale ({{modifier}} per aprirlo nel browser)",
       "bulk_switch_keeps_conversation": "Scegli un modello per tutte le sessioni. La conversazione viene mantenuta e prosegue con il nuovo modello.",

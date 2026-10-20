@@ -5,6 +5,7 @@ import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X, Monitor, EyeOff, VenetianMask, MessageSquare, Folder, Clock } from 'lucide-react'
 import FolderGlyph from '../../components/FolderGlyph'
+import InfoTip from '../../components/InfoTip'
 import { offlineProps } from '../../utils/offline'
 import { fetchHistory, resumeFromHistory } from '../../store/chatSlice'
 import { SEARCH_MIN_CHARS } from '../../api/client'
@@ -53,14 +54,20 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
         <div className="border-t border-border" />
       )}
       {/* Older Sessions footer — the persistent collapse/expand header for the
-          history pane. Whole row is the click target; the Clear button stops
-          propagation. */}
+          history pane. Whole row is the click target; the Clear button and the
+          info glyph stop propagation. */}
       <div
         role="button"
         tabIndex={0}
         {...uiLocation('chat.older-sessions')}
         onClick={() => { if (historyOpen) setHistoryOpen(false); else openHistoryPane() }}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (historyOpen) setHistoryOpen(false); else openHistoryPane() } }}
+        onKeyDown={e => {
+          // Only the row's own keys toggle it. A key pressed on a control inside
+          // the row (Clear, the info glyph) bubbles here too, and preventing its
+          // default would swallow that control's own activation.
+          if ((e.target as HTMLElement) !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (historyOpen) setHistoryOpen(false); else openHistoryPane() }
+        }}
         /* pt/pb are 14px, not py-3, so this row's top border lands on the same
            baseline as the nav rail's community row ("Star us · Report issue"):
            both cards sit 8px off the shell floor, the rail spends 8+2+24+10 =
@@ -75,6 +82,10 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
         <span className="flex items-center gap-1.5 text-[13px] font-semibold text-text-strong leading-none">
           <Clock size={14} className="shrink-0" />
           <span className="leading-none">{i18nT('pages.chatSidebar.older_sessions_2')}</span>
+          {/* What the pane lists. The copy restates the server's `exclude_open`
+              rule (handlers/sessions_parts/history_reads.py): every saved
+              session not open as a tab, any age. Change it when that rule does. */}
+          <InfoTip text={i18nT('pages.chatSidebar.older_sessions_tip')} />
         </span>
         {/* Chevron trails the Clear button so the disclosure glyph is the
             rightmost control, and Clear shifts left by the gap rather than
