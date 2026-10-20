@@ -100,6 +100,7 @@ def _run(
     calls: list[str],
     handoff_nonce: str = _NONCE,
     key: bytes | None = None,
+    handoff_bytes: bytes | None = None,
 ) -> dict:
     """Run the extension once; *mcp_json* is the text of pi's user-level ``mcp.json``."""
     agent_dir = tmp_path / "agent"
@@ -110,7 +111,7 @@ def _run(
     project.mkdir()
     payload, _names = pi_mcp_handoff_payload([_ELEMENT], handoff_nonce, _KEY)
     handoff = tmp_path / "handoff.json"
-    handoff.write_bytes(payload)
+    handoff.write_bytes(payload if handoff_bytes is None else handoff_bytes)
     receipt = tmp_path / "registration.json"
     harness = tmp_path / "harness.mjs"
     harness.write_text(_HARNESS, encoding="utf-8")
@@ -161,9 +162,11 @@ def test_the_handoff_servers_are_registered_for_direct_use(node, tmp_path) -> No
     # Removed once read where the directory allows it.
     assert out["handoff_left"] is False
     assert out["receipt"] == {
-        "kiro-crew-mcp-registration": 1,
+        "kiro-crew-mcp-registration": 2,
         "nonce": _NONCE,
-        "servers": ["kirocrew-core"],
+        "handoff": "loaded",
+        "registered": ["kirocrew-core"],
+        "unregistered": {},
     }
 
 
@@ -180,7 +183,9 @@ def test_a_same_named_server_in_pi_mcp_json_is_refused(node, tmp_path) -> None:
     assert out["results"]["mcp__other__tool"] == "allowed"
     assert out["results"]["read"] == "allowed"
     assert any("kirocrew-core" in n["message"] for n in out["notes"])
-    assert out["receipt"]["servers"] == []
+    assert out["receipt"]["handoff"] == "loaded"
+    assert out["receipt"]["registered"] == []
+    assert out["receipt"]["unregistered"] == {"kirocrew-core": "mcp_json"}
 
 
 def test_a_tool_name_that_keeps_the_dash_is_refused_too(node, tmp_path) -> None:
@@ -201,17 +206,29 @@ def test_an_unreadable_mcp_json_refuses_every_crew_server(node, tmp_path) -> Non
     """What a broken file declares is unknown, so none of Crew's names is trusted."""
     out = _run(node, tmp_path, mcp_json="{not json", calls=["mcp__kirocrew_core__x"])
     assert _REFUSED in out["results"]["mcp__kirocrew_core__x"]
+    assert out["receipt"]["unregistered"] == {"kirocrew-core": "mcp_json_unreadable"}
 
 
 def test_a_handoff_under_another_key_registers_nothing(node, tmp_path) -> None:
     """A sibling session's file does not open under this process's key."""
     out = _run(node, tmp_path, mcp_json=None, calls=[], key=bytes(32))
     assert out["registered"] == []
-    assert out["receipt"]["servers"] == []
+    # Named as a seal that did not open, never as pi's mcp.json shadowing it.
+    assert out["receipt"]["handoff"] == "unsealed"
+    assert out["receipt"]["registered"] == []
+    assert out["receipt"]["unregistered"] == {}
 
 
 def test_a_handoff_for_another_nonce_registers_nothing(node, tmp_path) -> None:
     """The file is bound to the session: one written for a different nonce is ignored."""
     out = _run(node, tmp_path, mcp_json=None, calls=[], handoff_nonce="f" * 32)
     assert out["registered"] == []
-    assert out["receipt"]["servers"] == []
+    assert out["receipt"]["handoff"] == "unsealed"
+    assert out["receipt"]["unregistered"] == {}
+
+
+def test_a_handoff_that_is_not_a_handoff_file_is_named_malformed(node, tmp_path) -> None:
+    out = _run(node, tmp_path, mcp_json=None, calls=[], handoff_bytes=b"{not json")
+    assert out["registered"] == []
+    assert out["receipt"]["handoff"] == "malformed"
+    assert out["receipt"]["unregistered"] == {}

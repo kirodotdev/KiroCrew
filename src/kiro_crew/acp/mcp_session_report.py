@@ -576,6 +576,10 @@ class McpSessionReport:
     #: failed bucket lists. Set by :meth:`record_pruned_omitted`; counted and said
     #: in the payload and the summary like :attr:`no_tools_omitted`.
     pruned_omitted: int = 0
+    #: How many more servers the harness confirmed it did NOT register than the
+    #: failed bucket lists. Set by :meth:`record_unregistered_omitted`; counted
+    #: apart from :attr:`pruned_omitted` because Crew did not leave these out.
+    unregistered_omitted: int = 0
     #: Bumped by every :meth:`begin_session`, so a session-open mount check
     #: (:mod:`kiro_crew.acp.mcp_mount_check`) started for one attempt can tell
     #: that the report has moved on to another and write nothing.
@@ -614,6 +618,7 @@ class McpSessionReport:
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
+        self.unregistered_omitted = 0
         self.generation += 1
         self._started = True
         self._ready.clear()
@@ -711,6 +716,17 @@ class McpSessionReport:
         before = self.pruned_omitted
         self.pruned_omitted = max(0, value)
         return self.pruned_omitted != before
+
+    def record_unregistered_omitted(self, count: Any) -> bool:
+        """Record how many confirmed-unregistered servers the failed bucket refused.
+
+        Same terms as :meth:`record_pruned_omitted`. Returns True when the report
+        changed.
+        """
+        value = count if isinstance(count, int) and not isinstance(count, bool) else 0
+        before = self.unregistered_omitted
+        self.unregistered_omitted = max(0, value)
+        return self.unregistered_omitted != before
 
     def record_header_secret_refs(self, entries: Any, omitted: int = 0) -> None:
         """Record the remote servers whose headers carry a ``secret://`` reference.
@@ -969,6 +985,12 @@ class McpSessionReport:
                     if self.pruned_omitted
                     else ""
                 )
+                + (
+                    f" (+{self.unregistered_omitted} more the harness did not register, "
+                    "not listed)"
+                    if self.unregistered_omitted
+                    else ""
+                )
             )
         restart = self.restart_to_load()
         if restart:
@@ -1045,6 +1067,7 @@ class McpSessionReport:
             "no_tools": list(self.no_tools),
             "no_tools_omitted": self.no_tools_omitted,
             "pruned_omitted": self.pruned_omitted,
+            "unregistered_omitted": self.unregistered_omitted,
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),
