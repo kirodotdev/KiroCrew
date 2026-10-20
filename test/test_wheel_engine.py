@@ -772,13 +772,20 @@ class TestCancellableBuildChild:
         The hook waits on the pidfile the child writes -- a positive handshake,
         bounded so a child that never starts fails by name -- and only then raises,
         so the loop is left before its deadline is consulted a second time.
+
+        ``time.sleep`` is patched on the ``time`` module, so every thread in the
+        process calls the hook. Only the thread running the build gets the
+        failure; any other (a daemon sweeper left by an earlier test) sleeps for
+        real, or it would take the one injected error and leave the build to run
+        into its timeout.
         """
         pidfile = tmp_path / "pids"
         real_sleep = time.sleep
         raised: list[bool] = []
+        build_thread = threading.current_thread()
 
         def failing_sleep(secs: float) -> None:
-            if raised:
+            if raised or threading.current_thread() is not build_thread:
                 real_sleep(secs)
                 return
             deadline = time.monotonic() + 30.0
