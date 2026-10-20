@@ -95,7 +95,8 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       }
     }
 
-    // When the gateway reports it cannot synthesize at all (`voice_unavailable`)
+    // When the gateway reports it cannot synthesize at all (`voice_unavailable`,
+    // or Polly rejecting the voice/engine/region as `voice_polly_rejected`)
     // for a manual Read aloud that allowed a fallback, speak the reply on the
     // client with the webview's own engine instead of showing the failure
     // notice. Returns whether it OWNED this outcome, so the caller skips
@@ -103,7 +104,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
     // the epoch — so a cancelled reply never starts speaking late, and only
     // fires when client speech is actually available (else the notice stands).
     const tryClientFallback = (requestId: string, slot: string, code: string | undefined, speakable?: string): boolean => {
-      if (code !== 'voice_unavailable') return false
+      if (code !== 'voice_unavailable' && code !== 'voice_polly_rejected') return false
       const entry = fallbackRef.current.get(requestId)
       fallbackRef.current.delete(requestId)
       if (!entry) return false

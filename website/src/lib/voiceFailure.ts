@@ -22,6 +22,12 @@ export const voiceFailureMessage = (code: string) => {
   if (code === 'voice_consent_required') {
     return i18nT('components.voicePlaybackNotice.consent_required', { speak })
   }
+  // Amazon Polly does not offer the selected voice/engine in the selected
+  // region — AWS rejects every sentence, so the fix is a different
+  // voice/engine/region in the settings, not a retry.
+  if (code === 'voice_polly_rejected') {
+    return i18nT('components.voicePlaybackNotice.polly_rejected', { speak })
+  }
   return i18nT('components.voicePlaybackNotice.failed', { speak })
 }
 

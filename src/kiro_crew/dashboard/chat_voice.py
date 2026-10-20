@@ -67,6 +67,11 @@ _MAX_ACTIVE_SYNTHESES = 2
 _MAX_REQUEST_ID_CHARS = 128
 _CANCELLED_REQUEST_TTL = 60.0
 
+#: Failure codes after which the dashboard may speak the reply with its own
+#: engine. Both mean the gateway produced no audio for a reason the client's
+#: engine does not share, so their error payloads carry ``speakable``.
+_CLIENT_FALLBACK_CODES = frozenset({"voice_unavailable", "voice_polly_rejected"})
+
 #: The live ``_vc`` attribute each config PUT field lands on, mapped to the key
 #: it is stored under in config.json's ``voice_reply`` block (the names the
 #: loader in slack/handler.py reads back).
@@ -555,24 +560,25 @@ async def _synthesize_request(
         err_msg, _ = redact_exfiltration_urls(str(exc))
         err_msg, _ = redact_credentials(err_msg)
         code = getattr(exc, "code", "voice_synthesis_failed")
-        # Carry the speakable text on the one code the client speaks locally, so
+        # Carry the speakable text on the codes the client speaks locally, so
         # the fallback voices placeholders (not raw code/markup) without
         # re-implementing strip_markdown.
-        extra = {"speakable": speakable} if code == "voice_unavailable" else {}
+        fallback = code in _CLIENT_FALLBACK_CODES
+        extra = {"speakable": speakable} if fallback else {}
         state.broadcast_ws(
             "voice_error",
             {**identity, "error": err_msg, "code": code, **extra},
         )
         # The body is a literal dict with a literal `code` on purpose: the
         # error-code ratchet treats a `**spread` body as opaque. `speakable` is
-        # only read by the client on voice_unavailable; None elsewhere is inert.
+        # only read by the client on a fallback code; None elsewhere is inert.
         return web.json_response(
             {
                 "ok": False,
                 "error": err_msg,
                 "code": code,
                 "request_id": request_id,
-                "speakable": speakable if code == "voice_unavailable" else None,
+                "speakable": speakable if fallback else None,
             },
             status=502,
         )
