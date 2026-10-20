@@ -12998,6 +12998,7 @@
         "mcp_concern_permission_mode": "에이전트 설정 파일이 요청하는 권한 모드 — {{name}}은(는) 자기 것을 씁니다",
         "mcp_concern_tool_allowlist": "에이전트 설정 파일이 허용하는 도구 — 그 목록은 여기서 아무것도 좁히지 않습니다",
         "mcp_deny_exception": "예외가 하나 있습니다. {{productName}} 자신의 서버, 예를 들어 kirocrew-core는 {{name}}에서도 도구 단위로 동작합니다.",
+        "mcp_deny_manage_link": "연결에서 MCP 서버 목록 열기",
         "mcp_deny_rule": "{{name}}에서 MCP 도구 하나를 끄면 끈 도구만이 아니라 같은 서버의 모든 도구가 멈춥니다.",
         "missing_components": "이 컴퓨터에 없음: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "새 세션은 이 에이전트를 사용합니다. 이미 열려 있는 세션은 시작할 때의 에이전트를 유지하며, 여기서 전환해도 세션 중에는 바뀌지 않습니다.",

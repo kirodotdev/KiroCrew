@@ -342,6 +342,15 @@ describe('sharing assessment', () => {
     fireEvent.mouseDown(tab)
   }
 
+  it('links "the MCP server list under Connections" to that list, not the Services gallery', async () => {
+    // #21303: the sentence names the MCP Servers sub-tab, which opens from `?view=`.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [withRec({ name: 'alpha-mcp' })] } as never)
+    await openAssessment()
+    const link = await screen.findByRole('link', { name: 'Connections' })
+    expect(link).toHaveAttribute('href', '/capabilities?tab=mcp&view=mcp-servers')
+  })
+
   it('shows the verdict and its reason instead of only a yes or no', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({

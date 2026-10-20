@@ -13434,6 +13434,7 @@
         "mcp_concern_permission_mode": "El modo de permisos que pide tu archivo de configuración de agente: {{name}} usa el suyo",
         "mcp_concern_tool_allowlist": "Las herramientas que permite tu archivo de configuración de agente: esa lista no limita nada aquí",
         "mcp_deny_exception": "Una excepción: los servidores propios de {{productName}}, como kirocrew-core, siguen funcionando herramienta por herramienta en {{name}}.",
+        "mcp_deny_manage_link": "Abrir la lista de servidores MCP en Conexiones",
         "mcp_deny_rule": "Apagar una herramienta MCP en {{name}} detiene todas las herramientas del mismo servidor, no solo la que apagaste.",
         "missing_components": "Falta en esta máquina: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Una sesión ya abierta conserva el agente con el que se inició: cambiarlo aquí no la modifica a mitad de sesión.",

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useInRouterContext, useSearchParams } from 'react-router-dom'
+import { Link, useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Bot, Boxes, Check, CircleHelp, Sparkles, Terminal, X } from 'lucide-react'
 
@@ -21,6 +21,7 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
+import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
@@ -1313,6 +1314,15 @@ export function AgentBackendTab() {
         {mcpDenyRule(value) && (
           <p className="mt-3 mb-0 text-[12px] leading-relaxed text-text-strong">
             {mcpDenyRule(value)}
+            {/* The list where a reader acts on the rule (#21303). */}
+            {inRouter && (
+              <>
+                {' '}
+                <Link to={MCP_SERVERS_HREF} className="font-normal text-accent hover:underline">
+                  {i18nT('pages.developer.agentBackendTab.mcp_deny_manage_link')}
+                </Link>
+              </>
+            )}
           </p>
         )}
         {mcpDenyException(value) && (

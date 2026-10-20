@@ -12998,6 +12998,7 @@
         "mcp_concern_permission_mode": "你的代理配置文件要求的权限模式——{{name}} 改用自己那一套",
         "mcp_concern_tool_allowlist": "你的代理配置文件允许的工具——这份清单在这里不会起限制作用",
         "mcp_deny_exception": "有一个例外：{{productName}} 自己的服务器，比如 kirocrew-core，在 {{name}} 上仍然按工具生效。",
+        "mcp_deny_manage_link": "在“连接”中打开 MCP 服务器列表",
         "mcp_deny_rule": "在 {{name}} 上关掉一个 MCP 工具，同一台服务器上的所有工具都会停，不只是你关掉的那个。",
         "missing_components": "本机缺少：{{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理；在此切换不影响正在进行的会话。",

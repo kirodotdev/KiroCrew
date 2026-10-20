@@ -7342,6 +7342,7 @@
         "mcp_concern_permission_mode": "The permission mode your agent config file asks for — {{name}} uses its own instead",
         "mcp_concern_tool_allowlist": "The tools your agent config file allows — that list does not narrow anything here",
         "mcp_deny_exception": "One exception: {{productName}}'s own servers, such as kirocrew-core, keep working tool by tool on {{name}}.",
+        "mcp_deny_manage_link": "Open the MCP Servers list in Connections",
         "mcp_deny_rule": "Turning off one MCP tool on {{name}} stops every tool on the same server, not just the one you turned off.",
         "missing_components": "Missing on this machine: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. A session that is already open keeps the one it started with — switching here does not change it mid-session.",

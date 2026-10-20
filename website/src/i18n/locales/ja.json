@@ -12998,6 +12998,7 @@
         "mcp_concern_permission_mode": "エージェント設定ファイルが求める権限モード — {{name}} は自分のものを使います",
         "mcp_concern_tool_allowlist": "エージェント設定ファイルが許すツール — その一覧はここでは何も絞りません",
         "mcp_deny_exception": "例外が1つあります。{{productName}} 自身のサーバー（kirocrew-core など）は {{name}} でもツール単位で動きます。",
+        "mcp_deny_manage_link": "「接続」で MCP サーバーの一覧を開く",
         "mcp_deny_rule": "{{name}} で MCP ツールを1つオフにすると、同じサーバーのすべてのツールが止まります。オフにしたものだけではありません。",
         "missing_components": "このマシンにありません: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使用します。すでに開いているセッションは開始時のエージェントを維持し、ここで切り替えてもセッション中に変わることはありません。",
