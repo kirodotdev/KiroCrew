@@ -14,9 +14,8 @@
  * every retained string renders as TEXT, never HTML.
  */
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { flushSync } from 'react-dom'
 import { OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from './overlayRoot'
-import { noteInPlaceResize } from '../hooks/virtualizer/inPlaceResize'
+import { Reveal, REVEAL_MS } from './redactionReveal'
 import { TOUCH_REPLAY_WINDOW_MS } from './InstantTip'
 import { Check, ChevronRight, Copy, Link2Off, Lock, Shield, TriangleAlert, X } from 'lucide-react'
 import { Trans } from 'react-i18next'
@@ -235,6 +234,12 @@ const EMPTY_HOLDS: ReadonlyMap<string, AllowHold> = new Map()
 let allowHolds: ReadonlyMap<string, ReadonlyMap<string, AllowHold>> = new Map()
 const holdListeners = new Set<() => void>()
 
+/** A per-reply counter, so a reply with no message time gets its OWN fallback
+ *  hold key instead of sharing one slot-wide key with every other untimestamped
+ *  reply in the slot (which would let one reply's outcome and cleanup reach
+ *  another's card). */
+let replyFallbackSeq = 0
+
 function subscribeHolds(cb: () => void): () => void {
   holdListeners.add(cb)
   return () => { holdListeners.delete(cb) }
@@ -280,8 +285,16 @@ interface RedactionUi {
   firstCredential: number
   blockedLinks: readonly BlockedLink[]
   slotKey?: string
-  /** Names this reply for the allow holds (slot and message time). */
+  /** Names this reply for the allow holds (slot and message time). Used for
+   *  the reload-restore, which must match the reloaded row by its timestamp,
+   *  so it is undefined when the reply carries no message time. */
   replyKey?: string
+  /** Where this reply's allow outcome is kept so "Allowed · Undo" survives the
+   *  card closing and reopening. `replyKey` when the reply has a message time;
+   *  otherwise a per-reply fallback, so a reply with no timestamp (a streamed
+   *  or interrupted reply) still keeps its outcome. The fallback is deliberately
+   *  not `replyKey`, so the timestamp-matched reload-restore never reads it. */
+  holdKey?: string
   /** This reply's message time, so an allow or undo can ask the reload to
    *  re-serve this row even when it is above the newest page (#17023). */
   messageTs?: string
@@ -315,10 +328,18 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   coached?: boolean
   children: React.ReactNode
 }) {
+  // Where this reply keeps its allow outcome. With a message time that is the
+  // same key the reload-restore uses, so a reloaded row reopens its held card.
+  // Without one, a per-reply fallback key (not slot-wide), so a reply with no
+  // timestamp keeps "Allowed · Undo" across a card close without one reply's
+  // outcome or cleanup reaching another untimestamped reply in the same slot.
+  const fallbackId = useRef<number>()
+  if (fallbackId.current === undefined) fallbackId.current = replyFallbackSeq++
+  const holdKey = replyKey ?? (slotKey ? `${slotKey}|~${fallbackId.current}` : undefined)
   // A reply that remounts while a card of an allowed host is held (the reload
   // after Allow can rebuild the row) reopens that card, so Undo stays up.
   const [openId, setOpenId] = useState<string | null>(() => {
-    const held = replyKey ? allowHolds.get(replyKey) : undefined
+    const held = holdKey ? allowHolds.get(holdKey) : undefined
     const first = held ? held.values().next().value : undefined
     return first ? first.cardId : null
   })
@@ -339,13 +360,28 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
       return id
     })
   }, [])
-  // A hold lasts while its card is open: closing it, or opening another card
-  // of this reply, lets the reply render from its own records again.
-  const holds = useAllowHolds(replyKey)
+  // A timestamped reply's hold lasts while its card is open: closing it, or
+  // opening another card of this reply, lets the reply render from its own
+  // records again, because the reload has restored the links as plain links.
+  // A reply with NO message time is never reloaded by Allow or Undo (see
+  // BlockedLinkAllow's requestReload), so its fallback hold is
+  // not cleared on close — it is the only thing that carries the "Allowed ·
+  // Undo" outcome back when the card reopens.
+  const holds = useAllowHolds(holdKey)
   useEffect(() => {
     if (!replyKey) return
     for (const [domain, hold] of holds) if (openId !== hold.cardId) setAllowHold(replyKey, domain, null)
   }, [openId, replyKey, holds])
+  // A timestamped reply's holds outlive this mount on purpose: the reload
+  // remounts the reply and reopens the held card. A fallback-key reply is not
+  // reloaded, so its holds have no next mount to belong to — drop them when it
+  // leaves the DOM, so the module-global store does not accumulate them.
+  useEffect(() => {
+    if (!holdKey || holdKey === replyKey) return
+    return () => {
+      for (const domain of allowHolds.get(holdKey)?.keys() ?? []) setAllowHold(holdKey, domain, null)
+    }
+  }, [holdKey, replyKey])
   // The card is inline in the transcript (not portalled), so it stays mounted
   // and comes back as it was on a Crew switch. Only the Escape key handler
   // stands down while the local Crew is hidden, so Escape on the remote Crew
@@ -360,8 +396,8 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   const value = useMemo(() => {
     const map = new Map(credentials.map(r => [r.ordinal, r]))
     const first = credentials.length ? Math.min(...credentials.map(r => r.ordinal)) : -1
-    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, triggerRef, toggle, close }
-  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, toggle, close])
+    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, holdKey, messageTs, coached, openId, triggerRef, toggle, close }
+  }, [credentials, blockedLinks, slotKey, replyKey, holdKey, messageTs, coached, openId, toggle, close])
   return <RedactionUiCtx.Provider value={value}>{children}</RedactionUiCtx.Provider>
 }
 
@@ -428,305 +464,6 @@ function ErrorLine({ message, testId }: { message: string; testId?: string }) {
       <ErrorNotice variant="inline" askAgent message={message} testId={testId} />
     </div>
   )
-}
-
-/** How long a reveal takes; the exit keeps its content mounted this long. */
-export const REVEAL_MS = 180
-/** Control points of the reveal's curves: a decelerating open and a gentle
- *  ease-in-out close. */
-const EASE_OPEN = [0.2, 0, 0, 1] as const
-const EASE_CLOSE = [0.4, 0, 0.2, 1] as const
-const bezier = (p: readonly number[]) => `cubic-bezier(${p.join(', ')})`
-
-/**
- * Opens and closes its content so the card pushes the text below it down as
- * it appears, and draws that text back up as it closes.
- *
- * The layout changes ONCE, at the start of an open or the end of a close; the
- * movement in between is a transform on the card and on everything after it
- * up to the scroll container (FLIP). Transform and opacity animations run on
- * the compositor, so they keep a steady frame rate while the main thread is
- * busy with the commit that inserted the card. A height transition moves on
- * the main thread instead, and a phone recording showed it skipping straight
- * from closed to nearly open. The card slides out from under the line above
- * inside a clipping box, and the text below moves by the same amount, so the
- * two edges stay together on every frame. A reveal mounted already open
- * animates in unless `appear` is false (the coach, which is part of the reply
- * rather than something the reader opened). Reduced-motion users get the
- * instant switch.
- */
-export function Reveal(props: RevealProps) {
-  return <PushReveal {...props} />
-}
-
-interface RevealProps {
-  show: boolean
-  children: React.ReactNode
-  className?: string
-  appear?: boolean
-  /** Names what the open reveal is showing. A change while open swaps the
-   *  content in place and moves the text below by the height difference,
-   *  instead of closing one panel while another opens. */
-  contentKey?: string
-}
-
-function PushReveal({ show, children, className = '', appear = true, contentKey }: RevealProps) {
-  const [mounted, setMounted] = useState(show)
-  const [clip, setClip] = useState(false)
-  const boxRef = useRef<HTMLDivElement>(null)
-  const running = useRef<Animation[]>([])
-  const firstRender = useRef(true)
-  // The box's height as last laid out. A resize observer keeps it, so when a
-  // content change commits, this still holds the height from before it.
-  const laidOutH = useRef(0)
-  const lastKey = useRef(contentKey)
-  if (show && !mounted) setMounted(true)
-  useEffect(() => {
-    const box = boxRef.current
-    if (!box || typeof ResizeObserver === 'undefined') return
-    laidOutH.current = box.offsetHeight
-    const ro = new ResizeObserver(() => { laidOutH.current = box.offsetHeight })
-    ro.observe(box)
-    return () => ro.disconnect()
-  }, [mounted])
-  useLayoutEffect(() => {
-    const prevKey = lastKey.current
-    lastKey.current = contentKey
-    const box = boxRef.current
-    const inner = box?.firstElementChild as HTMLElement | null
-    if (prevKey === contentKey || !show || !box || !inner || running.current.length || !canAnimate(box)) return
-    const d = box.offsetHeight - laidOutH.current
-    const timing: KeyframeAnimationOptions = { duration: REVEAL_MS, easing: bezier(EASE_OPEN), fill: 'forwards' }
-    noteInPlaceResize(box.parentElement ?? box, box.getBoundingClientRect().top)
-    const shift = `translateY(${-d}px)`
-    const moving = [
-      inner.animate([{ opacity: 0 }, { opacity: 1 }], timing),
-      ...(d === 0 ? [] : followingContent(box, Math.abs(d)).map(el => el.animate([{ transform: shift }, { transform: 'none' }], { ...timing, composite: 'add' }))),
-      // The frame to resize is the card this area sits in, or, when the area
-      // IS a card (one card replacing another), that card's own frame.
-      ...(d === 0 ? [] : frameAnimations(box, d, true, { ...timing, composite: 'add' },
-        box.parentElement?.closest<HTMLElement>('[data-card-frame-host]')
-          ?? inner.querySelector<HTMLElement>(':scope > [data-card-frame-host]'))),
-    ]
-    running.current = moving
-    moving[0].onfinish = () => {
-      if (running.current !== moving) return
-      running.current = []
-      settle(moving)
-    }
-  }, [contentKey, show])
-  useLayoutEffect(() => {
-    const initial = firstRender.current
-    firstRender.current = false
-    const box = boxRef.current
-    const inner = box?.firstElementChild as HTMLElement | null
-    settle(running.current)
-    running.current = []
-    if (!box || !inner) return
-    // A box that starts above the top of the viewport changes nothing the
-    // reader is looking at: the virtualizer holds their view still across it,
-    // so it swaps without motion instead of dragging the visible text with it.
-    const boxTop = box.getBoundingClientRect().top
-    const above = boxTop < viewportTop(box)
-    if ((initial && !appear) || !canAnimate(box) || above) {
-      // Tell the virtualizer how much of this row changed above the fold, so
-      // a change on screen in the same row at the same moment does not hide
-      // it (see inPlaceResize).
-      if (above && !initial) {
-        const travel = measuredTravel(box, followingContent(box, 0)[0]) ?? box.getBoundingClientRect().height
-        noteInPlaceResize(box.parentElement ?? box, boxTop, 0, show ? travel : -travel)
-      }
-      if (!show) setMounted(false)
-      return
-    }
-    const h = box.getBoundingClientRect().height
-    // The box's own height change is on screen, so the virtualizer must not
-    // treat it as a reprice above the reader (see inPlaceResize).
-    const anchor = box.parentElement ?? box
-    if (show) noteInPlaceResize(anchor, box.getBoundingClientRect().top)
-    const shift = `translateY(${-h}px)`
-    const from = show ? shift : 'none'
-    const to = show ? 'none' : shift
-    const timing: KeyframeAnimationOptions = {
-      duration: REVEAL_MS,
-      // Open decelerates into place; close eases in so it does not jump at its first frame.
-      easing: bezier(show ? EASE_OPEN : EASE_CLOSE),
-      fill: 'forwards',
-    }
-    setClip(true)
-    // Opening fades the content in as it slides out. Closing a whole card
-    // keeps it opaque, so it visibly retracts under the line above as the
-    // text below draws up over its place; closing a section inside a card
-    // fades its text out as it retracts, which reads more gently in the small
-    // space.
-    const inCard = !!box.parentElement?.closest('[data-card-frame-host]')
-    const card = inner.animate(
-      show
-        ? [{ transform: from, opacity: 0 }, { transform: to, opacity: 1 }]
-        : inCard
-          ? [{ transform: from, opacity: 1 }, { transform: to, opacity: 0 }]
-          : [{ transform: from }, { transform: to }],
-      timing,
-    )
-    const followers = followingContent(box, h)
-    const travel = measuredTravel(box, followers[0]) ?? h
-    const follow = show ? [`translateY(${-travel}px)`, 'none'] : ['none', `translateY(${-travel}px)`]
-    const moving = [
-      card,
-      // `add`: when one card closes while another opens further down, the
-      // text below both moves by the sum of the two, not by whichever
-      // animation happened to start last.
-      ...followers.map(el => el.animate([{ transform: follow[0] }, { transform: follow[1] }], { ...timing, composite: 'add' })),
-      ...frameAnimations(box, travel, show, { ...timing, composite: 'add' }),
-    ]
-    running.current = moving
-    card.onfinish = () => {
-      if (running.current !== moving) return
-      running.current = []
-      if (show) {
-        setClip(false)
-        settle(moving)
-        return
-      }
-      // Remove the box and drop the transforms in one commit, so the text
-      // below lands where the transforms were holding it.
-      noteInPlaceResize(anchor, box.getBoundingClientRect().top)
-      flushSync(() => setMounted(false))
-      settle(moving)
-    }
-  }, [show, mounted, appear])
-  useEffect(() => () => settle(running.current), [])
-  if (!mounted) return null
-  return (
-    // flow-root keeps the content's margins inside the box whether or not it
-    // clips, so the height the transforms travel is the height it occupies.
-    <div ref={boxRef} data-reveal={show ? 'open' : 'closed'} className={`flow-root ${clip ? 'overflow-hidden' : ''} ${className}`}>
-      <div>{children}</div>
-    </div>
-  )
-}
-
-/**
- * Ends each animation and removes its effect. Native animations with
- * `fill: 'forwards'` hold their last frame until cancelled and never write
- * the element's inline style, so cancelling hands every element back to the
- * page exactly as it was, with no inline style left to race a cleanup
- * (Framer's `animate()` writes its final frame into the inline style).
- */
-function settle(moving: Animation[]): void {
-  for (const anim of moving) anim.cancel()
-}
-
-/**
- * A section opening inside a details card also has to grow the card's frame
- * with it. The frame is drawn by three layers behind the content (see
- * CardFrame) so it can follow with transforms alone: the middle layer scales
- * from its top edge, the bottom cap slides with the text below, and the
- * shadow layer scales with the whole card. The layout is already at its
- * opened height when this runs, so an open starts the frame `h` shorter and a
- * close ends it `h` shorter, matching the content.
- */
-function frameAnimations(
-  box: HTMLElement,
-  h: number,
-  show: boolean,
-  timing: KeyframeAnimationOptions,
-  host?: HTMLElement | null,
-): Animation[] {
-  const card = host ?? box.parentElement?.closest<HTMLElement>('[data-card-frame-host]')
-  if (!card) return []
-  const mid = card.querySelector<HTMLElement>(':scope > [data-card-frame] > [data-frame="mid"]')
-  const cap = card.querySelector<HTMLElement>(':scope > [data-card-frame] > [data-frame="bottom"]')
-  const shadow = card.querySelector<HTMLElement>(':scope > [data-card-frame] > [data-frame="shadow"]')
-  if (!mid || !cap || !shadow) return []
-  const midH = mid.offsetHeight
-  const cardH = shadow.offsetHeight
-  if (midH <= 0 || cardH <= 0) return []
-  const shortMid = `scaleY(${Math.max(0, (midH - h) / midH)})`
-  const shortCard = `scaleY(${Math.max(0, (cardH - h) / cardH)})`
-  const up = `translateY(${-h}px)`
-  const pair = (el: HTMLElement, short: string) =>
-    el.animate(show ? [{ transform: short }, { transform: 'none' }] : [{ transform: 'none' }, { transform: short }], timing)
-  return [pair(mid, shortMid), pair(shadow, shortCard), pair(cap, up)]
-}
-
-/**
- * How far the first block below moves when `box` appears or goes: its top
- * with the box laid out, minus its top with the box taken out of the layout
- * for one synchronous measurement. This is the box's height plus whatever
- * margin its neighbours stop sharing, however deeply those margins collapse,
- * which no reading of the box alone can know.
- */
-function measuredTravel(box: HTMLElement, first: HTMLElement | undefined): number | null {
-  if (!first) return null
-  const withBox = first.getBoundingClientRect().top
-  const display = box.style.display
-  box.style.display = 'none'
-  const without = first.getBoundingClientRect().top
-  box.style.display = display
-  return withBox - without
-}
-
-/** The viewport-y of the top of `el`'s scroll container (0 for the page). */
-function viewportTop(el: HTMLElement): number {
-  for (let p = el.parentElement; p; p = p.parentElement) {
-    if (scrollsVertically(p)) return p.getBoundingClientRect().top
-  }
-  return 0
-}
-
-/**
- * Whether `el` is a vertical scroll container. A computed `overflow-y: auto`
- * alone is not enough: `overflow-x: auto` on a code block computes the other
- * axis to `auto` too, and the body's overflow belongs to the viewport.
- */
-function scrollsVertically(el: HTMLElement): boolean {
-  if (el === document.body || el === document.documentElement) return false
-  const overflowY = getComputedStyle(el).overflowY
-  return (overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight
-}
-
-function canAnimate(el: HTMLElement): boolean {
-  return typeof el.animate === 'function' && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-}
-
-/** Upper bound on the elements a reveal moves; past it the rest is off screen. */
-const MAX_FOLLOWERS = 60
-
-/**
- * Everything laid out after `box` inside its scroll container: its later
- * siblings, then its parent's later siblings, and so on up to the scroller.
- * Those are the boxes the reveal's height change moves, so they are the ones
- * that must ride along with it. Content that stays below the viewport throughout is left
- * alone.
- */
-function followingContent(box: HTMLElement, travel: number): HTMLElement[] {
-  const out: HTMLElement[] = []
-  // Tops are measured with the card in place, so anything within `travel` of
-  // the viewport's bottom edge is on screen at some point of the movement.
-  const limit = window.innerHeight + travel
-  // A `display: contents` wrapper draws no box and ignores a transform, so its
-  // children are the boxes that move.
-  const take = (s: Element): boolean => {
-    if (out.length >= MAX_FOLLOWERS || !(s instanceof HTMLElement)) return true
-    const display = getComputedStyle(s).display
-    if (display === 'none') return true
-    if (display === 'contents') {
-      for (const c of Array.from(s.children)) if (!take(c)) return false
-      return true
-    }
-    if (s.getBoundingClientRect().top > limit) return false
-    out.push(s)
-    return true
-  }
-  let el: HTMLElement = box
-  while (el.parentElement && out.length < MAX_FOLLOWERS) {
-    for (let s = el.nextElementSibling; s; s = s.nextElementSibling) if (!take(s)) break
-    const parent = el.parentElement
-    if (scrollsVertically(parent)) break
-    el = parent
-  }
-  return out
 }
 
 /** The last non-null ``value``, so a reveal can keep showing what it is closing. */
@@ -817,7 +554,7 @@ function CardShell({ id, title, children, testId }: {
  * can scale vertically without distorting anything (it has no rounded
  * corners and its borders are vertical lines), and a bottom cap. A section
  * that opens inside the card then moves the frame with transforms alone (see
- * frameAnimations), on the compositor like the rest of the reveal.
+ * frameAnimations in ./redactionReveal), on the compositor like the rest of the reveal.
  */
 function CardFrame() {
   const piece = 'pointer-events-none absolute inset-x-0 border-border bg-bg-elevated'
@@ -1511,68 +1248,38 @@ function MarkedUrl({ url }: { url: string }) {
   )
 }
 
-type Confirming = null | 'open' | 'allow'
-type Feedback = null | { kind: 'opened' } | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
+type OpenFeedback = null | { kind: 'opened' }
+type AllowFeedback = null | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
 
-function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: string }) {
-  const { slotKey, replyKey, messageTs, blockedLinks } = useRedactionUi()
-  const hold = useAllowHolds(replyKey).get(record.domain)
-  const [confirming, setConfirming] = useState<Confirming>(null)
-  // A card that re-renders after the reply reloads picks its outcome up from
-  // the hold, so "Allowed · Undo" stays on screen.
-  const [feedback, setFeedback] = useState<Feedback>(() => hold ? (hold.outcome === 'allowed' ? { kind: 'allowed', workspace: hold.workspace } : { kind: 'undone' }) : null)
+/**
+ * One blocked link in the card: its address, why it was blocked, and the
+ * per-link actions (review the URL, copy it, open it once). Allow is NOT
+ * here: it acts on the host, not on one link, so the card owns it once (see
+ * BlockedLinkCard). An entry with several siblings therefore never shows a
+ * second, stale Allow button. Once the host is allowed (`allowed`, the same
+ * state the card title reads), the entry says so in place of its Reason line
+ * and drops Open once, so no entry under the allowed title still reads as
+ * blocked.
+ */
+function BlockedLinkEntry({ record, allowed }: { record: BlockedLink; allowed: boolean }) {
+  const [confirming, setConfirming] = useState(false)
+  const [feedback, setFeedback] = useState<OpenFeedback>(null)
   const [error, setError] = useState<string | null>(null)
-  const shownFeedback = useLast(feedback)
   const shownError = useLast(error)
-  const panel = confirming ?? (error !== null ? 'error' : feedback ? `feedback-${feedback.kind}` : null)
+  const panel = confirming ? 'open' : (error !== null ? 'error' : feedback ? 'feedback-opened' : null)
   const shownPanel = useLast(panel)
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
   const url = record.url
-  const allowRule = url !== null && ALLOWABLE_RULES.has(record.rule) && !!slotKey
-  const allowable = allowRule && isAllowableHost(record.domain)
-  // Where Allow would otherwise sit, say why it is missing so a reader who
-  // has allowed other hosts does not take its absence for a bug.
-  const hostRefused = allowRule && !allowable
   const openOnce = () => {
     // Re-derived at the click, so what opens is the address on screen and it
     // passes the same shape check. noopener/noreferrer: the page gets no handle
     // on this window and does not learn which conversation it came from.
     const target = openableBlockedLinkUrl(record.url, record.domain)
-    setConfirming(null)
+    setConfirming(false)
     if (target === null) return
     window.open(target, '_blank', 'noopener,noreferrer')
     setFeedback({ kind: 'opened' })
-  }
-  // The confirmation stays up until the request settles and is then replaced
-  // by its outcome in one step, so the area swaps in place instead of
-  // closing and reopening a moment later.
-  const allow = async () => {
-    if (!slotKey) { setConfirming(null); return }
-    try {
-      const res = await api.redactionAllowHost(slotKey, record.domain)
-      setError(null)
-      setFeedback({ kind: 'allowed', workspace: res.workspace })
-      // The reply reloads with this host's links shown as links again; the
-      // hold keeps this card open over them with its Undo.
-      if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId })
-      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
-    } catch {
-      setError(i18nT('components.redaction.link_allow_failed'))
-    }
-    setConfirming(null)
-  }
-  const undo = async (workspace: string) => {
-    try {
-      await api.redactionRevokeHost(workspace, record.domain)
-      setError(null)
-      setFeedback({ kind: 'undone' })
-      if (replyKey && hold) setAllowHold(replyKey, record.domain, { ...hold, outcome: 'undone' })
-      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
-      setTimeout(() => setFeedback(null), 1600)
-    } catch {
-      setError(i18nT('components.redaction.link_undo_failed'))
-    }
   }
   return (
     <div data-testid="blocked-link-entry">
@@ -1582,7 +1289,9 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
       <div className="mb-2 mt-1 text-[13px] leading-5 text-card-fg">
         <Trans i18nKey="components.redaction.link_destination" components={{ host: <code className={CODE}>{record.domain}</code> }} />
         <br />
-        {linkReason(record)}
+        {allowed
+          ? <span data-testid="blocked-link-entry-allowed">{i18nT('components.redaction.link_allowed_entry')}</span>
+          : linkReason(record)}
       </div>
       {url !== null ? (
         <>
@@ -1610,28 +1319,20 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
                 return ok
               }}
             />
-            <button type="button" className={btnCls} data-testid="blocked-link-open-once" onClick={() => setConfirming('open')}>
-              {i18nT('components.redaction.link_open_once')}
-            </button>
-            {allowable && (
-              <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming('allow')}>
-                {i18nT('components.redaction.link_allow')}
+            {!allowed && (
+              <button type="button" className={btnCls} data-testid="blocked-link-open-once" onClick={() => setConfirming(true)}>
+                {i18nT('components.redaction.link_open_once')}
               </button>
             )}
           </div>
-          {hostRefused && (
-            <div className="mt-1.5 text-[12px] leading-[18px] text-muted" data-testid="blocked-link-allow-unsupported">
-              {i18nT('components.redaction.link_allow_unsupported')}
-            </div>
-          )}
         </>
       ) : (
         <div className="text-[13px] leading-5" data-testid="blocked-link-withheld">
           {i18nT(record.url_withheld === 'length' ? 'components.redaction.link_withheld_length' : 'components.redaction.link_withheld_credential')}
         </div>
       )}
-      {/* One area for the step after a button: a confirmation, then what it
-          did. Moving from one to the next swaps the content in place, so the
+      {/* One area for the step after an open-once: the confirmation, then what
+          it did. Moving from one to the next swaps the content in place, so the
           card changes height once instead of one panel closing while another
           opens. */}
       <Reveal show={panel !== null} contentKey={shownPanel ?? undefined}>
@@ -1642,25 +1343,135 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
             ? i18nT('components.redaction.link_open_confirm_body', { chars: record.query_chars })
             : i18nT('components.redaction.link_open_confirm_body_plain')}
           <div className="mt-2 flex flex-wrap gap-2">
-            <button ref={confirming === 'open' ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(null)}>{i18nT('components.redaction.cancel')}</button>
+            <button ref={confirming ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(false)}>{i18nT('components.redaction.cancel')}</button>
             <button type="button" className={btnCls} data-testid="blocked-link-open-confirmed" onClick={openOnce}>{i18nT('components.redaction.link_open')}</button>
           </div>
         </div></>)}
-        {shownPanel === 'allow' && (<><div role="alertdialog" aria-label={i18nT('components.redaction.link_allow_confirm_aria')} className="mt-2 rounded-lg border border-border bg-bg p-2.5 text-[12px] leading-[18px]" data-testid="blocked-link-allow-confirm">
-          <b>{i18nT('components.redaction.link_allow_confirm_title', { host: record.domain })}</b>
+        {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-error" message={shownError} />}
+        {shownPanel === 'feedback-opened' && (
+          <StatusLine testId="blocked-link-feedback">
+            <span>{i18nT('components.redaction.link_opened')}</span>
+          </StatusLine>
+        )}
+      </Reveal>
+    </div>
+  )
+}
+
+/**
+ * The card's one Allow control and its outcome, below the host's entries.
+ * Allow puts the host on the workspace allow-list, which covers every link
+ * the card lists, so the card offers it once and shows one "Allowed · Undo"
+ * line. The outcome is kept in the reply's hold, so it survives the card
+ * closing and reopening, and a reply with no message time keeps it under a
+ * per-reply fallback key (see RedactionProvider's holdKey).
+ */
+function BlockedLinkAllow({ domain, records, cardId }: { domain: string; records: readonly BlockedLink[]; cardId: string }) {
+  const { slotKey, holdKey, messageTs, blockedLinks } = useRedactionUi()
+  const hold = useAllowHolds(holdKey).get(domain)
+  const [confirming, setConfirming] = useState(false)
+  // Seed the outcome only from an ALLOWED hold: a remounted card that reads a
+  // stale 'undone' hold would otherwise open showing "Undone" beside a fresh
+  // Allow button for as long as the reply stays mounted.
+  const [feedback, setFeedback] = useState<AllowFeedback>(() => hold?.outcome === 'allowed' ? { kind: 'allowed', workspace: hold.workspace } : null)
+  const [error, setError] = useState<string | null>(null)
+  const shownFeedback = useLast(feedback)
+  const shownError = useLast(error)
+  const panel = confirming ? 'confirm' : (error !== null ? 'error' : feedback ? `feedback-${feedback.kind}` : null)
+  const shownPanel = useLast(panel)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
+  // The confirmation stays up until the request settles and is then replaced
+  // by its outcome in one step, so the area swaps in place instead of
+  // closing and reopening a moment later.
+  // Ask the chat page to reload the reply so the host's links show as links.
+  // Only a reply with a message time is reloaded: its hold is keyed by that
+  // time, so the reloaded row restores the card. A reply with NO message time
+  // keeps its outcome under a per-mount fallback key the reloaded row cannot
+  // match, so a reload would drop the card and its "Allowed · Undo"; it is
+  // left as is, and its links show as links on the next normal load.
+  const requestReload = () => {
+    if (slotKey && messageTs) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
+  }
+  const allow = async () => {
+    if (!slotKey) { setConfirming(false); return }
+    try {
+      const res = await api.redactionAllowHost(slotKey, domain)
+      setError(null)
+      setFeedback({ kind: 'allowed', workspace: res.workspace })
+      // The reply reloads with this host's links shown as links again; the
+      // hold keeps this card open over them with its Undo.
+      if (holdKey) setAllowHold(holdKey, domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, domain), outcome: 'allowed', cardId })
+      requestReload()
+    } catch {
+      setError(i18nT('components.redaction.link_allow_failed'))
+    }
+    setConfirming(false)
+  }
+  const undo = async (workspace: string) => {
+    try {
+      await api.redactionRevokeHost(workspace, domain)
+      setError(null)
+      setFeedback({ kind: 'undone' })
+      // Keep the hold, marked 'undone': after a reload the reply no longer
+      // carries this host's records, and the hold is what keeps the card (and
+      // its "Undone" line) on screen until the follow-up reload re-blocks the
+      // link. The title and a remount's seed read only an 'allowed' hold, so
+      // this never shows the host as allowed or brings back a stale "Undone".
+      // A timestamped reply's hold clears when its card closes; a fallback-key
+      // hold (no message time) clears when the reply unmounts (see
+      // RedactionProvider).
+      if (holdKey && hold) setAllowHold(holdKey, domain, { ...hold, outcome: 'undone' })
+      requestReload()
+      // Clear only the "Undone" line: on a reply that is not reloaded the
+      // same card stays mounted, and a re-Allow inside this window must keep
+      // its "Allowed · Undo".
+      setTimeout(() => setFeedback(f => (f?.kind === 'undone' ? null : f)), 1600)
+    } catch {
+      setError(i18nT('components.redaction.link_undo_failed'))
+    }
+  }
+  // Allowable once for the host: at least one listed link has an openable
+  // address under a rule the host exemption relaxes, and we have a slot to
+  // save against. The host must also be one the allowed-host list can hold
+  // (isAllowableHost); where it is not, the card says why in Allow's place so
+  // a reader who has allowed other hosts does not take its absence for a bug.
+  const relaxable = records.filter(r => r.url !== null && ALLOWABLE_RULES.has(r.rule))
+  const allowRule = relaxable.length > 0 && !!slotKey
+  const allowable = allowRule && isAllowableHost(domain)
+  const hostRefused = allowRule && !allowable
+  // The button only shows while the host is not yet allowed; once allowed, the
+  // "Allowed · Undo" outcome takes its place.
+  const allowed = feedback?.kind === 'allowed'
+  return (
+    <>
+      {allowable && !allowed && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming(true)}>
+            {i18nT('components.redaction.link_allow')}
+          </button>
+        </div>
+      )}
+      {hostRefused && (
+        <div className="mt-1.5 text-[12px] leading-[18px] text-muted" data-testid="blocked-link-allow-unsupported">
+          {i18nT('components.redaction.link_allow_unsupported')}
+        </div>
+      )}
+      <Reveal show={panel !== null} contentKey={shownPanel ?? undefined}>
+        {shownPanel === 'confirm' && (<><div role="alertdialog" aria-label={i18nT('components.redaction.link_allow_confirm_aria')} className="mt-2 rounded-lg border border-border bg-bg p-2.5 text-[12px] leading-[18px]" data-testid="blocked-link-allow-confirm">
+          <b>{i18nT('components.redaction.link_allow_confirm_title', { host: domain })}</b>
           <br />
           <Trans i18nKey="components.redaction.link_allow_confirm_body" components={[<b key="0" />, <b key="1" />]} />
           <div className="mt-2 flex flex-wrap gap-2">
-            <button ref={confirming === 'allow' ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(null)}>{i18nT('components.redaction.cancel')}</button>
+            <button ref={confirming ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(false)}>{i18nT('components.redaction.cancel')}</button>
             <button type="button" className={btnWarnCls} data-testid="blocked-link-allow-confirmed" onClick={() => void allow()}>{i18nT('components.redaction.link_allow_short')}</button>
           </div>
         </div></>)}
-        {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-error" message={shownError} />}
+        {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-allow-error" message={shownError} />}
         {shownPanel?.startsWith('feedback') && (<>{shownFeedback && (
           <StatusLine testId="blocked-link-feedback">
             <span>
-              {shownFeedback.kind === 'opened' && i18nT('components.redaction.link_opened')}
-              {shownFeedback.kind === 'allowed' && i18nT('components.redaction.link_allowed', { host: record.domain })}
+              {shownFeedback.kind === 'allowed' && i18nT('components.redaction.link_allowed', { host: domain })}
               {shownFeedback.kind === 'undone' && i18nT('components.redaction.link_undone')}
             </span>
             {shownFeedback.kind === 'allowed' && (
@@ -1672,29 +1483,36 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
           </StatusLine>
         )}</>)}
       </Reveal>
-    </div>
+    </>
   )
 }
 
 function BlockedLinkCard({ id }: { id: string }) {
   useLanguageGeneration()
-  const { blockedLinks } = useRedactionUi()
+  const { blockedLinks, holdKey } = useRedactionUi()
   const domain = blockedLinkCardDomain(id)
   const group = blockedLinksForDomain(blockedLinks, domain)
+  const hold = useAllowHolds(holdKey).get(domain)
   if (group.length === 0) return null
+  // The title comes from the same allowed state as the Allow control, so the
+  // two cannot disagree: once the host is allowed, the card no longer calls
+  // its links "blocked".
+  const allowed = hold?.outcome === 'allowed'
   // The host's distinct blocked links in this reply, in record order: nothing the
   // reply carries ties a chip to one record, so no entry is put first, and a
-  // lone record is listed the same way, under its own address, with a title
-  // that speaks of the host's blocked links rather than "this link".
+  // lone record is listed the same way, under its own address.
   return (
-    <CardShell id={id} title={i18nT('components.redaction.link_title_host')} testId="blocked-link-card">
+    <CardShell id={id} title={i18nT(allowed ? 'components.redaction.link_title_host_allowed' : 'components.redaction.link_title_host')} testId="blocked-link-card">
       {group.map((record, i) => (
         <div key={i} className={i > 0 ? 'mt-2 border-t border-border pt-2' : undefined}>
-          <BlockedLinkEntry record={record} cardId={id} />
+          <BlockedLinkEntry record={record} allowed={allowed} />
         </div>
       ))}
+      <BlockedLinkAllow domain={domain} records={group} cardId={id} />
       <Foot>
-        <ReportLink rule={group[0].rule} kind="link" label={i18nT('components.redaction.link_report')} />
+        {/* An allowed host is the reader's own call, not a suspected false
+            positive, so the report link stays out of the allowed state. */}
+        {!allowed && <ReportLink rule={group[0].rule} kind="link" label={i18nT('components.redaction.link_report')} />}
         <AboutLink label={i18nT('components.redaction.about_blocked_links')} />
       </Foot>
     </CardShell>
@@ -1703,14 +1521,14 @@ function BlockedLinkCard({ id }: { id: string }) {
 
 /** Where a block's cards open: right after the block holding their markers. */
 export function RedactionCardSlot({ ids }: { ids: string }) {
-  const { openId, credentials, coached, firstCredential, slotKey, replyKey } = useRedactionUi()
+  const { openId, credentials, coached, firstCredential, slotKey, holdKey } = useRedactionUi()
   const list = ids.split(' ')
   // A held card this slot mounts with is the one already on screen before the
   // reload, so it shows without animating open again.
   const [heldAtMount] = useState(() => {
-    if (openId === null || !list.includes(openId) || !replyKey) return false
+    if (openId === null || !list.includes(openId) || !holdKey) return false
     const domain = blockedLinkCardDomain(openId)
-    const hold = allowHolds.get(replyKey)?.get(domain)
+    const hold = allowHolds.get(holdKey)?.get(domain)
     return hold?.cardId === openId
   })
   // The coach follows the first block holding a removed value, before any card.
@@ -1980,3 +1798,5 @@ export function RedactedCodeBlock({ code, lang, base }: { code: string; lang?: s
 
 /** How many credential tags a block's source holds, for the next block's base. */
 export { countCredentialTags }
+/** The reveal lives in ./redactionReveal; this path stays the one callers import. */
+export { Reveal, REVEAL_MS }
