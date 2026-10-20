@@ -244,13 +244,15 @@ export const queueReducers = {
    *  nothing from them. An empty object clears the lists (the frame carries
    *  no `meta` once every marker is gone). Omitted by the optimistic local
    *  edit, which cannot know how the server pruned them. */
-  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[] }>) {
-    const { slot, queue_id, content, attachments, pastes } = action.payload
+  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[]; editRev?: number }>) {
+    const { slot, queue_id, content, attachments, pastes, editRev } = action.payload
     if (isUnsafeKey(slot)) return
     const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
     if (!msgs) return
     const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
     if (idx < 0) return
+    const applied = msgs[idx].meta?.editRev
+    if (typeof editRev === 'number' && typeof applied === 'number' && editRev < applied) return
     if (msgs[idx].content !== content && msgs[idx].meta?.banner !== undefined) {
       // The server drops the label when an edit changes the text; so does the row.
       const { banner: _b, ...rest } = msgs[idx].meta ?? {}
@@ -282,6 +284,7 @@ export const queueReducers = {
       const { quote: _q, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = rest
     }
+    if (typeof editRev === 'number') msgs[idx].meta = { ...msgs[idx].meta, editRev }
   },
   /** Reorder queued messages to match the given queue-id sequence (from the
    *  backend queue_reorder WS event or an optimistic local update). Queued
