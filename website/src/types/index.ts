@@ -67,6 +67,7 @@ export type {
   TodoTask,
   TodoList,
   McpSessionReport,
+  CodeChannelInfo,
   SessionLink,
   ConfiguredChannelTarget,
   TurnIdentityFields,
