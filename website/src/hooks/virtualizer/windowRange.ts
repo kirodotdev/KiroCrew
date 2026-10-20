@@ -91,6 +91,10 @@ export interface WindowState {
   windowRange: WindowRange
   setWindowRange: SetWindowRange
   retainRange: (range: RetainedVirtualRange | null) => void
+  /** The range `setWindowRange(next)` commits: `next` widened to keep any
+   *  retained range mounted. A render-phase writer compares against this, not
+   *  against `next`, or it never sees its own update land. */
+  resolveWindowRange: (next: WindowRange) => WindowRange
   /** Live mirror of the COMMITTED window. The facade advances it in a layout
    *  effect, right after the shift capture's own baseline mirror. */
   windowRangeRef: Ref<WindowRange>
@@ -120,19 +124,19 @@ export function useWindowState(
   // Every window write goes through here, so a retained range (a native
   // selection's rows) stays mounted whichever owner moved the window:
   // unmounting a selection endpoint lets the browser re-root the selection.
-  const setWindowRange: SetWindowRange = useCallback((update) => {
-    setWindowRangeState((previous) => {
-      const next = typeof update === 'function' ? update(previous) : update
-      const retained = retainedRangeRef.current
-      if (!retained) return next
-      const count = countRef.current
-      const start = Math.max(0, Math.min(retained.start, count))
-      const end = Math.max(start, Math.min(retained.end, count))
-      return end > start
-        ? { start: Math.min(next.start, start), end: Math.max(next.end, end) }
-        : next
-    })
+  const resolveWindowRange = useCallback((next: WindowRange): WindowRange => {
+    const retained = retainedRangeRef.current
+    if (!retained) return next
+    const count = countRef.current
+    const start = Math.max(0, Math.min(retained.start, count))
+    const end = Math.max(start, Math.min(retained.end, count))
+    return end > start
+      ? { start: Math.min(next.start, start), end: Math.max(next.end, end) }
+      : next
   }, [])
+  const setWindowRange: SetWindowRange = useCallback((update) => {
+    setWindowRangeState((previous) => resolveWindowRange(typeof update === 'function' ? update(previous) : update))
+  }, [resolveWindowRange])
   const retainRange = useCallback((range: RetainedVirtualRange | null) => {
     const count = countRef.current
     const next = range ? {
@@ -147,7 +151,7 @@ export function useWindowState(
   }, [setWindowRange])
   // Live mirror of windowRange for imperative reads (debug probe).
   const windowRangeRef = useRef(windowRange)
-  return { windowRange, setWindowRange, windowRangeRef, retainRange }
+  return { windowRange, setWindowRange, windowRangeRef, retainRange, resolveWindowRange }
 }
 
 export interface WindowOperations {

@@ -75,12 +75,14 @@ type HeightAnchor = { cands: { key: string; top: number }[]; at: number; scrollT
 
 export interface ShiftCapture {
   shiftAnchorRef: Ref<{ key: string; top: number } | null>
-  shiftStageRef: Ref<'awaiting-rebase' | 'rebased' | 'ready' | null>
+  shiftStageRef: Ref<'awaiting-rebase' | 'ready' | null>
   prependCountRef: Ref<number>
   shiftInsertedRef: Ref<number>
   prependPreScrollTopRef: Ref<number>
   prependNetRef: Ref<number>
-  rebaseScheduledRef: Ref<boolean>
+  /** Set when the host re-based the window in the capture render itself, so
+   *  part 1 must not shift it a second time. */
+  rebasedInRenderRef: Ref<boolean>
   heightAnchorPendingRef: Ref<HeightAnchor | null>
   /** TRIGGER 6's invalidation key (see its doc below). */
   spliceCommit: number
@@ -225,18 +227,20 @@ export function useShiftCapture<T>(ctx: {
    * rows by 1500).
    *
    * Staged, because trigger 1 needs an extra commit before it can measure:
-   *   'awaiting-rebase' — prepend captured; the window must be re-based first
-   *                       (part 1) so the anchor row is still mounted to measure.
-   *   'rebased'         — re-base committed; correct, then re-derive the window.
-   *   'ready'           — window shift captured; correct only. No re-derive:
-   *                       the shift already is the window's own decision.
+   *   'awaiting-rebase' — prepend captured; the host re-bases the window in this
+   *                       same render (useVirtualChat), so the anchor row is
+   *                       still mounted to measure, and part 1 promotes it.
+   *   'ready'           — correct. Only a trigger-1 correction re-derives the
+   *                       window; a window shift already is the window's own
+   *                       decision.
    */
   const shiftAnchorRef = useRef<{ key: string; top: number } | null>(null)
-  const shiftStageRef = useRef<'awaiting-rebase' | 'rebased' | 'ready' | null>(null)
+  const shiftStageRef = useRef<'awaiting-rebase' | 'ready' | null>(null)
   /** How far DOWN the anchored row moved in the list (new index minus old), set
    *  by TRIGGER 1's capture and consumed by part 1. Equal to the net count growth
    *  only for a pure front insert. */
   const prependCountRef = useRef(0)
+  const rebasedInRenderRef = useRef(false)
   /**
    * TRIGGER 6's invalidation key for part 2, bumped in the render that captures a
    * swap anchor. Every other trigger rides a key part 2 already watches — a
@@ -280,11 +284,6 @@ export function useShiftCapture<T>(ctx: {
    *  path re-bases by the DISPLACEMENT in prependCountRef instead, which
    *  equals the net only for a pure front insert. */
   const prependNetRef = useRef(0)
-  /** Set by part 1 in the commit it schedules a re-base in, cleared by part 2 in
-   *  that same commit. Part 2 now also watches `itemCount` (for trigger 3), so
-   *  it shares a commit with part 1 and would otherwise consume a prepend anchor
-   *  before the re-base kept its row mounted — see part 2. */
-  const rebaseScheduledRef = useRef(false)
   /** Keys of rows that LEFT the list in this render, handed to the height owner,
    *  which drains them later in this same render (see useHeightOwner). */
   const retiredKeysRef = useRef<string[] | null>(null)
@@ -621,7 +620,6 @@ export function useShiftCapture<T>(ctx: {
   // nothing, so the consumer's cost there is the read alone.
   if (
     !anchorCapturedThisRender &&
-    shiftStageRef.current !== 'rebased' &&
     windowRange.start !== windowRangeRef.current.start &&
     !stickRef.current
   ) {
@@ -778,11 +776,11 @@ export function useShiftCapture<T>(ctx: {
   return {
     shiftAnchorRef,
     shiftStageRef,
+    rebasedInRenderRef,
     prependCountRef,
     shiftInsertedRef,
     prependPreScrollTopRef,
     prependNetRef,
-    rebaseScheduledRef,
     heightAnchorPendingRef,
     spliceCommit,
     retiredKeysRef,
@@ -824,7 +822,7 @@ export function useShiftCompensation<T>(ctx: {
   } = ctx
   const {
     shiftAnchorRef, shiftStageRef, prependCountRef, shiftInsertedRef, prependPreScrollTopRef, prependNetRef,
-    rebaseScheduledRef, heightAnchorPendingRef, spliceCommit, captureAnchorCands,
+    heightAnchorPendingRef, spliceCommit, captureAnchorCands, rebasedInRenderRef,
   } = ctx.shift
   const { stickRef, writeScrollTop } = ctx.follow
   const { prePaintRepin } = ctx.pinning
@@ -859,10 +857,13 @@ export function useShiftCompensation<T>(ctx: {
   }, [writeScrollTop, stickRef, settleMeasuringRef])
 
   /**
-   * Part 1 — TRIGGER 1 only: re-base the window by the anchored row's own
-   * displacement so the rows being read stay mounted, including the anchor row
-   * that part 2 has to measure. Runs pre-paint, so the shifted-but-uncorrected frame is never
-   * shown. A window shift needs no equivalent: it IS a range change already.
+   * Part 1 — TRIGGER 1 only: the host already re-based the window by the
+   * anchored row's own displacement in the capture render, so the rows being
+   * read, the anchor row part 2 has to measure included, are mounted in this
+   * commit. Part 1 hands that anchor to part 2, or, with no anchor to measure,
+   * compensates by arithmetic. Runs pre-paint, so the shifted-but-uncorrected
+   * frame is never shown. A window shift needs no equivalent: it IS a range
+   * change already.
    */
   useLayoutEffect(() => {
     const armed = shiftStageRef.current === 'awaiting-rebase'
@@ -871,6 +872,8 @@ export function useShiftCompensation<T>(ctx: {
     if (!armed && net <= 0) return
     const shift = prependCountRef.current
     prependCountRef.current = 0
+    const rebasedInRender = rebasedInRenderRef.current
+    rebasedInRenderRef.current = false
     const el = scrollerRef.current
     // Every exit from 'awaiting-rebase' clears the slot: an anchor left in that
     // stage is one part 2 never consumes.
@@ -888,7 +891,7 @@ export function useShiftCompensation<T>(ctx: {
         // lurch). Same-commit pre-paint: rebase the window so mounted rows
         // keep their identity, then advance scrollTop by the block just
         // inserted above the reader.
-        setWindowRange((r) => ({
+        if (!rebasedInRender) setWindowRange((r) => ({
           start: Math.min(itemCount, r.start + net),
           end: Math.min(itemCount, r.end + net),
         }))
@@ -907,13 +910,11 @@ export function useShiftCompensation<T>(ctx: {
       shiftStageRef.current = null
       return
     }
-    shiftStageRef.current = 'rebased'
+    // The capture render already mounted the re-based rows (the host re-bases
+    // in every render that arms this stage), so this commit IS the re-based
+    // one: hand straight to the consumer below.
     shiftInsertedRef.current = net
-    rebaseScheduledRef.current = true
-    // Signed: the anchored row's displacement, so the re-based range contains it
-    // whichever way it moved. Clamped to the list on both ends.
-    const clamp = (i: number) => Math.max(0, Math.min(itemCount, i))
-    setWindowRange((r) => ({ start: clamp(r.start + shift), end: clamp(r.end + shift) }))
+    shiftStageRef.current = 'ready'
     // itemCount is the ONLY trigger by design: offsetIndex re-syncs in the
     // same render that changes itemCount (its memo keys on it), and the
     // scroller/write helpers are stable -- re-running on their identity
@@ -921,23 +922,6 @@ export function useShiftCompensation<T>(ctx: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemCount])
 
-  /**
-   * Trigger-1 stage promotion: 'rebased' -> 'ready' on the commit whose
-   * windowRange change IS part 1's re-base landing (rebaseScheduledRef
-   * marks it). Keying on windowRange -- not on effect-run counting -- is
-   * what makes the promotion immune to extra effect ticks: however many
-   * times the consumer re-runs between part 1 and the re-based commit,
-   * the stage stays 'rebased' and the anchor stays uncommitted until the
-   * re-based rows are really in the DOM.
-   */
-  useLayoutEffect(() => {
-    if (rebaseScheduledRef.current && shiftStageRef.current === 'rebased') {
-      rebaseScheduledRef.current = false
-      shiftStageRef.current = 'ready'
-    }
-    // windowRange is the invalidation key: the promotion must observe the
-    // commit that applied part 1's setWindowRange.
-  }, [windowRange, rebaseScheduledRef, shiftStageRef])
 
   /**
    * Part 2 — the single consumer for TRIGGERS 1-6: re-read the anchor row in
@@ -947,8 +931,8 @@ export function useShiftCompensation<T>(ctx: {
    *
    * Gated on the stage, not on this effect having run: the deps include
    * `recomputeWindow`, whose identity changes as heights are measured, so an
-   * ungated read here would consume a prepend anchor before part 1 had re-based
-   * the window to keep its row mounted.
+   * ungated read here would consume a prepend anchor before part 1 had handed
+   * it over on the commit that keeps its row mounted.
    *
    * The scrollTop write is recorded in lastWriteTopRef so the passive scroll
    * listener classifies it as a self-scroll (isSelfScroll / SELF_SCROLL_EPSILON)
@@ -963,17 +947,12 @@ export function useShiftCompensation<T>(ctx: {
    * window's own decision, and recomputing it here would fight the scroll.
    */
   useLayoutEffect(() => {
-    // Consume at 'ready' ONLY. A trigger-1 anchor is promoted to 'ready'
-    // by the effect above, keyed on the windowRange commit that actually
-    // mounted the re-based rows. The previous protocol accepted 'rebased'
-    // here behind a one-shot stand-down flag; under a throttled CPU the
-    // flag was consumed by an earlier same-flush run and the anchor was
-    // then measured against the TRANSITIONAL DOM -- new items over the old
-    // commit's node indices -- whose mixed coordinates either mis-bound at
-    // the captured position (delta 0: correction swallowed, the landing
-    // showed as a full-page lurch) or bound across the spacer (a
-    // kilopixel over-correction, snapped back a frame later). Phone rig:
-    // both signatures, per-landing.
+    // Consume at 'ready' ONLY. A trigger-1 anchor reaches 'ready' in part 1,
+    // on the commit whose DOM already holds the re-based rows. Measuring it
+    // against a TRANSITIONAL DOM -- new items over the old commit's node
+    // indices -- mis-binds at the captured position (delta 0: correction
+    // swallowed, the landing shows as a full-page lurch) or binds across
+    // the spacer (a kilopixel over-correction, snapped back a frame later).
     const stage = shiftStageRef.current
     if (stage !== 'ready') return
     shiftStageRef.current = null
