@@ -415,6 +415,7 @@ def test_full_cli_keeps_registry_scan_off_the_gateway_readiness_path() -> None:
 
 def test_slim_servers_match_the_cli_dispatch() -> None:
     import importlib
+    import re
 
     for command, (module, func) in mcp_entry.SLIM_SERVERS.items():
         assert callable(getattr(importlib.import_module(module), func)), command
@@ -422,6 +423,13 @@ def test_slim_servers_match_the_cli_dispatch() -> None:
     for command, (module, func) in mcp_entry.SLIM_SERVERS.items():
         assert f'"{command}"' in cli_src
         assert module in cli_src, module
+    # And the other way: every server cli.main dispatches by name starts slim too,
+    # so a new `elif args.command == "mcp-<name>":` branch cannot quietly fall back
+    # to importing the whole CLI on every agent session.
+    dispatched = set(re.findall(r'elif args\.command == "(mcp-[a-z-]+)":', cli_src))
+    assert dispatched, "cli.main's mcp-* dispatch was not found"
+    slim = set(mcp_entry.SLIM_SERVERS)
+    assert dispatched == slim, sorted(dispatched ^ slim)
 
 
 def test_mcp_guide_answers_initialize_without_the_gateway_stack(tmp_path: Path) -> None:

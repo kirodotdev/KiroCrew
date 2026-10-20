@@ -24,6 +24,7 @@ SLIM_SERVERS: dict[str, tuple[str, str]] = {
     "mcp-core": ("kiro_crew.mcp_core", "run_mcp_core_server"),
     "mcp-cron": ("kiro_crew.mcp_cron", "run_mcp_server"),
     "mcp-guide": ("kiro_crew.mcp_guide", "run_mcp_server"),
+    "mcp-mate": ("kiro_crew.mcp_mate", "run_mcp_server"),
     "mcp-panel": ("kiro_crew.mcp_panel", "run_mcp_server"),
     "mcp-dashboard": ("kiro_crew.mcp_dashboard", "run_mcp_server"),
     # The same dispatch in cli.main, and the same light import (no aiohttp,
