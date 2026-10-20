@@ -466,7 +466,8 @@ The structured monitor digests comment bodies to detect that one changed, so an
 in-place edit whose `created_at` never moves still wakes the owner. GitHub
 digests its PR-level issue comments; Azure DevOps digests the comments nested
 inside its PR threads, skipping the `system`-type lifecycle narration it posts on
-its own; both reduce each body to a fixed-width fingerprint and fail closed to an
+its own; GitLab digests its MR notes, skipping GitLab's `system` activity notes;
+each reduces every body to a fixed-width fingerprint and fails closed to an
 empty digest (no wake) on an incomplete read. It never interprets what a comment
 says or decides whether an advisory finding is valid, and on GitHub it
 deliberately does not read inline review-thread bodies at all -- it reports only
