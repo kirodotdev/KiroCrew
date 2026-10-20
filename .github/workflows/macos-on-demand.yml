@@ -22,7 +22,7 @@ name: macOS Tests (on demand)
 # merges, and it arrives hours rather than up to a day later.
 #
 # WHY THE WHOLE SUITE AND NOT A SUBSET. Calling platform-tests.yml means the PR
-# path and the nightly run byte-identical steps: the four shards, the darwin gap
+# path and the nightly run byte-identical steps: the five shards, the darwin gap
 # lists, and the three admission-gating contracts asserted by name in shard 1
 # (peer identity, the compiled Seatbelt private-memory boundary, the terminal
 # handler suite that test/macos-collect-ignore.txt keeps out of every shard). A
@@ -258,10 +258,13 @@ jobs:
           FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
           # The lane's ceiling on the hosted macOS pool, in LIVE runs of this
           # workflow. What the pool actually feels is JOBS, and a run holds one
-          # per shard, so this number has to move whenever the shard count in
-          # platform-tests.yml does or the real ceiling drifts while this value
-          # looks untouched: 6 runs of 3 shards was 18 jobs, and 4 runs of the
-          # current 4 shards is 16 -- the same order, deliberately not more.
+          # per shard it has running at once: min(SHARD_COUNT, max-parallel) in
+          # platform-tests.yml, since shards past the matrix cap queue behind the
+          # first wave inside the same run. So this number has to move whenever
+          # either of those does, or the real ceiling drifts while this value
+          # looks untouched: 4 runs of min(5 shards, max-parallel 4) is 16 jobs,
+          # inside the 18 the pool was calibrated at
+          # (test_macos_platform_tests_gate.py asserts the product).
           # Measured 2026-09-24: this lane
           # held 53 of the 56 in-progress macOS jobs and 37 of the 40 queued
           # ones, across 22 live runs, and a shard created at 08:29 did not get a
@@ -270,8 +273,11 @@ jobs:
           # macOS work; it WAS the pool, and `build.yml` and `release.yml` (the
           # signing paths, which cannot run anywhere else) queued behind it.
           # A capped run is skipped outright rather than queued, so the ceiling
-          # bounds demand and not just occupancy: at roughly 40 minutes a suite
-          # this lane settles at about six verdicts an hour. That is a deliberate
+          # bounds demand and not just occupancy: 5 shards at max-parallel 4 run
+          # in two shard-waves, about 52 minutes of wall clock a suite against
+          # about 27 for one wave (platform-tests.yml carries the per-shard
+          # measurement), so 4 live runs settle at about four or five verdicts
+          # an hour. That is a deliberate
           # trade -- a timely verdict for a few pull requests instead of a
           # 14-hour verdict for all of them, with the nightly still covering
           # every merge. It is a first calibration off one day's measurement;
@@ -415,7 +421,7 @@ jobs:
           fi
 
   # The nightly's own workflow, called against this pull request's head. Same
-  # four shards, same 40-minute cap per shard, same contracts -- and the same
+  # five shards, same 40-minute cap per shard, same contracts -- and the same
   # runner queue, which is why it is behind `decide` and outside readiness.
   platform-tests:
     name: macOS Tests

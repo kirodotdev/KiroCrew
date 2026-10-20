@@ -127,11 +127,16 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
 class TestTheMovedLaneIsTheSameLane:
     """A move that quietly drops shards or canaries is a deletion with a receipt."""
 
-    def test_the_full_suite_still_runs_in_four_shards(self) -> None:
+    def test_the_full_suite_still_runs_in_five_shards(self) -> None:
         job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
         assert job["runs-on"] == "macos-15", "macos-latest moves under us; pin the label"
-        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4]
-        assert job["env"]["SHARD_COUNT"] == 4
+        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4, 5]
+        assert job["env"]["SHARD_COUNT"] == 5
+        # 5 shards on a max-parallel of 4: the fifth queues behind the first, and
+        # the cap is per JOB, so the lane spends one more shard of wall time and
+        # no shard gets closer to 40 (test_workflow_matrix_max_parallel.py pins
+        # the 4).
+        assert job["strategy"]["max-parallel"] == 4
         # 40 is a spend guard as much as a hang guard -- a runaway macOS shard costs
         # about ten times a Linux one -- so suite growth is absorbed by the shard
         # COUNT and this number stays put. The cap only means something while the
@@ -167,17 +172,23 @@ class TestTheMovedLaneIsTheSameLane:
         """The product is the invariant; either factor alone can hide a rise in it.
 
         ``macos-on-demand.yml`` admits runs, but the hosted macOS pool is starved by
-        JOBS, and a run of this lane holds one per shard. So a shard-count bump lifts
-        that lane's peak occupancy without touching the ceiling it is bounded by, and
-        the ceiling's own comment cannot stop it -- a comment is not a guard, which is
-        why the product is asserted here rather than described there.
+        JOBS, and a run of this lane holds one per shard it has running at once:
+        ``min(SHARD_COUNT, max-parallel)``, because shards past the matrix cap queue
+        behind the first wave inside the same run. So a shard-count bump below the cap,
+        or a cap raise, lifts that lane's peak occupancy without touching the ceiling
+        it is bounded by, and the ceiling's own comment cannot stop it -- a comment is
+        not a guard, which is why the product is asserted here rather than described
+        there.
 
         The calibrated peak lives in ``CALIBRATED_PEAK_MACOS_JOBS`` rather than in this
         sentence, so a recalibration is one edit. Raising either factor past it needs the
         pool argument made again in the same diff, which is exactly what failing here
         asks for.
         """
-        shards = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["env"]["SHARD_COUNT"]
+        job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
+        shards = int(job["env"]["SHARD_COUNT"])
+        max_parallel = int(job["strategy"]["max-parallel"])
+        per_run = min(shards, max_parallel)
         decide = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
         ceiling = next(
             int(step["env"]["LANE_MAX_LIVE_RUNS"])
@@ -185,9 +196,10 @@ class TestTheMovedLaneIsTheSameLane:
             if "LANE_MAX_LIVE_RUNS" in (step.get("env") or {})
         )
         peak = self.CALIBRATED_PEAK_MACOS_JOBS
-        assert int(shards) * ceiling <= peak, (
-            f"{shards} shards x {ceiling} live runs = {int(shards) * ceiling} concurrent "
-            f"macos-15 jobs, over the {peak} this lane's ceiling was calibrated at"
+        assert per_run * ceiling <= peak, (
+            f"min({shards} shards, max-parallel {max_parallel}) x {ceiling} live runs = "
+            f"{per_run * ceiling} concurrent macos-15 jobs, over the {peak} this lane's "
+            "ceiling was calibrated at"
         )
         # The probe budget is justified beside itself as TWICE the ceiling, and that
         # is the only reason its size is defensible on a step that runs for every

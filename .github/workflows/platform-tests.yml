@@ -103,15 +103,28 @@ jobs:
     #     tests to run 45,943 of them, where `--file-shards 3 --file-shard 2`
     #     spends 29.8 s collecting only the 46,744 it owns. Every shard was paying
     #     that import twice over for tests it then threw away.
+    #
+    # MEASURED AGAIN at 4 shards, once the suite had grown into them: on run
+    # 39459787319 shards 2, 3 and 4 took 29, 32 and 33 minutes of job wall and
+    # shard 1 was cancelled at 40:00; on run 39451202841 shards 1, 3 and 4 took
+    # 27, 30 and 31 and shard 2 was cancelled at 40:00. A passing shard at 33 of
+    # 40 is 1.2x headroom, and the cancelled ones show the file-hash assignment
+    # can land a heavier mix on any one shard. So 5 shards: the same suite
+    # spread one way further is about 26 minutes a shard at the 33-minute shape,
+    # 1.5x inside the cap, for one more runner's sub-minute fixed overhead.
+    # The 5 shards run 4 at a time (test_workflow_matrix_max_parallel.py holds
+    # every matrix job to that shared-pool rule), so the fifth starts when the
+    # first finishes: each JOB stays inside the cap, which is the invariant,
+    # for about one more shard of lane wall time.
     timeout-minutes: 40
     strategy:
       max-parallel: 4
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5]
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

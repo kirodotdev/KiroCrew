@@ -5675,7 +5675,7 @@ using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
 path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
-macOS assigns whole files like the other platforms, in four shards. The shard
+macOS assigns whole files like the other platforms, in five shards. The shard
 count is the knob to reach for there rather than the 40-minute cap, because that
 cap is a spend guard as much as a hang guard on a lane billed at ten times Linux:
 a higher cap bounds a runaway more loosely, while a higher count is what divides
