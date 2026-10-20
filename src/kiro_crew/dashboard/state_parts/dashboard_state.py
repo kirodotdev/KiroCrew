@@ -669,6 +669,7 @@ class DashboardState:
         # hand-edited-but-typo'd column.
         self._unparsed_tag_board_entries: list[Any] = []
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        self._bulk_title_run: Any = None
         self._dynamic_cards: Any = None
         # Gateway replacement is process-wide, not an ordinary repeatable
         # background mutation.  The task latch coalesces duplicate /api/restart

@@ -145,6 +145,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # the create's awaits keeps it.
                 ("chat_api/slot_create.py", "_retract_failed_newborn"),
                 ("chat_api/slot_create.py", "api_chat_slot_create"),
+                ("chat_title_bulk.py", "_is_busy"),
                 ("handlers/members_thread_turns.py", "_turn_busy"),
                 ("handlers/members_thread_turns.py", "_turn_ends_within"),
                 # The agent route's transaction; the in-turn /agent command shares it.
