@@ -188,60 +188,6 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "route_crew",
-            "description": (
-                "Rank the crews whose triggers match a task, best first, and return each "
-                "one's score, description and memory store. Use this when you want the "
-                "same task to reach the same crew every time; use select_crew when you "
-                "want the roster and intend to judge the fit yourself. Only when both "
-                "`matches` and `unavailable` are empty does no crew claim the task; "
-                "handle that case on the default crew. Report unavailable members and "
-                "their reasons without substituting Global memory. Acting on a match means "
-                "spawn_run(crew=<name>), which is what gives that run the crew's memory "
-                "and template and keeps another crew's memory out of it."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "The task to route. Usually the user's own words.",
-                    },
-                },
-                "required": ["task"],
-            },
-        },
-        {
-            "name": "select_crew",
-            "description": (
-                "Orchestrator crew routing. Call with NO argument to get the roster of "
-                "selectable crews (name + triggers) so you can decide whether a specialist "
-                "crew fits the task better than handling it yourself. Call with `crew` set "
-                "to a roster name to bind it: returns the crew's resolved {workspace, "
-                "memory_store, kiro_agent, model}, which you then run via "
-                "spawn_run(crew=<name>) -- `crew=`, NOT `agent=`: `agent` names a "
-                "kiro-cli template, and passing a crew name there gives the run the "
-                "DEFAULT memory store, silently, which is how one crew's work ends up "
-                "in another's memory. Selection rules: (1) pick a crew ONLY when its "
-                "triggers clearly and specifically match the task with high confidence; "
-                "(2) if no crew is a strong match, do NOT route — fall back to the default "
-                "crew (default_agent); (3) crews without triggers are omitted from the "
-                "roster and are never auto-selected."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "crew": {
-                        "type": "string",
-                        "description": (
-                            "Crew name to bind. Omit or leave empty to list the roster instead."
-                        ),
-                    },
-                },
-                "required": [],
-            },
-        },
-        {
             "name": "register_hook",
             "description": (
                 "Register a webhook listener so an external system can inject a message "

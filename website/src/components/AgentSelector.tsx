@@ -31,13 +31,7 @@ export interface KiroCrewAgent {
    *  payloads predate the field. */
   display_name?: string
   description: string
-  /** Free-text routing intent read by the orchestrator's select_crew. Optional:
-   *  older payloads predate the field, and it falls back to `description`. */
-  triggers?: string
   source: string
-  /** Default session color (#rrggbb hex) applied to new sessions using this
-   *  agent. Empty or absent means no agent color. */
-  session_color?: string
   /** Per-crew avatar override, verbatim from the backend. `{}`/absent means
    *  the face is derived from the crew name; interpreted by ghostTraitsFrom. */
   avatar?: unknown

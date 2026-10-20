@@ -170,9 +170,8 @@ _SENSITIVE_MASK = "••••••••"
 #
 # Scope: every ``str`` field of ``KiroCrewAgentConfig`` whose LOAD path does not
 # pin its shape. ``reasoning_effort`` (``coerce_effort`` collapses anything but
-# a known level to ``""``) and ``session_color`` (``_safe_color`` pins to
-# ``#rrggbb``) are excluded because their guards already refuse redactable
-# content; everything else — including fields with only an isinstance-str
+# a known level to ``""``) is excluded because its guard already refuses
+# redactable content; everything else — including fields with only an isinstance-str
 # guard, which constrains type but not content — is in. A test enumerates the
 # dataclass's ``str`` fields against this tuple plus that exception set, so a
 # newly added free-text field fails loudly instead of shipping unmasked.
@@ -187,7 +186,6 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "member_id",
     "display_name",
     "description",
-    "triggers",
     "kiro_agent",
     "workspace",
     "memory_store",

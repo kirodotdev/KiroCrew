@@ -257,7 +257,7 @@ class TestApiSpawn:
         from kiro_crew.subagent_persistence import create_agent_folder
 
         cfg = loader.KiroCrewConfig.load()
-        cfg.agents["worker"] = loader.KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="work")
+        cfg.agents["worker"] = loader.KiroCrewAgentConfig(kiro_agent="kirocrew")
         store = provision_member_memory(cfg, "worker")
         cfg.save()
         mgr = _mgr()

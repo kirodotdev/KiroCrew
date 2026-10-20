@@ -773,7 +773,7 @@ async def test_owner_agent_pick_to_v1_member_or_default_pins_nothing(tmp_path, m
     from kiro_crew.member_memory_auth import read_private_session_store
 
     cfg = KiroCrewConfig.load()
-    cfg.agents["legacy"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="legacy")
+    cfg.agents["legacy"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
     cfg.save()
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock(return_value=True)
@@ -950,8 +950,8 @@ def member_stores(monkeypatch):
     # Provider calls in this file are doubles; model the supported WSL runtime.
     pass  # Member routing does not depend on OS isolation.
     cfg = KiroCrewConfig.load()
-    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
-    cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="review")
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
     writer = provision_member_memory(cfg, "writer")
     reviewer = provision_member_memory(cfg, "reviewer")
     cfg.save()

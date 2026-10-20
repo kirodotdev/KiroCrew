@@ -746,9 +746,9 @@ def _ensure_builtin_skills(base: Path) -> None:
 #: Exact identity keeps user-authored or edited files outside cleanup scope.
 RETIRED_CONDUCTOR_SKILL_SHA256 = frozenset(
     {
-        # select_crew-era text (crew triggers, `spawn_run(crew=...)` guidance)
+        # the later revision (crew-roster text, `spawn_run(crew=...)` guidance)
         "ee91da7d58b89ddc4cd3ff097a87f520335193d78cb5937d7636e5baa9ee6ca5",
-        # the first select_crew revision, before the crew= vs agent= warning
+        # the first crew-roster revision, before the crew= vs agent= warning
         "e967c693613dca258f66992b9788a8e5e8e12c4397147f58f6595ee42ffa21be",
     }
 )

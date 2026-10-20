@@ -177,9 +177,6 @@ export interface HistoryItem {
 export interface AgentInfo {
   name: string
   source: string
-  /** Default session color (#rrggbb) for this agent, applied at render time to
-   *  sessions created by it that carry no explicit per-session color. */
-  session_color?: string
   /** The roster namespace (`/api/agents/catalog`); `member` is a crewmate. */
   selection_kind?: 'member' | 'template'
 }

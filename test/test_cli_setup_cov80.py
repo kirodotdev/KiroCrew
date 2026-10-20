@@ -369,7 +369,7 @@ class TestSetupWhatsApp:
 class TestRemoveRetiredConductorSkill:
     """``agent.conductor_skill`` (the dashboard's "Orchestrator Mode" toggle) used
     to generate an always-on ``<skills>/conductor/SKILL.md``. The flag is retired
-    — crew routing goes through the ``select_crew`` MCP tool — so setup removes
+    — the model delegates with ``spawn_run(crew=...)`` directly — so setup removes
     the generated file on old installs. Only bytes the retired generator itself
     wrote are recognised, by exact SHA-256 of the two static revisions. Anything
     else under that path — a user's own skill, an edited copy of ours, or the

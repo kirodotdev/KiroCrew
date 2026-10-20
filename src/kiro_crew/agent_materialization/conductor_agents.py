@@ -124,8 +124,9 @@ def _conductor_mcp_servers(config: dict[str, Any]) -> dict[str, Any]:
 # all, which is the direction a safety list wants.
 #
 # The core verbs that replaced the bare ``@kirocrew-core`` on the goal conductor;
-# the pipeline and security conductors shipped them from their first release,
-# without ``select_crew`` (they route nothing).
+# the pipeline and security conductors shipped them from their first release.
+# (The goal conductor's since-retired ``select_crew`` grant is listed per agent
+# below, where the history belongs.)
 _HISTORY_CORE_VERBS: frozenset[str] = frozenset(
     {
         "@kirocrew-core/monitor_start",
@@ -170,9 +171,10 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
     }
 )
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
-#: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
-#: tuple the table holds exactly that entry (pinned by test), so an entry can join
-#: it only as a grant some release is shown to have shipped. The pipeline
+#: today: the goal conductor's bare ``@kirocrew-core``, and the goal and ledger
+#: conductors' ``select_crew`` (crew routing is gone). Beyond each spec's current
+#: tuple the table holds exactly those entries (pinned by test), so an entry can
+#: join it only as a grant some release is shown to have shipped. The pipeline
 #: conductor's two work-ledger verbs were shipped for one release, retired, and are
 #: shipped again as the base every conductor holds.
 _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
@@ -942,8 +944,8 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
     derivation the goal conductor's comment describes — the union of this prompt's
     own "Your tools:" inventory and the skill's real call sites, filtered to what
     registers on each server — lands on exactly that set here: patrol lifecycle,
-    reads, the agent's own ledger, and owner reporting, with no ``select_crew``
-    (this conductor routes nothing). A third byte-identical copy would be
+    reads, the agent's own ledger, and owner reporting. A third byte-identical
+    copy would be
     duplication whose later divergence nothing could detect, and reuse across
     agents is already this file's practice, and ``_filter_auto_approve`` plus
     ``_conductor_mcp_servers`` are the same argument applied one level down.

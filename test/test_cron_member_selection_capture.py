@@ -89,9 +89,7 @@ def member_with_distinct_template(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     (config_dir() / "crons").mkdir(parents=True)
     cfg = KiroCrewConfig.load()
-    cfg.agents["SampleMemberAgent"] = KiroCrewAgentConfig(
-        kiro_agent="sample-template-agent", triggers="sample"
-    )
+    cfg.agents["SampleMemberAgent"] = KiroCrewAgentConfig(kiro_agent="sample-template-agent")
     store = provision_member_memory(cfg, "SampleMemberAgent")
     cfg.save()
     return store
@@ -113,9 +111,7 @@ def member_also_a_materialized_template(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     (config_dir() / "crons").mkdir(parents=True)
     cfg = KiroCrewConfig.load()
-    cfg.agents["kirocrew-conductor"] = KiroCrewAgentConfig(
-        kiro_agent="kirocrew", triggers="conduct"
-    )
+    cfg.agents["kirocrew-conductor"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
     provision_member_memory(cfg, "kirocrew-conductor")
     cfg.save()
     # Materialize a kiro agent spec of the SAME name (warm snapshot). Under the

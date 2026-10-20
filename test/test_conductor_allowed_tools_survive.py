@@ -133,8 +133,12 @@ _NEVER_SHIPPED_HERE = [
 #: other entry is shipped today and needs no archaeology; an entry can join this
 #: residue only by being added here with its provenance.
 _VERIFIED_RETIREMENTS: dict[str, frozenset[str]] = {
-    "kirocrew-conductor": frozenset({"@kirocrew-core"}),
-    "kirocrew-ledger-conductor": frozenset(),
+    # ``select_crew`` was the goal and ledger conductors' routing verb (step 1 of
+    # the goal-conductor skill's dispatch procedure) until crew routing was
+    # retired with the ``triggers`` field; a record that still carries the grant
+    # is Crew's own, so the history keeps it and the installer drops it.
+    "kirocrew-conductor": frozenset({"@kirocrew-core", "@kirocrew-core/select_crew"}),
+    "kirocrew-ledger-conductor": frozenset({"@kirocrew-core/select_crew"}),
     "kirocrew-pipeline-conductor": frozenset(),
     "kirocrew-security-conductor": frozenset(),
 }

@@ -40,7 +40,7 @@ mkdirSync(OUT, { recursive: true })
 const CREW = (name, display_name, kiro_agent) => ({
   name, display_name, scope: 'global', kiro_agent, workspace: 'default',
   memory_store: 'default', model: '', reasoning_effort: '', description: '',
-  triggers: '', source: '', session_color: '', avatar: {}, starred: false,
+  source: '', avatar: {}, starred: false,
   paused: false, last_active_ts: 0,
 })
 

@@ -70,7 +70,7 @@ import {
   CrewRosterList,
 } from './KiroCrewAgentsPageRoster'
 import { type SheetTarget, useCrewDiscardGuard, CrewDiscardDialog } from './KiroCrewAgentsPageDiscard'
-import { errorText, CrewEditorHeader, CrewModelPane, CrewPlacePane, CrewRoutingPane } from './KiroCrewAgentsPagePanes'
+import { errorText, CrewEditorHeader, CrewModelPane, CrewPlacePane } from './KiroCrewAgentsPagePanes'
 
 export {
   INHERIT_MODEL,
@@ -84,8 +84,6 @@ export {
   EffortField,
   DisplayNameField,
   displayNameFallback,
-  TriggersField,
-  SessionColorField,
 } from './KiroCrewAgentsPageFields'
 export type { MemberMemoryState } from './KiroCrewAgentsPageFields'
 
@@ -94,8 +92,6 @@ interface AgentUpdatePayload {
   kiro_agent: string
   workspace: string
   memory_store: string
-  /** Free-text routing intent for orchestrator crew selection. */
-  triggers: string
   /** Presentation label shown in place of the name; '' clears it back to the
    *  name. Sent unconditionally so clearing is a real write. */
   display_name: string
@@ -105,8 +101,6 @@ interface AgentUpdatePayload {
    *  backend accepts (low..max); a level is only honoured on a model that
    *  supports effort at all. */
   reasoning_effort: string
-  /** Default session color (#rrggbb hex) for new sessions. '' = no default. */
-  session_color: string
   /** The face this save commits: a record pins a face; `null` is an explicit
    *  RESET to the name-derived face; `{}` is the record for a crew with no
    *  override, which the backend also stores as no override. */
@@ -227,9 +221,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [kiroAgent, setKiroAgent] = useState('')
   const [workspace, setWorkspace] = useState('default')
   const [memoryStore, setMemoryStore] = useState('default')
-  const [triggers, setTriggers] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [sessionColor, setSessionColor] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [editEffort, setEditEffort] = useState('')
   /** Draft avatar override. null = the name-derived face (no override). */
@@ -331,9 +323,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setError(''); setSheetHint('')
     setConfirmDelete(false)
     setKiroAgent(a.kiro_agent); setWorkspace(a.workspace); setMemoryStore(a.memory_store)
-    setTriggers(a.triggers || '')
     setDisplayName(a.display_name || '')
-    setSessionColor(a.session_color || '')
     setEditModel(a.model || INHERIT_MODEL)
     setEditEffort(a.reasoning_effort || '')
     // Normalized through the same coercion the renderer applies, so the dirty
@@ -645,7 +635,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       kiro_agent: kiroAgent,
       workspace,
       memory_store: memoryStore,
-      triggers,
       // Sent unconditionally like `model`/`reasoning_effort`: '' is a real
       // value (clear the label back to the name), so a skipped field would
       // make clearing impossible. The server trims.
@@ -657,7 +646,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       // value (clear the pin), so a skipped field would make clearing
       // impossible.
       reasoning_effort: editEffort,
-      session_color: sessionColor,
     }
     // Three spellings: a draft the user built; `null` when they explicitly RESET
     // (see `avatarReset`); `avatarPassthrough` before `{}` so a record this build
@@ -866,9 +854,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     memoryStore,
     editModel,
     editEffort,
-    triggers,
     displayName,
-    sessionColor,
     editAvatar,
     capabilityDirty,
     capabilityBusy,
@@ -911,15 +897,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const activeWebhooks = boundWebhookTokens.filter(
     (t: WebhookTokenEntry) => webhookCanCallIn(t, webhooksQuery.data?.switch_on !== false)).length
 
-  /** Keywords the orchestrator can match, counted the way the field is authored:
-   *  comma-separated, blanks ignored, so a trailing comma is not a keyword. */
-  const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
-
   const sections = useCrewEditorSections({
     templateLabel: i18nT('pages.kiroCrewAgentsPage.built_from'),
     activeSchedules: wakeJobs.filter(j => j.enabled).length,
     totalSchedules: wakeJobs.length,
-    routingWords,
     sharesStorage: collidingCrews.length > 0,
     canDelete: !!editing && editing !== defaultAgent,
     schedulesUnknown: wakeQuery.isError,
@@ -1046,8 +1027,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   {pane === 'overview' && (
                     <>
                     {/* Renaming is identity work, so it lives on the pane a
-                        user opens to answer "who is this crew" — not under
-                        routing (the UX lane's finding on this PR). The create
+                        user opens to answer "who is this crew" (the UX lane's
+                        finding on this PR). The create
                         form keeps its copy beside Name for the same reason. */}
                     <DisplayNameField value={displayName} onChange={setDisplayName} fallback={displayNameFallback(editingAgent, editing)} />
                     <CrewOverviewPane
@@ -1073,7 +1054,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       // the Crewmates panel, which does have one, passes it.
                       activeSchedules={wakeJobs.filter(j => j.enabled).length}
                       schedulesUnknown={wakeQuery.isError}
-                      routingWords={routingWords}
                       sharingCrews={collidingCrews.length}
                       workspaceShared={sharingWorkspace.length > 0}
                       memoryShared={sharingMemoryStore.length > 0}
@@ -1152,10 +1132,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
-
-                  {pane === 'routing' && (
-                    <CrewRoutingPane editing={editing} triggers={triggers} setTriggers={setTriggers} sessionColor={sessionColor} setSessionColor={setSessionColor} editAvatar={editAvatar} openAvatarBuilder={openAvatarBuilder} />
-                  )}
 
                   {pane === 'danger' && (
                     <div className="flex flex-col gap-3 rounded-md border border-danger-subtle bg-danger-subtle p-3">

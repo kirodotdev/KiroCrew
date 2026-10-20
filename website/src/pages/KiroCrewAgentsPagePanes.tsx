@@ -1,12 +1,12 @@
 /** Presentational pieces of the crew editor sheet: its header (face, live
- *  title, source badge, Edit avatar and Chat) and the Model, Workspace & memory
- *  and Routing pane bodies. The page owns their state and passes it in. */
+ *  title, source badge, Edit avatar and Chat) and the Model and Workspace &
+ *  memory pane bodies. The page owns their state and passes it in. */
 import { MessageSquare, UserPen } from 'lucide-react'
 import { Btn } from '../components/ui'
 import {
   DialogHeader, DialogTitle,
 } from '../components/ui/dialog'
-import CrewAvatar, { packAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
+import { packAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
 import CrewStateAvatar from '../components/CrewStateAvatar'
 import CrewAvatarButton from '../components/crew/CrewAvatarButton'
 import { type CrewPaneKey } from '../components/crew/crewEditorSections'
@@ -17,14 +17,11 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import ErrorNotice from '../components/ErrorNotice'
 import type { NavigateFunction } from 'react-router-dom'
 import {
-  Field,
   WorkspaceField,
   memberMemoryState,
   MemoryStoreField,
   ModelField,
   EffortField,
-  TriggersField,
-  SessionColorField,
 } from './KiroCrewAgentsPageFields'
 import { CrewSourceBadge, showsCrewSourceBadge } from './KiroCrewAgentsPageRoster'
 
@@ -236,43 +233,6 @@ export function CrewPlacePane({ editing, workspaceOptions, workspace, setWorkspa
           {i18nT('pages.kiroCrewAgentsPage.also_used_by_these_crews', { crews: collidingCrews.join(', ') })}
         </div>
       )}
-    </>
-  )
-}
-
-/** The Routing pane: routing keywords, session color and the avatar entry. */
-export function CrewRoutingPane({ editing, triggers, setTriggers, sessionColor, setSessionColor, editAvatar, openAvatarBuilder }: {
-  editing: string
-  triggers: string
-  setTriggers: (v: string) => void
-  sessionColor: string
-  setSessionColor: (v: string) => void
-  editAvatar: CrewAvatarOverride | null
-  openAvatarBuilder: () => void
-}) {
-  return (
-    <>
-      <TriggersField value={triggers} onChange={setTriggers} subject="agent" />
-      <SessionColorField value={sessionColor} onChange={setSessionColor} subject="agent" />
-      <Field
-        label={i18nT('components.avatarBuilder.field_label')}
-        hint={i18nT('components.avatarBuilder.field_hint')}
-      >
-        <div className="flex items-center gap-2.5">
-          <CrewAvatarButton size={36} onEdit={openAvatarBuilder} data-testid="field-avatar-button">
-            <CrewAvatar seed={editing || ''} avatar={editAvatar ?? undefined} size={36} />
-          </CrewAvatarButton>
-          <Btn onClick={openAvatarBuilder} data-testid="open-avatar-builder">
-            <UserPen className="lucide-inline" aria-hidden="true" />
-            {i18nT('components.avatarBuilder.edit_avatar')}
-          </Btn>
-          {editAvatar && (
-            <span className="text-[11px] text-muted">
-              {i18nT('components.avatarBuilder.customized_note')}
-            </span>
-          )}
-        </div>
-      </Field>
     </>
   )
 }

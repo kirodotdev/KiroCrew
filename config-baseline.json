@@ -9435,20 +9435,6 @@
       "defaultValue": ""
     },
     {
-      "path": "agents.*.triggers",
-      "kind": "core",
-      "type": "string",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Triggers",
-      "help": "Routing intent for orchestrator crew selection: free-text 'when to use this crew' guidance the main agent reads via select_crew. A crew with no triggers is not offered for selection.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": ""
-    },
-    {
       "path": "agents.*.source",
       "kind": "core",
       "type": "string",
@@ -9517,20 +9503,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
-    },
-    {
-      "path": "agents.*.session_color",
-      "kind": "core",
-      "type": "string",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Session Color",
-      "help": "Default session color for sessions created by this agent. Accepts a CSS hex color string (#rrggbb, lowercase). Applied at render time to any session this agent started that has no color of its own, so editing it re-tints those sessions live. A color set on the session itself (a manual pick or the dashboard default-color policy) always takes precedence. Empty means no agent color.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": ""
     },
     {
       "path": "agents.*.telegram_account",

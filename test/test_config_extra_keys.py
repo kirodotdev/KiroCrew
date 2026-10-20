@@ -274,8 +274,8 @@ def test_retired_keys_are_purged_not_preserved(cfg_home):
 
 def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     """agent.conductor_skill (the dashboard's old "Orchestrator Mode" toggle)
-    generated an always-on delegation skill; crew routing now goes through the
-    `select_crew` MCP tool, so the flag has nothing behind it. A config that still
+    generated an always-on delegation skill; the model now delegates with
+    `spawn_run(crew=...)` directly, so the flag has nothing behind it. A config that still
     carries it must load undegraded, not grow an attribute for it, and drop it on
     save rather than keep advertising a dead setting."""
     _write(cfg_home, {"agent": {"conductor_skill": True, "subagent_max_turns": 42}})

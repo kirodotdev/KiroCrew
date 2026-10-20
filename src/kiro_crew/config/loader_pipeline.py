@@ -126,7 +126,6 @@ from kiro_crew.config.sections import (
     WorkspaceConfig,
     _migrate_workspaces,
     _safe_bool,
-    _safe_color,
     _safe_float,
     _safe_int,
     _validate_activation,
@@ -843,9 +842,6 @@ def build_config(
                 # raise AttributeError from the resolver instead of simply
                 # being ignored.
                 raw_model = crew.get("model")
-                # Same guard as model: a non-string triggers (e.g. `1`) must
-                # not survive load — select_crew's roster calls .strip() on it.
-                raw_triggers = crew.get("triggers")
                 # Same guard family: the label is rendered verbatim by every
                 # roster surface, so a non-string collapses to "" (show the
                 # name) rather than reaching the wire.
@@ -897,15 +893,12 @@ def build_config(
                         else crew.default("display_name")
                     ),
                     description=crew.read("description", _safe_str),
-                    triggers=(
-                        raw_triggers if isinstance(raw_triggers, str) else crew.default("triggers")
-                    ),
                     source=crew.read("source", _safe_str),
                     # Hand-editable config: a quoted "true" or a stray int
                     # must not become a truthy star, so only a real bool
                     # is honoured and anything else reads as un-starred.
                     starred=crew.read("starred", _safe_bool),
-                    # Same guard family as model/triggers: config.json is
+                    # Same guard family as model: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.
                     # lo=0 keeps a negative override from arming an
@@ -918,7 +911,6 @@ def build_config(
                     ),
                     autocompact_pct=_crew_autocompact_pct(crew),
                     telegram_account=crew.read("telegram_account", _safe_str),
-                    session_color=_safe_color(crew.get("session_color")),
                     # Module-qualified on purpose: the facade's `from
                     # sections import` list is a frozen pre-split snapshot
                     # (test_config_module_boundaries), and post-split

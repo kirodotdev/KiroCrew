@@ -135,7 +135,7 @@ async function main() {
       }
 
       await save('pane-overview')
-      for (const key of ['template', 'model', 'place', 'schedules', 'webhook', 'routing', 'danger']) {
+      for (const key of ['template', 'model', 'place', 'schedules', 'webhook', 'danger']) {
         await sheet.locator(`[data-testid="crew-rail-${key}"]`).click()
         await page.waitForTimeout(250)
         await save(`pane-${key}`)

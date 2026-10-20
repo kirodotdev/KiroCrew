@@ -150,10 +150,9 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # Resolved through ``resolve_agent_bindings``, never by deriving a store
         # from ``agent``, which answers `default` for exactly the crew that
         # configured otherwise.
-        # NOT pattern-validated, for the reason SELECT_CREW_SCHEMA states above:
-        # crew creation only strips the name, so a crew may legitimately contain
-        # spaces or dots, and a regex here would refuse a crew the operator can
-        # see in the roster. The deny-by-default gate is the `crew not in
+        # NOT pattern-validated: crew creation only strips the name, so a crew
+        # may legitimately contain spaces or dots, and a regex here would refuse
+        # a crew the operator can see in the roster. The deny-by-default gate is the `crew not in
         # cfg.agents` membership check at the endpoint, which answers 400 with an
         # `unknown_crew` code rather than degrading to the global store.
         FieldSpec("crew", str, max_len=MAX_SHORT_STRING),

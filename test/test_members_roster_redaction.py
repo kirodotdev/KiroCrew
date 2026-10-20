@@ -89,7 +89,6 @@ class TestRecordStringsAreMasked:
             "model",
             "display_name",
             "description",
-            "triggers",
         ],
     )
     @pytest.mark.parametrize("planted", [CRED, EXFIL])
@@ -167,7 +166,6 @@ class TestBenignRowsAreUntouched:
                 model="sonnet",
                 display_name="Release Writer",
                 description="Drafts release notes.",
-                triggers="release notes, changelog",
             )
         }
         rows, _ = await _roster(tmp_path, agents)
@@ -178,7 +176,6 @@ class TestBenignRowsAreUntouched:
         assert row["model"] == "sonnet"
         assert row["display_name"] == "Release Writer"
         assert row["description"] == "Drafts release notes."
-        assert row["triggers"] == "release notes, changelog"
 
     @pytest.mark.asyncio
     async def test_name_and_slug_stay_verbatim(self, tmp_path):

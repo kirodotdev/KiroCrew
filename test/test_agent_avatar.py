@@ -1697,7 +1697,7 @@ class TestPackAvatarThroughTheEndpoints:
 
     @pytest.mark.asyncio
     async def test_create_with_a_junk_pack_id_is_a_400(self):
-        """Same convention as session_color: a non-empty value the validator
+        """Same convention as the colour validator: a non-empty value it
         collapses is a caller mistake, not a silent reset to the default face."""
         from aiohttp.test_utils import TestClient, TestServer
 

@@ -3120,7 +3120,7 @@ class KiroCrewConfig:
 ### Per-crew avatar override (`agents.*.avatar`)
 
 `KiroCrewAgentConfig.avatar` is a sparse override, exactly like the per-crew
-`model` and `session_color` fields: absent or `{}` means the face is derived from
+`model` field: absent or `{}` means the face is derived from
 the crew's name (zero migration). `_safe_avatar` (`config/sections_agent_fields.py`) is the
 total coercer applied on load, in the create/update endpoints and by the roster's
 `_roster_avatar`,
@@ -3135,8 +3135,8 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   an unknown option to "absent", so a new hat needs no backend release);
   booleans must be real JSON booleans (`bool("false")` is `True`, so a
   string-typed value is read as `False`); `tile` is the one pinned value — it is
-  interpolated into SVG markup, so it goes through the same `#rrggbb` validator
-  as `session_color`. An all-empty trait set drops the `traits` key rather than
+  interpolated into SVG markup, so it goes through the `#rrggbb` validator
+  (`_safe_color`). An all-empty trait set drops the `traits` key rather than
   storing a featureless third state, and a ghost override left with nothing but
   `kind` collapses to `{}` (the one canonical "reset" spelling). `traits` is
   therefore optional: `{"kind": "ghost", "sounds": {...}}` is valid and means

@@ -1959,19 +1959,13 @@ def record_activity(
     chat site needs it because its ``is_new`` flag tracks the PROVIDER session,
     not the conversation: a dead provider cold-starts the same conversation with
     ``is_new=True`` again, which would append the same pointer twice and inflate
-    the counts this log exists to feed. Routing decisions are NOT deduped — each
-    ``select_crew`` bind is a distinct event even for one session.
+    the counts this log exists to feed.
 
-    ``via`` records HOW the member was chosen, because the two call sites mean
+    ``via`` records HOW the member was engaged, because the call sites mean
     different things and a mixed log cannot be read apart afterwards:
 
     * ``"chat"`` — the human picked this member for the session.
-    * ``"select_crew"`` — the orchestrator judged this member fits the task.
-
-    A ``select_crew`` entry records the routing *decision*, not an execution:
-    binding a crew does not oblige the model to delegate to it. That is the
-    useful signal for trigger generation (what the router believes belongs to
-    whom), but it means these counts are intent, not runs.
+    * ``"auto-improvement"`` — the auto-improvement spine ran this member.
 
     Blocking file IO: call via ``asyncio.to_thread`` from async code.
     """
@@ -1985,21 +1979,15 @@ def record_activity(
     # carrying the name keeps per-member attribution recoverable in that case,
     # which the frequency signal downstream depends on.
     #
-    # The session pointer is named for what it MEANS, not just what it holds.
-    # A routing decision is recorded in the session that made it — the parent —
-    # while the member itself runs in a different (sub-agent) session that does
-    # not exist yet at bind time. Filing both under one `session` key would let
-    # a consumer counting "sessions this member took part in" count a session
-    # the member never ran in. Distinct keys make that misread impossible
-    # instead of leaving it to the consumer to notice `via`.
+    # `session` is the session the member took part in. (Logs written before
+    # the orchestrator's routing tool was retired may also carry `decided_in`
+    # rows -- a routing decision made in a parent session; they are not
+    # participation and no reader counts them as such.)
     entry = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "member": member,
+        "session": session_key,
     }
-    if via == "select_crew":
-        entry["decided_in"] = session_key
-    else:
-        entry["session"] = session_key
     if project:
         entry["project"] = project
     if via:
@@ -2031,9 +2019,7 @@ def record_activity(
             # Check the member's own ACTIVITY_RECORD events for this session
             # pair instead of scanning a file. Matched on BOTH fields: a
             # colliding slug means one log can hold two members, so session
-            # alone would suppress the wrong entry. Only participation entries
-            # carry `session`, which is also the only kind deduped — routing
-            # decisions are distinct events.
+            # alone would suppress the wrong entry.
             #
             # The scan is UNBOUNDED, and a bound is not an optimisation here: the
             # log is already materialised in memory by the read below, so a limit
@@ -2062,8 +2048,8 @@ def record_activity(
         # already names as a second writer on the read side. ``crew_log.lease``
         # states the caller's duty for this code -- it reports the loss rather
         # than retrying it -- and a debug line does not discharge that: it leaves
-        # a dropped routing decision indistinguishable from a member that was
-        # never routed, which is the one thing this record exists to tell apart.
+        # a dropped entry indistinguishable from a member that was never
+        # engaged, which is the one thing this record exists to tell apart.
         if getattr(exc, "code", "") == CODE_ALREADY_OWNED:
             logger.warning(
                 "member activity entry DROPPED for %r (session %r, via %r): another "

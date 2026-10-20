@@ -229,26 +229,20 @@ cycle; an unbound running worker is neither visible nor recoverable.
 |---|---|
 | a leaf — one assertable acceptance condition | `kirocrew-worker` |
 | decomposes into two or more independently acceptable sub-items | `kirocrew-conductor` |
-| `select_crew` names a specialist crew that fits | that crew |
+
+Both mount `@kirocrew-work`, so the child reports against its own item.
 
 `depth` is computed when a child first opens its ledger (its first `goal` or
 `create`) and capped at 2, so you may dispatch a conductor and its own
 workers may not conduct. A `depth_exceeded` error means the item has to be
 flattened into leaves, not retried.
 
-A specialist crew that does not mount `@kirocrew-work` cannot report to the
-ledger. Dispatch it anyway when it is the right crew for the item, and fall back
-to `session_read_message` for **that one item** — never for all of them. Making
-such a crew reportable is a one-line addition to that crew's own spec, which is
-where the decision belongs.
-
 **Never leave `agent` unset to "inherit the default".** The value inherited is
 YOUR agent, `kirocrew-conductor`, whose spec deliberately has no
 `fs_write` — so the child could not write a file even though writing one is the
 work you dispatched it to do, and the item would look stalled rather than
-misconfigured. `select_crew` and `session_create` are also **not wired**:
-`select_crew` returns a crew's resolved configuration and binds nothing, so you
-pass the agent name to `session_create` yourself.
+misconfigured. Nothing picks the agent for you: you pass the agent name to
+`session_create` yourself.
 
 **A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
 `agent_kind: "template"`: the worker then runs the `kirocrew-worker` template on
@@ -753,7 +747,7 @@ what the composer renders:
   granted by name too, and only these: `monitor_start`, `monitor_update`,
   `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
   `session_ledger_read`, `session_ledger_record`, `skill_search`, `skill_fetch`,
-  `select_crew`, `send_message`, `send_notification`, `ask_question`,
+  `send_message`, `send_notification`, `ask_question`,
   `nothing_to_do`, `reset_conversation`. That covers
   every core call this procedure asks you to make; **any other core tool is
   mounted but prompts**, including `task_run`, `workflow_run` and the `spawn_*`

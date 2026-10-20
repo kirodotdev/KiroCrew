@@ -151,7 +151,7 @@ describe('crew webhook pane — a disabled binding is visible but not live', () 
 
 describe('crew editor rail — the webhook row is a real pane row', () => {
   const facts = (over: Partial<CrewEditorFacts> = {}): CrewEditorFacts => ({
-    templateLabel: 'Agent Template', activeSchedules: 1, totalSchedules: 2, routingWords: 0,
+    templateLabel: 'Agent Template', activeSchedules: 1, totalSchedules: 2,
     sharesStorage: false, canDelete: true, webhookTokens: 0, webhookTokensActive: 0,
     dirtyPanes: new Set(),
     ...over,

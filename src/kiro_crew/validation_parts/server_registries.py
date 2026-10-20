@@ -107,7 +107,6 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     READ_SLACK_PROFILE_SCHEMA,
     REGISTER_HOOK_SCHEMA,
-    ROUTE_CREW_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SEND_NOTIFICATION_SCHEMA,
@@ -137,7 +136,6 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
-    "route_crew": ROUTE_CREW_SCHEMA,
     "spawn_run": SPAWN_RUN_SCHEMA,
     "spawn_sub_agents": SPAWN_SUB_AGENTS_SCHEMA,
     "spawn_list": SPAWN_LIST_SCHEMA,

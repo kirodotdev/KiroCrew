@@ -114,7 +114,6 @@ from kiro_crew.session_directive import (
 )
 from kiro_crew.session_token_sig import session_key_from_env_token  # noqa: F401
 from kiro_crew.skills import SkillsLoader
-from kiro_crew.trigger_match import rank_triggered  # noqa: F401
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
     coerce_mcp_tool_args,
@@ -1010,7 +1009,6 @@ _OWNERS = (
     "kiro_crew.mcp_core_parts.identity",
     "kiro_crew.mcp_core_parts.gateway",
     "kiro_crew.mcp_core_parts.governance",
-    "kiro_crew.mcp_core_parts.crew",
     "kiro_crew.mcp_core_parts.history",
     "kiro_crew.mcp_core_parts.radar_crew",
 )
@@ -1023,13 +1021,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.mcp_core_parts.crew import (  # noqa: F401
-        _crew_memory_unavailable_reason,
-        _do_route_crew,
-        _do_select_crew,
-        _key_with_label,
-        _with_display_name,
-    )
     from kiro_crew.mcp_core_parts.gateway import (  # noqa: F401
         _API,
         _API_PORT,

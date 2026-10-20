@@ -142,7 +142,6 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
       className={`group flex flex-col gap-3 rounded-lg border bg-card p-3.5 transition-all
                   hover:border-border-strong hover:shadow-md focus-ring
                   ${isDefault ? 'border-accent-subtle' : 'border-border'}`}
-      style={agent.session_color ? { borderLeftColor: agent.session_color, borderLeftWidth: '3px' } : undefined}
     >
       <div className="flex items-center gap-3">
         <CrewAvatar seed={agent.name} avatar={agent.avatar} size={38} />

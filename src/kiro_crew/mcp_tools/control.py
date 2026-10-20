@@ -58,8 +58,6 @@ from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
     ASK_WAIT_SLICE_SECS,
     REGISTER_HOOK_SCHEMA,
-    ROUTE_CREW_SCHEMA,
-    SELECT_CREW_SCHEMA,
     TASK_RUN_SCHEMA,
     WAIT_SCHEMA,
     ValidationError,
@@ -284,16 +282,6 @@ class _WaitStep(DeferredTool):
 #: answers in milliseconds; the bound only matters when the gateway is stalled,
 #: where the step pool must not be held for the helper's 30s default.
 _WAIT_PING_TIMEOUT_SECS = 5.0
-
-
-def route_crew(name: str, args: dict[str, Any]) -> str:
-    args = validate_tool_args(args, ROUTE_CREW_SCHEMA)
-    return mcp_core._do_route_crew(str(args.get("task") or ""))
-
-
-def select_crew(name: str, args: dict[str, Any]) -> str:
-    args = validate_tool_args(args, SELECT_CREW_SCHEMA)
-    return mcp_core._do_select_crew(str(args.get("crew") or ""))
 
 
 def register_hook(name: str, args: dict[str, Any]) -> str:
@@ -609,8 +597,6 @@ def _format_ask_outcome(reply: dict) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "task_run": task_run,
     "wait": wait,
-    "route_crew": route_crew,
-    "select_crew": select_crew,
     "register_hook": register_hook,
     "autonudge_stop": autonudge_stop,
     "ask_question": ask_question,

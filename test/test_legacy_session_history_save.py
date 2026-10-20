@@ -34,7 +34,7 @@ KEY = f"dashboard:{NAME}"
 @pytest.fixture
 def legacy_store() -> str:
     cfg = KiroCrewConfig.load()
-    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
     store = provision_member_memory(cfg, "writer")
     cfg.save()
     return store

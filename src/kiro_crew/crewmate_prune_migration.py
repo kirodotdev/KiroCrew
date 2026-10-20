@@ -336,6 +336,10 @@ def _raw_agents_section(path: Path | None = None) -> dict:
 
 #: Sync copies these fields from the spec rather than using record defaults.
 _SPEC_COPIED_FIELDS = frozenset({"description", "source"})
+#: Record fields a build before this one declared and wrote on every row. The
+#: sync's row from such a build carries them at their empty default, so they are
+#: tolerated at ``""`` only: a value there means an operator edited the row.
+_RETIRED_RECORD_FIELDS = frozenset({"triggers", "session_color"})
 
 
 def _canonical_sync_source(source: str) -> str:
@@ -349,12 +353,17 @@ def _is_fresh_sync_shape(raw: dict, *, kiro_agent: str) -> bool:
     Compared field by field against a default record bound to ``kiro_agent``.
     ``description`` and ``source`` are copied from the spec and handled
     separately; every other declared field must equal its default. The row may
-    carry no key the record does not declare. A declared key the row lacks
-    reads as its default, so a row written by a build whose record had fewer
-    fields is still the sync's row.
+    carry no key the record does not declare, except a retired field
+    (:data:`_RETIRED_RECORD_FIELDS`) at its old empty default, which an earlier
+    build's sync wrote on every row. A declared key the row lacks reads as its
+    default, so a row written by a build whose record had fewer fields is still
+    the sync's row.
     """
     expected = dataclasses.asdict(KiroCrewAgentConfig(kiro_agent=kiro_agent))
-    if set(raw) - set(expected):
+    extra = set(raw) - set(expected)
+    if extra - _RETIRED_RECORD_FIELDS:
+        return False
+    if any(raw.get(key) != "" for key in extra):
         return False
     for key, default in expected.items():
         if key in _SPEC_COPIED_FIELDS:

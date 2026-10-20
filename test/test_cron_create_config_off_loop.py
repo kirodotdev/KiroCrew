@@ -52,7 +52,7 @@ def member_home(tmp_path, monkeypatch):
     (config_dir() / "crons").mkdir(parents=True)
     cfg = KiroCrewConfig.load()
     cfg.agents["SampleMemberAgent"] = KiroCrewAgentConfig(
-        kiro_agent="sample-template-agent", triggers="sample"
+        kiro_agent="sample-template-agent", description="sample"
     )
     provision_member_memory(cfg, "SampleMemberAgent")
     cfg.save()

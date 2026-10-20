@@ -536,11 +536,6 @@ export default function TeamView({
 
 function weekLineText(t: TFn, entry: MemberActivityEntry): string {
   const project = entry.project ? projectLabel(entry.project) : ''
-  if (entry.via === 'select_crew') {
-    return project
-      ? t('pages.membersPage.team_week_routed_in', { project })
-      : t('pages.membersPage.team_week_routed')
-  }
   return project ? t('pages.membersPage.team_week_chat_in', { project }) : t('pages.membersPage.team_week_chat')
 }
 

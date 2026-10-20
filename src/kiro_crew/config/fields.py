@@ -114,7 +114,7 @@ def _safe_str(value: object, default: str) -> str:
     trust the declared type (``kirocrew agent list`` width-formats four agent
     fields, where ``None`` or a container raises ``TypeError`` from
     ``__format__``). No stringification on purpose: ``str({"k": "v"})`` is
-    not content the operator wrote, and the ``model`` / ``triggers`` guards this
+    not content the operator wrote, and the ``model`` / ``display_name`` guards this
     joins already collapse to the default rather than coerce.
     """
     return value if isinstance(value, str) else default

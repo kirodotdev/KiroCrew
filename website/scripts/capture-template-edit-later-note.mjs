@@ -26,7 +26,7 @@ const PREFIX = process.argv[3] || 'after'
 mkdirSync(OUT, { recursive: true })
 
 const CREWS = [
-  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '', triggers: '' },
+  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '' },
 ]
 
 /** A plain ARRAY: what /api/agents/installed really answers. */

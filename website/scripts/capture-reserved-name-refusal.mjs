@@ -37,8 +37,8 @@ mkdirSync(OUT, { recursive: true })
 const RESERVED_SENTENCE = /is reserved for a built-in agent\. Pick another name[.,]/
 
 const CREWS = [
-  { name: 'default', kiro_agent: 'default-2', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '', triggers: '', session_color: '' },
-  { name: 'atlas', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'Long-horizon planner', source: 'user', model: '', triggers: '', session_color: '' },
+  { name: 'default', kiro_agent: 'default-2', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '' },
+  { name: 'atlas', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'Long-horizon planner', source: 'user', model: '' },
 ]
 
 const INSTALLED = [

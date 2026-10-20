@@ -147,14 +147,19 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # unattended auto-approval. See sections._read_dangerously_skip_permissions.
     # RETIRED: agent.conductor_skill toggled a generated always-on
     # `conductor/SKILL.md` delegation guide (the dashboard "Orchestrator Mode"
-    # switch). Crew routing goes through the `select_crew` / `route_crew` MCP
-    # tools, so the flag has nothing behind it and is dropped on save.
+    # switch). The model delegates with `spawn_run(crew=...)` directly, so the
+    # flag has nothing behind it and is dropped on save.
     "agent": frozenset({"dangerouslySkipPermissions", "yolo", "conductor_skill"}),
     # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
     # sections._read_auto_add_documents still reads the old spelling.
     "knowledge": frozenset({"auto_ingest_doc_links"}),
     # RETIRED: the out-of-band installs the removed local STT providers needed.
     "stt": frozenset({"whisper_path", "mlx_model", "parakeet_model", "device"}),
+    # RETIRED: a crewmate's ``triggers`` fed the routing tools (``route_crew``,
+    # ``select_crew``) and ``session_color`` the per-crew session colour; both
+    # features are gone, and an older sync wrote the two keys on every row, so
+    # preserving them would keep every config carrying settings nothing reads.
+    "agents": frozenset({"triggers", "session_color"}),
 }
 
 

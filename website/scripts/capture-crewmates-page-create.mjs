@@ -5,7 +5,7 @@
  *   02-dialog-<theme>   the real New crewmate dialog, opened from the hero,
  *                       Name + job typed into the real form
  *   02b-dialog-advanced-<theme>  the same dialog with Advanced unfolded
- *                       (workspace / model / triggers / session colour)
+ *                       (workspace / model)
  *   02c-dialog-new-workspace-<theme>  nested New workspace form over the
  *                       inert New crewmate parent
  *   03-created-<theme>  Radar is the only row; its chat is open with the
@@ -283,13 +283,8 @@ for (const theme of ['dark', 'light']) {
     check(`02b-dialog-advanced-${theme} expanded`, (await dlg.getByTestId('crewmate-create-advanced-toggle').getAttribute('aria-expanded')) === 'true', 'aria-expanded=true')
     check(`02b-dialog-advanced-${theme} workspace`, await adv.getByRole('combobox', { name: 'Workspace' }).isVisible(), 'workspace field')
     check(`02b-dialog-advanced-${theme} model`, await adv.getByRole('combobox', { name: 'Edit default model' }).isVisible(), 'model field')
-    check(`02b-dialog-advanced-${theme} triggers`, await adv.getByLabel('Triggers').isVisible(), 'triggers field')
-    check(`02b-dialog-advanced-${theme} triggers hint`, await adv.getByText(/^Situations when Kiro Crew should hand a task to this crewmate/).isVisible(), 'HEAD wording of the triggers hint (when-to-use, no schedule contrast)')
-    check(`02b-dialog-advanced-${theme} no stale hint`, (await dlg.getByText(/not a schedule/).count()) === 0, 'old routing-vs-schedule sentence gone')
-    const colour = adv.getByLabel('Session color hex value')
-    check(`02b-dialog-advanced-${theme} colour`, await colour.isVisible(), 'session colour field')
-    const box = await colour.boundingBox()
-    check(`02b-dialog-advanced-${theme} colour in frame`, !!box && box.y + box.height <= 1100, `colour bottom=${box ? Math.round(box.y + box.height) : 'n/a'}`)
+    check(`02b-dialog-advanced-${theme} no triggers`, (await adv.getByLabel('Triggers').count()) === 0, 'retired triggers field absent')
+    check(`02b-dialog-advanced-${theme} no colour`, (await adv.getByLabel('Session color hex value').count()) === 0, 'retired session colour field absent')
     const legacy = await dlg.getByText(/this member|member color|crew member/i).count()
     check(`02b-dialog-advanced-${theme} vocabulary`, legacy === 0, `legacy-noun hits=${legacy}`)
     await page.waitForTimeout(500) // disclosure + modal motion

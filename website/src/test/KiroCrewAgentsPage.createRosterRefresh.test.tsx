@@ -58,8 +58,6 @@ const ONCALL = {
   kiro_agent: 'kirocrew',
   workspace: 'default',
   memory_store: 'default',
-  triggers: 'incidents',
-  session_color: '',
 }
 
 beforeEach(() => {

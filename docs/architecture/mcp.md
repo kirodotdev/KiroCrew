@@ -2329,7 +2329,6 @@ answers `tools/list` from):
 - **Monitor read:** `monitor_inspect` (strict authenticated session
   identity only; no ancestor fallback; reports a structured monitor or a legacy
   timer loop's presence reading, whichever the session holds)
-- **Crew routing:** `route_crew`, `select_crew`
 - **Session work ledger:** `session_ledger_read`, `session_ledger_record`
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
@@ -2425,7 +2424,7 @@ of its responsibility:
 
 | Module | Owns |
 |---|---|
-| `control.py` | `task_run`, `wait` and its deferred step, `route_crew`, `select_crew`, `register_hook`, `ask_question` and its card wait, `HANDLERS` |
+| `control.py` | `task_run`, `wait` and its deferred step, `register_hook`, `ask_question` and its card wait, `HANDLERS` |
 | `control_parts/schemas.py` | every control descriptor, and the structured-arming and runtime-ceiling reads that shape one |
 | `control_parts/directive.py` | `_emit_directive`, and the tools whose effect is one directive: `nothing_to_do`, `set_project`, `reset_conversation`, `chat_tag`, `suggest_followup` |
 | `control_parts/monitor.py` | `monitor_start`, `monitor_watch`, `monitor_inspect`, `monitor_update`, `monitor_stop`, `autonudge_stop`, and their context and preflight refusals |
@@ -2524,7 +2523,6 @@ to the owner of its responsibility:
 | `identity` | which session is calling: the lenient and strict resolvers, `require_strict_session_key` and its diagnosis, `REFLEXIVE_TOOL_MODULES`, the Slack identity classification |
 | `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, and `_send`'s retry schedule, failure text and error body |
 | `governance` | channel-agent containment and the messaging, browse, channel and memory-write vets |
-| `crew` | Crew Mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
 | `radar_crew` | the Issue Radar crew tools' identity, ledger view and write scrubbing |
 

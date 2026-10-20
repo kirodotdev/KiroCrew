@@ -33,10 +33,10 @@ mkdirSync(OUT, { recursive: true })
 /** The crews the roster shows. Two point at `atlas`, so its blast radius is real.
  *  `scout` is bound to its own private copy of `kirocrew` (blueprint fork). */
 const CREWS = [
-  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '', triggers: '', session_color: '' },
-  { name: 'atlas', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'Long-horizon planner', source: 'user', model: '', triggers: 'migration', session_color: '' },
-  { name: 'gpu-critic', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'Validates review findings', source: 'user', model: '', triggers: '', session_color: '' },
-  { name: 'scout', kiro_agent: 'scout', workspace: 'default', memory_store: 'default', description: 'Research scout with its own definition', source: 'user', model: '', triggers: '', session_color: '' },
+  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '' },
+  { name: 'atlas', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'Long-horizon planner', source: 'user', model: '' },
+  { name: 'gpu-critic', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default', description: 'Validates review findings', source: 'user', model: '' },
+  { name: 'scout', kiro_agent: 'scout', workspace: 'default', memory_store: 'default', description: 'Research scout with its own definition', source: 'user', model: '' },
 ]
 
 /** A plain ARRAY: what /api/agents/installed really answers.

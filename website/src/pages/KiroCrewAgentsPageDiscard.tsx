@@ -122,9 +122,7 @@ export function useCrewDiscardGuard({
   memoryStore,
   editModel,
   editEffort,
-  triggers,
   displayName,
-  sessionColor,
   editAvatar,
   capabilityDirty,
   capabilityBusy,
@@ -145,9 +143,7 @@ export function useCrewDiscardGuard({
   memoryStore: string
   editModel: string
   editEffort: string
-  triggers: string
   displayName: string
-  sessionColor: string
   editAvatar: CrewAvatarOverride | null
   capabilityDirty: boolean
   capabilityBusy: boolean
@@ -215,12 +211,11 @@ export function useCrewDiscardGuard({
     }
     if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
-    if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     // Trim-compared on BOTH sides, because the server trims on save: "  Ops  "
     // over a stored "Ops" persists nothing, so it must not read as an unsaved
     // change — and a hand-edited config holding "  Ops  " must not open dirty.
-    if (displayName.trim() !== (editingAgent.display_name || '').trim()) out.add('routing')
-    if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
+    // The name field lives on the overview pane, so that is the row the unsaved mark goes on.
+    if (displayName.trim() !== (editingAgent.display_name || '').trim()) out.add('overview')
     // Every tier in one comparison: ghost traits normalize through
     // ghostTraitsFrom (flat record, stable key order), an image override through
     // imageAvatarFrom and a pack through packAvatarFrom — so a picture pick, a
@@ -242,7 +237,7 @@ export function useCrewDiscardGuard({
             : editAvatar?.kind === 'pack'
               ? { id: editAvatar.id }
               : null
-    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
+    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('overview')
     // Compared separately from the face, and BOTH sides go through the same
     // coercion — which is what makes the comparison sound rather than merely
     // convenient. `JSON.stringify` is order-sensitive: the draft's map is in
@@ -261,14 +256,14 @@ export function useCrewDiscardGuard({
       ? [null, null]
       : [motionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
     const draftReactions = [motionsFrom(editAvatar), soundsFrom(editAvatar)]
-    if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('routing')
+    if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('overview')
     // An open inline schedule-create form is pending work too: it gets the
     // rail's unsaved dot and the note, so closing the editor cannot silently
     // eat a half-typed schedule the way an untracked surface would.
     if (schedDraft) out.add('schedules')
     if (capabilityDirty) out.add('capabilities')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, displayName, sessionColor, schedDraft, editAvatar, capabilityDirty])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, displayName, schedDraft, editAvatar, capabilityDirty])
 
   /** Rail-driven pane changes route through here: leaving the schedules pane
    *  while a schedule draft is open asks before destroying the typed work

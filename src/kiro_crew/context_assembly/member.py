@@ -420,7 +420,7 @@ def build_member_section(
     safety boundary is never formally outranked by product prose):
 
     1. ``[MEMBER IDENTITY]`` — derived from the crew's registered config
-       (name, description, triggers). Auto-generated: works even for a
+       (name, description). Auto-generated: works even for a
        crew whose description is empty, which is exactly the case that
        needs a floor.
     2. ``[HOW YOU WORK]`` — the product-owned working protocol
@@ -484,9 +484,7 @@ def build_member_section(
     # (`"description": 1`) must degrade to the identity floor rather than
     # crash the member's chat turn on `.strip()`.
     _desc = getattr(crew, "description", "") if crew else ""
-    _trig = getattr(crew, "triggers", "") if crew else ""
     description = _desc.strip() if isinstance(_desc, str) else ""
-    triggers = _trig.strip() if isinstance(_trig, str) else ""
     # Rules are read OUTSIDE the total-degrade guard, deliberately: every
     # other failure degrades this section to an ordinary session, but for
     # the one safety-relevant layer that degrade IS the fail-open — a
@@ -528,7 +526,6 @@ def build_member_section(
     # content time rather than in the structural-marker scan.
     member = _markers._scrub_member_payload(member)
     description = _markers._scrub_member_payload(description)
-    triggers = _markers._scrub_member_payload(triggers)
     rules = _markers._scrub_member_payload(rules)
     briefing = _markers._scrub_member_payload(briefing)
     goals = _markers._scrub_member_payload(goals)
@@ -540,8 +537,6 @@ def build_member_section(
     ]
     if description:
         identity.append(f"Your role: {description}")
-    if triggers:
-        identity.append(f"Your remit — the work that belongs to you: {triggers}")
     if not desk_withheld:
         # The one identity sentence that describes the DM thread itself: an
         # ordinary chat, a cron turn or a delegate on this member's store is

@@ -586,20 +586,17 @@ describe('crew editor — save', () => {
 
     // Save is gated on there being something to save, so make one real edit; the
     // point of this test is the payload's SHAPE, which every other field pins.
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: 'pager' } })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', {
-      display_name: '',
+      display_name: 'Pager',
       kiro_agent: 'oncall-agent',
       workspace: 'oncall',
       memory_store: 'oncall-mem',
-      triggers: 'pager',
       model: 'claude-opus-5',
       reasoning_effort: '',
-      session_color: '',
       avatar: {},
     })
   })
@@ -611,30 +608,12 @@ describe('crew editor — save', () => {
     const sheet = await openEditor('oncall')
 
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: 'pager' } })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeEnabled()
 
     // Typing it back is not a pending change.
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: '' } })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: '' } })
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
-  })
-
-  it('sends edited routing triggers', async () => {
-    await renderRoster()
-    const sheet = await openEditor('oncall')
-
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
-      target: { value: 'incident, prod outage' },
-    })
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
-
-    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
-    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
-      'oncall',
-      expect.objectContaining({ triggers: 'incident, prod outage' }),
-    )
   })
 
   it('does not touch the default from the editor at all', async () => {
@@ -645,8 +624,7 @@ describe('crew editor — save', () => {
     const sheet = await openEditor('oncall')
 
     expect(within(sheet).queryByRole('switch')).not.toBeInTheDocument()
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: 'pager' } })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.setDefaultAgent).not.toHaveBeenCalled()
@@ -1005,7 +983,7 @@ describe('crew editor — appearance pack round-trip', () => {
   /* A crew wearing a pack from the crew appearance library. The record is the
      pack id and nothing else, so the editor has to LOAD it: while it did not,
      `avatarPayload`'s `editAvatar ?? {}` wrote "no override" on every save, and
-     editing a crew's triggers undressed it. */
+     editing a crew's display name undressed it. */
   const PACK_CREW = {
     name: 'aurora',
     kiro_agent: 'oncall-agent',
@@ -1030,20 +1008,17 @@ describe('crew editor — appearance pack round-trip', () => {
     await renderRoster()
     const sheet = await openEditor('aurora')
 
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
-      target: { value: 'pager' },
-    })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
       'aurora',
       expect.objectContaining({
-        triggers: 'pager',
+        display_name: 'Pager',
         // Verbatim: the id this build reads, and the legacy cue it does not.
         // The pack's own files are still its art and its audio -- the retired
-        // key plays nothing, it is merely not destroyed by a trigger edit.
+        // key plays nothing, it is merely not destroyed by a display-name edit.
         avatar: { kind: 'pack', id: 'aurora-fox', sounds: { done: 'chime' } },
       }),
     )
@@ -1130,17 +1105,14 @@ describe('crew editor — appearance pack round-trip', () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
 
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
-      target: { value: 'pager' },
-    })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
       'oncall',
       expect.objectContaining({
-        triggers: 'pager',
+        display_name: 'Pager',
         avatar: {
           kind: 'hologram',
           id: 'from-a-newer-client',
@@ -1190,12 +1162,9 @@ describe('crew editor — ghost reaction round-trip', () => {
     avatar: { kind: 'ghost', motions: { done: 'nod' }, sounds: { done: 'chime' } },
   }
 
-  const saveWithATrigger = async (name: string) => {
+  const saveWithADisplayName = async (name: string) => {
     const sheet = await openEditor(name)
-    gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
-      target: { value: 'pager' },
-    })
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     return mockApi.updateKirocrewAgent.mock.calls.at(-1)?.[1] as Record<string, unknown>
@@ -1207,7 +1176,7 @@ describe('crew editor — ghost reaction round-trip', () => {
       default_agent: 'kirocrew',
     })
     await renderRoster()
-    const body = await saveWithATrigger('radar')
+    const body = await saveWithADisplayName('radar')
     expect(body.avatar).toEqual({
       kind: 'ghost',
       motions: { done: 'nod' },
@@ -1246,7 +1215,7 @@ describe('crew editor — ghost reaction round-trip', () => {
       default_agent: 'kirocrew',
     })
     await renderRoster()
-    const body = await saveWithATrigger('radar')
+    const body = await saveWithADisplayName('radar')
     expect(body.avatar).toEqual({
       kind: 'ghost',
       motions: { done: 'nod' },
@@ -1271,7 +1240,7 @@ describe('crew editor — ghost reaction round-trip', () => {
       default_agent: 'kirocrew',
     })
     await renderRoster()
-    const body = await saveWithATrigger('radar')
+    const body = await saveWithADisplayName('radar')
     expect(body.avatar).toEqual({
       kind: 'image',
       sounds: { done: 'chime', error: 'pop' },
@@ -1344,13 +1313,14 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     await screen.findByRole('dialog', { name: 'Customize avatar' })
   })
 
-  it('the Avatar field face and its button both open the builder, and the button says "Edit avatar"', async () => {
+  it('the header face and its button both open the builder, and the button says "Edit avatar"', async () => {
+    // The face has no pane of its own: the header and the Overview hub are its doors.
     await renderRoster()
     const sheet = await openEditor('oncall')
-    fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
-    const btn = within(sheet).getByTestId('open-avatar-builder')
+    expect(within(sheet).queryByTestId('crew-rail-avatar')).toBeNull()
+    const btn = within(sheet).getByTestId('header-edit-avatar')
     expect(btn).toHaveTextContent('Edit avatar')
-    fireEvent.click(within(sheet).getByTestId('field-avatar-button'))
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
     fireEvent.click(within(builder).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Customize avatar' })).toBeNull())

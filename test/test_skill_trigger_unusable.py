@@ -29,7 +29,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.skills_discovery import _BUILTIN_SKILLS_DIR
-from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, rank_triggered, trigger_score, words_of
+from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
 #: The prompt the latency study sent as every new chat's first message.
 PONG = "Reply with exactly the word: pong."
@@ -110,11 +110,6 @@ class TestCaseExactPhrase:
     def test_an_unmarked_trigger_keeps_ignoring_case(self, trigger: str, text: str) -> None:
         # Only the author's `=` changes matching, so no existing trigger loses a match.
         assert trigger_score(trigger, words_of(text))[0] == 1.0
-
-    def test_crew_routing_reads_the_same_rule(self) -> None:
-        roster = [("office crew", "=Word, =Excel")]
-        assert rank_triggered("count every word here", roster) == []
-        assert [name for name, _ in rank_triggered("fix it in Excel", roster)] == ["office crew"]
 
 
 class TestComputerUseSkill:

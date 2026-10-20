@@ -304,9 +304,7 @@ def _agent_roster_row(
         # ``name`` above stays the row's identity and dispatch handle.
         "display_name": _roster_mask(agent_cfg.display_name),
         "description": _roster_mask(agent_cfg.description),
-        "triggers": _roster_mask(agent_cfg.triggers),
         "source": _roster_mask(agent_cfg.source),
-        "session_color": _roster_mask(agent_cfg.session_color),
         # The one STRUCTURED value a row carries -- shape-allowlisted by
         # ``_safe_avatar`` with masking confined to user-authored ``traits``
         # values, so ``kind``/``v``/``file`` survive as the pinned shapes the

@@ -1156,9 +1156,6 @@ describe('New crewmate dialog', () => {
     const advanced = await screen.findByTestId('crewmate-create-advanced')
     // The same field components the editor mounts: workspace and model.
     expect(within(advanced).getByLabelText('Workspace')).toBeInTheDocument()
-    const colorInput = advanced.querySelector('input[type="color"]')
-    expect(colorInput).not.toBeNull()
-    expect(colorInput).toHaveValue('#4f8ef7')
     expect(within(advanced).getByLabelText('Edit default model')).toBeInTheDocument()
   })
 

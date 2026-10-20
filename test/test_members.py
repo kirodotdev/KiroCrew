@@ -366,27 +366,21 @@ class TestRecordActivity:
         assert record_activity("review-agent", "s1", "persistent", dedupe_session=True) is True
         assert len(read_activity("review-agent")) == 2
 
-    def test_routing_decisions_are_not_deduped(self):
-        # Each select_crew bind is a distinct event even within one session.
-        record_activity("M", "s1", "persistent", via="select_crew")
-        record_activity("M", "s1", "persistent", via="select_crew")
+    def test_undeduped_entries_are_distinct_events(self):
+        # Without dedupe_session, each call is its own event even within one session.
+        record_activity("M", "s1", "persistent", via="auto-improvement")
+        record_activity("M", "s1", "persistent", via="auto-improvement")
         assert len(read_activity("m")) == 2
 
-    def test_routing_decision_uses_a_distinct_session_field(self):
-        # A decision is recorded in the session that MADE it (the parent); the
-        # member runs elsewhere. Filing it under `session` would let a consumer
-        # count a session the member never ran in.
-        record_activity("M", "parent-1", "persistent", via="select_crew")
-        row = read_activity("m")[0]
-        assert row["decided_in"] == "parent-1"
-        assert "session" not in row
-
-    def test_participation_and_decisions_are_countable_apart(self):
+    def test_every_entry_is_filed_under_session(self):
+        # The retired routing tool filed its decisions under a separate
+        # `decided_in` key; every entry written today is a participation record
+        # and carries `session`, whatever `via` says.
         record_activity("M", "chat-1", "persistent", via="chat")
-        record_activity("M", "parent-1", "persistent", via="select_crew")
+        record_activity("M", "spine-1", "persistent", via="auto-improvement")
         rows = read_activity("m")
-        assert [r["session"] for r in rows if "session" in r] == ["chat-1"]
-        assert [r["decided_in"] for r in rows if "decided_in" in r] == ["parent-1"]
+        assert [r["session"] for r in rows] == ["chat-1", "spine-1"]
+        assert all("decided_in" not in r for r in rows)
 
     def test_memory_mode_cannot_be_omitted(self):
         # Required positionally so a caller cannot silently log a private
@@ -635,14 +629,14 @@ class TestRefusedActivityIsReported:
         key = acquire(_log_path("m").parent / LEASE_FILE, kind=KIND_MEMBER, unit_id="m", sole=True)
         try:
             with caplog.at_level(logging.DEBUG, logger="kiro_crew.members"):
-                assert record_activity("M", "s2", "persistent", via="select_crew") is False
+                assert record_activity("M", "s2", "persistent", via="auto-improvement") is False
         finally:
             release(key)
 
         reported = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert reported, "a dropped activity entry was not reported above debug"
         assert "DROPPED" in reported[0]
-        assert "'s2'" in reported[0] and "select_crew" in reported[0]
+        assert "'s2'" in reported[0] and "auto-improvement" in reported[0]
         # The report is about a real loss, not a spurious one.
         self._reset_service()
         assert [row.get("session") for row in read_activity("m")] == ["s1"]

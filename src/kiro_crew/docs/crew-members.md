@@ -32,9 +32,7 @@ page before you switch it on.
 | Model | Default model for its sessions | the template's pinned model, then the global default |
 | Reasoning effort | How long its sessions think before answering | the global default, or its role effort for a background worker crew; ignored by models that do not reason |
 | Description | One line about what it is for | no description shown |
-| Triggers (`triggers`) | Free text saying when work should go to it | never auto-selected; naming it still delegates to it |
 | Avatar | A ghost face with chosen traits, or an uploaded picture | a face derived from its name |
-| Session color | Tints the sessions it starts | no color of its own |
 
 A per-session pick always wins over the crewmate's model and reasoning effort,
 and the crewmate's values win over the global defaults.
@@ -104,8 +102,8 @@ press
 **Create** and the crewmate is made at once. Below the avatar, **Advanced
 settings** unfolds the rest of the form in the same card: what the crewmate is
 **Built from** (the starting setup it copies; `kirocrew` unless you pick
-another), an optional line on **what it looks after**, and the workspace,
-model, triggers and session color. Folding it again keeps whatever you set
+another), an optional line on **what it looks after**, and the workspace and
+model. Folding it again keeps whatever you set
 there. When a crewmate suggests a new crewmate, its link opens this same form
 with the suggested name and goal already filled in; nothing is created until
 you press **Create**. Creating opens the new crewmate's chat, and the crewmate
@@ -144,7 +142,7 @@ Beyond creating, the page edits crewmates in place. The Profile card's pencil,
 Crewmates page itself, and every configuration write goes through that dialog.
 The crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
 remains an alternative editor for an existing crewmate's name, template, model,
-reasoning effort, workspace, triggers, avatar and session color.
+reasoning effort, workspace and avatar.
 
 From the CLI:
 
@@ -269,74 +267,28 @@ clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,
 not against your roster, so it picks a **template**. A crewmate whose name has no
 spec file of its own comes back as `Unknown agent`.
 
-## Routing work to a crewmate
+## Delegating work to a crewmate
 
-This section is for an agent deciding where a task belongs. Two tools read the
-same roster and answer different questions.
+This section is for an agent handing a task to a crewmate. There is no routing
+tool and no roster tool: work reaches a crewmate by an explicit choice — a chat
+opened on it, a bound schedule or webhook, or a delegation that names it. An
+agent delegates when the user (or the task it was given) names the crewmate;
+it does not guess a name, and when none is named the task stays where it is.
 
-`select_crew` with no argument returns the roster: every crewmate with non-empty
-triggers except the configured `default_agent`, each with its triggers, plus that
-`default_agent` name as a top-level field. A roster entry, a `route_crew` match
-and an `unavailable` row also carry `display_name` when the crewmate's dashboard
-label differs from its key. Pass the key, not the label, to `crew=`. The omission is of that one configured
-name, not of whoever is calling — a crewmate with triggers can see itself in
-the list, so check the name you picked against your own. You judge the fit.
+Delegating means `spawn_run(crew="<name>")`. Pass the crewmate's key, not its
+dashboard label. `crew=` is the only argument that moves the run onto that
+crewmate's memory store and template. `agent=` names an installed agent template
+and nothing else: a name with no template is refused outright, and a name that
+does resolve to one runs on the memory the caller already has. So
+`agent="<a crewmate name>"` never *selects* that crewmate's memory, it only
+inherits the caller's — from a default-crew orchestrator that is the default
+store, which is how one crewmate's work ends up somewhere it does not belong.
 
-`select_crew(crew="<name>")` binds one and returns its `bound` block —
-`kiro_agent`, `workspace`, `memory_store`, `model` — and records the routing
-decision in that crewmate's activity log. The first three are resolved values,
-so they name the template, the folder and the store the run will really use.
-`model` is the crewmate's configured pin verbatim, so an empty string there means
-it pins nothing and the run inherits.
-
-`route_crew(task="<the task>")` ranks the same triggers mechanically and returns
-each match with a score, a description and a memory store, best first. Use it
-when the same task should reach the same crewmate every time; use the roster when
-the task is prose and you intend to judge.
-
-Acting on either answer means `spawn_run(crew="<name>")`. `crew=` is the only
-argument that moves the run onto that crewmate's memory store and template.
-`agent=` names an installed agent template and nothing else: a name with no
-template is refused outright, and a name that does resolve to one runs on the
-memory the caller already has. So `agent="<a crewmate name>"` never *selects*
-that crewmate's memory, it only inherits the caller's — from a default-crew
-orchestrator that is the default store, which is how one crewmate's work ends up
-somewhere it does not belong.
-
-### How triggers are matched
-
-Triggers are comma-separated phrases. A phrase scores as the fraction of its own
-words present in the task text, and a crewmate scores as its best phrase, so a
-specific multi-word phrase has to match more completely than a generic one-word
-phrase to reach the same score. A phrase prefixed with `!` is a negative: if all
-of its words appear, that crewmate is excluded whatever else it scored.
-Negatives are applied after every positive, so the order you write them in
-cannot change the outcome. Anything below a 0.7 overlap is not a match at all,
-and ties keep the order the crewmates appear in your config. Case is ignored,
-except in a phrase prefixed with `=`, which must appear exactly as written:
-`=Excel` fires on "Excel" but not on "excel".
-
-The same matcher picks [skills](skills.md), so "this phrasing matches" means one
-thing across the product.
-
-### When not to route
-
-- **No match.** When `route_crew` returns nothing in either `matches` or
-  `unavailable`, no crewmate claims the task: handle it on the default crew
-  rather than picking the least-bad row.
-- **A weak match.** The roster's own guidance is to select only on a clear,
-  specific, high-confidence match. One shared word is not one.
-- **No triggers.** A crewmate with empty triggers is never picked
-  automatically: it is omitted from the roster and never ranked. It can still be
-  delegated to by name with `spawn_run(crew=...)`. Triggers steer automatic
-  routing only; there is no separate "accept delegated tasks" switch.
-- **Memory unavailable.** A crewmate whose memory binding cannot be resolved
-  comes back under `unavailable` with a reason. Report the refusal; running it on
-  the default store instead is the one substitution never to make.
-
-An unknown name returns an error listing the crewmates that do exist. Binding is
-a decision, not an obligation — it records intent and changes nothing until you
-spawn.
+Every crewmate can be delegated to by name; there is no "accept delegated
+tasks" switch. An unknown name is refused with an error listing the crewmates
+that do exist, and a crewmate whose memory binding cannot be resolved is
+refused rather than run on the default store — report that refusal, never
+substitute the default memory for it.
 
 ## Related
 

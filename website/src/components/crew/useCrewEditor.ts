@@ -85,11 +85,9 @@ interface AgentUpdatePayload {
   kiro_agent: string
   workspace: string
   memory_store: string
-  triggers: string
   display_name: string
   model: string
   reasoning_effort: string
-  session_color: string
   avatar: CrewAvatarOverride | Record<string, unknown> | null
 }
 
@@ -163,12 +161,8 @@ export interface CrewEditorController {
   workspace: string
   setWorkspace: (v: string) => void
   memoryStore: string
-  triggers: string
-  setTriggers: (v: string) => void
   displayName: string
   setDisplayName: (v: string) => void
-  sessionColor: string
-  setSessionColor: (v: string) => void
   editModel: string
   setEditModel: (v: string) => void
   editEffort: string
@@ -206,7 +200,6 @@ export interface CrewEditorController {
   goToPane: (key: CrewPaneKey) => void
   panelId: string
   sections: ReturnType<typeof useCrewEditorSections>
-  routingWords: number
   templatePaneActive: boolean
 
   // Wake / webhook summaries the panes and rail read.
@@ -393,9 +386,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const [kiroAgent, setKiroAgent] = useState('')
   const [workspace, setWorkspace] = useState('default')
   const [memoryStore, setMemoryStore] = useState('default')
-  const [triggers, setTriggers] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [sessionColor, setSessionColor] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [editEffort, setEditEffort] = useState('')
   const [editAvatar, setEditAvatar] = useState<CrewAvatarOverride | null>(null)
@@ -455,9 +446,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     setError(''); setSheetHint('')
     setConfirmDelete(false)
     setKiroAgent(a.kiro_agent); setWorkspace(a.workspace); setMemoryStore(a.memory_store)
-    setTriggers(a.triggers || '')
     setDisplayName(a.display_name || '')
-    setSessionColor(a.session_color || '')
     setEditModel(a.model || INHERIT_MODEL)
     setEditEffort(a.reasoning_effort || '')
     // Normalized through the same coercion the renderer applies, so the dirty
@@ -693,11 +682,9 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
         kiro_agent: kiroAgent,
         workspace,
         memory_store: memoryStore,
-        triggers,
         display_name: displayName,
         model: editModel,
         reasoning_effort: editEffort,
-        session_color: sessionColor,
       }
       let avatarPayload: CrewAvatarOverride | Record<string, unknown> | null = avatarReset
         ? null
@@ -848,9 +835,8 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     }
     if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
-    if (triggers !== (editingAgent.triggers || '')) out.add('routing')
-    if (displayName.trim() !== (editingAgent.display_name || '').trim()) out.add('routing')
-    if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
+    // The name field lives on the overview pane, so that is the row the unsaved mark goes on.
+    if (displayName.trim() !== (editingAgent.display_name || '').trim()) out.add('overview')
     const savedNorm =
       ghostTraitsFrom(editingAgent.avatar) ??
       iconAvatarFrom(editingAgent.avatar) ??
@@ -866,17 +852,17 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
             : editAvatar?.kind === 'pack'
               ? { id: editAvatar.id }
               : null
-    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
+    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('overview')
     const unclaimed = unclaimedAvatarFrom(editingAgent.avatar) !== null
     const savedReactions = unclaimed
       ? [null, null]
       : [motionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
     const draftReactions = [motionsFrom(editAvatar), soundsFrom(editAvatar)]
-    if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('routing')
+    if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('overview')
     if (schedDraft) out.add('schedules')
     if (capabilityDirty) out.add('capabilities')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, displayName, sessionColor, schedDraft, editAvatar, capabilityDirty])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, displayName, schedDraft, editAvatar, capabilityDirty])
 
   const requestPane = useCallback((key: CrewPaneKey) => {
     if (schedDraft && key !== pane) { setDiscardAsk(key); return }
@@ -984,13 +970,10 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const activeWebhooks = boundWebhookTokens.filter(
     (t: WebhookTokenEntry) => webhookCanCallIn(t, webhooksQuery.data?.switch_on !== false)).length
 
-  const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
-
   const sections = useCrewEditorSections({
     templateLabel: i18nT('pages.kiroCrewAgentsPage.built_from'),
     activeSchedules: wakeJobs.filter(j => j.enabled).length,
     totalSchedules: wakeJobs.length,
-    routingWords,
     sharesStorage: collidingCrews.length > 0,
     canDelete: !!editing && editing !== defaultAgent,
     schedulesUnknown: wakeQuery.isError,
@@ -1056,9 +1039,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     kiroAgent, setKiroAgent,
     workspace, setWorkspace,
     memoryStore,
-    triggers, setTriggers,
     displayName, setDisplayName,
-    sessionColor, setSessionColor,
     editModel, setEditModel,
     editEffort, setEditEffort,
     editAvatar,
@@ -1083,7 +1064,6 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     goToPane,
     panelId,
     sections,
-    routingWords,
     templatePaneActive,
     wakeJobs,
     wakeUnknown: wakeQuery.isError,

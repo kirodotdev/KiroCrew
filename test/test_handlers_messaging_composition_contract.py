@@ -1511,7 +1511,7 @@ def test_the_named_delegation_ratchet_reads_the_owners(
     monkeypatch.setattr(guard, "__file__", str(root / "test" / "test_crew_members_doc.py"))
 
     def check() -> None:
-        guard.test_empty_triggers_only_skip_routing_not_named_delegation(doc)
+        guard.test_every_crewmate_can_be_delegated_to_by_name(doc)
 
     _red_green(root, check, "spawn", None, '\n# "crew_delegation_disabled"\n')
 

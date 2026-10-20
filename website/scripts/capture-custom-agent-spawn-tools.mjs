@@ -40,7 +40,7 @@ const FAMILY = '@kirocrew-core/spawn_*'
 const SPAWN_REFS = ['spawn_run', 'spawn_list', 'spawn_status', 'spawn_steer', 'spawn_continue', 'spawn_release'].map(t => `@kirocrew-core/${t}`)
 
 const CREWS = [
-  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '', triggers: '', session_color: '' },
+  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '' },
 ]
 const INSTALLED = [
   { name: 'kirocrew', description: 'Built-in', source: 'kirocrew', model: '', skills: [], mcp_servers: ['kirocrew-core'], filename: 'kirocrew.json', kirocrew_owned: true },

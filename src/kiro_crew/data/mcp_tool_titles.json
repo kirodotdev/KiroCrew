@@ -20,8 +20,6 @@
     "kiro_cli_logs": "Read kiro-cli logs",
     "task_run": "Start task",
     "wait": "Wait",
-    "route_crew": "Route to crew",
-    "select_crew": "Select crew",
     "register_hook": "Register webhook",
     "autonudge_stop": "Stop nudge loop",
     "ask_question": "Ask question",

@@ -31,7 +31,7 @@ const SLOT = 'chat-1'
 const row = (name, selection_kind, source, description, extra = {}) => ({
   name, selection_kind, source, description, scope: 'global',
   kiro_agent: name, workspace: 'default', memory_store: selection_kind === 'member' ? `member-${name}` : 'default',
-  model: '', reasoning_effort: '', triggers: '', session_color: '', avatar: {}, ...extra,
+  model: '', reasoning_effort: '', avatar: {}, ...extra,
 })
 const CATALOG = [
   row('default', 'member', 'kirocrew', 'The stock crew agent'),

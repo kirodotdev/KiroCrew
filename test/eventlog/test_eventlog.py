@@ -347,7 +347,7 @@ def test_a_read_sees_events_another_process_committed(tmp_path, monkeypatch):
     """A READ has to cross the same cross-process gap an append does.
 
     The service held a loaded ``MemberLog`` per slug and every read short-circuited
-    on its cached events, so a ``select_crew`` subprocess appending through its own
+    on its cached events, so a ``kirocrew-core`` subprocess appending through its own
     service stayed invisible here: activity, history and the pushed projections all
     reported the older state until this process happened to append or restart.
     """

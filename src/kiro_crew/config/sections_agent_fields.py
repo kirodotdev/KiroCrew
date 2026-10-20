@@ -451,7 +451,7 @@ def _safe_avatar(value: object) -> dict:
     (``EYES[k] ?? ''``), and keeping the vocabulary in one place (the style
     module) means a new hat needs no backend release. ``tile`` is the one
     exception — it is interpolated into SVG markup, so it is pinned to a hex
-    color by the same validator session_color uses. A motion or cue name is
+    color (``_safe_color``). A motion or cue name is
     pinned, because unlike a trait it names an animation or a synthesizer
     preset rather than an option a renderer can resolve to nothing.
     """

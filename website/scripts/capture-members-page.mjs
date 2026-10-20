@@ -74,7 +74,7 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
         capped: false,
         entries: [
           { ts: now - 180, via: 'chat', project: '' },
-          { ts: now - 2700, via: 'select_crew', project: 'demo-app' },
+          { ts: now - 2700, via: 'chat', project: 'demo-app' },
           { ts: now - 7200, via: 'chat', project: '' },
           { ts: now - 86400, via: 'chat', project: 'demo-app' },
         ],

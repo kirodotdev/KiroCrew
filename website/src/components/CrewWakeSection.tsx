@@ -1,10 +1,6 @@
 /**
- * The "what wakes this crew" section of the crew editor.
- *
- * Distinct from the Routing section's `triggers` field directly above it: that
- * field decides when the orchestrator PICKS this crew for a task a human already
- * started, while everything listed here starts a turn with no human present.
- * Users conflate the two, so the section carries a one-line disambiguator.
+ * The "what wakes this crew" section of the crew editor: everything listed
+ * here starts a turn with no human present.
  *
  * Only clock triggers are listed. Webhook tokens carry their own crew binding
  * and are the webhook pane's answer (CrewWebhookSection), not a second row kind
@@ -173,9 +169,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
    *  CREWMATE, and borrowing the editor's noun there makes the panel read as if it
    *  had wandered into a different product. */
   heading?: string
-  /** The line under the heading. Overridden with it, for the same reason: the
-   *  editor's copy disambiguates against the Triggers field sitting directly above
-   *  it, which does not exist in the panel, so there it explains nothing. */
+  /** The line under the heading. Overridden with it, for the same reason. */
   blurb?: string
   /** What the empty state says. Same reason again, and the most-seen of the three:
    *  most crewmates have no schedules, so on the panel this is the line the reader

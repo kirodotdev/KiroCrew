@@ -3617,7 +3617,7 @@ Parameters:
 - `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 1000)
 - `agent` (str, optional): one agent template applied to every task.
 - `agents` (list[str], optional): per-task agent templates; length must match `tasks`.
-- `crew` (str, optional): target Crew Member whose memory and provider template apply to every task. Any existing member can be named; its `triggers` only decide automatic routing (`select_crew` / `route_crew`), not whether it can be named here. An unknown name is refused with `unknown_member`.
+- `crew` (str, optional): target Crew Member whose memory and provider template apply to every task. Any existing member can be named. An unknown name is refused with `unknown_member`.
 - `target_member` (str, optional): explicit Crew Member selector; it must not conflict with `crew`.
 - `model` (str, optional): batch-wide model override; a non-empty effective model pin forces a dedicated process.
 - `keep` (bool, optional): request guaranteed resumability on a dedicated process and extend retention; ordinary runs remain continuable best-effort during their result-retention window.

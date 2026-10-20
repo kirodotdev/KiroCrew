@@ -7,7 +7,7 @@
  * on. Those boxes are gone; the facts they carried are here, and each is a value
  * rather than a sentence.
  */
-import { Boxes, Clock, Cpu, Database, FolderOpen, Users, Waypoints, Webhook } from 'lucide-react'
+import { Boxes, Clock, Cpu, Database, FolderOpen, Users, Webhook } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import CrewOverviewDiagram, { type CrewWireNode } from './CrewOverviewDiagram'
 import type { CrewPaneKey } from './crewEditorSections'
@@ -17,13 +17,12 @@ import type { CrewPaneKey } from './crewEditorSections'
  *  rather than a button that answers nothing, which is the affordance bug
  *  this pane exists to prevent. */
 type CrewNodeKey =
-  | 'schedules' | 'routing' | 'webhook' | 'template' | 'workspace' | 'memory' | 'model'
+  | 'schedules' | 'webhook' | 'template' | 'workspace' | 'memory' | 'model'
 
 /** Which editor pane each diagram node opens. Workspace and memory store are
  *  two nodes but one pane — the editor binds them side by side. */
 const NODE_PANE: Record<CrewNodeKey, CrewPaneKey> = {
   schedules: 'schedules',
-  routing: 'routing',
   webhook: 'webhook',
   template: 'template',
   workspace: 'place',
@@ -47,7 +46,6 @@ export interface CrewOverviewPaneProps {
   activeSchedules: number
   /** Schedules could not be read, so the count is unknown rather than zero. */
   schedulesUnknown?: boolean
-  routingWords: number
   /** How many other crews point at this crew's workspace or memory store. Drives
    *  the stat only, where the OR is the honest reading of "its storage". */
   sharingCrews: number
@@ -88,7 +86,7 @@ function Stat({ icon, value, label }: { icon?: React.ReactNode; value: string; l
 
 export default function CrewOverviewPane({
   hub, templateLabel, template, workspace, memoryStore, modelLabel, modelInherited,
-  resolvedModel, activeSchedules, schedulesUnknown, routingWords, sharingCrews,
+  resolvedModel, activeSchedules, schedulesUnknown, sharingCrews,
   workspaceShared, memoryShared, webhookTokens, webhooksUnknown, onNavigate,
 }: CrewOverviewPaneProps) {
   const { t } = useTranslation()
@@ -106,13 +104,6 @@ export default function CrewOverviewPane({
         ? unknown
         : activeSchedules > 0 ? String(activeSchedules) : t('components.crewEditor.node_none'),
       muted: schedulesUnknown || activeSchedules === 0,
-    },
-    {
-      key: 'routing',
-      icon: Waypoints,
-      label: t('pages.kiroCrewAgentsPage.triggers'),
-      value: routingWords > 0 ? String(routingWords) : t('components.crewEditor.node_none'),
-      muted: routingWords === 0,
     },
     {
       key: 'webhook',

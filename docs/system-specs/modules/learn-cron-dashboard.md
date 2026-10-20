@@ -4072,15 +4072,15 @@ an unreadable scan is reported as unchecked rather than clean.
 **Crew avatars**: a crew's face is derived from its name unless the record's
 `avatar` field (see `config.md`, *Per-crew avatar override*) pins one of three
 tiers. The ghost and picture tiers are edited in the crew editor's avatar builder (`CrewAvatarBuilder.tsx`,
-reached from the header face, the Overview hub face, and the Avatar row of the
-Triggers pane) and both follow the editor's two-step Apply → Save: Apply commits
+reached from the header face, the header's Edit avatar button, and the Overview
+hub face; the face has no rail pane of its own) and both follow the editor's two-step Apply → Save: Apply commits
 to the editor draft only, Save changes writes the record. Every face that opens
 the builder renders through one component, `crew/CrewAvatarButton.tsx` (issue
 #9103): a real `<button>` named "Edit avatar" carrying a hover/focus scrim with a
 pencil glyph, a persistent corner pencil badge under `(hover: none)`, and an
 optional one-time "Edit this avatar" chip (`mc-avatar-edit-hint-dismissed`,
 one flag per origin — dismissed by the first click on any face or chip). The
-editor header and the Triggers-pane row also carry an explicit "Edit avatar"
+editor header and the Avatar-pane row also carry an explicit "Edit avatar"
 text button. The Crewmates page (`/members`) is a writer too, through the SAME
 editor: the centred identity pill opens the Profile card (`CrewProfilePanel`), and
 its pencil ("Edit member"), Permissions and Model entries open `CrewEditorModal` in
@@ -4103,7 +4103,7 @@ do not appear in the selected member's thread.
 The **ghost tier** is
 pure config — POST `/api/agents` and PUT `/api/agents/{name}` accept
 `avatar: {"kind":"ghost","traits":{…}}` (or `{}` to reset) and reject any other
-non-empty shape with 400 `invalid_avatar`, mirroring `session_color`. The **pack tier** is pure config too (`{"kind":"pack","id":...}`) and is specified below under *Crew appearance library*. **Reactions belong to the tier that can play them** (see
+non-empty shape with 400 `invalid_avatar`, mirroring `reasoning_effort`. The **pack tier** is pure config too (`{"kind":"pack","id":...}`) and is specified below under *Crew appearance library*. **Reactions belong to the tier that can play them** (see
 `config.md`): `motions` (a built-in per-state animation) is the ghost's alone,
 because a picture has no face to move and a pack animates from its own files,
 and so is `sounds` (a synthesized per-state preset): a picture is a static,

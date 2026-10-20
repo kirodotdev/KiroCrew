@@ -12,7 +12,7 @@ import { createTestStore } from '../test/helpers'
 import { i18nT } from '../i18n/t'
 import { Dialog, DialogContent } from '../components/ui/dialog'
 import type { CrewPaneKey } from '../components/crew/crewEditorSections'
-import { CrewEditorHeader, CrewModelPane, CrewPlacePane, CrewRoutingPane } from './KiroCrewAgentsPagePanes'
+import { CrewEditorHeader, CrewModelPane, CrewPlacePane } from './KiroCrewAgentsPagePanes'
 
 /* SimpleSelect is stubbed as in WorkspaceModal.test.tsx: these cases are about
    what the panes do with a pick and the select's action row, not about driving
@@ -110,15 +110,6 @@ describe('CrewModelPane', () => {
     expect(screen.getByText(i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: 'model-a' }))).toBeInTheDocument()
     expect(screen.getByText(i18nT('pages.kiroCrewAgentsPage.effort_resolves_to', { effort: i18nT('lib.effort.default') }))).toBeInTheDocument()
     expect(screen.getByText(i18nT('pages.kiroCrewAgentsPage.no_effort_pin_the_model_decides'), { exact: false })).toBeInTheDocument()
-  })
-})
-
-describe('CrewRoutingPane', () => {
-  it('opens the avatar builder from its button', () => {
-    const openAvatarBuilder = vi.fn()
-    renderWithProviders(<CrewRoutingPane editing="mate" triggers="" setTriggers={vi.fn()} sessionColor="" setSessionColor={vi.fn()} editAvatar={null} openAvatarBuilder={openAvatarBuilder} />)
-    fireEvent.click(screen.getByTestId('open-avatar-builder'))
-    expect(openAvatarBuilder).toHaveBeenCalledTimes(1)
   })
 })
 

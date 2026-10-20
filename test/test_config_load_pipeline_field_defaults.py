@@ -844,13 +844,6 @@ def _own_value_cases() -> list:
             0,
         ),
         _case(
-            "agents.session_color-malformed",
-            [(sections.KiroCrewAgentConfig, "session_color", "#123456")],
-            {"agents": {"crew": {"session_color": "not a colour"}}},
-            lambda c: c.agents["crew"].session_color,
-            "",
-        ),
-        _case(
             "stt.provider-retired",
             [(sections.SttConfig, "provider", "apple")],
             {"stt": {"provider": "whisper"}},

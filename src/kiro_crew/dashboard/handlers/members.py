@@ -484,15 +484,11 @@ async def api_members(request: web.Request) -> web.Response:
                 # through the search box. A boolean, never the id itself.
                 "dashboard_created": agent_cfg.source == _SOURCE_KIROCREW
                 and _member_is_created(agent_cfg.member_id),
-                # A crew's IDENTITY: who it is, and the phrasings that should
-                # reach it. Both are operator-authored prose already stored on the
-                # crew, and both are needed off-config — a roster that shows a
+                # A crew's IDENTITY: who it is. Operator-authored prose already
+                # stored on the crew, needed off-config — a roster that shows a
                 # crew's memory store but not what it is for cannot answer "which
-                # of these should handle a ticket", by the reader or by a router.
-                # An empty `triggers` is meaningful rather than missing: it is the
-                # operator's opt-out from being routed to at all.
+                # of these should handle a ticket".
                 "description": _roster_mask(agent_cfg.description),
-                "triggers": _roster_mask(agent_cfg.triggers),
                 # Presentation label only, masked like the other free text. The
                 # page shows it in place of `name` when non-empty; `name` stays
                 # the identity every per-member route and binding is keyed on.
@@ -1888,8 +1884,7 @@ async def api_member_activity(request: web.Request) -> web.Response:
 
     Response entries carry an allowlist of fields only: ``ts`` (epoch
     seconds), ``via`` (how the member was engaged — ``chat`` is a session
-    the user opened with it, ``select_crew`` is a routing decision), and
-    ``project``. Session keys stay out of the payload: the drawer renders
+    the user opened with it), and ``project``. Session keys stay out of the payload: the drawer renders
     what happened, not handles into other sessions.
 
     ``member`` (query, REQUIRED) is the exact crew name. Slugification is

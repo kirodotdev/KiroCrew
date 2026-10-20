@@ -82,13 +82,12 @@ export interface MemberRosterRow {
 }
 
 /** One entry of GET /api/members/{slug}/activity — a recorded engagement.
- *  `via` distinguishes a session the user opened with the member ('chat')
- *  from an orchestrator routing decision ('select_crew'); the latter records
- *  intent, not a run. */
+ *  `via` names how the engagement started; 'chat' is a session the user
+ *  opened with the member. */
 export interface MemberActivityEntry {
   /** Epoch seconds (UTC) the engagement was recorded. */
   ts: number
-  via: 'chat' | 'select_crew' | string
+  via: 'chat' | string
   project?: string
 }
 

@@ -83,18 +83,21 @@ vi.mock('../components/CrewAvatarBuilder', async () => {
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 
 /** Open the seeded crew's edit sheet. */
+/** The editor's accessible name follows the display name live, so a sheet
+ *  dirtied by a rename is found by the prefix, not by the saved name. */
+const EDITOR = /^Edit crewmate /
+
 async function openEditor(): Promise<HTMLElement> {
   renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('crew-card'))
-  return screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
+  return screen.findByRole('dialog', { name: EDITOR })
 }
 
-/** Edit Triggers so `dirtyPanes` is non-empty. Triggers is one of the seven
- *  fields #5539 left unguarded, and it lives on a pane the dismissal does not
- *  have to be on — the guard is about the crew, not the visible pane. */
-function makeDirty(sheet: HTMLElement, value = 'incidents, prod outages') {
-  fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
-  fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value } })
+/** Edit the display name so `dirtyPanes` is non-empty. It is one of the
+ *  fields #5539 left unguarded, and the guard is about the crew, not the
+ *  visible pane. */
+function makeDirty(sheet: HTMLElement, value = 'On-call desk') {
+  fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value } })
 }
 
 /** Put a TYPED schedule draft on screen. The draft guard keys on typed work,
@@ -106,9 +109,10 @@ async function openSchedDraft(sheet: HTMLElement) {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
 }
 
-/** Pick a picture, which stages an upload on the next Save. */
+/** Pick a picture, which stages an upload on the next Save. The builder
+ *  opens from the header, on whichever pane is showing. */
 async function pickPicture(sheet: HTMLElement) {
-  fireEvent.click(within(sheet).getByTestId('open-avatar-builder'))
+  fireEvent.click(within(sheet).getByTestId('header-edit-avatar'))
   fireEvent.click(await screen.findByRole('button', { name: 'stub-pick-picture' }))
 }
 
@@ -126,8 +130,6 @@ beforeEach(() => {
       kiro_agent: 'kirocrew',
       workspace: 'default',
       memory_store: 'default',
-      triggers: 'incidents',
-      session_color: '',
     }],
     default_agent: 'kirocrew',
   })
@@ -162,8 +164,8 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // Back out: the sheet stays and the edited value survives.
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-keep'))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument())
-    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBeInTheDocument()
-    expect(within(sheet).getByRole('textbox', { name: 'Triggers' })).toHaveValue('incidents, prod outages')
+    expect(screen.getByRole('dialog', { name: EDITOR })).toBeInTheDocument()
+    expect(within(sheet).getByTestId('display-name-input')).toHaveValue('On-call desk')
   })
 
   it('confirming Discard closes the sheet without saving', async () => {
@@ -177,7 +179,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: EDITOR })).not.toBeInTheDocument())
     // A dismissal, never a save.
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -195,7 +197,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // active layer — and is exactly the property a body-portal confirm outside
     // this DialogContent would have to fake by releasing the focus scope.
     expect(sheet).toBeInTheDocument()
-    expect(screen.getByTestId('crew-rail-routing')).toBeInTheDocument()
+    expect(screen.getByTestId('crew-rail-overview')).toBeInTheDocument()
   })
 
   it('a clean sheet closes immediately with no discard prompt', async () => {
@@ -204,7 +206,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: EDITOR })).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -218,8 +220,6 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
         kiro_agent: 'kirocrew',
         workspace: 'default',
         memory_store: 'default',
-        triggers: 'incidents',
-        session_color: '',
         display_name: '  Ops  ',
       }],
       default_agent: 'kirocrew',
@@ -246,9 +246,8 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: NARROW })).not.toBeInTheDocument()
-    // The switch landed, and coming back shows the edit intact.
-    fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
-    expect(within(sheet).getByRole('textbox', { name: 'Triggers' })).toHaveValue('incidents, prod outages')
+    // The switch landed, and the edit is intact.
+    expect(within(sheet).getByTestId('display-name-input')).toHaveValue('On-call desk')
   })
 
   it('a dismissal while the committing PUT is away closes without promising a discard', async () => {
@@ -268,7 +267,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.keyDown(sheet, { key: 'Escape', code: 'Escape' })
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: EDITOR })).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -298,7 +297,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // abandoned save never reaches the crew record.
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: EDITOR })).not.toBeInTheDocument())
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
 
@@ -325,7 +324,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: EDITOR })).not.toBeInTheDocument())
     await act(async () => {})
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -358,7 +357,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // An open schedule draft keeps its OWN confirm — only that one can lock
     // Discard while the draft's create POST is in flight — and that confirm
     // closes the WHOLE sheet. Asking only about "the schedule you typed" while
-    // Discard also throws away a Model or Triggers edit is the same silent loss
+    // Discard also throws away a Model or Display name edit is the same silent loss
     // this guard exists to end, except behind a dialog, which is worse than no
     // dialog at all.
     const sheet = await openEditor()
@@ -399,6 +398,6 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // The save path routes through settleFor/closeSheet, never the guard.
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: EDITOR })).not.toBeInTheDocument())
   })
 })

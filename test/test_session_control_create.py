@@ -103,7 +103,7 @@ def private_dispatch(tmp_path, monkeypatch):
     from kiro_crew.memory_stores import provision_member_memory
 
     cfg = KiroCrewConfig.load()
-    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", description="write")
     store = provision_member_memory(cfg, "writer")
     cfg.save()
     state = _make_state(tmp_path)

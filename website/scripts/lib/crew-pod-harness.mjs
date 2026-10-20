@@ -63,7 +63,7 @@ export async function primeCrewPod(page, authed, crew, theme) {
       await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', triggers: 'incidents, pager' }),
+        body: JSON.stringify({ name, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }),
       })
     }
   }, [crew, theme])

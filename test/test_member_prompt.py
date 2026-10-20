@@ -314,15 +314,11 @@ def _builder(tmp_path) -> ContextBuilder:
     )
 
 
-def _fake_config(description="Watches new issues", triggers="new GitHub issues"):
+def _fake_config(description="Watches new issues"):
     from kiro_crew.config.loader import KiroCrewConfig
 
     cfg = KiroCrewConfig()
-    cfg.agents = {
-        CREW: KiroCrewAgentConfig(
-            kiro_agent="kirocrew-autofix", description=description, triggers=triggers
-        )
-    }
+    cfg.agents = {CREW: KiroCrewAgentConfig(kiro_agent="kirocrew-autofix", description=description)}
     return cfg
 
 
@@ -348,7 +344,6 @@ class TestMemberSectionInjection:
         assert f"You are {CREW}. Not a generic assistant" in ctx
         assert "an identity of your own" in ctx
         assert "Your role: Watches new issues" in ctx
-        assert "new GitHub issues" in ctx
         assert "[HOW YOU WORK]" in ctx
         assert "[PERMANENT RULES" in ctx
         assert "Never merge PRs." in ctx
@@ -540,7 +535,6 @@ class TestMemberSectionInjection:
         cfg = KiroCrewConfig()
         crew = KiroCrewAgentConfig(kiro_agent="a")
         crew.description = 1  # type: ignore[assignment] — simulating a hand-edited config
-        crew.triggers = ["not", "a", "string"]  # type: ignore[assignment]
         cfg.agents = {CREW: crew}
         with patch("kiro_crew.context.KiroCrewConfig.load", return_value=cfg):
             ctx = _builder(tmp_path).build_session_context(
@@ -821,7 +815,7 @@ class TestMemberSectionInjection:
                 )
         with patch(
             "kiro_crew.context.KiroCrewConfig.load",
-            return_value=_fake_config(description="", triggers=""),
+            return_value=_fake_config(description=""),
         ):
             ctx = _builder(tmp_path).build_session_context(
                 session_key="dashboard:member-code-reviewer", agent=CREW, member=CREW

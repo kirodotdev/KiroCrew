@@ -22,13 +22,13 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Boxes, Clock, Cpu, FolderOpen, LayoutDashboard, Trash2, Waypoints, Webhook,
+  Boxes, Clock, Cpu, FolderOpen, LayoutDashboard, Trash2, Webhook,
   type LucideIcon,
 } from 'lucide-react'
 
 /** Which pane the editor body is showing. */
 export type CrewPaneKey =
-  | 'overview' | 'template' | 'capabilities' | 'model' | 'place' | 'schedules' | 'routing' | 'webhook' | 'danger'
+  | 'overview' | 'template' | 'capabilities' | 'model' | 'place' | 'schedules' | 'webhook' | 'danger'
 
 export interface CrewEditorSection {
   key: CrewPaneKey
@@ -73,8 +73,6 @@ export interface CrewEditorFacts {
   activeSchedules: number
   /** Every schedule bound to this crew, paused included. */
   totalSchedules: number
-  /** How many routing keywords the crew offers the orchestrator. */
-  routingWords: number
   /** Another crew points at this crew's workspace or memory store. */
   sharesStorage: boolean
   /** False for the default crew, which cannot be removed. */
@@ -104,7 +102,7 @@ export interface CrewEditorFacts {
 export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection[] {
   const { t } = useTranslation()
   const {
-    templateLabel, activeSchedules, totalSchedules, routingWords, sharesStorage, canDelete,
+    templateLabel, activeSchedules, totalSchedules, sharesStorage, canDelete,
     schedulesUnknown, webhookTokens, webhookTokensActive, webhooksUnknown, dirtyPanes,
   } = facts
   return useMemo(() => {
@@ -139,16 +137,6 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
         icon: FolderOpen,
         label: t('components.crewEditor.pane_workspace_memory'),
         ...(sharesStorage ? { shared: true } : {}),
-      },
-      // Routing sits ABOVE schedules deliberately: the wake pane's own
-      // disambiguator says "Separate from Triggers above", and that sentence is
-      // only true while the row it names really is above it.
-      {
-        key: 'routing',
-        group: t('components.crewEditor.group_how_work_arrives'),
-        icon: Waypoints,
-        label: t('pages.kiroCrewAgentsPage.triggers'),
-        ...(routingWords > 0 ? { count: String(routingWords) } : {}),
       },
       {
         key: 'schedules',
@@ -192,6 +180,6 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
     return rows
     // Primitives, not the `facts` object: a caller building it inline gets a new
     // identity every render, which would make the memo never hit.
-  }, [templateLabel, activeSchedules, totalSchedules, routingWords, sharesStorage, canDelete,
+  }, [templateLabel, activeSchedules, totalSchedules, sharesStorage, canDelete,
     schedulesUnknown, webhookTokens, webhookTokensActive, webhooksUnknown, dirtyPanes, t])
 }

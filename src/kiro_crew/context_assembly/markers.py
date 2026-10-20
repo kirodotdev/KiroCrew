@@ -210,7 +210,7 @@ def _is_marker_ignorable(ch: str) -> bool:
 
 
 # Forgeable member-authority markers, scrubbed from every VARIABLE payload the
-# member section frames (description, triggers, rules, briefing). The genuine
+# member section frames (description, rules, briefing). The genuine
 # headers are minted by ``_build_member_section``'s own f-strings AFTER this
 # scrub, so a forged ``[PERMANENT RULES — …]`` planted in the agent-writable
 # briefing (steered external content) cannot render as the user-owned layer.

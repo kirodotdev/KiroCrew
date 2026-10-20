@@ -71,11 +71,9 @@ async function stills(browser, theme) {
   // Close-up so a reviewer can actually read the 28px face.
   await face.screenshot({ path: join(OUT, `02b-editor-face-hover-closeup-${theme}.png`) })
 
-  // 3: the Avatar row on the Triggers pane — face + text button, same open path.
-  await sheet.getByTestId('crew-rail-routing').click()
-  const rowBtn = sheet.getByTestId('open-avatar-builder')
-  check(`[${theme}] Avatar row button reads "${EDIT_AVATAR}"`, (await rowBtn.innerText()).trim() === EDIT_AVATAR)
-  await sheet.screenshot({ path: join(OUT, `03-editor-avatar-row-${theme}.png`) })
+  // 3: the face has no rail pane of its own; the header and the Overview hub
+  //    are its doors, so a second copy of the same button is not drawn.
+  check(`[${theme}] no Avatar pane in the rail`, (await sheet.getByTestId('crew-rail-avatar').count()) === 0)
 
   // 4: Crew Members — on that chat surface the face is a plain face (issue
   //    #9425) inside the centred identity pill; the pill itself is the entry,

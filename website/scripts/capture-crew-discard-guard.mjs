@@ -3,8 +3,8 @@
  *
  * Same gateway-free flow as capture-crew-inline-schedule.mjs (real built SPA,
  * fixture-stubbed /api/**). The evidence is the confirm the editor now raises
- * before a dismissal destroys tracked edits: a Triggers change on the routing
- * pane, then Escape, which used to close the sheet and drop the edit silently.
+ * before a dismissal destroys tracked edits: a display-name change on the
+ * Overview pane, then Escape, which used to close the sheet and drop the edit silently.
  *
  * Full-page shots rather than element shots: the point of the surface is that
  * the confirm sits OVER the still-open editor, so cropping to either dialog
@@ -26,7 +26,7 @@ const CREWS = [
   { name: 'kirocrew', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' },
   {
     name: 'oncall', kiro_agent: 'kirocrew', workspace: 'oncall',
-    memory_store: 'oncall-mem', triggers: 'incidents',
+    memory_store: 'oncall-mem',
   },
 ]
 
@@ -88,13 +88,14 @@ async function main() {
         shot.push(`${theme}-${name}.png`)
       }
 
-      // Triggers is one of the seven fields dirtyPanes tracks and the one the
-      // earlier schedule-only guard left unprotected.
-      await sheet.locator('[data-testid="crew-rail-routing"]').click()
+      // Display name is one of the fields dirtyPanes tracks and the kind the
+      // earlier schedule-only guard left unprotected. Its field is on the
+      // Overview pane, where the editor opens.
+      await sheet.locator('[data-testid="crew-rail-overview"]').click()
       await page.waitForTimeout(250)
-      await sheet.getByRole('textbox', { name: 'Triggers' }).fill('incidents, prod outages')
+      await sheet.getByTestId('display-name-input').fill('On-call desk')
       await page.waitForTimeout(250)
-      await save('dirty-routing-pane')
+      await save('dirty-overview-pane')
 
       await page.keyboard.press('Escape')
       const confirm$ = page.getByRole('dialog', { name: 'Discard unsaved changes?' })

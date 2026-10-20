@@ -5254,17 +5254,12 @@ unbound running worker is neither visible nor recoverable.
 |---|---|
 | a leaf — one assertable acceptance condition | `kirocrew-worker` |
 | decomposes into two or more independently acceptable sub-items | `kirocrew-conductor`, and only while `depth` allows it (capped at 2, so your children may conduct and your grandchildren may not) |
-| `select_crew` names a specialist crew that fits | that crew |
 
-A specialist crew that does not mount `@kirocrew-work` cannot report to the
-ledger. Dispatch it anyway when it is the right crew, and fall back to
-`session_read_message` for that one item — never for all of them.
+Both mount `@kirocrew-work`, so the child reports against its own item.
 
 **Never leave `agent` unset.** An omitted `agent` inherits YOUR agent, not a
 global default — so the child comes up as a second conductor, with no
-`fs_write`, and the item looks stalled rather than misconfigured. `select_crew`
-does not wire itself to `session_create` either: it returns a name and you pass
-it.
+`fs_write`, and the item looks stalled rather than misconfigured.
 
 **A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
 `agent_kind: "template"`: the worker then runs its template on your own memory,
@@ -5877,21 +5872,18 @@ the charter, not the procedure.
 #: and ``chat_folder_*`` verbs the charter also names are
 #: ``@kirocrew-dashboard`` and are granted by the tuple above, while
 #: ``list_sessions`` is core (``mcp_tools/sessions.py``) despite sitting in the
-#: prompt's child-session paragraph. Deriving rather than reusing the sibling's
-#: thirteen is load-bearing: ``select_crew`` is absent from that tuple and is
-#: step 1 of this conductor's documented dispatch procedure
-#: (``goal-conductor/SKILL.md``), so copying would have broken dispatch on the
-#: first cycle while looking like a correct patch.
+#: prompt's child-session paragraph. Derived rather than reused from the
+#: sibling's thirteen so that a verb this conductor's documented procedure
+#: (``goal-conductor/SKILL.md``) calls cannot silently go ungranted when the
+#: two tuples drift apart.
 #:
-#: ``select_crew`` earns its place under the invariant already stated for the
-#: dashboard tuple — a granted verb may CREATE or READ, never MUTATE something
-#: that already exists and is not the agent's own. ``_do_select_crew`` reads
-#: config, resolves the crew's bindings, and appends one routing-decision
-#: record keyed to its OWN session; it binds nothing and starts no work.
+#: Every verb here sits under the invariant already stated for the dashboard
+#: tuple — a granted verb may CREATE or READ, never MUTATE something that
+#: already exists and is not the agent's own.
 #:
 #: What is granted: reads (``resource_status``, ``list_sessions``, skills), the
 #: patrol loop's own lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``),
-#: the conductor's OWN durable ledger, routing (``select_crew``), and
+#: the conductor's OWN durable ledger, and
 #: reporting to the owner (``send_message``, ``send_notification``,
 #: ``ask_question``), and the quiet end of a patrol cycle with nothing to report
 #: (``nothing_to_do``, which mutates nothing and would otherwise prompt on every
@@ -5979,7 +5971,6 @@ _CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
     "@kirocrew-core/session_ledger_record",
     "@kirocrew-core/skill_search",
     "@kirocrew-core/skill_fetch",
-    "@kirocrew-core/select_crew",
     "@kirocrew-core/send_message",
     "@kirocrew-core/send_notification",
     "@kirocrew-core/ask_question",

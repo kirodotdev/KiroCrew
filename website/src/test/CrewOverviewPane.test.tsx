@@ -24,7 +24,6 @@ function renderPane(over: Partial<React.ComponentProps<typeof CrewOverviewPane>>
       modelInherited
       resolvedModel="claude-opus-5"
       activeSchedules={2}
-      routingWords={3}
       sharingCrews={1}
       workspaceShared={false}
       memoryShared={false}
@@ -112,7 +111,6 @@ describe('crew overview pane — the webhook node reports the binding fact', () 
 describe('crew overview pane — diagram nodes open the pane they describe', () => {
   const cases: Array<[node: string, pane: string]> = [
     ['schedules', 'schedules'],
-    ['routing', 'routing'],
     ['webhook', 'webhook'],
     ['template', 'template'],
     // Two nodes, one pane: the editor binds workspace and memory side by side.

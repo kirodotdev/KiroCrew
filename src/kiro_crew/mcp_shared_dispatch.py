@@ -856,9 +856,8 @@ def _run_stdio_dispatch_loop(
                     # refusal does not pass through the tool path's scrubbers --
                     # plus the local-path pass, because one arm of the endpoint
                     # (two specs declaring one name) quotes full spec paths and
-                    # the credential redactor has no path rule; the same chain
-                    # ``mcp_core._crew_memory_unavailable_reason`` applies to
-                    # its own gateway text. Bounded so a pathological filename
+                    # the credential redactor has no path rule. Bounded so a
+                    # pathological filename
                     # cannot inflate the response -- AFTER the scrubbers, never
                     # before: a cut made first can land inside a token, and the
                     # fragment left behind fails to match the pattern the

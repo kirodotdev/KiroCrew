@@ -52,9 +52,7 @@ ROSTER_ROW_KEYS = frozenset(
         "reasoning_effort",
         "display_name",
         "description",
-        "triggers",
         "source",
-        "session_color",
         "avatar",
     }
 )
@@ -113,9 +111,7 @@ def _seed_config_with_every_field_set() -> dict:
                 "model": "claude-opus-5",
                 "reasoning_effort": "high",
                 "description": "probe description",
-                "triggers": "probe triggers",
                 "source": "kirocrew",
-                "session_color": "#abcdef",
                 # Withheld — must NOT appear in the response.
                 "member_id": "member-roster-probe",
                 "watchdog_tool_stall_suspect_secs": 111.0,
@@ -154,8 +150,6 @@ class TestRosterRowKeySet:
         assert row["model"] == "claude-opus-5"
         assert row["reasoning_effort"] == "high"
         assert row["description"] == "probe description"
-        assert row["triggers"] == "probe triggers"
-        assert row["session_color"] == "#abcdef"
         # And the withheld fields are gone even though the config set them
         # to distinctive non-default values.
         assert not (set(row) & WITHHELD_RECORD_FIELDS)
@@ -318,10 +312,8 @@ class TestUnshowableValuesAreMasked:
             kiro_agent=self.PROBE,
             workspace=f"ws-{self.PROBE}",
             memory_store=f"ms-{self.PROBE}",
-            triggers=f"use when {self.PROBE}",
             model=self.PROBE,
             reasoning_effort=self.PROBE,
-            session_color=self.PROBE,
             display_name=f"label {self.PROBE}",
             description=f"see {self.PROBE}",
             source=self.PROBE,
@@ -407,15 +399,15 @@ class TestUnshowableValuesAreMasked:
     @pytest.mark.parametrize("redact", [False, True])
     def test_benign_content_is_never_altered(self, redact: bool) -> None:
         """A mask that swallows legitimate text is a rendering bug, not hardening."""
-        cfg = KiroCrewAgentConfig(description="a plain crew", triggers="use for triage")
+        cfg = KiroCrewAgentConfig(description="a plain crew", display_name="Triage")
         row = _agent_roster_row("kirocrew", "global", cfg, redact=redact)
         assert row["description"] == "a plain crew"
-        assert row["triggers"] == "use for triage"
+        assert row["display_name"] == "Triage"
         assert row["name"] == "kirocrew"
 
     def test_both_caller_classes_ship_the_same_key_set(self) -> None:
         """Only values differ. A caller-dependent KEY set would be a second contract."""
-        cfg = KiroCrewAgentConfig(description="d", triggers="t")
+        cfg = KiroCrewAgentConfig(description="d", display_name="t")
         owner = _agent_roster_row("probe", "global", cfg, redact=False)
         app = _agent_roster_row("probe", "global", cfg, redact=True)
         assert set(owner) == set(app) == ROSTER_ROW_KEYS
@@ -892,14 +884,14 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         """End to end: glyphs never reach config.json, and the original survives.
 
         This is GPT 5.6's finding on `a34a51a88`'s successor as an executable test:
-        masked trigger -> editor appends text -> PUT must NOT persist the sentinel
+        masked description -> editor appends text -> PUT must NOT persist the sentinel
         plus the text.
         """
         from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
         seed = _seed_config_with_every_field_set()
         stored = f"use when {self.PROBE}"
-        seed["agents"]["roster-probe"]["triggers"] = stored
+        seed["agents"]["roster-probe"]["description"] = stored
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(seed), encoding="utf-8")
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
@@ -910,12 +902,12 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
             async with TestClient(TestServer(app)) as client:
                 put = await client.put(
                     "/api/agents/roster-probe",
-                    json={"triggers": f"{_SENSITIVE_MASK} and also triage"},
+                    json={"description": f"{_SENSITIVE_MASK} and also triage"},
                 )
                 assert put.status == 200, await put.text()
         after = json.loads(tmp.read_text())["agents"]["roster-probe"]
-        assert after["triggers"] == stored, "the appended mask was persisted"
-        assert _SENSITIVE_MASK not in after["triggers"]
+        assert after["description"] == stored, "the appended mask was persisted"
+        assert _SENSITIVE_MASK not in after["description"]
 
     @pytest.mark.asyncio
     async def test_end_to_end_read_then_write_preserves_the_stored_value(
@@ -930,8 +922,8 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         unrelated field.
         """
         seed = _seed_config_with_every_field_set()
-        stored_triggers = f"use when {self.PROBE}"
-        seed["agents"]["roster-probe"]["triggers"] = stored_triggers
+        stored_description = f"use when {self.PROBE}"
+        seed["agents"]["roster-probe"]["description"] = stored_description
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(seed), encoding="utf-8")
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
@@ -947,7 +939,7 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
                 resp = await client.get("/api/agents")
                 rows = {a["name"]: a for a in (await resp.json())["agents"]}
                 row = rows["roster-probe"]
-                assert _carries_mask(row["triggers"]), "the value should arrive masked"
+                assert _carries_mask(row["description"]), "the value should arrive masked"
                 # Echo the row back the way `saveEdit` does: every field, always.
                 put = await client.put(
                     "/api/agents/roster-probe",
@@ -955,16 +947,15 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
                         "kiro_agent": row["kiro_agent"],
                         "workspace": row["workspace"],
                         "memory_store": row["memory_store"],
-                        "triggers": row["triggers"],
+                        "description": row["description"],
                         "model": row["model"],
                         "reasoning_effort": row["reasoning_effort"],
-                        "session_color": row["session_color"],
                     },
                 )
                 assert put.status == 200, await put.text()
 
             stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-            assert stored["triggers"] == stored_triggers, "the mask was persisted"
+            assert stored["description"] == stored_description, "the mask was persisted"
 
     @pytest.mark.asyncio
     async def test_a_stale_view_cannot_corrupt_the_config(self, tmp_path: Path) -> None:
@@ -978,7 +969,7 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         recognised and dropped.
         """
         seed = _seed_config_with_every_field_set()
-        seed["agents"]["roster-probe"]["triggers"] = f"first {self.PROBE}"
+        seed["agents"]["roster-probe"]["description"] = f"first {self.PROBE}"
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(seed), encoding="utf-8")
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
@@ -994,16 +985,16 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
                 rows = {
                     a["name"]: a for a in (await (await client.get("/api/agents")).json())["agents"]
                 }
-                stale = rows["roster-probe"]["triggers"]
+                stale = rows["roster-probe"]["description"]
                 # Someone else rewrites the stored value AFTER the read.
                 on_disk = json.loads(tmp.read_text())
-                on_disk["agents"]["roster-probe"]["triggers"] = f"second {self.PROBE} changed"
+                on_disk["agents"]["roster-probe"]["description"] = f"second {self.PROBE} changed"
                 tmp.write_text(json.dumps(on_disk))
-                put = await client.put("/api/agents/roster-probe", json={"triggers": stale})
+                put = await client.put("/api/agents/roster-probe", json={"description": stale})
                 assert put.status == 200, await put.text()
 
             stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-            assert stored["triggers"] == f"second {self.PROBE} changed"
+            assert stored["description"] == f"second {self.PROBE} changed"
 
     @pytest.mark.asyncio
     async def test_an_echoed_mask_cannot_reject_an_unrelated_edit(self, tmp_path: Path) -> None:
@@ -1031,13 +1022,13 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
                     json={
                         "reasoning_effort": _SENSITIVE_MASK,
                         "model": _SENSITIVE_MASK,
-                        "triggers": "a genuine new value",
+                        "description": "a genuine new value",
                     },
                 )
                 assert put.status == 200, await put.text()
             stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
             # The real edit landed...
-            assert stored["triggers"] == "a genuine new value"
+            assert stored["description"] == "a genuine new value"
             # ...and the masked fields kept their stored values.
             assert stored["reasoning_effort"] == "high"
             assert stored["model"] == "claude-opus-5"
@@ -1046,7 +1037,7 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
     async def test_a_real_edit_still_writes_through(self, tmp_path: Path) -> None:
         """The rule must not swallow an actual change, or editing is broken."""
         seed = _seed_config_with_every_field_set()
-        seed["agents"]["roster-probe"]["triggers"] = f"use when {self.PROBE}"
+        seed["agents"]["roster-probe"]["description"] = f"use when {self.PROBE}"
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(seed), encoding="utf-8")
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
@@ -1056,8 +1047,8 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
             app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
             async with TestClient(TestServer(app)) as client:
                 put = await client.put(
-                    "/api/agents/roster-probe", json={"triggers": "an actual new value"}
+                    "/api/agents/roster-probe", json={"description": "an actual new value"}
                 )
                 assert put.status == 200, await put.text()
             stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-            assert stored["triggers"] == "an actual new value"
+            assert stored["description"] == "an actual new value"

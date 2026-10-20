@@ -46,7 +46,6 @@ _KNOWN_SEAMS = frozenset(
         "_resolve_session_key_strict",
         "require_strict_session_key",
         "_vet_memory_writes_governance",
-        "_do_select_crew",
         "_crew_machine_markers",
         "_API",
         "_API_UNIX_SOCKET",
@@ -69,7 +68,7 @@ _BASE_PROJECT_IMPORTS = frozenset("""
     create_embedder_from_config current_caller dashboard_socket_path dedup_sweep
     dispatch drive_deferred external_client_identity_note host_pid_is_shared
     internal_caller is_incognito_transcript is_legacy_slack_key legacy_key list_agents
-    loopback_urlopen map_deferred outbox_dir port_is_gateway_owned rank_triggered
+    loopback_urlopen map_deferred outbox_dir port_is_gateway_owned
     read_config_text read_local_secret record_activity redact redact_credentials
     redact_exfiltration_urls redact_local_paths refuse_if_markerless
     resolve_agent_bindings resolve_client_port_src resolve_own_identity
@@ -240,7 +239,7 @@ def test_every_project_name_the_facade_imported_stays_bound_on_it() -> None:
     mirror serves comes from a project module outside the family."""
     bound = _static_bindings(Path(mcp_core.__file__))
     assert "loopback_urlopen" in bound, "the static reader went blind"
-    assert len(_BASE_PROJECT_IMPORTS) == 60
+    assert len(_BASE_PROJECT_IMPORTS) == 59
     assert sorted(name for name in _BASE_PROJECT_IMPORTS if name not in bound) == sorted(
         _SERVED_ONLY
     )

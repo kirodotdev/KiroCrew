@@ -573,7 +573,6 @@ class TestMemberMemoryUserFlows:
     @pytest.mark.parametrize(
         "invalid",
         [
-            {"session_color": "invalid-color"},
             {"avatar": {"kind": "invalid"}},
             {"avatar": {"kind": "image", "promote": True}},
         ],

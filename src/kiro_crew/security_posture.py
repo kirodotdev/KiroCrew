@@ -2511,10 +2511,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "workflows/library.py",
         "mcp_core.py",
         # The same server's owner modules, same class: they redact an HTTP error
-        # body, a history snippet, a crew error and the issue-radar crew's writes
-        # before ``mcp_core`` returns or forwards them, and the egress boundary is
-        # the transport the result crosses.
-        "mcp_core_parts/crew.py",
+        # body, a history snippet and the issue-radar crew's writes before
+        # ``mcp_core`` returns or forwards them, and the egress boundary is the
+        # transport the result crosses.
         "mcp_core_parts/gateway.py",
         "mcp_core_parts/history.py",
         "mcp_core_parts/radar_crew.py",

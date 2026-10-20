@@ -60,7 +60,6 @@ async def test_spawn_inherits_member_or_uses_explicit_target(env, target):
     from kiro_crew.dashboard.handlers import messaging
 
     cfg = loader.KiroCrewConfig.load()
-    cfg.agents["bob"].triggers = "review"
     cfg.save()
     env.state.subagents = SimpleNamespace(
         spawn=mock.Mock(return_value=SimpleNamespace(id="run-1", done=False))

@@ -12,7 +12,6 @@ the ones before it, never the facade:
   recovery, the internal secret, the identity headers and ``_send``'s retry schedule,
   failure text and error body (``_send`` and the verbs stay in the facade);
 * ``governance`` -- channel-agent containment and the governance vets;
-* ``crew`` -- Crew Mode's ``route_crew`` and ``select_crew``;
 * ``history`` -- the chat-history search helpers;
 * ``radar_crew`` -- the Issue Radar crew tools' identity, ledger view and scrubbing.
 

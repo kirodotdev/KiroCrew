@@ -31,7 +31,6 @@ if TYPE_CHECKING:
         _require_owner,
         _revalidate_crew_pin,
         _safe_avatar,
-        _safe_color,
         _sel,
         _UnverifiableLineage,
         discovery_executor,
@@ -309,13 +308,6 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # {"model": 123} into the literal "123", which normalizes to a string the
     # backend then rejects as an unknown model id.
     model = normalize_agent_model(body.get("model"))
-    _raw_color = body.get("session_color", "")
-    session_color = _safe_color(_raw_color)
-    if _raw_color not in ("", None) and not session_color:
-        return web.json_response(
-            {"error": "session_color must be #rrggbb or empty", "code": "invalid_color_hex"},
-            status=400,
-        )
     _raw_effort = body.get("reasoning_effort", "")
     effort_reason = _crew_effort_rejected(_raw_effort)
     if effort_reason:
@@ -348,7 +340,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             status=400,
         )
     display_name = _raw_display.strip()
-    # Same convention as session_color: a non-empty raw value that the coercer
+    # Same convention as reasoning_effort: a non-empty raw value that the coercer
     # collapses to "no override" is a caller mistake worth a 400, not a silent
     # fallback to the name-derived face. The one exception is a well-formed
     # ghost override whose traits all coerce to absent: that collapse is the
@@ -459,9 +451,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             approval_mode=approval_mode,
             display_name=display_name,
             description=body.get("description", ""),
-            triggers=body.get("triggers", ""),
             source=body.get("source", "kirocrew"),
-            session_color=session_color,
             avatar=avatar,
         )
         # Provision against this snapshot; publish the agent, its owned store and

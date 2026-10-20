@@ -43,8 +43,8 @@ mkdirSync(OUT, { recursive: true })
 const BAR_LABEL = 'New sessions use'
 
 const CREWS = [
-  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '', triggers: '', session_color: '' },
-  { name: 'pr-bot', kiro_agent: 'pr-bot-copy', workspace: 'default', memory_store: 'default', description: 'Reviews pull requests', source: 'user', model: '', triggers: '', session_color: '' },
+  { name: 'default', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', description: 'Used for all new chats', source: 'user', model: '' },
+  { name: 'pr-bot', kiro_agent: 'pr-bot-copy', workspace: 'default', memory_store: 'default', description: 'Reviews pull requests', source: 'user', model: '' },
 ]
 
 const tmpl = over => ({

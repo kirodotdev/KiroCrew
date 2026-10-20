@@ -1,12 +1,9 @@
-"""Tests for the session_color field on KiroCrewAgentConfig.
+"""Tests for ``_safe_color``, the hex-colour validator the avatar fields use.
 
-Covers:
-- _safe_color validation (valid hex, malformed, non-string)
-- Round-trip through KiroCrewConfig.load() -> .save() -> .load()
-- Agent create/update handlers accept and normalize session_color
+Covers valid hex, malformed and non-string input.
 """
 
-from kiro_crew.config.loader import KiroCrewAgentConfig, _safe_color
+from kiro_crew.config.loader import _safe_color
 
 
 class TestSafeColor:
@@ -51,29 +48,3 @@ class TestSafeColor:
 
     def test_whitespace_trimmed(self):
         assert _safe_color("  #aabbcc  ") == "#aabbcc"
-
-
-class TestKiroCrewAgentConfigSessionColor:
-    """session_color field on KiroCrewAgentConfig."""
-
-    def test_default_empty(self):
-        cfg = KiroCrewAgentConfig()
-        assert cfg.session_color == ""
-
-    def test_explicit_value(self):
-        cfg = KiroCrewAgentConfig(session_color="#4a90d9")
-        assert cfg.session_color == "#4a90d9"
-
-    def test_serializes_in_asdict(self):
-        import dataclasses
-
-        cfg = KiroCrewAgentConfig(session_color="#e64980")
-        d = dataclasses.asdict(cfg)
-        assert d["session_color"] == "#e64980"
-
-    def test_empty_serializes(self):
-        import dataclasses
-
-        cfg = KiroCrewAgentConfig()
-        d = dataclasses.asdict(cfg)
-        assert d["session_color"] == ""

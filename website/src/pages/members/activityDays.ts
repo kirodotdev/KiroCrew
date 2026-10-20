@@ -13,7 +13,6 @@ export type ActivityDay = {
   /** Local midnight, epoch seconds. */
   dayStart: number
   chats: number
-  routed: number
   /** Distinct project paths, first-seen order. */
   projects: string[]
   /** The day's entries, oldest first. */
@@ -34,11 +33,10 @@ export function groupActivityDays(entries: readonly MemberActivityEntry[], cappe
     const dayStart = d.getTime() / 1000
     let day = days.get(dayStart)
     if (!day) {
-      day = { dayStart, chats: 0, routed: 0, projects: [], entries: [], isFloor: false }
+      day = { dayStart, chats: 0, projects: [], entries: [], isFloor: false }
       days.set(dayStart, day)
     }
-    if (e.via === 'select_crew') day.routed += 1
-    else day.chats += 1
+    day.chats += 1
     if (e.project && !day.projects.includes(e.project)) day.projects.push(e.project)
     day.entries.push(e)
     if (e.ts < oldestTs) oldestTs = e.ts

@@ -44,7 +44,7 @@ def member_with_distinct_template(tmp_path, monkeypatch):
     (config_dir() / "crons").mkdir(parents=True)
     cfg = KiroCrewConfig.load()
     cfg.agents["SampleMemberAgent"] = KiroCrewAgentConfig(
-        kiro_agent="sample-template-agent", triggers="sample"
+        kiro_agent="sample-template-agent", description="sample"
     )
     provision_member_memory(cfg, "SampleMemberAgent")
     cfg.save()

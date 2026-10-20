@@ -151,7 +151,7 @@ def test_an_unchanged_record_is_not_rewritten(tmp_path):
 @pytest.fixture
 def writer_member():
     cfg = KiroCrewConfig.load()
-    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="writer-template", triggers="write")
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="writer-template")
     store = provision_member_memory(cfg, "writer")
     cfg.save()
     return store

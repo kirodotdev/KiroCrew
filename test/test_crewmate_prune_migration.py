@@ -395,7 +395,9 @@ class TestThePass:
             "model": "",
             "display_name": "",
             "description": "One-click setup agent -- managed by AIM.",
+            # A build before the retirement wrote these two on every sync row.
             "triggers": "",
+            "session_color": "",
             "source": "builtin",
             "starred": False,
         }
@@ -405,7 +407,6 @@ class TestThePass:
             "workspace": "default",
             "memory_store": "default",
             "description": "Communication agent -- managed by AIM.",
-            "triggers": "",
             "source": "builtin",
             "starred": False,
         }
@@ -735,7 +736,7 @@ class TestKeptOnDoubt:
 
         def _strip(doc):
             row = doc["agents"]["scout"]
-            for key in ("member_id", "starred", "session_color", "avatar", "reasoning_effort"):
+            for key in ("member_id", "starred", "avatar", "reasoning_effort"):
                 row.pop(key, None)
             return doc
 
@@ -820,12 +821,14 @@ class TestCandidates:
         # ``kirocrew_owned`` apart from ``source`` -- and a sync-shaped row
         # bound to one is still never a candidate.
         cfg.agents["kirocrew-conductor"] = _synced("kirocrew-conductor")
-        # Never a candidate: a private copy, a row the owner tuned or routed, a
-        # row whose name is not its binding, or a source the sync rule excludes.
+        # Never a candidate: a private copy, a row the owner tuned or relabelled,
+        # a row whose name is not its binding, or a source the sync rule excludes.
+        # (``description`` would not do for the relabelled row: the sync copies it
+        # from the spec, so the shape check leaves it out on purpose.)
         cfg.agents["copy"] = KiroCrewAgentConfig(kiro_agent="copy", source="builtin")
         cfg.agents["tuned"] = KiroCrewAgentConfig(kiro_agent="tuned", source="builtin", model="m")
         cfg.agents["routed"] = KiroCrewAgentConfig(
-            kiro_agent="routed", source="builtin", triggers="x"
+            kiro_agent="routed", source="builtin", display_name="Routed"
         )
         cfg.agents["renamed"] = _synced("radar")
         cfg.agents["odd"] = KiroCrewAgentConfig(kiro_agent="odd", source="somewhere")
@@ -1315,6 +1318,17 @@ class TestCandidates:
     def test_a_key_the_record_does_not_declare_disqualifies(self):
         raw = {"kiro_agent": "radar", "description": "d", "source": "builtin", "extra": 1}
         assert not mig._is_fresh_sync_shape(raw, kiro_agent="radar")
+
+    def test_a_retired_key_is_tolerated_only_at_its_old_empty_default(self):
+        # A build before the retirement wrote ``triggers`` and ``session_color``
+        # on every sync row; such a row is still the sync's. A value there is an
+        # operator edit, so it protects the row like any other edit.
+        raw = {"kiro_agent": "radar", "description": "d", "source": "builtin"}
+        assert mig._is_fresh_sync_shape(
+            {**raw, "triggers": "", "session_color": ""}, kiro_agent="radar"
+        )
+        assert not mig._is_fresh_sync_shape({**raw, "triggers": "pager"}, kiro_agent="radar")
+        assert not mig._is_fresh_sync_shape({**raw, "session_color": "#aabbcc"}, kiro_agent="radar")
 
     def test_protected_fields_disqualify(self):
         raw = {"kiro_agent": "radar", "description": "d", "source": "builtin"}

@@ -24,7 +24,7 @@ Detail this file deliberately does not restate:
 | Spawning, limits, results | [Subagents & Parallel Work](../../src/kiro_crew/docs/subagents.md) |
 | Memory types, V1/V2, modes | [Memory & Learning](../../src/kiro_crew/docs/memory-and-learning.md) |
 | Section internals and budget rationale | [memory-skills-hooks spec](../system-specs/modules/memory-skills-hooks.md) |
-| Crew records, binding, `select_crew` | [crew-mode spec](../system-specs/modules/crew-mode.md) |
+| Crew records, binding, delegation | [crew-mode spec](../system-specs/modules/crew-mode.md) |
 | Sub-agent lifecycle, host/profile resolution | [subagent spec](../system-specs/modules/subagent.md), [platform-context spec](../system-specs/modules/platform-context.md) |
 
 ## 1. Main chat session start
@@ -563,8 +563,8 @@ item it was dispatched for, not from its spec.
 ## 5. Crew mode (Crew page)
 
 A **crew member** is an entry in `config.json` under `agents.<name>` binding a
-kiro-cli template (`kiro_agent`), a workspace, a memory store, a model and
-free-text `triggers`; `config/loader_agents.py` → `resolve_agent_bindings` turns the name
+kiro-cli template (`kiro_agent`), a workspace, a memory store and a model;
+`config/loader_agents.py` → `resolve_agent_bindings` turns the name
 into `ResolvedBindings`, and the member's own space lives in `members.py`.
 
 ### The member's DM session
@@ -575,7 +575,7 @@ order — earlier outranks later, with one stated exception:
 
 | Layer | Owner | Source | Writable by |
 |--:|---|---|---|
-| 1 `[MEMBER IDENTITY]` | product, derived | the crew's `description` + `triggers` in `config.json` | dashboard |
+| 1 `[MEMBER IDENTITY]` | product, derived | the crew's `description` in `config.json` | dashboard |
 | 2 `[HOW YOU WORK]` | product | `_MEMBER_HOW_YOU_WORK`, identical for every member | nobody |
 | 3 `[PERMANENT RULES]` | the user | `<data home>/trust/member-rules/<slug>.json` | dashboard only |
 | 4 `[CURRENT ASSIGNMENT]` | the member | `<data home>/members/<slug>/briefing.md` | the member's own file tools |
@@ -650,15 +650,13 @@ restored, possibly stale copy), `MINIMAL` (cron; none).
 - Isolation is routing for the built-in tools, not secrecy against arbitrary code
   running as the same OS user.
 
-### Routing and dispatch
+### Dispatch
 
-`select_crew` (roster / bind) is answered by `mcp_core_parts/crew.py` → `_do_select_crew`,
-and `route_crew` by its own `_do_route_crew` beside it. Routing scores the crews'
-free-text `triggers` through the same
-`trigger_match.py` primitive the skill matcher uses (`rank_triggered`), so the two
-cannot disagree. A bind records a routing-*intent* pointer via
-`members.record_activity` (`via="select_crew"`), keyed under `decided_in` because
-the decision is made in the parent session while the crew runs elsewhere.
+There is no orchestrator-side crew routing: the former `select_crew` /
+`route_crew` tools and the crew `triggers` field they ranked are retired (see
+[Retired: crew routing](../system-specs/modules/crew-mode.md#retired-crew-routing)).
+Work reaches a crew by an explicit choice — a chat opened on it, a bound
+schedule or webhook, or `spawn_run(crew=...)`.
 
 A member dispatches real work instead of running it inline. Its DM thread mounts
 the dashboard session-control server per session
@@ -722,6 +720,6 @@ per-member permission control; both exist today, in the forms above.
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
 | The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |
 | Member identity, rules, briefing, activity, V2 essentials | `src/kiro_crew/members.py`, `src/kiro_crew/context_assembly/member.py` (`build_member_section`, `build_v2_essentials`), `src/kiro_crew/member_essential_context.py` |
-| Crew records, routing, binding | `src/kiro_crew/config/loader_pipeline.py`, `src/kiro_crew/config/loader_agents.py`, `src/kiro_crew/mcp_core_parts/crew.py` |
+| Crew records, binding | `src/kiro_crew/config/loader_pipeline.py`, `src/kiro_crew/config/loader_agents.py` |
 | Per-member permissions | `src/kiro_crew/agent_capabilities.py`, `src/kiro_crew/agent_state.py` |
 | Session creation and agent inheritance | `src/kiro_crew/dashboard/session_control_parts/session_create.py` |

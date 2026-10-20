@@ -1,8 +1,8 @@
-"""Crew routing and delegation: the seam that keeps a crew's memory its own.
+"""Crew delegation: the seam that keeps a crew's memory its own.
 
-Three surfaces, one contract. ``trigger_match`` decides which crew a task
-belongs to, ``route_crew`` reports that ranking, and ``spawn_run(crew=...)`` is
-the only way to act on it that carries the crew's memory silo with it.
+``spawn_run(crew=...)`` is the only way to hand work to a crew that carries the
+crew's memory silo with it; ``trigger_match`` is the one scorer the skills
+loader reads, pinned here so a second implementation cannot quietly diverge.
 
 The failure this file exists to catch is not a crash. It is a task quietly
 handled by the wrong crew: ``spawn_run(agent=<crew name>)`` looks like
@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, rank_triggered, trigger_score, words_of
+from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
 # ── the shared primitive ──
 
@@ -55,49 +55,13 @@ class TestTriggerScoring:
         assert negated is False, "'outage' is absent, so the veto must not fire"
 
 
-class TestRanking:
-    ROSTER = [
-        ("coding crew", "fix the bug, review the pull request"),
-        ("email crew", "draft a reply, inbox"),
-        ("quiet crew", ""),
-    ]
-
-    def test_the_matching_crew_wins(self):
-        assert [n for n, _ in rank_triggered("fix the bug", self.ROSTER)] == ["coding crew"]
-
-    def test_an_unrelated_task_matches_nothing(self):
-        # The important half: no match must mean NO match, not the least-bad
-        # crew. A router that always answers routes email into the codebase.
-        assert rank_triggered("what is the weather in Tokyo", self.ROSTER) == []
-
-    def test_a_crew_without_triggers_is_never_a_candidate(self):
-        """DOUBLY guaranteed, so this cannot fail on the explicit guard alone.
-
-        An empty, whitespace-only or comma-only trigger list scores 0.0, which is
-        already below the floor — verified, not assumed. So deleting
-        ``rank_triggered``'s explicit skip changes no outcome and this test stays
-        green: it covers the PROPERTY, not that one line. Kept because the
-        property is the operator's opt-out from being routed to, and a future
-        change to the floor could make the skip load-bearing.
-        """
-        assert trigger_score("", words_of("quiet crew"))[0] < MIN_TRIGGER_OVERLAP
-        assert all(n != "quiet crew" for n, _ in rank_triggered("quiet crew", self.ROSTER))
-
-    def test_ties_keep_the_operators_roster_order(self):
-        tied = [("first", "handle the ticket"), ("second", "handle the ticket")]
-        assert [n for n, _ in rank_triggered("handle the ticket", tied)] == ["first", "second"]
-
-    def test_below_the_floor_does_not_match(self):
-        low = [("crew", "one two three four five")]
-        assert rank_triggered("one", low) == []
-        assert MIN_TRIGGER_OVERLAP > 0.2, "a single word must not carry a five-word phrase"
-
+class TestTheSkillsLoaderSharesTheMatcher:
     def test_the_skills_loader_scores_through_this_module(self):
         """One definition of "matches", not two that agree today.
 
-        The skills loader and crew routing read the same operator-authored
-        grammar. A second implementation would diverge exactly on the phrasings
-        that matter and the symptom would be a misrouted task.
+        The skills loader reads operator-authored trigger grammar through this
+        module. A second implementation would diverge exactly on the phrasings
+        that matter and the symptom would be a skill that silently stops firing.
         """
         import inspect
 
@@ -108,11 +72,11 @@ class TestRanking:
         assert skills._MIN_TRIGGER_OVERLAP == MIN_TRIGGER_OVERLAP
 
 
-# ── routing and delegation over a real config ──
+# ── delegation over a real config ──
 
 
 def _materialize_private_stores(config):
-    """Create readable, empty owned stores for routing execution fixtures."""
+    """Create readable, empty owned stores for delegation execution fixtures."""
     from kiro_crew.memory_stores import provision_member_memory
 
     for member in config.agents:
@@ -131,14 +95,8 @@ def crew_config(tmp_path, monkeypatch):
                 "default_agent": "kirocrew",
                 "agents": {
                     "kirocrew": {},
-                    "coding crew": {
-                        "triggers": "fix the bug, review the pull request",
-                        "description": "Owns the codebase",
-                    },
-                    "email crew": {
-                        "triggers": "draft a reply, inbox",
-                        "description": "Owns correspondence",
-                    },
+                    "coding crew": {"description": "Owns the codebase"},
+                    "email crew": {"description": "Owns correspondence"},
                 },
             }
         )
@@ -151,125 +109,6 @@ def crew_config(tmp_path, monkeypatch):
     _materialize_private_stores(config)
     yield config
     loader_mod._invalidate_config_cache()
-
-
-class TestRouteCrew:
-    def test_broken_member_does_not_hide_ranked_healthy_matches(self, crew_config, monkeypatch):
-        from dataclasses import replace
-
-        from kiro_crew import mcp_core
-
-        legacy = replace(
-            crew_config.agents["coding crew"],
-            member_id="broken-member",
-            memory_store="missing-store",
-        )
-        crew_config.agents = {"legacy": legacy, **crew_config.agents}
-        for name in ("legacy", "coding crew", "email crew"):
-            crew_config.agents[name].triggers = "fix the bug"
-        monkeypatch.setattr(mcp_core.KiroCrewConfig, "load", lambda: crew_config)
-
-        out = json.loads(mcp_core._do_route_crew("fix the bug"))
-
-        assert [item["crew"] for item in out["matches"]] == ["coding crew", "email crew"]
-        assert [item["memory_store"] for item in out["matches"]] == [
-            crew_config.agents[name].memory_store for name in ("coding crew", "email crew")
-        ]
-        assert [item["crew"] for item in out["unavailable"]] == ["legacy"]
-        assert "missing-store" in out["unavailable"][0]["reason"]
-        assert "Global was not used" in out["unavailable"][0]["reason"]
-        assert "memory_store" not in out["unavailable"][0]
-
-    def test_all_unavailable_is_distinct_from_no_trigger_match(self, crew_config, monkeypatch):
-        from kiro_crew import mcp_core
-
-        crew_config.agents["coding crew"].memory_store = "default"
-        monkeypatch.setattr(mcp_core.KiroCrewConfig, "load", lambda: crew_config)
-        out = json.loads(mcp_core._do_route_crew("fix the bug"))
-        assert out["matches"] == []
-        assert [item["crew"] for item in out["unavailable"]] == ["coding crew"]
-        assert "do not substitute Global" in out["guidance"]
-        unmatched = json.loads(mcp_core._do_route_crew("weather in Tokyo"))
-        assert unmatched["matches"] == unmatched["unavailable"] == []
-
-    @pytest.mark.parametrize("named", [False, True])
-    def test_memory_refusal_redacts_before_bounding_and_does_not_record_a_binding(
-        self, crew_config, monkeypatch, named
-    ):
-        from unittest.mock import Mock
-
-        from kiro_crew import mcp_core
-        from kiro_crew.memory_stores import UnknownMemoryStore
-
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        reason = f"private memory unavailable: /home/alice/private/memory.db {secret} " + "x" * 1200
-        monkeypatch.setattr(
-            mcp_core, "resolve_agent_bindings", Mock(side_effect=UnknownMemoryStore(reason))
-        )
-        activity = Mock()
-        monkeypatch.setattr(mcp_core, "record_activity", activity)
-
-        out = json.loads(
-            mcp_core._do_select_crew("coding crew")
-            if named
-            else mcp_core._do_route_crew("fix the bug")
-        )
-        safe = out["error"] if named else out["unavailable"][0]["reason"]
-        assert safe.startswith("private memory unavailable:")
-        assert "/home/alice" not in safe and secret not in safe
-        assert len(safe) <= 1000
-        assert "bound" not in out
-        if not named:
-            assert out["matches"] == []
-        activity.assert_not_called()
-
-    @pytest.mark.parametrize("named", [False, True])
-    def test_unrelated_binding_errors_are_not_silenced(self, crew_config, monkeypatch, named):
-        from unittest.mock import Mock
-
-        from kiro_crew import mcp_core
-
-        monkeypatch.setattr(
-            mcp_core, "resolve_agent_bindings", Mock(side_effect=RuntimeError("binding defect"))
-        )
-        with pytest.raises(RuntimeError, match="binding defect"):
-            if named:
-                mcp_core._do_select_crew("coding crew")
-            else:
-                mcp_core._do_route_crew("fix the bug")
-
-    def test_a_coding_task_routes_to_the_coding_crew_and_names_its_store(self, crew_config):
-        from kiro_crew import mcp_core
-
-        out = json.loads(mcp_core._do_route_crew("please fix the bug in the parser"))
-        assert [m["crew"] for m in out["matches"]] == ["coding crew"]
-        assert out["matches"][0]["memory_store"] == crew_config.agents["coding crew"].memory_store
-        assert out["matches"][0]["description"] == "Owns the codebase"
-
-    def test_an_email_task_routes_to_the_email_crew(self, crew_config):
-        from kiro_crew import mcp_core
-
-        out = json.loads(mcp_core._do_route_crew("draft a reply to this inbox thread"))
-        assert [m["crew"] for m in out["matches"]] == ["email crew"]
-        assert out["matches"][0]["memory_store"] == crew_config.agents["email crew"].memory_store
-
-    def test_no_match_reports_the_default_and_no_crew(self, crew_config):
-        from kiro_crew import mcp_core
-
-        out = json.loads(mcp_core._do_route_crew("what is the weather in Tokyo"))
-        assert out["matches"] == []
-        assert out["default_agent"] == "kirocrew"
-
-    def test_the_default_crew_is_never_a_routing_target(self, crew_config):
-        from kiro_crew import mcp_core
-
-        out = json.loads(mcp_core._do_route_crew("fix the bug"))
-        assert all(m["crew"] != "kirocrew" for m in out["matches"])
-
-    def test_an_empty_task_is_refused(self, crew_config):
-        from kiro_crew import mcp_core
-
-        assert "error" in json.loads(mcp_core._do_route_crew("   "))
 
 
 class TestDelegationCarriesTheCrewsStore:
@@ -363,11 +202,11 @@ class TestDelegationCarriesTheCrewsStore:
 
 
 class TestTheMembersRosterCarriesIdentity:
-    def test_description_and_triggers_are_exposed(self, crew_config):
+    def test_description_is_exposed(self, crew_config):
         """A roster that shows a crew's store but not what it is for cannot
         answer "which of these should handle a ticket".
 
-        Both values reach the row through ``_roster_mask``, which passes benign
+        The value reaches the row through ``_roster_mask``, which passes benign
         text byte-identical and replaces a credential-shaped value with a
         sentinel. That is a redaction of the VALUE, not a withdrawal of the
         field, so the roster still carries a crew's identity.
@@ -378,7 +217,7 @@ class TestTheMembersRosterCarriesIdentity:
 
         src = inspect.getsource(members_handler)
         assert '"description": _roster_mask(agent_cfg.description)' in src
-        assert '"triggers": _roster_mask(agent_cfg.triggers)' in src
+        assert "triggers" not in src, "the retired triggers field must not be re-exposed"
 
 
 class TestTheSpawnEndpointActuallyDelegates:
@@ -416,8 +255,8 @@ class TestTheSpawnEndpointActuallyDelegates:
         "default_agent": "kirocrew",
         "agents": {
             "kirocrew": {"kiro_agent": "kirocrew"},
-            "coding": {"kiro_agent": "kirocrew", "triggers": "fix"},
-            "email": {"kiro_agent": "kirocrew", "triggers": "draft"},
+            "coding": {"kiro_agent": "kirocrew"},
+            "email": {"kiro_agent": "kirocrew"},
         },
     }
 
@@ -457,18 +296,23 @@ class TestTheSpawnEndpointActuallyDelegates:
         assert json.loads(resp.text)["code"] == "unknown_member"
         mgr.spawn.assert_not_called()
 
-    def test_a_crew_named_without_triggers_still_spawns_in_its_store(self, tmp_path, monkeypatch):
-        """Triggers steer automatic routing only; naming a member is enough.
-
-        Members added from an agent template, or synced from an installed agent package, start with
-        empty triggers. A named delegation to one must bind that member's store,
-        exactly as it does for a member that has triggers.
+    def test_a_crew_record_carrying_a_retired_key_still_spawns_in_its_store(
+        self, tmp_path, monkeypatch
+    ):
+        """A config.json written before `triggers` was retired still loads, and a
+        named delegation to such a member binds that member's store exactly as
+        it does for a freshly written record. The stale key is ignored on load
+        and dropped on the next save.
         """
         cfg = {
             "default_agent": "kirocrew",
             "agents": {
                 "kirocrew": {"kiro_agent": "kirocrew"},
-                "builder": {"kiro_agent": "kirocrew", "triggers": "  "},
+                "builder": {
+                    "kiro_agent": "kirocrew",
+                    "triggers": "fix",
+                    "session_color": "#aabbcc",
+                },
             },
         }
         resp, mgr = self._spawn_call({"task": "x", "crew": "builder"}, cfg, tmp_path, monkeypatch)
@@ -477,8 +321,10 @@ class TestTheSpawnEndpointActuallyDelegates:
         config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
         store = config["agents"]["builder"]["memory_store"]
         assert store and mgr.spawn.call_args.kwargs["memory_store"] == store
+        assert "triggers" not in config["agents"]["builder"]
+        assert "session_color" not in config["agents"]["builder"]
 
-    def test_the_crew_field_description_does_not_gate_on_triggers(self):
+    def test_the_crew_field_description_names_no_retired_router(self):
         """The tool text is what an agent reads before it delegates."""
         import importlib
         import inspect
@@ -489,14 +335,16 @@ class TestTheSpawnEndpointActuallyDelegates:
             inspect.getsource(importlib.import_module(name))
             for name in (spawn_tool.__name__, *spawn_tool._OWNERS)
         )
-        assert "Naming a member is enough" in src
+        assert "select_crew" not in src
+        assert "route_crew" not in src
+        assert "Triggers" not in src
         assert "must have non-empty Triggers" not in src
         assert "delegated tasks" not in src
 
     def test_the_mcp_tool_forwards_the_field_it_accepts(self):
-        """A schema field the handler drops is a documented no-op. `select_crew`,
-        `route_crew` and the conductor skill all instruct `spawn_run(crew=...)`,
-        so the handler reading it is the contract."""
+        """A schema field the handler drops is a documented no-op. The conductor
+        skill and the crew-members page instruct `spawn_run(crew=...)`, so the
+        handler reading it is the contract."""
         import inspect
 
         from kiro_crew.mcp_tools import spawn as spawn_tool
@@ -521,8 +369,8 @@ class TestTheSpawnEndpointActuallyDelegates:
 
     def test_no_guidance_still_tells_the_model_to_use_agent_for_a_crew(self):
         """`spawn_run(agent=<crew>)` is accepted and runs on the DEFAULT store, so
-        guidance saying so is a leak the docs teach. The `select_crew` tool text
-        is the copy that matters most: it is what the model reads at routing
+        guidance saying so is a leak the docs teach. The control tool texts are
+        the copy that matters most: they are what the model reads at delegation
         time now that the always-on conductor skill is gone."""
         import re
         from pathlib import Path

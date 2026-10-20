@@ -581,7 +581,7 @@ class TestAgentCrudEdgeCases:
             async with TestClient(TestServer(_make_crud_app())) as client:
                 response = await client.put(
                     "/api/agents/default",
-                    json={"kiro_agent": target, "triggers": "review pull requests"},
+                    json={"kiro_agent": target, "description": "review pull requests"},
                 )
                 assert response.status == 200, await response.text()
 
@@ -644,34 +644,34 @@ class TestAgentCrudEdgeCases:
 
 
 @pytest.mark.asyncio
-async def test_crud_triggers_create_and_update_round_trip(tmp_path: Path) -> None:
-    """`triggers` persists through create + update and appears in the agents list."""
+async def test_crud_description_create_and_update_round_trip(tmp_path: Path) -> None:
+    """`description` persists through create + update and appears in the agents list."""
     tmp = tmp_path / "config.json"
     tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
     with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
         async with TestClient(TestServer(_make_crud_app())) as client:
-            # Create carrying triggers
+            # Create carrying a description
             resp = await client.post(
                 "/api/agents",
                 json={
                     "name": "oncall",
                     "kiro_agent": "kirocrew",
-                    "triggers": "incident, prod outage, pager escalation",
+                    "description": "incident, prod outage, pager escalation",
                 },
             )
             assert resp.status == 200
 
             resp = await client.get("/api/agents")
             by_name = {a["name"]: a for a in (await resp.json())["agents"]}
-            assert by_name["oncall"]["triggers"] == "incident, prod outage, pager escalation"
+            assert by_name["oncall"]["description"] == "incident, prod outage, pager escalation"
 
-            # Update the triggers only
-            resp = await client.put("/api/agents/oncall", json={"triggers": "sev2, sev1, page"})
+            # Update the description only
+            resp = await client.put("/api/agents/oncall", json={"description": "sev2, sev1, page"})
             assert resp.status == 200
 
             resp = await client.get("/api/agents")
             by_name = {a["name"]: a for a in (await resp.json())["agents"]}
-            assert by_name["oncall"]["triggers"] == "sev2, sev1, page"
+            assert by_name["oncall"]["description"] == "sev2, sev1, page"
 
 
 class TestDefaultAgentGuard:
@@ -1175,7 +1175,7 @@ class TestAgentMutationNonObjectBody:
     """POST/PUT /api/agents reject a non-object JSON body with 400."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bad_body", [["session_color"], "session_color", 123, True])
+    @pytest.mark.parametrize("bad_body", [["display_name"], "display_name", 123, True])
     async def test_create_rejects_non_object_body(self, bad_body, tmp_path: Path) -> None:
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
@@ -1187,7 +1187,7 @@ class TestAgentMutationNonObjectBody:
                 assert (await resp.json())["code"] == "body_not_object"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bad_body", [["session_color"], "session_color", 123, True])
+    @pytest.mark.parametrize("bad_body", [["display_name"], "display_name", 123, True])
     async def test_update_rejects_non_object_body(self, bad_body, tmp_path: Path) -> None:
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
