@@ -162,6 +162,30 @@ def overlay_pins(*key_path: str) -> bool:
     return isinstance(node, dict) and key_path[-1] in node
 
 
+def written_value(*key_path: str) -> object:
+    """The value written at *key_path* in the config files, or ``None`` when neither sets it.
+
+    ``config.local.json`` wins over ``config.json``, as at load. Unlike a loaded
+    config this does not fill in field defaults, so it can tell "the user wrote
+    true" from "true is the default". Best-effort like :func:`overlay_pins`: an
+    unreadable or malformed file counts as not setting the key.
+    """
+    for path in (config_local_path(), config_path()):
+        try:
+            if not path.is_file():
+                continue
+            node: object = json.loads(read_config_text(path))
+        except (OSError, ValueError):
+            continue
+        for key in key_path[:-1]:
+            if not isinstance(node, dict):
+                break
+            node = node.get(key)
+        if isinstance(node, dict) and key_path[-1] in node:
+            return node[key_path[-1]]
+    return None
+
+
 def config_local_path() -> Path:
     """Return path to config.local.json — an overlay whose keys win over config.json."""
     return config_dir() / "config.local.json"

@@ -19049,7 +19049,7 @@
     "installReceiptBody": "Nach einer erfolgreichen Installation oder Aktualisierung aus dem offiziellen Kiro-Crew-Katalog wird ein anonymer Beleg gesendet. Externe Register, lokale Apps und selbst registrierte Apps werden nie gemeldet.",
     "installReceiptFields": "Offizieller App-Slug · anonymer Token pro App (nicht appübergreifend verknüpfbar) · Neuinstallation/Aktualisierung · Kiro-Crew-Version",
     "installReceiptTitle": "Installationsbelege für offizielle Apps",
-    "localDataBody": "Nutzungs- und Kontextdaten. Leistungsmetriken sind standardmäßig aus.",
+    "localDataBody": "Leistungsmetriken werden standardmäßig auf diesem Gerät aufgezeichnet. Der Schalter „Metriken aufzeichnen“ unter Einstellungen > Datenschutz zeigt, ob sie gerade aktiviert sind.",
     "localDataTitle": "Bleibt auf deinem Gerät",
     "notSendingAlreadySentToday": "Das Signal von heute wurde bereits gesendet.",
     "notSendingAwaitingAck": "Es wurde noch nichts gesendet. Das erste Signal wartet, bis du diese Seite gesehen hast.",
@@ -19068,7 +19068,10 @@
     "toggleDescription": "Für künftige Starts gespeichert.",
     "toggleLabel": "Anonymes Nutzungssignal senden",
     "toggleSaveFailed": "Deine Telemetrie-Auswahl konnte nicht gespeichert werden. Versuche es erneut.",
-    "envOverrideWithSettingRef": "Der Heartbeat ist deaktiviert, weil <settingRef/> in dieser Umgebung gesetzt ist. Entferne die Variable, um Telemetrie hier zu verwalten."
+    "envOverrideWithSettingRef": "Der Heartbeat ist deaktiviert, weil <settingRef/> in dieser Umgebung gesetzt ist. Entferne die Variable, um Telemetrie hier zu verwalten.",
+    "localDataBodyOn": "Leistungsmetriken werden gerade auf diesem Gerät aufgezeichnet.",
+    "localDataBodyOff": "Leistungsmetriken werden auf diesem Gerät gerade nicht aufgezeichnet.",
+    "doNotTrackCaption": "DO_NOT_TRACK=1 schaltet Leistungsmetriken und das Lebenszeichen aus:"
   },
   "settings": {
     "chat": {

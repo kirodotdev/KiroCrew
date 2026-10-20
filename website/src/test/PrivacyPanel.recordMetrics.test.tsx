@@ -77,6 +77,21 @@ describe('PrivacyPanel metric-recording switch', () => {
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', true))
   })
 
+  it('says whether metrics are being recorded now, not only the default', async () => {
+    mount({ enabled: true })
+    expect(await screen.findByText('Performance metrics are being recorded on this device now.')).toBeInTheDocument()
+    collectionStatus.mockResolvedValue(collection({ enabled: false }) as never)
+    await userEvent.click(await screen.findByRole('switch', { name: LABEL }))
+    expect(await screen.findByText('Performance metrics are not being recorded on this device now.')).toBeInTheDocument()
+  })
+
+  it('says what DO_NOT_TRACK turns off above its shell lines', async () => {
+    mount()
+    expect(
+      await screen.findByText('Setting DO_NOT_TRACK=1 turns off performance metrics and the heartbeat:'),
+    ).toBeInTheDocument()
+  })
+
   it('turns collection back off, so enabling is not a one-way door', async () => {
     mount({ enabled: true })
     const sw = await screen.findByRole('switch', { name: LABEL })

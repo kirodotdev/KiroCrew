@@ -19333,7 +19333,7 @@
     "installReceiptBody": "Dopo un’installazione o un aggiornamento riuscito dal catalogo ufficiale di Kiro Crew, viene inviata una ricevuta anonima. Registri esterni, app locali e app autoregistrate non vengono mai segnalati.",
     "installReceiptFields": "slug dell’app ufficiale · token anonimo per app (non collegabile tra app) · nuova installazione/aggiornamento · versione di Kiro Crew",
     "installReceiptTitle": "Ricevute di installazione delle app ufficiali",
-    "localDataBody": "Registri di utilizzo e contesto. Le metriche di prestazione sono disattivate per impostazione predefinita.",
+    "localDataBody": "Le metriche sulle prestazioni vengono registrate su questo dispositivo per impostazione predefinita. L'interruttore «Registra le metriche» in Impostazioni > Privacy mostra se sono attive adesso.",
     "localDataTitle": "Resta sul tuo dispositivo",
     "notSendingAlreadySentToday": "Il segnale di oggi è già stato inviato.",
     "notSendingAwaitingAck": "Non è stato ancora inviato nulla. Il primo segnale attende che tu abbia visto questa pagina.",
@@ -19352,7 +19352,10 @@
     "toggleDescription": "Salvato per i prossimi avvii.",
     "toggleLabel": "Invia segnale di utilizzo anonimo",
     "toggleSaveFailed": "Non è stato possibile salvare la tua scelta sulla telemetria. Riprova.",
-    "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui."
+    "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui.",
+    "localDataBodyOn": "Le metriche sulle prestazioni vengono registrate adesso su questo dispositivo.",
+    "localDataBodyOff": "Le metriche sulle prestazioni non vengono registrate adesso su questo dispositivo.",
+    "doNotTrackCaption": "Impostare DO_NOT_TRACK=1 disattiva le metriche sulle prestazioni e il segnale:"
   },
   "settings": {
     "chat": {

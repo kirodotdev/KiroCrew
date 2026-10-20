@@ -171,10 +171,16 @@ function MetricRecordingToggle() {
  * the same three pieces — single-sourcing them is what keeps the first-run
  * explanation and this durable panel from drifting apart. */
 export function PrivacyPanel() {
+  // The same query the Record metrics switch reads (deduplicated by key), so the
+  // "Stays on your device" line states what is on now, not only the default.
+  const statusQ = useQuery<CollectionStatus>({
+    queryKey: ['telemetryCollection'],
+    queryFn: () => api.collectionStatus(),
+  })
   return (
     <div aria-label={i18nT('privacyDisclosure.settingsLabel')}>
       <Card>
-        <PrivacyDisclosureSections />
+        <PrivacyDisclosureSections recordingOn={statusQ.data?.enabled} />
       </Card>
 
       <Card>

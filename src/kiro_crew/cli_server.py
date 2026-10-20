@@ -69,6 +69,7 @@ from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen, tcp_verified_urlopen, unix_socket_urlopen
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
 from kiro_crew.memory import MemoryStore
+from kiro_crew.metrics import notice as usage_notice
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
@@ -364,6 +365,10 @@ async def _gateway(
         print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()
+    # Local recording is on by default; a host with no dashboard open is told in
+    # one stderr line, once per install. On a daemon thread, so it neither runs on
+    # the loop nor holds the boot back.
+    usage_notice.print_notice_in_background(cfg)
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
@@ -386,6 +391,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     cfg = KiroCrewConfig.load()
+    usage_notice.print_notice_in_background(cfg)
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 

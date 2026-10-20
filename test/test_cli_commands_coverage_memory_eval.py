@@ -986,6 +986,7 @@ class TestTelemetryCli:
         path.write_text(json.dumps({"agent": {"model": "auto"}}), encoding="utf-8")
         effective = KiroCrewConfig()
         effective.telemetry.beacon_enabled = False
+        effective.telemetry.enabled = False
         with (
             patch.object(KiroCrewConfig, "load", return_value=effective),
             patch("kiro_crew.cli_commands.config_path", return_value=path),
@@ -1091,6 +1092,7 @@ class TestTelemetryCli:
         path.write_text("{}", encoding="utf-8")
         still_on = KiroCrewConfig()
         still_on.telemetry.beacon_enabled = True
+        still_on.telemetry.enabled = False
         with (
             patch.object(KiroCrewConfig, "load", return_value=still_on),
             patch("kiro_crew.cli_commands.config_path", return_value=path),

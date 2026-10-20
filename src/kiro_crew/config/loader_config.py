@@ -49,6 +49,7 @@ from kiro_crew.config.loader_locations import (
     config_local_path,
     config_path,
     read_config_text,
+    written_value,
 )
 from kiro_crew.config.loader_snapshots import (
     _read_hardened_agent_spec,
@@ -799,6 +800,17 @@ class KiroCrewConfig:
             agent_section = d.get("agent")
             if isinstance(agent_section, dict):
                 agent_section.pop("sandbox_allow_unsandboxed_exec", None)
+        # Same rule for ``telemetry.enabled``: its absence is load-bearing too.
+        # The default is on, and ``metrics.provider.outbound_consented`` reads a
+        # WRITTEN ``true`` as the operator's own opt-in to recording, which also
+        # permits export. A whole-document save (the boot default-config write,
+        # a CLI one-shot) would otherwise freeze the default in as that opt-in.
+        # Absent stays absent until someone writes the key through a delta
+        # writer (Settings, the Privacy chapter, ``kirocrew telemetry``).
+        if written_value("telemetry", "enabled") is None:
+            telemetry_section = d.get("telemetry")
+            if isinstance(telemetry_section, dict):
+                telemetry_section.pop("enabled", None)
         # The harness fields go back to disk exactly as ``config.json`` stores
         # them, never from the in-memory value, which is RESOLVED: "no choice"
         # (absent or "") reads as today's default, and a pick this deployment

@@ -244,6 +244,15 @@ _TOOL_STALL_PAIR_NOTE = (
 # known cost of an explicit list. It is accepted because the alternative -- deriving
 # "was this value chosen or merely materialized" automatically -- is exactly the
 # provenance the config layer does not have.
+# Both metrics disk caps carry the same caveat: 0 is a real setting, and adopting
+# deletes what the new cap no longer allows.
+_METRICS_CAP_NOTE = (
+    "0 means no limit and is a supported setting; it only matters while local "
+    "metric recording is on, and adopting the new cap deletes the metric shards "
+    "past it."
+)
+
+
 SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # forward_declared_env's False default costs env-declaring servers their
     # pooling, so the shipped default is True. The change carried no migration, so
@@ -553,6 +562,28 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=2,
         new_default="auto",
         changed_in="#17055",
+    ),
+    # The local metrics disk caps went from 0 (no limit) to 30 days and 100 MB
+    # when local recording became on by default. Older builds' first-boot save
+    # wrote the whole telemetry section, so most upgraded installs store 0 / 0
+    # without having chosen it.
+    #
+    # REPORT-ONLY: 0 is the documented way to turn each cap off, so a stored 0
+    # may be a choice, and adopting a cap prunes shards past it, which cannot be
+    # undone. The report says so and the user decides.
+    SupersededDefault(
+        dotted_key="telemetry.retention_days",
+        old_default=0,
+        new_default=30,
+        changed_in="#22397",
+        note=_METRICS_CAP_NOTE,
+    ),
+    SupersededDefault(
+        dotted_key="telemetry.max_total_mb",
+        old_default=0,
+        new_default=100,
+        changed_in="#22397",
+        note=_METRICS_CAP_NOTE,
     ),
 )
 

@@ -18765,7 +18765,7 @@
     "installReceiptBody": "Kiro Crew の公式カタログから正常にインストールまたは更新された後、匿名レシートが1つ送信されます。外部レジストリ、ローカルアプリ、自己登録アプリは報告されません。",
     "installReceiptFields": "公式アプリスラッグ · アプリごとの匿名トークン (アプリ間でリンク不可) · 新規/更新フラグ · Kiro Crew バージョン",
     "installReceiptTitle": "公式アプリインストールレシート",
-    "localDataBody": "使用状況とコンテキスト記録。パフォーマンスメトリクスはデフォルトではオフです。",
+    "localDataBody": "パフォーマンスメトリクスは既定でこのデバイスに記録されます。現在オンかどうかは［設定 > プライバシー］の「メトリクスを記録」スイッチで確認できます。",
     "localDataTitle": "デバイスに保持",
     "notSendingAlreadySentToday": "今日のハートビートはすでに送信されました。",
     "notSendingAwaitingAck": "まだ何も送信されていません。最初のハートビートはこのページを確認するまで待機します。",
@@ -18784,7 +18784,10 @@
     "toggleDescription": "今後の起動のために保存されます。",
     "toggleLabel": "匿名の使用状況ハートビートを送信",
     "toggleSaveFailed": "テレメトリの選択を保存できませんでした。もう一度試してください。",
-    "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。"
+    "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。",
+    "localDataBodyOn": "パフォーマンスメトリクスは現在このデバイスに記録されています。",
+    "localDataBodyOff": "パフォーマンスメトリクスは現在このデバイスに記録されていません。",
+    "doNotTrackCaption": "DO_NOT_TRACK=1 を設定すると、パフォーマンスメトリクスとハートビートがオフになります:"
   },
   "settings": {
     "chat": {

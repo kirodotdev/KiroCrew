@@ -73,7 +73,15 @@ class TestCollectionStatusEndpoint:
         assert body["overlay_override"] is False
 
     @pytest.mark.asyncio
-    async def test_defaults_off(self, _home) -> None:
+    async def test_defaults_on(self, _home) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            body = await _get(c)
+        assert body["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_off_without_a_recording_choice_reads_off(self, _home) -> None:
+        # Its owner already said no to telemetry; the default does not override that.
+        _write_config(_home, {"beacon_enabled": False})
         async with TestClient(TestServer(_make_app())) as c:
             body = await _get(c)
         assert body["enabled"] is False

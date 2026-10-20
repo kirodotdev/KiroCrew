@@ -4,10 +4,32 @@
 
 Local-first metrics telemetry built on the OpenTelemetry SDK (Apache-2.0 / CNCF).
 The trunk is designed so future work is purely adding instrument calls at call
-sites — never changing this plumbing. **Default OFF** (`telemetry.enabled:
-false`): all metric call sites are cheap no-ops and nothing is written or
-exported, byte-identical to no telemetry (mirrors the `mcp_gateway.enabled` /
-`skills.lazy_load` opt-in convention). Any instrument that needs durable state to
+sites, never changing this plumbing. **Local recording is on by default**
+(`telemetry.enabled: true`), bounded on disk by `retention_days` (default 30)
+and `max_total_mb` (default 100). Every user is told: the dashboard's first-run
+Privacy chapter (see "In-product privacy disclosure" below), or on a CLI or headless start
+the one-line stderr notice from `metrics/notice.py`, printed once per install
+(stamp file `usage_notice_shown` under the data home) while no notice version is
+acknowledged and recording is on. Export never follows from the default: it
+needs recording turned on explicitly (see "Export needs an explicit opt-in"
+below). A value written in either config file wins over the default; the
+heartbeat-off load rule keeps an install that turned the heartbeat off without
+setting `telemetry.enabled` off, and `KIROCREW_TELEMETRY_DISABLED`, the old
+heartbeat env opt-out, also holds the default recording off until
+`telemetry.enabled` is written (`env_pin()` answers off and names it, and
+`env_pin_is_soft()` marks it as a hold that a written value lifts, so the
+collection route reports `env_pinned: false`, the Settings switch stays usable,
+and `kirocrew telemetry status` says "Held off by" instead of "Pinned by"). Older
+builds' first boot saved the whole `telemetry` section at its old defaults
+(`enabled: false`, both caps `0`). That section loads as written: recording
+stays off (it may be the user's off), and the caps stay `0`, because `0` is the
+documented "no limit" and a stored `0` cannot be told apart from a chosen one.
+Reading them as the new caps would delete metric shards the user kept. Both caps
+are report-only rows in the superseded-defaults registry (see `config.md`), so
+`kirocrew doctor` and `kirocrew config defaults` name them and the user can adopt
+30 days / 100 MB. When off,
+all metric call sites are cheap no-ops and nothing is written or exported,
+byte-identical to no telemetry. Any instrument that needs durable state to
 survive a process death — currently only the session-lifetime breadcrumb — must
 gate that state on the same consent, and fail closed when consent cannot be
 read, so this sentence stays literally true.
@@ -1863,16 +1885,26 @@ consent flow:
   surfaces, so the first-run explanation and the durable panel cannot drift. The
   heartbeat switch (`TelemetryToggle`) lives in Settings > Privacy; the chapter's
   two buttons replace it there.
+- **Export needs an explicit opt-in.** `_build_recorder` attaches an OTLP reader
+  only when `provider.outbound_consented(cfg)` holds: recording was turned on
+  explicitly (`KIROCREW_TELEMETRY` truthy, or `telemetry.enabled: true` written in
+  a config file, read through `config.loader.written_value`). A recording default
+  alone never permits export, and neither does the Privacy chapter's
+  acknowledgement, whose text says recorded data stays on this machine. The check
+  runs only when a destination exists, so a local-only host reads nothing extra.
 - **`DO_NOT_TRACK`.** A truthy value (`1`, `true`, `yes`, `on`) acts like
   `KIROCREW_TELEMETRY=0` plus `KIROCREW_TELEMETRY_DISABLED=1`: `env_pin()`
   answers False before reading `KIROCREW_TELEMETRY` (off wins) and
   `telemetry_permitted` refuses with `do_not_track`. `pin_env_var()` /
   `beacon.opt_out_env_var()` name it, so both Settings switches show it as the
   pin to unset.
+- **Heartbeat-off load rule.** A config that writes `telemetry.beacon_enabled:
+  false` and never sets `telemetry.enabled` loads with recording off, whatever
+  the field default. No file is rewritten.
 - The durable surface distinguishes local usage/context records from optional
-  performance metrics. Performance metrics are off by default and remain local
+  performance metrics. Performance metrics are on by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
-  configures an OTLP endpoint. It also carries the **recording switch** over
+  configures an OTLP endpoint and turned recording on explicitly. It also carries the **recording switch** over
   `telemetry.enabled` — a second, independent control from the beacon toggle above
   — fed by `GET /api/telemetry/collection` and disabled when an env var, a
   `config.local.json` overlay, or a configured OTLP endpoint means the write

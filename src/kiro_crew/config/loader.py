@@ -857,6 +857,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         ssh_auth_sock_consent_path,
         workspace_dir_from_entry,
         workspace_root,
+        written_value,
     )
     from kiro_crew.config.loader_pipeline import (  # noqa: F401
         _TOP_LEVEL_DEFAULTS,

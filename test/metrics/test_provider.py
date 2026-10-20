@@ -45,6 +45,10 @@ def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
 def _patch_config(monkeypatch, **tel_kwargs):
     fake = KiroCrewConfig(telemetry=TelemetryConfig(**tel_kwargs))
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
+    # Treat these configs as an explicit opt-in to recording, which is what lets a
+    # configured export destination attach (``provider.outbound_consented``); the
+    # default alone never does, and these tests are about the readers.
+    monkeypatch.setattr("kiro_crew.metrics.provider.outbound_consented", lambda cfg: True)
     # Keep the consent gate deterministic: a stray KIROCREW_TELEMETRY in the
     # ambient env must not flip these tests. Individual env-var tests re-set it.
     monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
@@ -375,12 +379,12 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
 
 
 def test_retention_config_defaults():
-    """Retention caps default off so upgrades never delete existing shards."""
+    """Recording is on by default, so the disk caps are on by default too."""
     from kiro_crew.config.loader import TelemetryConfig
 
     cfg = TelemetryConfig()
-    assert cfg.retention_days == 0
-    assert cfg.max_total_mb == 0
+    assert cfg.retention_days == 30
+    assert cfg.max_total_mb == 100
     # Negative values are clamped to 0 (disabled) rather than pruning everything.
     clamped = TelemetryConfig(retention_days=-5, max_total_mb=-1)
     assert clamped.retention_days == 0

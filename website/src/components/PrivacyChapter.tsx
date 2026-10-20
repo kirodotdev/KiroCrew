@@ -364,7 +364,7 @@ export default function PrivacyChapter({
             {i18nT('components.privacyChapter.detailsOffNote')}
           </p>
         )}
-        <PrivacyDisclosureSections />
+        <PrivacyDisclosureSections recordingOn={usage.status === 'ready' ? usage.recordingOn : undefined} />
         <p className="mt-5 mb-3 text-sm leading-relaxed text-muted">
           {i18nT('privacyDisclosure.controlsBody')}
         </p>

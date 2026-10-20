@@ -58,6 +58,7 @@ from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.metrics.provider import (
     TELEMETRY_ENV_VAR,
     env_pin,
+    env_pin_is_soft,
     otlp_egress_active,
     pin_env_var,
 )
@@ -272,15 +273,20 @@ def _telemetry_cfg() -> _TelemetryState:
     except Exception:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
     env_var = TELEMETRY_ENV_VAR
+    soft = False
     try:
         env_var = pin_env_var()
         pin = env_pin()
+        soft = pin is not None and env_pin_is_soft()
     except Exception:
         logger.debug("telemetry env pin resolution failed", exc_info=True)
         pin = None
     if pin is not None:
         enabled = pin
-        env_pinned = True
+        # A soft pin (``KIROCREW_TELEMETRY_DISABLED`` holding the default off)
+        # gives way to a written ``telemetry.enabled``, so the switch stays
+        # usable: writing it is exactly how the user lifts that pin.
+        env_pinned = not soft
     return _TelemetryState(enabled, directory, env_pinned, env_var, otlp_configured, retention_days)
 
 

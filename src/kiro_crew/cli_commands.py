@@ -648,10 +648,18 @@ def _telemetry(args: argparse.Namespace) -> None:
     # sets this key locally would keep sending while this command
     # printed "DISABLED" — a false promise on a privacy control is worse than an
     # error, so re-read the effective config and report the shadowing file.
+    exporting = False
     try:
-        loaded = KiroCrewConfig.load().telemetry
+        loaded_cfg = KiroCrewConfig.load()
+        loaded = loaded_cfg.telemetry
         effective = loaded.beacon_enabled
         recording = loaded.enabled
+        if want and not set_recording and recording:
+            from kiro_crew.metrics.provider import outbound_consented
+
+            # Recording on by default is not an opt-in to export, so a
+            # configured destination may still be sending nothing.
+            exporting = outbound_consented(loaded_cfg)
     except Exception:  # noqa: BLE001 - diagnostics must not mask the write
         effective = want
         recording = want
@@ -678,7 +686,7 @@ def _telemetry(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    if want and not set_recording and recording:
+    if want and not set_recording and recording and exporting:
         # Recording was already on before this command; saying it was "NOT turned
         # on" would tell the user both recording and export are off while both run.
         print("Anonymous usage beacon ENABLED (one heartbeat per day).")
@@ -686,6 +694,14 @@ def _telemetry(args: argparse.Namespace) -> None:
             "   Local metric recording was already on, and this host is configured to "
             "export metrics off the machine. This command changed neither; the "
             "config file, where the destination is configured, controls both."
+        )
+    elif want and not set_recording and recording:
+        # On by default only: the destination is configured but nothing is sent.
+        print("Anonymous usage beacon ENABLED (one heartbeat per day).")
+        print(
+            "   Local metric recording is on by default. This host has an export "
+            "destination configured, but nothing is exported until "
+            "telemetry.enabled: true is written in the config file."
         )
     elif want and not set_recording:
         print("Anonymous usage beacon ENABLED (one heartbeat per day).")
@@ -709,7 +725,7 @@ def _telemetry(args: argparse.Namespace) -> None:
 def _format_recording_status(cfg: KiroCrewConfig) -> str:
     """The local metric recording half of ``kirocrew telemetry status``."""
     from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
-    from kiro_crew.metrics.provider import env_pin, pin_env_var
+    from kiro_crew.metrics.provider import env_pin, env_pin_is_soft, pin_env_var
 
     pin = env_pin()
     effective = cfg.telemetry.enabled if pin is None else pin
@@ -719,7 +735,12 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         f"  Enabled:     {'yes' if effective else 'no'}",
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
     ]
-    if pin is not None:
+    if pin is not None and env_pin_is_soft():
+        lines.append(
+            f"  Held off by: {pin_env_var()} until telemetry.enabled is written "
+            "(kirocrew telemetry enable, or Settings > Privacy)"
+        )
+    elif pin is not None:
         lines.append(f"  Pinned by:   {pin_env_var()} (the config value has no effect)")
     lines.append(
         f"  Notice:      privacy notice version {cfg.dashboard.privacy_ack_version} "

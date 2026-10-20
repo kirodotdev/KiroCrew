@@ -1660,7 +1660,8 @@ class TestTelemetryEnabledPatch:
         try:
             with patch("kiro_crew.metrics.provider.shutdown") as reset:
                 async with TestClient(TestServer(app)) as c:
-                    assert (await _patch(c, "telemetry.enabled", True)).status == 200
+                    # False: the default is on, so writing true would change nothing.
+                    assert (await _patch(c, "telemetry.enabled", False)).status == 200
         finally:
             sub = metrics_provider._config_sub
             if sub is not None:

@@ -24,11 +24,16 @@ const SHELL_LABEL_KEY = {
 } as const
 
 /** The three per-shell env-var forms, keyed by the same shell ids as
- * `SHELL_LABEL_KEY` so a new shell cannot be added without its label. */
+ * `SHELL_LABEL_KEY` so a new shell cannot be added without its label.
+ *
+ * `DO_NOT_TRACK`, not `KIROCREW_TELEMETRY_DISABLED`: with local recording on by
+ * default, the env var shown here must turn off everything the command above it
+ * does. `KIROCREW_TELEMETRY_DISABLED` stops only the heartbeat, so a user who
+ * copied it would believe metrics were off while recording went on. */
 export const SHELL_COMMANDS = [
-  { shell: 'macos', command: 'export KIROCREW_TELEMETRY_DISABLED=1' },
-  { shell: 'powershell', command: "$env:KIROCREW_TELEMETRY_DISABLED = '1'" },
-  { shell: 'cmd', command: 'set KIROCREW_TELEMETRY_DISABLED=1' },
+  { shell: 'macos', command: 'export DO_NOT_TRACK=1' },
+  { shell: 'powershell', command: "$env:DO_NOT_TRACK = '1'" },
+  { shell: 'cmd', command: 'set DO_NOT_TRACK=1' },
 ] as const satisfies ReadonlyArray<{
   shell: keyof typeof SHELL_LABEL_KEY
   command: string
@@ -231,7 +236,12 @@ function DisclosureSection({
  * wire without a line here would make this text a false statement — the
  * `PrivacyPanel.test.tsx` field-count assertion is what keeps them in step.
  */
-export function PrivacyDisclosureSections() {
+/**
+ * The shared disclosure sections. ``recordingOn`` is the effective local
+ * recording state when the caller has read it; left undefined (still loading,
+ * or the read failed) the local-data line states the default instead.
+ */
+export function PrivacyDisclosureSections({ recordingOn }: { recordingOn?: boolean } = {}) {
   return (
     <div className="flex flex-col gap-5">
       <div>
@@ -269,7 +279,13 @@ export function PrivacyDisclosureSections() {
       <DisclosureSection
         icon={<HardDrive className="lucide-inline" aria-hidden="true" />}
         title={i18nT('privacyDisclosure.localDataTitle')}
-        body={i18nT('privacyDisclosure.localDataBody')}
+        body={
+          recordingOn === true
+            ? i18nT('privacyDisclosure.localDataBodyOn')
+            : recordingOn === false
+              ? i18nT('privacyDisclosure.localDataBodyOff')
+              : i18nT('privacyDisclosure.localDataBody')
+        }
       />
     </div>
   )
@@ -284,6 +300,9 @@ export function PrivacyCommandList() {
           {command}
         </code>
       ))}
+      {/* Say what the env var stops: the status and disable commands above it
+          are self-describing, this line is not. */}
+      <span className="mt-1 text-[12px] text-muted">{i18nT('privacyDisclosure.doNotTrackCaption')}</span>
       {SHELL_COMMANDS.map(({ shell, command }) => (
         <div key={command} className="flex max-w-full flex-col items-start gap-1">
           <span className="text-[12px] font-medium text-muted">

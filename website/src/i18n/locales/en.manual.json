@@ -9090,7 +9090,7 @@
     "controlsTitle": "Telemetry controls",
     "dataNeverSentBody": "Prompts, responses, files, credentials, hostnames, usernames, or your operating system. Your IP is not stored.",
     "dataNeverSentTitle": "Never sent",
-    "localDataBody": "Usage and context records. Performance metrics are off by default.",
+    "localDataBody": "Performance metrics are recorded on this device by default. The Record metrics switch in Settings > Privacy shows whether they are on now.",
     "localDataTitle": "Stays on your device",
     "notSendingAlreadySentToday": "Today's heartbeat has already been sent.",
     "notSendingAwaitingAck": "Nothing has been sent yet. The first heartbeat waits until you've seen this page.",
@@ -9113,7 +9113,10 @@
     "toggleDescription": "Saved for future launches.",
     "toggleLabel": "Send anonymous usage heartbeat",
     "toggleSaveFailed": "Couldn't save your telemetry choice. Try again.",
-    "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here."
+    "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here.",
+    "localDataBodyOn": "Performance metrics are being recorded on this device now.",
+    "localDataBodyOff": "Performance metrics are not being recorded on this device now.",
+    "doNotTrackCaption": "Setting DO_NOT_TRACK=1 turns off performance metrics and the heartbeat:"
   },
   "settings": {
     "chat": {

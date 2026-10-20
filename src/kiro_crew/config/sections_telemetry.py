@@ -19,25 +19,38 @@ logger = logging.getLogger("kiro_crew.config.loader")
 # into the config package. Setting the field to "" disables the beacon outright.
 _DEFAULT_BEACON_ENDPOINT = "https://d175o3ylxqum0e.cloudfront.net"
 
+# Disk bounds for the local metric recorder, which is on by default.
+DEFAULT_METRICS_RETENTION_DAYS = 30
+DEFAULT_METRICS_MAX_TOTAL_MB = 100
+
 
 @dataclass
 class TelemetryConfig:
-    """Metrics telemetry settings (Wave 0 trunk).
+    """Metrics telemetry settings.
 
-    Default OFF: when disabled, metric call sites are cheap no-ops and nothing is
-    written or exported (byte-identical to no telemetry), mirroring the
-    ``mcp_gateway.enabled`` / ``skills.lazy_load`` opt-in convention. When
-    enabled, a local-first JSONL sink under ``~/.kiro/crew/metrics`` is activated;
-    remote / OTLP egress is a separate opt-in requiring ``kirocrew[otlp]``.
+    Default ON for local recording: a local-first JSONL sink under
+    ``~/.kiro/crew/metrics`` records how the app is used, bounded on disk by the
+    ``retention_days`` and ``max_total_mb`` defaults below. Every user is told in
+    the dashboard's Privacy chapter (or by a one-line notice on a CLI or headless
+    start) and can turn it off there, in Settings > Privacy, with ``kirocrew
+    telemetry disable``, ``KIROCREW_TELEMETRY=0`` or ``DO_NOT_TRACK=1``. A value
+    written in either config file wins over the default, and an install that
+    turned the heartbeat off without setting this switch loads as off. When off,
+    metric call sites are cheap no-ops and nothing is written. Remote / OTLP
+    egress is a separate opt-in, and needs recording turned on explicitly (see
+    ``metrics.provider.outbound_consented``).
     """
 
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Enabled",
-            "Main switch for Kiro Crew metrics telemetry. Off by default: metric "
-            "call sites are no-ops and nothing is written. When on, a local-first "
-            "JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
+            "Main switch for local usage metrics. On by default: a local-first JSONL "
+            "sink under ~/.kiro/crew/metrics records how long things take and how "
+            "often features are used (no prompts, files or credentials), with no "
+            "network egress. Turn it off here, in Settings > Privacy, with kirocrew "
+            "telemetry disable, KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, "
+            "metric call sites are no-ops and nothing is written.",
         ),
     )
     local_dir: str = field(
@@ -55,22 +68,27 @@ class TelemetryConfig:
             "How often the local exporter flushes aggregated metrics to disk (>=1).",
         ),
     )
+    # Non-zero defaults because recording is on by default: an uncapped
+    # recorder grows on disk without end. 30 days covers the Telemetry panel's
+    # 14-day window with room to spare; 100 MB is several weeks of a heavy
+    # user's shards (one measured busy host wrote about 11 MB a day).
     retention_days: int = field(
-        default=0,
+        default=DEFAULT_METRICS_RETENTION_DAYS,
         metadata=_meta(
             "Retention (days)",
             "Prune local JSONL metric shards older than this many days on each "
-            "export cycle. 0 disables age-based pruning. Bounds on-disk telemetry "
-            "growth.",
+            f"export cycle. Default {DEFAULT_METRICS_RETENTION_DAYS}. 0 disables "
+            "age-based pruning. Bounds on-disk telemetry growth.",
         ),
     )
     max_total_mb: int = field(
-        default=0,
+        default=DEFAULT_METRICS_MAX_TOTAL_MB,
         metadata=_meta(
             "Max Total Size (MB)",
             "Opportunistic directory budget for local metric shards. Closed shards "
             "are pruned oldest-first; protected active writers can temporarily exceed "
-            "the budget. 0 disables the size cap.",
+            f"the budget. Default {DEFAULT_METRICS_MAX_TOTAL_MB}. 0 disables the "
+            "size cap.",
         ),
     )
     otlp_endpoint: str = field(
@@ -106,7 +124,8 @@ class TelemetryConfig:
             "capabilities.telemetry governance scope, which this switch cannot "
             "override. Independent "
             "of the 'enabled' switch above, which is local-only metrics "
-            "collection and still never egresses.",
+            "collection and egresses only to a configured export destination "
+            "after recording was turned on explicitly.",
         ),
     )
     beacon_endpoint: str = field(
