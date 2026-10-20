@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, type RefObject } from 'react'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { store, type AppDispatch, type RootState } from '../store'
-import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
+import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, recordSendAttempt, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
 import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
 import { expandAll as expandPasteTokens } from '../utils/pasteTokens'
 import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
@@ -259,6 +259,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         slot: slotKey,
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, ...(crewmate ? { responsiveSend: true } : {}) } },
       }))
+      // Same record as ChatPage's send: ↑ can recall it if the bubble is lost.
+      dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId }))
     }
     // Sending is explicit intent to be at the end, so the pane force-pins the
     // transcript exactly as ChatPage does after its own optimistic append: the
