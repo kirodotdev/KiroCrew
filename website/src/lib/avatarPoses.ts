@@ -8,6 +8,14 @@
  * here: pick one of the shipped poses, pick a background colour, done. There is
  * no per-trait vocabulary and no reaction layer — the pose IS the whole face.
  *
+ * A pose does still show the crew AT WORK: `poseDataUri(pose, bg, true)` wraps
+ * the silhouette in the ghost's body-motion groups (`workingStyle` in
+ * `kiroGhostAvatar.ts`) at the ghost's full amplitude, so an icon crew bobs and
+ * sways beside a ghost crew in the same rhythm. Body motion only MOVES the
+ * drawing — nothing about the pose, its eyes or its colour changes — so the
+ * still frame and the working frame are the same face, and reduced-motion users
+ * get the still frame unchanged.
+ *
  * The art is a set of hand-drawn SVGs (`assets/avatarPoses/pose-N.svg`), each a
  * white ghost silhouette with two black eye cut-outs over a background rect.
  * They are imported as RAW TEXT and recoloured here rather than being inlined as
@@ -42,7 +50,7 @@ import pose10 from '../assets/avatarPoses/pose-10.svg?raw'
 import pose11 from '../assets/avatarPoses/pose-11.svg?raw'
 
 import { createAvatar } from '@dicebear/core'
-import { BRAND_PURPLE, TILES } from './kiroGhostAvatar'
+import { BRAND_PURPLE, TILES, workingStyle, type WorkingIntensity } from './kiroGhostAvatar'
 
 /** The icon background palette offered in the avatar builder (brand purple +
  *  the tile colours) — the set a name-seeded default colour is drawn from, so
@@ -199,19 +207,78 @@ export function resolvePoseBg(bg: string | undefined): string {
 const RECT_FILL_RE = /(<rect\b[^>]*\bfill=")[^"]*(")/
 
 /**
+ * The drawing that moves while the crew works: everything after the background
+ * rect up to the closing tag. The rect is the tile and stays put, exactly as the
+ * ghost's tile does under its own body motion.
+ */
+const BODY_RE = /(<rect\b[^>]*\/>)([\s\S]*)(<\/svg>)/
+
+/** The pose art is authored on a 300-unit tile; the ghost's motion keyframes and
+ *  transform origins are written for its 1200-unit tile. */
+const POSE_TILE = 300
+const GHOST_TILE = 1200
+
+/**
+ * The one amplitude an icon moves at. The ghost scales its body motion down to
+ * `subtle` in a dense roster because its eyes animate too and the two together
+ * read as busy at 40px; a pose has no moving eyes, so the body is the whole
+ * cue, and at the subtle amplitude it is too small to register as motion at
+ * all. One amplitude, the legible one, on every surface.
+ */
+const ICON_WORKING: WorkingIntensity = 'full'
+
+/**
+ * Wrap a pose's silhouette in the ghost's body-motion groups.
+ *
+ * The keyframes are REUSED, not re-authored: `workingStyle` is the ghost's own
+ * `<style>` block, so the two tiers cannot drift apart in tempo, and no new
+ * `@keyframes` exist for the icon. Its pixel offsets and `transform-origin`s
+ * are in the ghost's 1200-unit space, so the wrap scales into that space,
+ * animates there, and scales the art back out — the pose itself is untouched.
+ * The eye idioms the block also defines target classes the pose art does not
+ * carry, so they simply do not apply.
+ */
+function wrapWorking(body: string): string {
+  const into = POSE_TILE / GHOST_TILE
+  const outOf = GHOST_TILE / POSE_TILE
+  return (
+    workingStyle(ICON_WORKING) +
+    `<g transform="scale(${into})"><g class="kg-fit"><g class="kg-sway"><g class="kg-bob"><g class="kg-sq">` +
+    `<g transform="scale(${outOf})">${body}</g>` +
+    '</g></g></g></g></g>'
+  )
+}
+
+/**
  * Compose a pose + background into the data URI the roster and the builder
  * both render. The silhouette and eyes are left exactly as drawn; only the
- * background rect's fill is swapped for the chosen colour.
+ * background rect's fill is swapped for the chosen colour. With `working` true
+ * the silhouette is wrapped in the ghost's body motion (see `wrapWorking`);
+ * otherwise the output is the still frame it has always been. A boolean, not
+ * the ghost's `WorkingIntensity`: an icon has one amplitude (`ICON_WORKING`),
+ * so a caller cannot ask for one it does not draw.
  *
  * A pose whose source somehow lacks the expected rect still renders — the body
  * and eyes draw over whatever the file declares — rather than throwing on a
  * roster, which is the same "degrade, never crash" rule the trait readers hold.
+ * The same holds for the working wrap: a source the body match cannot place is
+ * served still rather than not at all.
  */
-export function poseDataUri(pose: string | undefined, bg: string | undefined): string {
+export function poseDataUri(
+  pose: string | undefined,
+  bg: string | undefined,
+  working?: boolean,
+): string {
   const svg = POSE_SVG[resolvePose(pose)]
   const colour = resolvePoseBg(bg)
   const painted = svg.replace(RECT_FILL_RE, `$1${colour}$2`)
-  return `data:image/svg+xml;utf8,${encodeURIComponent(painted)}`
+  const composed = working
+    ? painted.replace(
+        BODY_RE,
+        (_m, rect: string, body: string, close: string) => rect + wrapWorking(body) + close,
+      )
+    : painted
+  return `data:image/svg+xml;utf8,${encodeURIComponent(composed)}`
 }
 
 /** The seed a blank name falls back to, so an unnamed draft still previews a

@@ -24,7 +24,8 @@
  * or the default does. Identity is never part of it — see
  * `lib/crewAvatarState.ts` — so a reacting crew still reads as the same crew.
  * A picture is static, and a pack brings its own per-state art; for both,
- * `state` only picks which drawing is served.
+ * `state` only picks which drawing is served. An icon (a shipped pose) has no
+ * reactions but does play the ghost's `working` body motion.
  *
  * Rendered as an `<img>` carrying a data URI rather than inlined SVG markup.
  * Two reasons, both load-bearing:
@@ -96,7 +97,8 @@ export type CrewAvatarOverride =
    *  picks. The whole override is `pose` + `bg`: the pose names one of the
    *  hand-drawn silhouettes (`lib/avatarPoses.ts`), `bg` is a `#rrggbb` painted
    *  behind it. No traits, no reactions — the pose is the whole face, and it is
-   *  how new crews are built. See `iconAvatarFrom`. */
+   *  how new crews are built; it does still play the ghost's working body
+   *  motion, which moves the pose without changing it. See `iconAvatarFrom`. */
   | { kind: 'icon'; pose: string; bg: string }
 
 const TILE_RE = /^#[0-9a-f]{6}$/
@@ -357,8 +359,9 @@ export default function CrewAvatar({
   // A reaction is the ghost's: `motionsFrom` is ghost-gated, and the tier guard
   // repeats that here so the DEFAULT motion cannot reach a served tier either —
   // the ghost drawn as a broken picture's fallback is a still face, not a crew
-  // reporting a turn it never ran. An icon is a static drawing like a picture,
-  // so it is excluded here too. Sounds are the other half of the reaction
+  // reporting a turn it never ran. An icon has no reaction layer either, so it
+  // is excluded here too (its working motion is not a reaction — see the icon
+  // branch below). Sounds are the other half of the reaction
   // layer and are deliberately NOT this component's business: they belong to
   // the state hook.
   const motions = useMemo(
@@ -430,10 +433,17 @@ export default function CrewAvatar({
   // a data URI exactly like a pinned-trait ghost — nothing is fetched, so there
   // is no load-failure path and no fallback to latch. It wins over the served
   // tiers because a record is only ever one kind; the readers are exclusive.
+  //
+  // It takes WORKING, not the reaction: a pose has no reaction layer (`motions`
+  // is nulled for it above), but "at work" is body motion that only moves the
+  // drawing, and a crew that is working must read as working on every tier
+  // that composes its own art. The `working` intensity is the ghost's knob and
+  // is not forwarded: a pose has one amplitude (`avatarPoses.ICON_WORKING`).
+  // `done` / `error` with no reaction draw the still frame.
   if (icon) {
     return (
       <img
-        src={poseDataUri(icon.pose, icon.bg)}
+        src={poseDataUri(icon.pose, icon.bg, shownState === 'working')}
         alt=""
         aria-hidden="true"
         width={size}

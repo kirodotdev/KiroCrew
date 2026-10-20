@@ -14,6 +14,7 @@ import { render } from '@testing-library/react'
 import CrewAvatar, { ghostTraitsFrom, seededTraits } from '../components/CrewAvatar'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ghostDataUri, type KiroGhostTraits } from '../lib/kiroGhostAvatar'
+import { poseDataUri } from '../lib/avatarPoses'
 import {
   AVATAR_STATES,
   MOTION_DEFAULTS,
@@ -310,6 +311,38 @@ describe('CrewAvatar renders the state it is told', () => {
     // Back-compat: MembersPage shipped `working` before `state` existed.
     const legacy = render(<CrewAvatar seed={SEED} avatar={avatar} working="subtle" />)
     expect(src(legacy.container)).toBe(ghostDataUri(PINNED, 'subtle'))
+  })
+
+  it('plays the working body motion on an icon at one amplitude, whatever intensity is asked', () => {
+    // An icon has no reaction layer, but "at work" is body motion that only
+    // moves the pose — so it must read as working beside a ghost. The ghost's
+    // intensity knob is not the icon's: a dense roster asks `subtle` and the
+    // icon still moves at the one amplitude it draws.
+    const icon: CrewAvatarOverride = { kind: 'icon', pose: 'pose-3', bg: '#25679d' }
+    const working = poseDataUri('pose-3', '#25679d', true)
+    expect(working).not.toBe(poseDataUri('pose-3', '#25679d'))
+    const bare = render(<CrewAvatar seed={SEED} avatar={icon} state="working" />)
+    expect(src(bare.container)).toBe(working)
+    bare.unmount()
+    const subtle = render(<CrewAvatar seed={SEED} avatar={icon} state="working" working="subtle" />)
+    expect(src(subtle.container)).toBe(working)
+    subtle.unmount()
+    const full = render(<CrewAvatar seed={SEED} avatar={icon} state="working" working="full" />)
+    expect(src(full.container)).toBe(working)
+    full.unmount()
+    // The legacy bare `working` spelling reaches the icon too.
+    const legacy = render(<CrewAvatar seed={SEED} avatar={icon} working="subtle" />)
+    expect(src(legacy.container)).toBe(working)
+  })
+
+  it('draws an icon still for every state but working — it has no reactions', () => {
+    const icon = { kind: 'icon', pose: 'pose-3', bg: '#25679d', motions: { done: 'bounce' } }
+    for (const state of AVATAR_STATES) {
+      if (state === 'working') continue
+      const { container, unmount } = render(<CrewAvatar seed={SEED} avatar={icon} state={state} />)
+      expect(src(container)).toBe(poseDataUri('pose-3', '#25679d'))
+      unmount()
+    }
   })
 
   it('serves a picture unchanged for every state — a picture is static', () => {

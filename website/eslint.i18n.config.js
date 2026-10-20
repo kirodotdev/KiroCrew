@@ -346,6 +346,17 @@ export default [
       // user-visible copy ever added to THIS path will not be reported — keep the
       // module parser-facing only, and keep it DOM-free.
       'src/lib/kiroGhostAvatar.ts',
+      // The icon-tier pose composer, by the same boundary: its literals are the
+      // SVG group wrapper that puts a pose under the ghost's body motion
+      // (`<g class="kg-bob">…`) and a background fill — markup handed to the SVG
+      // parser, where a translated tag name renders a blank tile. It imports the
+      // pose art as raw text, imports no `i18nT` / `useTranslation`, and touches
+      // no DOM; every export is data in, SVG `string` out, consumed by the same
+      // fully gated `components/CrewAvatar.tsx` behind `alt=""` / `aria-hidden`.
+      //
+      // Same false-negative class as the ghost: copy added to THIS path is not
+      // reported, so keep it parser-facing and DOM-free.
+      'src/lib/avatarPoses.ts',
       // Same rationale, different convention: this app keeps its seed prompts in a
       // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
       // payload sent over the wire, never rendered.
