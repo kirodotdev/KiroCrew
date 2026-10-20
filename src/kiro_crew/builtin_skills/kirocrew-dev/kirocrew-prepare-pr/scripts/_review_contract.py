@@ -307,6 +307,38 @@ def override_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS)
     return {name} if name else set()
 
 
+def disposition_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Lowercased reviewer name(s) a disposition ``target=`` answers for.
+
+    Shares the override alias map (``fable`` -> the Opus reviewer) and accepts
+    the literal reviewer name. Unlike the override path it does NOT expand
+    ``all``: a disposition covers one finding, so ``target=all`` answers for no
+    lane and a span-bearing ``target=all`` record stays cross-lane.
+    """
+    text = (target or "").lower()
+    if text == OVERRIDE_TARGET_ALL:
+        return set()
+    names = {name.lower() for name in override_reviewer_names(text, bindings, keys)}
+    if text in {name.lower() for name in (bindings or {}).values()}:
+        names.add(text)
+    return names
+
+
+def target_spelling_for_reviewer(reviewer, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Return the ``target=`` spelling that answers for ``reviewer``, else the name.
+
+    The Opus lane is spelled ``fable`` in a disposition marker, so a message
+    telling an author to retarget a finding must name that spelling.
+    """
+    want = (reviewer or "").lower()
+    key_for = dict(keys or ())
+    for spelling, marker_key in key_for.items():
+        bound = (bindings or {}).get(marker_key)
+        if bound and bound.lower() == want:
+            return spelling
+    return reviewer
+
+
 def _accepted_overrides(comments, head_sha, authors):
     """Yield ``(target, actor, comment)`` for each trusted record naming ``head_sha`` EXACTLY.
 
@@ -1436,6 +1468,10 @@ def disposition_violations(
     so an older ``head=`` does not exempt malformed, multi-finding, or cross-lane
     claims. Lanes without parseable finding identities remain exempt from the
     requirement to claim one.
+
+    The cross-lane check resolves ``target=`` to the reviewer it answers for,
+    because ``fable`` is the ``target=`` spelling of the OPUS lane: comparing the
+    raw spelling reported a correct ``target=fable`` answer as cross-lane.
     """
     lanes = {name.lower() for name in (bindings or {}).values()}
 
@@ -1462,6 +1498,9 @@ def disposition_violations(
             )
             continue
         target = record.get("target") or ""
+        # Only the cross-lane comparison reads the resolved lane(s); the no-span
+        # and unresolved-span checks below keep comparing the raw spelling.
+        target_lanes = disposition_reviewer_names(target, bindings)
         spans = record.get("spans") or []
         judged_head = record.get("head") or ""
         if judged_head and len(judged_head) < 40:
@@ -1501,12 +1540,12 @@ def disposition_violations(
             )
         for span in spans:
             lane = judged_map.get(span) or current_map.get(span)
-            if lane is not None and lane != target:
+            if lane is not None and lane not in target_lanes:
                 out.add(
                     "cross-lane disposition ({}; target={}) claims span {} "
                     "from lane {} - one comment covers exactly one lane, so "
                     "give that finding its own comment with target={}".format(
-                        where, target, span, lane, lane
+                        where, target, span, lane, target_spelling_for_reviewer(lane, bindings)
                     )
                 )
             elif lane is None and target in lanes and target in judged_lanes:
