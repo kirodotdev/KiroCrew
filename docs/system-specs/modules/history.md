@@ -1215,7 +1215,25 @@ learn-cron-dashboard):
   import) -- through `slot_args` (the constructor keywords), `apply` (every other
   field) and `AppliedMeta.settle` (the fields that need the loaded window: held
   notes already delivered, the turn-in-flight marker, the title refresh mark). A
-  purpose missing from a row is a declared asymmetry with its reason. The value
+  purpose missing from a row is a declared asymmetry with its reason. Most
+  SLOT-OWNED fields (whose absence a full save reads as cleared) are read by
+  every purpose, so a hydration does not leave a slot-owned value at its default
+  for the next save to write back over the persisted one: the open-tab restore
+  keeps a custom tab theme and a History resume keeps the memory store, artifact
+  binding, held notes and queued prompts. The asymmetries that remain are
+  deliberate, each a value NOT safe to read back from the line on that path: the
+  remote-execution binding (startup only, so an old relay chat comes back a
+  read-only archive); the creator attribution, app scope and channel link a
+  resume re-derives from a corroborating source rather than the agent-editable
+  line (an app resume never reads the link, so its token cannot bind the slot to
+  an unauthorized channel session); the ``tab_id`` a resume keeps FRESH per slot
+  object, because it is the per-writer ownership mark ``_line_is_this_slots``
+  reads and a resume can run while the original slot is still live (two slots
+  sharing one id would let the old slot's rows-only save rebuild the resumed
+  slot's line); and the theme-consent pair a resume reads beside the theme. The
+  persisted origin is read as no origin when it is JSON `null` or non-string
+  (`_restore_origin`), never the string `"None"`.
+  The value
   checks a read applies live beside their rows, among them the title state, the
   auto-compaction threshold, the dismissed source links, the model and effort, the
   retired modes and the color. The model and effort go through one shared
