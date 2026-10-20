@@ -65,6 +65,28 @@ describe('ChatInput Lexical composer: keyboard chords match the textarea', () =>
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  // A host that opts out of optimize passes no chord handler, so the chord
+  // reaches the send rule. In ctrl-enter mode that rule must exclude Shift, or
+  // the optimize chord submits the draft on a surface that has no optimizer.
+  it.each([
+    ['Ctrl', { ctrlKey: true }],
+    ['Cmd', { metaKey: true }],
+  ])('%s+Shift+Enter neither sends nor optimizes in ctrl-enter mode with the optimizer off', async (_label, mod) => {
+    const onSend = vi.fn()
+    renderWithProviders(<Host onSend={onSend} sendOnEnter="ctrl-enter" promptOptimizer={false} />)
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+    await act(async () => {})
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true, ...mod })
+    })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(optimizeCalls()).toBe(0)
+    // The unshifted chord on the same host still sends, so the guard above is
+    // not passing merely because sending is unreachable here.
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', ...mod })
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+  })
+
   it('Ctrl+Enter while running in steer mode queues (onSend) for that one send', async () => {
     const onSend = vi.fn()
     const onSteer = vi.fn()

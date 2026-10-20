@@ -706,8 +706,11 @@ function InteractionPlugin({
           editor.dispatchCommand(INSERT_LINE_BREAK_COMMAND, false)
           return true
         }
+        // Shift is excluded in ctrl-enter mode too: on a host that offers no
+        // optimize (no `onOptimizeChord`) the optimize chord reaches this rule
+        // and must not submit the draft.
         const shouldSend = sendOnEnter === 'ctrl-enter'
-          ? commandKey
+          ? commandKey && !event.shiftKey
           : !event.shiftKey
         if (!shouldSend) return false
         event.preventDefault()
