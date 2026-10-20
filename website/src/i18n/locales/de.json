@@ -7875,6 +7875,7 @@
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "Terminal",
+        "kind_update": "Aktualisierung",
         "kind_webhook": "Webhook",
         "this_week": "Diese Woche",
         "today": "Heute",
@@ -17040,7 +17041,8 @@
         "custom_sound_deleted": "{{name}} gelöscht.",
         "custom_sound_undo": "Rückgängig",
         "custom_sound_option": "{{name}} (eigener)",
-        "channel_member": "Crewmate-Nachrichten"
+        "channel_member": "Crewmate-Nachrichten",
+        "channel_apps": "App-Aktualisierungen"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

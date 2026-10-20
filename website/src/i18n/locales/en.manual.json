@@ -3063,6 +3063,7 @@
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "Terminal",
+        "kind_update": "Update",
         "kind_webhook": "Webhook"
       },
       "notificationBanner": {

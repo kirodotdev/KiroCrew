@@ -65,6 +65,19 @@ inside the manifest are rewritten to blob-proxy URLs, so nothing has to be
 mirrored into the Kiro Crew repo. Push a new version and the store picks it up on
 the next refresh.
 
+### Bumping a version reaches your users
+
+Once the store sees a version newer than the one installed, Kiro Crew tells the
+user itself: a bell notification naming your app and the new version, once per
+version, plus the pending-updates count on Discover. Your app can also read the
+same answer and show its own banner through `useAppInfo().update` (see
+[Getting started](getting-started.md#telling-the-user-a-new-version-is-out)).
+
+Two things follow for you. A version bump is user-visible even when nobody opens
+the store, so a release published by accident is noticed; and only `version`
+decides it, so re-pushing the same version with different content tells nobody
+anything.
+
 ## 3. Categories come from your tags
 
 Discover groups apps into a fixed set of categories by scanning `tags` in

@@ -7999,6 +7999,7 @@
         "kind_subagent": "Sous-agent",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "Terminal",
+        "kind_update": "Mise à jour",
         "kind_webhook": "Webhook",
         "this_week": "Cette semaine",
         "today": "Aujourd’hui",
@@ -17310,7 +17311,8 @@
         "custom_sound_deleted": "{{name}} supprimé.",
         "custom_sound_undo": "Annuler",
         "custom_sound_option": "{{name}} (le tien)",
-        "channel_member": "Messages des coéquipiers"
+        "channel_member": "Messages des coéquipiers",
+        "channel_apps": "Mises à jour des apps"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

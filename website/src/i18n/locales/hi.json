@@ -7875,6 +7875,7 @@
         "kind_subagent": "सब-एजेंट",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "टर्मिनल",
+        "kind_update": "अपडेट",
         "kind_webhook": "वेबहुक",
         "this_week": "इस हफ़्ते",
         "today": "आज",
@@ -17040,7 +17041,8 @@
         "custom_sound_deleted": "{{name}} हटाया गया।",
         "custom_sound_undo": "पूर्ववत करो",
         "custom_sound_option": "{{name}} (तुम्हारी)",
-        "channel_member": "साथियों के संदेश"
+        "channel_member": "साथियों के संदेश",
+        "channel_apps": "ऐप अपडेट"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

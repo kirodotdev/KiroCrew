@@ -7875,6 +7875,7 @@
         "kind_subagent": "সাবএজেন্ট",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "টার্মিনাল",
+        "kind_update": "আপডেট",
         "kind_webhook": "ওয়েবহুক",
         "this_week": "এই সপ্তাহ",
         "today": "আজ",
@@ -17040,7 +17041,8 @@
         "custom_sound_deleted": "{{name}} মুছে ফেলা হয়েছে।",
         "custom_sound_undo": "পূর্বাবস্থায় ফেরাও",
         "custom_sound_option": "{{name}} (তোমার)",
-        "channel_member": "সঙ্গীদের বার্তা"
+        "channel_member": "সঙ্গীদের বার্তা",
+        "channel_apps": "অ্যাপ আপডেট"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

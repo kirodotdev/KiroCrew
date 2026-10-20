@@ -1361,14 +1361,14 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/apps` | List all installed apps |
+| GET | `/api/apps` | List all installed apps, each with cached `update` state |
 | GET | `/api/apps/registry` | List available apps from registry |
 | GET | `/api/apps/blob?repo=&path=&ref=` | Proxy images from a registry app's git repo |
 | POST | `/api/apps/install` | Install from local path (owner only) |
 | POST | `/api/apps/register` | Register a self-managed app (owner only) |
 | POST | `/api/apps/registry/install` | Install from registry (owner only) |
 | POST | `/api/apps/registry/install-stream` | Install from registry with an SSE progress stream (owner only) |
-| GET | `/api/apps/{name}` | Get app details |
+| GET | `/api/apps/{name}` | Get app details, including cached `update` state |
 | GET | `/api/apps/{name}/manifest` | Get app manifest |
 | GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only) |
 | POST | `/api/apps/{name}/update` | Update installed app (owner only) |

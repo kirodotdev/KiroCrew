@@ -137,6 +137,11 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import forget_app_hooks, teardown_app_runtime
+from kiro_crew.apps.update_notify import (
+    deliver_app_update_notes,
+    prepare_app_update_notes,
+)
+from kiro_crew.apps.update_status import attach_update, attach_updates
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.config.loader import (
     ConfigReadError,
@@ -367,6 +372,16 @@ def _stamp_installed_trust_repository(app: dict[str, Any]) -> dict[str, Any]:
     return app
 
 
+def _installed_app_detail(name: str, app: dict[str, Any]) -> dict[str, Any]:
+    """One installed app's row: trust stamp, then its cached update state.
+
+    Blocking (both halves touch disk), so async handlers offload the whole
+    helper. What ``update`` means, and why it is absent rather than false when
+    nothing is known: :func:`~kiro_crew.apps.update_status.attach_update`.
+    """
+    return attach_update(name, _stamp_installed_trust_repository(app))
+
+
 def _listed_apps_with_trust() -> list[dict[str, Any]]:
     """Read installed apps and resolve their consent coordinates synchronously.
 
@@ -377,7 +392,12 @@ def _listed_apps_with_trust() -> list[dict[str, Any]]:
     installed = list_apps()
     for app in installed:
         _stamp_installed_trust_repository(app)
-    return installed
+    # Same ``update`` field the single-app route carries, and for a reason that
+    # is not symmetry for its own sake: a side-panel tab reads its row from this
+    # endpoint while a routed page reads the other, so an app's own
+    # "new version" banner would appear on one surface and silently never on the
+    # other. Batched, so the caches are read once rather than once per app.
+    return attach_updates(installed)
 
 
 async def handle_list_apps(request: web.Request) -> web.Response:
@@ -618,7 +638,7 @@ async def handle_get_app(request: web.Request) -> web.Response:
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(await asyncio.to_thread(_stamp_installed_trust_repository, info))
+    return web.json_response(await asyncio.to_thread(_installed_app_detail, name, info))
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:
@@ -2542,13 +2562,35 @@ async def handle_open_app(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+async def _announce_app_updates(request: web.Request, rows: list[dict[str, Any]]) -> None:
+    """Bell-note the app updates these listing rows reveal, once each.
+
+    Called with CATALOG rows only. The seed fallback answers when the catalog
+    is unreachable, and its rows can name an older version than the catalog
+    does -- announcing from them would report a "new" version that is not the
+    newest, and their absent rows say nothing about an app either way.
+
+    The ledger half runs off the loop (disk); delivery runs on it, because
+    ``state.notify`` off the serving loop persists outside the notification
+    coordinator's FIFO executor. Both halves are total.
+    """
+    state = request.app.get("state")
+    if state is None:
+        return
+    notes = await asyncio.to_thread(prepare_app_update_notes, rows)
+    if notes:
+        deliver_app_update_notes(state, notes)
+
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     # The published catalog is the storefront's source of truth when it is
     # reachable: its rows replace the seed + per-app manifest fetch. Offline the
     # catalog is empty and the seed listing answers instead.
     apps = await list_catalog_apps()
-    if not apps:
+    if apps:
+        await _announce_app_updates(request, apps)
+    else:
         apps = await list_registry()
     # Published rail order and layout ride along on the response the store already
     # makes, rather than endpoints the page would have to wait on separately. They

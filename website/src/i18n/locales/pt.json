@@ -7999,6 +7999,7 @@
         "kind_subagent": "Subagente",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "Terminal",
+        "kind_update": "Atualização",
         "kind_webhook": "Webhook",
         "this_week": "Esta semana",
         "today": "Hoje",
@@ -17310,7 +17311,8 @@
         "custom_sound_deleted": "{{name}} excluído.",
         "custom_sound_undo": "Desfazer",
         "custom_sound_option": "{{name}} (seu)",
-        "channel_member": "Mensagens de colegas"
+        "channel_member": "Mensagens de colegas",
+        "channel_apps": "Atualizações de apps"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

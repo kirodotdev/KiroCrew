@@ -7751,6 +7751,7 @@
         "kind_subagent": "서브에이전트",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "터미널",
+        "kind_update": "업데이트",
         "kind_webhook": "웹훅",
         "this_week": "이번 주",
         "today": "오늘",
@@ -16782,7 +16783,8 @@
         "custom_sound_deleted": "{{name}}을(를) 삭제했습니다.",
         "custom_sound_undo": "실행 취소",
         "custom_sound_option": "{{name}}(내 사운드)",
-        "channel_member": "크루메이트 메시지"
+        "channel_member": "크루메이트 메시지",
+        "channel_apps": "앱 업데이트"
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

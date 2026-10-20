@@ -71,6 +71,13 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # Passive: the note lands in the bell without a banner, sound or OS toast
     # until the user raises the channel in Settings -> Notifications.
     "system.member": "passive",
+    # An installed app has a newer version published. Its own channel for the
+    # same reason system.monitor has one: this is the one system note a user
+    # may reasonably never want, and without a channel of its own it would
+    # fall back to system.agent, where muting it also mutes the notes agents
+    # write for a human decision. Default priority -- nothing is blocked, the
+    # app keeps working on the version it has.
+    "system.apps": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

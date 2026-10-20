@@ -7751,6 +7751,7 @@
         "kind_subagent": "サブエージェント",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "ターミナル",
+        "kind_update": "アップデート",
         "kind_webhook": "Webhook",
         "this_week": "今週",
         "today": "今日",
@@ -16770,7 +16771,8 @@
         "custom_sound_deleted": "{{name}} を削除しました。",
         "custom_sound_undo": "元に戻す",
         "custom_sound_option": "{{name}}（自作）",
-        "channel_member": "クルーメイトからのメッセージ"
+        "channel_member": "クルーメイトからのメッセージ",
+        "channel_apps": "アプリのアップデート"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

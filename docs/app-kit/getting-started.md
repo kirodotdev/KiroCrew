@@ -191,7 +191,7 @@ Available in `@kirocrew/app-sdk`:
 | `useAppApi()` | Permission-scoped JSON-response HTTP client (`request`, GET/POST/PUT/PATCH/DELETE); request options and errors: [API reference](api-reference.md#app-sdk-hooks-dashboard-ui) |
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
-| `useAppInfo()` | App metadata (name, version, permissions, `active`) |
+| `useAppInfo()` | App metadata (name, version, permissions, `active`, `update`) |
 | `useNavigate()` | Navigate to Kiro Crew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
@@ -215,6 +215,68 @@ useEffect(() => {
 
 Treat `undefined` as `true`: the field is optional, so an app running on a host that
 predates it must still render rather than assume it is hidden.
+
+### Telling the user a new version is out
+
+`useAppInfo().update` is how your app finds out that a newer version of itself has
+been published, so you can show your own "update available" row instead of waiting
+for the user to visit the store.
+
+```tsx
+const { version, update } = useAppInfo()
+
+if (!update) return null                 // nothing checked yet — say nothing
+if (!update.available) return null       // checked, you are current
+
+return <Banner>Version {update.latestVersion} is out (you have {version}).</Banner>
+```
+
+The three states are deliberately distinct, and the first two are easy to confuse:
+
+| `update` | Means |
+|---|---|
+| absent | The host has not consulted anything. You do **not** know you are current. |
+| `available: false` | The host checked and nothing newer is published. |
+| `available: true` | `latestVersion` is newer than your installed `version`. |
+
+Render an absent `update` as "nothing to say", never as "up to date" — the second
+claims something no one has verified.
+
+`checkedAt` is when the host's cache was written, as an ISO-8601 instant, or `null`
+if it could not be read. The host answers from caches it already keeps and never
+fetches on your behalf, so the answer can be hours old; show `checkedAt` if the age
+matters to your user. A fresh answer arrives when the store's listing refreshes.
+
+The field reads the same on every surface your app mounts on — a routed `ui.pages`
+page and a `contributes.panelTabs` side-panel tab both get it — so you write the
+banner once.
+
+The field is advisory. It tells you what to display, not what to do: your app cannot
+update itself from it, and the gateway re-resolves the app's source when an update is
+actually applied.
+
+### Running something once after you are upgraded
+
+There is no "you were just updated" event, on purpose. An update is applied from
+Discover or the app's detail page, where your app is usually not mounted, so a
+live signal would reach the code that needs it least. Compare instead, on mount:
+remember the last version your app ran, and act when `useAppInfo().version`
+differs from it.
+
+```tsx
+const { version } = useAppInfo()
+useEffect(() => {
+  const last = localStorage.getItem('my-app:last-version')
+  if (last !== version) {
+    migrateIfNeeded(last, version)   // last is null on a first run
+    localStorage.setItem('my-app:last-version', version)
+  }
+}, [version])
+```
+
+This runs in the NEW bundle, whenever it first mounts, however long after the
+update that is. Keep the stored version wherever the rest of your app's state
+lives — a backend can do the same comparison on start against its own data.
 
 ## Chat Marker Protocol
 

@@ -147,6 +147,10 @@ const TEST_BTN_CLASS = 'px-3 py-1.5 rounded-md border border-border text-[12px] 
  *  messages arrive on `system.member`, but the product calls them crewmates. */
 const CHANNEL_LABELS: Record<string, () => string> = {
   'system.member': () => i18nT('pages.settings.notificationsPanel.channel_member'),
+  // The bare id is "apps", which reads as "every app's notifications" -- the
+  // opposite of what muting it does, which is silence only the gateway's
+  // "a newer version is published" notes.
+  'system.apps': () => i18nT('pages.settings.notificationsPanel.channel_apps'),
 }
 
 /** Human label for a channel within its group (drop the source prefix apps

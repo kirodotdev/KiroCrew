@@ -7751,6 +7751,7 @@
         "kind_subagent": "子代理",
         "kind_task_runner": "Task Runner",
         "kind_terminal": "终端",
+        "kind_update": "更新",
         "kind_webhook": "Webhook",
         "this_week": "本周",
         "today": "今天",
@@ -16770,7 +16771,8 @@
         "custom_sound_deleted": "已删除 {{name}}。",
         "custom_sound_undo": "撤销",
         "custom_sound_option": "{{name}}（自定义）",
-        "channel_member": "队友消息"
+        "channel_member": "队友消息",
+        "channel_apps": "应用更新"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",
