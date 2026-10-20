@@ -37,6 +37,7 @@ import PrDetail from './components/PrDetail'
 import CrewList from './components/CrewList'
 import CrewEditor from './components/CrewEditor'
 import CrewPageView from './views/CrewPageView'
+import RetiredCrewNotice from './components/RetiredCrewNotice'
 import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
 import { providerTerms } from './lib/links'
@@ -281,6 +282,7 @@ export default function Workspace() {
             {/* The scroll container moves off <main> onto this wrapper so the
                 Back row stays pinned instead of scrolling away with the page. */}
             <div className="flex-1 min-h-0 overflow-y-auto">
+            <RetiredCrewNotice />
             {crewView.kind === 'crew'
               ? <CrewPageView crewId={crewView.id} onEdit={(crew) => setCrewEditor({ crew })} />
               : (
