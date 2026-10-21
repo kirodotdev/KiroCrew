@@ -8461,6 +8461,8 @@
       "desktop_app": "Desktop-App",
       "enable_shortcuts": "Tastenkürzel aktivieren",
       "global_hotkey_hint": "Funktioniert systemweit, auch wenn die App im Hintergrund läuft. Zum Ändern oder Deaktivieren globalHotkey in der Konfigurationsdatei der Desktop-App bearbeiten (Connection > Open Config File); die Änderung wird nach einem Neustart der App wirksam.",
+      "global_hotkey_hint_off": "Zum Festlegen oder Ändern globalHotkey in der Konfigurationsdatei der Desktop-App bearbeiten (Connection > Open Config File); die Änderung wird nach einem Neustart der App wirksam.",
+      "global_hotkey_off": "Aus",
       "keyboard_shortcuts": "Tastenkürzel",
       "keyboard_shortcuts_2": "Tastenkürzel",
       "or": "oder",

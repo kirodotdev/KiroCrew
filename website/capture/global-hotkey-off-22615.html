@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Global summon hotkey Off-state capture (#22615)</title>
+    <script>
+      // Must run BEFORE any app module loads: src/lib/electron.ts reads
+      // window.kirocrew at import time (const mc = window.kirocrew), so the
+      // Electron-shell detection is fixed the moment that module is evaluated.
+      // Setting these in the TSX entry would be too late — the module graph has
+      // already been imported by then and isElectron would be false.
+      (function () {
+        var params = new URLSearchParams(location.search)
+        var scene = params.get('scene') === 'on' ? 'on' : 'off'
+        var DEFAULT_CHORD = 'CommandOrControl+Shift+K'
+        var accelerator = scene === 'on' ? DEFAULT_CHORD : ''
+        window.kirocrew = { isElectron: true, platform: 'darwin' }
+        window.electronAPI = {
+          getGlobalHotkey: function () {
+            return Promise.resolve({ accelerator: accelerator, default: DEFAULT_CHORD })
+          },
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/global-hotkey-off-22615.tsx"></script>
+  </body>
+</html>

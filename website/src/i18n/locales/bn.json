@@ -8461,6 +8461,8 @@
       "desktop_app": "ডেস্কটপ অ্যাপ",
       "enable_shortcuts": "শর্টকাট সক্রিয় করুন",
       "global_hotkey_hint": "সিস্টেম জুড়ে কাজ করে, অ্যাপ ব্যাকগ্রাউন্ডে থাকলেও। পরিবর্তন বা নিষ্ক্রিয় করতে, ডেস্কটপ কনফিগ ফাইলে globalHotkey সম্পাদনা করুন (Connection > Open Config File); অ্যাপ পুনরায় চালু হলে পরিবর্তন কার্যকর হয়।",
+      "global_hotkey_hint_off": "সেট বা পরিবর্তন করতে, ডেস্কটপ কনফিগ ফাইলে globalHotkey সম্পাদনা করো (Connection > Open Config File); অ্যাপ পুনরায় চালু হলে পরিবর্তন কার্যকর হয়।",
+      "global_hotkey_off": "বন্ধ",
       "keyboard_shortcuts": "কীবোর্ড শর্টকাট",
       "keyboard_shortcuts_2": "কীবোর্ড শর্টকাট",
       "or": "বা",

@@ -5359,6 +5359,8 @@
       "desktop_app": "Desktop App",
       "enable_shortcuts": "Enable shortcuts",
       "global_hotkey_hint": "Works system-wide, even while the app is in the background. To change or disable it, edit globalHotkey in the desktop config file (Connection > Open Config File); the change takes effect after the app restarts.",
+      "global_hotkey_hint_off": "To set or change the summon shortcut, edit globalHotkey in the desktop config file (Connection > Open Config File); the change takes effect after the app restarts.",
+      "global_hotkey_off": "Off",
       "keyboard_shortcuts": "Keyboard shortcuts",
       "keyboard_shortcuts_2": "Keyboard Shortcuts",
       "or": "or",

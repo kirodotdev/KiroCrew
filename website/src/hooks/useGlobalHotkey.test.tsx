@@ -1,10 +1,12 @@
 /**
  * useGlobalHotkey — gating and pass-through of the desktop summon hotkey.
  *
- * The hook's job is deciding when the shortcuts UI may advertise the chord:
- * only inside the Electron shell, only when the preload bridge exists, and
- * only when the main process reports something ACTUALLY bound. Every other
- * case returns null so the row is hidden instead of advertising a dead chord.
+ * The hook reports the main process's summon-hotkey state to the shortcuts UI:
+ * only inside the Electron shell and only when the preload bridge exists. On a
+ * desktop build it returns the info even when the hotkey is UNBOUND
+ * (accelerator ""), so the UI can show "Off" with how-to-enable guidance rather
+ * than hide it; it returns null only when there is no desktop shell to
+ * configure (a plain browser, or a build without the bridge).
  */
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
@@ -40,17 +42,15 @@ describe('useGlobalHotkey', () => {
     expect(result.current).toEqual({ accelerator: 'Alt+Shift+K', default: 'Alt+Shift+K' })
   })
 
-  it('returns null when nothing could be bound (accelerator "")', async () => {
-    let served = false
+  it('keeps the info object when the hotkey is unbound on a desktop build', async () => {
+    // The opt-out default on a fresh install: accelerator "" but still a desktop
+    // build, so the UI must be able to render the "Off" row rather than hide it.
     ;(window as BridgeWindow).electronAPI = {
-      getGlobalHotkey: async () => {
-        served = true
-        return { accelerator: '', default: 'Alt+Shift+K' }
-      },
+      getGlobalHotkey: async () => ({ accelerator: '', default: 'Alt+Shift+K' }),
     }
     const { result } = renderHook(() => useGlobalHotkey(), { wrapper })
-    await waitFor(() => expect(served).toBe(true))
-    expect(result.current).toBeNull()
+    await waitFor(() => expect(result.current).not.toBeNull())
+    expect(result.current).toEqual({ accelerator: '', default: 'Alt+Shift+K' })
   })
 
   it('returns null in a plain browser without querying anything', () => {

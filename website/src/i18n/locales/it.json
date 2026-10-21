@@ -8596,6 +8596,8 @@
       "desktop_app": "App desktop",
       "enable_shortcuts": "Attiva le scorciatoie",
       "global_hotkey_hint": "Funziona in tutto il sistema, anche quando l'app è in background. Per modificarla o disattivarla, modifica globalHotkey nel file di configurazione dell'app desktop (Connection > Open Config File); la modifica ha effetto al riavvio dell'app.",
+      "global_hotkey_hint_off": "Per impostarlo o modificarlo, modifica globalHotkey nel file di configurazione dell'app desktop (Connection > Open Config File); la modifica ha effetto al riavvio dell'app.",
+      "global_hotkey_off": "Disattivato",
       "keyboard_shortcuts": "Scorciatoie da tastiera",
       "keyboard_shortcuts_2": "Scorciatoie da tastiera",
       "or": "o",

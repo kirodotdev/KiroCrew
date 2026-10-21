@@ -78,6 +78,29 @@ function resolveGlobalHotkey(saved) {
 }
 
 /**
+ * Decide the one-time fresh-install seed for the summon hotkey. Pure.
+ *
+ * A global accelerator is EXCLUSIVE — while the app holds it, the focused app
+ * never sees the key — so claiming the platform default on first launch steals
+ * a chord (e.g. macOS Cmd+Shift+K, Slack's "compose a new message") from every
+ * other program without the user asking. The default is therefore opt-in for
+ * new installs: a fresh store is seeded "" (disabled). An upgrading user is
+ * left untouched (returns null = "do nothing") so they keep the hotkey they
+ * already had; the platform default stays null's meaning in resolveGlobalHotkey.
+ *
+ * @param {*} saved  The store's current `globalHotkey` value.
+ * @param {boolean} isFreshInstall  Whether this launch created the store (no
+ *   config pre-existed and the npm-rename seed carried nothing).
+ * @returns {""|null} "" to seed the disabled default, or null to leave the
+ *   store as-is. Only a fresh install whose value is still the untouched
+ *   default (null) is seeded; a user who already chose a chord or disabled it
+ *   ("" or a string), and every upgrade, are left alone.
+ */
+function planFreshInstallHotkeySeed(saved, isFreshInstall) {
+  return isFreshInstall && saved === null ? "" : null;
+}
+
+/**
  * Build the summon handler: surface an existing dashboard window (restoring it
  * first when minimized), or create one when none exists. Window discovery and
  * creation are injected so main.js keeps ownership of its window-management
@@ -198,6 +221,7 @@ function currentGlobalHotkey() {
 module.exports = {
   DEFAULT_GLOBAL_HOTKEY,
   resolveGlobalHotkey,
+  planFreshInstallHotkeySeed,
   createSummonHandler,
   bindGlobalHotkey,
   unregisterGlobalHotkey,
