@@ -10277,6 +10277,10 @@
         "tool_search_label": "Werkzeugsuche",
         "tool_search_description": "Zurückgestellte MCP-Tool-Spezifikationen bei Bedarf laden."
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} Feld",
+      "heading_other": "Frontmatter · {{count}} Felder"
     }
   },
   "hooks": {

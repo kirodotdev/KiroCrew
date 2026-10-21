@@ -10423,6 +10423,11 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} champ",
+      "heading_many": "Frontmatter · {{count}} champs",
+      "heading_other": "Frontmatter · {{count}} champs"
     }
   },
   "hooks": {

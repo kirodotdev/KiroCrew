@@ -6099,6 +6099,10 @@
       "session_queued": "This session: {{queued}} queued",
       "session_queued_hint": "Agents this session started are waiting for a free slot while fewer run at once.",
       "load_failed": "Could not check for queued agents"
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} field",
+      "heading_other": "Frontmatter · {{count}} fields"
     }
   },
   "hooks": {

@@ -10277,6 +10277,10 @@
         "tool_search_label": "সরঞ্জাম অনুসন্ধান",
         "tool_search_description": "চাহিদা অনুযায়ী বিলম্বিত MCP সরঞ্জাম স্পেসিফিকেশন লোড করো।"
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}}টি ফিল্ড",
+      "heading_other": "Frontmatter · {{count}}টি ফিল্ড"
     }
   },
   "hooks": {

@@ -10423,6 +10423,11 @@
         "tool_search_label": "Búsqueda de herramientas",
         "tool_search_description": "Cargar especificaciones de herramientas MCP diferidas bajo demanda."
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} campo",
+      "heading_many": "Frontmatter · {{count}} campos",
+      "heading_other": "Frontmatter · {{count}} campos"
     }
   },
   "hooks": {

@@ -10423,6 +10423,11 @@
         "tool_search_label": "Busca de ferramentas",
         "tool_search_description": "Carregar sob demanda especificações de ferramentas MCP adiadas."
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} campo",
+      "heading_many": "Frontmatter · {{count}} campos",
+      "heading_other": "Frontmatter · {{count}} campos"
     }
   },
   "hooks": {

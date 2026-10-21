@@ -10423,6 +10423,11 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} campo",
+      "heading_many": "Frontmatter · {{count}} campi",
+      "heading_other": "Frontmatter · {{count}} campi"
     }
   },
   "hooks": {

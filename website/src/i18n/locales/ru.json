@@ -10569,6 +10569,12 @@
         "tool_search_label": "Поиск инструментов",
         "tool_search_description": "Загружать отложенные спецификации инструментов MCP по требованию."
       }
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} поле",
+      "heading_few": "Frontmatter · {{count}} поля",
+      "heading_many": "Frontmatter · {{count}} полей",
+      "heading_other": "Frontmatter · {{count}} поля"
     }
   },
   "hooks": {
