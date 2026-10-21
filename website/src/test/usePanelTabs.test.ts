@@ -1,8 +1,8 @@
 /**
  * Tests for usePanelTabs — the tabbed side panel state model. Pins the
  * tab-strip contracts: singleton view tabs, document dedupe/focus,
- * replace-in-place opens, patch-without-focus, neighbor refocus on close,
- * and reordering.
+ * replace-in-place opens, patch-without-focus, return-to-last-viewed refocus
+ * on close, and reordering.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -441,34 +441,81 @@ describe('usePanelTabs', () => {
     expect(result.current.tabs).toHaveLength(2)
   })
 
-  it('closeTab refocuses the left neighbor (then right, then null)', () => {
+  it('closeTab returns focus to the tab viewed before the closed one, not to its neighbour', () => {
     const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
     act(() => result.current.openView('files'))
     act(() => result.current.openView('logs'))
     act(() => result.current.openView('side'))
+    act(() => result.current.setActive('files'))
+    act(() => result.current.openView('git'))
+    // Strip: files, logs, side, git. Viewed last to first: git, files, side, logs.
+    expect(result.current.tabs.map(t => t.id)).toEqual(['files', 'logs', 'side', 'git'])
+
+    // Back to Files, which was viewed before Git; Side is only Git's neighbour.
+    act(() => result.current.closeTab('git'))
+    expect(result.current.activeId).toBe('files')
+    // Closing again keeps walking back: Side, not Files' neighbour Logs.
+    act(() => result.current.closeTab('files'))
     expect(result.current.activeId).toBe('side')
 
-    // Close active (rightmost) -> left neighbor takes focus.
-    act(() => result.current.closeTab('side'))
-    expect(result.current.activeId).toBe('logs')
-
     // Close a NON-active tab -> focus untouched.
-    act(() => result.current.closeTab('files'))
-    expect(result.current.activeId).toBe('logs')
+    act(() => result.current.closeTab('logs'))
+    expect(result.current.activeId).toBe('side')
 
     // Close the last tab -> nothing focused.
-    act(() => result.current.closeTab('logs'))
+    act(() => result.current.closeTab('side'))
     expect(result.current.tabs).toEqual([])
     expect(result.current.activeId).toBeNull()
   })
 
-  it('closeTab on the active leftmost tab focuses the (new) first tab', () => {
+  it('closeTab falls back to the left neighbour, then the right, when no other tab was viewed', () => {
     const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
-    act(() => result.current.openView('files'))
     act(() => result.current.openView('logs'))
-    act(() => result.current.setActive('files'))
-    act(() => result.current.closeTab('files'))
+    // `syncPinned` adds Changes and Files without focusing them: Logs alone was viewed.
+    act(() => result.current.syncPinned(['changes', 'files']))
+    const [changes, files, logs] = result.current.tabs
+    act(() => result.current.setOrder([changes, logs, files]))
     expect(result.current.activeId).toBe('logs')
+    act(() => result.current.closeTab('logs'))
+    expect(result.current.activeId).toBe('changes')
+    act(() => result.current.closeTab('changes'))
+    expect(result.current.activeId).toBe('files')
+  })
+
+  it('the focus history survives a reload, without the tabs storage drops', async () => {
+    const stored = (): { recent?: unknown[] } => JSON.parse(localStorage.getItem('mc-panel-tabs:chat-h')!)
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => usePanelTabs('chat-h', mock.descriptors))
+      act(() => result.current.openView('files'))
+      act(() => result.current.openView('logs'))
+      act(() => result.current.openDiff('/a.ts', 'new', 'old'))
+      act(() => result.current.setActive('files'))
+      act(() => result.current.openView('git'))
+      act(() => { vi.advanceTimersByTime(500) })
+      // A diff tab is not persisted, so its id leaves the stored history too.
+      expect(stored().recent).toEqual(['logs', 'files', 'git'])
+    } finally {
+      vi.useRealTimers()
+    }
+    // A history written by another build is read as ids only.
+    localStorage.setItem('mc-panel-tabs:chat-h', JSON.stringify({ ...stored(), recent: ['logs', 7, 'files', 'git'] }))
+    vi.resetModules()
+    const fresh = await import('../hooks/usePanelTabs')
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => fresh.usePanelTabs('chat-h', mock.descriptors))
+      expect(result.current.activeId).toBe('git')
+      act(() => result.current.closeTab('git'))
+      expect(result.current.activeId).toBe('files')
+      act(() => result.current.closeTab('files'))
+      expect(result.current.activeId).toBe('logs')
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(stored().recent).toEqual(['logs'])
+    } finally {
+      vi.useRealTimers()
+      fresh.__resetPanelTabs()
+    }
   })
 
   it('closeAll clears tabs and focus; setOrder replaces the strip order wholesale', () => {
@@ -785,6 +832,31 @@ describe('openPanelView', () => {
       mock.descriptors = []
       rerender()
       expect(result.current.tabs.map(t => t.kind)).toEqual(['files'])
+      expect(result.current.activeId).toBe('files')
+    })
+
+    it('closeTab skips a tab whose app is gone and keeps it stored for when the app returns', () => {
+      mock.descriptors = [demoTab]
+      const { result, rerender } = renderHook(() => usePanelTabs('slot-skip', mock.descriptors))
+      act(() => result.current.openView('files'))
+      act(() => result.current.openView('logs'))
+      act(() => result.current.setActive('files'))
+      act(() => result.current.openPanelTab(demoTab))
+      act(() => result.current.openView('git'))
+      // Viewed last to first: Git, the app tab, Files, Logs. Then the app goes away.
+      mock.descriptors = []
+      rerender()
+      expect(result.current.tabs.map(t => t.id)).toEqual(['files', 'logs', 'git'])
+
+      // Back to Files, the last viewed tab the strip can show. Returning to the
+      // hidden app tab would show Logs, the last visible tab, instead.
+      act(() => result.current.closeTab('git'))
+      expect(result.current.activeId).toBe('files')
+
+      // The app comes back: its tab is still stored, and focus stays on Files.
+      mock.descriptors = [demoTab]
+      rerender()
+      expect(result.current.tabs.map(t => t.id)).toEqual(['files', 'logs', demoTab.kind])
       expect(result.current.activeId).toBe('files')
     })
 

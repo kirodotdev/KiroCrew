@@ -353,6 +353,44 @@ describe('shell exit closes a side-panel terminal tab', () => {
     expect(result.current.activeId).toBe('notes')
   })
 
+  it('returns a strip with no stored focus to the leading tab it showed', () => {
+    // A fresh Crewmates strip stores no focus and shows its first leading tab.
+    // A shell opened from there that exits lands back on it, as the close
+    // button does, not on the pinned view to its left.
+    const { result } = renderHook(() => usePanelTabs('chat-fresh', [], { leadingIds: ['notes'] }))
+    act(() => { result.current.syncPinned(['changes', 'files']) })
+    expect(result.current.activeId).toBe('notes')
+    let sid = ''
+    act(() => { sid = result.current.openTerminal() })
+    const ws = dial(sid)
+
+    act(() => { ws.simulateJson({ type: 'exit', status: 0 }) })
+
+    expect(result.current.tabs.map(t => t.id)).toEqual(['changes', 'files'])
+    expect(result.current.activeId).toBe('notes')
+  })
+
+  it('returns focus to the tab viewed before the shell, a leading tab included', () => {
+    // Strip: files, logs, terminal. Viewed before the shell: Files, then Notes.
+    const { result } = renderHook(() => usePanelTabs('chat-back', [], { leadingIds: ['notes'] }))
+    act(() => { result.current.openView('files') })
+    act(() => { result.current.openView('logs') })
+    act(() => { result.current.setActive('files') })
+    let sid = ''
+    act(() => { sid = result.current.openTerminal() })
+    const ws = dial(sid)
+    act(() => { ws.simulateJson({ type: 'exit', status: 0 }) })
+    // Files, not Logs, the dead tab's left neighbour.
+    expect(result.current.activeId).toBe('files')
+
+    act(() => { result.current.setActive('notes') })
+    act(() => { sid = result.current.openTerminal() })
+    const ws2 = dial(sid)
+    act(() => { ws2.simulateJson({ type: 'exit', status: 0 }) })
+    expect(result.current.tabs.map(t => t.id)).toEqual(['files', 'logs'])
+    expect(result.current.activeId).toBe('notes')
+  })
+
   it('closes the tab of a shell that exits in a chat the user is not looking at', () => {
     // The exit carries a session id and no slot, so a background chat's terminal
     // must close in its own strip while another chat is the active one.

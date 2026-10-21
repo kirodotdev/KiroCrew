@@ -10,8 +10,9 @@
  * 2. Focus — a fresh strip opens on the FIRST one (not on the first pinned view,
  *    which is what `syncPinned` would otherwise pick), a stored focus on any of
  *    them survives, a stored focus on an id the host no longer offers falls back
- *    to the first, and closing the last dynamic tab lands back on the first
- *    rather than on `null`.
+ *    to the first, closing the focused tab returns to the tab viewed before it
+ *    (a leading one included) or to the first when none was, and an emptied
+ *    bucket lands back on the first rather than on `null`.
  * 3. The panel's close control follows `onClose`: absent means permanent (no
  *    button), present means the button renders — the Crewmates page relies on
  *    the former for its docked column and the latter for its overlay.
@@ -177,15 +178,20 @@ describe('SidePanel leading tab', () => {
     expect(screen.getByRole('menuitem', { name: 'Terminal' })).toBeTruthy()
   })
 
-  it('closing the last dynamic tab returns focus to the leading tab, not to null', () => {
+  it('closing the focused tab returns to the tab viewed before it, and to the leading tab when none was', () => {
     renderPanel({ closable: false })
     act(() => { ctl!.openView('workflows') })
     expect(screen.getByRole('tab', { name: /Workflows/ })).toHaveAttribute('aria-selected', 'true')
     expect(queryLeadingBody()).toBeNull()
     act(() => { ctl!.closeTab('workflows') })
-    // `closeTab` refocuses a neighbour first (the pinned Files view sits to the
-    // left), so the fallback-to-leading arm is reached by emptying the bucket.
-    // A pinned view remains, so this is the neighbour case: Files is focused.
+    // The fresh strip was showing the leading tab, and nothing was viewed
+    // since: focus rests there, not on Files, the closed tab's left neighbour.
+    expect(ctl?.activeId).toBe(LEADING_ID)
+    expect(leadingBody()).toBeInTheDocument()
+    // A tab viewed in between is the one focus returns to.
+    act(() => { ctl!.setActive('files') })
+    act(() => { ctl!.openView('workflows') })
+    act(() => { ctl!.closeTab('workflows') })
     expect(ctl?.activeId).toBe('files')
     // Empty the bucket entirely and the leading tab is the resting focus.
     act(() => { ctl!.closeAll() })
@@ -436,7 +442,16 @@ describe('SidePanel leading tabs — three host tabs', () => {
     expect(fixed.contains(close)).toBe(false)
   })
 
-  it('closing the last dynamic tab lands on the first leading tab, whichever was focused before', () => {
+  it('closing the focused tab returns to the leading tab viewed before it, not to the first', () => {
+    renderPanel({ closable: false, leading: THREE_LEADING })
+    fireEvent.click(chipFor('crew-work-log'))
+    act(() => { ctl!.openView('workflows') })
+    act(() => { ctl!.closeTab('workflows') })
+    expect(ctl?.activeId).toBe('crew-work-log')
+    expect(chipFor('crew-work-log')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('emptying the bucket lands on the first leading tab, whichever was focused before', () => {
     renderPanel({ closable: false, leading: THREE_LEADING })
     fireEvent.click(chipFor('crew-work-log'))
     act(() => { ctl!.openView('workflows') })
