@@ -444,3 +444,76 @@ def test_claude_joins_the_steering_request_set_and_not_the_steer_set():
 )
 def test_the_handshake_advertisement_is_read_from_the_top_level_meta(init_resp, expected):
     assert steering_advertised(init_resp) is expected
+
+
+def _tool_update(update: dict[str, Any]) -> JsonRpcMessage:
+    return JsonRpcMessage(method="session/update", params={"sessionId": "sess-1", "update": update})
+
+
+def _open_tool(tool_call_id: str = "tc1") -> JsonRpcMessage:
+    return _tool_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": tool_call_id,
+            "title": "Bash",
+            "kind": "execute",
+            "status": "in_progress",
+        }
+    )
+
+
+def _close_tool(tool_call_id: str = "tc1") -> JsonRpcMessage:
+    return _tool_update(
+        {"sessionUpdate": "tool_call_update", "toolCallId": tool_call_id, "status": "completed"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_steer_while_a_tool_runs_is_held_for_the_next_turn():
+    """claude would move the running tool to the background and end the turn
+    early, so nothing is sent; the caller runs the text as the next turn."""
+    async with _Tasks() as spawned:
+        client = _client()
+        wire = _Wire(client)
+        turn = await _start_turn(client, spawned)
+        wire.inbound.put_nowait(_open_tool())
+        await async_wait_until(lambda: client._active_tool_calls.possibly_open)
+
+        assert await client.steer("change course") is False
+        assert wire.steering_frames() == []
+
+        wire.inbound.put_nowait(_close_tool())
+        await async_wait_until(lambda: not client._active_tool_calls.possibly_open)
+        wire.end_turn()
+        events = await await_until(turn, what="the turn")
+        assert EVENT_STEER_CONSUMED not in [e.kind for e in events]
+
+        # The held text runs as the next turn's own prompt.
+        client._send_prompt.reset_mock()
+        wire.end_turn()
+
+        async def _next_turn() -> list[Any]:
+            return [e async for e in client.stream_events("change course", timeout=30)]
+
+        await await_until(asyncio.ensure_future(_next_turn()), what="the next turn")
+        assert client._send_prompt.await_args.args[0] == "change course"
+        assert wire.steering_frames() == []
+
+
+@pytest.mark.asyncio
+async def test_a_steer_after_the_tool_finished_is_sent():
+    async with _Tasks() as spawned:
+        client = _client()
+        wire = _Wire(client)
+        turn = await _start_turn(client, spawned)
+        wire.inbound.put_nowait(_open_tool())
+        wire.inbound.put_nowait(_close_tool())
+        await async_wait_until(lambda: "tc1" in client._observed_tool_calls)
+        await async_wait_until(lambda: not client._active_tool_calls.possibly_open)
+
+        steer = _spawn(spawned, client.steer("now"))
+        wire.answer(await wire.next_steering_id(), "injected")
+        assert await await_until(steer, what="the steer") is True
+        wire.end_turn()
+        kinds = [e.kind for e in await await_until(turn, what="the turn")]
+        assert EVENT_STEER_CONSUMED in kinds

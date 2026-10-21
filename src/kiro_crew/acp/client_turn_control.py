@@ -13,7 +13,7 @@ Instance fields written: ``_active_run_id``, ``_cancel_grace_secs``, ``_cancel_t
 ``_permission_options``, ``_steer_answers``, ``_steer_turn``, ``_steering_waiter_map``,
 ``_steers_awaiting_echo``, ``_turn_permission_denied``.
 
-Instance fields read: ``_agent``, ``_agent_version``, ``_background_launches``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_agent_version``, ``_background_launches``,
 ``_last_stop_reason``, ``_permission_gate_events``, ``_process``, ``_session_id``,
 ``_session_key``, ``_stdin_stalled``, ``_turn_done``, ``_turn_lock``.
 """
@@ -475,6 +475,11 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
 
     At-least-once: a steer the adapter injected just as the turn ended is
     queued as well and runs a second time, visibly, as its own turn.
+
+    Nothing is sent while a tool call of the turn is open: claude moves a
+    running tool to the background on a steer and ends the turn early, and the
+    tool's output then lands in the next, unrelated turn. Returning False holds
+    the text for the caller to run as the next turn instead.
     """
     aimed_at = self._steering_turn_req
     if (
@@ -482,6 +487,7 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         or self._turn_done.is_set()
         or self._cancelled
         or self._parked_on_permission
+        or self._active_tool_calls.possibly_open
         or not self._steering_request_ready()
     ):
         return False
