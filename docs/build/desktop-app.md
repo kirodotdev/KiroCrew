@@ -244,13 +244,15 @@ version directory. A universal macOS build stages the engine once: its tarball
 is already `darwin-universal`, and `kas_bundle.make_universal_node` fetches the
 other architecture's pinned Node build and `lipo -create`s both into one Mach-O
 at the record's `node_bin` path, probing each slice through `arch -arm64` /
-`arch -x86_64`. Every build then runs `kas_bundle.trim_for_shipping`: the Node
-distribution keeps only its binary and `LICENSE` (the engine never spawns the
-distribution's npm, npx or corepack), and the engine loses its C/C++ sources,
-headers, source maps and web-tree-sitter's debug build. No reader re-hashes the
-extracted tree, so the record stays valid. The staged tree holds only regular
-files and directories; the build fails on a symlink or hardlink in it on macOS,
-because the signing service refuses a universal bundle with shared trees.
+`arch -x86_64`. The universal build then runs `kas_bundle.trim_for_shipping`:
+the Node distribution keeps only its binary and `LICENSE` (the engine never
+spawns the distribution's npm, npx or corepack), and the engine loses its C/C++
+sources, headers, source maps and web-tree-sitter's debug build. No reader
+re-hashes the extracted tree, so the record stays valid. A single-arch build
+stages the tree untrimmed, exactly as `kirocrew kas install` lays it down. The
+universal staged tree holds only regular files and directories; the universal
+macOS build fails on any symlink or hardlink in it, because the signing service
+refuses a universal bundle with shared trees.
 The Electron shell (`gateway-env.js`, `bundledKasEnvironment`) reads
 `BUNDLED-VERSION` and the install record beside it, and exports the root as
 `KIROCREW_BUNDLED_KAS_DIR` for either architecture. It runs nothing at boot: the route is off by default, the build

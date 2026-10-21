@@ -13,9 +13,9 @@
 #     resource forks and permissions the way Finder's drag does).
 #   * The universal layout the shell resolves at launch (find-bin.js): a
 #     per-arch backend tree for THIS runner's arch, with an executable launcher.
-#   * The bundled KAS engine (BUNDLE_KAS=0 skips): one backend-dist/kas/ root,
-#     no symlink or hardlink in it, its Node runs here and, on a universal
-#     app, carries both architecture slices.
+#   * The bundled KAS engine (BUNDLE_KAS=0 skips): one backend-dist/kas/ root
+#     whose Node runs here. On a universal app it holds no symlink or hardlink
+#     and its Node carries both architecture slices.
 #   * The REAL app, launched from its own executable, boots the packaged gateway
 #     and that gateway answers /api/health.
 #   * Only for a build made with BUNDLE_KIRO_CLI=1 (off by default; the shipped
@@ -155,7 +155,8 @@ echo "▶ Installed launcher reports: $launcher_version"
 # One root for every build (gateway-env.js, bundledKasEnvironment). On a
 # universal app its Node carries both slices, and the tree holds only regular
 # files and directories: the macOS signing service refuses symlinks and
-# hardlinks inside the bundle.
+# hardlinks inside the universal bundle. A single-arch tree keeps Node's bin
+# links, as `kirocrew kas install` lays them down.
 KAS_ROOT="$RESOURCES/backend-dist/kas"
 if [ "${BUNDLE_KAS:-1}" = "0" ]; then
   echo "▶ Bundled KAS engine: not part of this build (BUNDLE_KAS=0)"
@@ -168,14 +169,14 @@ else
   KAS_NODE_REL="$(/usr/bin/plutil -extract node_bin raw -o - "$KAS_ROOT/$KAS_VERSION/install.json")"
   KAS_NODE="$KAS_ROOT/$KAS_VERSION/$KAS_NODE_REL"
   test -x "$KAS_NODE" || { echo "ERROR: bundled KAS Node missing or not executable: $KAS_NODE" >&2; exit 1; }
-  kas_links="$(find "$KAS_ROOT" \( -type l -o \( -type f -links +1 \) \) -print | head -5)"
-  if [ -n "$kas_links" ]; then
-    echo "ERROR: bundled KAS tree carries a symlink or hardlink:" >&2
-    printf '  %s\n' "$kas_links" >&2
-    exit 1
-  fi
   kas_node_archs="$(lipo -archs "$KAS_NODE")"
   if [ -d "$RESOURCES/backend-dist/kirocrew-backend-arm64" ] && [ -d "$RESOURCES/backend-dist/kirocrew-backend-x64" ]; then
+    kas_links="$(find "$KAS_ROOT" \( -type l -o \( -type f -links +1 \) \) -print | head -5)"
+    if [ -n "$kas_links" ]; then
+      echo "ERROR: bundled KAS tree carries a symlink or hardlink:" >&2
+      printf '  %s\n' "$kas_links" >&2
+      exit 1
+    fi
     case "$kas_node_archs" in
       *x86_64*arm64*|*arm64*x86_64*) ;;
       *) echo "ERROR: universal app's KAS Node is not universal (lipo -archs: $kas_node_archs)" >&2; exit 1 ;;

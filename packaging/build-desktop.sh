@@ -1457,12 +1457,13 @@ fi
 # A universal macOS build stages the engine ONCE: the engine tarball is already
 # darwin-universal, and make_universal_node `lipo -create`s the arm64 and x64
 # Node builds into one Mach-O at the record's node_bin path, probing each slice
-# through `arch`. Every build then trims the tree to what runs
-# (trim_for_shipping): Node's binary and license, the engine minus its C
-# sources, headers, source maps and web-tree-sitter's debug build. The staged
-# tree holds only regular files and directories -- no symlink, no hardlink
-# (the macOS signing service refuses a bundle with shared trees); the gate
-# after the installer fails the build on either.
+# through `arch`, then trims the tree to what runs (trim_for_shipping): Node's
+# binary and license, the engine minus its C sources, headers, source maps and
+# web-tree-sitter's debug build. A single-arch build stages the tree as
+# `kirocrew kas install` lays it down, untrimmed. The universal staged tree
+# holds only regular files and directories -- no symlink, no hardlink (the
+# macOS signing service refuses a bundle with shared trees); the gate after the
+# installer fails the universal build on either.
 #
 # BUNDLE_KAS=0 opts a build out; the switch then needs `kirocrew kas install`
 # first, exactly as a pip install does. Fetches from KAS_BUNDLE_URL (default:
@@ -1506,8 +1507,8 @@ installed = kas_bundle.install_bundle(
 )
 if universal:
     installed = kas_bundle.make_universal_node(manifest, installed, source=url)
-freed = kas_bundle.trim_for_shipping(installed)
-print(f"    trimmed {freed / 1048576:.0f} MiB the engine never runs")
+    freed = kas_bundle.trim_for_shipping(installed)
+    print(f"    trimmed {freed / 1048576:.0f} MiB the engine never runs")
 # Re-read through the same reader the gateway will use: a tree the reader
 # rejects is a build error here, not a refusal on the user's first prompt.
 again = kas_bundle.installed_bundle(root=dest, version=KAS_PIN_VERSION)
@@ -1518,9 +1519,11 @@ print(f"    engine: {installed.acp_server.relative_to(dest)}")
 print(f"    node:   {installed.node_bin.relative_to(dest)} (v{installed.node_version})")
 PY
   kiro_cli_layout_gate "$dest"
-  if [ "$system" = "Darwin" ]; then
+  if [ "$universal" = "universal" ]; then
     # Only regular files and directories: a symlink or a hardlinked file inside
-    # the app is what the macOS signing service refuses.
+    # the universal app is what the macOS signing service refuses. A single-arch
+    # tree is staged as `kirocrew kas install` lays it down, Node's bin links
+    # included, and is not checked here.
     links="$(find "$dest" \( -type l -o \( -type f -links +1 \) \) -print 2>/dev/null | head -5)"
     if [ -n "$links" ]; then
       echo "ERROR: the staged KAS tree carries a symlink or hardlink the signer refuses:" >&2

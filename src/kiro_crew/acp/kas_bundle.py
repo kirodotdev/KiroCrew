@@ -18,9 +18,9 @@ What is on disk, under ``<data home>/engines/kas/``::
       bundle/node_modules/@kiro/agent/dist/server/acp-server.js
       node/node-v22.20.0-linux-x64/bin/node
 
-The desktop app stages the same layout into its resources, trimmed to what runs
-(:func:`trim_for_shipping`); a universal Mac app stages it once, with a Node
-binary holding both architectures (:func:`make_universal_node`).
+The desktop app stages the same layout into its resources. A universal Mac app
+stages it once, with a Node binary holding both architectures
+(:func:`make_universal_node`), trimmed to what runs (:func:`trim_for_shipping`).
 
 The ``engines`` leaf is sealed READ-ONLY inside Kiro Crew's sandbox
 (``sandbox._CREW_READONLY_LEAVES``) and write-protected at the file-tool gate
@@ -95,7 +95,6 @@ from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "DARWIN_UNIVERSAL_NODE_KEY",
     "KAS_BUNDLE_ENGINES_LEAF",
     "KAS_BUNDLE_MANIFEST_NAME",
     "ArtifactRef",
@@ -801,8 +800,6 @@ def install_pinned(
 
 #: Node keys of the two Mac architectures, and the ``arch(1)`` name of each.
 _DARWIN_NODE_SLICES = {"darwin-arm64": "arm64", "darwin-x64": "x86_64"}
-#: The record's ``node_key`` once both slices live in one binary.
-DARWIN_UNIVERSAL_NODE_KEY = "darwin-universal"
 
 #: The one file of the Node distribution kept beside the binary: its license.
 #: The trim lists below were checked against the engine at KAS 0.66.33 (no spawn
@@ -857,9 +854,9 @@ def make_universal_node(
     from *source*), and ``lipo -create`` writes one Mach-O holding both slices
     over the installed binary's path. The engine is already one darwin-universal
     tree, so the version directory then serves either architecture with no
-    second copy of anything. Each slice is probed through ``arch -<name>`` before
-    the record is rewritten; the record's ``node_bin`` stays the same path, so
-    every reader of it is unchanged. Raises :class:`KasBundleError`.
+    second copy of anything. Each slice is probed through ``arch -<name>``. The
+    record is left as :func:`install_bundle` wrote it: its ``node_bin`` is the
+    same path, so every reader of it is unchanged. Raises :class:`KasBundleError`.
     """
     home = installed.root
     record = _read_record(home)
@@ -907,12 +904,6 @@ def make_universal_node(
 
     for slice_name in sorted(want):
         _probe_node(node_bin, manifest.node_version, launcher=(arch, f"-{slice_name}"))
-    record["node_key"] = DARWIN_UNIVERSAL_NODE_KEY
-    record["node_sha256"] = {
-        have: record.get("node_sha256"),
-        other: other_ref.sha256,
-    }
-    _write_json(home / _INSTALL_RECORD_NAME, record)
     again = _read_installed(home.parent, installed.version, bundled=installed.bundled)
     if again is None or again.node_bin != node_bin:
         raise KasBundleError(f"{home} does not read back after the universal Node was written")
