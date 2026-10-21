@@ -168,8 +168,25 @@ describe('ChatTitleOverlay', () => {
     const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false } as never })} />)
     expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
     unmount()
-    render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false, code_channel: codeChannel } as never })} />)
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, code_channel: codeChannel,
+      // A bound session is also Slack-linked (its anchor thread): the code
+      // channel's own link must win over the thread link.
+      slack_linked: true, slack_channel: 'C0CODE1', slack_thread_ts: '1712793600.123456',
+    } as never })} />)
     expect(screen.getByTestId('code-channel-badge-header')).toHaveAttribute('href', codeChannel.web_url)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+  })
+
+  it('links a session mirrored to a Slack thread to that thread in the header', () => {
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false, slack_linked: false } as never })} />)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, slack_linked: true, slack_channel: 'C0THREAD1', slack_thread_ts: '1712793600.123456',
+    } as never })} />)
+    expect(screen.getByTestId('slack-thread-link-header')).toHaveAttribute('href', 'https://slack.com/archives/C0THREAD1/p1712793600123456')
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
   })
 
   it('offers no reveal on an embedded chat, and renames the active session', () => {

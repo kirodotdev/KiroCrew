@@ -1,27 +1,30 @@
 import { Archive, CircleCheck, Code, ExternalLink } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { i18nT } from '../i18n/t'
-import type { CodeChannelInfo } from '../types'
+import type { ChatSlot, CodeChannelInfo } from '../types'
 import { ChannelBrandIcon } from './ChannelBrandIcon'
 
 /**
- * The "Slack code channel" badge for a session that IS a Slack code channel's
- * (`slot.code_channel`, set by the backend only for a bound session while code
- * channels are on, so every other session renders nothing here).
+ * The marks a Slack-linked session wears in the dashboard.
  *
- * One component, two placements: `row` is the compact chip on a sidebar row's
- * meta line (beside the agent name, so the row keeps its fixed height), `header`
- * the chip beside the session title. Both are a real anchor to the channel
- * (Slack's `app_redirect` URL, which opens the desktop app when it is installed
- * and the web client otherwise) in a new tab, marked with the external-link
- * glyph. When the backend could not build a link (a malformed record) the badge
- * still marks the session, as plain text, so it never offers a dead click.
+ * A session that IS a Slack code channel's carries `slot.code_channel` (set by
+ * the backend only for a bound session while code channels are on, so every
+ * other session renders nothing here). Two placements:
  *
- * The accessible name always starts with "Slack code channel" (visible in the
- * header, an sr-only span on the compact row chip) so a screen reader hears what
- * the chip is before the channel's name. An archived or wrapped-up channel gets
- * its own glyph (an archive box, a check) beside the state word, so the two read
- * differently even on a meta line too narrow for the word, and the tooltip says
- * what each state means.
+ *   - `row`: on a sidebar row's meta line, the Slack mark ALONE. It is a link
+ *     to the channel; its accessible name and tooltip ("Open #name in Slack")
+ *     carry the channel, so no channel text competes with the agent name and
+ *     the time for the row's width. A fixed box that never shrinks.
+ *   - `header`: beside the session title, the full link: the Slack mark,
+ *     "#name" (truncated, the whole name in the tooltip), any state (archived,
+ *     task done) and the external-link glyph.
+ *
+ * A session mirrored to a Slack thread gets the same header link to its
+ * thread (`SlackThreadLink`). Every link is Slack's own URL (the backend's
+ * `app_redirect` URL for a channel, a `slack.com/archives` permalink for a
+ * thread): it opens Slack and carries no dashboard credential. When no
+ * well-formed URL exists the mark still shows, as plain text, so it never
+ * offers a dead click.
  */
 export function codeChannelName(info: CodeChannelInfo): string {
   return info.channel_name ? `#${info.channel_name}` : ''
@@ -39,7 +42,7 @@ function statusHint(status: CodeChannelInfo['status']): string {
   return ''
 }
 
-/** Where the click goes. */
+/** Where the click goes: "Open #name in Slack". */
 export function codeChannelOpenHint(info: CodeChannelInfo): string {
   const name = codeChannelName(info)
   return name
@@ -47,67 +50,47 @@ export function codeChannelOpenHint(info: CodeChannelInfo): string {
     : i18nT('components.codeChannelBadge.open_unnamed')
 }
 
-/** The tooltip: what a code channel is, what its state means, where the click goes.
- *  One sentence per line, so no locale's punctuation has to join them. */
-function codeChannelTitle(info: CodeChannelInfo): string {
-  return [
-    i18nT('components.codeChannelBadge.about'),
-    statusHint(info.status),
-    info.web_url ? codeChannelOpenHint(info) : '',
-  ].filter(Boolean).join('\n')
+/** The backend's `app_redirect` URL, or "" for anything else. The server
+ *  already validates it; checked here too so no path that forwards a slot row
+ *  unvalidated can put another scheme or host into an `href`. */
+const SLACK_APP_REDIRECT = /^https:\/\/slack\.com\/app_redirect\?channel=[CGD][A-Z0-9]{2,30}&team=[TE][A-Z0-9]{2,30}$/
+export function codeChannelUrl(info: CodeChannelInfo): string {
+  return SLACK_APP_REDIRECT.test(info.web_url ?? '') ? info.web_url : ''
 }
 
-const CHIP_BASE =
-  'inline-flex items-center gap-1 rounded-[4px] border no-underline transition-colors motion-reduce:transition-none'
+/** One sentence per line, so no locale's punctuation has to join them. */
+function lines(...parts: string[]): string {
+  return parts.filter(Boolean).join('\n')
+}
 
-/**
- * How the row chip gives up width on a short meta line (agent name, this chip,
- * the time), in this order:
- *
- *   1. the agent name yields first (`CODE_CHANNEL_AGENT_FIT`, in `SessionRow`);
- *   2. then the external-link glyph leaves, before the word loses a character;
- *   3. then the word (the channel name, or the state) truncates, down to a
- *      readable floor of "#" plus a few characters;
- *   4. below that floor the chip goes icon-only: the Slack mark alone, the name
- *      in the tooltip and the accessible name. Never a bare "#…".
- *
- * The Slack mark and the time never shrink.
- *
- * Two nested wrapping lines, each clipped to one line by a fixed height, do it
- * in CSS alone. The chip holds the mark and a text slot (`ROW_TEXT_FIT`) that
- * has no width of its own (`basis-0 grow`) but a floor; a chip too narrow for
- * mark plus floor wraps the slot onto its hidden second line (step 4). Inside
- * the slot the word sits at its full width, so a word and glyph that do not fit
- * side by side wrap the glyph away first (step 2), and the word, alone on its
- * line, then truncates (step 3).
- *
- * Under 10rem of meta line (a phone) the padding and gaps tighten; under 8.5rem
- * (the sidebar at its narrowest) the padding drops to 1px. Those
- * container-query classes sit inline on the chip (the strict i18n gate reads an
- * ALL-CAPS constant holding `@` as copy).
- *
- * An icon-only chip can be wider than its mark (the meta line hands it
- * whatever is left), so its one line is centred: a pill with the mark in the
- * middle, never a mark with an empty tail. There is no cap on the chip's share
- * of the line, because a cap would cut the channel name while the agent name
- * still had width to give.
- */
-const ROW_CHIP_FIT =
-  'h-4 shrink flex-wrap content-start justify-center overflow-hidden px-1'
-// The word's floor: "#" plus a few characters of a channel name. A state word
-// sits beside its own glyph, which already says what changed, so its floor is
-// a little lower: "Chan…" still reads beside the archive box, where wrapping the
-// word away would leave a near-empty chip at an ordinary width.
-const ROW_TEXT_FIT =
-  'basis-0 grow h-[14px] inline-flex flex-wrap content-start items-center gap-1 overflow-hidden'
-const ROW_TEXT_FLOOR_NAME = 'min-w-[5ch]'
-const ROW_TEXT_FLOOR_STATE = 'min-w-[4ch]'
-/** The agent name beside a row chip: yields first (by a shrink weight no other
- *  item comes near). `SessionRow` also hides it on a meta line under 10rem,
- *  where it could only show "k…" and its gap is the room "#" plus a few
- *  characters of the channel need. Lives here so the chip's own fit and the
- *  order it depends on are read together. */
-export const CODE_CHANNEL_AGENT_FIT = 'min-w-0 shrink-[1000]'
+/** Click handling every Slack link here shares (`target`/`rel` sit on each
+ *  anchor). */
+const LINK_HANDLERS = {
+  draggable: false,
+  // A sidebar row is a click-to-switch button and opens the SESSION in a
+  // background tab on a middle click: opening Slack must do neither. Pointer
+  // focus is dropped so the row's :focus-visible action strip is not pinned
+  // open; Enter keeps focus.
+  onClick: (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.stopPropagation()
+    if (e.detail > 0) e.currentTarget.blur()
+  },
+  onAuxClick: (e: React.MouseEvent<HTMLAnchorElement>) => e.stopPropagation(),
+} as const
+
+/** The Slack mark in a fixed box that never shrinks. */
+function SlackMark({ size, dim = false }: { size: number; dim?: boolean }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 ${dim ? 'opacity-50 grayscale' : ''}`}
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+      data-testid="code-channel-slack-mark"
+    >
+      <ChannelBrandIcon channel="slack" size={size} />
+    </span>
+  )
+}
 
 /** The phone top bar's marker: the Slack mark with a code glyph, so it cannot
  *  be taken for the plain Slack mark an ordinary Slack-linked session wears.
@@ -123,114 +106,167 @@ export function CodeChannelMark({ size = 12 }: { size?: number }) {
   )
 }
 
-export function CodeChannelBadge({ info, variant }: { info: CodeChannelInfo; variant: 'row' | 'header' }) {
-  const name = codeChannelName(info)
-  const state = statusLabel(info.status)
-  const header = variant === 'header'
-  const size = header ? 11 : 10
-  const tone = info.status === 'archived'
-    // Dashed as well as greyed, so an archived chip still reads differently
-    // from an active one when it is down to its icons.
-    ? 'border-border border-dashed bg-bg-elevated/60 text-muted'
-    : 'border-border bg-accent-subtle text-text'
-  const StateIcon = info.status === 'archived' ? Archive : info.status === 'wrapped_up' ? CircleCheck : null
-  const stateTone = info.status === 'wrapped_up' ? 'text-ok' : 'text-muted'
-  // A state chip's floor holds the Slack mark AND its state glyph, so the
-  // glyph that tells archived from active is never the thing cut (the
-  // narrowest line's smaller floor sits inline on the chip below).
-  const rowFloor = StateIcon ? 'min-w-[30px]' : 'min-w-[20px]'
-  const sizing = header
-    ? 'min-w-0 max-w-full px-2 py-0.5 text-[11px] rounded-md pointer-events-auto'
-    : `${ROW_CHIP_FIT} ${rowFloor} py-0 text-[10px] leading-[14px] font-normal`
-  const linkGlyph = info.web_url
-    ? <ExternalLink size={header ? 10 : 9} className="shrink-0 text-muted" aria-hidden="true" data-testid="code-channel-link-glyph" />
+/** The sidebar row's mark: the Slack mark, a link named for its channel, with
+ *  a small link glyph so it reads as one. An archived channel's mark is greyed
+ *  AND carries an archive glyph, so the state never rests on colour alone; its
+ *  state is also in the tooltip and the accessible description, and in words
+ *  on the session header. */
+function RowMark({ info }: { info: CodeChannelInfo }) {
+  const dim = info.status === 'archived'
+  const testProps = { 'data-testid': 'code-channel-badge-row', 'data-code-channel-status': info.status }
+  const url = codeChannelUrl(info)
+  const archived = dim
+    ? <Archive size={8} className="shrink-0 text-muted" aria-hidden="true" data-testid="code-channel-archived-glyph" />
     : null
-  // The header has room: name, then any state, then the link glyph.
-  const headerText = (
-    <>
-      {name && <span className="truncate min-w-0 max-w-[32ch] text-muted" dir="auto" data-testid="code-channel-name">{name}</span>}
-      {StateIcon && (
-        <span className={`inline-flex min-w-0 items-center gap-0.5 ${stateTone}`} data-testid="code-channel-status">
-          <StateIcon size={size - 1} className="shrink-0" aria-hidden="true" />
-          <span className="truncate min-w-0 whitespace-nowrap">{state}</span>
-        </span>
-      )}
-      {linkGlyph}
-    </>
-  )
-  // The row's meta line has room for one word: an active channel's name, or an
-  // archived or wrapped-up one's state (the name stays in the accessible name
-  // and the tooltip). See ROW_TEXT_FIT for how it gives up width.
-  const rowWord = state || name || i18nT('components.codeChannelBadge.label_short')
-  const rowText = (
-    <>
-      {name && state && <span className="sr-only" dir="auto" data-testid="code-channel-name">{name}</span>}
-      {StateIcon && (
-        // Two tones as well as two glyphs: an archived channel is greyed, a
-        // finished task reads as done. The glyph stays beside the mark.
-        <StateIcon size={size - 1} className={`shrink-0 ${stateTone}`} aria-hidden="true" data-testid="code-channel-status-glyph" />
-      )}
-      <span className={`${ROW_TEXT_FIT} ${state ? ROW_TEXT_FLOOR_STATE : ROW_TEXT_FLOOR_NAME}`} data-testid="code-channel-text">
-        {/* An unnamed chip with a state shows only the state word: the word
-            that says what changed is the one worth the width, and the
-            accessible name and tooltip already say it is a code channel. */}
-        <span
-          className={`min-w-0 truncate ${state ? stateTone : ''}`}
-          dir="auto"
-          aria-hidden={!state && !name ? true : undefined}
-          data-testid={state ? 'code-channel-status' : name ? 'code-channel-name' : undefined}
-        >{rowWord}</span>
-        {linkGlyph}
-      </span>
-    </>
-  )
-  const body = (
-    <>
-      {/* The Slack mark: a fixed box that never shrinks, first in the chip so
-          a wrap never takes it. */}
-      <span className="inline-flex shrink-0" style={{ width: size, height: size }} aria-hidden="true" data-testid="code-channel-slack-mark">
-        <ChannelBrandIcon channel="slack" size={size} />
-      </span>
-      {header ? (
-        <span className="shrink-0 whitespace-nowrap">{i18nT('components.codeChannelBadge.label')}</span>
-      ) : (
-        <span className="sr-only">{i18nT('components.codeChannelBadge.label')}</span>
-      )}
-      {header ? headerText : rowText}
-    </>
-  )
-  if (!info.web_url) {
+  if (!url) {
+    const label = i18nT('components.codeChannelBadge.label')
     return (
-      <span
-        className={`${CHIP_BASE} ${sizing} ${tone} ${header ? '' : '@max-[10rem]/rowmeta:gap-0.5 @max-[10rem]/rowmeta:px-0.5 @max-[8.5rem]/rowmeta:px-px'} ${header ? '' : StateIcon ? '@max-[8.5rem]/rowmeta:min-w-[26px]' : '@max-[8.5rem]/rowmeta:min-w-[14px]'}`}
-        data-testid={`code-channel-badge-${variant}`}
-        title={codeChannelTitle(info)}
-      >
-        {body}
+      <span role="img" aria-label={label} title={lines(label, statusHint(info.status))} className="inline-flex shrink-0 items-center gap-px" {...testProps}>
+        <SlackMark size={10} dim={dim} />
+        {archived}
       </span>
     )
   }
+  const open = codeChannelOpenHint(info)
   return (
     <a
-      href={info.web_url}
+      href={url}
       target="_blank"
       rel="noopener noreferrer"
-      draggable={false}
-      data-testid={`code-channel-badge-${variant}`}
-      // The sidebar row is a click-to-switch button and opens the SESSION in a
-      // background tab on a middle click: opening the channel must do neither.
-      // Pointer focus is dropped so the row's :focus-visible action strip is
-      // not pinned open; Enter keeps focus.
-      onClick={e => {
-        e.stopPropagation()
-        if (e.detail > 0) e.currentTarget.blur()
-      }}
-      onAuxClick={e => e.stopPropagation()}
-      className={`${CHIP_BASE} ${sizing} ${tone} ${header ? '' : '@max-[10rem]/rowmeta:gap-0.5 @max-[10rem]/rowmeta:px-0.5 @max-[8.5rem]/rowmeta:px-px'} ${header ? '' : StateIcon ? '@max-[8.5rem]/rowmeta:min-w-[26px]' : '@max-[8.5rem]/rowmeta:min-w-[14px]'} hover:text-text hover:border-accent focus-ring`}
-      title={codeChannelTitle(info)}
+      {...LINK_HANDLERS}
+      {...testProps}
+      aria-label={open}
+      title={lines(open, statusHint(info.status))}
+      className="inline-flex shrink-0 items-center justify-center gap-px rounded-sm hover:opacity-80 transition-opacity motion-reduce:transition-none focus-ring"
     >
+      <SlackMark size={10} dim={dim} />
+      {archived}
+      <ExternalLink size={8} className="shrink-0 text-muted" aria-hidden="true" data-testid="code-channel-link-glyph" />
+    </a>
+  )
+}
+
+const HEADER_CHIP =
+  'inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] no-underline pointer-events-auto transition-colors motion-reduce:transition-none'
+
+/** A header chip: the Slack mark, the visible text, then the link glyph. The
+ *  same chip pattern as the header's other chips (`ChatHeaderChips`). */
+function HeaderChip({ href, title, testId, tone, children }: {
+  href: string; title: string; testId: string; tone: string; children: ReactNode
+}) {
+  const body = (
+    <>
+      <SlackMark size={11} />
+      {children}
+    </>
+  )
+  if (!href) {
+    return <span className={`${HEADER_CHIP} ${tone}`} title={title} data-testid={testId}>{body}</span>
+  }
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" {...LINK_HANDLERS} data-testid={testId} title={title}
+      className={`${HEADER_CHIP} ${tone} hover:text-text hover:border-accent focus-ring`}>
       {body}
+      <ExternalLink size={10} className="shrink-0 text-muted" aria-hidden="true" data-testid="code-channel-link-glyph" />
       <span className="sr-only">{i18nT('components.codeChannelBadge.opens_in_slack')}</span>
     </a>
+  )
+}
+
+/** The session header's full link to the code channel. */
+function HeaderLink({ info }: { info: CodeChannelInfo }) {
+  const name = codeChannelName(info)
+  const state = statusLabel(info.status)
+  const StateIcon = info.status === 'archived' ? Archive : info.status === 'wrapped_up' ? CircleCheck : null
+  const stateTone = info.status === 'wrapped_up' ? 'text-ok' : 'text-muted'
+  const tone = info.status === 'archived'
+    ? 'border-border border-dashed bg-bg-elevated/60 text-muted'
+    : 'border-border bg-accent-subtle text-text'
+  const url = codeChannelUrl(info)
+  return (
+    <HeaderChip
+      href={url}
+      testId="code-channel-badge-header"
+      tone={tone}
+      title={lines(
+        i18nT('components.codeChannelBadge.about'),
+        statusHint(info.status),
+        url ? codeChannelOpenHint(info) : '',
+      )}
+    >
+      {/* Read first, so a screen reader hears what the chip is before its name. */}
+      <span className="sr-only">{i18nT('components.codeChannelBadge.label')}</span>
+      {name
+        ? <span className="truncate min-w-0 max-w-[32ch]" dir="auto" data-testid="code-channel-name">{name}</span>
+        : <span className="shrink-0 whitespace-nowrap">{i18nT('components.codeChannelBadge.label_short')}</span>}
+      {StateIcon && (
+        <span className={`inline-flex min-w-0 items-center gap-0.5 ${stateTone}`} data-testid="code-channel-status">
+          <StateIcon size={10} className="shrink-0" aria-hidden="true" />
+          <span className="truncate min-w-0 whitespace-nowrap">{state}</span>
+        </span>
+      )}
+    </HeaderChip>
+  )
+}
+
+export function CodeChannelBadge({ info, variant }: { info: CodeChannelInfo; variant: 'row' | 'header' }) {
+  return variant === 'row' ? <RowMark info={info} /> : <HeaderLink info={info} />
+}
+
+/** The flex weight a code-channel row's agent name gets: it yields before
+ *  anything else on the meta line, so the Slack mark and the time keep their
+ *  room. Every other row keeps its agent name `shrink-0`. */
+export const CODE_CHANNEL_AGENT_FIT = 'min-w-0 shrink-[1000]'
+
+/** Slack conversation ids and message timestamps, as the slot list carries them. */
+const SLACK_CHANNEL_ID = /^[CGD][A-Z0-9]{2,30}$/
+// Slack message timestamps: ten digits of seconds and six of sequence. Any
+// other shape would make a permalink to the wrong message.
+const SLACK_TS = /^\d{10}\.\d{6}$/
+
+/** The permalink of a mirrored Slack thread, or "" when the ids are not
+ *  well-formed (so nothing attacker-shaped can reach an `href`). */
+export function slackThreadUrl(channel: string | undefined, threadTs: string | undefined): string {
+  const c = (channel ?? '').trim()
+  const ts = (threadTs ?? '').trim()
+  if (!SLACK_CHANNEL_ID.test(c) || !SLACK_TS.test(ts)) return ''
+  return `https://slack.com/archives/${c}/p${ts.replace('.', '')}`
+}
+
+/** The session header's link to the Slack thread a session is mirrored to.
+ *  Renders nothing for a session with no Slack thread, nothing for a code
+ *  channel's session (its own header link covers it), and nothing while the
+ *  gateway cannot yet tell whether the session is a code channel's
+ *  (`code_channel_pending`), so a bound session never shows this link and then
+ *  swaps it for its own. Slots carry the thread's channel ID but not its name,
+ *  so the chip says "Slack thread" rather than "#name". A paused mirror says so.
+ *
+ *  A session STARTED in Slack is not `slack_linked` (its thread is where it
+ *  lives, not a mirror), so its thread comes from `slack_origin_channel` /
+ *  `slack_origin_thread_ts` instead, and its paused state from the `origin`
+ *  Slack row rather than an outbound one. */
+export function SlackThreadLink({ slot }: { slot?: Pick<ChatSlot, 'code_channel' | 'code_channel_pending' | 'slack_linked' | 'slack_channel' | 'slack_thread_ts' | 'slack_origin_channel' | 'slack_origin_thread_ts' | 'links'> | null }) {
+  if (!slot || slot.code_channel || slot.code_channel_pending) return null
+  const mirrored = !!slot.slack_linked
+  const href = mirrored
+    ? slackThreadUrl(slot.slack_channel, slot.slack_thread_ts)
+    : slackThreadUrl(slot.slack_origin_channel, slot.slack_origin_thread_ts)
+  if (!href) return null
+  const paused = !!slot.links?.some(link =>
+    link.channel === 'slack' && (mirrored ? link.direction !== 'origin' : link.direction === 'origin') && link.paused)
+  return (
+    <HeaderChip
+      href={href}
+      testId="slack-thread-link-header"
+      tone={paused ? 'border-border border-dashed bg-bg-elevated/60 text-muted' : 'border-border bg-accent-subtle text-text'}
+      title={lines(i18nT('components.codeChannelBadge.thread_open'), paused ? i18nT('components.codeChannelBadge.thread_paused_hint') : '')}
+    >
+      <span className="truncate min-w-0 whitespace-nowrap">{i18nT('components.codeChannelBadge.thread_label')}</span>
+      {paused && (
+        <span className="truncate min-w-0 whitespace-nowrap text-muted" data-testid="slack-thread-paused">
+          {i18nT('components.codeChannelBadge.thread_paused')}
+        </span>
+      )}
+    </HeaderChip>
   )
 }

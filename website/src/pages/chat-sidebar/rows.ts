@@ -29,6 +29,7 @@ import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
+import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
 
 /** What the chip prints. The serializer decides it; this only covers its absence,
@@ -173,6 +174,9 @@ export interface RowPlacement {
    *  chevron and no collapsed aggregate to carry. All the row does with it is wear
    *  the tag that says WHY it is up there. */
   folderConductor?: boolean
+  /** A Slack code channel's conductor in the folder view, with its workers folded
+   *  under it (`codeChannelCrew.ts`). Absent on every other row. */
+  crew?: CodeChannelCrewView
 }
 
 /** The shell values every row shows the same way. The shell builds it once per change
@@ -257,6 +261,8 @@ export interface SessionRowView {
   conductor: ConductorRowView | null
   /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
   folderConductor: boolean
+  /** See `RowPlacement.crew`. */
+  crew: CodeChannelCrewView | null
   isActive: boolean
   isOut: boolean
   isPinned: boolean
@@ -918,6 +924,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     rowMotionHeld: placement.rowMotionHeld ?? false,
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
+    crew: placement.crew ?? null,
     isActive: isActiveIn(scene, slot),
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
@@ -959,7 +966,7 @@ export function opensElsewhereOf(slot: Slot): string | null {
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
-  folderConductor: true,
+  folderConductor: true, crew: true,
   isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
@@ -997,6 +1004,8 @@ export function sameRowView(a: SessionRowView, b: SessionRowView): boolean {
   for (const key of VIEW_KEYS) {
     if (key === 'conductor') {
       if (!sameConductor(a.conductor, b.conductor)) return false
+    } else if (key === 'crew') {
+      if (!sameCrewView(a.crew, b.crew)) return false
     } else if (!Object.is(a[key], b[key])) {
       return false
     }

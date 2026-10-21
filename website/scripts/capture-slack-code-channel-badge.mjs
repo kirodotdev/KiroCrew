@@ -5,10 +5,14 @@
  * `code_channel` exactly as `slack/code_channels/dashboard_view.py` serializes
  * it, so what is under test is how the dashboard draws the field:
  *
- *   - a bound, active channel: sidebar row chip + session-header chip, both
- *     linking to the channel (Slack's app_redirect URL) in a new tab;
- *   - an archived channel and a wrapped-up one with no known name: the state
- *     reads in text, the unnamed one falls back to "Code channel";
+ *   - a bound, active channel: the sidebar row's Slack mark alone (a link named
+ *     "Open #channel in Slack", no channel text) and the session header's full
+ *     link (mark, "#channel", link glyph), both opening the channel (Slack's
+ *     app_redirect URL) in a new tab;
+ *   - an archived channel and a wrapped-up one with no known name: the header
+ *     says the state in words, the row's tooltip explains it, the unnamed one
+ *     falls back to "Code channel";
+ *   - a session mirrored to a Slack thread: the header links to the thread;
  *   - an ordinary session: no badge anywhere (the row and header are as on main,
  *     which is also what every row looks like with the toggle off, because the
  *     backend then sends no `code_channel` at all);
@@ -43,13 +47,27 @@ const row = (key, title, ago, extra = {}) => ({
 
 const BOUND = 'chat-bound'
 const PLAIN = 'chat-plain'
+const THREAD = 'chat-thread'
+const BORN = 'slack:1792588893.063579'
 const slackLink = { channel: 'slack', label: 'Slack', target: '…0001', binding: 'b', direction: 'out', drives_session: true, live: true }
 const SLOTS = [
   row(BOUND, 'Fix the login redirect loop', 60, { links: [slackLink], code_channel: channel('C0CODE1', 'fix-login-redirect', 'active') }),
   row('chat-archived', 'Bump the Node runtime', 600, { links: [slackLink], code_channel: channel('C0CODE2', 'bump-node-runtime', 'archived') }),
   row('chat-wrapped', 'Draft the release notes', 1200, { links: [slackLink], code_channel: channel('C0CODE3', '', 'wrapped_up') }),
   row(PLAIN, 'Plan the Q4 roadmap', 1800, { links: [slackLink] }),
+  row(THREAD, 'Review the API spec', 2400, {
+    links: [slackLink], slack_linked: true, slack_channel: 'C0THREAD1', slack_thread_ts: '1712793600.123456',
+  }),
+  // Started in Slack (Kyle's build-9 session): its own thread is an origin,
+  // not a mirror, so it is not slack_linked and carries the origin ids.
+  row(BORN, 'Triage the flaky deploy', 3000, {
+    links: [{ ...slackLink, target: '…UXM5', direction: 'origin' }], slack_linked: false, slack_channel: '', slack_thread_ts: '',
+    slack_origin_channel: 'C0C9R9WUXM5', slack_origin_thread_ts: '1792588893.063579',
+  }),
 ]
+// BEFORE=1 runs against a build without the Slack-born header link and
+// asserts the bug (no link) instead of the fix.
+const BEFORE = process.env.BEFORE === '1'
 
 const detail = { running: false, has_more: false, total: 0, queue: [], messages: [] }
 const extra = (path, route) => {
@@ -87,11 +105,18 @@ async function assertRows(page) {
   check('bound row chip links to the channel', (await bound.getAttribute('href')) === 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1')
   check('bound row chip opens a new tab', (await bound.getAttribute('target')) === '_blank')
   check('bound row chip has noopener', (await bound.getAttribute('rel')) === 'noopener noreferrer')
-  check('bound row chip names the channel', (await bound.textContent()).includes('#fix-login-redirect'))
-  const archived = rowOf(page, 'Bump the Node runtime').getByTestId('code-channel-status')
-  check('archived row says Channel archived', (await archived.textContent()).includes('Channel archived'))
+  check('bound row link is named for its channel', (await bound.getAttribute('aria-label')) === 'Open #fix-login-redirect in Slack')
+  check('bound row tooltip names the channel', (await bound.getAttribute('title')) === 'Open #fix-login-redirect in Slack')
+  check('bound row mark renders no text', (await bound.textContent()) === '')
+  check('no channel name anywhere in the bound row', !(await rowOf(page, 'Fix the login redirect loop').textContent()).includes('fix-login-redirect'))
   const archivedChip = rowOf(page, 'Bump the Node runtime').getByTestId('code-channel-badge-row')
-  check('archived chip keeps the name in its tooltip', (await archivedChip.getAttribute('title')).includes('#bump-node-runtime'))
+  check('archived mark is marked archived', (await archivedChip.getAttribute('data-code-channel-status')) === 'archived')
+  check('archived tooltip names the channel and the state', (await archivedChip.getAttribute('title')) === 'Open #bump-node-runtime in Slack\nArchived in Slack. The channel is read-only.')
+  // It reads as a link (a visible glyph), and archived is never colour alone.
+  const glyphBox = await bound.getByTestId('code-channel-link-glyph').boundingBox()
+  check('bound row mark shows a visible link glyph', !!glyphBox && glyphBox.width >= 7 && glyphBox.height >= 7)
+  check('archived row mark wears an archive glyph', await archivedChip.getByTestId('code-channel-archived-glyph').isVisible())
+  check('active row mark has no archive glyph', (await bound.getByTestId('code-channel-archived-glyph').count()) === 0)
   const wrapped = rowOf(page, 'Draft the release notes').getByTestId('code-channel-badge-row')
   check('unnamed chip tooltip falls back to the generic hint', (await wrapped.getAttribute('title')).includes('Open this code channel in Slack'))
   check('wrapped-up tooltip explains the state', (await wrapped.getAttribute('title')).includes('The task is done'))
@@ -100,14 +125,15 @@ async function assertRows(page) {
   const slackMark = '[role="img"][aria-label="Connected to Slack"]'
   check('code-channel row shows no second Slack mark', (await rowOf(page, 'Fix the login redirect loop').locator(slackMark).count()) === 0)
   check('ordinary Slack-linked row keeps its mark', (await rowOf(page, 'Plan the Q4 roadmap').locator(slackMark).count()) === 1)
-  check('wrapped-up row says Task done', (await wrapped.textContent()).includes('Task done'))
   check('plain row has no chip', (await rowOf(page, 'Plan the Q4 roadmap').getByTestId('code-channel-badge-row').count()) === 0)
   // The chip sits on the meta line and must never paint over the timestamp.
   for (const title of ['Fix the login redirect loop', 'Bump the Node runtime', 'Draft the release notes']) {
     const r = rowOf(page, title)
     const chip = await r.getByTestId('code-channel-badge-row').boundingBox()
     const time = await r.getByTestId('session-row-time').boundingBox()
-    check(`${title}: chip clears the timestamp`, chip && time && chip.x + chip.width <= time.x + 0.5)
+    check(`${title}: mark clears the timestamp`, chip && time && chip.x + chip.width <= time.x + 0.5)
+    const mark = await r.getByTestId('code-channel-slack-mark').boundingBox()
+    check(`${title}: mark is its fixed 10px`, mark && Math.abs(mark.width - 10) < 0.5 && Math.abs(mark.height - 10) < 0.5)
   }
 }
 
@@ -124,8 +150,8 @@ async function shootRows(page, path) {
   await page.screenshot({ path, clip: { x, y, width: right - x, height: bottom - y } })
 }
 
-async function shootHeader(page, path) {
-  const chip = page.getByTestId('code-channel-badge-header')
+async function shootHeader(page, path, testId = 'code-channel-badge-header') {
+  const chip = page.getByTestId(testId)
   const box = await chip.boundingBox()
   check('header chip has a box', !!box)
   const x = Math.max(0, Math.floor(box.x - 520))
@@ -144,8 +170,14 @@ async function main() {
       const header = page.getByTestId('code-channel-badge-header')
       check('header chip is visible', await header.isVisible())
       check('header chip links to the channel', (await header.getAttribute('href')).includes('channel=C0CODE1'))
-      check('header chip names itself', (await header.textContent()).includes('Slack code channel'))
+      check('header chip shows #channel', (await header.getByTestId('code-channel-name').textContent()) === '#fix-login-redirect')
+      check('header chip shows the link glyph', await header.getByTestId('code-channel-link-glyph').isVisible())
+      check('header link carries no credential', !/token|auth/i.test(await header.getAttribute('href')))
       await shootRows(page, join(OUT, `01-sidebar-${theme}.png`))
+      // Close-ups of the row mark itself: an active row and an archived one.
+      for (const [title, name] of [['Fix the login redirect loop', 'active'], ['Bump the Node runtime', 'archived']]) {
+        await rowOf(page, title).screenshot({ path: join(OUT, `07-row-${name}-${theme}.png`) })
+      }
       await shootHeader(page, join(OUT, `02-header-${theme}.png`))
       // The archived and wrapped-up states in the header.
       for (const [title, state, file] of [
@@ -159,6 +191,33 @@ async function main() {
         check(`${file} header says ${state}`, (await chip.textContent()).includes(state))
         await shootHeader(page, join(OUT, `02-header-${file}-${theme}.png`))
       }
+      // A session mirrored to a Slack thread: the header links to the thread.
+      await page.locator('.session-row [data-session-title]').filter({ hasText: 'Review the API spec' }).click()
+      await page.waitForTimeout(800)
+      await page.mouse.move(5, 890)
+      const thread = page.getByTestId('slack-thread-link-header')
+      check('thread header links to the thread', (await thread.getAttribute('href')) === 'https://slack.com/archives/C0THREAD1/p1712793600123456')
+      check('thread session shows no code-channel chip', (await page.getByTestId('code-channel-badge-header').count()) === 0)
+      await shootHeader(page, join(OUT, `02-header-thread-${theme}.png`), 'slack-thread-link-header')
+      // A session started in Slack: the header links to the thread it lives in.
+      await page.locator('.session-row [data-session-title]').filter({ hasText: 'Triage the flaky deploy' }).click()
+      await page.waitForTimeout(800)
+      await page.mouse.move(5, 890)
+      const born = page.getByTestId('slack-thread-link-header')
+      if (BEFORE) {
+        check('BEFORE: Slack-born header has no thread link (the bug)', (await born.count()) === 0)
+      } else {
+        check('Slack-born header links to its own thread', (await born.getAttribute('href')) === 'https://slack.com/archives/C0C9R9WUXM5/p1792588893063579')
+        check('Slack-born link opens a new tab with noopener', (await born.getAttribute('rel')) === 'noopener noreferrer')
+        check('Slack-born header shows no code-channel chip', (await page.getByTestId('code-channel-badge-header').count()) === 0)
+      }
+      await page.screenshot({ path: join(OUT, `06-header-slack-born-${theme}.png`), clip: { x: 0, y: 40, width: 1600, height: 80 } })
+      if (BEFORE) {
+        await page.close()
+        await context.close()
+        console.log(`${theme}: BEFORE bug reproduced`)
+        continue
+      }
       await page.close()
       await context.close()
 
@@ -170,13 +229,14 @@ async function main() {
       await plain.waitForTimeout(1000)
       await plain.mouse.move(5, 890)
       check('plain session header has no chip', (await plain.getByTestId('code-channel-badge-header').count()) === 0)
+      check('plain session header has no thread link', (await plain.getByTestId('slack-thread-link-header').count()) === 0)
       await plain.screenshot({ path: join(OUT, `03-plain-header-${theme}.png`), clip: { x: 0, y: 40, width: 1600, height: 80 } })
       await plainContext.close()
       console.log(`${theme}: desktop OK`)
     }
 
     // 320px phone: the drawer's rows and the top bar's glyph.
-    for (const theme of ['dark', 'light']) {
+    for (const theme of BEFORE ? [] : ['dark', 'light']) {
       const context = await browser.newContext({ viewport: { width: 320, height: 640 }, deviceScaleFactor: 3, hasTouch: true, isMobile: true })
       context._base = base
       const page = await context.newPage()

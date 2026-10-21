@@ -9997,7 +9997,11 @@
       "opens_in_slack": "（在 Slack 中打开）",
       "about": "此会话运行在一个 Slack 代码频道中。那里和这里的消息属于同一段对话。",
       "archived_hint": "已在 Slack 中归档。该频道为只读。",
-      "wrapped_up_hint": "已收尾。任务已完成，频道仍保持开放，可继续跟进。"
+      "wrapped_up_hint": "已收尾。任务已完成，频道仍保持开放，可继续跟进。",
+      "thread_label": "Slack 话题",
+      "thread_open": "打开此 Slack 话题",
+      "thread_paused": "回复已暂停",
+      "thread_paused_hint": "此会话在话题中的回复已暂停。在话题中发送的消息仍会送达。"
     },
     "crew": {
       "crewEditorNextDialog": {
@@ -12618,6 +12622,14 @@
       "crew_attention_go_question": "打开需要你回答的聊天",
       "crew_attention_go_working": "打开进行中的聊天",
       "crew_attention_name": "{{target}}。{{counts}}",
+      "code_channel_crew_waiting": "等你处理",
+      "code_channel_crew_waiting_title_other": "此频道有 {{count}} 个会话在等你处理",
+      "code_channel_crew_interrupted_other": "{{count}} 个已中断",
+      "code_channel_crew_show_other": "显示 {{count}} 个工作会话",
+      "code_channel_crew_hide_other": "隐藏 {{count}} 个工作会话",
+      "code_channel_crew_stuck_other": "{{count}} 个卡住",
+      "code_channel_crew_done_other": "已完成 {{count}}/{{total}}",
+      "code_channel_crew_done_plain": "已完成",
       "not_open_here_yet": "在 {{name}} 上 —— 点击可在此处打开",
       "on_instance": "在 {{name}} 上",
       "only_show_sessions_that_have_no_tags": "仅显示没有标签的会话",

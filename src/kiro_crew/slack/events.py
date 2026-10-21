@@ -257,6 +257,13 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     # (the hooks fire only for a bound code channel).
     install_code_channels(lambda: orch.slack)
     await asyncio.to_thread(code_channel_store().load)
+    if orch.dashboard_state:
+        # A slot list serialized before this load marked bound rows pending;
+        # re-push it now the store is read so those rows get their badge.
+        try:
+            orch.dashboard_state.push_slots_update()
+        except Exception:
+            logger.warning("slot list re-push after code-channel load failed", exc_info=True)
 
     # ── Enterprise Grid workspace validation ──
     # Blocks data exfiltration via personal/external Slack workspaces.

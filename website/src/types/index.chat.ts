@@ -96,6 +96,27 @@ export interface CodeChannelInfo {
   web_url: string
 }
 
+/**
+ * A conductor's crew, summarised from its work ledger: the field a conductor's
+ * dashboard slot carries as `work_aggregate`. Its contract is the work board's
+ * (#21993, published at cc01bfb07b), delivered by the ordinary slot patch; it is
+ * null when the conductor has no workers. The sidebar renders it as it comes
+ * and falls back to what the slot list alone says while it is null or absent
+ * (pages/chat-sidebar/codeChannelCrew.ts).
+ *
+ *   state   the crew's state, ALREADY resolved worst first by the board
+ *           (waiting > stuck > working > done > idle): never re-ranked here.
+ *           waiting: on the user; stuck: a worker gone quiet or lost.
+ *   label   the board's summary text, ALREADY redacted: rendered verbatim.
+ *   counts  items in each state; `done` with `total` reads "N of M done".
+ *           Read defensively all the same: a missing count reads as absent.
+ */
+export interface WorkAggregate {
+  state: 'waiting' | 'stuck' | 'working' | 'done' | 'idle'
+  label: string
+  counts: { working?: number; waiting?: number; stuck?: number; done?: number; total?: number }
+}
+
 export interface SessionLink {
   channel: string
   label: string
@@ -239,7 +260,12 @@ export interface ChatSlot extends TurnIdentityFields {
   queue_depth?: number
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
   code_channel?: CodeChannelInfo
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; /** Place in the gateway's manual order (sort "Manual"), or null when it has none. */ manual_rank?: number | null; /** Revision of the manual order the rank belongs to. */ manual_rev?: number; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; ciPending?: string; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
+  /** Code channels are on but not read yet, so this Slack-linked row may still
+   *  turn out to be one: draw no Slack link on it until the next push. */
+  code_channel_pending?: boolean
+  /** The crew's work-ledger summary (see `WorkAggregate`); null with no workers. */
+  work_aggregate?: WorkAggregate | null
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; /** Place in the gateway's manual order (sort "Manual"), or null when it has none. */ manual_rank?: number | null; /** Revision of the manual order the rank belongs to. */ manual_rev?: number; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; /** The Slack thread a Slack-born session lives in (not a mirror; slack_linked stays false). */ slack_origin_channel?: string; slack_origin_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; ciPending?: string; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a

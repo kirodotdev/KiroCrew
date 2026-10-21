@@ -151,8 +151,8 @@ class TestViews:
     ) -> None:
         import asyncio
 
-        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
         from kiro_crew.slack import handler
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
 
         warm = CodeChannelStore(tmp_path / "slack-code-channels.json")
         warm.put_binding(_store_binding("chat-1-1"))
@@ -195,6 +195,85 @@ class TestWithCodeChannels:
         out = with_code_channels([{"key": "a"}], {"a": view})
         out[0]["code_channel"]["status"] = "mutated"
         assert view["status"] == "active"
+
+
+class TestPendingStore:
+    """While the store is unread no row can be told to be a code channel's."""
+
+    ROWS = [{"key": "linked", "slack_linked": True}, {"key": "plain", "slack_linked": False}]
+
+    def _cold(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+        cold = CodeChannelStore(tmp_path / "slack-code-channels.json")
+        monkeypatch.setattr(cold, "load", lambda: None)
+        set_store(cold)
+        return cold
+
+    def test_unread_store_marks_only_slack_linked_rows_and_mutates_nothing(
+        self, gate: dict[str, Any], tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.code_channels.store import set_store
+
+        self._cold(tmp_path, monkeypatch)
+        try:
+            rows = [dict(r) for r in self.ROWS]
+            out = with_code_channels(rows, {})
+            assert out[0] == {"key": "linked", "slack_linked": True, "code_channel_pending": True}
+            assert out[1] is rows[1]
+            assert "code_channel_pending" not in rows[0]
+        finally:
+            set_store(None)
+
+    def test_unread_store_marks_a_slack_born_row_too(
+        self, gate: dict[str, Any], tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Slack-born session is not slack_linked, but it can still be a code channel's."""
+        from kiro_crew.slack.code_channels.store import set_store
+
+        self._cold(tmp_path, monkeypatch)
+        try:
+            born = {"key": "slack:1.2", "slack_linked": False, "slack_origin_thread_ts": "1.2"}
+            empty = {"key": "plain", "slack_linked": False, "slack_origin_thread_ts": ""}
+            out = with_code_channels([born, empty], {})
+            assert out[0] == {**born, "code_channel_pending": True}
+            assert out[1] is empty
+            assert "code_channel_pending" not in born
+        finally:
+            set_store(None)
+
+    def test_gate_shut_marks_nothing(
+        self, gate: dict[str, Any], tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.code_channels.store import set_store
+
+        gate["on"] = False
+        self._cold(tmp_path, monkeypatch)
+        try:
+            rows = [dict(r) for r in self.ROWS]
+            assert with_code_channels(rows, {}) is rows
+        finally:
+            set_store(None)
+
+    def test_a_read_store_with_no_bindings_marks_nothing(
+        self, gate: dict[str, Any], tmp_path: Any
+    ) -> None:
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+        warm = CodeChannelStore(tmp_path / "slack-code-channels.json")
+        warm.load()
+        set_store(warm)
+        try:
+            rows = [dict(r) for r in self.ROWS]
+            assert with_code_channels(rows, {}) is rows
+        finally:
+            set_store(None)
+
+    def test_app_ws_rows_never_carry_the_marker(self) -> None:
+        from kiro_crew.dashboard import ws_event_scope
+
+        row = {"key": "linked", "code_channel_pending": True}
+        assert "code_channel_pending" not in ws_event_scope._withhold_from_apps(row)
 
 
 # ── Through the real slot list ────────────────────────────────────────────
