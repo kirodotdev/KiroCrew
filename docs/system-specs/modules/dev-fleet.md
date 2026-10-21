@@ -1285,6 +1285,23 @@ sentence names neither a single filesystem nor a single budget: the install writ
 both the scratch and the package cache, which need not share a filesystem, and
 each can exhaust bytes or file slots while the other looks healthy.
 
+**A fallback pass discloses that it rehearsed the wrong filesystem.** A pass
+earned in `TMPDIR` measured a room budget the real `npm ci` is not charged
+against, so a bare pass would be the silent twin of the loud out-of-room refusal
+this step exists to remove — the sync proceeds and the real install fails for room
+after the merge. So `_make_scratch` returns a third value, the fallback reason or
+`None`, and `probe` surfaces it on the pass `preflight:` line, which LEADS with
+the same `incoming lockfile is installable` affirmation a faithful pass gets and
+then appends the disclosure
+(`incoming lockfile is installable; rehearsed in TMPDIR rather than the checkout's filesystem (<reason>)`)
+— so the line still reads as a pass — without changing the verdict. The reasons are named apart because they merit different
+attention: the checkout path does not exist, the checkout is not writable, the
+checkout path could not be read (an `OSError` resolving it), the
+checkout's git does not yet hide the scratch name (the ignore rule ships
+separately from the probe code, so a checkout on an older ref has none — the one
+reason that self-heals when the checkout advances), and the checkout refused the
+directory with a non-out-of-room error. A repo-hosted pass keeps the generic line.
+
 **Abandoned scratch directories are swept before a new one is created.** `probe`
 removes its own in a `finally`, so what survives is a run that never reached it —
 SIGKILL, an OOM kill, a reboot. `/tmp` was age-cleaned by the host; the checkout
