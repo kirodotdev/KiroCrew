@@ -101,7 +101,7 @@ async def test_tampered_signature_is_rejected(fixtures) -> None:
 
 
 def _sign_wire_target(method: str, wire_target: str, body: bytes = b"") -> dict[str, str]:
-    """Sign exactly as the gateway does (apps/routes.py::handle_app_api_proxy):
+    """Sign exactly as the gateway does (apps/routes_proxy.py::handle_app_api_proxy):
     over the RAW, percent-encoded request-target, never a decoded form."""
     ts = str(int(time.time()))
     digest = hashlib.sha256(body).hexdigest()

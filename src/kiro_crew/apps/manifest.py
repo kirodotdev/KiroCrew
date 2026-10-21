@@ -274,14 +274,14 @@ def app_endpoint_allowed(
     # BOTH documented app namespaces, but only when the CALLER's contract covers the
     # second one: which namespace an app owns is not its choice — one declaring
     # ``backend.entryPoint`` runs its own process and is reverse-proxied at
-    # ``/apps/<app>/api/`` (``routes.py`` ``handle_app_api_proxy``), while one declaring
+    # ``/apps/<app>/api/`` (``routes_proxy.py`` ``handle_app_api_proxy``), while one declaring
     # only ``backend.hooks.routes`` is registered in-gateway under ``/api/apps/<app>/``.
     # Admitting just the in-gateway form refused every process-backed app's contribution
     # at install, so those apps could not contribute a row at all.
     #
     # It is a per-caller flag rather than a blanket widening because this is the ONE
     # shared endpoint check (see ``test_app_endpoint_allowed_is_the_one_shared_check``)
-    # and its other caller, the publish-provider registry in ``routes.py``, states
+    # and its other caller, the publish-provider registry in ``routes_listing.py``, states
     # ``/api/apps/<app>/`` as its contract in its own refusal message. Widening the
     # helper for everyone would have broadened that surface silently.
     #

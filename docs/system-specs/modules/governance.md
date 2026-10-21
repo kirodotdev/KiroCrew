@@ -2774,7 +2774,7 @@ second surface cannot grow a drifting copy):
 | Surface | Destination id | On deny |
 |---|---|---|
 | `api_artifact_publish` + its sharing/review siblings (`handlers/artifacts_parts/`: `publish_sharing.py`, with the comment, remote and update routes in `artifact_comments.py`, `remote_artifacts.py` and `create_update.py`, via the `_publish_governance_denied` alias in `handlers/artifacts_parts/route_plumbing.py`) | the requested/effective `publication.provider` | 403 |
-| `GET /api/publish-providers` (`apps/routes.py`) | `deploy-web-aws` | the row is omitted, so the button never renders |
+| `GET /api/publish-providers` (`apps/routes_listing.py`) | `deploy-web-aws` | the row is omitted, so the button never renders |
 | `POST /api/deploy/deploy` (`deploy/handlers.py`) | `deploy-web-aws` | 403, audited `deploy/denied` |
 | `POST /api/deploy/pending/{id}/confirm` | `deploy-web-aws` | 403 BEFORE `claim_pending`, so a denied confirm does not consume the entry |
 

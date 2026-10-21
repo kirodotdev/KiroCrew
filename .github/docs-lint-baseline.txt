@@ -212,8 +212,6 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/context.py:51-
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/execution.py:459-460
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/permissions.py:71
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/route_registry.py:122
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/routes.py:2336
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/routes.py:503
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/version.py:32-33
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	dashboard/handlers_system.py:168-172
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	manifest.py:247
@@ -289,7 +287,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	suggestions.
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	suggestions.py:96
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	sync_bridge.py:28
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	tips.py:759
-line-ref	docs/request-for-change/rfc-s3-backup.md	apps/routes.py:310
 line-ref	docs/request-for-change/rfc-s3-backup.md	learn.py:6
 line-ref	docs/request-for-change/rfc-s3-backup.md	profiles.py:1
 line-ref	docs/request-for-change/rfc-s3-backup.md	session_storage.py:7-10

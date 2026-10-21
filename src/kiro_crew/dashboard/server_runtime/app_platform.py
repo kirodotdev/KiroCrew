@@ -118,7 +118,7 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
     if started_apps:
         logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
 
-    # Both adapters are shared with the enable path (apps/routes.py) so the two
+    # Both adapters are shared with the enable path (apps/routes_enable.py) so the two
     # entry points cannot drift into giving an app different capabilities.
     from kiro_crew.apps.event_bus import build_broadcast_fn
     from kiro_crew.apps.spawn_sdk import build_spawn_impl

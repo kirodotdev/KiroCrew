@@ -3,7 +3,7 @@
 Two independent things are pinned here.
 
 The manifest half: ``platform.os`` is a published capability label, not an
-enable gate -- ``apps/routes.py`` only calls ``supports_platform(sys.platform)``
+enable gate -- ``apps/routes_enable.py`` only calls ``supports_platform(sys.platform)``
 when ``platform.installMode == "client"``, which no builtin app sets, so this
 app was never blocked from enabling on Windows regardless of what it declared.
 The declaration is honest rather than optimistic: this app spawns no

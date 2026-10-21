@@ -552,7 +552,7 @@ async def install_from_registry(
             "ok": False,
             "name": name,
             "error": f"blocked by execution policy: {execution_denied}",
-            # Same wire contract as the openCommand denial in routes.py: the
+            # Same wire contract as the openCommand denial in routes_enable.py: the
             # frontend keys its affordance off `code`, never off this prose.
             # Without it the App Store cannot tell "needs a trust grant" from
             # any other install failure and the consent modal never opens.

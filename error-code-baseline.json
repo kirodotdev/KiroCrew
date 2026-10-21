@@ -47,9 +47,34 @@
       "missing_code": 3
     },
     "apps/routes.py": {
-      "dynamic_status": 2,
-      "missing_code": 60,
-      "opaque_body": 8
+      "dynamic_status": 1,
+      "missing_code": 22,
+      "opaque_body": 2
+    },
+    "apps/routes_enable.py": {
+      "missing_code": 5,
+      "opaque_body": 2
+    },
+    "apps/routes_install.py": {
+      "missing_code": 5,
+      "opaque_body": 3
+    },
+    "apps/routes_listing.py": {
+      "missing_code": 2
+    },
+    "apps/routes_proxy.py": {
+      "missing_code": 7
+    },
+    "apps/routes_registry.py": {
+      "missing_code": 11,
+      "opaque_body": 1
+    },
+    "apps/routes_static.py": {
+      "dynamic_status": 1,
+      "missing_code": 6
+    },
+    "apps/routes_uninstall.py": {
+      "missing_code": 2
     },
     "dashboard/agent_admin/agent_config.py": {
       "missing_code": 1

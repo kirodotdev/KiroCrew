@@ -833,7 +833,10 @@ def test_registries_config_write_is_not_dispatched_with_a_bare_to_thread() -> No
     is ``_write_registries_config`` itself.
     """
     offenders: list[str] = []
-    for owner, call in _calls_in_async_frames(_module_tree(routes_mod)):
+    family = (routes_mod, *(sys.modules[name] for name in routes_mod._OWNERS))
+    for owner, call in (
+        found for part in family for found in _calls_in_async_frames(_module_tree(part))
+    ):
         func = call.func
         is_to_thread = (
             isinstance(func, ast.Attribute)

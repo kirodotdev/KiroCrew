@@ -17,7 +17,6 @@
 9026 src/kiro_crew/acp/runtime.py
 6697 src/kiro_crew/agent.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
-5184 src/kiro_crew/apps/routes.py
 2579 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
 2232 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py
 2058 src/kiro_crew/change_card_catalog.py

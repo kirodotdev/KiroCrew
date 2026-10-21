@@ -1,7 +1,7 @@
 """Windows support for the Spec Builder app.
 
 Pinned in the app's own suite because the manifest is a published capability
-label, not an enable gate: ``apps/routes.py`` only calls ``supports_platform``
+label, not an enable gate: ``apps/routes_enable.py`` only calls ``supports_platform``
 for a ``platform.installMode == "client"`` app, which no builtin sets. Omitting
 the block falls back to the implicit ``["macos", "linux"]`` default, which
 misreports Windows support on the App Store detail page even though every part

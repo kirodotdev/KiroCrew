@@ -208,6 +208,7 @@ def test_every_media_route_uses_the_shared_helper() -> None:
     A raw ``If-None-Match`` string compare is exactly the drift this module
     replaced, so any reappearance in the four route modules fails here.
     """
+    import importlib
     import inspect
     from pathlib import Path
 
@@ -215,7 +216,13 @@ def test_every_media_route_uses_the_shared_helper() -> None:
     from kiro_crew.dashboard import agent_admin
     from kiro_crew.dashboard.handlers import agents, appearances, themes
 
-    for mod in (apps_routes, agents, appearances, themes):
+    for mod in (
+        apps_routes,
+        *map(importlib.import_module, apps_routes._OWNERS),
+        agents,
+        appearances,
+        themes,
+    ):
         src = inspect.getsource(mod)
         if mod is agents:
             # The agents handlers run the functions their agent_admin owners

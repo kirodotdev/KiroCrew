@@ -2084,6 +2084,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The run-record owner the ``apps/job_sdk.py`` facade serves: it hosts ``_redact``,
         # the record's ingest scrub, under the facade's classification.
         "apps/job_sdk_records.py",
+        # Partitions of the "App lifecycle output" sink beside the registered apps/routes.py.
+        "apps/routes_enable.py",
+        "apps/routes_lifecycle.py",
+        "apps/routes_listing.py",
+        "apps/routes_registry.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py and the cron.py owners) are the covered surfaces.

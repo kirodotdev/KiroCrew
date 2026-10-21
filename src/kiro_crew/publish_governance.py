@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 #: Destination id of the core public-web deploy provider (S3 + CloudFront in the
 #: user's own AWS account).  Declared here so the provider registry
-#: (``apps/routes.py``), the deploy handler (``deploy/handlers.py``) and any
+#: (``apps/routes_listing.py``), the deploy handler (``deploy/handlers.py``) and any
 #: operator allowlist all name the same string.
 DEPLOY_WEB_PROVIDER_ID = "deploy-web-aws"
 

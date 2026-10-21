@@ -9,7 +9,7 @@ was already written cross-platform: ``platform_compat.IS_POSIX`` branches around
 ``platform_compat.pin_directory`` / ``file_lock`` / ``is_link_or_junction``
 instead of raw POSIX calls, ``tempfile`` instead of ``/tmp``, and the standard
 library's ``tarfile`` instead of shelling out to ``tar``. ``platform.os`` is a
-published capability label, not an enable gate -- ``apps/routes.py`` only calls
+published capability label, not an enable gate -- ``apps/routes_enable.py`` only calls
 ``supports_platform`` for a ``platform.installMode == "client"`` app, which no
 builtin sets, so an absent or wrong ``platform`` block never actually blocked
 this app from running on Windows; it only misinformed the App Store detail

@@ -3,7 +3,7 @@ gateway's agent-denied environment.
 
 Both halves drive the REAL production seam, not a rebuilt copy of its literals:
 
-* ``apps/routes.py::handle_open_app`` is driven through its own HTTP route, so
+* ``apps/routes_enable.py::handle_open_app`` is driven through its own HTTP route, so
   the environment under test is the one that endpoint actually builds.
 * ``knowledge/llm_pool.py::CCWorker._spawn`` is driven directly, with only
   ``_claude_bin`` redirected at a stub, so every environment decision stays in
@@ -75,7 +75,7 @@ MODEL_CREDENTIAL_KEYS = ("AWS_ACCESS_KEY_ID", "ANTHROPIC_API_KEY", "KIRO_API_KEY
 
 
 # ---------------------------------------------------------------------------
-# F48 -- apps/routes.py::handle_open_app
+# F48 -- apps/routes_enable.py::handle_open_app
 # ---------------------------------------------------------------------------
 
 

@@ -3,7 +3,7 @@
 Two things are pinned here:
 
 1. The manifest's ``platform.os`` declaration -- a published capability label,
-   not an enable gate. ``apps/routes.py`` only calls ``supports_platform`` for
+   not an enable gate. ``apps/routes_enable.py`` only calls ``supports_platform`` for
    a ``platform.installMode == "client"`` app, which no builtin sets, so this
    value never blocked (or would have blocked) the app from being enabled on
    Windows; declaring it truthfully is still worth doing for the label users
