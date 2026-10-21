@@ -107,3 +107,32 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
   }
   return null
 }
+
+/** Fast poll while the reading has not settled; the steady cadence once it has. */
+export const KIRO_USAGE_WARMING_POLL_MS = 2_500
+export const KIRO_USAGE_STEADY_POLL_MS = 30_000
+
+/**
+ * How often the credit pill should re-poll `/api/sessions/usage`, given the last
+ * settled state and whether the last read errored.
+ *
+ * The gateway serves the reading from a cache that the GET itself warms in the
+ * background: a reopen hits an empty cache (`null`) and, before kiro-cli
+ * readiness is verified, a 503 the query surfaces as an error with no data. At
+ * the steady cadence each of those unsettled reads costs a full interval before
+ * the next poll sees the warmed value, so the pill sits "checking" for roughly
+ * two intervals after a reopen. Polling fast while the state is unsettled
+ * collapses that wait to a couple of seconds; a settled state — a real reading,
+ * or a terminal `none` / `api-key` / `signin-required` the next poll would not
+ * change — drops back to the steady cadence so a resolved pill is not polled
+ * every few seconds forever.
+ *
+ * `null` is the warming cache. `isError` is the pre-readiness 503 (and any other
+ * failed read): the query holds no data, so `state` is `null` there too, but it
+ * is called out explicitly because an errored read is exactly the boot condition
+ * this acceleration targets.
+ */
+export function kiroUsageRefetchInterval(state: KiroUsageState, isError: boolean): number {
+  if (isError || state === null) return KIRO_USAGE_WARMING_POLL_MS
+  return KIRO_USAGE_STEADY_POLL_MS
+}

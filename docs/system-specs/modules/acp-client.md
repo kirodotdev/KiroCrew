@@ -2597,7 +2597,9 @@ message, and no token or credential text is logged.
   dashboard endpoint that shells out to `kiro-cli` on a timer therefore calls
   `reject_if_kiro_unverified()` BEFORE resolving or spawning the binary:
   `/api/models` (polled every 8s while the model list is degraded) and
-  `/api/sessions/usage` (polled every 30s by the credit pill). Both return the
+  `/api/sessions/usage` (polled by the credit pill: fast, ~2.5s, while the
+  reading is unsettled — an empty warming cache or a pre-readiness 503 — then a
+  30s steady cadence once a reading or a terminal state lands). Both return the
   shared `kiro_prerequisite_required` 503 — the same degraded response their
   timeout branches already produce — so the client contract is unchanged and
   only the subprocess is skipped. On `/api/models` the gate is not the only
@@ -2619,7 +2621,11 @@ message, and no token or credential text is logged.
   browser-login storm; `/api/sessions/usage` reads on a 5-minute
   `_POLL_GATE_MAX_AGE_SECS` because its spawn is already throttled to one fetch
   per `_USAGE_REFRESH_SECS` (600s), so the wide window cannot storm it and only
-  spares the credit pill the inline probe. The widened worst case is one
+  spares the credit pill the inline probe. The fast unsettled-state poll does
+  not change this: it serves the cached payload and reads the same 5-minute
+  latch, so it neither re-probes readiness nor spawns `kiro-cli` more often —
+  it only shortens how long the pill waits to SEE the cache the background
+  fetch has already warmed. The widened worst case is one
   stale-`ready=True` usage spawn up to five minutes after an external logout,
   still caught sooner by the identity-change re-probe and by Refresh.
 - **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
