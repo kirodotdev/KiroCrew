@@ -1512,7 +1512,12 @@ keys`. Three exclusions from that warning are named in code:
 
 A deprecated field is announced only when it holds something: `null` and an
 empty map, list or string carry nothing to migrate, so `validation` stays
-silent on them (`False` and `0` are chosen values and are still announced). For
+silent on them (`False` and `0` are chosen values and are still announced). It
+is silent too on a field holding its own schema default (`_is_own_default`,
+which never equates a bool with a number): that value behaves exactly as an
+absent key, and the default-config writer serializes every field, so a config
+Kiro Crew has just created carries `agent.subagent_cpu_cost_cores: 1.0` and the
+loader would otherwise warn about its own write on the first launch. For
 each populated field, `validation` warns once per process for each distinct
 `repr(value)`. It stores only a SHA-256 digest of that representation in the
 warning registry, so configured credentials do not stay there as raw text. A

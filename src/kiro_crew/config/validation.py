@@ -164,6 +164,16 @@ def _holds_nothing(value: object) -> bool:
     return value is None or (isinstance(value, (dict, list, str)) and not value)
 
 
+def _is_own_default(value: object, default: object) -> bool:
+    """True when a stored value is the field's own default.
+
+    Such a value behaves exactly as an absent key, so there is nothing for the
+    operator to migrate. A bool never equals a number here, so a deprecated
+    flag's ``False`` is not read as a numeric ``0`` default or the reverse.
+    """
+    return isinstance(value, bool) == isinstance(default, bool) and value == default
+
+
 def _get_help_text(schema: dict, dot_path: str) -> str:
     """Return the help text for the field at *dot_path*."""
     node = _lookup_schema_node(schema, dot_path)
@@ -603,7 +613,10 @@ def validate_config_data(data: dict) -> dict:
     # nothing (an empty map/list/string, or null) carries nothing for the
     # operator to migrate, so it is not announced: warning on bare presence would
     # scold an install whose earlier build materialized the key's empty default
-    # into every save, which the operator never wrote and cannot act on.
+    # into every save, which the operator never wrote and cannot act on. The
+    # same holds for a key holding the field's own default: the default-config
+    # writer serializes every field, so a config Kiro Crew has just created
+    # already carries it, and the loader would warn about its own write.
     for entry in SCHEMA_REGISTRY:
         if not entry.deprecated:
             continue
@@ -617,7 +630,7 @@ def validate_config_data(data: dict) -> dict:
             else:
                 found = False
                 break
-        if found and not _holds_nothing(node):
+        if found and not _holds_nothing(node) and not _is_own_default(node, entry.default_value):
             value_digest = hashlib.sha256(repr(node).encode("utf-8")).digest()
             warning_key = (entry.path, value_digest)
             with _DEPRECATED_WARNING_LOCK:

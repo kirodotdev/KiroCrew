@@ -572,6 +572,42 @@ class TestDynamicSubagentSizingFields:
             _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.8}})
             assert notices() == []
 
+    @_requires_jsonschema
+    @pytest.mark.parametrize("value", [1.0, 1], ids=["float", "int"])
+    def test_the_fields_own_default_is_not_announced(self, monkeypatch, caplog, value) -> None:
+        """A config Kiro Crew just created carries the default; warning on it is
+        the loader scolding its own write."""
+        from kiro_crew.config import validation
+
+        monkeypatch.setattr(validation, "_REPORTED_DEPRECATED_FIELDS", set())
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            _load_from_dict({"agent": {"subagent_cpu_cost_cores": value}})
+        assert not [r for r in caplog.records if "deprecated field" in r.getMessage()]
+
+    @_requires_jsonschema
+    def test_a_fresh_default_config_loads_without_a_deprecation_notice(
+        self, monkeypatch, caplog
+    ) -> None:
+        """The document the first ``kirocrew gateway`` writes, read straight back."""
+        from kiro_crew.config import validation
+
+        monkeypatch.setattr(validation, "_REPORTED_DEPRECATED_FIELDS", set())
+        fresh = KiroCrewConfig().to_dict()
+        assert fresh["agent"]["subagent_cpu_cost_cores"] == 1.0
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            _load_from_dict(fresh)
+        assert not [r for r in caplog.records if "deprecated field" in r.getMessage()]
+
+    def test_a_bool_is_never_a_numeric_default(self) -> None:
+        """``False == 0`` in Python; a deprecated flag set to ``False`` was chosen."""
+        from kiro_crew.config.validation import _is_own_default
+
+        assert _is_own_default(1, 1.0)
+        assert _is_own_default(False, False)
+        assert not _is_own_default(False, 0)
+        assert not _is_own_default(True, 1.0)
+        assert not _is_own_default(0.8, 1.0)
+
     def test_to_dict_round_trip(self) -> None:
         cfg = _load_from_dict(
             {
