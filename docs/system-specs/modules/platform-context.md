@@ -856,7 +856,7 @@ Wired sites:
   is not secret and does not rotate, which is why argv suits it.
 - `apps/manager_builtins.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
-- `apps/registry_pipeline/sources.py` / `apps/routes.py` — clone-sandbox-mode decision routes
+- `apps/registry_pipeline/sources.py` / `apps/routes_art.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
 - Telemetry `record_event` sites — `dashboard/server_runtime/diagnostics.py` records `gateway_start`
   at boot; `_turn_context_usage` (`dashboard/chat_turn/turn_stats.py`) and
@@ -1517,7 +1517,7 @@ representative rather than exhaustive.
   `sel().log_api_access(operation="slack.message.intercept")` audit event — the
   interceptor is a permission decision distinct from the allowlist check, so its
   verdict reaches the SEL trail.
-- `apps/routes.py` — `_fetch_git_blob`'s per-URL clone-sandbox-mode decision
+- `apps/routes_art.py` — `_fetch_git_blob`'s per-URL clone-sandbox-mode decision
   routes through `_context_clone_sandbox_mode` (same as the registry's clone
   sites in `apps/registry_pipeline/`), so a companion's extended trusted-host set
   applies to registry-blob fetches too. The other `wrap_argv` sites run local

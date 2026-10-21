@@ -547,7 +547,7 @@ in its result instead of raising, so read the result rather than assuming.
 - `scripts/uninstall.sh` must always stop background work and remove anything
   the app registered outside its own directory. **User state is a separate
   decision and is not yours to make.** Uninstall preserves app data by default
-  (`keep_data = True` in `src/kiro_crew/apps/routes.py`, flipped only by an
+  (`keep_data = True` in `src/kiro_crew/apps/routes_uninstall.py`, flipped only by an
   explicit `purge_data` request), and that choice reaches your script as
   `PURGE_DATA` / `KEEP_DATA` in its environment. So delete state files only
   under `PURGE_DATA=1`, and leave them untouched under `KEEP_DATA=1`. A script

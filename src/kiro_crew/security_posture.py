@@ -353,7 +353,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The run-record owner the ``apps/job_sdk.py`` facade serves: it hosts ``_redact``,
         # the record's ingest scrub, under the facade's classification.
         "apps/job_sdk_records.py",
-        # Partitions of the "App lifecycle output" sink beside the registered apps/routes.py.
+        # Partitions of the "App lifecycle output" sink beside the registered
+        # apps/routes_uninstall.py.
         "apps/routes_enable.py",
         "apps/routes_lifecycle.py",
         "apps/routes_listing.py",

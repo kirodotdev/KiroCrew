@@ -1666,7 +1666,7 @@ decision as both `KEEP_DATA` and `PURGE_DATA` in its environment.
 update correctness depends on it is broken, and the fix is an idempotent
 `onInstall` (a registry update re-runs it), not a new call site added quietly.
 
-Writers: `apps/routes.py::handle_uninstall_app`, `_run_lifecycle_script`,
+Writers: `apps/routes_uninstall.py::handle_uninstall_app`, `_run_lifecycle_script`,
 `apps/routes_uninstall.py::_deregister_crons_with_retry`; `apps/manager_uninstall.py::uninstall_app`.
 
 ## 11. Dependencies are reference-counted, and only sole ownership is removable
@@ -2363,7 +2363,7 @@ with a compensating per-response control — event scoping is that control for
 returns owner hash, host specs, cron and usage stats, and the live safety-override
 state, and an app that wants it declares it in `permissions.api`.
 
-**A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry).
+**A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes_listing.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry).
 
 **Install, update and registry writes are owner-only for every caller.**
 `POST /api/apps/install`, `POST /api/apps/registry/install`,
@@ -3398,7 +3398,7 @@ genuinely has no local copy; that half of `known_registry_repos` is untouched.
 
 Writers: builtin `app.json` manifests, `apps/registry_pipeline/manifests.py`
 (`_merge_manifest`, `_store_asset_path`),
-`apps/routes.py` (`handle_app_art_file`),
+`apps/routes_art.py` (`handle_app_art_file`),
 `website/src/components/appstore/appManifest.ts`,
 `website/src/components/appstore/useHeroArt.ts`,
 `website/src/pages/AppDetailPage.tsx`,
@@ -4322,41 +4322,40 @@ records which module owns which part, so a change lands in its owner.
 
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
-| `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below. It also keeps the handlers whose blocking file-system calls the sync-io `fs` baseline counts against this path (`handle_install_app`, `_run_uninstall`, `handle_app_config`, `_fetch_git_blob`, `handle_blob_proxy`), the units that call them (`handle_uninstall_app`, `handle_migrate_cleanup`), the installed-art route that shares the blob proxy's extension screen (`handle_app_art_file`), and the route table (`register_app_routes`) |
+| `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
 | `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs` and `_unregister_notification_channels` |
 | `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers it strips and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
-| `routes_art.py` | Reading an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and what the blob proxy shares with the registry routes: the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch |
-| `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, and `handle_publish_providers` over `collect_publish_providers` |
-| `routes_install.py` | `handle_update_app` with the cron resync an update drives, and `handle_register_external` |
-| `routes_uninstall.py` | `handle_uninstall_preview`, and the bounded cron deregistration retry an uninstall uses (`_deregister_crons_with_retry`) |
+| `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
+| `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |
+| `routes_install.py` | `handle_install_app` (a local-path install), `handle_update_app` with the cron resync an update drives, and `handle_register_external` |
+| `routes_uninstall.py` | `handle_uninstall_app` and `handle_migrate_cleanup` over `_run_uninstall`, `handle_uninstall_preview`, and the bounded cron deregistration retry an uninstall uses (`_deregister_crons_with_retry`) |
 | `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`), the client-install platform check (`_client_install_manifest`) and the desktop environment an `openCommand` launcher keeps |
 | `routes_registry.py` | Browsing, refreshing and installing from the app registry (`handle_registry`, `handle_registry_refresh`, `handle_registry_install`, `handle_registry_install_stream`) and the registry list in `config.json` (`handle_registries`, `handle_registries_refresh`, `_write_registries_config`) |
 
-The handlers `routes.py` keeps are pinned there by the sync-io `fs` gate, which counts a
-moved blocking call as an added one (`.github/sync-io-in-async-fs-baseline.txt`), so they
-move to owners only once that gate reads a move as a move. Imports only point down, in the
+No file of the family is in the sync-io `fs` baseline, so the gate holds every one of
+them to no blocking file-system call on the event loop. Imports only point down, in the
 facade's `_OWNERS` order: lifecycle, proxy, static, art, listing, install, uninstall,
-enable, registry. No owner imports the facade; the facade imports the owner names its own
-handlers call, and every import that ran inside a handler still runs there, so a gateway
+enable, registry. No owner imports the facade; the facade imports the handlers its route
+table names, and every import that ran inside a handler still runs there, so a gateway
 boot loads what it loaded before.
 
 Every patch seam stays on the facade. It installs `kiro_crew._facade_mirror`, so a write
-to `routes.<name>` reaches every owner that binds the name, and the facade's own handlers
-read it from the facade's namespace; a read is served by the defining owner. Each shared
+to `routes.<name>` reaches every owner that binds the name, and a read is served by the
+defining owner. Each shared
 table stays one object in one owner: `_BUILTIN_SERVICE_APPS` in `routes_enable.py`,
 `_app_secret_cache` in `routes_proxy.py`, the UI stream semaphore in `routes_static.py`
 and the blob fetch semaphore in `routes_art.py`. Every owner logs as
 `kiro_crew.apps.routes`, the logger name `caplog` assertions key on.
 `test/test_routes_facade.py` pins the owner set, every name the one-module file bound
-resolving through the facade to its owner's object, the kept handlers, every import the
+resolving through the facade to its owner's object, each handler's owner, every import the
 facade binds being accounted for, the logger, the type-checking groups and that nothing
 outside the family imports an owner; `test/test_facade_mirror_guards.py` holds the facade
 to the mirror contract. The tests that read a pinned construct by path read the module
 that holds it, and the ones that scan the whole module (`test_builtin_app_lifecycle.py`,
 `test_apps_instances_loop_offload.py`, `test_conditional_get.py`, and the duplicate-set
 half of `test_app_art_route.py`) read the facade joined with its owners. Besides
-`routes.py`, which the "App lifecycle output" redaction sink row names, only the four
+`routes_uninstall.py`, which the "App lifecycle output" redaction sink row names, only the four
 owners `NON_EGRESS_REDACTION_MODULES` lists as that sink's partitions
 (`routes_enable.py`, `routes_lifecycle.py`, `routes_listing.py`, `routes_registry.py`)
 call a redactor, so a new call belongs in one of those or needs its own row there.

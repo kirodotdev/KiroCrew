@@ -254,7 +254,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "App lifecycle output",
-        "apps/routes.py",
+        "apps/routes_uninstall.py",
         "Install/start/stop script output and warnings surfaced from an app.",
     ),
     (
