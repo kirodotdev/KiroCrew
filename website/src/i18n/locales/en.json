@@ -10276,6 +10276,8 @@
         "session_title_lines_desc": "How many lines a session title can use before it is cut off",
         "session_preview_lines": "Preview Lines on Session Cards",
         "session_preview_lines_desc": "How many lines the latest-message preview can use before it is cut off",
+        "new_chat_tab_active": "Switch to New Chat Tabs",
+        "new_chat_tab_active_desc": "{{mod}}-click on New opens the chat as the active tab, and {{mod}}+Shift-click opens it in the background",
         "content_width": "Content Width",
         "context": "Context",
         "turns": "Turns",

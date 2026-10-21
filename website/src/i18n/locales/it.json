@@ -18607,6 +18607,8 @@
         "session_title_lines_desc": "Quante righe può occupare il titolo di una sessione prima di essere troncato",
         "session_preview_lines": "Righe di anteprima nelle schede sessione",
         "session_preview_lines_desc": "Quante righe può occupare l'anteprima dell'ultimo messaggio prima di essere troncata",
+        "new_chat_tab_active": "Passa alle nuove schede di chat",
+        "new_chat_tab_active_desc": "{{mod}}-clic su Nuovo apre la chat come scheda attiva, {{mod}}+Maiusc-clic la apre in background",
         "content_width": "Larghezza del contenuto",
         "context": "Contesto",
         "turns": "Turni",

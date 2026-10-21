@@ -7,6 +7,7 @@ import { ChevronRight } from 'lucide-react'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields } from '../../i18n/format'
+import { loadChatConfig } from '../chat/ChatSettings'
 
 /** Is this click the "open as a tab" modifier gesture? One predicate for every
  *  surface that offers it (session rows, the New button, the folder create
@@ -23,11 +24,15 @@ export function isOpenInTabModifierClick(e: React.MouseEvent): boolean {
  *  tab, the same as on a session row. Cmd/Ctrl+Shift-click opens it as the
  *  active tab, the browser's convention for a foreground open, and the only
  *  one-step foreground gesture on a trackpad. Any other click returns false.
+ *  The chat setting `newChatTabActive` swaps the two, the way a browser's
+ *  "switch to new tabs immediately" option does, so both stay one click away.
+ *  It is read at click time so a change in Settings applies without a reload.
  *  See docs/decisions/2026-10-17-sidebar-create-controls-shift-opens-the-active-tab.md. */
 export function createTabModeForClick(e: React.MouseEvent): 'foreground' | 'background' | false {
-  if (isOpenInTabModifierClick(e)) return 'background'
   const tabModifier = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
-  return tabModifier && e.shiftKey && !e.altKey ? 'foreground' : false
+  if (!tabModifier || e.altKey) return false
+  const foreground = e.shiftKey !== (loadChatConfig().newChatTabActive === true)
+  return foreground ? 'foreground' : 'background'
 }
 
 /** Quiet boundary between manually ordered pins and automatically sorted rows.
