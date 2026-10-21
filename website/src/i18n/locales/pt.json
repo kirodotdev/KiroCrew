@@ -17443,11 +17443,15 @@
       "developerPanel": {
         "developer_tools": "Ferramentas de desenvolvedor",
         "feature_previews": "Prévias de recursos",
-        "feature_previews_desc": "Recursos e páginas não lançados. As páginas ficam ocultas da barra lateral e da Pesquisar em tudo até você ativá-las aqui; os próprios interruptores, porém, aparecem na busca das configurações. Estão inacabados de propósito e valem só para este dispositivo, a menos que um cartão diga o contrário.",
+        "feature_previews_desc": "Recursos e páginas não lançados. Suas escolhas ficam salvas neste {{productName}} e valem onde quer que você abra o painel, em qualquer navegador ou no aplicativo para desktop. As páginas ficam ocultas da barra lateral e da Pesquisar em tudo até você ativá-las aqui; os próprios interruptores, porém, aparecem na busca das configurações. Estão inacabados de propósito.",
         "gateway": "Gateway",
         "how_to_set_up_an_ssh_tunnel": "Como configurar um túnel SSH",
         "run_a_local_gateway": "Executar um gateway local",
-        "turn_it_off_only_when_a_gateway_already_answers": "Inicia um gateway nesta máquina. Deixe ativado, a menos que a porta deste app já chegue a uma Crew em outra máquina; caso contrário, o app não conseguirá se conectar na próxima vez que abrir, que é quando isto entra em vigor. Para isso, a Crew precisa estar salva para esta porta com “Set Remote Host…” no menu Connection, mais um túnel: marque “Keep an SSH tunnel to this crew open” ali (macOS e Linux) ou mantenha seu próprio túnel SSH em execução. As conexões de Configurações → Crew remota param quando isto está desativado, então não contam."
+        "turn_it_off_only_when_a_gateway_already_answers": "Inicia um gateway nesta máquina. Deixe ativado, a menos que a porta deste app já chegue a uma Crew em outra máquina; caso contrário, o app não conseguirá se conectar na próxima vez que abrir, que é quando isto entra em vigor. Para isso, a Crew precisa estar salva para esta porta com “Set Remote Host…” no menu Connection, mais um túnel: marque “Keep an SSH tunnel to this crew open” ali (macOS e Linux) ou mantenha seu próprio túnel SSH em execução. As conexões de Configurações → Crew remota param quando isto está desativado, então não contam.",
+        "feature_previews_save_denied": "Só o proprietário deste {{productName}} pode alterar as prévias de recursos, então “{{name}}” voltou ao estado anterior.",
+        "feature_previews_save_failed": "Não foi possível salvar “{{name}}”, então ele voltou ao estado anterior. Tente de novo.",
+        "feature_previews_carry_failed": "“{{name}}” está ativado só neste navegador: não foi possível salvá-lo neste {{productName}}. Recarregue a página para tentar de novo; até lá ele continua ativado.",
+        "feature_previews_carry_denied": "“{{name}}” foi ativado neste navegador antes de poder ser salvo aqui. Só o proprietário deste {{productName}} pode salvá-lo, então ele continua ativado só neste navegador."
       },
       "discordPanel": {
         "allowed_server_channel_ids": "IDs de canais de servidor permitidos",

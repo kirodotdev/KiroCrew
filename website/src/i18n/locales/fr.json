@@ -17443,11 +17443,15 @@
       "developerPanel": {
         "developer_tools": "Outils de développement",
         "feature_previews": "Aperçus de fonctionnalités",
-        "feature_previews_desc": "Fonctionnalités et pages non publiées. Les pages restent masquées dans la barre latérale et dans Rechercher partout jusqu’à ce que tu les actives ici ; les interrupteurs eux-mêmes apparaissent bien dans la recherche des paramètres. Inachevées à dessein, et valables pour cet appareil uniquement, sauf indication contraire sur une carte.",
+        "feature_previews_desc": "Fonctionnalités et pages non publiées. Tes choix sont enregistrés sur ce {{productName}} et s’appliquent partout où tu ouvres le tableau de bord, dans n’importe quel navigateur ou dans l’application de bureau. Les pages restent masquées dans la barre latérale et dans Rechercher partout jusqu’à ce que tu les actives ici ; les interrupteurs eux-mêmes apparaissent bien dans la recherche des paramètres. Inachevées à dessein.",
         "gateway": "Passerelle",
         "how_to_set_up_an_ssh_tunnel": "Configurer un tunnel SSH",
         "run_a_local_gateway": "Exécuter une passerelle locale",
-        "turn_it_off_only_when_a_gateway_already_answers": "Démarre une passerelle sur cette machine. Laisse-la activée sauf si le port de cette app atteint déjà une Crew sur une autre machine ; sinon l'app ne pourra pas se connecter à sa prochaine ouverture, moment où ce réglage prend effet. Il faut pour cela que la Crew soit enregistrée pour ce port avec « Set Remote Host… » dans le menu Connection, plus un tunnel : coche « Keep an SSH tunnel to this crew open » à cet endroit (macOS et Linux) ou garde ton propre tunnel SSH actif. Les connexions de Réglages → Crew distante s'arrêtent quand ce réglage est désactivé ; elles ne comptent donc pas."
+        "turn_it_off_only_when_a_gateway_already_answers": "Démarre une passerelle sur cette machine. Laisse-la activée sauf si le port de cette app atteint déjà une Crew sur une autre machine ; sinon l'app ne pourra pas se connecter à sa prochaine ouverture, moment où ce réglage prend effet. Il faut pour cela que la Crew soit enregistrée pour ce port avec « Set Remote Host… » dans le menu Connection, plus un tunnel : coche « Keep an SSH tunnel to this crew open » à cet endroit (macOS et Linux) ou garde ton propre tunnel SSH actif. Les connexions de Réglages → Crew distante s'arrêtent quand ce réglage est désactivé ; elles ne comptent donc pas.",
+        "feature_previews_save_denied": "Seul le propriétaire de ce {{productName}} peut modifier les aperçus de fonctionnalités, « {{name}} » a donc été rétabli.",
+        "feature_previews_save_failed": "Impossible d’enregistrer « {{name}} », il a donc été rétabli. Réessaie.",
+        "feature_previews_carry_failed": "« {{name}} » est activé dans ce navigateur uniquement : impossible de l’enregistrer sur ce {{productName}}. Recharge la page pour réessayer ; il reste activé d’ici là.",
+        "feature_previews_carry_denied": "« {{name}} » a été activé dans ce navigateur avant de pouvoir être enregistré ici. Seul le propriétaire de ce {{productName}} peut l’enregistrer, il reste donc activé dans ce navigateur uniquement."
       },
       "discordPanel": {
         "allowed_server_channel_ids": "ID de canaux de serveur autorisés",

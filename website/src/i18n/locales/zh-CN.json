@@ -16853,11 +16853,15 @@
       "developerPanel": {
         "developer_tools": "开发者工具",
         "feature_previews": "功能预览",
-        "feature_previews_desc": "尚未发布的功能和页面。在此开启之前，这些页面不会出现在侧边栏和全局搜索中；下面的开关本身则可以通过设置搜索找到。这些内容有意保留未完善的状态；除卡片另有说明外，开关仅对本设备生效。",
+        "feature_previews_desc": "尚未发布的功能和页面。你在这里的选择保存在此 {{productName}} 上，无论在哪个浏览器或桌面应用中打开仪表板都会生效。在此开启之前，这些页面不会出现在侧边栏和全局搜索中；下面的开关本身则可以通过设置搜索找到。这些内容有意保留未完善的状态。",
         "gateway": "网关",
         "how_to_set_up_an_ssh_tunnel": "如何设置 SSH 隧道",
         "run_a_local_gateway": "运行本地网关",
-        "turn_it_off_only_when_a_gateway_already_answers": "在这台机器上启动网关。除非本应用的端口已经连到另一台机器上的 Crew，否则请保持开启；不然下次打开应用时（也就是此设置生效时）将无法连接。为此需要用 Connection 菜单中的“Set Remote Host…”为此端口保存该 Crew，并且要有隧道：在那里勾选“Keep an SSH tunnel to this crew open”（macOS 和 Linux），或自己保持 SSH 隧道运行。关闭此项后，设置 → 远程 Crew 中的连接会停止，所以不算数。"
+        "turn_it_off_only_when_a_gateway_already_answers": "在这台机器上启动网关。除非本应用的端口已经连到另一台机器上的 Crew，否则请保持开启；不然下次打开应用时（也就是此设置生效时）将无法连接。为此需要用 Connection 菜单中的“Set Remote Host…”为此端口保存该 Crew，并且要有隧道：在那里勾选“Keep an SSH tunnel to this crew open”（macOS 和 Linux），或自己保持 SSH 隧道运行。关闭此项后，设置 → 远程 Crew 中的连接会停止，所以不算数。",
+        "feature_previews_save_denied": "只有此 {{productName}} 的所有者可以更改功能预览，因此“{{name}}”已恢复原状。",
+        "feature_previews_save_failed": "无法保存“{{name}}”，因此已恢复原状。请重试。",
+        "feature_previews_carry_failed": "“{{name}}”仅在此浏览器中开启：无法保存到此 {{productName}}。请重新加载页面后重试；在此之前它会保持开启。",
+        "feature_previews_carry_denied": "“{{name}}”在保存到这里之前就已在此浏览器中开启。只有此 {{productName}} 的所有者可以保存它，因此它仅在此浏览器中保持开启。"
       },
       "discordPanel": {
         "allowed_server_channel_ids": "允许的服务器频道 ID",

@@ -16853,11 +16853,15 @@
       "developerPanel": {
         "developer_tools": "開発者ツール",
         "feature_previews": "機能プレビュー",
-        "feature_previews_desc": "未リリースの機能とページです。ここでオンにするまで、ページ自体はサイドバーと「すべてから検索」には表示されませんが、下のスイッチは設定の検索で見つかります。内容は意図的に未完成のままです。カードに別の記載がない限り、設定はこのデバイスのみに適用されます。",
+        "feature_previews_desc": "未リリースの機能とページです。ここでの選択はこの {{productName}} に保存され、どのブラウザーやデスクトップアプリでダッシュボードを開いても同じように適用されます。ここでオンにするまで、ページ自体はサイドバーと「すべてから検索」には表示されませんが、下のスイッチは設定の検索で見つかります。内容は意図的に未完成のままです。",
         "gateway": "ゲートウェイ",
         "how_to_set_up_an_ssh_tunnel": "SSH トンネルの設定方法",
         "run_a_local_gateway": "ローカルゲートウェイを実行する",
-        "turn_it_off_only_when_a_gateway_already_answers": "このマシンでゲートウェイを起動します。このアプリのポートがすでに別のマシンのクルーにつながっている場合を除き、オンのままにしてください。そうでないと、次回アプリを開いたとき（この設定が反映されるとき）に接続できません。そのためには、Connection メニューの「Set Remote Host…」でこのポートのクルーを保存し、さらにトンネルが必要です：そこで「Keep an SSH tunnel to this crew open」にチェックを入れる（macOS と Linux）か、ご自身の SSH トンネルを維持してください。これがオフのときは 設定 → リモートクルー の接続は止まるため、条件を満たしません。"
+        "turn_it_off_only_when_a_gateway_already_answers": "このマシンでゲートウェイを起動します。このアプリのポートがすでに別のマシンのクルーにつながっている場合を除き、オンのままにしてください。そうでないと、次回アプリを開いたとき（この設定が反映されるとき）に接続できません。そのためには、Connection メニューの「Set Remote Host…」でこのポートのクルーを保存し、さらにトンネルが必要です：そこで「Keep an SSH tunnel to this crew open」にチェックを入れる（macOS と Linux）か、ご自身の SSH トンネルを維持してください。これがオフのときは 設定 → リモートクルー の接続は止まるため、条件を満たしません。",
+        "feature_previews_save_denied": "機能プレビューを変更できるのはこの {{productName}} の所有者だけのため、「{{name}}」は元に戻されました。",
+        "feature_previews_save_failed": "「{{name}}」を保存できなかったため、元に戻されました。もう一度お試しください。",
+        "feature_previews_carry_failed": "「{{name}}」はこのブラウザーでのみオンです。この {{productName}} に保存できませんでした。ページを再読み込みしてもう一度お試しください。それまではオンのままです。",
+        "feature_previews_carry_denied": "「{{name}}」はここに保存される前に、このブラウザーでオンにされました。保存できるのはこの {{productName}} の所有者だけのため、このブラウザーでのみオンのままになります。"
       },
       "discordPanel": {
         "allowed_server_channel_ids": "許可されたサーバーチャネル ID",
