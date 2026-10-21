@@ -549,7 +549,14 @@ reading the thread as persistent after the next restart. The header of a row
 flagged before the stamp existed is ensured by `SessionMap.stamp_privacy_headers`,
 which the session pool's `start_pool` runs right after `prune` (awaited in place
 by a blocking start; inside the already-scheduled task by a non-blocking one, so
-a live-config apply or a background-session restart never waits on it): every
+a live-config apply or a background-session restart never waits on it), on
+every `start_pool`; a sweep in which any row's stamp failed raises
+`PrivacySweepIncomplete`, which the pool logs, and the next `start_pool` retries
+the repair. The locked per-row walk lives in
+`privacy_mode.stamp_flagged_headers`, beside the lock it holds, so the lock stays
+module-private and the invariant "every durable privacy write on a key runs
+under its lock" has one owner; `SessionMap` supplies only the two undecorated
+data probes `privacy_flagged_entries` and `privacy_flags`. Every
 flagged row is named under the map lock (a snapshot of candidates, no file
 touched), then each row is re-read and stamped under that session's
 durable-write lock (`privacy_mode._serialized`, the lock the modifier's commit

@@ -287,8 +287,9 @@ class TestPrivacyFlagsAndPrune:
     async def test_an_unwritable_or_unreadable_header_is_not_reported_as_recorded(
         self, patched, monkeypatch
     ):
-        """Unreadable is not "recorded": the count says so, and the row stays."""
+        """Unwritable is not "recorded": the sweep raises naming the row, and the row stays."""
         from kiro_crew.history import ConversationLog
+        from kiro_crew.messaging.privacy_mode import PrivacySweepIncomplete
 
         await asyncio.to_thread(self._log, seed=True, mode="incognito")
         monkeypatch.setattr(
@@ -296,6 +297,28 @@ class TestPrivacyFlagsAndPrune:
             "update_metadata_if",
             lambda self, *a, **kw: (_ for _ in ()).throw(OSError("read-only")),
         )
+        sm = SessionMap()
+        sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
+        sm.set_flag(self.KEY, "incognito", True)
+        sm.prune()
+        with pytest.raises(PrivacySweepIncomplete) as incomplete:
+            await sm.stamp_privacy_headers()
+        assert incomplete.value.keys == [self.KEY]
+        assert sm.get_flag(self.KEY, "incognito") is True
+
+    @pytest.mark.asyncio
+    async def test_a_message_first_transcript_is_not_a_repair_owed(self, patched):
+        """A legacy transcript whose first line is a MESSAGE (valid JSON, not a
+        header) is one no line writer will stamp, so the sweep counts it not
+        recorded and finishes rather than raising forever. Mutation: raise for
+        it like any other existing transcript whose header is too weak -- red."""
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog()
+        log.init()
+        path = log._path(self.KEY)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"role": "user", "content": "hello"}\n', encoding="utf-8")
         sm = SessionMap()
         sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
         sm.set_flag(self.KEY, "incognito", True)
@@ -544,19 +567,21 @@ class TestPrivacyFlagsAndPrune:
         has exactly one ``async with``, its context is ``_serialized(...)``,
         the row is re-read (``privacy_flags``) inside it before the probe, and
         the probe is handed to ``to_thread`` there -- never called on the loop,
-        never outside the lock. Mutation: drop the lock, drop the re-read, or
+        never outside the lock. The locked walk lives in
+        ``privacy_mode.stamp_flagged_headers`` (its home, beside the lock it
+        owns), not ``SessionMap``. Mutation: drop the lock, drop the re-read, or
         move the probe out of the block -- red by name.
         """
         import ast
         import inspect
 
-        from kiro_crew import session_map as session_map_mod
+        from kiro_crew.messaging import privacy_mode as privacy_mode_mod
 
-        tree = ast.parse(inspect.getsource(session_map_mod))
+        tree = ast.parse(inspect.getsource(privacy_mode_mod))
         sweep = next(
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "stamp_privacy_headers"
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "stamp_flagged_headers"
         )
         blocks = [node for node in ast.walk(sweep) if isinstance(node, ast.AsyncWith)]
         assert len(blocks) == 1, "one lock block per row"
@@ -753,6 +778,160 @@ class TestANonBlockingStartDoesNotWaitForTheSweep:
             assert mgr._session_map.get_flag(key, "incognito") is True
         finally:
             await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_runs_on_every_start_and_before_the_background_start(
+        self, patched, monkeypatch
+    ):
+        """A reset path (``refresh_defaults`` / ``reload_provider_factory`` / the
+        dashboard restart) sets ``pool_started`` False and re-enters
+        ``start_pool``, and the sweep runs AGAIN: a release whose compensating
+        row clear and header re-stamp both failed mid-process relies on the next
+        sweep to put the mode back into the header, so no start may skip it. The
+        sweep runs BEFORE the background session so a flagged thread's header is
+        stamped before any turn can read it as persistent. Recorded as an ORDER
+        of events, never by timing. Mutation: guard the sweep to once per process
+        -> it runs once, red; order the sweep after ``ensure_background`` -> the
+        ordering assertion goes red.
+        """
+        from kiro_crew.session_pool import WarmSessionPool
+
+        events: list[str] = []
+
+        real_ensure = WarmSessionPool._ensure_background_unless_lazy
+
+        async def _recording_ensure(self) -> None:
+            events.append("ensure_background")
+            await real_ensure(self)
+
+        async def _recording_sweep(self) -> int:
+            events.append("sweep")
+            await asyncio.sleep(0)
+            return 0
+
+        monkeypatch.setattr(WarmSessionPool, "_ensure_background_unless_lazy", _recording_ensure)
+        monkeypatch.setattr(SessionMap, "stamp_privacy_headers", _recording_sweep)
+
+        async def _drain(mgr) -> None:
+            for _ in range(20):
+                pending = [t for t in mgr._background_tasks if not t.done()]
+                if not pending:
+                    break
+                await asyncio.gather(*pending)
+
+        mgr = self._manager()
+        try:
+            await mgr.start_pool(blocking=False)
+            await _drain(mgr)
+            # A live-config apply / provider reload resets the gate and re-enters.
+            mgr._pool_started = False
+            await mgr.start_pool(blocking=False)
+            await _drain(mgr)
+            assert events.count("sweep") == 2, f"a start_pool re-entry skipped the sweep: {events}"
+            assert events.count("ensure_background") == 2, events
+            # Each sweep ran before its background start, so no turn can read a
+            # flagged row as persistent before its header is stamped.
+            assert events == ["sweep", "ensure_background"] * 2, events
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_header_stamp_is_retried_by_a_later_start(self, patched, monkeypatch):
+        """A legacy-flagged row whose header stamp FAILS (the write raises, as an
+        I/O error or a lock timeout does) leaves the header unrestricted, and the
+        header-only readers (``get_chat_session``'s guard among them) would serve
+        the private transcript. The pool logs the sweep's
+        ``PrivacySweepIncomplete`` and still starts, and the next ``start_pool``
+        (a live-config apply, a provider reload) sweeps again and repairs the
+        header. Mutation: skip the sweep on a ``start_pool`` re-entry -- red: the
+        header is never stamped.
+        """
+        from kiro_crew.history import ConversationLog
+
+        key = TestPrivacyFlagsAndPrune.KEY
+        await asyncio.to_thread(TestPrivacyFlagsAndPrune._log, seed=True)
+        seeded = SessionMap()
+        seeded.set(key, "sid-reclaimed-by-kiro-cli")
+        seeded.set_flag(key, "incognito", True)  # a legacy row: map flag, no header mode
+        seeded.flush()
+
+        real_update = ConversationLog.update_metadata_if
+
+        def _failing_update(self, k, *args, **kwargs):
+            if k == key:
+                raise OSError("simulated header-write failure")
+            return real_update(self, k, *args, **kwargs)
+
+        mgr = self._manager()
+        try:
+            with pytest.MonkeyPatch.context() as failing:
+                failing.setattr(ConversationLog, "update_metadata_if", _failing_update)
+                await mgr.start_pool()
+            assert (
+                ConversationLog().get_metadata(key).get("memory_mode") is None
+            ), "premise: the failed stamp left the header unrestricted"
+            # A live-config apply / provider reload resets the gate and re-enters.
+            mgr._pool_started = False
+            await mgr.start_pool()
+            assert (
+                ConversationLog().get_metadata(key).get("memory_mode") == "incognito"
+            ), "a failed stamp counted the sweep done, so the retry never repaired the header"
+            assert mgr._session_map.get_flag(key, "incognito") is True
+        finally:
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_fails_then_recovers_is_a_repair_still_owed(
+        self, patched, monkeypatch
+    ):
+        """The tighten-only write meets a header read that fails (every bounded
+        attempt, ``METADATA_LINE_TRANSIENT``) and defers without writing; the
+        probe's read-back a moment later RECOVERS and returns the unrestricted
+        header. That is still a repair owed: the probe raises, so the sweep
+        raises ``PrivacySweepIncomplete`` naming the row instead of reporting a
+        clean pass, and the next sweep stamps the header. Mutation: answer
+        ``False`` for an existing transcript whose read-back header is still
+        weaker than its flag -- red: the sweep returns as if nothing were owed.
+        """
+        from kiro_crew.history import METADATA_LINE_TRANSIENT, ConversationLog
+        from kiro_crew.messaging.privacy_mode import PrivacySweepIncomplete
+
+        key = TestPrivacyFlagsAndPrune.KEY
+        await asyncio.to_thread(TestPrivacyFlagsAndPrune._log, seed=True)
+        sm = SessionMap()
+        sm.set(key, "sid-reclaimed-by-kiro-cli")
+        sm.set_flag(key, "incognito", True)  # a legacy row: map flag, no header mode
+        sm.prune()
+
+        real_status = ConversationLog._read_metadata_status
+        real_state = ConversationLog.metadata_line_state
+        failing = {"status": 1, "state": 1}
+
+        def _status_fails_once(self, k):
+            if k == key and failing["status"]:
+                failing["status"] -= 1
+                return {}, False
+            return real_status(self, k)
+
+        def _state_transient_once(self, k):
+            if k == key and failing["state"]:
+                failing["state"] -= 1
+                return METADATA_LINE_TRANSIENT
+            return real_state(self, k)
+
+        with pytest.MonkeyPatch.context() as flaky:
+            flaky.setattr(ConversationLog, "_read_metadata_status", _status_fails_once)
+            flaky.setattr(ConversationLog, "metadata_line_state", _state_transient_once)
+            with pytest.raises(PrivacySweepIncomplete) as incomplete:
+                await sm.stamp_privacy_headers()
+        assert failing == {"status": 0, "state": 0}, "premise: the write met a failed read"
+        assert incomplete.value.keys == [key]
+        assert (
+            ConversationLog().get_metadata(key).get("memory_mode") is None
+        ), "premise: the deferred write left the header unrestricted"
+        # The next sweep, with reads healthy again, stamps it.
+        assert await sm.stamp_privacy_headers() == 1
+        assert ConversationLog().get_metadata(key).get("memory_mode") == "incognito"
 
 
 def _provider_factory(session_key=None, agent=None, channel_id=None, **kwargs):
