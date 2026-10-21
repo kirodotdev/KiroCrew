@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         redact_for_display,
         remember_slack_options,
         slack_options_owner_key,
+        slot_history_key,
     )
 
 
@@ -141,6 +142,26 @@ def _resolve_session_target(
     # don't have the "dashboard:" prefix
     slot_key = job.session_key.removeprefix("dashboard:")
     return slot_key, job.name
+
+
+def _publishing_session_meta(state: DashboardState, session_key: str) -> dict[str, str] | None:
+    """The ``slot`` and ``history_key`` a bell note published by *session_key* links back to.
+
+    *session_key* must be the publisher's attested key (``attributable_session_key``),
+    never a request field, so a note can only name the session that published it. Only
+    the publisher's own slot counts: the banner treats a note whose ``slot`` is the chat
+    on screen as already shown there, which holds for the session that wrote it and for
+    no other, so a cron run with no tab of its own does not borrow its creator's.
+    ``history_key`` is the slot's transcript key, which is what resuming the session after
+    its tab closes needs: the bare slot name names no transcript. A slot the dashboard
+    does not hold yields ``None``: the note then carries no link rather than one to a
+    session the dashboard cannot show.
+    """
+    slot_key = dashboard_slot_key(session_key)
+    slot = state.get_slot(slot_key) if slot_key else None
+    if slot is None:
+        return None
+    return {"slot": slot_key, "history_key": slot_history_key(slot)}
 
 
 def _session_link_blocks(url: str) -> list[dict[str, Any]]:
@@ -833,7 +854,16 @@ async def _deliver_send_message_fallback(
     member = await asyncio.to_thread(member_identity_for_session, attribution_session)
     # A message that offers [OPTIONS:] asks the user to choose, so it is not muted.
     publisher = None if options else attribution_session or None
-    state.notify("agent", title, text, member=member, publisher_session=publisher)
+    # The link back to the sender stays even then: a question is where it is needed most.
+    session_meta = _publishing_session_meta(state, attribution_session)
+    state.notify(
+        "agent",
+        title,
+        text,
+        meta=session_meta,
+        member=member,
+        publisher_session=publisher,
+    )
     # No widget on either channel path, so a parsed [OPTIONS:] trailer is
     # re-attached as a numbered list rather than dropped: the user still
     # learns the choices exist and can answer by typing one. Built from the

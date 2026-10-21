@@ -22,7 +22,7 @@ _CHAT = "dashboard:chat-1-1700000000"
 def _state(*, jobs: list[Any] | None = None, title: str | None = "Fix login") -> MagicMock:
     state = MagicMock()
     state.crons.list_jobs.return_value = jobs or []
-    slot = None if title is None else SimpleNamespace(display_title=title)
+    slot = None if title is None else SimpleNamespace(key="chat-1-1700000000", display_title=title)
     state.get_slot.side_effect = lambda key: slot if key == "chat-1-1700000000" else None
     return state
 

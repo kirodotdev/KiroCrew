@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         DashboardState,
         NotificationPayload,
         NotificationValidationError,
+        _publishing_session_meta,
         _sel,
         attributable_session_key,
         caller_names_a_missing_slot,
@@ -29,7 +30,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     Agent sessions publish schema-v2 notifications through the system.agent
     channel. Body: ``{"title": str, "body"?: str, "priority"?: str,
     "url"?: str, "group_key"?: str, "actions"?: [{id,label,url?}]}``.
-    ``source``/``channel`` are server-fixed (never body-supplied), and the
+    ``source``/``channel``/``slot`` are server-fixed (never body-supplied), and the
     full payload validation applies — internal-path urls, action caps,
     length caps. Durability mirrors the app push: a 200 awaits the persist.
     """
@@ -120,9 +121,11 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     if actions is not None and not isinstance(actions, list):
         return web.json_response({"error": "actions must be a list"}, status=400)
     # Attribution comes from an attested, non-app session header, never the
-    # body, so no caller can put another crewmate's face on its note.
+    # body, so no caller can put another crewmate's face on its note or point
+    # its note at another session.
     attribution_key = await asyncio.to_thread(attributable_session_key, request)
     member = await asyncio.to_thread(member_identity_for_session, attribution_key)
+    session_meta = _publishing_session_meta(state, attribution_key)
     payload = NotificationPayload(
         source="system",
         channel="system.agent",
@@ -134,6 +137,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         group_key=body.get("group_key"),
         actions=actions,
         member=member,
+        meta=session_meta or {},
         publisher_session=attribution_key or None,
     )
     try:

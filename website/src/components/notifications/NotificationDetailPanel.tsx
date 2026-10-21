@@ -17,6 +17,7 @@ import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } f
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
 import { buildNotificationPrompt } from './notificationHandoff.prompt'
+import { isMemberThreadSlot } from '../../hooks/unreadOnAttention'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -24,6 +25,24 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 function logError(msg: string, err: unknown): void {
   // eslint-disable-next-line no-console -- intentional failure diagnostic
   console.error(msg, err)
+}
+
+/** The Members page that shows a note's mate thread, or null for a note from any
+ *  other session. The chat page does not render a mate's DM thread, so both of the
+ *  note's buttons open the page its sidebar row opens: the open slot's `agent`
+ *  names the mate, and an open thread without one opens the bare Members page.
+ *  Once the thread has closed, the note's `member` names the mate, and a note
+ *  without one returns null so Resume chat resumes it from history. */
+function memberThreadPage(
+  slotKey: string | undefined,
+  openSlot: { agent?: string } | null | undefined,
+  member: { name: string } | null,
+  slots: ReadonlyArray<{ key: string; mode?: string }>,
+): string | null {
+  if (!slotKey || !isMemberThreadSlot(slotKey, slots)) return null
+  const name = openSlot ? openSlot.agent : member?.name
+  if (name) return `/members?member=${encodeURIComponent(name)}`
+  return openSlot ? '/members' : null
 }
 
 /**
@@ -93,6 +112,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
 
   // Direct slot link from notification meta
   const directSlot = n.slot ? slots.find(s => s.key === n.slot) : null
+  const memberPage = memberThreadPage(n.slot, directSlot, member, slots)
 
   // Fuzzy match: try to find a related chat slot from the body/title
   const relatedSlot = useMemo(() => {
@@ -164,7 +184,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
           {handoffNotice}
         </>)}
         {directSlot && !(n.kind === 'cron' && n.job_id && n.slot) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { dispatch(switchSlot({ key: directSlot.key, announceOnMissing: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { if (memberPage) { navigate(memberPage); return } dispatch(switchSlot({ key: directSlot.key, announceOnMissing: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
         )}
         {!directSlot && n.slot && !(n.kind === 'cron' && n.job_id && n.slot) && (
           /* `.unwrap()` is load-bearing for the diagnostic: a thunk dispatch
@@ -174,7 +194,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
              renders, so a resume that failed OR landed on a surface the chat
              page cannot display is EXPLAINED there. Staying put would leave the
              button looking dead, which is the defect this touches (#5925). */
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(async () => { try { await dispatch(resumeFromHistory({ key: n.slot!, title: n.title })).unwrap() } catch (e) { logError('Resume failed', e) } navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.resume_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(async () => { if (memberPage) { navigate(memberPage); return } try { await dispatch(resumeFromHistory({ key: n.history_key ?? n.slot!, title: n.title })).unwrap() } catch (e) { logError('Resume failed', e) } navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.resume_chat')}</button>
         )}
         {!directSlot && !n.slot && relatedSlot && (
           <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { dispatch(switchSlot({ key: relatedSlot.key, announceOnMissing: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>

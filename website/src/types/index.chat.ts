@@ -578,6 +578,8 @@ export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
   slot?: string; session_key?: string; slack_link?: string
+  /** Transcript identity used to resume a closed slot; the slot name alone may name no history. */
+  history_key?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps
   source?: string; channel?: string; priority?: string; silenced?: boolean
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
