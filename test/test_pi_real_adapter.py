@@ -52,6 +52,8 @@ import asyncio
 import json
 import os
 import queue
+import shutil
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -96,6 +98,19 @@ _CREW_TITLE = "mcp__probe-server__echo"
 
 
 # ── the scripted model ──────────────────────────────────────────────────────
+
+
+class _LoopbackServer(ThreadingHTTPServer):
+    """The model's listener. Reached by port, never by name, so the bind skips the
+    ``socket.getfqdn`` lookup ``http.server`` makes, which can stall on some hosts."""
+
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 class _Model(BaseHTTPRequestHandler):
@@ -434,6 +449,62 @@ def _write_pi_config(agent_dir: Path, port: int) -> None:
     )
 
 
+def _child_env(client: AcpClient) -> dict[str, str]:
+    """The environment the adapter child gets, built by the bindings a spawn uses.
+
+    The session's overlay, the spawn-env repair and the agent-subprocess scrub, then
+    the launch tail's PATH augmentation -- the same steps ``_verify_pi_gate`` takes
+    for the read-back, so the adapter, the read-back and this drive resolve the same
+    ``node`` and the same ``pi``.
+    """
+    from kiro_crew.acp.client import _resolve_spawn_env, augmented_path
+
+    env = pi_mod.scrub_agent_subprocess_env(
+        _resolve_spawn_env(
+            {**os.environ, **client._agent_env_for_spawn(), **client._extra_env},
+            kiro_api_key=False,
+        )
+    )
+    env["PATH"] = augmented_path(env.get("PATH", ""))
+    return env
+
+
+def _readback_diagnosis(client: AcpClient, launcher: str, work: Path) -> str:
+    """pi's own answer to the read-back, for a refusal that only names the fault class."""
+    if not launcher:
+        return "the launch refused before it wrote a gate launcher"
+    env = _child_env(client)
+    env["PI_OFFLINE"] = "1"
+    node = shutil.which("node", path=env["PATH"])
+    try:
+        version = subprocess.run(  # noqa: S603 - the node the child would run
+            [node or "node", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        ).stdout.strip()
+        completed = subprocess.run(  # noqa: S603 - Crew's own launcher
+            [launcher, *pi_mod._PI_RPC_ARGS],
+            input=json.dumps(pi_mod._PI_READBACK_REQUEST) + "\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            cwd=work,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"the read-back could not be re-run: {exc}"
+    return (
+        f"node on the child's PATH: {node} ({version}); read-back exit {completed.returncode}\n"
+        f"stderr: {completed.stderr[-2500:]}\nstdout: {completed.stdout[-1000:]}"
+    )
+
+
 def _drive(root: Path) -> dict:
     """Launch the pinned pair through ``PiLaunch`` and drive one scripted session."""
     work = root / "work"
@@ -444,6 +515,16 @@ def _drive(root: Path) -> dict:
     # drive's root so nothing outlives it.
     child_tmp = root / "tmp"
     child_tmp.mkdir()
+    # The node this lane installed, first on the child's PATH. pi's bin is a
+    # `#!/usr/bin/env node` script and pi needs Node 22.19+; the launch tail's PATH
+    # augmentation puts well-known directories (``/usr/local/bin`` among them) ahead
+    # of the inherited PATH, and a runner image's system node there can be older.
+    # ``~/.local/bin`` leads that list, and HOME is this drive's own home.
+    node = shutil.which("node")
+    if node:
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        (local_bin / "node").symlink_to(node)
     mcp_log = root / "mcp-calls.jsonl"
     stub_mcp = root / "stub_mcp.py"
     stub_mcp.write_text(_STUB_MCP, encoding="utf-8")
@@ -456,7 +537,7 @@ def _drive(root: Path) -> dict:
 
     model_log: list[dict] = []
     handler = type("Model", (_Model,), {"log": model_log, "lock": threading.Lock()})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _LoopbackServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     agent_dir = root / "agent"
     _write_pi_config(agent_dir, server.server_address[1])
@@ -491,19 +572,24 @@ def _drive(root: Path) -> dict:
             mp.setattr(client, "_session_mcp_servers", lambda: [dict(element)])
             mp.setattr(client, "_pooled_mcp_servers", lambda: [])
             launch = pi_mod.PiLaunch()
-            plan = asyncio.run(
-                launch.resolve_spawn(
-                    SpawnContext(
-                        agent="",
-                        work_dir=work,
-                        model=None,
-                        environ=dict(os.environ),
-                        home=home,
-                        sandbox_mode="auto",
-                        session=client,
+            try:
+                plan = asyncio.run(
+                    launch.resolve_spawn(
+                        SpawnContext(
+                            agent="",
+                            work_dir=work,
+                            model=None,
+                            environ=dict(os.environ),
+                            home=home,
+                            sandbox_mode="auto",
+                            session=client,
+                        )
                     )
                 )
-            )
+            except pi_mod.AcpToolGateUnroutable as exc:
+                # The launch's refusal names the fault class, not pi's own words; a
+                # red lane needs those, so ask the same launcher once more and say.
+                pytest.fail(f"{exc}\n{_readback_diagnosis(client, launch._launcher, work)}")
             nonce = client._pi_gate_nonce
             servers = tuple(client._pi_mcp_server_names)
             out.update(
@@ -515,14 +601,7 @@ def _drive(root: Path) -> dict:
                 sealed=pi_mod._seal_pi_gate_extension(),
                 initialize=client._initialize_params(),
             )
-            from kiro_crew.acp.client import _resolve_spawn_env
-
-            env = pi_mod.scrub_agent_subprocess_env(
-                _resolve_spawn_env(
-                    {**os.environ, **client._agent_env_for_spawn(), **client._extra_env},
-                    kiro_api_key=False,
-                )
-            )
+            env = _child_env(client)
             launch.apply_spawn_env(env)
             out["env_launcher"] = env.get("PI_ACP_PI_COMMAND")
             # pi's registry, asked again through the launcher the session runs, so

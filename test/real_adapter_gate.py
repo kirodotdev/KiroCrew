@@ -71,9 +71,9 @@ LOCKFILE = MANIFEST_DIR / "package-lock.json"
 CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp"
 OPENCODE_PACKAGE = "opencode-ai"
 #: pi is TWO packages, and both are pinned: the third-party ACP adapter, and the
-#: agent it spawns. Either can break the session on its own -- the adapter by no
-#: longer honouring ``PI_ACP_PI_COMMAND`` or no longer forwarding a confirm dialog,
-#: the agent by no longer listing an extension's command or loading it at all -- so
+#: agent it spawns. Either can break the session on its own -- the adapter if it
+#: ignores ``PI_ACP_PI_COMMAND`` or drops a confirm dialog, the agent if it omits
+#: an extension's command from its registry or does not load the extension -- so
 #: a pin on one alone would let the other drift unmeasured.
 PI_ACP_PACKAGE = "pi-acp"
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
