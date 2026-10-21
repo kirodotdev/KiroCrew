@@ -1,25 +1,22 @@
 /**
  * Geometry harness for a Slack code channel row's meta line at narrow widths.
  *
- * The meta line reads: agent name, the code-channel chip, the time. When it is
- * short of room the agent name must give way first, then the channel name, and
- * the Slack mark and the time must never clip. jsdom computes no layout, so the
- * unit test can only pin the classes; this loads the REAL built SPA with canned
- * slots, nested the two ways the sidebar nests them (three folders deep, and the
- * conductor lane's conductor > worker > worker), with a long agent name and long
- * channel names, and MEASURES each row at the default sidebar width (260px), the
- * narrowest one (180px) and a 320px phone:
+ * The meta line reads: agent name, the channel's Slack mark (alone: a link named
+ * "Open #channel in Slack"), the time. The mark must never shrink or clip, and
+ * no channel text may render in the row. jsdom computes no layout, so the unit
+ * test can only pin the DOM and classes; this loads the REAL built SPA with
+ * canned slots, nested the two ways the sidebar nests them (three folders deep,
+ * and the conductor lane's conductor > worker > worker), with a long agent name
+ * and long channel names, and MEASURES each row at the default sidebar width
+ * (260px), the narrowest one (180px) and a 320px phone:
  *
- *   - the Slack mark is drawn at exactly its fixed 10px, wholly inside the chip
- *     and its line;
- *   - the chip ends before the time starts, and the time is whole -- unless the
- *     line is too short for the time beside an icon-only chip with the agent
- *     name gone, which is reported (NOTE) next to what an ordinary row at the
- *     same depth does (BASELINE);
- *   - the channel name shows "#" plus two characters or leaves (never "#…");
- *   - when the channel name is cut, the agent name is cut too (it yields first)
- *     and the link glyph has already gone;
- *   - an icon-only chip keeps its mark centred, never an empty tail.
+ *   - the Slack mark is drawn at exactly its fixed 10x10px and no ancestor
+ *     (chip, meta line, row) clips any of it;
+ *   - the link's accessible name is exactly "Open #<channel> in Slack", the
+ *     mark renders no text, and the channel name appears nowhere in the row;
+ *   - the mark ends before the time starts, and the time is whole unless the
+ *     agent name has already given all its width (NOTE), which is reported
+ *     next to what an ordinary row at the same depth does (BASELINE).
  *
  * Usage: node scripts/capture-slack-code-channel-row-fit.mjs [outDir] [--expect-bug]
  *   --expect-bug  exit 0 only if some check FAILS (run it against a build
@@ -105,108 +102,55 @@ async function measure(page, title) {
   return page.locator('.session-row').filter({ hasText: title }).evaluate(el => {
     const line = el.querySelector('.session-agent-label')
     const chip = line.querySelector('[data-testid="code-channel-badge-row"]')
-    const mark = chip.querySelector('[data-testid="code-channel-slack-mark"]') || chip.querySelector('svg, img')
-    const agent = line.querySelector('[data-testid="session-row-agent"]') || line.firstElementChild
-    const name = chip.querySelector('[data-testid="code-channel-name"]') || chip.querySelector('span[dir="auto"]')
+    const mark = chip.querySelector('[data-testid="code-channel-slack-mark"]')
+    const agent = line.querySelector('[data-testid="session-row-agent"]')
     const time = line.querySelector('[data-testid="session-row-time"]')
-    const glyph = chip.querySelector('[data-testid="code-channel-link-glyph"]') || chip.querySelector('svg.lucide-external-link')
-    const box = n => { const r = n.getBoundingClientRect(); return { x: r.x, right: r.right, w: r.width, top: r.top } }
-    let floor = 0
-    if (name) {
-      // The readable minimum: "#" plus two characters and the ellipsis, in the
-      // name's own font. Anything narrower is a bare "#…" or worse.
-      const probe = name.cloneNode(false)
-      probe.textContent = `${(name.textContent || '').slice(0, 3)}\u2026`
-      probe.style.cssText = 'position:absolute;visibility:hidden;max-width:none;min-width:0;width:auto;overflow:visible'
-      name.parentElement.appendChild(probe)
-      floor = probe.getBoundingClientRect().width
-      probe.remove()
+    const box = n => { const r = n.getBoundingClientRect(); return { x: r.x, right: r.right, w: r.width, h: r.height, top: r.top, bottom: r.bottom } }
+    const mb = mark.getBoundingClientRect()
+    // Every clipping ancestor up to the row: the mark must lie wholly inside
+    // each, or part of it is cut off on screen.
+    const clippers = []
+    for (let n = mark.parentElement; n && n !== el.parentElement; n = n.parentElement) {
+      const cs = getComputedStyle(n)
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+        const r = n.getBoundingClientRect()
+        const inside = mb.left >= r.left - 0.5 && mb.right <= r.right + 0.5 && mb.top >= r.top - 0.5 && mb.bottom <= r.bottom + 0.5
+        if (!inside) clippers.push(`${n.tagName.toLowerCase()}.${(n.className || '').toString().split(' ').slice(0, 2).join('.')}`)
+      }
     }
-    const nb = name ? name.getBoundingClientRect() : null
-    const cb = chip.getBoundingClientRect()
-    const onFirstLine = n => { const r = n.getBoundingClientRect(); return r.width >= 1 && r.top < cb.top + 8 && r.right <= cb.right + 0.5 }
-    // Right edge of what the chip actually draws on its one visible line: its
-    // leaves (text runs and glyphs), not the boxes that hold them.
-    let inkRight = cb.x
-    let inkLeft = cb.right
-    for (const n of chip.querySelectorAll('*')) {
-      if (n.closest('svg') && n.tagName.toLowerCase() !== 'svg') continue
-      if (n.tagName.toLowerCase() !== 'svg' && n.children.length > 0) continue
-      if (getComputedStyle(n).position === 'absolute' || !onFirstLine(n)) continue
-      inkRight = Math.max(inkRight, n.getBoundingClientRect().right)
-      inkLeft = Math.min(inkLeft, n.getBoundingClientRect().left)
-    }
-    const minChip = parseFloat(getComputedStyle(chip).minWidth) || 0
     return {
-      slot: (() => { const s = chip.querySelector('[data-testid="code-channel-text"]'); return s ? s.getBoundingClientRect().toJSON() : null })(),
-      word: (() => { const s = chip.querySelector('[data-testid="code-channel-status"]'); return s ? s.getBoundingClientRect().toJSON() : null })(),
-      depth: Number(el.getAttribute('data-conductor-depth') || el.closest('[data-conductor-depth]')?.getAttribute('data-conductor-depth') || 0),
-      glyphShown: glyph ? onFirstLine(glyph) : false,
-      stateGlyph: (() => { const g = chip.querySelector('[data-testid="code-channel-status-glyph"]'); return g ? onFirstLine(g) : null })(),
-      line: box(line), chip: box(chip), mark: box(mark), time: box(time), inkRight, inkLeft, minChip,
+      line: box(line), chip: box(chip), mark: box(mark), time: box(time),
+      clippedBy: clippers,
+      ariaLabel: chip.getAttribute('aria-label'),
+      chipText: chip.textContent,
+      rowText: el.textContent,
       timeCut: time.scrollWidth > time.clientWidth + 0.5,
-      agentCut: agent.scrollWidth > agent.clientWidth + 0.5,
       agentW: agent.getBoundingClientRect().width,
-      name: name ? {
-        w: nb.width, cut: name.scrollWidth > name.clientWidth + 0.5, floor,
-        // An sr-only name, or one the chip wrapped onto its clipped second line.
-        visible: getComputedStyle(name).position !== 'absolute',
-        // Not on the chip's first line: the chip's fixed height clips it away
-        // (wholly or, worse, in half).
-        wrapped: nb.top > cb.top + 3,
-      } : null,
     }
   })
 }
 
-async function checkRow(page, title, where, { nameMustShow = false } = {}) {
+async function checkRow(page, title, where, channelName) {
   const m = await measure(page, title)
   const at = `${where} / ${title}`
   if (process.env.ROWFIT_DEBUG) console.log(at, JSON.stringify(m))
-  if (nameMustShow && m.name && m.name.visible) {
-    check(`${at}: channel name stays on the chip at this width`, !m.name.wrapped)
-  }
   // The top invariant, measured: the mark is drawn at exactly its fixed size and
-  // nothing (chip, meta line) cuts any of it off.
-  check(`${at}: Slack mark is exactly its fixed 10px`, Math.abs(m.mark.w - 10) < 0.5, `width ${m.mark.w.toFixed(1)}`)
-  check(`${at}: Slack mark lies inside the chip`, m.mark.x >= m.chip.x - 0.5 && m.mark.right <= m.chip.right + 0.5,
-    `mark ${m.mark.x.toFixed(1)}-${m.mark.right.toFixed(1)} chip ${m.chip.x.toFixed(1)}-${m.chip.right.toFixed(1)}`)
-  check(`${at}: Slack mark lies inside its line`, m.mark.x >= m.line.x - 0.5 && m.mark.right <= m.line.right + 0.5)
-  // An archived or wrapped-up chip keeps its state glyph at every width, so it
-  // never reads as an active one.
-  if (m.stateGlyph !== null) check(`${at}: state glyph stays beside the mark`, m.stateGlyph === true)
-  // A state word wraps away only when the chip truly lacks room for its floor.
-  if (m.word && m.slot && m.slot.top > m.chip.top + 3) {
-    check(`${at}: state word leaves only when the chip has no room for it`, m.chip.w - (m.inkRight - m.inkLeft) < 40,
-      `chip ${m.chip.w.toFixed(0)}px, icons ${(m.inkRight - m.inkLeft).toFixed(0)}px`)
-  }
-  check(`${at}: chip ends before the time`, m.chip.right <= m.time.x + 0.5, `chip right ${m.chip.right.toFixed(1)} time x ${m.time.x.toFixed(1)}`)
-  // The time never truncates on the chip's account. The one case it is cut is
-  // a line too short for the time beside even an icon-only chip with the agent
-  // gone; there nothing in the chip has width left to give (and an ordinary row
-  // at that depth fares no better, see `baseline`).
+  // no ancestor (chip, meta line, row) cuts any of it off.
+  check(`${at}: Slack mark is exactly its fixed 10x10px`, Math.abs(m.mark.w - 10) < 0.5 && Math.abs(m.mark.h - 10) < 0.5,
+    `size ${m.mark.w.toFixed(1)}x${m.mark.h.toFixed(1)}`)
+  check(`${at}: nothing clips the Slack mark`, m.clippedBy.length === 0, `clipped by ${m.clippedBy.join(', ')}`)
+  // The mark alone: a link named for its channel, with no channel text anywhere in the row.
+  check(`${at}: link is named "Open #${channelName} in Slack"`, m.ariaLabel === `Open #${channelName} in Slack`, `aria-label ${JSON.stringify(m.ariaLabel)}`)
+  check(`${at}: the mark renders no text`, m.chipText === '', JSON.stringify(m.chipText))
+  check(`${at}: no channel-name text in the row`, !m.rowText.includes(channelName))
+  check(`${at}: mark ends before the time`, m.mark.right <= m.time.x + 0.5, `mark right ${m.mark.right.toFixed(1)} time x ${m.time.x.toFixed(1)}`)
+  // The time never truncates on the mark's account: if it is cut at all, the
+  // agent name has already given all its width (an ordinary row at that depth
+  // fares no better, see `baseline`).
   const timeWhole = m.time.right <= m.line.right + 0.5 && m.time.x >= m.line.x - 0.5 && !m.timeCut
-  const chipGaveAll = m.chip.w <= m.minChip + 0.5 && m.agentW < 1
-  check(`${at}: time is whole, or the chip already gave all it has`, timeWhole || chipGaveAll,
-    `time ${m.time.x.toFixed(1)}-${m.time.right.toFixed(1)} line ${m.line.x.toFixed(1)}-${m.line.right.toFixed(1)} chip ${m.chip.w.toFixed(1)} (min ${m.minChip})`)
+  check(`${at}: time is whole, or the agent name already gave all it has`, timeWhole || m.agentW < 1,
+    `time ${m.time.x.toFixed(1)}-${m.time.right.toFixed(1)} line ${m.line.x.toFixed(1)}-${m.line.right.toFixed(1)} agent ${m.agentW.toFixed(1)}`)
   if (!timeWhole) tooNarrow.push(`${at}: line ${m.line.w.toFixed(0)}px for a ${m.time.w.toFixed(0)}px time`)
-  // An icon-only chip wider than its mark keeps the mark centred, never an empty tail.
-  const left = m.inkLeft - m.chip.x
-  const right = m.chip.right - m.inkRight
-  check(`${at}: chip has no blank slot`, right <= 6 || Math.abs(left - right) <= 1.5, `left ${left.toFixed(1)}px right ${right.toFixed(1)}px`)
-  if (m.name && m.name.visible) {
-    // The name may leave the chip only once the agent name has gone entirely:
-    // that is the line being too short for the mark, "#abc" and the time at once.
-    if (m.name.wrapped) {
-      check(`${at}: channel name leaves only after the agent name has gone`, m.agentW < 1, `agent still ${m.agentW.toFixed(1)}px`)
-    } else {
-      check(`${at}: channel name keeps "#" and two characters (never a bare "#…")`, m.name.w + 0.5 >= m.name.floor, `shown ${m.name.w.toFixed(1)} need ${m.name.floor.toFixed(1)}`)
-      if (m.name.cut) {
-        check(`${at}: agent name yields before the channel name`, m.agentCut || m.agentW < 1)
-        check(`${at}: link glyph leaves before the channel name loses a character`, !m.glyphShown)
-      }
-    }
-  }
   return m
 }
 
@@ -258,7 +202,7 @@ async function desktop(browser, base, theme, width, layout) {
   const where = `${layout} ${width}px ${theme}`
   await checkNesting(page, where, layout)
   await measureBaseline(page, where)
-  for (const [title] of ROWS) await checkRow(page, title, where, { nameMustShow: width >= 260 })
+  for (const [title, s] of ROWS) await checkRow(page, title, where, s.code_channel.channel_name)
   await shootFolder(page, join(OUT, `sidebar-${layout}-${width}px-${theme}.png`))
   await context.close()
 }
@@ -278,7 +222,7 @@ async function phone(browser, base, theme, layout) {
   const where = `${layout} 320px phone ${theme}`
   await checkNesting(page, where, layout)
   await measureBaseline(page, where)
-  for (const [title] of ROWS) await checkRow(page, title, where)
+  for (const [title, s] of ROWS) await checkRow(page, title, where, s.code_channel.channel_name)
   await shootFolder(page, join(OUT, `sidebar-${layout}-320px-phone-${theme}.png`))
   await context.close()
 }

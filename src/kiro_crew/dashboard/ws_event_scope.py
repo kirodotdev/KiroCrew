@@ -1418,7 +1418,7 @@ def filter_slots_for_app(
 #: Slot-row fields for a person's dashboard only. The WS app frame is built from
 #: the dashboard-user list, so they are removed here as well as never being put
 #: on the bare list (``slack/code_channels/dashboard_view.py``).
-_PERSON_ONLY_SLOT_KEYS = ("code_channel",)
+_PERSON_ONLY_SLOT_KEYS = ("code_channel", "code_channel_pending")
 
 
 def _withhold_from_apps(slot_dict: dict[str, Any]) -> dict[str, Any]:

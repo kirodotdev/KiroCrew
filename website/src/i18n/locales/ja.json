@@ -9997,7 +9997,11 @@
       "opens_in_slack": "（Slack で開きます）",
       "about": "このセッションは Slack コードチャンネルで動いています。あちらとこちらのメッセージは同じ会話です。",
       "archived_hint": "Slack でアーカイブ済みです。チャンネルは読み取り専用です。",
-      "wrapped_up_hint": "完了しました。タスクは終わり、チャンネルはフォローアップのために開いたままです。"
+      "wrapped_up_hint": "完了しました。タスクは終わり、チャンネルはフォローアップのために開いたままです。",
+      "thread_label": "Slack スレッド",
+      "thread_open": "この Slack スレッドを開く",
+      "thread_paused": "返信を一時停止中",
+      "thread_paused_hint": "このセッションのスレッドへの返信は一時停止中です。スレッドで送られたメッセージは引き続き届きます。"
     },
     "crew": {
       "crewEditorNextDialog": {
@@ -12618,6 +12622,14 @@
       "crew_attention_go_question": "回答が必要なチャットを開く",
       "crew_attention_go_working": "実行中のチャットを開く",
       "crew_attention_name": "{{target}}。{{counts}}",
+      "code_channel_crew_waiting": "あなたの対応待ち",
+      "code_channel_crew_waiting_title_other": "このチャンネルの {{count}} 件のセッションがあなたの対応を待っています",
+      "code_channel_crew_interrupted_other": "中断 {{count}} 件",
+      "code_channel_crew_show_other": "ワーカーセッション {{count}} 件を表示",
+      "code_channel_crew_hide_other": "ワーカーセッション {{count}} 件を非表示",
+      "code_channel_crew_stuck_other": "停滞 {{count}} 件",
+      "code_channel_crew_done_other": "{{total}} 件中 {{count}} 件完了",
+      "code_channel_crew_done_plain": "完了",
       "not_open_here_yet": "{{name}} 上 — クリックするとここで開きます",
       "on_instance": "{{name}} 上",
       "only_show_sessions_that_have_no_tags": "タグがないセッションのみ表示",

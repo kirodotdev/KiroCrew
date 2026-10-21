@@ -10,7 +10,7 @@ import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import type { useSteerDelivery } from './turnActions'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
 import ChatHeaderChips from '../../../components/ChatHeaderChips'
-import { CodeChannelBadge } from '../../../components/CodeChannelBadge'
+import { CodeChannelBadge, SlackThreadLink } from '../../../components/CodeChannelBadge'
 import { PinnedPrompt } from '..'
 import { pinCandidateKey } from '../usePinnedPrompt'
 import SessionTitleControl from '../SessionTitleControl'
@@ -152,6 +152,7 @@ export default function ChatTitleOverlay({
           )}
           </div>
         {currentSlot?.code_channel && <CodeChannelBadge info={currentSlot.code_channel} variant="header" />}
+        <SlackThreadLink slot={currentSlot} />
         <ChatHeaderChips slotKey={activeSlot} />
         {/* Trailing controls grouped under a single ml-auto so multiple
             right-aligned items don't each absorb free space (two ml-auto

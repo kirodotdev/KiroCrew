@@ -51,6 +51,9 @@ STATUS_ACTIVE = "active"
 STATUS_WRAPPED_UP = "wrapped_up"
 STATUS_ARCHIVED = "archived"
 
+#: Row key set while the store is still being read (see :func:`with_code_channels`).
+CODE_CHANNEL_PENDING_KEY = "code_channel_pending"
+
 #: Slack workspace (``T``/``E``) and conversation (``C``/``G``/``D``) ids.
 _TEAM_ID = re.compile(r"^[TE][A-Z0-9]{2,30}$")
 _CHANNEL_ID = re.compile(r"^[CGD][A-Z0-9]{2,30}$")
@@ -172,6 +175,33 @@ def code_channel_views(bindings: Iterable[Any] | None = None) -> dict[str, dict[
         return {}
 
 
+def _store_pending() -> bool:
+    """True while code channels are on but the store has not been read yet.
+
+    Then no row can be told to be a code channel's, so a bound session would
+    show its plain Slack-thread link for a moment and flip to the code-channel
+    badge after the warm-up's re-push. Never raises, never touches the disk.
+    """
+    try:
+        if not _gate_open():
+            return False
+        from kiro_crew.slack.code_channels.store import store
+
+        return not store().loaded
+    except Exception:
+        return False
+
+
+def _carries_slack_thread(payload: Mapping[str, Any]) -> bool:
+    """True for a row the dashboard could draw a Slack thread link on.
+
+    That is a row mirrored to a thread (``slack_linked``) or a Slack-born
+    session's own thread (``slack_origin_thread_ts``): either could turn out
+    to be a code channel's session once the store is read.
+    """
+    return bool(payload.get("slack_linked") or payload.get("slack_origin_thread_ts"))
+
+
 def with_code_channels(
     payloads: list[dict[str, Any]], views: Mapping[str, dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
@@ -180,11 +210,25 @@ def with_code_channels(
     Never mutates a row: the audience views share their row dicts with the
     bare list SSE and app tokens read, so a bound row is copied before the key
     is added and every other row is passed through as it is.
+
+    While the store is still being read (:func:`_store_pending`), every row
+    that carries a Slack thread (mirrored or Slack-born) instead carries
+    ``code_channel_pending: True``, so the
+    dashboard draws no Slack link on it until it knows which kind it is.
     """
     if views is None:
         views = code_channel_views()
     if not views:
-        return payloads
+        if not _store_pending():
+            return payloads
+        return [
+            (
+                {**payload, CODE_CHANNEL_PENDING_KEY: True}
+                if _carries_slack_thread(payload)
+                else payload
+            )
+            for payload in payloads
+        ]
     out: list[dict[str, Any]] = []
     for payload in payloads:
         view = views.get(str(payload.get("key") or ""))

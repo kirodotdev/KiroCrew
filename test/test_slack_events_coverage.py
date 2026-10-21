@@ -647,6 +647,35 @@ class TestInitSocketMode:
         assert len(orch._socket_client.socket_mode_request_listeners) == 1
 
     @pytest.mark.asyncio
+    async def test_code_channel_store_load_re_pushes_the_slot_list(self):
+        """Rows serialized before the start-up load were marked pending; the
+        push after the load is what gives them their badge."""
+        orch = _socket_orch()
+        orch.dashboard_state = MagicMock()
+        order: list[str] = []
+        store = MagicMock()
+        store.load.side_effect = lambda: order.append("load")
+        orch.dashboard_state.push_slots_update.side_effect = lambda: order.append("push")
+        with (
+            _SocketPatches(),
+            patch("kiro_crew.slack.events.code_channel_store", return_value=store),
+        ):
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        assert order[:2] == ["load", "push"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_slot_re_push_does_not_stop_start_up(self):
+        orch = _socket_orch()
+        orch.dashboard_state = MagicMock()
+        orch.dashboard_state.push_slots_update.side_effect = RuntimeError("bad slot")
+        with (
+            _SocketPatches(),
+            patch("kiro_crew.slack.events.code_channel_store", return_value=MagicMock()),
+        ):
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        assert len(orch._socket_client.socket_mode_request_listeners) == 1
+
+    @pytest.mark.asyncio
     async def test_dangerously_skip_permissions_enables_yolo(self):
         orch = _socket_orch()
         orch._cfg.agent.dangerously_skip_permissions = True
