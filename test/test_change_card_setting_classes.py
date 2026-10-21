@@ -88,6 +88,19 @@ def test_newly_classified_paths_read_their_class_on_the_card(path, before, after
     assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
 
 
+def test_kiro_cloud_profiles_are_code_exec_and_the_default_keeps_mains_class():
+    """Only the new Kiro Cloud Sessions list is code-exec: it moves a chat's agent
+    and tools outside the tool gate. The default profile stays where main has it."""
+    assert [n for n, m in _CLASSES.items() if "session_environments.kiro_cloud_profiles" in m] == [
+        "_CODE_EXEC_SETTINGS"
+    ]
+    assert [n for n, m in _CLASSES.items() if "session_environments.default_profile" in m] == [
+        "_CANNOT_WIDEN_SETTINGS"
+    ]
+    p = {"path": "session_environments.default_profile", "value": "cloud"}
+    assert catalog.build_preview("setting.change", p, {"value": ""}, {})["risk"] == "normal"
+
+
 @pytest.mark.parametrize(
     "path,cls,before,after,risk",
     [
