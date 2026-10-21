@@ -77,6 +77,27 @@ def _install_lite_agent_fallback() -> None:
     agent_state.set_cc_model("kirocrew-lite", agent_mod._background_cc_model())
 
 
+def knowledge_agent_model() -> str:
+    """The model the kirocrew-knowledge agent runs on.
+
+    ``knowledge.extraction_model``, else ``agent.model`` (extraction runs on the
+    same model as chat), else ``"auto"``. One rule for both readers: the installer
+    writes it into the spec, which kiro-cli reads natively, and ``LLMPool`` hands
+    it to a harness that reads no spec of Crew's.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        cfg = KiroCrewConfig.load()
+        model = cfg.knowledge.extraction_model.strip()
+        if not model:
+            # Use the user's default model (same as chat).
+            model = cfg.agent.model or "auto"
+    except Exception:
+        model = "auto"
+    return model
+
+
 def _install_knowledge_agent() -> None:
     """Generate and install the kirocrew-knowledge agent config.
 
@@ -86,19 +107,10 @@ def _install_knowledge_agent() -> None:
     knowledge.extraction_model explicitly, that model is used instead —
     allowing a cheaper model for extraction without changing the chat default.
     """
-    from kiro_crew.config.loader import KiroCrewConfig
-
     path = agent_mod.kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
 
     # Resolve model: knowledge.extraction_model > agent.model > "auto"
-    try:
-        cfg = KiroCrewConfig.load()
-        model = cfg.knowledge.extraction_model.strip()
-        if not model:
-            # Use the user's default model (same as chat).
-            model = cfg.agent.model or "auto"
-    except Exception:
-        model = "auto"
+    model = knowledge_agent_model()
 
     config: dict[str, object] = {
         "name": "kirocrew-knowledge",

@@ -246,6 +246,27 @@ def _log_capability_fallback(resolved: str, declared: bool, reason: str) -> None
     )
 
 
+def _knowledge_spec_model() -> str | None:
+    """The model pin the installer writes into the knowledge spec, or None for no pin.
+
+    The same rule the installer applies (``knowledge.extraction_model`` →
+    ``agent.model`` → ``"auto"``, ``kiro_crew.agent.knowledge_agent_model``), so
+    a harness that reads no spec of Crew's runs the model kiro-cli would read
+    from it. ``"auto"`` or a blank is no pin. Blocking (reads the config) and
+    never raises; callers run it off the loop.
+    """
+    try:
+        from kiro_crew.agent import knowledge_agent_model
+
+        model = knowledge_agent_model()
+    except Exception:
+        logger.debug("knowledge model pin unreadable; no pin", exc_info=True)
+        return None
+    if not isinstance(model, str) or not model.strip() or model.strip() == "auto":
+        return None
+    return model.strip()
+
+
 def _get_idle_ttl(config: Optional[dict] = None) -> float:
     """Seconds the pool may sit fully idle before scaling to zero.
 
@@ -526,13 +547,30 @@ class AcpWorker(Worker):
         ``ensure_ready`` spawns the harness, and the result is returned so the
         post-start confirmation can require both reads to agree when no projection
         was prepared. Any other backend returns False.
+
+        The model pin follows the same split. A ``Routing.AGENT_SPEC`` harness reads
+        the spec's own ``model`` (the installer resolves ``knowledge.extraction_model``
+        → ``agent.model`` → ``"auto"`` into it), so nothing is passed and its
+        construction is unchanged. Every other harness reads no spec of Crew's, so
+        the same pin, by the installer's own rule, is handed to the client, whose
+        startup model application scopes it to this backend (a model another
+        harness serves falls back to the backend default rather than being sent).
         """
-        client = AcpClient(
-            agent=AGENT_NAME,
-            sandbox_mode=sandbox_mode,
-            acp_backend=acp_backend,
-            audit_source="subagent",
-        )
+        if routing_for(acp_backend) is Routing.AGENT_SPEC:
+            client = AcpClient(
+                agent=AGENT_NAME,
+                sandbox_mode=sandbox_mode,
+                acp_backend=acp_backend,
+                audit_source="subagent",
+            )
+        else:
+            client = AcpClient(
+                agent=AGENT_NAME,
+                sandbox_mode=sandbox_mode,
+                acp_backend=acp_backend,
+                audit_source="subagent",
+                model=await asyncio.to_thread(_knowledge_spec_model),
+            )
         self._client = client
         self._effective_effort = None
         authored_before_spawn = False
