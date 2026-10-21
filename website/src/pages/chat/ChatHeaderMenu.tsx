@@ -92,13 +92,13 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
           /* No aria-label here: the visible title IS the accessible name, and the
              menu's role is appended as sr-only text -- an aria-label would replace
              the title, which on the phone this trigger is the only copy of. */
-          <button data-testid="session-title-menu" className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
+          <button data-testid="session-title-menu" data-chat-header-focus className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
             <span className="session-header-title text-[15px] font-semibold truncate min-w-0">{triggerLabel}</span>
             <span className="sr-only">, {i18nT('pages.chatPage.session_options')}</span>
             <ChevronDown size={16} className="shrink-0 text-muted" />
           </button>
         ) : (
-          <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
+          <button data-chat-header-focus className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
             <ChevronDown size={14} />
           </button>
         )}
