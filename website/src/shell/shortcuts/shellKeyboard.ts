@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { agentCycleTarget } from '../../lib/crewMode'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, store } from '../../store'
@@ -106,9 +107,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // onCycleModel below. Agent names are never '', so the ''-falsy
       // accessor is safe here.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
-      const nextIdx = (idx + 1) % installedAgents.length
-      void switchActiveSlotAgent(activeSlot, installedAgents[nextIdx].name)
+      // The picker's own conductor-free list (lib/crewMode): a chord never moves a
+      // normal chat onto a conductor, and a conductor chat does not cycle at all.
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, 1)
+      if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCyclePrevAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -117,9 +119,8 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
       // See onCycleAgent above.
       const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
-      const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
-      const prevIdx = (idx - 1 + installedAgents.length) % installedAgents.length
-      void switchActiveSlotAgent(activeSlot, installedAgents[prevIdx].name)
+      const target = agentCycleTarget(installedAgents, currentAgent, currentSlot?.agent_kind, -1)
+      if (target) void switchActiveSlotAgent(activeSlot, target)
     },
     onCycleReasoningEffort: async () => {
       const activeSlot = store.getState().chat.activeSlot

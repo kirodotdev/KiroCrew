@@ -73,12 +73,14 @@ export const FILTER_LABEL_KEY: Record<SessionFilterKey, string> = {
   running: 'pages.chatSidebar.filter_running',
   pinned: 'pages.chatSidebar.filter_pinned',
   recent: 'pages.chatSidebar.filter_recent',
+  crew: 'pages.chatSidebar.filter_crew',
 }
 export const FILTER_DESCRIPTION_KEY: Record<SessionFilterKey, string> = {
   unread: 'pages.chatSidebar.filter_unread_description',
   running: 'pages.chatSidebar.filter_running_description',
   pinned: 'pages.chatSidebar.filter_pinned_description',
   recent: 'pages.chatSidebar.filter_recent_description',
+  crew: 'pages.chatSidebar.filter_crew_description',
 }
 
 /** Sort options, in menu order. The label lives in `SORT_LABEL_KEY`. */
@@ -464,6 +466,9 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     <span className="flex-1 truncate">{filtersPaused ? i18nT('pages.chatSidebar.resume_all_filters') : i18nT('pages.chatSidebar.pause_all_filters')}</span>
                   </DropdownMenuItem>
                 )}
+                {/* Why a Crew Mode chat's own sessions are not rows here: they are
+                    listed in its side panel. One line, so the absence is explained. */}
+                <p className="px-2 pt-1 pb-1.5 text-[11px] text-muted max-w-[16rem]" data-testid="filter-crew-hint">{i18nT('pages.chatSidebar.filter_crew_hint')}</p>
                 <DropdownMenuSeparator />
                 {/* Names its object: this menu also carries "Folder order" two
                     sections down, and a bare "Sort by" over one list beside an
@@ -945,6 +950,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                 testId={`filter-chip-${filterDef.key}`}
                 label={`${filterLabel}${filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}${slotCount > 0 ? ` (${slotCount})` : ''}`}
                 color={filterDef.color}
+                gradient={filterDef.key === 'crew'}
                 paused={filtersPaused}
                 clearLabel={clearLabel}
                 onClear={() => toggleFilter(filterDef.key)}

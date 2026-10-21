@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { runsConductor } from '../lib/crewMode'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -1023,7 +1024,7 @@ export default function ChatPane({
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
-          onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
+          onAgentClick={!agentLocked && !runsConductor(paneSlot?.agent, paneSlot?.agent_kind) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}

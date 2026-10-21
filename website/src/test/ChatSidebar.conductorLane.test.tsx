@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, fireEvent, render, within } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -87,6 +88,11 @@ vi.mock('../api/client', () => ({
     get: (_t, p: string) => {
       if (p === 'chatFolders') return vi.fn().mockImplementation(() => Promise.resolve(mocks.folders))
       if (p === 'chatSlots') return mocks.chatSlots
+      // The root row's summary reads the server's groups (the worker list API).
+      if (p === 'crewWorkers') return vi.fn().mockResolvedValue({ root: 'k-root', workers: [
+        { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
+        { key: 'k-w2', title: 'W2', agent: '', status: 'needs_approval', group: 'needs_you', last_activity: '', ledger_item: '', created_by: 'k-root' },
+      ] })
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -202,6 +208,41 @@ afterEach(() => {
 })
 
 describe('chat sidebar — conductor lane', () => {
+  it('draws a Crew Mode root as the crew card: badge, eyebrow, worker ghosts and what needs you', async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-w2', title: 'W2', messages: 0, running: false, pending_approval: true, modified: 2000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container, getByTestId, getAllByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(card).toBeTruthy()
+    expect(card.className).toContain('crew-card')
+    expect(within(card).getByTestId('crew-eyebrow')).toHaveTextContent('Crew Mode')
+    expect(within(card).getByTestId('crew-ghost-badge')).toBeTruthy()
+    // The conductor's name is not shown: Crew Mode chooses it.
+    expect(within(card).queryByText('kirocrew-conductor')).toBeNull()
+    // The server's groups, not a guess from the rows: W1's "done" comes from the API.
+    await screen.findByTestId('crew-worker-stack')
+    const stack = within(container.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('crew-worker-stack')
+    expect([...stack.children].map(c => c.getAttribute('data-group'))).toEqual(['needs_you', 'done'])
+    expect(getByTestId('crew-root-summary')).toHaveTextContent('Needs you · 1')
+    // Only the root wears the card.
+    expect(getAllByTestId('crew-eyebrow')).toHaveLength(1)
+  })
+
+  it("leaves a Crew Mode root's workers out of the person's list and keeps the root", () => {
+    const { queryByText } = renderSidebar([
+      { key: 'k-root', title: 'Crew root', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'Crew worker', messages: 1, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-plain', title: 'Plain chat', messages: 1, running: false, modified: 2000 },
+    ])
+    expect(queryByText('Crew root')).toBeTruthy()
+    expect(queryByText('Plain chat')).toBeTruthy()
+    expect(queryByText('Crew worker')).toBeNull()
+  })
+
   it('is not the default lane: the tree renders and the conductor lane does not', () => {
     const { queryByTestId } = renderSidebar()
     expect(queryByTestId('conductor-view-lane')).toBeNull()

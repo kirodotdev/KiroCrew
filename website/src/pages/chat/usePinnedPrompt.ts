@@ -405,6 +405,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       ts: pinItem.msg.ts,
       raw: pinItem.msg.content,
       pastes: (pinItem.msg.meta?.pastes as PasteBlock[] | undefined) || [],
+      meta: pinItem.msg.meta as Record<string, unknown> | undefined,
       push,
       bannerH,
       liveH,

@@ -1,4 +1,6 @@
-import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
+import { ReactReduxContext } from 'react-redux'
+import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
 import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -244,6 +246,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // bubble, and the matching `>` block is dropped from the rendered body so the
   // same text is not shown twice. See `messageQuote.ts`.
   const carriedQuote = readMessageQuote(meta)
+  // A message another session delivered: its `[sent by session <key> ...]` line
+  // is for the agent, so the bubble shows the text under who sent it, by role.
+  const seed = parseSessionSeed(content, meta as Record<string, unknown> | undefined)
+  const seedFrom = useSeedSender(seed?.sender, slotKey)
+  const unseeded = seed ? seed.body : content
   const startEdit = useCallback(() => {
     // Expand any collapsed paste tokens into their original content so the
     // user can actually edit the pasted text. Once edited, the message is
@@ -413,7 +420,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const pasteBlocks = (Array.isArray(meta?.pastes) ? meta.pastes : []).filter((b): b is PasteBlock =>
     !!b && typeof b === 'object' && typeof (b as PasteBlock).seq === 'number' && typeof (b as PasteBlock).content === 'string')
   const shownContent = pasteBlocks.length ? expandPasteTokens(content, pasteBlocks) : content
-  const renderedBody = carriedQuote ? stripQuoteBlock(content, carriedQuote) : content
+  const renderedBody = carriedQuote ? stripQuoteBlock(unseeded, carriedQuote) : unseeded
   // What Quote quotes: the body as shown -- a carried quote's block excluded,
   // so quoting a quoting message never nests the old block and its attribution
   // inside the new one (fork Opus review) -- with collapsed pastes expanded.
@@ -490,6 +497,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           an ahead-skewed one would let a reused slot pass the mint check and open
           the wrong conversation, silently. The fallback still covers a bubble that
           has no server ts yet. */}
+      {seed && <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70" data-testid="session-seed-from">{seedFrom}</p>}
       {carriedQuote && <QuoteCard quote={carriedQuote} variant="sent" onJump={carriedQuote.ts ? onJumpToQuote : undefined} />}
       {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
@@ -759,3 +767,23 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 })
 
 export default UserMessage
+
+const noopSubscribe = () => () => {}
+
+/**
+ * Who a delivered message is from, by role (`seedSenderKey`), SUBSCRIBED to the
+ * store when one is mounted, so a bubble drawn before the slots frame arrives is
+ * relabelled when it does. Without a store the label is generic.
+ */
+function useSeedSender(sender: string | undefined, slotKey: string | undefined): string {
+  const redux = useContext(ReactReduxContext)
+  const subscribe = redux ? redux.store.subscribe : noopSubscribe
+  const role = useSyncExternalStore<SeedSender | ''>(subscribe, () => {
+    if (!sender) return ''
+    const rows = ((redux?.store.getState() as { dashboard?: { slots?: SeedRow[] } } | undefined)?.dashboard?.slots) ?? []
+    return seedSender(rows, sender, slotKey)
+  })
+  if (role === 'conductor') return i18nT('pages.chat.userMessage.seed_from_conductor')
+  if (role === 'worker') return i18nT('pages.chat.userMessage.seed_from_worker')
+  return role ? i18nT('pages.chat.userMessage.seed_from_session') : ''
+}

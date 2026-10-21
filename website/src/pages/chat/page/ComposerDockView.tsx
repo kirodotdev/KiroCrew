@@ -1,7 +1,8 @@
 import type { NavigateFunction } from 'react-router-dom'
-import type { RefObject, Dispatch, SetStateAction, MutableRefObject } from 'react'
+import { useId, type RefObject, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { OverlayPortal } from '../../../components/overlayRoot'
-import { Undo2 } from 'lucide-react'
+import { Send, Undo2 } from 'lucide-react'
+import { CrewModeComposerChip } from '../../../components/crew/CrewModeMarks'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPastes'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
@@ -10,6 +11,7 @@ import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuot
 import AgentDropdownList, { isCrewmateChat, DefaultAgentRow, defaultWriteKind, ManageAgentsFooter, type DefaultWriteFailure } from '../../../components/AgentDropdownList'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { MemoryModeChip, type MemoryMode } from '../../../components/MemoryModeChip'
+import { CrewModeChip } from '../../../components/CrewModeChip'
 import type { PromptHistoryItem } from '../../../components/composerPromptHistory'
 import type { ResolvedSessionControl } from '../../../hooks/useSessionControls'
 import type { ProviderAdapter, ModelInfo } from '../../../providers/types'
@@ -249,10 +251,20 @@ interface ComposerDockViewProps {
   switchMemoryMode: (newMode: MemoryMode) => Promise<void>
   composerAbove: JSX.Element
   composerSessionControls: ReturnType<typeof useSessionControlChips>
+  /** The Crew Mode chip (crewModeSwitch): offered on this chat, and its one-way switch on. */
+  crewModeOffered: boolean
+  turnOnCrewMode: () => void
+  /** A conductor session (Crew Mode): the composer offers no agent picker, since
+   *  the conductor is chosen by Crew Mode itself. Workspace and model stay. */
+  agentPickerHidden?: boolean
+  /** The main pane holds a Crew Mode worker: the composer is that worker's steer
+   *  composer (ringed, labelled with the worker, and a running turn takes the
+   *  text as a steer rather than queueing it). The worker's title. */
+  steerWorker?: string
 }
 
 /**
- * The floating composer dock, the next positioned sibling after the scroller (that DOM order is what paints it over the transcript), and its contents: the jump-to-bottom pill, the status stack (task, sub-agent and workflow bars, queued messages), the flying quote, and the input area (refused-press notice, history suggestions, knowledge picker, question and follow-up cards, memory-mode chip, the composer), and the composer toolbar's popovers (the agent and model dropdowns, the project picker, the open app session control).
+ * The floating composer dock, the next positioned sibling after the scroller (that DOM order is what paints it over the transcript), and its contents: the jump-to-bottom pill, the status stack (task, sub-agent and workflow bars, queued messages), the flying quote, and the input area (refused-press notice, history suggestions, knowledge picker, question and follow-up cards, memory-mode and Crew Mode chips, the composer), and the composer toolbar's popovers (the agent and model dropdowns, the project picker, the open app session control).
  *
  * Its body is not re-indented: `ChatPage.statusStackLayering.test.tsx` finds the status stack's end by its closing tag's depth (14 spaces).
  */
@@ -272,8 +284,17 @@ export default function ComposerDockView({
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
-  composerSessionControls,
+  composerSessionControls, crewModeOffered, turnOnCrewMode, agentPickerHidden = false, steerWorker,
 }: ComposerDockViewProps) {
+  const crewModeNoteId = useId()
+  // Disabled while a reply runs (the agent switch refuses mid-turn): the
+  // composer's own turn state, which a send sets at once, as well as the listed
+  // slot's, which follows the server.
+  const crewModeBusy = slotRunning || !!currentSlot?.running
+  // The chip's hint as a visible line, named by its `aria-describedby`, so a
+  // keyboard, a screen reader and a touch reader all reach it, not only a mouse
+  // hovering the title. It says, while a reply runs, when the chip works again.
+  const crewModeNote = crewModeOffered && crewModeBusy ? i18nT('components.crewMode.chip_hint_busy') : null
   return (
     <>
             {/* Composer dock. Floats over the bottom of the transcript scroller
@@ -439,13 +460,35 @@ export default function ComposerDockView({
               {showComposerMemoryChip && (
                 // No backdrop: the chip is glass and whatever scrolls under it is meant to show.
                 // `w-fit`, not a full-width flex row: the box is a `dock-inert` child, so
-                // it catches input, and it should be no wider than the chip it holds.
-                <div className="relative z-10 mx-auto w-fit px-4 pt-2 pb-2" data-testid="composer-memory-chip">
+                // it catches input, and it should be no wider than the chips it holds.
+                // The Crew Mode chip sits right of the memory chip, on the welcome state
+                // only. Crew Mode is one way: once it is chosen the parent stops offering
+                // both chips, so this row leaves with them and nothing turns it off.
+                // The row wraps, so on a phone the chip's note drops under the chip
+                // instead of overlapping it.
+                <div className="relative z-10 mx-auto w-fit max-w-full px-4 pt-2 pb-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1" data-testid="composer-memory-chip">
                   <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} switching={memorySwitching} disabled={composerOptimizing} />
+                  {crewModeOffered && (
+                    // Busy while a reply runs; disabled while a memory-mode switch is
+                    // replacing this session.
+                    <CrewModeChip onTurnOn={turnOnCrewMode} busy={crewModeBusy} disabled={memorySwitching} describedBy={crewModeNote ? crewModeNoteId : undefined} />
+                  )}
+                  {crewModeNote && (
+                    <span id={crewModeNoteId} data-testid="crew-mode-note" className="text-[12px] text-muted text-center">
+                      {crewModeNote}
+                    </span>
+                  )}
                 </div>
               )}
               {/* Announces why the composer is locked; in every session, as the user may move on mid-switch. */}
               <span role="status" className="sr-only" data-testid="memory-switch-status">{memorySwitching ? i18nT('components.welcomeView.switching_memory_mode') : ''}</span>
+              <div className={steerWorker !== undefined ? 'crew-steer-ring mx-2 p-2' : undefined} data-testid={steerWorker !== undefined ? 'crew-steer-composer' : undefined}>
+              {steerWorker !== undefined && (
+                <div className="mb-1.5 px-1 flex items-center gap-1.5 text-[12px] font-semibold text-aim" data-testid="crew-steer-label">
+                  <Send size={13} aria-hidden="true" />
+                  <span className="truncate">{i18nT('components.crewMode.steer_label', { name: steerWorker })}</span>
+                </div>
+              )}
               <Composer
                 ref={composerRef}
                 slotKey={activeSlot}
@@ -475,6 +518,9 @@ export default function ComposerDockView({
               // Streaming, compaction and stopping keep the input interactive (api_chat queues on slot.running and stop preserves the
               // queue, so Enter queues a follow-up during the stop window). Only a memory-mode switch locks it, the reason as placeholder.
               disabled={memorySwitching} lockedPlaceholder={memorySwitching ? i18nT('components.welcomeView.switching_memory_mode') : undefined}
+              // A worker's steer composer: its placeholder names the worker, and a
+              // running turn takes the text as a steer (no queue choice to make).
+              {...(steerWorker !== undefined ? { placeholder: i18nT('components.crewMode.steer_placeholder', { name: steerWorker }), busyMode: 'steer-only' as const } : {})}
               autoFocusKey={activeSlot}
               prefillHint={prefillHint}
               onDismissHint={() => setPrefillHint(false)}
@@ -539,7 +585,8 @@ export default function ComposerDockView({
               // would hide every routed turn. Same `jevRouteOn` the picker's row is
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
-              onAgentClick={provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
+              agentBadge={agentPickerHidden ? <CrewModeComposerChip /> : undefined}
+              onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
                 modelPickerReturnsFocusRef.current = !!composerHadFocus
                 anchorModelBtn(rect, trigger); setModelDropdown(!modelDropdown)
@@ -647,6 +694,8 @@ export default function ComposerDockView({
               connected={connected}
             />
               </Composer>
+              {steerWorker !== undefined && <p className="mt-1 px-1 text-[11px] text-muted" data-testid="crew-steer-hint">{i18nT('components.crewMode.steer_hint')}</p>}
+              </div>
             </div>
             {/* Agent dropdown portal — triggered from input bar */}
             {agentDropdown && agentBtnRect && <OverlayPortal>{

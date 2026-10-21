@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse } from '../../types'
+import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -69,7 +69,26 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
   const slotList = {
     // The look-preview frame (utils/lookPreview.ts) shows one demo session in
     // place of the user's own: fixtures answer both reads below.
-    chatSlots: () => isLookPreviewFrame() ? Promise.resolve(lookPreviewSlots()) : fetch('/api/chat/slots').then(j),
+    // `crew=all` keeps a Crew Mode root's workers in the answer: these reads look a
+    // session up by key (a worker opened from the side panel included), and the
+    // person's own list leaves workers out on the client (`crewModeView`).
+    chatSlots: () => isLookPreviewFrame() ? Promise.resolve(lookPreviewSlots()) : fetch('/api/chat/slots?crew=all').then(j),
+    /** One Crew Mode root's workers: every session it dispatched, directly or
+     *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
+    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[] }> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
+    /** One Crew Mode root's timeline: a lane per session, bars from recorded
+     *  transcript rows only (`GET /api/chat/slots/{root}/crew-timeline`). */
+    crewTimeline: (root: string): Promise<CrewTimeline> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-timeline').then(j),
+    /** Type into one of a root's workers as the person: cuts into its running
+     *  turn, or queues for its next one (`POST .../crew-workers/{worker}/steer`). */
+    crewWorkerSteer: (root: string, worker: string, message: string): Promise<{ ok: boolean; steered: boolean; queued: boolean; started: boolean }> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/steer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      }).then(j),
     /** How many tabs this gateway's startup restore listed but could not show.
      *
      *  `reported: false` means the restore has not answered yet, which is not the

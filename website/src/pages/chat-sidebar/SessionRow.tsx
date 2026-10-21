@@ -46,6 +46,9 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { CrewEyebrow, CrewGhostBadge, CrewWorkerStack } from '../../components/crew/CrewModeMarks'
+import { summarizeCrewWorkers } from '../../lib/crewWorkers'
+import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 
 /**
  * Session-row type scale, quantized to a 4px baseline grid.
@@ -227,6 +230,27 @@ interface SessionRowProps {
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 
+/** A Crew Mode root's live workers on its row: a ghost per worker coloured by
+ *  state, then "N needs you" or "done x/y". Reads the slot list itself, keyed to a
+ *  short signature so a worker's unrelated change does not repaint the row. */
+function CrewRootSummaryLine({ root }: { root: string }) {
+  // The server's groups (the worker list API), so the row, the panel and the
+  // breadcrumb agree; nothing until the list has answered.
+  const workers = useCrewWorkerSummary(root)
+  const { groups, needsYou: needs, done, total } = summarizeCrewWorkers(workers ?? [])
+  if (total === 0) return null
+  return (
+    <div className="flex items-center gap-2 min-w-0 mt-1" data-testid="crew-root-summary">
+      <CrewWorkerStack groups={groups} />
+      <span className={`ml-auto text-[12px] truncate ${needs > 0 ? 'crew-tone-warn font-medium' : 'crew-tone-muted'}`}>
+        {needs > 0
+          ? i18nT('components.crewMode.summary_needs_you', { count: needs })
+          : i18nT('components.crewMode.summary_done', { done, total })}
+      </span>
+    </div>
+  )
+}
+
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
     slot: s, showDivider, scope, navScope, holdContainer, isActive, isOut, isPinned, isUnread, isRunning,
@@ -234,6 +258,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // A Crew Mode root (stamped by the gateway, `crew_mode.stamp_rows`) is drawn as
+  // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
+  // local row: a peer row's stamps describe another gateway's tree.
+  const crewRoot = !!s.crew_mode_root && !s.peer_id
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
@@ -1121,7 +1149,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           <ContextMenuTrigger asChild>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
-          className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''} ${crewRoot ? 'crew-card my-1' : ''}`}
+          data-crew-root={crewRoot ? 'true' : undefined}
+          data-active={crewRoot && isActive ? 'true' : undefined}
           style={boostStyle as React.CSSProperties}
           draggable={
             // Both drag paths are off for a peer-owned row and for a row that
@@ -1357,6 +1387,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             // shifted left by the missing chevron.
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
+          {crewRoot && <span className="mt-2 mr-2"><CrewGhostBadge size={26} /></span>}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
@@ -1366,7 +1397,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
-              {memberTitle === null && (
+              {/* A Crew Mode root names the mode, not the conductor behind it: the
+                *  conductor is Crew Mode's to choose and may be swapped. */}
+              {crewRoot && <CrewEyebrow />}
+              {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* WHY this card is sitting above its folder's other rows, in a
@@ -1609,6 +1643,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 </>
               )}
             </div>
+            {crewRoot && <CrewRootSummaryLine root={s.key} />}
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot

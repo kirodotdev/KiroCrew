@@ -172,6 +172,7 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @import "./styles/shell-chrome.css";
 @import "./styles/focus-and-state-cues.css";
 @import "./styles/sidebar-and-side-panel.css";
+@import "./styles/crew-mode.css";
 @import "./styles/highlights-and-page-zoom.css";
 @import "./styles/liquid-glass.css";
 @import "./styles/content-fit.css";

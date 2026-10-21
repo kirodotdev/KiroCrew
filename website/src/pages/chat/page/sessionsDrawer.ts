@@ -12,6 +12,7 @@ import { api } from '../../../api/client'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { openPanelView } from '../../../hooks/usePanelTabs'
 import type { ClosedSessionActions, SidebarFolderActions } from '../../../components/markdown/contexts'
+import { useAppSelector } from '../../../store'
 import { PREVIEW_EXPAND_EVENT } from '../../../components/WebPreviewPanel'
 import { useHoverIntent } from '../../../hooks/useHoverIntent'
 import { shouldMountSidePanel, isSidePanelHidden } from '../sidePanelMount'
@@ -69,6 +70,10 @@ interface SessionsDrawerOptions {
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
+/** The window width from which a worker view keeps the sessions list open: the
+ *  left nav, the list, a 560px chat and the side panel all fit. */
+export const CREW_WORKER_ROOMY_PX = 1600
+
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
   hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
@@ -597,6 +602,25 @@ export function useSessionsDrawer({
     // so its identity never changes. Naming it rather than relying on that keeps the
     // listener from silently capturing a stale copy if closeSidebar ever gains a dep.
   }, [closeSidebar, setSidebarPinned, sidebarAutoHidden, sidebarPinnedRef])
+  // A Crew Mode worker reads like a normal session: when one opens on a screen too
+  // narrow for the sessions list, the side panel's Workers list and a readable
+  // chat (`CREW_WORKER_ROOMY_PX`), the sessions list steps aside, the way
+  // preview-expand hides it, and comes back when the person leaves the worker.
+  // Same restore ref and the same rule: only a user toggle persists.
+  const viewingWorker = useAppSelector(state => !!(activeSlot && state.dashboard.slots.find(row => row.key === activeSlot)?.crew_root))
+  useEffect(() => {
+    if (isMobile || embedded || previewExpanded) return
+    if (viewingWorker) {
+      if ((window.innerWidth || 0) >= CREW_WORKER_ROOMY_PX) return
+      if (sidebarAutoHidden.current === null) sidebarAutoHidden.current = sidebarPinnedRef.current
+      setSidebarPinned(false)
+      return
+    }
+    const prior = sidebarAutoHidden.current
+    sidebarAutoHidden.current = null
+    if (prior !== null) setSidebarPinned(prior)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on entering or leaving a worker; the refs and setter are stable
+  }, [viewingWorker])
   // The no-sessions force-open yields to expand mode: with an empty list no
   // sessions toggle is rendered, so suppressing it makes nothing inert, and the
   // preview would otherwise stay covered by a list that cannot be dismissed.

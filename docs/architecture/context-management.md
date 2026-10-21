@@ -229,6 +229,7 @@ it adds:
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |
 | `[PROJECT]` | the slot's project dir | every turn, `project` group |
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
+| `[DASHBOARD]` | `dashboard_agentic.root_session_dashboard_block` → `session_turn_block`, the crewmate block keyed by the session's own store key | a dashboard chat that is a ROOT session (`is_root_session`) running the conductor template (Crew Mode; not a crewmate, `agent_kind != "member"`), not a crewmate DM, and whose page has been ADOPTED (a crewmate's block rides in its member section instead) |
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |

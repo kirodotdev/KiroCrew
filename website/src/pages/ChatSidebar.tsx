@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId } from 'react'
+import { crewModeView } from '../lib/crewMode'
 import { LayoutGroup, AnimatePresence } from 'framer-motion'
 import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -125,11 +126,14 @@ function ChatSidebar({
   // crash, so the names are the guard. The prop itself keeps its public name;
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
-  slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
+  slots: listedSlots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
   chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // A Crew Mode root's workers are the root's to show (its side panel), never rows
+  // of the person's own list: they are dropped before anything below sees them.
+  const localSlots = useMemo(() => crewModeView(listedSlots), [listedSlots])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the

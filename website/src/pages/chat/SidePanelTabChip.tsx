@@ -7,6 +7,7 @@
  * tab-kind glyphs (`KIND_ICON`, `iconForKind`). `SidePanel.tsx` lays out the
  * strip and renders these chips; this module never imports it.
  */
+import { KiroGhostMark } from '../../components/KiroGhostMark'
 import TabCloseMenu, { openTabCloseMenu } from '../../components/TabCloseMenu'
 import type { ReactNode } from 'react'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
@@ -24,6 +25,7 @@ import { i18nT } from '../../i18n/t'
 type BuiltinTabKind = Exclude<TabKind, `app:${string}`>
 const KIND_ICON: Record<BuiltinTabKind, ReactNode> = {
   'command-center': <PanelRight size={16} />,
+  workers: <KiroGhostMark size={16} />,
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, crewlog: <History size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,

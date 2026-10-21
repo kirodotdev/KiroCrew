@@ -1,0 +1,118 @@
+/* ── Crew Mode surfaces ──
+   One gradient ties every Crew Mode surface together: the session list's root
+   card, its "CREW MODE" eyebrow, the filter chip, the composer's Crew Mode chip
+   and the steer composer's ring. It runs from the theme's own `--aim` (the
+   crew's purple) to `--info` (its blue), so a theme that moves either token
+   moves Crew Mode with it, light and dark alike. Nothing here covers other UI:
+   each rule colours the element it is set on, and the one motion is a single
+   glow-in that ends on a static frame and is skipped under reduced motion. */
+
+.crew-grad {
+  background-image: linear-gradient(90deg, var(--aim), var(--info));
+  color: var(--aim-fg);
+}
+
+.crew-grad-text {
+  background-image: linear-gradient(90deg, var(--aim), var(--info));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* The root row: a tinted card with a soft glow, still one list row. */
+.crew-card {
+  background-image: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--aim) 18%, transparent) 0%,
+    color-mix(in srgb, var(--info) 8%, transparent) 60%,
+    transparent 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--aim) 45%, var(--border));
+  box-shadow: 0 0 14px -2px color-mix(in srgb, var(--aim) 35%, transparent);
+  border-radius: var(--radius-lg, 12px);
+  animation: crew-glow-in 0.6s ease-out 1 both;
+}
+
+.crew-card[data-active="true"] {
+  border-color: color-mix(in srgb, var(--aim) 75%, var(--border));
+  box-shadow: 0 0 18px -2px color-mix(in srgb, var(--aim) 55%, transparent);
+}
+
+/* The steer composer: the composer in a worker view, ringed in the crew's purple. */
+.crew-steer-ring {
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--aim) 70%, transparent),
+    0 0 16px -4px color-mix(in srgb, var(--aim) 50%, transparent);
+}
+
+@keyframes crew-glow-in {
+  from {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-card {
+    animation: none;
+  }
+}
+
+/* One frame for the steer composer: the ring IS the composer's card, so the
+   composer's own glass card inside it gives up its surface, edge and shadow.
+   Scoped to the composer card the dock draws (`liquid-glass glass-thin
+   glass-shadow`); menus the composer opens are portalled out of this box. */
+.crew-steer-ring {
+  background-color: var(--bg-elevated);
+}
+
+.crew-steer-ring .liquid-glass.glass-thin.glass-shadow {
+  background: transparent;
+  box-shadow: none;
+  border-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.crew-steer-ring .liquid-glass.glass-thin.glass-shadow::before,
+.crew-steer-ring .liquid-glass.glass-thin.glass-shadow::after,
+.crew-steer-ring .glass-shelf::before {
+  display: none;
+}
+
+/* A solid (non-glass) pane wears a 1px `--border` outline marked `!important`
+   (liquid-glass.css); inside the ring that outline is the second frame. The
+   keyboard ring (`:focus-visible`) is left alone. */
+.crew-steer-ring .liquid-glass.glass-thin.glass-shadow:not(:focus-visible) {
+  outline: none !important;
+}
+
+/* A phone's steer input is 16px, so iOS does not zoom the page into it. */
+@media (max-width: 767px) {
+  .crew-steer-ring [contenteditable="true"],
+  .crew-steer-ring textarea {
+    font-size: 16px;
+  }
+}
+
+/* Status text on a card or row: the state's hue mixed toward the theme's strongest
+   text colour, which is near black on a light theme and near white on a dark one,
+   so one rule darkens a light theme's yellow and lightens a dark theme's green.
+   Measured against the darkest surface each sits on (the selected crew card and
+   the selected root row, whose tint is the deepest), 12px labels stay at or above
+   4.5:1 in both themes; the ghosts and dots wear the same tone. `crew-tone-muted`
+   is the quiet line ("Done 2/3", "Waiting"), held to the same floor. */
+.crew-tone-warn {
+  color: color-mix(in srgb, var(--warn) 45%, var(--text-strong, var(--text)));
+}
+
+.crew-tone-ok {
+  color: color-mix(in srgb, var(--ok) 45%, var(--text-strong, var(--text)));
+}
+
+.crew-tone-aim {
+  color: color-mix(in srgb, var(--aim) 50%, var(--text-strong, var(--text)));
+}
+
+.crew-tone-muted {
+  color: color-mix(in srgb, var(--muted) 50%, var(--text-strong, var(--text)));
+}

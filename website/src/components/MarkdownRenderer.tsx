@@ -703,6 +703,14 @@ export function fixCodeFences(s: string): string {
   return s
 }
 
+/** An HTML element tag: `<div`, `<svg`, `</p>`, `<br/>`. Comments and `<` in text do not match. */
+const HTML_ELEMENT_RE = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?\/?>/
+
+/** Whether a widget body is markdown rather than HTML: it has text and no element tag. */
+function isMarkdownWidgetBody(body: string): boolean {
+  return body.trim().length > 0 && !HTML_ELEMENT_RE.test(body)
+}
+
 const MCWIDGET_STRIP_RE = /<mcwidget[\s\S]*?<\/mcwidget>|<mcwidget[\s\S]*$/g
 
 // Anthropic tool-use protocol markup occasionally leaks into the visible
@@ -1073,9 +1081,17 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       return smooth ? <SmoothResize enabled={!block.complete}>{node}</SmoothResize> : node
     }
     case 'widget':
-      return block.complete
-        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
-        : <WidgetPlaceholder title={block.language} />
+      if (!block.complete) return <WidgetPlaceholder title={block.language} />
+      // A widget whose body holds no HTML element is markdown an agent wrapped in
+      // the widget tag (a "Task board" table, say). Drawn in the frame it reads as
+      // raw `**` and `|` text, so it is rendered as the markdown it is, under its title.
+      if (isMarkdownWidgetBody(block.content)) {
+        return <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2" data-testid="markdown-widget" aria-label={block.language || undefined}>
+          {block.language && <h4 className="mb-1 text-[12px] font-semibold text-muted">{block.language}</h4>}
+          <MarkdownBlock content={block.content.trim()} sourcePos={false} startLine={block.startLine} glow={false} smooth={false} softBreaks={softBreaks} live={false} unfurl={unfurl} markers={markers} />
+        </section>
+      }
+      return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
     case 'markdown':
       // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
       // with the block's own `complete` flag so a provisional block is treated

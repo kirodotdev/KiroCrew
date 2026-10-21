@@ -12,7 +12,7 @@
  * callers import from there. This module never imports `SidePanel.tsx`.
  */
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type ReactNode } from 'react'
-import { Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitPullRequest, GitBranch, History, Component, Globe, CircleDot, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin } from 'lucide-react'
+import { Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitPullRequest, GitBranch, History, Component, Globe, CircleDot, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin, Users } from 'lucide-react'
 import type { ViewKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS } from '../../hooks/usePanelTabs'
 import { DropdownMenuItem } from '../../components/ui/dropdown-menu'
@@ -35,6 +35,7 @@ import { DropdownMenuItem } from '../../components/ui/dropdown-menu'
  */
 export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   'command-center': 'commandCenter.title',
+  workers: 'commandCenter.workers',
   changes: 'pages.chat.sidePanel.menu_changes',
   issues: 'pages.chat.sidePanel.menu_issues',
   files: 'pages.chat.sidePanel.menu_files',
@@ -55,6 +56,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
 
 export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   'command-center': 'commandCenter.description',
+  workers: 'commandCenter.workers_description',
   changes: 'pages.chat.sidePanel.menu_changes_desc',
   issues: 'pages.chat.sidePanel.menu_issues_desc',
   files: 'pages.chat.sidePanel.menu_files_desc',
@@ -102,6 +104,9 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind | 'terminal'; icon:
     id: 'session-output',
     items: [
       { kind: 'command-center', icon: <PanelRight size={15} /> },
+      // A Crew Mode chat's workers: offered only on a Crew Mode root or one of
+      // its workers (`crewMode` below), where the list has something to show.
+      { kind: 'workers', icon: <Users size={15} /> },
       { kind: 'summary', icon: <ListTree size={15} /> },
       { kind: 'pins', icon: <Pin size={15} /> },
       { kind: 'changes', icon: <GitPullRequest size={15} /> },
@@ -158,7 +163,9 @@ const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context', 'crewl
 /** Which `+`-menu entries are offered, given the gates that hide entries:
  *  Terminal is hidden when the feature is disabled server-side, the
  *  diagnostics views (Logs, Context breakdown) are hidden unless Developer
- *  Mode is on, and **Summary is hidden while session summaries are disabled**.
+ *  Mode is on, **Summary is hidden while session summaries are disabled**, and
+ *  **Workers is offered only on a Crew Mode root or one of its workers**
+ *  (`crewMode`).
  *  The permanently pinned views (Changes / Files / Artifacts) are never listed;
  *  they are always present in the strip.
  *
@@ -181,7 +188,7 @@ const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context', 'crewl
  *  bucket would be orphaned by the re-key). Withheld here and from the pinned
  *  block alike — an empty view is worse than no view. */
 export function newMenuSections(
-  opts: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean; hiddenViews?: ReadonlySet<SidePanelWithholdable> },
+  opts: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean; hiddenViews?: ReadonlySet<SidePanelWithholdable>; crewMode?: boolean },
 ): { id: string; items: { kind: ViewKind | 'terminal'; icon: ReactNode }[] }[] {
   return NEW_MENU_GROUPS
     .map(group => ({
@@ -190,6 +197,7 @@ export function newMenuSections(
         (opts.terminalEnabled || item.kind !== 'terminal')
         && (opts.devMode || !DEV_ONLY_VIEWS.has(item.kind))
         && (opts.summaryEnabled || item.kind !== 'summary')
+        && (!!opts.crewMode || item.kind !== 'workers')
         && !opts.hiddenViews?.has(item.kind)
         && !(PINNED_VIEWS as string[]).includes(item.kind),
       ),

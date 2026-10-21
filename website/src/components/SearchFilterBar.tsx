@@ -153,7 +153,7 @@ export const FILTER_CHIP_ROW_CLS = 'px-3 pb-1 flex items-center gap-1.5 flex-wra
  *  `label` is the caller's — the sidebar appends its window and count, the
  *  roster its counts — so one recipe carries whatever a list has to say about
  *  the filter without knowing what it is. */
-export function FilterChip({ label, color, aggregate, paused, clearLabel, onClear, testId }: {
+export function FilterChip({ label, color, aggregate, paused, clearLabel, onClear, testId, gradient }: {
   label: string
   /** The filter's colour token, e.g. `var(--accent)` or `var(--warn)`; omit for an aggregate chip. */
   color?: string
@@ -167,11 +167,14 @@ export function FilterChip({ label, color, aggregate, paused, clearLabel, onClea
   clearLabel: string
   onClear: () => void
   testId?: string
+  /** Paint the chip in the Crew Mode gradient (`styles/crew-mode.css`) instead of `color`. */
+  gradient?: boolean
 }) {
   return (
     <button
       type="button"
       className={cn(
+        gradient && 'crew-grad border border-transparent',
         'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors',
         aggregate && 'max-w-full bg-bg-elevated/60 border border-border text-muted hover:text-text',
         // Same colour token paused or not, so the chip still reads as ITS
@@ -179,7 +182,7 @@ export function FilterChip({ label, color, aggregate, paused, clearLabel, onClea
         // now" without leaning on contrast alone.
         paused && 'border-dashed',
       )}
-      style={aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
+      style={gradient || aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
       onClick={onClear}
       title={clearLabel}
       aria-label={clearLabel}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { selectPersonSlots } from '../store/dashboardSlice'
 import { Forward, Plus } from 'lucide-react'
 
 import { useAppDispatch, useAppSelector } from '../store'
@@ -48,7 +49,8 @@ export function useArtifactSendToSession({ name, slug, active, onSend, beforeSen
   onError: (message: string | null) => void
 }) {
   const dispatch = useAppDispatch()
-  const slots = useAppSelector((s) => s.dashboard.slots)
+  // The person's list: a Crew Mode root's workers are its side panel's to show.
+  const slots = useAppSelector(selectPersonSlots)
   const [creating, setCreating] = useState(false)
   const liveRef = useRef(active)
   liveRef.current = active

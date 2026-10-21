@@ -705,3 +705,49 @@ def test_the_empty_window_merge_cannot_resurrect_a_deleted_session(tmp_path):
     asyncio.run(save_slot_off_loop(state, child, force=True))
 
     assert not path.exists(), "the merge must not resurrect a deleted session file"
+
+
+def test_a_crew_mode_root_creates_its_worker_outside_the_persons_folders(tmp_path, request):
+    """The server drops a Crew Mode caller's folder, whoever sent it (``crew_mode``)."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent_kind = "template"
+    # The caller's own agent is the configured Crew Mode conductor, so the case does
+    # not depend on a conductor spec being installed in the test home.
+    from types import SimpleNamespace
+
+    from kiro_crew import crew_mode
+
+    caller.agent = "kirocrew"
+    crew_mode.remember(SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="kirocrew")))
+    request.addfinalizer(
+        lambda: crew_mode.remember(SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="")))
+    )
+    _folder(state, "fold00000001", "Goal")
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert not child.folder_id
+    assert created.get("folder_ignored") == "crew_mode"
+
+    # A worker of that root is held to the same rule for the sessions IT opens.
+    grandchild = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(child), folder_id="fold00000001")
+    )
+    assert not state.get_slot(grandchild["target"]).folder_id
+    assert grandchild.get("folder_ignored") == "crew_mode"
+
+
+def test_a_plain_caller_still_files_its_child(tmp_path):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _folder(state, "fold00000001", "Goal")
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+    assert state.get_slot(created["target"]).folder_id == "fold00000001"
+    assert "folder_ignored" not in created

@@ -1807,6 +1807,16 @@ async def _run_chat(
                     board_tags = resolve_board_tags(_slot_tags, state._tags) or None
             except Exception:
                 logger.debug("board_tags resolution failed", exc_info=True)
+            # A ROOT session's own page, as the [DASHBOARD] block names it (a crewmate's
+            # rides in its member section instead). The root test is the one the page's
+            # read and write routes apply; the block is empty until a page is adopted.
+            session_dashboard: str | None = None
+            try:
+                from kiro_crew.dashboard_agentic import root_session_dashboard_block
+
+                session_dashboard = await root_session_dashboard_block(slot) or None
+            except Exception:
+                logger.debug("session dashboard block failed", exc_info=True)
             _color_theme = getattr(slot, "color_theme", "")
             # Governance gate: installed-pack persona injection
             # is a governable capability. A policy can force-disable it wholesale
@@ -1976,6 +1986,7 @@ async def _run_chat(
                     exclude_last_n=1,
                     folder_path=folder_path,
                     board_tags=board_tags,
+                    session_dashboard=session_dashboard,
                     model_window=model_window,
                     # Member DM threads get the four-layer member identity block.
                     # `slot.agent` is the member the human picked (the crew name);

@@ -10,13 +10,14 @@ import ActivityViewer from './ActivityViewer'
 // Loaded with its tab, not the shell: the panel (attention cards, tile lists,
 // the session card frame) is only mounted once a Dashboard tab exists.
 const CommandCenterPanel = lazy(() => import('./command-center/CommandCenterPanel'))
+import { CrewWorkersTab } from './command-center/CrewWorkerList'
 import FilesHomePanel from './FilesHomePanel'
 import { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
-import { PINNED_VIEWS, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
+import { PINNED_VIEWS, offerPanelView, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
 import { appIcon } from '../../apps/appIcons'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -288,7 +289,16 @@ export default function SidePanel({
   // disabled server-side and Context breakdown unless Developer Mode is on, and
   // never list the permanently pinned views (Changes / Files / Artifacts) —
   // those are always present in the strip (see the syncPinned reconcile below).
-  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled, hiddenViews })
+  // A Crew Mode root or one of its workers: its panel offers Workers, and the
+  // tab is put on its strip whenever the session is shown (a fresh browser, a
+  // reload, a reopened browser tab), without taking focus. Closing it holds
+  // until the next visit; the + menu brings it back at any time.
+  const crewMode = useAppSelector(st => {
+    const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
+    return !!(row?.crew_mode_root || row?.crew_root)
+  })
+  useEffect(() => { if (crewMode && slot) offerPanelView(slot, 'workers') }, [crewMode, slot])
+  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled, hiddenViews, crewMode })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
@@ -388,6 +398,25 @@ export default function SidePanel({
   // lists (the scroller keeps its box as tabs open/close/reorder).
   const [attachTabEdges, tabEdges, remeasureTabEdges] = useScrollEdges<HTMLUListElement>()
   useEffect(() => { remeasureTabEdges() }, [dynamicTabs, pinnedTabs, remeasureTabEdges])
+  // An active dynamic tab (Workers, a file, a terminal) is the panel's heading:
+  // the idle pinned chips drop to their icons sooner (`data-dynamic-active`,
+  // sidebar-and-side-panel.css) and the active chip is scrolled fully into view
+  // on open and on resize, so its label is never left clipped under a fade.
+  const dynamicActive = useMemo(() => dynamicTabs.some(t => t.id === activeId), [dynamicTabs, activeId])
+  const dynamicWrapRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const wrap = dynamicWrapRef.current
+    if (!wrap || !dynamicActive) return
+    const reveal = () => {
+      const chip = wrap.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      chip?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+    }
+    reveal()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(reveal)
+    observer.observe(wrap)
+    return () => observer.disconnect()
+  }, [activeId, dynamicActive, dynamicTabs.length])
   // The pinned group scrolls under the same scrollbar-none, and its own comment
   // notes it overflows at 320px once a host prepends leading chips — so it
   // needs the same cue. Separate hook: it is a different scroller, and the two
@@ -550,7 +579,7 @@ export default function SidePanel({
           frameless Linux paint their caption controls — the panel chrome below
           would sit under them, covered and unclickable. Bottom-docked the strip
           is nowhere near that corner, so it takes no reserve. */}
-      <div className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
+      <div data-dynamic-active={dynamicActive ? 'true' : undefined} className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
@@ -634,7 +663,7 @@ export default function SidePanel({
             parent, not the scrolled group. min-w-0 keeps the scroller
             shrinkable. The -mb-px (border overlap) stays on the group itself,
             which the seam-hairline contract pins. */}
-        <div className="relative min-w-0 flex items-end">
+        <div ref={dynamicWrapRef} className="relative min-w-0 flex items-end">
         <Reorder.Group
           ref={attachTabEdges}
           axis="x"
@@ -920,6 +949,17 @@ export default function SidePanel({
               </ErrorBoundary>
             </div>
           )
+          // A Crew Mode root's workers, for the root and for each worker on screen.
+          if (t.kind === 'workers') {
+            if (!isActive) return null
+            return (
+              <div key={`${t.id}:${slot}`} className="absolute inset-0">
+                <ErrorBoundary scope="crew-workers" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.workers_error')} />}>
+                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} />
+                </ErrorBoundary>
+              </div>
+            )
+          }
           // The pinned Files tab renders the file-browser home directly — it
           // is not one of ActivityViewer's multiplexed session views.
           if (t.kind === 'files') {

@@ -223,6 +223,9 @@ export interface ChatInputProps {
    * `useAnchoredTriggerRect`.
    */
   onAgentClick?: (rect: DOMRect, trigger?: HTMLElement) => void
+  /** Shown where the agent chip sits when the session has no agent picker (a
+   *  Crew Mode chat's conductor is Crew Mode's to choose): a label, not a control. */
+  agentBadge?: React.ReactNode
   /** `composerHadFocus` is whether the message editor held focus when the chip
    *  was pressed, read before the press moved focus onto the chip. The picker
    *  uses it to hand focus back to the editor after a pick, and only then: a

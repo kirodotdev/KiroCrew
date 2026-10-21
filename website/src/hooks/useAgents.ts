@@ -5,6 +5,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { hideMateWithoutPreview } from '../lib/assistantMember'
 import { withMarkdownBlocks } from '../lib/markdownAgents'
 import { PREVIEW_CREW } from '../utils/previewFlags'
+import { setCrewModeCatalog, withoutConductors } from '../lib/crewMode'
 import { usePreviewFlag } from './usePreviewFlag'
 
 /**
@@ -33,7 +34,8 @@ import { usePreviewFlag } from './usePreviewFlag'
  *   withheld when a listed template reaches the same binding (see
  *   `withoutCoveredCrewmates`); a crewmate no template covers stays pickable, and
  *   so does the member named as the default agent unless a listed template
- *   shares its name.
+ *   shares its name. Conductor templates (the catalog's `conductor_agents`) are
+ *   always left out: a chat reaches a conductor through Crew Mode.
  *   With the key on, every member is listed, a member and a template of one name
  *   are two rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
@@ -115,6 +117,10 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // same "KAS only" pill: the catalog was asked for THIS chat, so its
       // `session_backend` is the harness this chat runs.
       const rows = withMarkdownBlocks(d.agents || [], d)
+      // Recorded before the state update below re-renders, so every reader of
+      // lib/crewMode (the Crew Mode switch, the picker filter) sees this catalog's
+      // conductor on the same render as its rows.
+      setCrewModeCatalog(d.crew_mode_agent, d.conductor_agents)
       setChoices(rows)
       setDisplayChoices(rows)
       setDefaultAgent(d.default_agent || '')
@@ -142,14 +148,15 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   const displayAgents = useMemo(() => foldByName(shownDisplay), [shownDisplay])
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
+  // Conductor templates never reach a chat's picker: Crew Mode is the way in.
   const pickerChoices = useMemo(
-    () => (memberChoices ? shown : withoutCoveredCrewmates(shown)),
+    () => withoutConductors(memberChoices ? shown : withoutCoveredCrewmates(shown)),
     [shown, memberChoices],
   )
   // The picker's rows as of the last successful load, for display-only labels
   // that must agree with the picker on when a same-name pair exists (#19472).
   const displayPickerChoices = useMemo(
-    () => (memberChoices ? shownDisplay : withoutCoveredCrewmates(shownDisplay)),
+    () => withoutConductors(memberChoices ? shownDisplay : withoutCoveredCrewmates(shownDisplay)),
     [shownDisplay, memberChoices],
   )
 

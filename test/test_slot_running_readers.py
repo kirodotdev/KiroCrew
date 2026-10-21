@@ -226,6 +226,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
+                # it as a steer, and only an unreserved slot has its queued text
+                # started now, the composer's own two questions.
+                ("handlers/crew_workers.py", "_deliver_as_person"),
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_api/chat_send.py", "api_chat"),
                 ("responsive_chat.py", "accept"),

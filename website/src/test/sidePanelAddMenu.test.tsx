@@ -187,11 +187,16 @@ describe('newMenuSections', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
     // view added to NEW_MENU_LABEL_KEY without being placed in a group — or
     // placed in two — fails here instead of quietly vanishing from the menu.
-    const flat = kinds({ devMode: true, terminalEnabled: true }).flat()
+    const flat = kinds({ devMode: true, terminalEnabled: true, crewMode: true }).flat()
     const pinned = ['changes', 'files', 'artifacts']
     const catalogued = Object.keys(NEW_MENU_LABEL_KEY).filter(k => !pinned.includes(k))
     expect([...flat].sort()).toEqual([...catalogued].sort())
     expect(new Set(flat).size).toBe(flat.length)
+  })
+
+  it('offers Workers only on a Crew Mode root or one of its workers', () => {
+    expect(kinds({ devMode: true, terminalEnabled: true }).flat()).not.toContain('workers')
+    expect(kinds({ devMode: true, terminalEnabled: true, crewMode: true }).flat()).toContain('workers')
   })
 
   it('hides Summary while session summaries are disabled', () => {

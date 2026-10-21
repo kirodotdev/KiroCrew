@@ -105,6 +105,15 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "A Crew Mode root's worker list and timeline",
+        "dashboard/handlers/crew_workers.py",
+        "The side panel's worker cards (a closed worker's saved title, the ledger "
+        "line through the board's deep redactor) and every timeline bar and mark "
+        "label, which are slices of transcript rows: each passes exfiltration-URL "
+        "and credential redaction (the display battery for timeline labels) "
+        "before it reaches the browser.",
+    ),
+    (
         "Interrupted work in a crewmate reply",
         "dashboard/responsive_chat.py",
         "The bounded interrupted-turn reference passed to the next model prompt. "
@@ -1804,6 +1813,11 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # Pure derivation: `redact_labels` takes the redactor as an argument and
+        # applies it to labels it derived; the module emits nothing. The egress is
+        # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
+        # display battery in.
+        "crew_timeline.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).

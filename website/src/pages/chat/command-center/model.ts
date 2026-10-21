@@ -146,6 +146,16 @@ export function canCarryCard(slot: ChatSlot | undefined | null): boolean {
   return !isPrivateMemoryMode(slot?.memory_mode) && slot?.executor !== 'remote' && !slot?.parent
 }
 
+/** Whether `slot` owns a dashboard PACKAGE, the side panel's Overview: a ROOT
+ *  session, one no other session dispatched (`created_by`) or adopted (the
+ *  session-tree `parent`). The gateway's `is_root_session` (`card_lifecycle.py`)
+ *  reads the same two fields and refuses the read with `not_root_session`
+ *  otherwise, so this only keeps a caller from offering a page it would be
+ *  refused. An unknown slot answers false: there is nothing to offer yet. */
+export function isRootSession(slot: ChatSlot | undefined | null): boolean {
+  return !!slot && !slot.created_by && !slot.parent
+}
+
 export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] {
   if (root === null) return slots
   if (!slots.some(s => s.key === root)) return []

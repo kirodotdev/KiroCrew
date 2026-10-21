@@ -28,8 +28,9 @@ Fewer than two qualifying items means one long session is the better shape, and
 a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
-[Agents](agents.md) for the per-session, per-thread and per-cron selectors) and
-give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+[Agents](agents.md) for the per-session, per-thread and per-cron selectors), or
+turn on **Crew Mode** above the chat input, which does the same, and give it
+the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 

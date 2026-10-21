@@ -181,6 +181,30 @@ def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]
     return row, None
 
 
+#: What a folder argument becomes for a Crew Mode session: nothing, said once.
+CREW_MODE_FOLDER_NOTE = (
+    " (folder ignored: this session is part of a Crew Mode chat, which keeps its "
+    "sessions out of the person's folders and lists them in the chat's side panel)"
+)
+
+
+def _caller_in_crew_tree(caller_key: str, rows: list[dict]) -> bool:
+    """Whether the caller is a Crew Mode root or one of its workers.
+
+    Read off the caller's own row in the slot list, which the gateway stamps
+    (``crew_mode.stamp_rows``). A caller with no ``dashboard:`` row is not in one.
+    """
+    from kiro_crew import crew_mode
+
+    if not caller_key.startswith("dashboard:"):
+        return False
+    slot_key = caller_key.split(":", 1)[1]
+    for r in rows:
+        if str(r.get("key") or "") == slot_key:
+            return crew_mode.in_crew_tree(r)
+    return False
+
+
 def _visible_chat_slots(ctx: ToolContext) -> tuple[list[dict], str | None]:
     """The live sessions these tools may see, private and foreign ones removed.
 

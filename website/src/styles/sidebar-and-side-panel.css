@@ -43,6 +43,13 @@
   .side-tab-pinned-idle{width:2rem;max-width:none;justify-content:center;padding-left:0;padding-right:0}
   .side-tab-pinned-idle .side-tab-label,.side-tab-pinned-idle .side-tab-badge{display:none}
 }
+/* With a dynamic tab active (Workers, a file, a terminal) that tab is the panel's
+   heading, so the idle pinned chips give up their labels at a wider strip, and
+   the active label has the room to read in full at the default panel width. */
+@container (max-width:640px){
+  [data-dynamic-active="true"] .side-tab-pinned-idle{width:2rem;max-width:none;justify-content:center;padding-left:0;padding-right:0}
+  [data-dynamic-active="true"] .side-tab-pinned-idle .side-tab-label,[data-dynamic-active="true"] .side-tab-pinned-idle .side-tab-badge{display:none}
+}
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already

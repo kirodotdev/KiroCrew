@@ -51,6 +51,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat-sidebar/folderBlocks.tsx': { announced: 2, keepTarget: 0, plain: 0, reason: 'every site is a gesture on a LISTED folder, so both announce: the two ways to reach a folder\'s conductor -- the item in both folder menus and the chat button in the folder row\'s own hover cluster' },
   'src/pages/chat/SubagentRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/WorkflowRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
+  'src/pages/chat/command-center/CrewWorkerList.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'opening a Crew Mode worker, or going back to its root, from the side panel announces' },
   'src/pages/chat/memoryModeSwitch.ts': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to the just-created memory-mode replacement, awaited with in-page error UI' },
   'src/pages/chat/useChatPageSessionController.ts': { announced: 4, keepTarget: 0, plain: 7, reason: 'tab-strip select + foreground open-in-tab + late-frame deep-link recovery + a short-name notice row announce; the plain sites are close-tab successor selection, URL deep-link restore (x2), the short-name deep link opening a slot it just found in the live roster, mount re-sync, tab fallback and app-launch activation with its own sidError notice' },
   'src/pages/overview/PromptsTab.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },

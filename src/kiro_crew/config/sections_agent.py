@@ -39,6 +39,7 @@ from kiro_crew.constants import (
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
+from kiro_crew.crew_mode import DEFAULT_CREW_MODE_AGENT
 from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
@@ -287,6 +288,16 @@ class AgentConfig:
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
+    )
+    crew_mode_agent: str = field(
+        default=DEFAULT_CREW_MODE_AGENT,
+        metadata=_meta(
+            "Crew Mode conductor",
+            "The agent template a chat runs when Crew Mode is turned on. The only "
+            "place that names it: changing it swaps the conductor for new Crew Mode "
+            "chats, and chats already in Crew Mode keep the one they started on. "
+            "Takes effect when the dashboard is reloaded; no gateway restart.",
+        ),
     )
     deepseek_env: dict[str, str] = field(
         default_factory=dict,

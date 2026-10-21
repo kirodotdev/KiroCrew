@@ -18,7 +18,9 @@ from urllib.parse import quote
 
 from kiro_crew.conductor_patrol import reply_line
 from kiro_crew.mcp_dashboard_caller_scope import (
+    CREW_MODE_FOLDER_NOTE,
     _caller_app_scope,
+    _caller_in_crew_tree,
     _refuse_tree_shaping_if_unverifiable,
 )
 from kiro_crew.mcp_dashboard_folder_tree import _chat_folder_paths
@@ -82,6 +84,10 @@ def _resolve_folder_for_new_session(
     scope_rows, scope_err = _get_rows(ctx.client, "/api/chat/slots")
     if scope_err:
         return "", "", "", redact(f"Error: {scope_err}")
+    if _caller_in_crew_tree(gate_key, scope_rows):
+        # A Crew Mode chat's sessions live in its side panel, never in the person's
+        # folders: the folder is dropped, nothing is created, and the reply says so.
+        return "", "", CREW_MODE_FOLDER_NOTE, None
     if _caller_app_scope(gate_key, scope_rows):
         return (
             "",

@@ -84,6 +84,10 @@ function applyToolOutputToMessages(
 export const activityReducers = {
   toggleActivity(state: ChatState) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null; persistActivityOpen(state.activeSlot, state.activityOpen) },
   openActivityPanel(state: ChatState) { state.activityOpen = true; persistActivityOpen(state.activeSlot, true) },
+  /** Close the active slot's panel, whatever it was: for a switch that must land
+   *  on the chat even when the target slot remembers its panel open (a phone
+   *  opening a Crew Mode worker from the Workers sheet). */
+  closeActivityPanel(state: ChatState) { state.activityOpen = false; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, false) },
   openActivityToTab(state: ChatState, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.activityTabRequest += 1; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
   /** Tool details expand inline in the chat. This action signals the matching
    *  ToolCallLine pill to auto-expand and scroll into view. */

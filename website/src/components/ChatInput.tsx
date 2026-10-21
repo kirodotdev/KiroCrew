@@ -215,6 +215,7 @@ function ChatInput({
   agentSource,
   modelName,
   onAgentClick,
+  agentBadge,
   onModelClick,
   onProjectClick,
   sessionControls,
@@ -1681,6 +1682,7 @@ function ChatInput({
             <SessionControlChips sessionControls={sessionControls} shelfCompact={shelfCompact} onSessionControlClick={onSessionControlClick} />
           )}
           <div className="flex items-center gap-2 min-w-0 flex-1">
+          {!onAgentClick && agentBadge}
           {onAgentClick && agentName && (
             <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentMemory={agentMemory} agentSource={agentSource} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
           )}

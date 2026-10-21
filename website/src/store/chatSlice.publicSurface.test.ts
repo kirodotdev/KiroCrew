@@ -33,7 +33,7 @@ const ACTION_CREATORS = [
   'ageFolderSuggestion', 'appendMessage', 'appendQueuedMessage', 'appendSlotMessage',
   'cancelQueuedMessage', 'clearFocusToolCallId', 'clearFolderSuggestion', 'clearFollowupCard',
   'clearMessages', 'clearPendingPermissions', 'clearQuestionCard', 'clearSlotCache',
-  'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone',
+  'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone', 'closeActivityPanel',
   'clearTerminalSubagents', 'clearUndeletableHistory', 'clearUnresumableResume',
   'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'editQueuedMessage',
   'endLocalTurn', 'finalizeAssistant', 'hydrateSlotMessages', 'markQuestionSettled', 'markSendUnconfirmed', 'markSubagentApprovalGone', 'markSubagentApproving',

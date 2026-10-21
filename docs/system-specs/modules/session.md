@@ -406,6 +406,188 @@ cleanup does not read durable session metadata. Tab close retires its nudge loop
 before other asynchronous work. After the last consumer and provider stop, cleanup
 releases only the captured identity, preserving any replacement session carrier.
 
+**Crew Mode** has no field of its own. It is a UI over a conductor template
+(`kiro_crew/crew_mode.py`): a chat is in Crew Mode exactly when it is a root
+session whose agent is one of the conductor family (`CONDUCTOR_TEMPLATES` --
+`kirocrew-conductor`, `kirocrew-pipeline-conductor`, `kirocrew-ledger-conductor`,
+`kirocrew-security-conductor`, `kirocrew-team-lead` -- plus the configured
+`agent.crew_mode_agent`) in the `template` namespace. `agent.crew_mode_agent`
+(default `kirocrew-conductor`) is the one place that names the conductor the
+switch turns on, so changing it swaps the conductor for new Crew Mode chats; a
+chat already in Crew Mode keeps the one it started on. The agent catalog
+(`GET /api/agents/catalog`) carries both `crew_mode_agent` and
+`conductor_agents`, which the dashboard reads instead of naming a conductor itself.
+The composer switch is one way: an ordinary
+`POST /api/chat/slots/{slot}/agent` naming the configured conductor in the `template`
+namespace. The chip shows only on an empty chat's welcome state, and its hint
+reads "Turn on Crew Mode: each task runs in its own chat and reports back here."
+Pressing it hides both the memory-mode chip and the Crew Mode chip for that chat
+at once, and neither comes back: the composer has no off control and no off note.
+If the server refuses the switch, the chat never turned on and both chips return.
+A normal chat's agent picker lists no conductor template (`withoutConductors`),
+and the keyboard agent cycle steps over the same list (`agentCycleTarget`; a
+conductor chat does not cycle at all), so Crew Mode is the way into one. A
+conductor chat's composer offers no agent picker: a Crew Mode chip (a label in
+the crew gradient, `CrewModeComposerChip`) sits where the agent chip would, and
+the workspace and model controls stay. The server route itself is
+unchanged: an empty agent name still stamps the configured default template.
+
+Every slot row says where it sits in Crew Mode (`crew_mode.stamp_rows`, run by
+`serialize_slots` after the parents): `crew_mode_root` is true on a Crew Mode root,
+and `crew_root` names the root on every session it dispatched, directly or through
+another worker (walked over `created_by` and the crew log's `parent`, stopping on a
+repeat or a creator that is no longer listed). The person's session lists leave
+those workers out. The dashboard reads `?crew=all` (its live slot frame carries
+every row) and filters client-side with one rule, `crewModeView`, exposed as the
+store selector `selectPersonSlots`: the chat sidebar, the Sessions page, the
+command palette's Recents (whose Older rows are still deduped against every live
+row, so a worker never comes back there) and an artifact's Send to session all
+read it; the tab strip and a worker's own open view are not person lists and read
+every row. `GET /api/chat/slots` without `?crew=all` applies the same rule for
+other person clients (scripts, `curl`); an agent's own read (`internal_auth`) keeps
+every row, since its folder, status and lineage tools resolve rows from that list.
+Which agent conducts is read where it is used: `crew_mode.crew_mode_agent()` asks
+the live config watcher's snapshot (primed from the boot config, refreshed on each
+edit of the file), and the agent catalog and the agent switch remember the
+config they loaded, so a custom `agent.crew_mode_agent` is in force
+from gateway start.
+`?crew=roots` returns only Crew Mode roots, and the sidebar's **Crew Mode** filter
+chip (`SessionFilterKey` `crew`) narrows to them. A Crew Mode root and its workers
+are never filed into the person's folders: `session_create`, `session_fork` and
+`session_revive` drop a `folder` argument from such a caller, and
+`chat_folder_file_self` leaves it where it is, each saying so in its reply
+(`CREW_MODE_FOLDER_NOTE`). The server holds the same rule for every caller of
+session-control create: `create_session` drops `folder_id` when the caller is a
+Crew Mode root or one of its workers (`crew_mode.slot_in_crew_tree`, the slot
+list's stamp rule applied to the live slots) and answers `folder_ignored:
+"crew_mode"`.
+
+The side panel lists a root's workers. `GET /api/chat/slots/{slot}/crew-workers`
+answers each worker's key, title, agent, status (`working`, `idle`,
+`needs_approval`, `closed` for a tab the crew log still names), group from
+real signals only (`needs_you` for an open approval or question card, or a
+ledger report `blocked`/`question` with reason `approval`/`needs_human`;
+`working` while a turn runs; `done` for a closed tab, a closed ledger item or a
+`done` report; `waiting` for anything else idle, so a worker that has replied,
+or asked in plain text after its card timed out, is never counted done), last
+activity, bound work-ledger item
+(read through the board's `task_records` seam) and `summary`, the card's one
+line: the item's latest report summary, else its title (both through the
+board's egress redactor), else the worker's last reply, first line, at most
+160 characters. A closed worker's title and agent come from its saved
+session metadata (`dashboard:<key>` in the conversation log, redacted), else its
+short key (`chat-3`). A card or the breadcrumb opens a worker with a plain
+`switchSlot`, like a tab click: each session keeps its own draft, so leaving one
+needs no guard.
+
+`GET /api/chat/slots/{slot}/crew-timeline` (same gate, roots only) answers the
+root's timeline: one lane per session (the root, then its live workers, then
+closed ones with no bars), each with its title, agent and model
+and `model_source`: `served` (the backend's report), `chosen` (the session's pick) or
+`default` (the gateway's `agent.model`), which the lane shows as "Default (<name>)". `crew_timeline.derive_lane` reads each live
+slot's loaded transcript window, loaded off the loop, and draws bars from
+recorded rows only: a turn from the assistant row's `turn_stats.elapsed_ms`
+(an open turn runs from its user row to now while the slot runs), a tool call
+from its `🔧` row, a wait from the `🔧` row to the `✅` row an approval writes,
+from a `permission` row, or for an `ask_question` call, and point marks for
+`error` rows, `❌` rows and refused (`🚫`) tools. A bar whose end no row stamps
+ends at the next row (`end_bound: "next_row"`), or at now while the session is
+live (`"now"`). A hand-off joins the sender's `session_send` row whose recorded
+`target` is the worker to the worker's seed row: the exact envelope the server
+prepends (`[sent by session <key> via session_send]` and a blank line) on a row
+without the person's `human` marker. The `[quoted: sent by session` form is the
+server's defanged copy of a forged envelope and is left as written, in the
+timeline and in the bubble alike. Bar and mark labels go through the display
+redaction (`_redact_for_display`) before they leave. The header is the elapsed time from the first row to the last (or
+now while any lane runs or waits) and the sum of `turn_stats.credits`; no
+tokens or money. `gaps` names what is not recorded and so not drawn:
+thinking vs output inside a turn, a tool's end time, a tool's failure status,
+tokens, closed workers' rows and rows older than the loaded window. A lane
+keeps its newest 400 bars and counts the rest in `dropped_segments`.
+
+The dashboard draws this as design B. A Crew Mode root's session-list row is the
+crew card (`styles/crew-mode.css` `.crew-card`, a tint and glow from `--aim` to
+`--info`): a solid ghost badge, a gradient "Crew Mode" eyebrow in place of the
+agent name, the title and time, and a stack of tiny worker ghosts coloured by
+group with "Needs you · N" or "Done x/y" (`summarizeCrewWorkers` over the worker
+list API, the same groups the panel and the breadcrumb show; a live slot row alone
+never says done). It stays in the time-sorted list. The filter menu's
+Crew Mode item is a gradient chip when on, and one line under the filters says
+workers and their folders stay out of the list. The side panel gets a **Workers**
+tab (`ViewKind` `workers`, zh-CN "成员") opened beside the board when Crew Mode is
+turned on: cards grouped Needs you, Working, Waiting, Done with counts, the worker
+on screen marked, and a "Projects tab · coming soon" footer. A **List | Timeline**
+switch on top (List by default; none on a phone, where the panel is a sheet
+and shows the list only, by the owner's decision) swaps the cards for the
+timeline (`CrewTimeline`): lanes with the name on up to two lines (the full name
+and model are the tooltip) and the model under it (`model_source`: `served` when
+the backend reported it, `chosen` for the session's own pick, else `default`,
+shown as "Default (auto)" with the gateway's `agent.model`, and the gap
+`served_model_unreported` is then listed), bars coloured from the theme tokens
+(turn the crew gradient, tool `--info`, wait `--warn`, failure a `--danger`
+mark), each at least 6px wide, hand-offs drawn as `--aim` arrows from the
+sender's lane at its `session_send` to the worker's lane at its first row, a
+header with Live or Finished, true elapsed time and credits, and a legend whose
+(i) holds what is not recorded. Time is drawn true up to a minute per stretch
+between recorded moments and grows by half a minute per doubling past that
+(`timelineScale`), so one long wait cannot squash the short bars; the (i) says
+so whenever a stretch was drawn shorter, and axis labels sit at least 14% of
+the track apart. A live run
+has a playhead on a window rounded up past now, advanced between reads (2 s)
+unless reduced motion is on; a finished run is static and re-read every 15 s.
+Clicking a lane opens that session like a card. Under reduced motion the timeline
+draws no playhead, and while the person types in the composer it holds the last
+read still until 1.5 s after the last keystroke. Every Crew Mode root and worker
+gets the Workers tab on its strip when shown (`offerPanelView`, without taking
+focus), and the + menu offers Workers on such a slot. With a dynamic tab active,
+the idle pinned chips drop to icons below a 640px strip and the active chip is
+scrolled fully into view. Opening a worker or going back on desktop keeps the
+panel open on the target; the breadcrumb row carries the panel's open control.
+Status text on cards and on the root row wears `crew-tone-*` (warn, ok, aim and
+the quiet `muted` line), the hue mixed toward the theme's strongest text colour,
+for at least 4.5:1 on every row state (normal, hover, selected) in both themes.
+On a phone, opening a worker or going back always closes the destination's
+panel (`closeActivityPanel`), so the sheet never covers the chat it opened. A worker opened on a window narrower than 1600px
+(`CREW_WORKER_ROOMY_PX`) hides the sessions list the way preview expand does,
+and leaving the worker restores it; a person's own toggle wins and only that
+toggle is stored. In the breadcrumb only the root title takes the ellipsis.
+The steer composer is one frame: the ring is the composer's card and the
+composer's glass card inside gives up its surface. A message another session
+delivered drops its `[sent by session <key> via session_send]` line in the
+bubble and the pinned card (`lib/crewSeed.ts`) and is labelled by role: "From
+conductor" when the worker's root sent it, "From a worker" for another worker
+of the same root, "From another chat" otherwise.
+
+A root session whose page is `goal-board` or `work-kanban` gets one more
+`[DASHBOARD]` line (`BOARD_IN_PANEL_LINE`): the page is the task board, so the
+reply carries no task board, table or `task-dashboard` artifact. A widget an
+agent fills with markdown instead of HTML (no element tag in its body) renders
+as that markdown under its title rather than as raw text in the frame. A card opens the
+worker in the MAIN pane like any session with the Workers tab in front of its
+panel; on a phone the panel sheet closes. The worker view's header is a
+breadcrumb (`CrewWorkerBreadcrumb`: ghost, root title, worker, status) with
+"Back to conductor", and its composer is the steer composer: ringed in the crew
+purple, labelled "Steer · <worker>", a hint that the text goes into the running
+chat, and `busyMode="steer-only"` so a running turn takes the text as a steer. `POST /api/chat/slots/{slot}/crew-workers/{worker}/steer`
+types `{message}` into one of them as the person: it cuts into a running turn
+(`steer_into_running_turn`, `user_origin=True`) or queues for the next one and
+starts an idle worker (`queue_for_next_turn`, `directive_user_origin=True`, which
+also persists the entry and sends the `queue_push` frame, so the queued card shows);
+the start takes the composer's default, so with the worker's sub-agents still
+running the drain holds the text until they finish and the reply says `queued`; the
+helpers the composer's own Steer uses, so the transcript shows the person's
+message with no peer envelope. Both routes take the root dashboard read's gate
+(app tokens answered 404, owner only) and reach only a session stamped with that
+root; any other target is `404 not_a_worker`. Opening a worker shows it in the main
+view like any session, with a way back to its root. Turning it on in a root session
+also opens the side panel's Dashboard view, whose Overview is the session's own
+Dynamic Dashboard. The switch to the conductor adopts `goal-board` on that page while
+nothing else is adopted, and each turn's `[DASHBOARD]` block then names it, so the
+conductor's task board lives there instead of in its replies.
+A person who wants every new chat
+on the conductor sets it as the default agent (`agent.default_agent`); the switch
+is then not offered, since every chat already starts on the conductor.
+
 ## Private member session ownership
 
 The section name is retained for existing documentation links. Member memory is

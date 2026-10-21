@@ -317,6 +317,7 @@ def rail_parts(
     context_groups: frozenset[str] | None,
     board_tags: list[tuple[str, str]] | None,
     minimal_context: bool,
+    session_dashboard: str | None = None,
     folder_path: str | None,
     session_key: str | None,
     agent: str | None,
@@ -374,6 +375,14 @@ def rail_parts(
             parts.append(
                 f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
             )
+
+    # The root session's own dashboard page -- the `[DASHBOARD]` block a crewmate gets
+    # inside its member section, built by `dashboard_agentic.session_turn_block` for the
+    # session's store key. Every turn, so the page the side panel Overview shows is
+    # known even after a page is adopted mid-chat. Built by the caller, which owns the
+    # slot and the root test; empty for a session that adopted no page.
+    if session_dashboard and not minimal_context:
+        parts.append(session_dashboard.rstrip("\n") + "\n\n")
 
     # Resource pressure — inject a compact advisory ONLY when a host ceiling
     # is near: memory tight/critical, the agent slice close to its cgroup task

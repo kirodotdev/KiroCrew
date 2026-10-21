@@ -551,3 +551,13 @@ async def test_catalog_sends_the_refused_backends(catalog):
         assert response.status == 200
         body = await response.json()
     assert body["markdown_refused_backends"] == agent_catalog._markdown_refused_backends()
+
+
+@pytest.mark.asyncio
+async def test_catalog_names_the_configured_crew_mode_agent_and_the_conductor_family(catalog):
+    catalog.config.agent.crew_mode_agent = "better-conductor"
+    async with TestClient(TestServer(catalog.app)) as client:
+        body = await (await client.get("/api/agents/catalog")).json()
+    assert body["crew_mode_agent"] == "better-conductor"
+    assert "better-conductor" in body["conductor_agents"]
+    assert "kirocrew-conductor" in body["conductor_agents"]

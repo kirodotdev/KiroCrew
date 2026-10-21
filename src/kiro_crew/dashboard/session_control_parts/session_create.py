@@ -264,6 +264,16 @@ async def create_session(
     # stale folder intent.
     folder_project_raw: str | None = None
     folder_project = ""
+    # A Crew Mode chat and every session it dispatches stay out of the person's
+    # folders: the folder is dropped here, for every caller of this verb, by the
+    # same rule the slot list stamps (``crew_mode``), and the answer says so.
+    from kiro_crew import crew_mode
+
+    folder_ignored = bool(folder_id) and crew_mode.slot_in_crew_tree(
+        state._slots, str(getattr(caller_slot, "key", "") or "")
+    )
+    if folder_ignored:
+        folder_id = ""
     if folder_id:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
@@ -1272,6 +1282,8 @@ async def create_session(
         **({"reasoning_effort": effort_name} if effort_name else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
+        # The folder a Crew Mode caller named was dropped (``crew_mode``).
+        **({"folder_ignored": "crew_mode"} if folder_ignored else {}),
     }
 
 

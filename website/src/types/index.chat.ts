@@ -242,6 +242,13 @@ export interface ChatSlot extends TurnIdentityFields {
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
   created_by?: string
+  /** True on a Crew Mode root: a root session running a conductor template
+   *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
+  crew_mode_root?: boolean
+  /** On a session a Crew Mode root dispatched (directly or through another
+   *  worker): that root's key. The person's session list leaves such a row out;
+   *  the side panel lists it under its root. Absent on every other row. */
+  crew_root?: string
   /** Whether THIS gateway process stamped `created_by` at mint, rather than
    * rehydrating it from the transcript. `created_by` is restored from a metadata
    * line an agent's file tools can edit, so on its own it is a claim; this says
@@ -618,4 +625,89 @@ export interface SubagentInfo {
 
 export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
+}
+
+/** One row of a Crew Mode root's worker list (`GET /api/chat/slots/{root}/crew-workers`). */
+export interface CrewWorker {
+  key: string
+  title: string
+  agent: string
+  /** `working` while a turn runs, `needs_approval` while one waits on a tool
+   *  approval or question, `idle` otherwise, `closed` once the tab is gone. */
+  status: 'working' | 'idle' | 'needs_approval' | 'closed'
+  /** The side panel's group: needs the person, moving, not started, finished. */
+  group: 'needs_you' | 'working' | 'waiting' | 'done'
+  /** ISO time of the worker's last turn or message; "" when it has none yet. */
+  last_activity: string
+  /** The work-ledger item the worker is bound to, or "" when it is not bound. */
+  ledger_item: string
+  /** One line on the task: its latest report or title on the ledger, else its
+   *  last reply; "" when it has neither yet. */
+  summary?: string
+  /** The session that dispatched it: the root itself or another worker. */
+  created_by: string
+}
+
+/** One bar on a Crew Mode timeline lane, from recorded transcript rows only. */
+export interface CrewTimelineSegment {
+  kind: 'turn' | 'tool' | 'waiting'
+  start: string
+  end: string
+  /** `recorded`: a row stamps the end. `next_row`: the end is not stamped, so the
+   *  bar stops at the next row the session wrote. `now`: still open. */
+  end_bound: 'recorded' | 'next_row' | 'now'
+  label: string
+}
+
+/** A point on a lane: an error row (`failed`) or a refused tool (`refused`). */
+export interface CrewTimelineMark {
+  kind: 'failed' | 'refused'
+  ts: string
+  label: string
+}
+
+/** One session's lane: the conductor first, then its workers. */
+export interface CrewTimelineLane {
+  key: string
+  title: string
+  agent: string
+  model: string
+  /** `served`: the backend reported it. `chosen`: the session's own pick.
+   *  `default`: the session runs the gateway default (`model` names it, `auto`
+   *  when the backend chooses). */
+  model_source: 'served' | 'chosen' | 'default'
+  role: 'conductor' | 'worker'
+  status: CrewWorker['status']
+  running: boolean
+  waiting: boolean
+  segments: CrewTimelineSegment[]
+  marks: CrewTimelineMark[]
+  credits: number
+  first_ts: string
+  last_ts: string
+  /** Older bars left out to bound the reply; 0 when every bar is here. */
+  dropped_segments: number
+}
+
+/** A dispatch: the sender's `session_send` call to the worker's seed row. */
+export interface CrewTimelineHandoff {
+  from: string
+  to: string
+  start: string
+  end: string
+}
+
+/** `GET /api/chat/slots/{root}/crew-timeline`. */
+export interface CrewTimeline {
+  root: string
+  now: string
+  live: boolean
+  started: string
+  ended: string
+  elapsed_ms: number
+  credits: number
+  lanes: CrewTimelineLane[]
+  handoffs: CrewTimelineHandoff[]
+  /** What the transcript does not record, so the view does not draw it. */
+  gaps: string[]
 }

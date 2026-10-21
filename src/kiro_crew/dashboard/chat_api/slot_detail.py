@@ -100,6 +100,14 @@ async def api_chat_slots(request: web.Request) -> web.Response:
             for p in payloads
             if member_owns_slot(state, state._slots.get(str(p.get("key") or "")), caller_key)
         ]
+    # A person's list leaves Crew Mode workers out; an agent's read keeps them
+    # (``crew_mode.list_view``). Imported here: this body is re-bound into the
+    # ``chat_handlers`` facade's namespace, so it may name only what it imports.
+    from kiro_crew import crew_mode
+
+    payloads = crew_mode.list_view(
+        payloads, request.query.get("crew", ""), agent=request.get("internal_auth") is True
+    )
     if include_check_status:
         # Only the OWNER's GET drives provider work. Both the visibility probe
         # and the status refresh run the operator's `gh`/`glab` credentials, so

@@ -344,6 +344,18 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/chat/slots/{slot}/dashboard", _deferred("member_dashboard", "api_session_dashboard")
     )
+    # A Crew Mode root's workers for its side panel, under the same owner-only,
+    # no-app gate as the root's dashboard read above.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers", _deferred("crew_workers", "api_crew_workers")
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/steer",
+        _deferred("crew_workers", "api_crew_worker_steer"),
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-timeline", _deferred("crew_workers", "api_crew_timeline")
+    )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
