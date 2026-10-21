@@ -753,6 +753,7 @@ class TestEagerSpawnDefaultModel:
     @pytest.fixture(autouse=True)
     def _no_debounce(self, monkeypatch):
         monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+        monkeypatch.setattr(chat_runner, "_eager_spawn_sem", asyncio.Semaphore(1))
 
     @pytest.mark.asyncio
     async def test_eager_session_starts_on_the_global_default(self, tmp_path, _runner_config):
