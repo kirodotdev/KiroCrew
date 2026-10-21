@@ -78,17 +78,19 @@ def _spool_record(
     """
     if pool_digest is None:
         pool_digest = _pool_key(server).stable_hash()
-    return write_spool({
-        "server": server,
-        "tool": "draw",
-        "session_key": session_key,
-        "agent": agent,
-        "pool_digest": pool_digest,
-        "html": "<html>app</html>",
-        "csp": None,
-        "permissions": None,
-        "structured_content": None,
-    })
+    return write_spool(
+        {
+            "server": server,
+            "tool": "draw",
+            "session_key": session_key,
+            "agent": agent,
+            "pool_digest": pool_digest,
+            "html": "<html>app</html>",
+            "csp": None,
+            "permissions": None,
+            "structured_content": None,
+        }
+    )
 
 
 def _cbs(spool_id: str):
@@ -124,7 +126,8 @@ class _LivePool:
 
 async def _spawn_pooled_server() -> _LivePool:
     process = await asyncio.create_subprocess_exec(
-        sys.executable, str(SERVER_PATH),
+        sys.executable,
+        str(SERVER_PATH),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -157,11 +160,19 @@ async def _spawn_pooled_server() -> _LivePool:
         # Handshake once through a normal stub so _init_state is "ready" — the
         # state a pooled backend that already served an app is guaranteed to be in.
         inbox = await backend.attach_stub("chat-stub")
-        await backend.forward_from_stub("chat-stub", {
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                       "clientInfo": {"name": "kiro-cli", "version": "0"}},
-        })
+        await backend.forward_from_stub(
+            "chat-stub",
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "kiro-cli", "version": "0"},
+                },
+            },
+        )
         await finished(inbox.get(), "the initialize response")
     except BaseException:
         # BaseException, not Exception: a CancelledError delivered at the
@@ -175,15 +186,22 @@ async def _spawn_pooled_server() -> _LivePool:
 # Gateway side: handle_app_call against the real fake server
 # --------------------------------------------------------------------------
 
+
 async def test_app_call_happy_path(apps_flag_on, spool_tmp):
     """save_state (visibility ["app"]) is callable via a valid spool token."""
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "save_state", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-result", reply
         assert reply["result"]["content"][0]["text"] == "state saved"
     finally:
@@ -200,7 +218,8 @@ async def test_app_call_cancellation_is_audited(apps_flag_on, spool_tmp, monkeyp
 
     audits: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        app_call_mod, "_audit",
+        app_call_mod,
+        "_audit",
         lambda outcome, reason, **kw: audits.append((outcome, reason)),
     )
 
@@ -220,10 +239,16 @@ async def test_app_call_cancellation_is_audited(apps_flag_on, spool_tmp, monkeyp
     try:
         spool_id = _spool_record()
         with pytest.raises(asyncio.CancelledError):
-            await handle_app_call(live.pool, {
-                "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-                "tool": "save_state", "arguments": {},
-            })
+            await handle_app_call(
+                live.pool,
+                {
+                    "type": "app-call",
+                    "spool_id": spool_id,
+                    "callback_secret": _cbs(spool_id),
+                    "tool": "save_state",
+                    "arguments": {},
+                },
+            )
         assert any(o == "cancelled" for o, _ in audits), audits
     finally:
         await live.aclose()
@@ -234,10 +259,16 @@ async def test_app_call_model_and_app_tool_allowed(apps_flag_on, spool_tmp):
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "draw", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-result", reply
         assert "drew a thing" in reply["result"]["content"][0]["text"]
     finally:
@@ -250,10 +281,16 @@ async def test_app_call_denies_non_app_tool(apps_flag_on, spool_tmp):
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "no_such_tool", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "no_such_tool",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert reply["reason"] == "tool not app-visible"
     finally:
@@ -268,47 +305,77 @@ async def test_app_call_rejects_schema_violating_arguments(apps_flag_on, spool_t
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "save_state", "arguments": {"smuggled": "../../etc/passwd"},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {"smuggled": "../../etc/passwd"},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "schema validation" in reply["reason"]
         # The compliant empty call still works on the same backend.
-        ok = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "save_state", "arguments": {},
-        })
+        ok = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert ok["type"] == "app-result"
     finally:
         await live.aclose()
 
 
-async def test_app_call_denied_by_governance_mcp_scope(apps_flag_on, spool_tmp, tmp_path, monkeypatch):
+async def test_app_call_denied_by_governance_mcp_scope(
+    apps_flag_on, spool_tmp, tmp_path, monkeypatch
+):
     """An enterprise `mcp`-scope deny on @server/tool binds the app-originated
     path exactly like the model path (single ceiling across both invocation
     authorities). Policy loaded via the real KIROCREW_SECURITY_POLICY seam."""
     policy = tmp_path / "policy.json"
-    policy.write_text(json.dumps({
-        "version": 1,
-        "boot": {"fail_closed": True},
-        "mcp": {"mode": "deny", "deny": ["@fake-mcp-app/save_state"]},
-    }))
+    policy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "mcp": {"mode": "deny", "deny": ["@fake-mcp-app/save_state"]},
+            }
+        )
+    )
     monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(policy))
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "save_state", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "governance" in reply["reason"]
         # A tool the policy does not deny still works under the same ceiling.
-        ok = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "draw", "arguments": {},
-        })
+        ok = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert ok["type"] == "app-result"
     finally:
         await live.aclose()
@@ -327,9 +394,14 @@ async def test_app_call_denied_when_the_reloaded_policy_signature_is_bad(
     from kiro_crew.platform.governance import policy_signing_payload
 
     adm = tmp_path / "admission_policy.json"
-    adm.write_text(json.dumps({
-        "require_policy_signature": True, "trust_keys": {"fleet": "k"},
-    }))
+    adm.write_text(
+        json.dumps(
+            {
+                "require_policy_signature": True,
+                "trust_keys": {"fleet": "k"},
+            }
+        )
+    )
     monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
     body = {
         "version": 1,
@@ -345,12 +417,18 @@ async def test_app_call_denied_when_the_reloaded_policy_signature_is_bad(
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            # A tool the (tampered) policy does NOT deny — so a pass here would be a
-            # real bypass, not an incidental allowlist miss.
-            "tool": "draw", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                # A tool the (tampered) policy does NOT deny — so a pass here would be a
+                # real bypass, not an incidental allowlist miss.
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "signature" in reply["reason"]
     finally:
@@ -368,9 +446,14 @@ async def test_app_call_is_not_denied_when_no_policy_is_readable_here(
     policy is gone, so the signature gate must not fire on it.
     """
     adm = tmp_path / "admission_policy.json"
-    adm.write_text(json.dumps({
-        "require_policy_signature": True, "trust_keys": {"fleet": "k"},
-    }))
+    adm.write_text(
+        json.dumps(
+            {
+                "require_policy_signature": True,
+                "trust_keys": {"fleet": "k"},
+            }
+        )
+    )
     monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
     monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
     monkeypatch.setattr(
@@ -379,10 +462,16 @@ async def test_app_call_is_not_denied_when_no_policy_is_readable_here(
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "draw", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-result"
     finally:
         await live.aclose()
@@ -438,11 +527,13 @@ async def test_each_agents_own_profile_applies_through_one_shared_backend(
     profiles = tmp_path / "profiles"
     profiles.mkdir()
     (profiles / "scoped.json").write_text(
-        json.dumps({
-            "version": 1,
-            "bind": {"type": "task", "id": "gpu-dev"},
-            "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "bind": {"type": "task", "id": "gpu-dev"},
+                "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
@@ -451,24 +542,32 @@ async def test_each_agents_own_profile_applies_through_one_shared_backend(
     live = await _spawn_pooled_server()
     try:
         digest = live.backend.pool_key.stable_hash()
-        scoped = _spool_record(
-            pool_digest=digest, session_key="dashboard:scoped", agent="gpu-dev"
-        )
-        openly = _spool_record(
-            pool_digest=digest, session_key="dashboard:open", agent="kirocrew"
-        )
+        scoped = _spool_record(pool_digest=digest, session_key="dashboard:scoped", agent="gpu-dev")
+        openly = _spool_record(pool_digest=digest, session_key="dashboard:open", agent="kirocrew")
 
-        denied = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": scoped, "callback_secret": _cbs(scoped),
-            "tool": "draw", "arguments": {},
-        })
+        denied = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": scoped,
+                "callback_secret": _cbs(scoped),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert denied["type"] == "app-call-rejected"
         assert "governance" in denied["reason"]
 
-        allowed = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": openly, "callback_secret": _cbs(openly),
-            "tool": "draw", "arguments": {},
-        })
+        allowed = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": openly,
+                "callback_secret": _cbs(openly),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert allowed["type"] == "app-result", (
             "the scoped agent's profile leaked onto a co-tenant session: a shared "
             "backend must not share one agent's ceiling with another's"
@@ -500,11 +599,13 @@ async def test_app_call_without_a_session_cannot_be_governed_so_it_is_denied(
     profiles = tmp_path / "profiles"
     profiles.mkdir()
     (profiles / "scoped.json").write_text(
-        json.dumps({
-            "version": 1,
-            "bind": {"type": "task", "id": "gpu-dev"},
-            "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "bind": {"type": "task", "id": "gpu-dev"},
+                "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
@@ -514,18 +615,30 @@ async def test_app_call_without_a_session_cannot_be_governed_so_it_is_denied(
     try:
         digest = live.backend.pool_key.stable_hash()
         scoped = _spool_record(pool_digest=digest, session_key="", agent="gpu-dev")
-        denied = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": scoped, "callback_secret": _cbs(scoped),
-            "tool": "draw", "arguments": {},
-        })
+        denied = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": scoped,
+                "callback_secret": _cbs(scoped),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert denied["type"] == "app-call-rejected"
         assert "governance" in denied["reason"]
 
         openly = _spool_record(pool_digest=digest, session_key="", agent="kirocrew")
-        allowed = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": openly, "callback_secret": _cbs(openly),
-            "tool": "draw", "arguments": {},
-        })
+        allowed = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": openly,
+                "callback_secret": _cbs(openly),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert allowed["type"] == "app-result", (
             "premise: an unattributed render from a profile-free agent must run, "
             "or the refusal above is about the missing session, not the profile"
@@ -551,10 +664,16 @@ async def test_app_call_on_a_record_naming_no_producing_agent_is_denied(
             session_key="dashboard:older-gateway",
             agent="",
         )
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "draw", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "agent" in reply["reason"]
     finally:
@@ -582,11 +701,13 @@ async def test_a_session_rewriting_its_own_transcript_cannot_pick_its_ceiling(
     profiles = tmp_path / "profiles"
     profiles.mkdir()
     (profiles / "scoped.json").write_text(
-        json.dumps({
-            "version": 1,
-            "bind": {"type": "task", "id": "gpu-dev"},
-            "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "bind": {"type": "task", "id": "gpu-dev"},
+                "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
@@ -601,23 +722,34 @@ async def test_a_session_rewriting_its_own_transcript_cannot_pick_its_ceiling(
     try:
         digest = live.backend.pool_key.stable_hash()
         forged = _spool_record(pool_digest=digest, session_key=session, agent="gpu-dev")
-        denied = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": forged, "callback_secret": _cbs(forged),
-            "tool": "draw", "arguments": {},
-        })
-        assert denied["type"] == "app-call-rejected", (
-            "a session lowered its own governance ceiling by editing its transcript"
+        denied = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": forged,
+                "callback_secret": _cbs(forged),
+                "tool": "draw",
+                "arguments": {},
+            },
         )
+        assert (
+            denied["type"] == "app-call-rejected"
+        ), "a session lowered its own governance ceiling by editing its transcript"
         assert "governance" in denied["reason"]
 
         # Control: the stamp on the record, which the session cannot write, does
         # decide. Same session, same transcript, only the record's agent differs.
         allowed_id = _spool_record(pool_digest=digest, session_key=session, agent="kirocrew")
-        allowed = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": allowed_id,
-            "callback_secret": _cbs(allowed_id),
-            "tool": "draw", "arguments": {},
-        })
+        allowed = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": allowed_id,
+                "callback_secret": _cbs(allowed_id),
+                "tool": "draw",
+                "arguments": {},
+            },
+        )
         assert allowed["type"] == "app-result", (
             "premise: a profile-free agent stamped on the record must be allowed, "
             "or the refusal above proves nothing about which store decides"
@@ -627,7 +759,9 @@ async def test_a_session_rewriting_its_own_transcript_cannot_pick_its_ceiling(
         gp.reset_store()
 
 
-async def test_app_call_governance_evaluation_error_fails_closed(apps_flag_on, spool_tmp, tmp_path, monkeypatch):
+async def test_app_call_governance_evaluation_error_fails_closed(
+    apps_flag_on, spool_tmp, tmp_path, monkeypatch
+):
     """A broken governance load DENIES the app call (opposite polarity from
     Plane A's soft fail-open — this path has no always-on deny floor)."""
     policy = tmp_path / "broken.json"
@@ -636,10 +770,16 @@ async def test_app_call_governance_evaluation_error_fails_closed(apps_flag_on, s
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "save_state", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "governance" in reply["reason"]
     finally:
@@ -650,10 +790,15 @@ async def test_app_call_rejects_unknown_spool_id(apps_flag_on, spool_tmp):
     """No spool record — the capability token is the whole gate."""
     live = await _spawn_pooled_server()
     try:
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": "0" * 32,
-            "tool": "save_state", "arguments": {},
-        })
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": "0" * 32,
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "unknown or expired" in reply["reason"]
     finally:
@@ -677,10 +822,16 @@ async def test_app_call_non_ascii_secret_takes_the_audited_deny(apps_flag_on, sp
     """
     pool = BackendPool(max_backends=2)
     spool_id = _spool_record()
-    reply = await handle_app_call(pool, {
-        "type": "app-call", "spool_id": spool_id, "callback_secret": forged,
-        "tool": "save_state", "arguments": {},
-    })
+    reply = await handle_app_call(
+        pool,
+        {
+            "type": "app-call",
+            "spool_id": spool_id,
+            "callback_secret": forged,
+            "tool": "save_state",
+            "arguments": {},
+        },
+    )
     assert reply["type"] == "app-call-rejected"
     assert reply["reason"] == "invalid app callback capability"
 
@@ -690,10 +841,16 @@ async def test_app_call_rejects_when_no_backend(apps_flag_on, spool_tmp):
     to another backend for the same server."""
     pool = BackendPool(max_backends=2)
     spool_id = _spool_record(server="gone-server")
-    reply = await handle_app_call(pool, {
-        "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-        "tool": "save_state", "arguments": {},
-    })
+    reply = await handle_app_call(
+        pool,
+        {
+            "type": "app-call",
+            "spool_id": spool_id,
+            "callback_secret": _cbs(spool_id),
+            "tool": "save_state",
+            "arguments": {},
+        },
+    )
     assert reply["type"] == "app-call-rejected"
     assert "producing backend no longer available" in reply["reason"]
 
@@ -703,16 +860,27 @@ async def test_app_call_rejects_record_without_digest(apps_flag_on, spool_tmp):
     plain deny — never resolved by server name."""
     live = await _spawn_pooled_server()
     try:
-        spool_id = write_spool({
-            "server": "fake-mcp-app", "tool": "draw",
-            "session_key": "dashboard:sess-cb",
-            "html": "<html>app</html>", "csp": None,
-            "permissions": None, "structured_content": None,
-        })
-        reply = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-            "tool": "save_state", "arguments": {},
-        })
+        spool_id = write_spool(
+            {
+                "server": "fake-mcp-app",
+                "tool": "draw",
+                "session_key": "dashboard:sess-cb",
+                "html": "<html>app</html>",
+                "csp": None,
+                "permissions": None,
+                "structured_content": None,
+            }
+        )
+        reply = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert reply["type"] == "app-call-rejected"
         assert "no backend binding" in reply["reason"]
     finally:
@@ -724,17 +892,17 @@ async def test_app_call_rejects_malformed_frames(apps_flag_on, spool_tmp):
     for frame, want in (
         ({"type": "app-call"}, "missing spool_id"),
         ({"type": "app-call", "spool_id": "a" * 32}, "missing tool"),
-        ({"type": "app-call", "spool_id": "a" * 32, "tool": "t",
-          "arguments": "nope"}, "arguments must be an object"),
+        (
+            {"type": "app-call", "spool_id": "a" * 32, "tool": "t", "arguments": "nope"},
+            "arguments must be an object",
+        ),
     ):
         reply = await handle_app_call(pool, frame)
         assert reply["type"] == "app-call-rejected"
         assert reply["reason"] == want
 
 
-async def test_app_call_allows_tool_with_no_declared_visibility(
-    apps_flag_on, spool_tmp
-):
+async def test_app_call_allows_tool_with_no_declared_visibility(apps_flag_on, spool_tmp):
     """The bug this PR fixes, against the real fake server.
 
     ``visibility`` is optional and SEP-1865 defaults it to ``["model", "app"]``,
@@ -746,9 +914,13 @@ async def test_app_call_allows_tool_with_no_declared_visibility(
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        frame = {"type": "app-call", "spool_id": spool_id,
-                 "callback_secret": _cbs(spool_id),
-                 "tool": "refresh", "arguments": {}}
+        frame = {
+            "type": "app-call",
+            "spool_id": spool_id,
+            "callback_secret": _cbs(spool_id),
+            "tool": "refresh",
+            "arguments": {},
+        }
         reply = await handle_app_call(live.pool, frame)
         assert reply["type"] == "app-result", reply
         assert reply["result"]["content"][0]["text"] == "refreshed"
@@ -763,14 +935,22 @@ async def test_app_call_still_denies_model_only_tool(apps_flag_on, spool_tmp):
         from kiro_crew.mcp_gateway import app_call as app_call_mod
 
         async def _model_only(backend, **_):
-            return {"secret": {"name": "secret",
-                               "inputSchema": {"type": "object", "properties": {}},
-                               "_meta": {"ui": {"visibility": ["model"]}}}}
+            return {
+                "secret": {
+                    "name": "secret",
+                    "inputSchema": {"type": "object", "properties": {}},
+                    "_meta": {"ui": {"visibility": ["model"]}},
+                }
+            }
 
         spool_id = _spool_record()
-        frame = {"type": "app-call", "spool_id": spool_id,
-                 "callback_secret": _cbs(spool_id),
-                 "tool": "secret", "arguments": {}}
+        frame = {
+            "type": "app-call",
+            "spool_id": spool_id,
+            "callback_secret": _cbs(spool_id),
+            "tool": "secret",
+            "arguments": {},
+        }
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(app_call_mod, "_tools_by_name", _model_only)
             reply = await handle_app_call(live.pool, frame)
@@ -794,14 +974,22 @@ async def test_app_call_denies_a_malformed_declaration(apps_flag_on, spool_tmp):
         from kiro_crew.mcp_gateway import app_call as app_call_mod
 
         async def _unreadable(backend, **_):
-            return {"secret": {"name": "secret",
-                               "inputSchema": {"type": "object", "properties": {}},
-                               "_meta": {"ui": "bad"}}}
+            return {
+                "secret": {
+                    "name": "secret",
+                    "inputSchema": {"type": "object", "properties": {}},
+                    "_meta": {"ui": "bad"},
+                }
+            }
 
         spool_id = _spool_record()
-        frame = {"type": "app-call", "spool_id": spool_id,
-                 "callback_secret": _cbs(spool_id),
-                 "tool": "secret", "arguments": {}}
+        frame = {
+            "type": "app-call",
+            "spool_id": spool_id,
+            "callback_secret": _cbs(spool_id),
+            "tool": "secret",
+            "arguments": {},
+        }
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(app_call_mod, "_tools_by_name", _unreadable)
             reply = await handle_app_call(live.pool, frame)
@@ -820,8 +1008,13 @@ async def test_app_call_tools_list_is_fetched_fresh_per_call(apps_flag_on, spool
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        frame = {"type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-                 "tool": "save_state", "arguments": {}}
+        frame = {
+            "type": "app-call",
+            "spool_id": spool_id,
+            "callback_secret": _cbs(spool_id),
+            "tool": "save_state",
+            "arguments": {},
+        }
         r1 = await handle_app_call(live.pool, frame)
         assert r1["type"] == "app-result"
         # Simulate the server revoking app visibility. The revocation must be an
@@ -830,9 +1023,13 @@ async def test_app_call_tools_list_is_fetched_fresh_per_call(apps_flag_on, spool
         # undeclared tool to ["model", "app"].
 
         async def _revoked(backend, **_):
-            return {"save_state": {"name": "save_state",
-                                   "inputSchema": {"type": "object", "properties": {}},
-                                   "_meta": {"ui": {"visibility": ["model"]}}}}
+            return {
+                "save_state": {
+                    "name": "save_state",
+                    "inputSchema": {"type": "object", "properties": {}},
+                    "_meta": {"ui": {"visibility": ["model"]}},
+                }
+            }
 
         monkeypatch.setattr(app_call_mod, "_tools_by_name", _revoked)
         r2 = await handle_app_call(live.pool, frame)
@@ -845,6 +1042,7 @@ async def test_app_call_tools_list_is_fetched_fresh_per_call(apps_flag_on, spool
 # --------------------------------------------------------------------------
 # Dashboard side: POST /api/mcp-apps/call relay
 # --------------------------------------------------------------------------
+
 
 async def _fake_gateway(sock_path: Path, reply: dict):
     """One-shot unix-socket server that records the received frame."""
@@ -874,11 +1072,12 @@ async def test_relay_rejects_non_owner_and_app_tokens(relay_env, spool_tmp):
     spool_id = _spool_record()
     async with make_client() as client:
         for hdrs in (
-            {"X-Test-User": "someone-else", **_OWNER_HDR},   # non-owner subject
-            {"X-Test-App": "some-app", **_OWNER_HDR},        # app-scoped token
+            {"X-Test-User": "someone-else", **_OWNER_HDR},  # non-owner subject
+            {"X-Test-App": "some-app", **_OWNER_HDR},  # app-scoped token
         ):
             resp = await client.post(
-                "/api/mcp-apps/call", headers=hdrs,
+                "/api/mcp-apps/call",
+                headers=hdrs,
                 json={"spool_id": spool_id, "tool": "save_state", "arguments": {}},
             )
             assert resp.status == 403
@@ -964,20 +1163,27 @@ def relay_env(short_sock_dir, monkeypatch):
 async def test_relay_success(relay_env, spool_tmp):
     make_client, sock = relay_env
     spool_id = _spool_record()
-    server, received = await _fake_gateway(
-        sock, {"type": "app-result", "result": {"ok": True}}
-    )
+    server, received = await _fake_gateway(sock, {"type": "app-result", "result": {"ok": True}})
     try:
         async with make_client() as client:
-            resp = await client.post("/api/mcp-apps/call", headers=_OWNER_HDR, json={
-                "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-                "tool": "save_state", "arguments": {"a": 1},
-            })
+            resp = await client.post(
+                "/api/mcp-apps/call",
+                headers=_OWNER_HDR,
+                json={
+                    "spool_id": spool_id,
+                    "callback_secret": _cbs(spool_id),
+                    "tool": "save_state",
+                    "arguments": {"a": 1},
+                },
+            )
             assert resp.status == 200
             assert (await resp.json()) == {"result": {"ok": True}}
             assert received[0] == {
-                "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
-                "tool": "save_state", "arguments": {"a": 1},
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": _cbs(spool_id),
+                "tool": "save_state",
+                "arguments": {"a": 1},
             }
     finally:
         server.close()
@@ -993,9 +1199,15 @@ async def test_relay_policy_rejection_is_403(relay_env, spool_tmp):
     )
     try:
         async with make_client() as client:
-            resp = await client.post("/api/mcp-apps/call", headers=_OWNER_HDR, json={
-                "spool_id": spool_id, "tool": "secret", "arguments": {},
-            })
+            resp = await client.post(
+                "/api/mcp-apps/call",
+                headers=_OWNER_HDR,
+                json={
+                    "spool_id": spool_id,
+                    "tool": "secret",
+                    "arguments": {},
+                },
+            )
             assert resp.status == 403
             assert (await resp.json())["error"] == "tool not app-visible"
     finally:
@@ -1011,9 +1223,15 @@ async def test_relay_backend_error_passthrough(relay_env, spool_tmp):
     server, _ = await _fake_gateway(sock, {"type": "app-error", "error": err})
     try:
         async with make_client() as client:
-            resp = await client.post("/api/mcp-apps/call", headers=_OWNER_HDR, json={
-                "spool_id": spool_id, "tool": "save_state", "arguments": {},
-            })
+            resp = await client.post(
+                "/api/mcp-apps/call",
+                headers=_OWNER_HDR,
+                json={
+                    "spool_id": spool_id,
+                    "tool": "save_state",
+                    "arguments": {},
+                },
+            )
             assert resp.status == 200
             assert (await resp.json()) == {"error": err}
     finally:
@@ -1026,9 +1244,15 @@ async def test_relay_unknown_spool_is_404_without_gateway(relay_env, spool_tmp):
     gateway is even listening here)."""
     make_client, _sock = relay_env
     async with make_client() as client:
-        resp = await client.post("/api/mcp-apps/call", headers=_OWNER_HDR, json={
-            "spool_id": "f" * 32, "tool": "save_state", "arguments": {},
-        })
+        resp = await client.post(
+            "/api/mcp-apps/call",
+            headers=_OWNER_HDR,
+            json={
+                "spool_id": "f" * 32,
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert resp.status == 404
 
 
@@ -1037,9 +1261,15 @@ async def test_relay_gateway_down_is_503(relay_env, spool_tmp):
     make_client, _sock = relay_env
     spool_id = _spool_record()
     async with make_client() as client:
-        resp = await client.post("/api/mcp-apps/call", headers=_OWNER_HDR, json={
-            "spool_id": spool_id, "tool": "save_state", "arguments": {},
-        })
+        resp = await client.post(
+            "/api/mcp-apps/call",
+            headers=_OWNER_HDR,
+            json={
+                "spool_id": spool_id,
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert resp.status == 503
 
 
@@ -1054,7 +1284,8 @@ async def test_relay_validates_body(relay_env, spool_tmp):
         ):
             if isinstance(body, str):
                 resp = await client.post(
-                    "/api/mcp-apps/call", data=body,
+                    "/api/mcp-apps/call",
+                    data=body,
                     headers={"Content-Type": "application/json"},
                 )
             else:
@@ -1068,16 +1299,27 @@ async def test_app_call_requires_callback_secret(apps_flag_on, spool_tmp):
     live = await _spawn_pooled_server()
     try:
         spool_id = _spool_record()
-        wrong = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id, "callback_secret": "nope",
-            "tool": "save_state", "arguments": {},
-        })
+        wrong = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "callback_secret": "nope",
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert wrong["type"] == "app-call-rejected"
         assert "callback capability" in wrong["reason"]
-        missing = await handle_app_call(live.pool, {
-            "type": "app-call", "spool_id": spool_id,
-            "tool": "save_state", "arguments": {},
-        })
+        missing = await handle_app_call(
+            live.pool,
+            {
+                "type": "app-call",
+                "spool_id": spool_id,
+                "tool": "save_state",
+                "arguments": {},
+            },
+        )
         assert missing["type"] == "app-call-rejected"
         assert "callback capability" in missing["reason"]
     finally:
@@ -1093,9 +1335,7 @@ class _InboxBackend:
             self.inbox.put_nowait(line)
         self.detached: list[str] = []
 
-    async def attach_stub(
-        self, stub_uuid: str, *, agent: str = ""
-    ) -> "asyncio.Queue[bytes]":
+    async def attach_stub(self, stub_uuid: str, *, agent: str = "") -> "asyncio.Queue[bytes]":
         return self.inbox
 
     async def forward_from_stub(self, stub_uuid: str, frame: dict, **kwargs) -> None:
@@ -1122,7 +1362,9 @@ async def test_the_round_trip_skips_stray_frames_to_its_own_response():
         (json.dumps(reply) + "\n").encode("utf-8"),
     )
     got = await finished(
-        app_call_mod._roundtrip(backend, {"id": 4, "method": "tools/call"}, caller=None, timeout=10),
+        app_call_mod._roundtrip(
+            backend, {"id": 4, "method": "tools/call"}, caller=None, timeout=10
+        ),
         "the round trip's reply",
     )
     assert got == reply

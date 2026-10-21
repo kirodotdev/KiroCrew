@@ -261,12 +261,10 @@ test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
 test/test_acp_tool_search.py
 test/test_acp_true_provider_error.py
-test/test_acp_turn_lock.py
 test/test_agent_discovery.py
 test/test_agent_source_ownership_durability.py
 test/test_ai_agent_runner_coverage.py
 test/test_ai_backend_routes_coverage.py
-test/test_api_agent_config_put_succeeds.py
 test/test_api_agents_order.py
 test/test_api_file_diff.py
 test/test_api_input_validation.py
@@ -570,7 +568,6 @@ test/test_manifest_hooks.py
 test/test_mark_permission_resolved.py
 test/test_mcp_api_port_resolution.py
 test/test_mcp_app_panel_config.py
-test/test_mcp_apps_call_endpoint.py
 test/test_mcp_apps_e2e.py
 test/test_mcp_artifact_folders.py
 test/test_mcp_artifacts.py

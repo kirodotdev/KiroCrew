@@ -30,6 +30,7 @@ from kiro_crew.config.loader import (
     SttConfig,
     _validated_stt_provider,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 _IS_MACOS = platform.system() == "Darwin"
 
@@ -1155,7 +1156,7 @@ class TestStreamingSession:
         session = apple_speech.StreamingSession()
         session._proc = SimpleNamespace(stdout=stdout)  # type: ignore[assignment]
 
-        await asyncio.wait_for(session._read_events(), timeout=10)
+        await finished(session._read_events(), "reader drains stdout to EOF")
 
         kinds = []
         while (event := session._queue.get_nowait()) is not None:
@@ -1967,7 +1968,7 @@ class TestEndToEndMacOS:
                     await asyncio.sleep(target - now)
             last_audio_at = time.perf_counter()
             text = await session.finish()
-            await asyncio.wait_for(reader, timeout=5)
+            await await_until(reader, what="partial-result reader")
         finally:
             await session.close()
 

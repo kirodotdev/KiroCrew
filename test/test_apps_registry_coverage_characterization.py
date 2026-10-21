@@ -16,6 +16,7 @@ from apps_registry_coverage_helpers import _explicit_registry_execution_admissio
 from apps_registry_coverage_helpers import cache_dir_fixture  # noqa: F401
 
 from kiro_crew.apps import registry
+from kiro_crew.testing.wait import finished
 
 # ---------------------------------------------------------------------------
 # Characterization: behaviour a structural move of this module must not change
@@ -232,7 +233,10 @@ class TestTimeoutsAreReadWhereTheyAreUsed:
         monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0)
         proc = _NeverExits()
         # Bounded well below the real 5 s grace, so an inert patch fails here.
-        await asyncio.wait_for(registry._kill_process_group(proc), timeout=2)
+        await asyncio.wait_for(
+            registry._kill_process_group(proc),
+            timeout=2,  # flake-ok: the 2 s bound IS the assertion; an inert _KILL_GRACE_PERIOD patch waits the real 5 s grace
+        )
         assert reaped == [proc]
 
     @pytest.mark.asyncio
@@ -273,7 +277,8 @@ class TestTimeoutsAreReadWhereTheyAreUsed:
         monkeypatch.setattr(registry, "_kill_process_group", _kill)
         monkeypatch.setattr(registry, "_CLONE_TIMEOUT", 0.01)
         log: list[str] = []
-        result = await asyncio.wait_for(
+        # Bounded well below the real 60 s clone timeout, so an inert patch fails here.
+        result = await finished(
             registry._git_fetch_branch(
                 "https://github.com/acme/demo-app.git",
                 "main",
@@ -282,7 +287,8 @@ class TestTimeoutsAreReadWhereTheyAreUsed:
                 clone_env={},
                 sandbox_mode="strict",
             ),
-            timeout=5,
+            "fetch cut off by the clone timeout",
+            timeout=5,  # flake-ok: the 5 s bound IS the assertion; an inert _CLONE_TIMEOUT patch waits the real 60 s
         )
         assert result == {"ok": False, "name": "demo-app", "error": "git fetch failed (exit 124)"}
         assert len(killed) == 1 and isinstance(killed[0], _NeverExits)

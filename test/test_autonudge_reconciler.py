@@ -43,6 +43,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     MonitorState,
 )
+from kiro_crew.testing.wait import async_wait_until, finished
 
 
 @pytest.fixture(autouse=True)
@@ -83,9 +84,13 @@ def svc(tmp_path, event_loop):
     service.stop()
     live = [t for t in tasks if not t.done()]
     if live and not event_loop.is_closed():
-        with contextlib.suppress(asyncio.TimeoutError):
+        with contextlib.suppress(AssertionError):
             event_loop.run_until_complete(
-                asyncio.wait_for(asyncio.gather(*live, return_exceptions=True), timeout=5)
+                finished(
+                    asyncio.gather(*live, return_exceptions=True),
+                    "stopped service tasks",
+                    timeout=5,
+                )
             )
 
 
@@ -468,10 +473,10 @@ async def test_periodic_task_rescues_end_to_end(svc, monkeypatch):
     await svc.start()
     loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=300)
     svc._cancel_timer(loop.id)
-    deadline = time.time() + 5.0
-    while time.time() < deadline and not _timer_is_live(svc, loop.id):
-        await asyncio.sleep(0.05)
-    assert _timer_is_live(svc, loop.id)
+    await async_wait_until(
+        lambda: _timer_is_live(svc, loop.id),
+        describe=lambda: "the reconciler beat never re-armed the stranded loop's timer",
+    )
 
 
 @pytest.mark.asyncio

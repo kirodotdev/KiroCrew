@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +34,7 @@ from conftest import requires_symlinks
 from kiro_crew.apps.builtins.auto_improvement.backend import pr_checks
 from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers as W
 from kiro_crew.apps.builtins.auto_improvement.backend import store
+from kiro_crew.testing.wait import wait_until
 
 #: Captured BEFORE any fixture patches the module, so the two subprocess-owning helpers
 #: can still be tested on their own terms while every other test sees the fake.
@@ -212,14 +212,15 @@ def _reg(**kwargs: Any) -> W.PRWatcherRegistry:
 def _await_status(
     reg: W.PRWatcherRegistry, fp: str, statuses: set[str], timeout: float = WAIT_S
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    snapshot: dict[str, Any] = {}
-    while time.monotonic() < deadline:
+    def reached() -> dict[str, Any] | None:
         snapshot = reg.status(fp) or {}
-        if snapshot.get("status") in statuses:
-            return snapshot
-        time.sleep(0.02)
-    raise AssertionError(f"watcher never reached {statuses}; last={snapshot}")
+        return snapshot if snapshot.get("status") in statuses else None
+
+    return wait_until(
+        reached,
+        timeout=timeout,
+        describe=lambda: f"watcher never reached {statuses}; last={reg.status(fp) or {}}",
+    )
 
 
 # ── the subprocess boundary ──────────────────────────────────────────────────
@@ -1580,10 +1581,11 @@ class TestRunWatcher:
         snap = _await_status(reg, "fp1", {W.STATUS_READY})
         assert snap["verdict"] == pr_checks.VERDICT_READY
         assert runner.calls == []
-        deadline = time.monotonic() + WAIT_S
-        while reg.is_alive("fp1") and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert not reg.is_alive("fp1"), "a finished watcher leaked a live thread"
+        wait_until(
+            lambda: not reg.is_alive("fp1"),
+            timeout=WAIT_S,
+            describe=lambda: "a finished watcher leaked a live thread",
+        )
 
 
 # ── the runner build (the fail-closed egress gate) ───────────────────────────

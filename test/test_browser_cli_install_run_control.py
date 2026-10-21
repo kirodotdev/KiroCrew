@@ -20,6 +20,7 @@ from browser_cli_install_helpers import isolated_browser_cache_fixture  # noqa: 
 from browser_cli_install_helpers import _wire
 
 from kiro_crew.browser_cli import install as mod
+from kiro_crew.testing.wait import wait_until
 
 
 def test_the_standalone_command_writes_no_fixed_name_into_the_working_directory(
@@ -144,24 +145,26 @@ class TestInstallStages:
 _POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
 
 
-def _pid_gone(pid: int, deadline_s: float = 5.0) -> bool:
-    """Whether *pid* has exited (a zombie awaiting its reaper counts as exited)."""
-    import time
-
-    # flake-ok: pre-existing real-time exit poll under the caller's deadline, moved verbatim; tracked for a de-flake pass
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+def _exited(pid: int) -> bool:
+    """Whether *pid* has exited right now (a zombie awaiting its reaper counts)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    with contextlib.suppress(OSError):
+        stat_line = Path(f"/proc/{pid}/stat").read_text()
+        if stat_line.rsplit(")", 1)[1].split()[0] == "Z":
             return True
-        with contextlib.suppress(OSError):
-            stat_line = Path(f"/proc/{pid}/stat").read_text()
-            if stat_line.rsplit(")", 1)[1].split()[0] == "Z":
-                return True
-        # flake-ok: pre-existing 50 ms poll interval of a deadline loop, moved verbatim; tracked for a de-flake pass
-        time.sleep(0.05)
     return False
+
+
+def _pid_gone(pid: int, deadline_s: float = 5.0) -> bool:
+    """Whether *pid* exits within *deadline_s*; False, not a raise, so a teardown can call it."""
+    try:
+        wait_until(lambda: _exited(pid), timeout=deadline_s)
+    except AssertionError:
+        return False
+    return True
 
 
 def _tree_script(pid_file: Path) -> list[str]:
@@ -248,11 +251,7 @@ class TestInstallerChildrenAreTerminable:
         started = time.monotonic()
         try:
             worker.start()
-            # flake-ok: pre-existing real-time pid-file poll under a 10 s deadline, moved verbatim; tracked for a de-flake pass
-            while not pid_file.exists() and time.monotonic() - started < 10:
-                # flake-ok: pre-existing 50 ms poll interval of a deadline loop, moved verbatim; tracked for a de-flake pass
-                time.sleep(0.05)
-            assert pid_file.exists(), "child never started"
+            wait_until(pid_file.exists, timeout=10, describe=lambda: "child never started")
             pid, start_id = _read_pid_identity(pid_file)
 
             assert scope.terminate() == 1

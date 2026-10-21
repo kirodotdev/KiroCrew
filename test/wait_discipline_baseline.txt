@@ -17,20 +17,10 @@
  2 spawn_test_helpers.py
  4 test_acp_refactor_facade.py
  4 test_acp_runtime_failed_start_reap.py
- 2 test_acp_turn_lock.py
  7 test_active_turn_session_key.py
  5 test_adaptive_startup_memory.py
- 2 test_agent_fork_templates.py
- 2 test_ai_pr_watchers_coverage.py
- 2 test_ai_runner_coverage.py
- 2 test_api_agent_config_put_succeeds.py
- 2 test_apple_speech.py
- 2 test_apps_registry_coverage_characterization.py
  5 test_auto_research_campaign_contract.py
- 2 test_autonudge_reconciler.py
  4 test_aws_control_backup_run_state.py
- 2 test_aws_control_routes.py
- 2 test_browser_cli_install_run_control.py
  5 test_browser_command_bus.py
  2 test_channel_subscribe_timeout.py
  5 test_chat_close_interrupts_turn.py

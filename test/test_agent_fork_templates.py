@@ -10,7 +10,6 @@ import contextlib
 import json
 import logging
 import threading
-import time
 import unittest.mock
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -26,6 +25,7 @@ from mcp_merge_helpers import DEFAULT_MANAGED_MCPS as _DEFAULT_MANAGED_MCPS
 from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 
 from kiro_crew import agent_state
+from kiro_crew.testing.wait import wait_until
 
 
 @contextmanager
@@ -460,21 +460,17 @@ class TestRefreshForkedTemplates:
         second = threading.Thread(target=agent_mod._refresh_forked_templates)
         second.start()
         # The queued pass registers before contending for the pass lock.
-        for _ in range(500):
-            if agent_mod._fork_refresh_pending == 2:
-                break
-            # flake-ok: pre-existing 10 ms poll on the pending-pass counter, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.01)
-        assert agent_mod._fork_refresh_pending == 2
+        wait_until(
+            lambda: agent_mod._fork_refresh_pending == 2,
+            describe=lambda: f"pending passes: {agent_mod._fork_refresh_pending}",
+        )
 
         # First pass finishes while the second is still pending: gate stays shut.
         release_first.set()
-        for _ in range(500):
-            if agent_mod._fork_refresh_pending == 1:
-                break
-            # flake-ok: pre-existing 10 ms poll on the pending-pass counter, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.01)
-        assert agent_mod._fork_refresh_pending == 1
+        wait_until(
+            lambda: agent_mod._fork_refresh_pending == 1,
+            describe=lambda: f"pending passes: {agent_mod._fork_refresh_pending}",
+        )
         assert not agent_mod._fork_refresh_settled.is_set()
 
         # Last pass finishes: gate re-opens.

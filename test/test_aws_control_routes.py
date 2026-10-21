@@ -51,6 +51,7 @@ from aws_control_routes_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import routes as routes_mod
 from kiro_crew.deploy.engine import AWSError
+from kiro_crew.testing.wait import until_parked
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -1431,13 +1432,11 @@ class TestDriveKeyLocks:
                     task = asyncio.create_task(
                         handlers[("POST", "/drive/{account}/move")](req)  # type: ignore[operator]
                     )
-                    # Give the handler every chance to (wrongly) probe while
-                    # the destination key is held by the "upload". Real sleeps,
-                    # not sleep(0): the probe crosses to_thread, so a zero-tick
-                    # yield could leave the handler short of the lock and make
-                    # the empty-calls assertion vacuous.
-                    for _ in range(10):
-                        await asyncio.sleep(0.01)
+                    # The handler is observed parked on the held destination
+                    # key before the absence is asserted: a probe before the
+                    # lock would already be in ``calls`` by then, so the
+                    # empty-calls assertion cannot pass vacuously.
+                    await until_parked(routes_mod._drive_key_locks[f"{bucket}\ndrive\nb.txt"])
                     assert calls == []
                 resp = await task
                 assert not copy.called
@@ -1516,8 +1515,10 @@ class TestDriveSectionSweepLock:
                     task = asyncio.create_task(
                         handlers[("POST", "/drive/{account}/folder/delete")](req)  # type: ignore[operator]
                     )
-                    for _ in range(10):
-                        await asyncio.sleep(0.01)
+                    # The sweep is observed parked on the section's exclusive
+                    # wait before the absence is asserted.
+                    section = routes_mod._drive_section_lock(bucket, "drive")
+                    await until_parked(section._state()["cond"])
                     assert not sweep.called
                 resp = await task
                 assert sweep.called
