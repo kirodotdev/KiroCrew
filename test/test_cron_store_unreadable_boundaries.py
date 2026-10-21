@@ -979,6 +979,9 @@ def test_a_corrupt_store_does_not_discard_a_queued_one_shot_removal(tmp_path: Pa
 # The next `apply_tiers`-shaped caller inherits the rule by going red.
 _PROBE = "raise_if_store_unreadable"
 
+#: The one module the scan skips: the store service itself (see the scan below).
+_STORE_MODULE = "src/kiro_crew/cron.py"
+
 #: Public reads. A read never raises on an unreadable store -- that IS the hazard.
 _CRON_READS = frozenset(
     {
@@ -1130,9 +1133,7 @@ def _read_decide_write_callers() -> tuple[tuple[str, str, int, bool], ...]:
         # -- reporting every exempt caller as unprobed and every exemption as stale at
         # once. POSIX is the portable spelling and the one the table is keyed in.
         posix = path.as_posix()
-        # cron_secret_grants.py: its two grant handlers read, decide and write without the
-        # probe, and this skip is what keeps them out of the offenders below.
-        if path.name in ("cron.py", "cron_secret_grants.py") or "__pycache__" in posix:
+        if "__pycache__" in posix:
             continue
         if "/tests/" in posix or path.name.startswith("test_"):
             continue
@@ -1140,6 +1141,11 @@ def _read_decide_write_callers() -> tuple[tuple[str, str, int, bool], ...]:
         # so the exemption keys resolve identically for an editable and an installed
         # package layout.
         rel = "src/kiro_crew/" + path.relative_to(root).as_posix()
+        # Only the store module itself is the service. Matched on the full package
+        # path, not the bare name: a name match also hid the dashboard's own
+        # `handlers/cron.py` and the grant handlers split out of it.
+        if rel == _STORE_MODULE:
+            continue
         callers.extend(_scan_module_for_read_decide_write(text, rel))
     return tuple(callers)
 

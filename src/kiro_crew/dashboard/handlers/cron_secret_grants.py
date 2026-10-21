@@ -113,6 +113,13 @@ async def _promote_pending_grant(
     raw digest over code the display never let them read.
     """
     job = await state.crons.get_job_async(job_id)
+    # An unreadable store loads as an EMPTY job list without raising, so a miss
+    # here alone would answer "job not found" over a corrupt file. The probe
+    # reads the latch this read just refreshed and does no I/O of its own.
+    try:
+        state.crons.raise_if_store_unreadable()
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     if not job:
         return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
     # The store is agent-writable and ``_job_from_record`` loads both grant
@@ -543,6 +550,13 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
             {"error": "request body must be a JSON object", "code": "invalid_json"}, status=400
         )
     job = await state.crons.get_job_async(job_id)
+    # An unreadable store loads as an EMPTY job list without raising, so a miss
+    # here alone would answer "job not found" over a corrupt file. The probe
+    # reads the latch this read just refreshed and does no I/O of its own.
+    try:
+        state.crons.raise_if_store_unreadable()
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     if not job:
         return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
     # ── Agent-requested pending grants: approve / deny ──
