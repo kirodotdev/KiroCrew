@@ -24,8 +24,8 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 ``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``.
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
-``_mode_model_unjudged``, ``_queue``, ``_runtime``, ``_session_id``,
-``_steering_cancel_tasks``.
+``_cloud_replayed_permissions``, ``_mode_model_unjudged``, ``_queue``, ``_runtime``,
+``_session_id``, ``_steering_cancel_tasks``.
 """
 
 from __future__ import annotations
@@ -450,6 +450,7 @@ async def _run_turn(
     _stale_terminals = 0
     _stale_reasons: list[str] = []
     _stale_owed: list[JsonRpcMessage] = []
+    _cloud_kept: set[str | int | None] = set()
     _sign_in_holds = getattr(self._runtime, "mcp_sign_in_holds", None)
     while True:
         try:
@@ -496,6 +497,14 @@ async def _run_turn(
             and stale.method is not None
             and stale.is_method(METHOD_REQUEST_PERMISSION)
         ):
+            # Only the cloud harness fills this set, so on every other host the
+            # test is false and the frame takes the reject below.
+            if stale.id in self._cloud_replayed_permissions:
+                # Kept in the set until the loop ends: a reject below hands this
+                # frame back to the queue, and this loop reads it again.
+                _cloud_kept.add(stale.id)
+                _stale_owed.append(stale)
+                continue
             # Answer with the request's OWN advertised reject option: the
             # per-turn _permission_options map was just cleared, so a bare
             # reject_tool would always take its `cancelled` fallback —
@@ -647,6 +656,10 @@ async def _run_turn(
                 elif stale.error is not None:
                     _stale_terminals += 1
 
+    # The held cloud replays now go to the dispatch loop, which answers them on
+    # the normal approval path; the next drain must not keep them again.
+    if _cloud_kept:
+        self._cloud_replayed_permissions.difference_update(_cloud_kept)
     for _owed in _stale_owed:
         # Order-preserving: the frames go back in the order they were read,
         # and a waiter that has since given up is harmless — the dispatch

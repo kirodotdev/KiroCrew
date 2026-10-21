@@ -20264,6 +20264,7 @@
       "choicesUnreadable": "No se pudieron cargar tus perfiles. Abre el menú otra vez para reintentarlo.",
       "unknownProfile": "Ese perfil ya no está configurado en Ajustes.",
       "environmentLocked": "El entorno de un chat queda fijo cuando se envía su primer mensaje.",
+      "privateChat": "Kiro Cloud Sessions no está disponible en chats de incógnito o temporales.",
       "appliesNext": "Queda fijado al enviar el primer mensaje. Para ejecutarlo en otro sitio, inicia un chat nuevo.",
       "stage": {
         "checking": "Comprobando el perfil",
@@ -20298,6 +20299,8 @@
       "conflict": "El archivo cambió en el espacio de trabajo, así que no se guardó. Tus cambios siguen aquí: cópialos si quieres conservarlos y luego carga la versión nueva.",
       "rootChanged": "La carpeta de trabajo de este perfil cambió desde que abriste este archivo, así que no se guardó. Tus cambios siguen aquí: cópialos si quieres conservarlos.",
       "openTerminal": "Abrir una terminal en este espacio de trabajo",
+      "cloudSandbox": "Este chat se ejecuta en un sandbox en la nube de Kiro, así que sus archivos y su Git no se pueden mostrar aquí.",
+      "cloudSandboxRefused": "No se pudieron abrir los archivos de este chat porque se ejecuta en un sandbox en la nube de Kiro, al que solo llega su propio agente.",
       "copyEdits": "Copiar mis cambios",
       "discardEdits": "Descartar mis cambios",
       "discardWhich": "Se perderán tus cambios sin guardar en {{path}}.",
@@ -20362,6 +20365,22 @@
     "computeSurvivesStop": "Esta plantilla conserva sus archivos cuando un espacio de trabajo se detiene",
     "computeSurvivesStopHint": "Activado: los archivos se conservan cuando un espacio de trabajo se detiene, así que {{productName}} puede detener estos espacios de trabajo. Desactivado: los archivos se pierden cuando un espacio de trabajo se detiene, así que {{productName}} nunca los detiene, ni siquiera cuando «Detener los espacios de trabajo cuando {{productName}} se apaga» está activado más abajo. La detención automática de Coder sigue aplicándose.",
     "computeSurvivesStopMicroVm": "¿No estás seguro? Déjalo activado, salvo que los archivos de esta plantilla se pierdan cuando un espacio de trabajo se detiene.",
+    "kiroCloud": {
+      "replayed": "No se pudo volver a abrir la sesión en la nube, así que se inició una nueva sesión en la nube que continúa esta conversación. Los archivos y cambios de la sesión anterior no están en ella. La sesión anterior sigue apareciendo en Kiro Web (app.kiro.dev).",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Perfiles que ejecutan toda la sesión en un sandbox en la nube de Kiro: el agente, sus archivos y sus comandos. Elige uno para una sesión desde el menú de entorno junto al cuadro de mensaje.",
+      "notVerified": "Estos perfiles no se comprueban de antemano. Si un chat en la nube no puede iniciarse, el chat explica el motivo.",
+      "setup1": "En Ajustes → {{tab}}, elige el backend {{backend}} e inicia sesión en Kiro con una cuenta que tenga Kiro Cloud Sessions.",
+      "setup2": "Indica los repositorios que debe abrir el sandbox, en formato owner/name. Una lista vacía abre un espacio de trabajo vacío.",
+      "repositories": "Repositorios",
+      "repositoriesHint": "Repositorios del proveedor de código (como GitHub) conectado a tu cuenta de Kiro, separados por comas, en formato owner/name (p. ej. acme/web), como máximo {{max}}. Déjalo vacío para un espacio de trabajo vacío.",
+      "emptyWorkspace": "Espacio de trabajo vacío",
+      "profiles": "Perfiles de Kiro Cloud",
+      "limits": "El agente en la nube ejecuta comandos sin preguntarte antes y no puede usar las herramientas ni las conexiones que configuraste en {{productName}}.",
+      "setup": "Instrucciones de configuración de Kiro Cloud",
+      "add": "Añadir perfil de Kiro Cloud",
+      "remove": "Quitar perfil de Kiro Cloud"
+    },
     "checkCoderLogin": "Para iniciar sesión, ejecuta <code>coder login</code> en una terminal de esta máquina."
   },
   "crewEditorNext": {

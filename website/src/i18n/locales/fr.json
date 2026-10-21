@@ -20264,6 +20264,7 @@
       "choicesUnreadable": "Impossible de charger tes profils. Rouvre le menu pour réessayer.",
       "unknownProfile": "Ce profil n’est plus configuré dans les paramètres.",
       "environmentLocked": "L’environnement d’un chat est fixé dès l’envoi de son premier message.",
+      "privateChat": "Kiro Cloud Sessions n’est pas disponible dans les chats incognito ou temporaires.",
       "appliesNext": "Fixé dès l’envoi du premier message. Pour tourner ailleurs, lance un nouveau chat.",
       "stage": {
         "checking": "Vérification du profil",
@@ -20298,6 +20299,8 @@
       "conflict": "Le fichier a changé dans l’espace de travail, il n’a donc pas été enregistré. Tes modifications sont toujours là : copie-les si tu veux les garder, puis charge la nouvelle version.",
       "rootChanged": "Le dossier de travail de ce profil a changé depuis l’ouverture de ce fichier, il n’a donc pas été enregistré. Tes modifications sont toujours là : copie-les si tu veux les garder.",
       "openTerminal": "Ouvrir un terminal dans cet espace de travail",
+      "cloudSandbox": "Ce chat s’exécute dans un bac à sable cloud Kiro : ses fichiers et son Git ne peuvent donc pas être affichés ici.",
+      "cloudSandboxRefused": "Impossible d’ouvrir les fichiers de ce chat, car il s’exécute dans un bac à sable cloud Kiro, accessible uniquement à son propre agent.",
       "copyEdits": "Copier mes modifications",
       "discardEdits": "Annuler mes modifications",
       "discardWhich": "Tes modifications non enregistrées de {{path}} seront perdues.",
@@ -20362,6 +20365,22 @@
     "computeSurvivesStop": "Ce modèle garde ses fichiers quand un espace de travail s’arrête",
     "computeSurvivesStopHint": "Activé : les fichiers sont conservés quand un espace de travail s’arrête, donc {{productName}} peut arrêter ces espaces de travail. Désactivé : les fichiers sont perdus quand un espace de travail s’arrête, donc {{productName}} ne les arrête jamais, même quand « Arrêter les espaces de travail à l’arrêt de {{productName}} » est activé plus bas. L’arrêt automatique de Coder s’applique toujours.",
     "computeSurvivesStopMicroVm": "Pas sûr ? Laisse-le activé, sauf si les fichiers de ce modèle sont perdus quand un espace de travail s’arrête.",
+    "kiroCloud": {
+      "replayed": "Impossible de rouvrir la session cloud, une nouvelle session cloud a donc été démarrée en reprenant cette conversation. Les fichiers et modifications de l’ancienne session n’y figurent pas. L’ancienne session reste listée dans Kiro Web (app.kiro.dev).",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profils qui exécutent toute la session dans un bac à sable cloud Kiro : l’agent, ses fichiers et ses commandes. Choisis-en un pour une session depuis le menu d’environnement à côté de la zone de message.",
+      "notVerified": "Ces profils ne sont pas vérifiés à l’avance. Si un chat cloud ne peut pas démarrer, le chat en explique la raison.",
+      "setup1": "Dans Paramètres → {{tab}}, choisis le backend {{backend}} et connecte-toi à Kiro avec un compte qui dispose de Kiro Cloud Sessions.",
+      "setup2": "Indique les dépôts que le bac à sable doit ouvrir, au format owner/name. Une liste vide ouvre un espace de travail vide.",
+      "repositories": "Dépôts",
+      "repositoriesHint": "Dépôts du fournisseur de code (comme GitHub) connecté à ton compte Kiro, séparés par des virgules, au format owner/name (ex. acme/web), {{max}} au maximum. Laisse le champ vide pour un espace de travail vide.",
+      "emptyWorkspace": "Espace de travail vide",
+      "profiles": "Profils Kiro Cloud",
+      "limits": "L’agent cloud exécute des commandes sans te demander ton accord, et ne peut pas utiliser les outils et connexions que tu as configurés dans {{productName}}.",
+      "setup": "Instructions de configuration de Kiro Cloud",
+      "add": "Ajouter un profil Kiro Cloud",
+      "remove": "Supprimer le profil Kiro Cloud"
+    },
     "checkCoderLogin": "Pour te connecter, lance <code>coder login</code> dans un terminal de cette machine."
   },
   "crewEditorNext": {

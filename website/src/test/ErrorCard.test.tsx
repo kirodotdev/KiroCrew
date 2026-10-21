@@ -751,3 +751,14 @@ describe('ErrorCard — turn hit its time limit', () => {
     cleanup()
   })
 })
+
+describe('a Kiro Cloud reopen that started a new sandbox', () => {
+  it('renders as an error card with the localized sentence, not the wire text', () => {
+    render(<ErrorCard content="channel fallback text" meta={{ kind: 'cloud_session_replayed' }} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveTextContent(i18nT('sessionEnvironments.kiroCloud.replayed'))
+    expect(card).toHaveTextContent("Files and changes from the earlier session aren't in it.")
+    expect(card).toHaveTextContent('The earlier session is still listed in Kiro Web (app.kiro.dev).')
+    expect(screen.queryByText('channel fallback text')).toBeNull()
+  })
+})

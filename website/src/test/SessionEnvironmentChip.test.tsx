@@ -282,6 +282,18 @@ describe('SessionEnvironmentChip', () => {
     expect(put).not.toHaveBeenCalled()
   })
 
+  it('names a Kiro Cloud profile by its repositories, or the sandbox when it has none', async () => {
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web', 'acme/api'] }
+    const empty = { ...cloud, id: 'blank', name: 'Empty sandbox', repositories: [] }
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse(null, [DEV, cloud, empty]))
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.click(await screen.findByRole('button', { name: 'Runs on This machine' }))
+    expect(await screen.findByRole('menuitemradio', { name: /Kiro Cloud/ })).toHaveTextContent('acme/web, acme/api')
+    // No repositories and no directory: the row says the workspace starts empty.
+    expect(screen.getByRole('menuitemradio', { name: /Empty sandbox/ })).toHaveTextContent('Empty workspace')
+  })
+
   it('keeps a fixed LOCAL chip a plain muted status with no card', async () => {
     mockEnv({ ...envResponse(null), locked: true })
     const health = vi.spyOn(api, 'chatSlotEnvironmentHealth')
@@ -291,6 +303,23 @@ describe('SessionEnvironmentChip', () => {
     expect(el.querySelector('.lucide-lock')).not.toBeNull()
     expect(el).toHaveClass('text-muted')
     expect(screen.queryByRole('button', { name: /This machine/ })).toBeNull()
+    expect(health).not.toHaveBeenCalled()
+  })
+
+  it('keeps a fixed Kiro Cloud chip a plain status with no metrics card', async () => {
+    // Only the sandbox's own agent reaches it, so there are no metrics to show.
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web'] }
+    mockEnv({ ...envResponse('cloud', [DEV, cloud]), provider: 'kiro_cloud', locked: true })
+    const health = vi.spyOn(api, 'chatSlotEnvironmentHealth')
+    const u = userEvent.setup()
+    chip()
+    const el = await screen.findByTestId('composer-environment-chip')
+    expect(el.tagName).toBe('SPAN')
+    expect(el).toHaveTextContent('Kiro Cloud')
+    expect(el.querySelector('.lucide-lock')).not.toBeNull()
+    await u.hover(el)
+    await u.click(el)
+    expect(screen.queryByTestId('environment-health-card')).toBeNull()
     expect(health).not.toHaveBeenCalled()
   })
 
@@ -437,6 +466,25 @@ describe('SessionEnvironmentChip', () => {
     // There is no Retry button beside the chip, so the notice names the way.
     expect(alert).toHaveTextContent("Couldn't load your profiles. Open the menu again to retry.")
     expect(alert).not.toHaveTextContent('choices_unreadable')
+  })
+
+  it('says why an incognito or temporary chat cannot move to Kiro Cloud', async () => {
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web'] }
+    mockEnv(envResponse(null, [DEV, cloud]))
+    vi.spyOn(api, 'setChatSlotEnvironment').mockRejectedValue(new ApiError(
+      400,
+      "Kiro Cloud Sessions aren't available in incognito or temporary chats; choose another session environment",
+      '{"code":"choice_refused","reason":"private_chat"}',
+    ))
+    const u = userEvent.setup()
+    chip()
+    await u.click(await button('Runs on This machine'))
+    await u.click(await radio(/Kiro Cloud/))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/Couldn't switch to Kiro Cloud, so this chat still runs on This machine\./)
+    // The catalog's own sentence, not the gateway's English text.
+    expect(alert).toHaveTextContent("Kiro Cloud Sessions aren't available in incognito or temporary chats.")
+    expect(alert).not.toHaveTextContent('choose another session environment')
   })
 
   it('keeps a switch refusal visible when the chat locks while it waits', async () => {

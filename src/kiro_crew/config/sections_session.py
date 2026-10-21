@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
@@ -519,6 +520,16 @@ class SessionEnvironmentsConfig:
             "compute_survives_stop}.",
         ),
     )
+    kiro_cloud_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Kiro Cloud Profiles",
+            "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, "
+            "repositories}. The session runs in a Kiro cloud sandbox through KAS, "
+            "without Kiro Crew's tools, MCP servers or governance gate; the gateway's "
+            "Kiro sign-in authenticates.",
+        ),
+    )
 
     default_profile: str = field(
         default="",
@@ -547,6 +558,7 @@ class SessionEnvironmentsConfig:
         """Build from the raw section, keeping every valid part (never raises)."""
         from kiro_crew.config.session_environments import (
             load_default_profile,
+            load_kiro_cloud_profiles,
             load_session_environments,
             load_stop_on_shutdown,
         )
@@ -555,6 +567,7 @@ class SessionEnvironmentsConfig:
         return cls(
             coder_url=coder_url,
             profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
+            kiro_cloud_profiles=load_kiro_cloud_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )

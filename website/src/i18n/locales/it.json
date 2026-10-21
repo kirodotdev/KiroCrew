@@ -20264,6 +20264,7 @@
       "choicesUnreadable": "Impossibile caricare i tuoi profili. Riapri il menu per riprovare.",
       "unknownProfile": "Quel profilo non è più configurato nelle Impostazioni.",
       "environmentLocked": "L'ambiente di una chat è fisso una volta inviato il primo messaggio.",
+      "privateChat": "Kiro Cloud Sessions non è disponibile nelle chat in incognito o temporanee.",
       "appliesNext": "Fissato con il primo messaggio. Per lavorare altrove, avvia una nuova chat.",
       "stage": {
         "checking": "Verifica del profilo",
@@ -20298,6 +20299,8 @@
       "conflict": "Il file è cambiato nel workspace, quindi non è stato salvato. Le tue modifiche sono ancora qui: copiale se vuoi tenerle, poi carica la nuova versione.",
       "rootChanged": "La cartella di lavoro di questo profilo è cambiata da quando hai aperto il file, quindi non è stato salvato. Le tue modifiche sono ancora qui: copiale se vuoi conservarle.",
       "openTerminal": "Apri un terminale in questo workspace",
+      "cloudSandbox": "Questa chat viene eseguita in una sandbox cloud di Kiro, quindi i suoi file e il suo Git non possono essere mostrati qui.",
+      "cloudSandboxRefused": "Impossibile aprire i file di questa chat, perché viene eseguita in una sandbox cloud di Kiro, raggiungibile solo dal suo agente.",
       "copyEdits": "Copia le mie modifiche",
       "discardEdits": "Scarta le mie modifiche",
       "discardWhich": "Le modifiche non salvate a {{path}} andranno perse.",
@@ -20362,6 +20365,22 @@
     "computeSurvivesStop": "Questo modello conserva i file quando un workspace si arresta",
     "computeSurvivesStopHint": "Attivo: i file vengono conservati quando un workspace si arresta, quindi {{productName}} può arrestare questi workspace. Disattivo: i file vanno persi quando un workspace si arresta, quindi {{productName}} non li arresta mai, nemmeno quando «Arresta i workspace quando {{productName}} si spegne» qui sotto è attivo. L'arresto automatico di Coder resta valido.",
     "computeSurvivesStopMicroVm": "Non sei sicuro? Lascialo attivo, a meno che i file di questo modello vadano persi quando un workspace si arresta.",
+    "kiroCloud": {
+      "replayed": "Impossibile riaprire la sessione cloud, quindi è stata avviata una nuova sessione cloud che prosegue questa conversazione. I file e le modifiche della sessione precedente non sono presenti. La sessione precedente è ancora elencata in Kiro Web (app.kiro.dev).",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profili che eseguono l’intera sessione in una sandbox cloud di Kiro: l’agente, i suoi file e i suoi comandi. Scegline uno per una sessione dal menu dell’ambiente accanto alla casella del messaggio.",
+      "notVerified": "Questi profili non vengono controllati in anticipo. Se una chat cloud non può avviarsi, la chat ne spiega il motivo.",
+      "setup1": "In Impostazioni → {{tab}}, scegli il backend {{backend}} e accedi a Kiro con un account che ha Kiro Cloud Sessions.",
+      "setup2": "Elenca i repository che la sandbox deve aprire, nel formato owner/name. Un elenco vuoto apre un workspace vuoto.",
+      "repositories": "Repository",
+      "repositoriesHint": "Repository del provider di codice (come GitHub) collegato al tuo account Kiro, separati da virgole, nel formato owner/name (ad es. acme/web), al massimo {{max}}. Lascialo vuoto per un workspace vuoto.",
+      "emptyWorkspace": "Workspace vuoto",
+      "profiles": "Profili Kiro Cloud",
+      "limits": "L’agente cloud esegue i comandi senza chiederti prima il permesso e non può usare gli strumenti e le connessioni che hai configurato in {{productName}}.",
+      "setup": "Istruzioni di configurazione di Kiro Cloud",
+      "add": "Aggiungi profilo Kiro Cloud",
+      "remove": "Rimuovi profilo Kiro Cloud"
+    },
     "checkCoderLogin": "Per accedere, esegui <code>coder login</code> in un terminale di questa macchina."
   },
   "crewEditorNext": {

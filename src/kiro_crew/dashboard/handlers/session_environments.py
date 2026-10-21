@@ -32,6 +32,7 @@ def _profiles() -> list[dict[str, object]]:
     Read from the applied config snapshot, the one a remote start and the file
     browser resolve against, so a profile edit the watcher has not reloaded yet
     is never advertised ahead of them. Disk only before any snapshot exists."""
+    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID, ambiguous_profile_ids
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.session_environment import session_environments_enabled
@@ -42,9 +43,20 @@ def _profiles() -> list[dict[str, object]]:
     if config is None:
         config = KiroCrewConfig.load()
     section = config.session_environments
+    # An id saved for two providers names neither: the launch path refuses it,
+    # so it is not offered.
+    ambiguous = ambiguous_profile_ids(section)
+    if ambiguous:
+        logger.warning(
+            "session environments: profile id(s) %s are saved for more than one provider; "
+            "not offering them",
+            sorted(ambiguous),
+        )
     out: list[dict[str, object]] = []
     if section.coder_url:
         for p in section.profiles:
+            if p.id in ambiguous:
+                continue
             out.append(
                 {
                     "id": p.id,
@@ -54,7 +66,44 @@ def _profiles() -> list[dict[str, object]]:
                     "template": p.template,
                 }
             )
+    # Kiro Cloud profiles need no Coder URL.
+    for item in getattr(section, "kiro_cloud_profiles", None) or []:
+        if isinstance(item, dict) and item.get("id") and item["id"] not in ambiguous:
+            out.append(
+                {
+                    "id": item["id"],
+                    "name": item.get("name") or item["id"],
+                    "provider": KIRO_CLOUD_PROVIDER_ID,
+                    # Kiro Crew never sees a directory in that sandbox.
+                    "workdir": "",
+                    "repositories": list(item.get("repositories") or []),
+                }
+            )
     return out
+
+
+def _fixed_by_provider(profile: str, session_key: str) -> bool:
+    """Whether the session's provider keeps its choice fixed with no workspace.
+
+    A recorded cloud choice is fixed once Kiro's cloud holds the session (a
+    cloud session id is on its row), even if its profile disappears or its id
+    is reused; a cloud start refused before ``session/new`` leaves it movable.
+    An unreadable choice or an ambiguous configured id locks the choice:
+    neither proves the session has no cloud history.
+    """
+    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID, profile_provider
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    try:
+        choices = _choices()
+        recorded = choices.resolve_choice(session_key)
+        if recorded is not None and recorded[2] == KIRO_CLOUD_PROVIDER_ID:
+            return choices.cloud_session_recorded(session_key)
+        section = KiroCrewConfig.load().session_environments
+        return profile_provider(section, profile) == KIRO_CLOUD_PROVIDER_ID
+    except SessionEnvironmentUnavailable:
+        return True
 
 
 async def api_session_environments_check(request: web.Request) -> web.Response:
@@ -265,6 +314,11 @@ async def _choice_locked(slot: object, session_key: str, profile: str | None) ->
         return False
     if profile is None:
         return True
+    if await asyncio.to_thread(_fixed_by_provider, profile, session_key):
+        # A cloud session's history lives in Kiro's cloud store once a cloud
+        # session id is recorded, so it stays fixed; so does an id saved for
+        # two providers, which may have run on either.
+        return True
     return await asyncio.to_thread(_remote_workspace_created, session_key)
 
 
@@ -290,10 +344,12 @@ async def api_chat_slot_environment_get(request: web.Request) -> web.Response:
     # read: an unreadable one cannot lock a local chat's Files and Terminal.
     # Part A's ``resolve`` also answers None then; this route does not rely on it.
     if not session_environments_enabled():
+        choice = None
         profile = None
     else:
         try:
-            profile = await asyncio.to_thread(_choices().get, key)
+            choice = await asyncio.to_thread(_choices().resolve_choice, key)
+            profile = choice[0] if choice else None
         except SessionEnvironmentUnavailable as exc:
             return web.json_response({"error": str(exc), "code": "choices_unreadable"}, status=500)
     profiles = await asyncio.to_thread(_profiles)
@@ -303,6 +359,7 @@ async def api_chat_slot_environment_get(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "profile": profile,
+            "provider": choice[2] if choice else None,
             "profiles": profiles,
             "starting": start_progress(key),
             "locked": await _choice_locked(slot, key, profile),
@@ -321,7 +378,12 @@ async def api_chat_slot_environment_browse(request: web.Request) -> web.Response
     key = _slot_session_key(request)
     if key is None:
         return slot_not_found()
-    from kiro_crew.coder.session_browse import NotRemote, WorkspaceNotRunning, browse_session
+    from kiro_crew.coder.session_browse import (
+        CloudSandboxOnly,
+        NotRemote,
+        WorkspaceNotRunning,
+        browse_session,
+    )
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     op = request.query.get("op", "list")
@@ -330,6 +392,8 @@ async def api_chat_slot_environment_browse(request: web.Request) -> web.Response
         result = await browse_session(key, op, path)
     except ValueError as exc:
         return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
+    except CloudSandboxOnly as exc:
+        return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)
     except NotRemote:
         return web.json_response(
             {"error": "this session runs on this machine", "code": "not_remote"}, status=409
@@ -358,11 +422,19 @@ async def api_chat_slot_environment_health(request: web.Request) -> web.Response
     key = _slot_session_key(request)
     if key is None:
         return slot_not_found()
-    from kiro_crew.coder.session_browse import NotRemote, WorkspaceNotRunning, session_health
+    from kiro_crew.coder.session_browse import (
+        CloudSandboxOnly,
+        NotRemote,
+        WorkspaceNotRunning,
+        session_health,
+    )
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     try:
         return web.json_response(await session_health(key))
+    except CloudSandboxOnly as exc:
+        # Only the sandbox's own agent reaches it: no metrics to read, and not a failure.
+        return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)
     except NotRemote:
         return web.json_response(
             {"error": "this session runs on this machine", "code": "not_remote"}, status=409
@@ -387,6 +459,7 @@ async def api_chat_slot_environment_file_put(request: web.Request) -> web.Respon
         return slot_not_found()
     from kiro_crew.coder.session_browse import (
         MAX_WRITE_BYTES,
+        CloudSandboxOnly,
         NotRemote,
         WorkdirChanged,
         WorkspaceNotRunning,
@@ -426,6 +499,8 @@ async def api_chat_slot_environment_file_put(request: web.Request) -> web.Respon
         )
     except ValueError as exc:
         return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
+    except CloudSandboxOnly as exc:
+        return web.json_response({"error": str(exc), "code": "cloud_sandbox"}, status=409)
     except NotRemote:
         return web.json_response(
             {"error": "this session runs on this machine", "code": "not_remote"}, status=409
@@ -453,6 +528,13 @@ async def api_chat_slot_environment_file_put(request: web.Request) -> web.Respon
     return web.json_response(result)
 
 
+def _slot_memory_mode(slot: Any) -> str:
+    """The strictest memory mode known for ``slot``: a committed tightening counts."""
+    from kiro_crew.dashboard.chat_persistence import pending_slot_memory_mode
+
+    return pending_slot_memory_mode(slot) or str(getattr(slot, "memory_mode", "") or "persistent")
+
+
 async def apply_default_environment(
     slot: Any, sessions: Any = None, terminals: dict | None = None
 ) -> bool:
@@ -477,7 +559,14 @@ async def apply_default_environment(
         default = str(getattr(section, "default_profile", "") or "")
         if not default or _environment_locked(slot):
             return False
-        if default not in {p["id"] for p in await asyncio.to_thread(_profiles)}:
+        providers = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
+        if default not in providers:
+            return False
+        from kiro_crew.coder.session_launch import cloud_needs_persistent_chat
+
+        if cloud_needs_persistent_chat(str(providers[default]), _slot_memory_mode(slot)):
+            # A private chat stays on this machine rather than taking a Kiro
+            # Cloud default its starts would refuse.
             return False
         key = effective_session_key(slot)
         if not key:
@@ -502,7 +591,7 @@ async def apply_default_environment(
                 await sessions.remove(key)
             if getattr(slot, "_pending_reset_history_key", None) == key:
                 slot._pending_reset_history_key = None
-            await asyncio.to_thread(choices.set, key, default)
+            await asyncio.to_thread(choices.set, key, default, str(providers[default]))
             if isinstance(terminals, dict):
                 from kiro_crew.dashboard.handlers.terminal import retire_local_shells_of_chat
 
@@ -530,12 +619,14 @@ async def api_chat_slot_environment_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "profile must be a string or null", "code": "invalid_request"}, status=400
         )
+    provider = ""
     if profile is not None:
-        known = {p["id"] for p in await asyncio.to_thread(_profiles)}
+        known = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
         if profile not in known:
             return web.json_response(
                 {"error": "profile is not configured", "code": "unknown_profile"}, status=400
             )
+        provider = str(known[profile])
     from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
     from kiro_crew.llm_helpers_parts.model_fallback import slot_switch_session_lock
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
@@ -544,6 +635,20 @@ async def api_chat_slot_environment_put(request: web.Request) -> web.Response:
     slot = state._slots.get(request.match_info["slot"])
     if slot is None:
         return slot_not_found()
+    from kiro_crew.coder.session_launch import (
+        PRIVATE_CHAT_CLOUD_REFUSAL,
+        cloud_needs_persistent_chat,
+    )
+
+    if profile is not None and cloud_needs_persistent_chat(provider, _slot_memory_mode(slot)):
+        return web.json_response(
+            {
+                "error": PRIVATE_CHAT_CLOUD_REFUSAL,
+                "code": "choice_refused",
+                "reason": "private_chat",
+            },
+            status=400,
+        )
     # Serialized like the project switch; a change arms the deferred reset so an
     # idle runtime does not keep running in the old environment.
     async with slot._lock:
@@ -572,7 +677,10 @@ async def api_chat_slot_environment_put(request: web.Request) -> web.Response:
                         status=409,
                     )
                 if previous != profile:
-                    await asyncio.to_thread(choices.set, key, profile)
+                    if profile is None:
+                        await asyncio.to_thread(choices.set, key, None)
+                    else:
+                        await asyncio.to_thread(choices.set, key, profile, provider)
             except (ValueError, SessionEnvironmentUnavailable) as exc:
                 return web.json_response({"error": str(exc), "code": "choice_refused"}, status=400)
             if previous != profile:

@@ -100,6 +100,8 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.decisions_local": _CAPABILITY_OFF,
     "capabilities.extension_install": _CAPABILITY_OFF,
     "capabilities.app_dev_mode": _CAPABILITY_OFF,
+    # The session's agent and tools run in Kiro's cloud, outside this ceiling.
+    "capabilities.kiro_cloud_sessions": _CAPABILITY_OFF,
 }
 
 #: Inner lists of a capability that keep their baseline when the remote policy

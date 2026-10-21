@@ -215,6 +215,8 @@ async def test_provider_carries_agent_through_background_start_to_audited_channe
         decision = governance[1].log_governance_decision.call_args.kwargs
         governed = crew or agent
         assert decision["outcome"] == "denied" and decision["agent"] == governed
+        # The cloud and workspace start gate judges the same identity.
+        assert prepare.await_args.kwargs["agent"] == governed
     finally:
         await asyncio.wait_for(launch.stop_git_proxy(), 30)
 

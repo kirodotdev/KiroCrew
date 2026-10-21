@@ -363,6 +363,7 @@ class _Runtime:
         self.send_error = AsyncMock()
         self.supports_image_prompt = False
         self.acp_backend = ""
+        self.is_cloud_sandbox = False
         self._last_activity = time.monotonic()
 
     def mark_turn_active(self, session_id: str, active: bool) -> None:

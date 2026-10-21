@@ -57,7 +57,14 @@ function unloadBlocked() {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue({
+    profile: 'dev', provider: 'coder', profiles: [{ id: 'dev', name: 'Coder', provider: 'coder', workdir: '/workspace/w' }],
+  })
 })
+
+/** The placement query resolves, the browser mounts, then its listing query
+ * rejects: two awaited requests before a listing alert can render. */
+const CHAINED_LISTING_TIMEOUT_MS = 5_000
 
 describe('RemoteFilesPanel', () => {
   function mockTree() {
@@ -279,6 +286,36 @@ describe('RemoteFilesPanel', () => {
     // The hand-off stays: drafts live in the query cache, so leaving loses nothing.
     expect(screen.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
   })
+
+  it('shows a refused cloud browse as an error with the hand-off, and no refresh, tree, viewer or terminal', async () => {
+    const list = vi.spyOn(api, 'chatSlotEnvironmentList').mockRejectedValue(
+      new ApiError(409, 'cloud', JSON.stringify({ error: 'cloud', code: 'cloud_sandbox' })),
+    )
+    wrap(<RemoteFilesPanel slot="chat-1" name="Kiro Cloud" workdir="" onOpenTerminal={() => {}} />)
+    // A rejected request is an error (errors-use-error-notice); only a recorded
+    // cloud placement is the neutral notice. Placement -> browser -> listing chain.
+    const notice = await screen.findByRole('alert', {}, { timeout: CHAINED_LISTING_TIMEOUT_MS })
+    // Its own sentence says what failed, so it never reads as the neutral notice.
+    expect(notice).toHaveTextContent("Couldn't open this chat's files")
+    expect(notice).not.toHaveTextContent('This chat runs in a Kiro cloud sandbox')
+    expect(within(notice).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
+    expect(screen.queryByText(/Select a file to view it/)).toBeNull()
+    expect(screen.queryByRole('tree')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open a terminal in this workspace' })).toBeNull()
+    // The panel and the root tree share one listing request.
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a real listing failure as an error with the hand-off', async () => {
+    vi.spyOn(api, 'chatSlotEnvironmentList').mockRejectedValue(new ApiError(500, 'boom', '{}'))
+    wrap(<RemoteFilesPanel slot="chat-1" name="Coder MicroVM" workdir="/workspace/w" />)
+    // Placement -> browser -> listing chain.
+    const failure = await screen.findByRole('alert', {}, { timeout: CHAINED_LISTING_TIMEOUT_MS })
+    expect(failure).toHaveTextContent('Could not read the workspace')
+    expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(screen.getByText(/Select a file to view it/)).toBeInTheDocument()
+  })
   it('retains session-owned drafts and the unload guard across tab, route and chat switches', async () => {
     mockTree().mockImplementation(async slot => ({ ...ROOT, path: 'README.md', content: slot, binary: false }))
     const u = userEvent.setup()
@@ -438,3 +475,53 @@ describe('RemoteFilesPanel', () => {
   })
 
 })
+
+describe('recorded cloud placement', () => {
+  it('shows neutral info and makes no browse requests for files', async () => {
+    vi.mocked(api.chatSlotEnvironment).mockResolvedValue({ profile: 'removed-cloud', provider: 'kiro_cloud', profiles: [] })
+    const list = vi.spyOn(api, 'chatSlotEnvironmentList')
+    const read = vi.spyOn(api, 'chatSlotEnvironmentRead')
+    wrap(<RemoteFilesPanel slot="chat-1" name="Kiro Cloud" workdir="" onOpenTerminal={() => {}} />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('tree')).toBeNull()
+    expect(screen.queryByRole('button', { name: /terminal/i })).toBeNull()
+    expect(list).not.toHaveBeenCalled()
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('waits for placement before mounting files browse', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof api.chatSlotEnvironment>>) => void
+    vi.mocked(api.chatSlotEnvironment).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const list = vi.spyOn(api, 'chatSlotEnvironmentList')
+    wrap(<RemoteFilesPanel slot="chat-1" name="Cloud" workdir="" />)
+    expect(await screen.findByText('Loading…')).toHaveAttribute('aria-busy', 'true')
+    expect(list).not.toHaveBeenCalled()
+    await act(async () => finish({ profile: 'cloud', provider: 'kiro_cloud', profiles: [] }))
+    await screen.findByRole('status')
+    expect(list).not.toHaveBeenCalled()
+  })
+
+  it('re-reads a stale placement after a cloud refusal and settles on the neutral notice', async () => {
+    const placement = vi.mocked(api.chatSlotEnvironment)
+      .mockResolvedValueOnce({ profile: 'dev', provider: 'coder', profiles: [{ id: 'dev', name: 'Coder', provider: 'coder', workdir: '/workspace/w' }] })
+      .mockResolvedValue({ profile: 'cloud', provider: 'kiro_cloud', profiles: [] })
+    vi.spyOn(api, 'chatSlotEnvironmentList').mockRejectedValue(
+      new ApiError(409, 'cloud', JSON.stringify({ error: 'cloud', code: 'cloud_sandbox' })),
+    )
+    wrap(<RemoteFilesPanel slot="chat-1" name="Coder" workdir="/workspace/w" />)
+    // Placement (coder) -> browser -> listing refused -> placement re-read
+    // (kiro_cloud) -> wrapper swaps to the neutral notice: three awaited requests.
+    const notice = await screen.findByRole('status', {}, { timeout: STALE_PLACEMENT_TIMEOUT_MS })
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(placement).toHaveBeenCalledTimes(2)
+  })
+})
+
+/** Placement read, browser listing refusal, then the placement re-read the
+ * refusal triggers: three awaited requests before the neutral notice renders. */
+const STALE_PLACEMENT_TIMEOUT_MS = 5_000

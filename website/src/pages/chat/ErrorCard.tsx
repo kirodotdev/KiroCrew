@@ -131,6 +131,15 @@ const KIRO_CLI_MISSING_KIND = 'kiro_cli_missing'
 export const isKiroCliMissing = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === KIRO_CLI_MISSING_KIND || (m.meta as { kind?: string } | undefined)?.kind === KIRO_CLI_MISSING_KIND
 
+/** Row kind the backend stamps on the error a Kiro Cloud chat leaves when its
+ *  cloud session could not be reopened and a new cloud session started with the
+ *  conversation replayed (`providers/acp_runtime_start.py`). The row's wire text
+ *  is the channel fallback; the card shows the localized sentence instead. */
+const CLOUD_SESSION_REPLAYED_KIND = 'cloud_session_replayed'
+
+const isCloudSessionReplayed = (meta: ChatMessage['meta']): boolean =>
+  (meta as { kind?: string } | undefined)?.kind === CLOUD_SESSION_REPLAYED_KIND
+
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
  *  one: a single timed-out start is host weather and the first Resume is the
@@ -568,7 +577,9 @@ export const ErrorCard = memo(function ErrorCard({
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
-  const content = (onContinue && retryProse(wireContent)) || wireContent
+  const content = isCloudSessionReplayed(meta)
+    ? i18nT('sessionEnvironments.kiroCloud.replayed')
+    : (onContinue && retryProse(wireContent)) || wireContent
   if (featureRequestFormUrl) {
     // A feature request the plan could not afford: the one action that still
     // ends it is the tracker's own form, which needs no agent turn. The prose
