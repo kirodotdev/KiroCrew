@@ -121,28 +121,45 @@ await page.screenshot({ path: `${OUT}/send-to-instance-menu.png` })
 
 await row.click()
 
-// The row reports the outcome in place — wait for the failure state to land.
-await page.getByText(/^Failed$/).waitFor({ timeout: 10000 })
+// The row reports the outcome in place — wait for the inline notice to land.
+const inline = page.getByRole('alert').first()
+await inline.waitFor({ timeout: 10000 })
 await page.waitForTimeout(400)
 
-// Assert the reason, don't just photograph the row: the message is what this
-// change is about, and it is invisible to a screenshot.
-const reason = await page.evaluate(() => {
-  // The title sits on the badge span whose own text is just the failure label.
-  // Matching on "contains Failed" instead would find the enclosing menu item,
-  // whose title is the instance name.
-  const el = Array.from(document.querySelectorAll('span[title]'))
-    .find(n => (n.textContent || '').trim() === 'Failed')
-  return el ? el.getAttribute('title') : ''
-})
+// Assert the reason, don't just photograph the row: a screenshot cannot prove
+// the peer's own sentence is what reached the reader rather than a status code.
+const reason = (await inline.textContent() || '').trim()
 if (!reason.includes('older Kiro Crew')) errors.push(`ASSERT: reason does not name the cause: ${reason}`)
 if (!reason.includes('update it')) errors.push(`ASSERT: reason does not name the remedy: ${reason}`)
 if (/HTTP \d\d\d/.test(reason)) errors.push(`ASSERT: reason still leaks a status code: ${reason}`)
+// The hand-off is a sibling menu item, so it is reachable by keyboard from the row.
+const handoff = page.getByRole('menuitem', { name: /ask the agent/i })
+if (await handoff.count() === 0) errors.push('ASSERT: the row carries no agent hand-off item')
+// While the menu is open the banner must NOT also be showing: two copies of the
+// peer sentence and two hand-off buttons is the duplication this scene proves gone.
+if (await page.getByTestId('session-action-error').count() > 0) {
+  errors.push('ASSERT: the page banner is showing while the row already carries the failure')
+}
 
 await page.screenshot({ path: `${OUT}/send-to-instance-failed-dark.png` })
 await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
 await page.waitForTimeout(500)
 await page.screenshot({ path: `${OUT}/send-to-instance-failed-light.png` })
+await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+
+// Closing the menu hands the same failure to the page banner, which is the only
+// surface that survives it. This is the frame for the main error path.
+await page.keyboard.press('Escape')
+await page.keyboard.press('Escape')
+const banner = page.getByTestId('session-action-error')
+await banner.waitFor({ timeout: 10000 })
+await page.waitForTimeout(400)
+const bannerText = (await banner.textContent() || '').trim()
+if (!bannerText.includes('older Kiro Crew')) errors.push(`ASSERT: banner drops the peer reason: ${bannerText}`)
+if (!/“|”/.test(bannerText)) errors.push(`ASSERT: banner does not set the peer sentence off in quotes: ${bannerText}`)
+if (!/Couldn’t send a copy/.test(bannerText)) errors.push(`ASSERT: banner heading is not the send lead: ${bannerText}`)
+if (await page.getByRole('menu').count() > 0) errors.push('ASSERT: the menu is still open, so this is not the handover frame')
+await page.screenshot({ path: `${OUT}/send-to-instance-banner-dark.png` })
 
 await context.close()
 await browser.close()

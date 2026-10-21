@@ -8212,13 +8212,14 @@
       "changed_fields": "{{name}} が{{fields}}を変更しました"
     },
     "sendToInstanceSubmenu": {
-      "failed": "失敗",
       "not_connected": "未接続",
       "send_a_copy_to": "コピーを送信",
       "sent": "送信しました",
       "sent_transcript_only": "送信しました（記録のみ）",
       "transcript_only_hint": "そのクルーが会話コンテキスト全体を復元できなかったため、このコピーは記録のみから再開します。",
-      "unknown_error": "不明なエラー"
+      "unknown_error": "不明なエラー",
+      "send_failed": "コピーは届きませんでした。このセッションは変更されていません。",
+      "send_failed_heading": "「{{name}}」のコピーを送信できませんでした"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "メインに戻す",
@@ -8263,7 +8264,8 @@
     "sessionColorSwatches": {
       "custom_color": "カスタムカラー",
       "hex_color_code": "16進カラーコード",
-      "no_color": "色なし"
+      "no_color": "色なし",
+      "color_change_failed": "色の変更は取り消されました。"
     },
     "sessionGridView": {
       "close_cell": "セルを閉じる",
@@ -9925,6 +9927,10 @@
         "tool_search_label": "ツール検索",
         "tool_search_description": "保留中の MCP ツール仕様を必要に応じて読み込みます。"
       }
+    },
+    "actionFailureNotice": {
+      "earlier_waiting_other": "以前の失敗が {{count}} 件待機しています。これを閉じると次を表示します。",
+      "unnamed_heading": "その操作を完了できませんでした"
     }
   },
   "hooks": {
@@ -10056,12 +10062,20 @@
         "reason_setting": "実行中のものはありません。設定で「{{setting}}」がオンになっているため確認しています。",
         "actions": "会話とメッセージ欄の下書きは保持され、後でセッションを再び開けます。"
       },
-      "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
+      "reload_failed": "セッションの再読み込みに失敗しました。ゲートウェイに接続できません。再接続してから再試行してください。",
       "duplicate_unreachable": "このセッションを複製できませんでした。{{productName}} に接続できませんでした。接続を確認してもう一度お試しください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "duplicate_failed_reason": "このセッションを複製できませんでした。理由: {{reason}}。しばらくしてからもう一度お試しください。",
       "duplicate_guided_reason": "このセッションを複製できませんでした。{{reason}}",
-      "duplicate_not_found": "このセッションを複製できませんでした。このセッションはもう開いていません。ページを再読み込みするか、履歴から開き直してもう一度お試しください。"
+      "duplicate_not_found": "このセッションを複製できませんでした。このセッションはもう開いていません。ページを再読み込みするか、履歴から開き直してもう一度お試しください。",
+      "pin_change_failed": "ピン留めの変更は取り消されました。",
+      "pin_change_failed_heading_other": "{{count}} 件のセッションを更新できませんでした",
+      "pin_change_failed_named": "{{names}}のピン留めの変更は取り消されました。",
+      "reload_failed_busy": "セッションの再読み込みに失敗しました。エージェントはターンの処理中です。セッションがアイドルになってから再試行してください。",
+      "reload_failed_conflict": "セッションの再読み込みに失敗しました。セッションは再読み込みできる状態ではありませんでした。しばらくしてから再試行してください。",
+      "reload_failed_heading": "「{{name}}」を再読み込みできませんでした",
+      "reload_failed_rebound": "セッションの再読み込みに失敗しました。実行中にこのセッションが置き換えられました。セッションを確認してから、もう一度お試しください。",
+      "reload_failed_rejected": "セッションの再読み込みに失敗しました。{{productName}} が拒否しました。エージェントは再起動されていません。再試行するか、エージェントに質問してください。"
     },
     "useStreamingStt": {
       "audio_module_load_failed": "口述の読み込みを完了できませんでした。接続を確認してから、もう一度口述してください。",
@@ -10084,6 +10098,9 @@
       "approval_wait_expired": "承認の待機時間が期限切れになったため、リクエストは拒否されました。",
       "approval_rejected": "承認が却下されたため、リクエストは拒否されました。",
       "unknown": "不明"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "移動は取り消されました。"
     }
   },
   "lib": {
@@ -12148,7 +12165,8 @@
       "comments_refused": "{{name}}はこれらのコメントを受け取れませんでした—ドキュメントからもう一度送信してください。コメントはそこに残っています。",
       "comments_refused_overlay": "{{name}}はこれらのコメントを受け取れませんでした—サイドパネルを開き直して、もう一度送信してください。コメントはドキュメントに残っています。",
       "comments_sent_other": "{{count}}件のコメントを送信しました",
-      "your_crewmate": "クルーメート"
+      "your_crewmate": "クルーメート",
+      "could_not_update": "「{{name}}」を更新できませんでした"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
@@ -18762,6 +18780,10 @@
     }
   },
   "utils": {
+    "actionFailure": {
+      "unreachable": "{{productName}} に接続できません。再接続してから再試行してください。",
+      "refused": "{{productName}} の応答:「{{reason}}」。再度拒否される場合はエージェントに質問してください。"
+    },
     "agentSwitchFeedback": {
       "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。"
     },

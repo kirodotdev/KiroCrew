@@ -8482,13 +8482,14 @@
       "changed_fields": "{{name}} mudou de {{fields}}"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Falhou",
       "not_connected": "não conectado",
       "send_a_copy_to": "Enviar uma cópia para",
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (apenas transcrição)",
       "transcript_only_hint": "Essa crew não conseguiu restaurar o contexto completo da conversa, então esta cópia retoma apenas a partir da transcrição.",
-      "unknown_error": "Erro desconhecido"
+      "unknown_error": "Erro desconhecido",
+      "send_failed": "A cópia não foi entregue — esta sessão não foi alterada.",
+      "send_failed_heading": "Não foi possível enviar uma cópia de “{{name}}”"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Trazer de volta para a janela principal",
@@ -8533,7 +8534,8 @@
     "sessionColorSwatches": {
       "custom_color": "Cor personalizada",
       "hex_color_code": "Código de cor hexadecimal",
-      "no_color": "Sem cor"
+      "no_color": "Sem cor",
+      "color_change_failed": "A alteração de cor foi desfeita."
     },
     "sessionGridView": {
       "close_cell": "Fechar célula",
@@ -10213,6 +10215,12 @@
         "tool_search_label": "Busca de ferramentas",
         "tool_search_description": "Carregar sob demanda especificações de ferramentas MCP adiadas."
       }
+    },
+    "actionFailureNotice": {
+      "earlier_waiting_many": "{{count}} falhas anteriores estão aguardando — dispense esta para ver a próxima.",
+      "earlier_waiting_one": "{{count}} falha anterior está aguardando — dispense esta para vê-la.",
+      "earlier_waiting_other": "{{count}} falhas anteriores estão aguardando — dispense esta para ver a próxima.",
+      "unnamed_heading": "Não foi possível concluir essa ação"
     }
   },
   "hooks": {
@@ -10346,12 +10354,22 @@
         "reason_setting": "Nada está em execução nela. Você está vendo esta pergunta porque “{{setting}}” está ativado nas Configurações.",
         "actions": "A conversa e o rascunho na caixa de mensagem são mantidos, e você pode reabrir a sessão depois."
       },
-      "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
+      "reload_failed": "Falha ao recarregar a sessão: o gateway está inacessível. Reconecte-se e tente novamente.",
       "duplicate_unreachable": "Não foi possível duplicar esta sessão. Não foi possível acessar o {{productName}}. Verifique sua conexão e tente novamente.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "duplicate_failed_reason": "Não foi possível duplicar esta sessão. Motivo: {{reason}}. Tente novamente em instantes.",
       "duplicate_guided_reason": "Não foi possível duplicar esta sessão. {{reason}}",
-      "duplicate_not_found": "Não foi possível duplicar esta sessão. Ela não está mais aberta. Recarregue a página ou reabra-a pelo Histórico e tente novamente."
+      "duplicate_not_found": "Não foi possível duplicar esta sessão. Ela não está mais aberta. Recarregue a página ou reabra-a pelo Histórico e tente novamente.",
+      "pin_change_failed": "A alteração de fixação foi desfeita.",
+      "pin_change_failed_heading_many": "Não foi possível atualizar {{count}} sessões",
+      "pin_change_failed_heading_one": "Não foi possível atualizar {{count}} sessão",
+      "pin_change_failed_heading_other": "Não foi possível atualizar {{count}} sessões",
+      "pin_change_failed_named": "A alteração de fixação foi desfeita para {{names}}.",
+      "reload_failed_busy": "Falha ao recarregar a sessão: o agente está no meio de um turno. Tente novamente quando a sessão estiver inativa.",
+      "reload_failed_conflict": "Falha ao recarregar a sessão: a sessão não estava em um estado que permitisse o recarregamento. Tente novamente em instantes.",
+      "reload_failed_heading": "Não foi possível recarregar “{{name}}”",
+      "reload_failed_rebound": "Falha ao recarregar a sessão: esta sessão foi substituída enquanto estava em execução. Verifique a sessão e tente novamente.",
+      "reload_failed_rejected": "Falha ao recarregar a sessão: o {{productName}} recusou. O agente não foi reiniciado; tente novamente ou pergunte ao agente."
     },
     "useStreamingStt": {
       "audio_module_load_failed": "O ditado não terminou de carregar. Verifique sua conexão e dite novamente.",
@@ -10374,6 +10392,9 @@
       "approval_wait_expired": "A espera pela aprovação expirou, então a solicitação foi negada.",
       "approval_rejected": "A aprovação foi rejeitada, então a solicitação foi negada.",
       "unknown": "Desconhecido"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "A movimentação foi desfeita."
     }
   },
   "lib": {
@@ -12524,7 +12545,8 @@
       "comments_refused_overlay": "{{name}} não recebeu estes comentários — reabra o painel lateral e envie-os novamente. Eles continuam no documento.",
       "comments_sent_other": "{{count}} comentários enviados",
       "comments_sent_many": "{{count}} comentários enviados",
-      "your_crewmate": "Seu crewmate"
+      "your_crewmate": "Seu crewmate",
+      "could_not_update": "Não foi possível atualizar “{{name}}”"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
@@ -19344,6 +19366,10 @@
     }
   },
   "utils": {
+    "actionFailure": {
+      "unreachable": "Não foi possível acessar o {{productName}}. Reconecte-se e tente novamente.",
+      "refused": "O {{productName}} respondeu: “{{reason}}”. Pergunte ao agente se recusar de novo."
+    },
     "agentSwitchFeedback": {
       "turn_in_flight": "Um turno está em andamento — tente novamente quando ele terminar."
     },

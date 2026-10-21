@@ -4317,6 +4317,18 @@
         "tool_search_label": "Tool search",
         "tool_search_description": "Load deferred MCP tool specs on demand."
       }
+    },
+    "sessionColorSwatches": {
+      "color_change_failed": "The color change was undone."
+    },
+    "actionFailureNotice": {
+      "earlier_waiting_one": "{{count}} earlier failure is waiting — dismiss this one to see it.",
+      "earlier_waiting_other": "{{count}} earlier failures are waiting — dismiss this one to see the next.",
+      "unnamed_heading": "Couldn’t complete that action"
+    },
+    "sendToInstanceSubmenu": {
+      "send_failed": "The copy was not delivered — this session is unchanged.",
+      "send_failed_heading": "Couldn’t send a copy of “{{name}}”"
     }
   },
   "hooks": {
@@ -4414,12 +4426,21 @@
         "reason_setting": "Nothing is running in it. You are asked because “{{setting}}” is turned on in Settings.",
         "actions": "The conversation and the draft in your message box are kept, and you can reopen the session later."
       },
-      "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
+      "reload_failed": "Session reload failed — the gateway is unreachable. Reconnect and try again.",
       "duplicate_unreachable": "Couldn't duplicate this session. {{productName}} couldn't be reached. Check your connection and try again.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "duplicate_failed_reason": "Couldn't duplicate this session. Reason: {{reason}}. Try again in a moment.",
       "duplicate_guided_reason": "Couldn't duplicate this session. {{reason}}",
-      "duplicate_not_found": "Couldn't duplicate this session. It's no longer open. Reload the page, or reopen it from History and try again."
+      "duplicate_not_found": "Couldn't duplicate this session. It's no longer open. Reload the page, or reopen it from History and try again.",
+      "pin_change_failed": "The pin change was undone.",
+      "pin_change_failed_heading_one": "Couldn’t update {{count}} session",
+      "pin_change_failed_heading_other": "Couldn’t update {{count}} sessions",
+      "pin_change_failed_named": "The pin change was undone for {{names}}.",
+      "reload_failed_busy": "Session reload failed — the agent is mid-turn. Try again when the session is idle.",
+      "reload_failed_conflict": "Session reload failed — the session was not in a state that allows a reload. Try again in a moment.",
+      "reload_failed_heading": "Couldn’t reload “{{name}}”",
+      "reload_failed_rebound": "Session reload failed — this session was replaced while the reload ran. Check the session, then try again.",
+      "reload_failed_rejected": "Session reload failed — {{productName}} refused it. The agent was not restarted; try again or ask the agent."
     },
     "useStreamingStt": {
       "audio_module_load_failed": "Dictation could not finish loading. Check your connection, then try dictating again.",
@@ -4464,6 +4485,9 @@
       "summary": "Summary",
       "workflows": "Workflows",
       "crewlog": "Crew log"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "The move was undone."
     }
   },
   "nav": {
@@ -5722,7 +5746,8 @@
       "comments_refused": "{{name}} didn’t receive these comments — send them again from the document. They’re still there.",
       "comments_refused_overlay": "{{name}} didn’t receive these comments — reopen the side panel and send them again. They’re still in the document.",
       "comments_sent_other": "{{count}} comments sent",
-      "your_crewmate": "Your crewmate"
+      "your_crewmate": "Your crewmate",
+      "could_not_update": "Couldn’t update “{{name}}”"
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",
@@ -9067,6 +9092,10 @@
     }
   },
   "utils": {
+    "actionFailure": {
+      "unreachable": "{{productName}} is unreachable. Reconnect and try again.",
+      "refused": "{{productName}} said “{{reason}}”. Ask the agent if it refuses again."
+    },
     "agentSwitchFeedback": {
       "turn_in_flight": "A turn is running — try again when it finishes."
     },

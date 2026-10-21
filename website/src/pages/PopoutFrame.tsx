@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { registerPopout } from '../utils/chatPopout'
 import { useAppSelector } from '../store'
 import ChatPage from './ChatPage'
+import ActionFailureNotice from '../components/ActionFailureNotice'
 
 import { i18nT } from '../i18n/t'
 
@@ -37,6 +38,7 @@ export default function PopoutFrame() {
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-bg flex flex-col relative">
+      <ActionFailureNotice className="mx-3 mt-2 mb-0 animate-rise" />
       <div className="flex-1 min-h-0">
         <ChatPage embedded embedMode="chat" popout />
       </div>
