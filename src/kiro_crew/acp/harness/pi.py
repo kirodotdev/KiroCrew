@@ -36,6 +36,7 @@ from pathlib import Path
 from kiro_crew import acp_tool_gate, agent_sdk, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
+from kiro_crew.acp.pi_mcp_registration import REGISTRATION_ENV, registration_path
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable, PiGateExtensionTampered
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
@@ -163,7 +164,7 @@ _PI_MCP_SERVER_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 # digest over the raw bytes would read every Windows install as tampered and refuse
 # every pi session there. ``.gitattributes`` pins the checkout LF as well; the
 # normalization here is what keeps the property from resting on a repo-config line.
-PI_GATE_EXTENSION_SHA256 = "33524636eca152b5601be722082da26f217bc58346e98643ce1580e59645a81d"
+PI_GATE_EXTENSION_SHA256 = "2e80605c2532e28c8634b64004e8f3c721ce4545d4dbf686e32111b4b6281e29"
 
 _pi_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLVED
 
@@ -797,12 +798,14 @@ class PiLaunch(ProcessAdapter):
         # named on the child's environment and nowhere else.
         self._mcp_handoff = ""
         self._mcp_key = b""
+        self._session: ProcessSession | None = None
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
         """Resolve both components, check pi's version, then seal and verify the gate."""
         global _pi_acp_argv_cache, _pi_bin_cache  # noqa: PLW0603
         session = ctx.session
         assert session is not None, "pi is launched for one session"
+        self._session = session
         # Two components, resolved separately because either can be absent on its
         # own and the not-found message must name the one that is.
         cached_pi_acp: tuple[list[str] | None, str] | object = _pi_acp_argv_cache
@@ -935,6 +938,13 @@ class PiLaunch(ProcessAdapter):
         if self._launcher:
             env[_ENV_PI_ACP_PI_COMMAND] = self._launcher
             env[_ENV_PI_GATE_SESSION] = self._nonce
+            # Scratch is allocated before this hook, but its env variables are
+            # injected afterwards. An inherited env value names the parent's window.
+            scratch = self._session.work_scratch_dir if self._session is not None else None
+            receipt = registration_path(scratch, self._nonce)
+            env.pop(REGISTRATION_ENV, None)
+            if receipt is not None:
+                env[REGISTRATION_ENV] = str(receipt)
             if self._mcp_handoff:
                 env[_ENV_PI_MCP_HANDOFF] = self._mcp_handoff
                 env[_ENV_PI_MCP_KEY] = self._mcp_key.hex()
