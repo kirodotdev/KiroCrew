@@ -46,6 +46,8 @@ FACADE_DIR = Path(vm.__file__).resolve().parent
 #: owner module -> the members the class binds from it, frozen at the split.
 BOUND_MEMBERS = {
     f"{RUNTIME_PACKAGE}.bulk_ingest": "import_memory migrate_from_markdown promote_episodic_patterns",
+    f"{RUNTIME_PACKAGE}.consolidation_relevance": """advance_consolidation_rotation
+        consolidation_rotation_cursor score_consolidation_rows""",
     f"{RUNTIME_PACKAGE}.derived_state": """_embedding_config_guard _embedding_current
         _embedding_token _invalidate_episodic_scoring _invalidate_semantic_scoring
         _sqlite_data_version invalidate_semantic_content""",
