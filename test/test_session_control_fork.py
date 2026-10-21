@@ -629,6 +629,7 @@ def test_the_human_fork_route_still_reports_its_full_body(tmp_path, monkeypatch)
     assert set(body) == {
         "ok",
         "key",
+        "incarnation",
         "title",
         "messages",
         "prompt",

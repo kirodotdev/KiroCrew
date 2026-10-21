@@ -273,6 +273,7 @@ async def _live_slot_resume_payload(state, existing) -> dict:
     return {
         "ok": True,
         "key": existing.key,
+        "incarnation": existing.incarnation,
         "messages": prepared,
         "queue": [queue_entry_view(q) for q in existing._queue],
         "total": total,
@@ -729,6 +730,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         {
             "ok": True,
             "key": slot.key,
+            "incarnation": slot.incarnation,
             # `total` is the effective hydrated length (durable rows plus a
             # recovered interruption row when one was appended), so this is
             # the raw index the next older page starts from.

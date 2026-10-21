@@ -470,6 +470,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         {
             "ok": True,
             "key": result.slot.key,
+            "incarnation": result.slot.incarnation,
             "title": result.slot.title,
             "messages": result.messages,
             "prompt": prompt,

@@ -1417,7 +1417,7 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     const result = await store.dispatch(createSlot({ activate: false, project: '/tmp/wt' }))
     expect(result.type).toBe('chat/createSlot/rejected')
-    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('bg-slot')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('bg-slot', undefined)
     expect(chat(store).creatingSlot).toBe(false)
   })
 
@@ -1446,7 +1446,7 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     const result = await store.dispatch(createSlot({ project: '/tmp/wt' }))
     expect(result.type).toBe('chat/createSlot/rejected')
-    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot', undefined)
     expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('fg-slot')
     expect(chat(store).creatingSlot).toBe(false)
   })
@@ -1710,6 +1710,30 @@ describe('chatSlice thunks', () => {
   // pins the close control for as long as that load takes; only the state
   // transitions are ordered, and `switchSlot.pending` completes those
   // synchronously.
+  it('names the dismissed row incarnation on the close', async () => {
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed', { incarnation: 'inc-A' }), slotRow('peer')]))
+
+    await store.dispatch(deleteSlot('doomed'))
+
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed', 'inc-A')
+  })
+
+  it('a successful close erases no key-scoped browser state', async () => {
+    // Naming the DELETE target proves which instance the CALLER meant, never that no
+    // replacement took the key before the reply arrived.
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed', { incarnation: 'inc-A' }), slotRow('peer')]))
+    localStorage.setItem('vc_heights_doomed', '{}')
+
+    await store.dispatch(deleteSlot('doomed'))
+
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('doomed', 'inc-A')
+    expect(localStorage.getItem('vc_heights_doomed')).toBe('{}')
+  })
+
   it('removes the dismissed slot before the peer history fetch resolves', async () => {
     let releasePeer: (v: unknown) => void = () => {}
     const peerFetch = new Promise(resolve => { releasePeer = resolve })
