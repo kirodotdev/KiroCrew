@@ -824,6 +824,12 @@ class SessionAgentRunner:
         failure (mirrors :meth:`AgentRunner.run`)."""
         timeout_s = self.default_timeout_s if timeout_s is None else timeout_s
         t0 = time.monotonic()
+        # This thread runs its own event loop, which the gateway's kiro-cli floor
+        # gate cannot hold. Wait here, bounded, BEFORE the config load: that load
+        # resolves a defaulted backend, and must see the floor's verdict.
+        from kiro_crew.agent_sdk.kas_floor_wait import wait_kas_floor_verdict_blocking
+
+        wait_kas_floor_verdict_blocking()
         try:
             factory = self._resolve_factory()
         except Exception as e:  # noqa: BLE001

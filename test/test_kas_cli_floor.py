@@ -713,3 +713,101 @@ class TestSharedBackgroundWaitsForTheFloor:
                 await asyncio.wait_for(manager.close_all(), timeout=30)
 
         asyncio.run(_run())
+
+
+class TestOffLoopRunnerWaitsForTheFloor:
+    """A runner on its own thread and event loop waits for the gateway's floor too."""
+
+    def test_an_agent_runner_step_before_the_verdict_lands_on_kiro_cli(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
+            SessionAgentRunner,
+        )
+        from kiro_crew.members import select_provider_backend
+
+        _help(monkeypatch, _OLD_HELP)
+        cfg = _cfg()
+        picked = []
+        results = []
+        signals = {}
+
+        def _signal(name):
+            loop, fut = signals["loop"], signals[name]
+            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_result(None))
+
+        class _Stop(Exception):
+            pass
+
+        def _resolve_factory():
+            # What the runner's own config load does: resolve the unset backend,
+            # then build a factory that keeps that answer.
+            configured = registry.resolve_selected_backend(None)
+
+            def _factory(key, **_kwargs):
+                picked.append(select_provider_backend(key, "", configured))
+                raise _Stop
+
+            _signal("reached")
+            return _factory
+
+        real_wait = kas_floor_wait.await_kas_floor_verdict
+
+        async def _entered(*, member=False):
+            _signal("reached")
+            await real_wait(member=member)
+
+        monkeypatch.setattr(kas_floor_wait, "await_kas_floor_verdict", _entered)
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+        runner = SessionAgentRunner()
+        monkeypatch.setattr(runner, "_resolve_factory", _resolve_factory)
+
+        def _step():
+            try:
+                results.append(runner.run("hello"))
+            finally:
+                _signal("finished")
+
+        async def _run():
+            loop = asyncio.get_running_loop()
+            signals.update(loop=loop, reached=loop.create_future(), finished=loop.create_future())
+            verdict = loop.create_future()
+            kas_floor_wait.arm_kas_floor_wait(verdict, main=True, member=False)
+            threading.Thread(target=_step, daemon=True).start()
+            try:
+                # Either the runner is now held at the gate, or it already loaded
+                # its config: the factory's recorded backend below tells which.
+                await asyncio.wait_for(signals["reached"], timeout=60)
+                bootstrap.apply_kas_cli_floor(cfg, kas_defaulted=True)
+            finally:
+                verdict.set_result(None)
+                await asyncio.wait_for(signals["finished"], timeout=60)
+
+        asyncio.run(_run())
+        assert picked == [KIRO]
+        assert results and not results[0].ok
+
+    def test_no_armed_gate_costs_the_runner_no_wait(self, monkeypatch):
+        from kiro_crew.agent_sdk import kas_floor_wait
+
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+        # Returns at once: nothing armed, so no loop is consulted.
+        kas_floor_wait.wait_kas_floor_verdict_blocking()
+
+    def test_a_caller_on_the_arming_loop_is_never_blocked(self, monkeypatch):
+        from kiro_crew.agent_sdk import kas_floor_wait
+
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+
+        async def _run():
+            verdict = asyncio.get_running_loop().create_future()
+            kas_floor_wait.arm_kas_floor_wait(verdict, main=True, member=False)
+            try:
+                # Blocking here would stall the verdict it waits for.
+                kas_floor_wait.wait_kas_floor_verdict_blocking()
+                assert not verdict.done()
+            finally:
+                verdict.set_result(None)
+
+        asyncio.run(_run())

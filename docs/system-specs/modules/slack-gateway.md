@@ -159,7 +159,10 @@ failure or cancellation. Every wait shares the deadline set at arm time, bounded
 by the probe timeout; releasing another role does not reset it. Waiter cancellation
 or timeout never cancels the floor task, and a gate from another event loop is
 ignored. Session allocation, background starts, pooled starts and task-run bootstrap
-await the gate before selecting their provider backend.
+await the gate before selecting their provider backend. A caller that builds its
+provider on its own thread and event loop (the Auto-Improvement `SessionAgentRunner`)
+blocks in `wait_kas_floor_verdict_blocking`, which runs the same bounded wait on the
+arming loop; a caller already on that loop is never blocked.
 
 Channel startup diagnostics receive setting names and boolean presence checks,
 never credential values. Each channel keeps its existing enablement predicate;
