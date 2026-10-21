@@ -915,9 +915,8 @@ async def _do_list() -> tuple[int, dict[str, Any]]:
 
     Bounded concurrency (semaphore=5) replaces serial iteration.
     """
-    # engine.list_sites spawns via subprocess preexec_fn — unsupported
-    # on native Windows (deploy features are POSIX-only). Return a structured
-    # unsupported result instead of an uncaught exception.
+    # Deploy features are POSIX-only, so native Windows gets a structured
+    # unsupported result before engine.list_sites runs any AWS call.
     if os.name == "nt":
         return 200, {
             "sites": [],
