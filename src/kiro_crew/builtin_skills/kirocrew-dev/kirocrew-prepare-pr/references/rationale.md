@@ -670,3 +670,10 @@ has `setup[]`, `gates[]`, `reviewers[]` (each
 `{name, model, model_tier, contract, rubric}`), `rule_files[]`, `single_commit`,
 `base_branch`, and `readiness{status_context, defer_label}`.
 
+
+## Why a red on-demand macOS run counts as a concern
+
+`macOS Tests (on demand)` is not a required check, so a red one does not block
+readiness by itself. #12925 merged over its own red shard 2 and reddened that shard
+on every open PR, so SKILL.md's *Review-ready* treats a red run on the current head
+as a concern to fix or to show red on main.

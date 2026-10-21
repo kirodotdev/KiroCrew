@@ -43,8 +43,13 @@ _SUBJECT = "acme/widgets#42"
 
 
 def _prepare_pr_recipe() -> dict[str, Any]:
-    """The ``monitor_start(...)`` call prepare-pr's SKILL.md tells an agent to make."""
-    text = (_SKILLS / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+    """The ``monitor_start(...)`` call prepare-pr's SKILL.md tells an agent to make.
+
+    SKILL.md points at ``references/monitor-loop.md``, which carries the call.
+    """
+    text = (_SKILLS / "kirocrew-prepare-pr" / "references" / "monitor-loop.md").read_text(
+        encoding="utf-8"
+    )
     block = next(
         textwrap.dedent(chunk).strip()
         for chunk in text.split("```")

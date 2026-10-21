@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
 PREPARE_PR = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "SKILL.md"
+CONTRACT = PREPARE_PR.parent / "references" / "pr-description-contract.md"
 EXPLAIN_FOR = SKILLS / "explain-for" / "SKILL.md"
 
 
@@ -30,8 +31,13 @@ def _flat(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").split())
 
 
+def _flat_with_contract() -> str:
+    """SKILL.md plus the reference that carries its PR description contract."""
+    return _flat(PREPARE_PR) + " " + _flat(CONTRACT)
+
+
 def test_prepare_pr_pins_the_pr_body_to_the_age_5_register() -> None:
-    flat = _flat(PREPARE_PR)
+    flat = _flat_with_contract()
     # The rule itself, and the skill it borrows the calibration from.
     assert "Age 5 row of the `explain-for`" in flat
     # The old pin must be gone everywhere, not just in the heading.
@@ -96,7 +102,7 @@ def test_a_tightened_contract_forces_a_breaking_line_with_a_fresh_sweep() -> Non
     assert "Breaking:" in template, "the breaking branch vanished from the template"
     assert "re-run the sweep on fresh main before the last push" in " ".join(template.split())
 
-    flat = _flat(PREPARE_PR)
+    flat = _flat_with_contract()
     # Which diffs cannot claim Compatible, named so the rule is checkable.
     assert "new required field, a validator that raises on input the base accepts" in flat
     assert "cannot be `Compatible:`" in flat
