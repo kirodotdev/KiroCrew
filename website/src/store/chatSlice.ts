@@ -1046,10 +1046,29 @@ const chatSlice = createSlice({
         // Identity is meta.mid only, as for the active walk: an overlapping
         // page must not reach the list as a duplicate row key.
         const fresh = messages.filter(m => !isRedeliveredMessage(cur, m.meta))
-        // The bounded length indexes this array, so it shifts with the prepend.
+        const merged = [...fresh, ...cur]
+        // Paging older is exactly when a parked block's anchor becomes loaded,
+        // as on the active walk; without this a split pane showed the restored
+        // answer bare until the slot was made active.
+        const parked = (state.thinkingOrphans ??= {})
+        const seated = reinsertThinkingOrphans(merged, parked[k] ?? [], !hasMore)
+        parked[k] = seated.remaining
+        // The bounded length counts leading rows of `merged`, so it shifts with
+        // the prepend AND with every block seated inside that region. Seating
+        // only inserts, keeping every row of `merged` in order, so the region
+        // ends right after its last original row.
         const boundedLen = state.slotPaneBounded?.[k]
-        writeSlotPage(state, slot, [...fresh, ...cur], hasMore,
-          boundedLen === undefined ? undefined : boundedLen + fresh.length, nextBefore)
+        let seatedBoundedLen: number | undefined
+        if (boundedLen !== undefined) {
+          const regionEnd = boundedLen + fresh.length
+          const original = new Set(merged)
+          let seen = 0
+          seatedBoundedLen = 0
+          for (let i = 0; i < seated.list.length && seen < regionEnd; i++) {
+            if (original.has(seated.list[i])) { seen++; seatedBoundedLen = i + 1 }
+          }
+        }
+        writeSlotPage(state, slot, seated.list, hasMore, seatedBoundedLen, nextBefore)
       })
       .addCase(loadOlderSlotMessages.rejected, (state, action) => {
         // A refused dispatch never set the flag, and must not clear one a
@@ -1065,7 +1084,7 @@ const chatSlice = createSlice({
 export const {
   setCloseRefused,
   setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
