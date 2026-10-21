@@ -5,7 +5,13 @@
  */
 
 import type { ClientTransport } from './transport'
-import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '../crewBoard'
+import type {
+  CrewBoardAction,
+  CrewBoardActionResult,
+  CrewBoardOpenDashboard,
+  CrewBoardOpenResult,
+  WorkBoardResponse,
+} from '../crewBoard'
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
@@ -123,6 +129,15 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
     crewBoardAction: (conductor: string, itemId: string, action: CrewBoardAction) =>
       post('/api/crew-board/action', { conductor, item_id: itemId, action })
         .then(j) as Promise<CrewBoardActionResult>,
+    /**
+     * The slot key of the worker session an org-chart card stands for, so the host can
+     * navigate to it. Addressed by the dashboard the frame shows, not by a conductor:
+     * the page never holds a conductor key. Owner-only like every call here; the key
+     * goes to the caller's own JavaScript and nowhere else.
+     */
+    crewBoardOpen: (dashboard: CrewBoardOpenDashboard, itemId: string) =>
+      post('/api/crew-board/action', { action: 'open', item_id: itemId, dashboard })
+        .then(j) as Promise<CrewBoardOpenResult>,
   }
 
   return { runtimes, history, historyDetail, crewBoard }

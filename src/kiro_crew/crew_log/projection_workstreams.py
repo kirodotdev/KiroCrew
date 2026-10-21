@@ -672,6 +672,31 @@ def _workstreams_bound_tasks(state: Mapping[str, Any]) -> dict[str, dict[str, An
     return bound
 
 
+def _workstreams_item_workers(state: Mapping[str, Any], item_id: str) -> list[str]:
+    """The worker session key of *item_id* on every board this fold holds.
+
+    One entry per board that carries the id, ``""`` when that board's item has no bound
+    worker, so a caller can tell "no such item" (empty list) from "on two boards" (two
+    entries) from "on one board, unbound" (``[""]``).
+
+    Reads the fold's RAW state, because the rendered value holds no session key. It does
+    not re-spell the render's window (newest boards, first tasks): the step already caps
+    every board's tasks, and a page can only ask about an id it drew. A card the page drew
+    is therefore always found here, whatever the render's order becomes.
+    """
+    workers: list[str] = []
+    for board_id in state["order"]:
+        board = state["boards"].get(board_id)
+        if board is None:
+            continue
+        item = board["items"].get(item_id)
+        if item is None:
+            continue
+        worker = item["worker_session_key"]
+        workers.append(worker if isinstance(worker, str) else "")
+    return workers
+
+
 def _workstreams_tails(state: Mapping[str, Any]) -> dict[tuple[str, str], list[dict[str, Any]]]:
     """The fold's global event ring, grouped into one newest-first tail per task.
 

@@ -462,7 +462,7 @@ def test_a_card_names_its_lookup_keys_and_never_a_session_key(
     """
     _, page = pages["org-chart"]
     assert (
-        "open via" in page and "pair.board.id" in page and "task.item_id" in page
+        "board / task: " in page and "pair.board.id" in page and "task.item_id" in page
     ), "a card does not name the two keys a host would resolve the session from"
 
 
@@ -954,3 +954,249 @@ def test_a_re_render_gives_focus_back_to_the_rebuilt_fold_button(
     assert make_fn, "foldControl is gone"
     records = "foldButtons[stateKey] = btn" in make_fn.group(1)
     assert records, "foldControl does not record its button, so render cannot find it again"
+
+
+def test_the_open_session_message_carries_exactly_a_type_and_an_item_id(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """The page names no board, slot or dashboard: the host takes those from the frame.
+
+    The board alias is minted per render, so sending it would only invite a wrong
+    lookup; a slot key is the one thing this page must never hold.
+    """
+    _, page = pages["org-chart"]
+    posts = re.findall(r"parent\.postMessage\((\{.*?\}), '\*'\)", page, re.S)
+    assert posts, "the page no longer posts anything to its host"
+    opens = [p for p in posts if "open-session" in p]
+    assert len(opens) == 1, "expected exactly one open-session post"
+    keys = re.findall(r"[{,]\s*(\w+):", opens[0])
+    assert keys == ["type", "item_id"], f"open-session carries {keys}, not just a type and item_id"
+    assert "'kirocrew-dashboard:open-session'" in opens[0]
+    body = opens[0].replace("'kirocrew-dashboard:open-session'", "")
+    assert "slot" not in body and "board" not in body
+
+
+def test_each_card_with_a_worker_gets_one_real_open_session_button(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """A real button gets Tab, Enter and Space for free; the card itself is not a click target."""
+    _, page = pages["org-chart"]
+    card = re.search(r"function drawCard\([^)]*\) \{(.*?)\n    \}\n", page, re.S)
+    assert card, "drawCard is gone"
+    source = card.group(1)
+    assert "el('button', 'oc-open'," in source and "i18n('open_session')" in source
+    assert (
+        "i18n('open_pending')" in source
+    ), "a click that is waiting on the host shows no sign of it"
+    assert "openBtn.title = i18n('open_session_title')" in source, "the button names no destination"
+    assert "openBtn.type = 'button'" in source
+    assert "openSession(itemId)" in source
+    # Nothing to open without an item id or a bound worker: no button is drawn.
+    assert "if (itemId && row.worker !== null)" in source
+    assert ".oc-open:focus-visible" in page, "keyboard focus on the button is invisible"
+    assert (
+        "addEventListener('click'" not in source.split("var keys")[0]
+    ), "the card body must not be clickable; most of its text is meant to be selected"
+
+
+def test_the_open_session_label_is_in_both_page_languages(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    _, page = pages["org-chart"]
+    assert page.count("open_session:") == 2, "open_session is not declared in en and zh-CN"
+    assert (
+        page.count("open_session_title:") == 2
+    ), "open_session_title is not declared in en and zh-CN"
+
+
+def _page_strings(page: str, key: str) -> list[str]:
+    """Every value the page's I18N tables hold for *key*, decoded from their \\u escapes."""
+    found = re.findall(rf"\b{key}: '((?:[^'\\]|\\.)*)'", page)
+    return [bytes(value, "ascii").decode("unicode_escape") for value in found]
+
+
+def test_the_copy_that_quotes_the_button_matches_the_button_in_both_languages(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """The footer names the button by its label, so a relabelled button cannot strand it."""
+    _, page = pages["org-chart"]
+    labels = _page_strings(page, "open_session")
+    footers = _page_strings(page, "foot_alias")
+    assert len(labels) == 2 and len(footers) == 2, "expected one en and one zh-CN string each"
+    for label, footer in zip(labels, footers):
+        assert label in footer, f"the footer {footer!r} does not quote the button {label!r}"
+
+
+def test_the_card_copy_uses_no_internal_vocabulary(pages: dict[str, tuple[Any, str]]) -> None:
+    """A reader sees these lines on every card and under the page, so they say what the button does."""
+    _, page = pages["org-chart"]
+    for key in (
+        "keys_title",
+        "foot_alias",
+        "open_session_title",
+        "open_ended",
+        "open_stale",
+        "open_ambiguous",
+    ):
+        for text in _page_strings(page, key):
+            for word in ("fold", "host", "alias", "cap"):
+                assert word not in text.lower().split(), f"{key} says {word!r}: {text!r}"
+
+
+def test_the_host_answer_is_drawn_on_the_card_that_asked(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """A refusal lands on the card it came from, only from the parent, by item id and code."""
+    _, page = pages["org-chart"]
+    assert (
+        "event.source !== window.parent" in page
+    ), "the answer is not limited to the parent window"
+    assert "'kirocrew-dashboard:open-session-result'" in page
+    listener = page[page.index("'kirocrew-dashboard:open-session-result'") :]
+    listener = listener[: listener.index("});")]
+    assert "d.item_id" in listener and "d.code" in listener
+    # Kept in a table by item id and drawn by drawCard: a note written onto a card would be
+    # rebuilt away by the next message the host posts.
+    assert "openState[d.item_id] = mine" in listener and "render()" in listener
+    draw = page[page.index("function drawCard(") : page.index("function render()")]
+    assert "oc-open-note" in draw, "the refusal is not drawn on the card"
+    assert (
+        "innerHTML" not in listener and "innerHTML" not in draw
+    ), "host answers must be set as text"
+    for key in ("open_pending", "open_ended", "open_stale", "open_ambiguous", "open_failed"):
+        assert len(_page_strings(page, key)) == 2, f"{key} is not declared in en and zh-CN"
+
+
+def test_a_card_rebuild_keeps_keyboard_focus_on_the_open_button(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """The page rebuilds every card on each host message, so render() must hand focus back.
+
+    The button is inert with aria-disabled and NOT `disabled`, because a disabled button drops
+    focus in some browsers: the person who pressed Enter on it is still on it when the answer
+    (a refusal note) is drawn.
+    """
+    _, page = pages["org-chart"]
+    render = page[
+        page.index("function render()") : page.index(
+            "    render();\n", page.index("function render()")
+        )
+    ]
+    assert "classList.contains('oc-open')" in render, "render() does not note a focused open button"
+    assert "openNow[oi].focus(" in render, "render() does not give the rebuilt open button focus"
+    draw = page[page.index("function drawCard(") : page.index("function render()")]
+    assert "setAttribute('aria-disabled', 'true')" in draw
+    assert "openBtn.disabled" not in draw, "a disabled button would drop keyboard focus"
+    assert "getAttribute('aria-disabled') === 'true'" in draw, "an inert button still opens"
+    # A button must not look usable beside a note saying a click cannot work.
+    assert "INERT_NOTES.indexOf(asked.note) !== -1" in draw
+
+
+def test_each_refusal_has_its_own_words(pages: dict[str, tuple[Any, str]]) -> None:
+    """`ambiguous_item` is not retry-able, so it must not borrow the 'try again in a minute' note."""
+    _, page = pages["org-chart"]
+    assert "ambiguous_item: 'open_ambiguous'" in page
+    assert "ambiguous_item: 'open_stale'" not in page
+
+
+def _i18n_tables(page: str) -> dict[str, set[str]]:
+    """The key set of each language table in the page's own ``I18N`` object."""
+    block = page[page.index("var I18N = {") : page.index("function locale()")]
+    split = block.index("'zh-CN': {")
+    key = re.compile(r"(?m)(?:^|[\s,{])([a-z][a-z0-9_]*): '")
+    return {"en": set(key.findall(block[:split])), "zh-CN": set(key.findall(block[split:]))}
+
+
+def _referenced_i18n_keys(page: str) -> set[str]:
+    """Every key the page can ask ``i18n()`` for, including the ones it looks up through a table."""
+    used = set(re.findall(r"i18n\('([a-z0-9_]+)'\)", page))
+    used |= set(re.findall(r'data-i18n="([a-z0-9_]+)"', page))
+    # Keys held in lookup tables and passed to i18n() by variable.
+    used |= set(re.findall(r"\['(situ_[a-z]+)'", page))
+    used |= set(
+        re.findall(r"\b[a-z_]+: '(open_[a-z]+)'", page[page.index("var OPEN_NOTE") :][:300])
+    )
+    # 'filter_none_' + filterMode, where filterMode is open or closed once a filter is on.
+    used |= {"filter_none_open", "filter_none_closed"}
+    # The inert button's title is looked up as note + "_title".
+    used |= {"open_ended_title", "open_ambiguous_title", "open_stale_title"}
+    return used
+
+
+def test_every_key_the_page_looks_up_is_defined_in_every_language(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """A missing key renders as the key itself (`last_report_prefix...`) in a tooltip or a line.
+
+    The lookup falls back from a language to English and then to the key's own name, so an
+    edit that drops a key from a table shows no error anywhere but on the page.
+    """
+    _, page = pages["org-chart"]
+    tables = _i18n_tables(page)
+    used = _referenced_i18n_keys(page)
+    assert len(used) > 40, "the scan stopped finding the page's keys"
+    for lang, defined in tables.items():
+        missing = sorted(used - defined)
+        assert not missing, f"{lang} table lacks {missing}, which the page looks up"
+    # English is every language's fallback, so it holds every key another language holds.
+    assert not sorted(tables["zh-CN"] - tables["en"]), "zh-CN defines a key English lacks"
+
+
+def test_the_key_scan_catches_a_dropped_key(pages: dict[str, tuple[Any, str]]) -> None:
+    """MUTATION-SENSITIVE: the scan above must actually fail when a table loses a key."""
+    _, page = pages["org-chart"]
+    broken = page.replace(" last_report_prefix: 'last report ',", "", 1)
+    assert broken != page, "the fixture key moved; point this test at another key"
+    assert "last_report_prefix" in _referenced_i18n_keys(broken)
+    assert "last_report_prefix" not in _i18n_tables(broken)["en"]
+
+
+def test_the_refusal_notes_lead_with_what_to_do_and_avoid_the_word_board(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """'Board' already names a topic inside the reports, so a note must not lean on it."""
+    _, page = pages["org-chart"]
+    for key in ("open_stale", "open_ambiguous", "open_ended", "open_failed"):
+        for text in _page_strings(page, key):
+            assert "board" not in text.lower(), f"{key} says board: {text!r}"
+    for text in _page_strings(page, "open_ambiguous"):
+        assert "sidebar" in text or "\u4fa7\u8fb9\u680f" in text
+
+
+def test_an_inert_button_says_why_in_its_title(pages: dict[str, tuple[Any, str]]) -> None:
+    """The chat-ended and cannot-open-here notes both grey the button, so the title tells them apart."""
+    _, page = pages["org-chart"]
+    draw = page[page.index("function drawCard(") : page.index("function render()")]
+    assert "openBtn.title = i18n(asked.note + '_title')" in draw
+    # The default title is set BEFORE the inert branch, or it would overwrite the reason.
+    assert draw.index("openBtn.title = i18n('open_session_title')") < draw.index(
+        "openBtn.title = i18n(asked.note + '_title')"
+    )
+    for key in ("open_ended_title", "open_ambiguous_title", "open_stale_title"):
+        assert len(_page_strings(page, key)) == 2, f"{key} is not declared in en and zh-CN"
+    titles = {_page_strings(page, key)[0] for key in _INERT_TITLE_KEYS}
+    assert len(titles) == 3, "two inert notes share one title"
+
+
+_INERT_TITLE_KEYS = ("open_ended_title", "open_ambiguous_title", "open_stale_title")
+
+
+def test_the_button_is_inert_while_the_stale_note_says_to_wait(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """The out-of-date note says 'try again in a minute', so a click before then cannot help."""
+    _, page = pages["org-chart"]
+    assert "var INERT_NOTES = ['open_ended', 'open_ambiguous', 'open_stale'];" in page
+    draw = page[page.index("function drawCard(") : page.index("function render()")]
+    assert "INERT_NOTES.indexOf(asked.note) !== -1" in draw
+    # A failure that says plain "try again" leaves the button live.
+    assert "'open_failed'" not in page[page.index("var INERT_NOTES") :][:120]
+
+
+def test_the_stale_note_does_not_say_the_task_may_be_finished_beside_try_again(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """Waiting helps because the page refreshes, so the note says that instead of 'moved or finished'."""
+    _, page = pages["org-chart"]
+    for text in _page_strings(page, "open_stale")[:1]:
+        assert "finished" not in text and "refresh" in text, text

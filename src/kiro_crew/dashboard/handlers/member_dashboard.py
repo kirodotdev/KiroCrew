@@ -25,7 +25,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Callable, Final, Mapping, NamedTuple
 
 from aiohttp import web
 
@@ -78,24 +78,46 @@ def _name_unsafe(name: str) -> bool:
     return bool(name) and redact_via_context(name) != name
 
 
+class NameRefusal(NamedTuple):
+    """Why a (slug, member) pair named no dashboard: the code, the sentence and the status."""
+
+    code: str
+    message: str
+    status: int = 400
+
+
 async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     """``(slug, member)`` for this request, or the refusal to return instead.
 
-    The four questions the sibling member routes ask, in their order: is the slug a
-    slug, is the member name one that can reach a model, does that name derive THIS
-    slug and exist, and is it the only name that does.
+    The app-caller gate, then :func:`resolve_names` on the path's slug and the query's
+    member, its refusal turned into this module's one response shape.
     """
     denied = await _deny_app_caller(request, "members.dashboard")
     if denied is not None:
         return denied
-    slug = request.match_info.get("slug", "")
+    resolved = await resolve_names(
+        request.match_info.get("slug", ""), request.query.get("member", "")
+    )
+    if isinstance(resolved, NameRefusal):
+        return _bad(resolved.code, resolved.message, status=resolved.status)
+    return resolved
+
+
+async def resolve_names(slug: str, member: str) -> tuple[str, str] | NameRefusal:
+    """``(slug, canonical member)`` for a dashboard named by *slug* and *member*, or the refusal.
+
+    The four questions the sibling member routes ask, in their order: is the slug a
+    slug, is the member name one that can reach a model, does that name derive THIS
+    slug and exist, and is it the only name that does. Request-free and response-free, so a
+    route that is handed the pair in a body (``crew-board`` ``open``) asks exactly what the
+    dashboard's own read asks and shapes the refusal itself.
+    """
     try:
         members_mod.validate_slug(slug)
     except MemberSlugError:
-        return _bad("invalid_member_slug", "invalid member slug")
-    member = request.query.get("member", "")
+        return NameRefusal("invalid_member_slug", "invalid member slug")
     if not members_mod.is_dispatchable_member_name(member):
-        return _bad("missing_member", "member query parameter required")
+        return NameRefusal("missing_member", "member query parameter required")
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     # The ROSTER's own spelling, before either check. The roster is keyed by the
     # display name somebody typed, so `Atlas` is the key and a tab opened on `atlas`
@@ -106,16 +128,16 @@ async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     member = members_mod.canonical_member_key(member, cfg)
     try:
         if members_mod.member_slug(member, cfg) != slug:
-            return _bad("member_slug_mismatch", "member does not match slug")
+            return NameRefusal("member_slug_mismatch", "member does not match slug")
     except MemberSlugError:
-        return _bad("member_slug_mismatch", "member does not match slug")
+        return NameRefusal("member_slug_mismatch", "member does not match slug")
     if member not in cfg.agents:
-        return _bad("member_not_found", "no crew member for this slug", status=404)
+        return NameRefusal("member_not_found", "no crew member for this slug", 404)
     if _member_names_for_slug(cfg, slug) != [member]:
-        return _bad(
+        return NameRefusal(
             "dashboard_slug_ambiguous",
             "multiple crews share this slug; their dashboards would be ambiguous",
-            status=409,
+            409,
         )
     return slug, member
 

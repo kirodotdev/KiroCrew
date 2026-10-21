@@ -329,11 +329,17 @@ on its conductor.
 
 `spender` is an opaque per-render alias, and the conductor ledger's rule is that no
 reader but the conductor sees a session key. These documents are embedded in a page any
-dashboard caller can read, so a card names the **board and item** a host resolves the
-session from -- the same pair the card-action route takes as lookup keys -- and never
-the key. A live click-through needs a host message and handler, which is a host change
-rather than a page one. `test_dashboard_template_views.py` asserts neither page names
-`worker_session_key` or binds a `slot`.
+dashboard caller can read, so a card names the **board and item** for a reader's
+orientation and never the key. The org-chart card's **Open worker chat** button posts
+`kirocrew-dashboard:open-session {item_id}` and nothing else. The host takes the
+dashboard from the frame the message came from, asks the gateway
+(`POST /api/crew-board/action`, action `open`) to find the item in that dashboard's
+`workstreams` fold, and navigates to the worker session itself. The worker's slot key
+reaches the host's JavaScript only; it is never posted into the frame. The host answers the
+page with `kirocrew-dashboard:open-session-result {item_id, code}`, and the card shows a refusal
+in its own words.
+`test_dashboard_template_views.py` asserts neither page names `worker_session_key` or
+binds a `slot`, and that the org-chart's message carries only a type and an item id.
 
 ## A page named for its crewmate
 

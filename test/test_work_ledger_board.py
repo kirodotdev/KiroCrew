@@ -912,3 +912,385 @@ async def test_the_read_advertises_whether_take_over_is_possible():
     assert "stop_available" not in body
     assert "channels_available" not in body
     assert "take_over_unavailable_code" not in body
+
+
+# ── open: the slot key of the worker a card stands for ─────────────────────
+
+ROOT = "chat-7-root"
+OPEN_ID = "it_3f9a01c2"
+SESSION_DASHBOARD = {"kind": "session", "slot": ROOT}
+MEMBER_DASHBOARD = {"kind": "member", "slug": "atlas", "member": "Atlas"}
+
+
+def _keyed(key: str, *, created_by: str = ""):
+    return SimpleNamespace(key=key, running=False, _created_by=created_by)
+
+
+async def _open(
+    state,
+    item_id: str = OPEN_ID,
+    dashboard=SESSION_DASHBOARD,
+    caller: str | None = None,
+    app_token: str = "",
+    extra: dict | None = None,
+):
+    request = make_mocked_request("POST", "/api/crew-board/action", app={"state": state})
+    _as_owner(request, caller, app_token)
+    payload = {"action": "open", "item_id": item_id}
+    if dashboard is not None:
+        payload["dashboard"] = dashboard
+    payload.update(extra or {})
+    request.json = _async_json(payload)
+    response = await board.api_work_ledger_board_action(request)
+    return json.loads(response.body.decode()), response
+
+
+@pytest.fixture
+def _lookup(monkeypatch):
+    """Stand in for the workstreams lookup and record what it was asked."""
+    answer: dict = {"workers": [WORKER], "raises": False}
+    calls: list[tuple[str, str]] = []
+
+    def _fake(slot, item_id):
+        calls.append((slot, item_id))
+        if answer["raises"]:
+            raise OSError("fold unreadable")
+        return list(answer["workers"])
+
+    monkeypatch.setattr(
+        "kiro_crew.crew_log.projection.workstream_item_workers", _fake, raising=True
+    )
+    # The real root test reads the session tree, which a unit test has not seeded.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.card_lifecycle.is_root_session",
+        lambda slot: not getattr(slot, "_created_by", ""),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.member_dashboard._dashboard_slot",
+        lambda member, slug: "member-dm-slot",
+        raising=True,
+    )
+    answer["calls"] = calls
+    return answer
+
+
+def _open_state(**extra):
+    return _state({ROOT: _keyed(ROOT), WORKER: _keyed(WORKER), **extra})
+
+
+@pytest.mark.asyncio
+async def test_open_returns_the_worker_slot_for_a_session_dashboard(_lookup):
+    body, response = await _open(_open_state())
+    assert response.status == 200
+    assert body == {"ok": True, "action": "open", "item_id": OPEN_ID, "slot": WORKER}
+    assert _lookup["calls"] == [(ROOT, OPEN_ID)]
+
+
+@pytest.mark.asyncio
+async def test_open_returns_the_worker_slot_for_a_member_dashboard(_lookup, monkeypatch):
+    cfg = SimpleNamespace(agents={"Atlas": SimpleNamespace(member_id="")})
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    body, response = await _open(_open_state(), dashboard=MEMBER_DASHBOARD)
+    assert response.status == 200
+    assert body["slot"] == WORKER
+    assert _lookup["calls"] == [("member-dm-slot", OPEN_ID)]
+
+
+@pytest.mark.asyncio
+async def test_open_is_refused_for_an_unknown_member(_lookup, monkeypatch):
+    cfg = SimpleNamespace(agents={"Other": SimpleNamespace(member_id="")})
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    body, response = await _open(_open_state(), dashboard=MEMBER_DASHBOARD)
+    assert response.status == 404
+    assert body["code"] == "member_not_found"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_open_is_refused_when_the_slug_does_not_belong_to_the_member(_lookup, monkeypatch):
+    cfg = SimpleNamespace(agents={"Atlas": SimpleNamespace(member_id="")})
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    wrong = {"kind": "member", "slug": "someone-else", "member": "Atlas"}
+    body, response = await _open(_open_state(), dashboard=wrong)
+    assert response.status == 400
+    assert body["code"] == "member_slug_mismatch"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_open_accepts_the_member_spelling_the_dashboard_read_accepts(_lookup, monkeypatch):
+    """One resolver for both routes: a tab opened on `atlas` is the crewmate `Atlas`."""
+    cfg = SimpleNamespace(agents={"Atlas": SimpleNamespace(member_id="")})
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    body, response = await _open(
+        _open_state(), dashboard={"kind": "member", "slug": "atlas", "member": "atlas"}
+    )
+    assert response.status == 200, body
+    assert _lookup["calls"] == [("member-dm-slot", OPEN_ID)]
+
+
+@pytest.mark.asyncio
+async def test_open_refuses_a_slug_shared_by_two_crewmates_like_the_read_does(_lookup, monkeypatch):
+    cfg = SimpleNamespace(
+        agents={
+            "Atlas": SimpleNamespace(member_id=""),
+            "ATLAS!": SimpleNamespace(member_id="atlas"),
+        }
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    body, response = await _open(_open_state(), dashboard=MEMBER_DASHBOARD)
+    assert response.status == 409
+    assert body["code"] == "dashboard_slug_ambiguous"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_open_works_on_an_item_whose_conductor_is_still_running(_lookup):
+    """Unlike stop, open is not limited to orphaned items: the normal case is a live worker."""
+    state = _open_state()
+    state._slots[WORKER] = SimpleNamespace(key=WORKER, running=True, _created_by=ROOT)
+    body, response = await _open(state)
+    assert response.status == 200
+    assert body["slot"] == WORKER
+
+
+@pytest.mark.asyncio
+async def test_open_answers_only_the_four_fields(_lookup):
+    body, _ = await _open(_open_state())
+    assert set(body) == {"ok", "action", "item_id", "slot"}
+
+
+@pytest.mark.asyncio
+async def test_a_non_owner_caller_cannot_open_and_no_lookup_runs(_lookup):
+    body, response = await _open(_open_state(), caller=NON_OWNER)
+    assert response.status == 403
+    assert body["code"] == "owner_only"
+    assert WORKER not in json.dumps(body)
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_an_app_token_cannot_open_and_no_lookup_runs(_lookup):
+    body, response = await _open(_open_state(), app_token="some-app")
+    assert response.status == 403
+    assert body["code"] == "owner_only"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad", ["", "it_1", "it_3F9A01C2", "it_3f9a01c2x", "../it_3f9a01c2", "chat-2-worker"]
+)
+async def test_a_malformed_item_id_is_refused_before_the_lookup(_lookup, bad):
+    body, response = await _open(_open_state(), item_id=bad)
+    assert response.status == 400
+    assert body["code"] == "invalid_item_id"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_a_body_naming_both_a_conductor_and_a_dashboard_is_refused(_lookup):
+    body, response = await _open(_open_state(), extra={"conductor": CONDUCTOR})
+    assert response.status == 400
+    assert body["code"] == "invalid_body"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dashboard",
+    [
+        None,
+        "chat-7-root",
+        {"kind": "other"},
+        {"kind": "session"},
+        {"kind": "session", "slot": 5},
+        {"kind": "member", "slug": "atlas"},
+    ],
+)
+async def test_a_missing_or_malformed_dashboard_is_refused_400(_lookup, dashboard):
+    body, response = await _open(_open_state(), dashboard=dashboard)
+    assert response.status == 400
+    assert body["code"] == "invalid_dashboard"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dashboard", "extra", "code"),
+    [
+        (SESSION_DASHBOARD, {"conductor": CONDUCTOR}, "invalid_body"),
+        (None, None, "invalid_dashboard"),
+    ],
+)
+async def test_the_early_open_refusals_are_audited_as_denied(
+    _lookup, _audit_callers, dashboard, extra, code
+):
+    """Every refusal of `open` leaves a `crew_board_action` line, including the malformed ones."""
+    _body, response = await _open(_open_state(), dashboard=dashboard, extra=extra)
+    assert response.status == 400
+    caller, _event, outcome, resources = [
+        row for row in _audit_callers if row[1] == "crew_board_action"
+    ][-1]
+    assert (caller, outcome) == (OWNER, "denied")
+    assert f"item={OPEN_ID}" in resources
+    assert code in resources
+
+
+@pytest.mark.asyncio
+async def test_a_session_dashboard_whose_slot_is_gone_is_refused_404(_lookup):
+    body, response = await _open(_state({WORKER: _keyed(WORKER)}))
+    assert response.status == 404
+    assert body["code"] == "slot_not_found"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_a_dispatched_session_has_no_dashboard_to_open_from(_lookup):
+    state = _state({ROOT: _keyed(ROOT, created_by="chat-1-lead"), WORKER: _keyed(WORKER)})
+    body, response = await _open(state)
+    assert response.status == 404
+    assert body["code"] == "not_root_session"
+    assert not _lookup["calls"]
+
+
+@pytest.mark.asyncio
+async def test_an_item_this_dashboard_does_not_reach_is_refused_404(_lookup):
+    _lookup["workers"] = []
+    body, response = await _open(_open_state())
+    assert response.status == 404
+    assert body["code"] == "item_not_found"
+
+
+@pytest.mark.asyncio
+async def test_an_id_on_two_boards_is_refused_not_guessed(_lookup):
+    _lookup["workers"] = [WORKER, OTHER_WORKER]
+    state = _open_state(**{OTHER_WORKER: _keyed(OTHER_WORKER)})
+    body, response = await _open(state)
+    assert response.status == 409
+    assert body["code"] == "ambiguous_item"
+    assert WORKER not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_an_id_on_two_boards_is_refused_even_when_one_has_no_worker(_lookup):
+    _lookup["workers"] = ["", WORKER]
+    body, response = await _open(_open_state())
+    assert response.status == 409
+    assert body["code"] == "ambiguous_item"
+
+
+@pytest.mark.asyncio
+async def test_an_item_with_no_bound_worker_has_nothing_to_open(_lookup):
+    _lookup["workers"] = [""]
+    body, response = await _open(_open_state())
+    assert response.status == 409
+    assert body["code"] == "no_worker_bound"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_worker_session_cannot_be_opened(_lookup):
+    body, response = await _open(_state({ROOT: _keyed(ROOT)}))
+    assert response.status == 409
+    assert body["code"] == "worker_closed"
+    assert WORKER not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_workstreams_read_is_a_503_that_names_no_key(_lookup):
+    _lookup["raises"] = True
+    body, response = await _open(_open_state())
+    assert response.status == 503
+    assert body["code"] == "workstreams_unavailable"
+    assert "fold unreadable" not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_open_is_audited_to_the_owner_without_the_worker_key(_lookup, _audit_callers):
+    await _open(_open_state())
+    rows = [row for row in _audit_callers if row[1] == "crew_board_action"]
+    assert rows, "an allowed open must be audited"
+    caller, _event, outcome, resources = rows[-1]
+    assert caller == OWNER
+    assert outcome == "ok"
+    assert f"item={OPEN_ID}" in resources
+    assert WORKER not in resources
+
+
+@pytest.mark.asyncio
+async def test_a_refused_open_is_audited_as_denied(_lookup, _audit_callers):
+    _lookup["workers"] = []
+    await _open(_open_state())
+    caller, _event, outcome, resources = [r for r in _audit_callers if r[1] == "crew_board_action"][
+        -1
+    ]
+    assert (caller, outcome) == (OWNER, "denied")
+    assert "item_not_found" in resources
+
+
+@pytest.mark.asyncio
+async def test_stop_and_take_over_still_answer_without_any_slot_field(_stop_calls):
+    """Only open returns a session key; the other two stay key-free."""
+    item_id = _orphaned_item()
+    state = _state({WORKER: _slot(running=True)})
+    stopped, _ = await _act(state, CONDUCTOR, item_id, "stop")
+    assert "slot" not in stopped
+    taken, _ = await _act(state, CONDUCTOR, item_id, "take_over")
+    assert "slot" not in taken
+    assert WORKER not in json.dumps([stopped, taken])
+
+
+@pytest.mark.asyncio
+async def test_open_resolves_the_worker_through_the_real_workstreams_fold(monkeypatch):
+    """No patched lookup: real crew-log entries, the real fold, the real route.
+
+    The conductor is still running and the worker is live, which is the case the card
+    exists for and the one stop's orphaned-only rule would have refused.
+    """
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog, eager, emit
+    from kiro_crew.crew_log import projection as crew_log
+    from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
+
+    eager.stop_for_tests()
+    crew_log.forget_slot_folds()
+    emit.reset_caches()
+    try:
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.card_lifecycle.is_root_session",
+            lambda slot: not getattr(slot, "_created_by", ""),
+            raising=True,
+        )
+        handle = CrewLog.create(
+            lg.KIND_SESSION, "unit-root", owner="raymond", agent="kirocrew", slot=ROOT
+        )
+
+        def work(action: str, **data):
+            handle.append(
+                WORK_ENTRY_TYPE,
+                {"slot": ROOT, "actor": "conductor", "by": ROOT, "action": action, **data},
+                src="gateway",
+            )
+
+        work("goal", goal="ship the card", round=1)
+        work("create", item_id=OPEN_ID, title="wire the button", round=1)
+        work("bind", item_id=OPEN_ID, worker_session_key=WORKER)
+        work("create", item_id="it_00000001", title="not dispatched yet", round=1)
+
+        state = _open_state()
+        body, response = await _open(state)
+        assert response.status == 200, body
+        assert body["slot"] == WORKER
+
+        unbound, response = await _open(state, item_id="it_00000001")
+        assert response.status == 409
+        assert unbound["code"] == "no_worker_bound"
+
+        missing, response = await _open(state, item_id="it_deadbeef")
+        assert response.status == 404
+        assert missing["code"] == "item_not_found"
+    finally:
+        eager.stop_for_tests()
+        crew_log.forget_slot_folds()
+        emit.reset_caches()

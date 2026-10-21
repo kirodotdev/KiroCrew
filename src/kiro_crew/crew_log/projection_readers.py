@@ -20,7 +20,11 @@ from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session_log import open_session_log
 from kiro_crew.crew_log.projection_slot_memo import fold_slot_warm_revised
 from kiro_crew.crew_log.projection_work import _work_units
-from kiro_crew.crew_log.projection_workstreams import _board_closure_units, _workstreams_units
+from kiro_crew.crew_log.projection_workstreams import (
+    _board_closure_units,
+    _workstreams_item_workers,
+    _workstreams_units,
+)
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.session_tree import OpenedRecord, log_rank_of
 from kiro_crew.crew_log.store import (
@@ -114,6 +118,20 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
                 units.append(unit_id)
     checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot)
     return projection_of(checkpoint, revision=revision)
+
+
+def workstream_item_workers(slot: str, item_id: str) -> "list[str]":
+    """The worker session key bound to *item_id* on each board *slot*'s workstreams page draws.
+
+    The server-side half of opening a worker from its card: the page holds only an alias
+    and an item id, so the key is looked up here, in the raw fold state the page's own read
+    was rendered from (:func:`~kiro_crew.crew_log.projection_workstreams._workstreams_item_workers`
+    has the shape of the answer). One warm fold read: the page's read just
+    primed the same cell. Blocking file IO; callers run it off the event loop.
+    """
+    units = _slot_units_for_fold(slot, WORKSTREAMS_FOLD_NAME)
+    checkpoint, _revision = fold_slot_warm_revised(WORKSTREAMS_FOLD_NAME, units, slot=slot)
+    return _workstreams_item_workers(checkpoint.state, item_id)
 
 
 def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":

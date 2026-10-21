@@ -121,6 +121,27 @@ export interface CrewBoardActionResult {
   item_id: string
 }
 
+/**
+ * The dashboard an org-chart card was drawn on, which is how `open` finds its item.
+ * A card holds only a per-render board alias and an item id, so the server searches the
+ * workstreams of the dashboard the frame shows instead of a conductor the page cannot name.
+ */
+export type CrewBoardOpenDashboard =
+  | { kind: 'session'; slot: string }
+  | { kind: 'member'; slug: string; member: string }
+
+/**
+ * What `open` answers: the slot key of the worker session, for the host's JavaScript
+ * only. It is the one answer in this file that names a session, and it must never be
+ * posted into a dashboard frame.
+ */
+export interface CrewBoardOpenResult {
+  ok: boolean
+  action: 'open'
+  item_id: string
+  slot: string
+}
+
 /** How often the browser re-reads the board. The RFC's figure: slow enough to
  *  cost nothing, fast enough that a decision request is noticed while the human is
  *  still at the desk. No websocket in this PR. */

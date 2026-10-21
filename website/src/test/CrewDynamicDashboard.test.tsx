@@ -745,3 +745,98 @@ describe('a preview link: the STAGED page, labelled as one', () => {
     expect(screen.getByTestId('crew-dashboard-frame')).not.toHaveAttribute('data-preview')
   })
 })
+
+describe('open-session bridge', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    mints.length = 0
+    retries = 0
+    retrySpy.mockClear()
+  })
+
+  const OPEN_ITEM = 'it_3f9a01c2'
+  const WORKER_SLOT = 'chat-4-worker-secret'
+
+  /** The frame the person just clicked in: a live activation and focus on that iframe. */
+  function clickedIn(frame: HTMLIFrameElement) {
+    vi.stubGlobal('navigator', { ...navigator, userActivation: { isActive: true } })
+    vi.spyOn(document, 'activeElement', 'get').mockReturnValue(frame)
+  }
+
+  async function mountSession() {
+    vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page())
+    renderWithProviders(<CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" />)
+    return (await screen.findByTestId('crew-dashboard-iframe')) as HTMLIFrameElement
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('asks the gateway for the worker behind a card, naming the dashboard it shows, and keeps the key out of the frame', async () => {
+    const frame = await mountSession()
+    const posted = vi.spyOn(frame.contentWindow as Window, 'postMessage')
+    vi.spyOn(window, 'focus').mockImplementation(() => {})
+    const ask = vi
+      .spyOn(api, 'crewBoardOpen')
+      .mockResolvedValue({ ok: true, action: 'open', item_id: OPEN_ITEM, slot: WORKER_SLOT })
+    clickedIn(frame)
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'kirocrew-dashboard:open-session', item_id: OPEN_ITEM }, source: frame.contentWindow,
+    }))
+    await waitFor(() => expect(ask).toHaveBeenCalledWith({ kind: 'session', slot: 'chat-7' }, OPEN_ITEM))
+    // The key reaches the host and goes nowhere near the page: not posted into the frame,
+    // and not in any document that was minted for it.
+    await waitFor(() => expect(ask).toHaveReturned())
+    // The page is told it worked (an item id, no code) and never given the slot.
+    await waitFor(() =>
+      expect(posted).toHaveBeenCalledWith(
+        { type: 'kirocrew-dashboard:open-session-result', item_id: OPEN_ITEM, code: null },
+        '*',
+      ),
+    )
+    expect(JSON.stringify(posted.mock.calls)).not.toContain(WORKER_SLOT)
+    expect(mints.join('\n')).not.toContain(WORKER_SLOT)
+  })
+
+  it('names a crewmate\'s dashboard by slug and member when the frame shows one', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    mount()
+    const frame = (await screen.findByTestId('crew-dashboard-iframe')) as HTMLIFrameElement
+    const ask = vi.spyOn(api, 'crewBoardOpen').mockRejectedValue(new Error('offline'))
+    clickedIn(frame)
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'kirocrew-dashboard:open-session', item_id: OPEN_ITEM }, source: frame.contentWindow,
+    }))
+    await waitFor(() => expect(ask).toHaveBeenCalledWith({ kind: 'member', slug: 'oncall', member: 'oncall' }, OPEN_ITEM))
+  })
+
+  it('tells the page which card was refused, by item id and code, and nothing else', async () => {
+    const frame = await mountSession()
+    const posted = vi.spyOn(frame.contentWindow as Window, 'postMessage')
+    vi.spyOn(api, 'crewBoardOpen').mockRejectedValue(
+      new ApiError(409, 'gone', '{"code":"worker_closed"}'),
+    )
+    clickedIn(frame)
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'kirocrew-dashboard:open-session', item_id: OPEN_ITEM }, source: frame.contentWindow,
+    }))
+    await waitFor(() =>
+      expect(posted).toHaveBeenCalledWith(
+        { type: 'kirocrew-dashboard:open-session-result', item_id: OPEN_ITEM, code: 'worker_closed' },
+        '*',
+      ),
+    )
+    // No banner above the frame: the answer is drawn on the card that asked.
+    expect(screen.queryByTestId('crew-dashboard-open-session-error')).toBeNull()
+  })
+
+  it('ignores the message without a gesture in the frame', async () => {
+    const frame = await mountSession()
+    const ask = vi.spyOn(api, 'crewBoardOpen')
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'kirocrew-dashboard:open-session', item_id: OPEN_ITEM }, source: frame.contentWindow,
+    }))
+    expect(ask).not.toHaveBeenCalled()
+  })
+})

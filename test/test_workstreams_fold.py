@@ -1481,3 +1481,90 @@ def test_nested_board_units_refused_by_the_ceiling_are_counted_too(
     assert len(units) == projection.WORKSTREAMS_UNIT_LIMIT
     # Each round offers one unit, so the refusals are the rounds past the ceiling.
     assert projection._workstreams_units_dropped("s0") > 0
+
+
+# --------------------------------------------------------------------------- #
+# opening a worker from its card: the id -> worker lookup over raw state
+# --------------------------------------------------------------------------- #
+
+
+def _raw(entries: list[Entry], slot: str = CONDUCTOR) -> dict[str, Any]:
+    """The fold's RAW state, which holds the worker keys the rendered value masks."""
+    checkpoint = projection.initial("workstreams")
+    bind = projection._FOLDS["workstreams"].bind_slot
+    assert bind is not None
+    bind(checkpoint.state, slot)
+    return projection.advance(checkpoint, entries).state
+
+
+def test_an_item_id_finds_the_worker_bound_to_it() -> None:
+    state = _raw(
+        [
+            _opened(CONDUCTOR),
+            _work("goal", goal="ship", round=1),
+            _work("create", item_id="it_1", title="the fold", round=1),
+            _work("bind", item_id="it_1", worker_session_key=WORKER_A),
+        ]
+    )
+    assert projection._workstreams_item_workers(state, "it_1") == [WORKER_A]
+
+
+def test_an_unbound_item_answers_one_empty_key_and_an_unknown_one_none() -> None:
+    state = _raw(
+        [
+            _opened(CONDUCTOR),
+            _work("goal", goal="ship", round=1),
+            _work("create", item_id="it_1", title="not dispatched", round=1),
+        ]
+    )
+    assert projection._workstreams_item_workers(state, "it_1") == [""]
+    assert projection._workstreams_item_workers(state, "it_2") == []
+
+
+def test_an_id_on_two_boards_answers_both_so_the_caller_can_refuse() -> None:
+    state = _raw(
+        [
+            _opened(CONDUCTOR),
+            _work("goal", goal="first", round=1, generation="g1"),
+            _work("create", item_id="it_1", title="a", round=1, generation="g1"),
+            _work("bind", item_id="it_1", worker_session_key=WORKER_A, generation="g1"),
+            _work("goal", goal="second", round=1, generation="g2"),
+            _work("create", item_id="it_1", title="b", round=1, generation="g2"),
+            _work("bind", item_id="it_1", worker_session_key=WORKER_B, generation="g2"),
+        ]
+    )
+    assert sorted(projection._workstreams_item_workers(state, "it_1")) == [WORKER_A, WORKER_B]
+
+
+def test_every_task_the_page_draws_is_found_by_the_lookup() -> None:
+    """A card the page drew can always be opened: the lookup finds every rendered task.
+
+    Checked against the render's own output, over a board past the task cap and more
+    boards than the page shows, so a later change to the render's window cannot leave a
+    drawn card without a worker here.
+    """
+    entries = [_opened(CONDUCTOR)]
+    for index in range(projection.WORKSTREAMS_BOARD_LIMIT + 2):
+        gen = f"g{index}"
+        stamp = NOON + index * HOUR
+        entries.append(_work("goal", goal=f"board {index}", round=1, generation=gen, time=stamp))
+        for task in range(projection.WORKSTREAMS_TASK_LIMIT + 2):
+            item = f"it_{index}_{task}"
+            entries.append(
+                _work("create", item_id=item, title="t", round=1, generation=gen, time=stamp)
+            )
+            entries.append(
+                _work(
+                    "bind",
+                    item_id=item,
+                    worker_session_key=f"chat-{index}-{task}-w",
+                    generation=gen,
+                    time=stamp,
+                )
+            )
+    state = _raw(entries)
+    value = projection.projection_of(projection.Checkpoint("workstreams", 1, state)).value
+    drawn = [task["item_id"] for row in value["items"] for task in row["tasks"]]
+    assert drawn, "the fixture must draw at least one card"
+    for item_id in drawn:
+        assert len(projection._workstreams_item_workers(state, item_id)) == 1

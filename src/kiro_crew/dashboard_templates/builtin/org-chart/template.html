@@ -137,6 +137,20 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .oc-keys code { font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
     color: var(--muted, #7f7f88); }
+  .oc-keys { display: flex; align-items: center; gap: 8px; }
+  .oc-keys .oc-keys-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* A real button, so Tab, Enter and Space work without any script of ours. The card
+     itself is not clickable: most of its text is meant to be selected and copied. */
+  .oc-open { all: unset; cursor: pointer; flex: 0 0 auto; box-sizing: border-box;
+    font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 9px;
+    color: var(--text, #e4e4e7);
+    border: 1px solid color-mix(in oklab, var(--oc-line) 70%, transparent); }
+  .oc-open:hover { background: color-mix(in oklab, var(--oc-done) 12%, transparent); }
+  .oc-open:focus-visible { outline: 2px solid var(--oc-done); outline-offset: 1px; }
+  .oc-open[aria-disabled="true"] { cursor: default; opacity: .6; }
+  .oc-open[aria-disabled="true"]:hover { background: none; }
+  /* The host's answer to a refused open, drawn on the very card that asked. */
+  .oc-open-note { margin-top: 5px; font-size: 10px; color: var(--oc-need); }
 
   .oc-foot { font-size: 9.5px; color: var(--muted, #7f7f88); margin-top: 12px;
     padding-top: 9px; border-top: 1px solid color-mix(in oklab, var(--oc-line) 55%, transparent); }
@@ -237,13 +251,21 @@
         worked_suffix: ' worked', tasks_on_session: ' tasks on this session',
         pr_prefix: 'PR ', acceptance_prefix: 'acceptance ',
         blocked_waiting: 'blocked, waiting on someone', asking_conductor: 'asking its conductor',
-        open_via: 'open via ', last_report_prefix: 'last report ',
-        keys_title: 'The fold aliases a worker\u2019s session key, so the card carries the board and item a host resolves the session from instead.',
+        open_via: 'board / task: ', last_report_prefix: 'last report ', open_session: 'Open worker chat', open_session_title: 'Open this worker\u2019s chat session',
+        open_pending: 'Opening\u2026',
+        open_ended: 'This worker\u2019s chat has ended. The card keeps its last report.',
+        open_stale: 'This card is out of date and will refresh soon. Try again in a minute.',
+        open_stale_title: 'Not available yet: this card is out of date. Try again in a minute.',
+        open_ended_title: 'Not available: this worker\u2019s chat has ended.',
+        open_ambiguous_title: 'Not available from this page: use the left sidebar.',
+        open_failed: 'Could not open this chat. Try again.',
+        open_ambiguous: 'Can\u2019t open from here. Find this worker\u2019s chat in the left sidebar.',
+        keys_title: 'The board and task this card belongs to.',
         empty_no_board: 'No board has reached this crewmate\u2019s record yet, so there is nobody to chart.',
         scope_leads: ' lead(s) ', scope_subleads: ' sub-lead(s) ', scope_sessions: ' worker session(s)',
         foot_cut: ' task(s) were cut by the fold\u2019s per-board cap, so they are in neither the graph nor the cards.',
         foot_mute: ' session(s) have never reported. Their cards say so rather than showing a silence, which is a different fact.',
-        foot_alias: 'A card carries the board and item a host opens the session from. The fold aliases the session key itself, so no page here can name a worker\u2019s session.',
+        foot_alias: 'Open worker chat jumps to that worker\u2019s chat, if it is still open.',
         fold_hide: 'Hide',
         fold_show: 'Show {n} items',
         fold_show_one: 'Show 1 item',
@@ -274,13 +296,21 @@
         worked_suffix: ' \u5df2\u5de5\u4f5c', tasks_on_session: ' \u4e2a\u4efb\u52a1\u5728\u6b64\u4f1a\u8bdd\u4e0a',
         pr_prefix: 'PR ', acceptance_prefix: '\u9a8c\u6536 ',
         blocked_waiting: '\u53d7\u963b\uff0c\u7b49\u5f85\u4ed6\u4eba', asking_conductor: '\u6b63\u5728\u8be2\u95ee\u5176\u6307\u6325',
-        open_via: '\u6253\u5f00\u65b9\u5f0f ', last_report_prefix: '\u6700\u540e\u6c47\u62a5 ',
-        keys_title: '\u8bb0\u5f55\u4e3a\u6267\u884c\u8005\u7684\u4f1a\u8bdd\u5bc6\u94a5\u8bbe\u7f6e\u4e86\u522b\u540d\uff0c\u6240\u4ee5\u5361\u7247\u6539\u4e3a\u643a\u5e26\u4e3b\u673a\u636e\u4ee5\u89e3\u6790\u4f1a\u8bdd\u7684\u770b\u677f\u4e0e\u6761\u76ee\u3002',
+        open_via: '\u770b\u677f / \u4efb\u52a1\uff1a', last_report_prefix: '\u6700\u540e\u6c47\u62a5 ', open_session: '\u6253\u5f00\u6267\u884c\u8005\u804a\u5929', open_session_title: '\u6253\u5f00\u6b64\u6267\u884c\u8005\u7684\u804a\u5929\u4f1a\u8bdd',
+        open_pending: '\u6b63\u5728\u6253\u5f00\u2026',
+        open_ended: '\u8be5\u6267\u884c\u8005\u7684\u804a\u5929\u5df2\u7ed3\u675f\uff0c\u5361\u7247\u4fdd\u7559\u4e86\u5b83\u7684\u6700\u540e\u4e00\u6b21\u6c47\u62a5\u3002',
+        open_stale: '\u8fd9\u5f20\u5361\u7247\u5df2\u8fc7\u671f\uff0c\u5f88\u5feb\u4f1a\u5237\u65b0\u3002\u8bf7\u4e00\u5206\u949f\u540e\u518d\u8bd5\u3002',
+        open_stale_title: '\u6682\u4e0d\u53ef\u7528\uff1a\u8fd9\u5f20\u5361\u7247\u5df2\u8fc7\u671f\u3002\u8bf7\u4e00\u5206\u949f\u540e\u518d\u8bd5\u3002',
+        open_ended_title: '\u6682\u4e0d\u53ef\u7528\uff1a\u8be5\u6267\u884c\u8005\u7684\u804a\u5929\u5df2\u7ed3\u675f\u3002',
+        open_ambiguous_title: '\u65e0\u6cd5\u4ece\u672c\u9875\u6253\u5f00\uff1a\u8bf7\u7528\u5de6\u4fa7\u8fb9\u680f\u3002',
+        open_failed: '\u65e0\u6cd5\u6253\u5f00\u8fd9\u4e2a\u804a\u5929\uff0c\u8bf7\u91cd\u8bd5\u3002',
+        open_ambiguous: '\u65e0\u6cd5\u4ece\u8fd9\u91cc\u6253\u5f00\u3002\u8bf7\u5728\u5de6\u4fa7\u8fb9\u680f\u91cc\u627e\u5230\u8fd9\u4e2a\u6267\u884c\u8005\u7684\u804a\u5929\u3002',
+        keys_title: '\u8fd9\u5f20\u5361\u7247\u6240\u5c5e\u7684\u770b\u677f\u548c\u4efb\u52a1\u3002',
         empty_no_board: '\u5c1a\u65e0\u770b\u677f\u8fdb\u5165\u8fd9\u4f4d\u961f\u53cb\u7684\u8bb0\u5f55\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u7ed8\u5236\u7684\u5bf9\u8c61\u3002',
         scope_leads: ' \u4e2a\u7275\u5934 ', scope_subleads: ' \u4e2a\u6b21\u7ea7\u7275\u5934 ', scope_sessions: ' \u4e2a\u6267\u884c\u8005\u4f1a\u8bdd',
         foot_cut: ' \u4e2a\u4efb\u52a1\u88ab\u8bb0\u5f55\u7684\u5355\u770b\u677f\u4e0a\u9650\u622a\u65ad\uff0c\u56e0\u6b64\u5b83\u4eec\u65e2\u4e0d\u5728\u5173\u7cfb\u56fe\u4e2d\uff0c\u4e5f\u4e0d\u5728\u5361\u7247\u4e2d\u3002',
         foot_mute: ' \u4e2a\u4f1a\u8bdd\u4ece\u672a\u6c47\u62a5\u3002\u5b83\u4eec\u7684\u5361\u7247\u5982\u5b9e\u8bf4\u660e\uff0c\u800c\u975e\u663e\u793a\u4e00\u6bb5\u9759\u9ed8\uff0c\u8fd9\u662f\u4e0d\u540c\u7684\u4e8b\u5b9e\u3002',
-        foot_alias: '\u5361\u7247\u643a\u5e26\u4e3b\u673a\u636e\u4ee5\u6253\u5f00\u4f1a\u8bdd\u7684\u770b\u677f\u4e0e\u6761\u76ee\u3002\u8bb0\u5f55\u672c\u8eab\u4e3a\u4f1a\u8bdd\u5bc6\u94a5\u8bbe\u7f6e\u4e86\u522b\u540d\uff0c\u6240\u4ee5\u8fd9\u91cc\u6ca1\u6709\u9875\u9762\u80fd\u6307\u51fa\u6267\u884c\u8005\u7684\u4f1a\u8bdd\u3002',
+        foot_alias: '\u201c\u6253\u5f00\u6267\u884c\u8005\u804a\u5929\u201d\u4f1a\u8df3\u5230\u8be5\u6267\u884c\u8005\u7684\u804a\u5929\uff08\u804a\u5929\u4ecd\u5728\u65f6\uff09\u3002',
         fold_hide: '\u6536\u8d77',
         fold_show: '\u663e\u793a {n} \u9879',
         fold_show_one: '\u663e\u793a 1 \u9879',
@@ -884,6 +914,45 @@
       return out;
     }
 
+    /* The one message this page sends to ask for a session. Exactly a type and an item id:
+       the host takes the dashboard from the frame it came from, so nothing else is read
+       from here. The host answers with an item id and a refusal code, never a session key,
+       and the answer is drawn on the card that asked.
+       Kept in a table by item id, NOT on the card: this page rebuilds every card whenever
+       the host posts it anything, so a note written onto a card would vanish at once. */
+    var OPEN_PENDING_MS = 8000;
+    var OPEN_NOTE_MS = 60000;
+    var openState = {};
+    var OPEN_NOTE = { worker_closed: 'open_ended', item_not_found: 'open_stale',
+                      ambiguous_item: 'open_ambiguous' };
+    /* Notes after which a click cannot work yet, so the button stays inert while they show. */
+    var INERT_NOTES = ['open_ended', 'open_ambiguous', 'open_stale'];
+    function openSession(itemId) {
+      var mine = { pending: true, note: null, at: Date.now() };
+      openState[itemId] = mine;
+      /* If the host never answers (no host, or a refused gesture), the button comes back. */
+      setTimeout(function () {
+        if (openState[itemId] === mine && mine.pending) { mine.pending = false; render(); }
+      }, OPEN_PENDING_MS);
+      try { parent.postMessage({ type: 'kirocrew-dashboard:open-session', item_id: itemId }, '*'); }
+      catch (e) { mine.pending = false; }
+      render();
+    }
+    window.addEventListener('message', function (event) {
+      if (event.source !== window.parent) return;
+      var d = event.data;
+      if (!d || d.type !== 'kirocrew-dashboard:open-session-result') return;
+      if (typeof d.item_id !== 'string') return;
+      var failed = d.code !== null && d.code !== undefined;
+      var mine = { pending: false, at: Date.now(),
+        note: !failed ? null
+          : (typeof d.code === 'string' && Object.prototype.hasOwnProperty.call(OPEN_NOTE, d.code)
+              ? OPEN_NOTE[d.code] : 'open_failed') };
+      openState[d.item_id] = mine;
+      render();
+      if (failed) setTimeout(function () { if (openState[d.item_id] === mine) render(); }, OPEN_NOTE_MS + 50);
+    });
+
     function drawCard(row, now) {
       var pair = row.latest;
       var task = pair.task;
@@ -958,20 +1027,54 @@
       }
       card.appendChild(facts);
 
-      /* THE TWO LOOKUP KEYS A HOST NEEDS, and not a session key.
+      /* THE BUTTON, AND THE TWO LOOKUP KEYS BESIDE IT. Neither is a session key.
          The fold aliases a worker's session key on purpose: this document is embedded
          in a page any dashboard caller can read, and the ledger's rule is that no
-         reader but the conductor sees one. So the card names the board and the item --
-         the same pair group A's action route takes, resolved server-side against the
-         fold -- and a host that wants to open the session resolves it from those.
-         Printing an alias as if it were a link would be a dead link; printing the key
-         would be the leak the fold exists to prevent. */
+         reader but the conductor sees one. So the button sends the host only the item
+         id. The host asks the gateway to find that item in the dashboard this frame
+         shows, and navigates to the session itself; the key never comes back here.
+         The board alias is printed for a reader's orientation and is NOT sent: it is
+         minted per render, so it could not identify a board on the server.
+         No item id, no bound worker: no button, because there is nothing to open. */
       var keys = el('div', 'oc-keys');
-      keys.appendChild(document.createTextNode(i18n('open_via')));
-      keys.appendChild(el('code', null,
-        (text(pair.board.id) || DASH) + ' / ' + (text(task.item_id) || DASH)));
+      var itemId = text(task.item_id);
+      if (itemId && row.worker !== null) {
+        var asked = openState[itemId];
+        var askedFresh = asked && Date.now() - asked.at < OPEN_NOTE_MS;
+        var openBtn = el('button', 'oc-open', asked && asked.pending ? i18n('open_pending') : i18n('open_session'));
+        openBtn.type = 'button';
+        openBtn.setAttribute('data-open-item', itemId);
+        openBtn.title = i18n('open_session_title');
+        /* aria-disabled and NOT disabled: a disabled button drops keyboard focus in some
+           browsers, and the person who pressed Enter here should still be on it when the
+           card is rebuilt with the answer. It is inert while a request is out and while the
+           note says a click cannot work yet (the chat has ended, the task is on two boards, or the
+           card is out of date and the note says to try again in a minute);
+           the click handler ignores it. */
+        if (asked && (asked.pending || (askedFresh && INERT_NOTES.indexOf(asked.note) !== -1))) {
+          openBtn.setAttribute('aria-disabled', 'true');
+          /* Say WHY it is inert, so the ended and the can't-open-here cases read differently. */
+          if (!asked.pending) openBtn.title = i18n(asked.note + '_title');
+        }
+        openBtn.addEventListener('click', function () {
+          if (openBtn.getAttribute('aria-disabled') === 'true') return;
+          openSession(itemId);
+        });
+        keys.appendChild(openBtn);
+      }
+      var keysText = el('span', 'oc-keys-text');
+      keysText.appendChild(document.createTextNode(i18n('open_via')));
+      keysText.appendChild(el('code', null,
+        (text(pair.board.id) || DASH) + ' / ' + (itemId || DASH)));
+      keys.appendChild(keysText);
       keys.title = i18n('keys_title');
       card.appendChild(keys);
+      var said = itemId ? openState[itemId] : null;
+      if (said && said.note && Date.now() - said.at < OPEN_NOTE_MS) {
+        var noteLine = el('div', 'oc-open-note', i18n(said.note));
+        noteLine.setAttribute('role', 'status');
+        card.appendChild(noteLine);
+      }
       return card;
     }
 
@@ -1003,6 +1106,9 @@
         if (Object.prototype.hasOwnProperty.call(foldButtons, fk)
             && foldButtons[fk] === document.activeElement) focusKey = fk;
       }
+      var active = document.activeElement;
+      var focusOpen = active && active.classList && active.classList.contains('oc-open')
+        ? active.getAttribute('data-open-item') : null;
       foldButtons = {};
       graph.textContent = '';
       holder.textContent = '';
@@ -1043,6 +1149,17 @@
       }
 
       for (var j = 0; j < rows.length; j++) holder.appendChild(drawCard(rows[j], now));
+
+      /* The cards were rebuilt above, so the button the person just used is a new element. */
+      if (focusOpen) {
+        var openNow = holder.querySelectorAll('button.oc-open');
+        for (var oi = 0; oi < openNow.length; oi++) {
+          if (openNow[oi].getAttribute('data-open-item') === focusOpen) {
+            openNow[oi].focus({ preventScroll: true });
+            break;
+          }
+        }
+      }
 
       var subs = 0;
       if (filterMode === 'all') {

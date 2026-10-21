@@ -166,8 +166,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     # The action half. Cookie-authed like the read above and for the same reason:
     # its principal is the dashboard owner, who already stops any session from the
     # Stop button. It resolves the worker session key from the store and never
-    # returns it, which is what lets the page offer an affordance whose target the
-    # masked read deliberately withholds.
+    # accepts it from the body. ``stop`` and ``take_over`` never return it, which is
+    # what lets the page offer an affordance whose target the masked read
+    # deliberately withholds. ``open`` returns it to the owner's host so it can
+    # navigate there; the host never passes it into a dashboard frame.
     app.router.add_post(
         "/api/crew-board/action",
         _deferred("work_ledger_board", "api_work_ledger_board_action"),
