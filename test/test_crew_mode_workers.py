@@ -1,4 +1,4 @@
-"""Crew Mode v2: the swappable conductor, the conductor family, the worker stamps,
+"""Crew Mode workers: the swappable conductor, the conductor family, the worker stamps,
 the person's session list, the folder no-ops and the worker list / steer routes.
 
 Every case names the rule it guards and fails when that rule is removed.

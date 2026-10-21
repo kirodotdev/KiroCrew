@@ -17,7 +17,7 @@ describe('crewWorkers', () => {
     expect(groupCrewWorkers([w({ key: 'a', group: 'done' }), w({ key: 'b', group: 'needs_you' })]).map(g => g.group)).toEqual(['needs_you', 'done'])
   })
 
-  // The server's table (test_crew_mode_v2.py: status, messages -> group), restated
+  // The server's table (test_crew_mode_workers.py: status, messages -> group), restated
   // as live-row flags, so the client mirror cannot drift from it.
   it.each([
     [{ pending_approval: true, messages: 4 }, 'needs_you'],
