@@ -280,6 +280,37 @@ def _whoami_agreement(before: dict[str, object], after: dict[str, object]) -> st
     return _WHOAMI_SAME if proven else _WHOAMI_UNPROVEN
 
 
+#: Unavailable-marker ``reason`` for a sign-in whose whoami names its provider
+#: and no user (see :func:`_account_type_only`).
+_REASON_ACCOUNT_UNPROVEN = "account_unproven"
+
+
+def _account_type_only(identity: dict[str, object]) -> bool:
+    """True when an external identity provider whoami names no user.
+
+    The external identity provider shape: ``{"accountType":"ExternalIdP",
+    "email":""}``. A type names a provider, not a user, and nothing kiro-cli
+    prints or stores for that sign-in is evidenced to name the user: the stored
+    credential's stable claims (``client_id``, ``scopes``) belong to the IdP
+    registration every user of it shares. No reading from either source can
+    therefore be tied to the user (:func:`_whoami_agreement` never returns
+    ``same`` for two such snapshots), so the refresh shows the account and
+    reports the balance unavailable without publishing one.
+
+    Only ExternalIdP. Any other type reporting only itself (a lapsed Builder ID
+    or Identity Center sign-in, a future type) takes the ordinary path, which
+    also refuses an unproven reading and keeps its ``signin_required`` remedy.
+    """
+    account_type = identity.get("account_type")
+    return (
+        isinstance(account_type, str)
+        # Normalized like the API-key check: kiro-cli and its token store
+        # spell the type ``ExternalIdP`` and ``ExternalIdp``.
+        and re.sub(r"[^a-z0-9]", "", account_type.lower()) == "externalidp"
+        and all(identity.get(key) is None for key in ("email", "start_url", "_profile_arn"))
+    )
+
+
 def _text_scrape_regresses_api_value(
     prev: object, new: dict[str, object], identity: dict[str, object]
 ) -> bool:

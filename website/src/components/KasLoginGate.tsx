@@ -30,6 +30,7 @@ import GithubLogo from './icons/GithubLogo'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
+import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
 import { i18nT } from '../i18n/t'
 
@@ -82,48 +83,9 @@ function openAuthTab(url: string): void {
   }
 }
 
-/**
- * Wire identifiers for the sign-in providers the gateway accepts. Sent verbatim
- * in the POST body — never catalog values, because a translated identifier is
- * not a protocol token.
- */
-export type KasLoginProvider = 'google' | 'github' | 'builder_id' | 'idc'
-
 // Extra begin-device fields the `idc` provider needs (the company's IAM Identity
 // Center access-portal URL, plus an optional region); other providers send none.
 export type KasLoginExtra = { start_url?: string; region?: string }
-
-// Display name for the provider a sign-in is running under (the device view's
-// eyebrow interpolates it). Routed through the catalog like every other label
-// so locales that transliterate brand names can.
-function providerLabel(provider: KasLoginProvider): string {
-  switch (provider) {
-    case 'google':
-      return i18nT('components.kasLogin.provider_google')
-    case 'github':
-      return i18nT('components.kasLogin.provider_github')
-    case 'builder_id':
-      return i18nT('components.kasLogin.provider_builder_id')
-    case 'idc':
-      return i18nT('components.kasLogin.provider_company_sso')
-  }
-}
-
-/**
- * Display name for the provider a STORED sign-in reports. The gateway spells
- * it as the governance classification the token carries ('Google' | 'Github' |
- * 'BuilderId' | 'Enterprise' | 'ExternalIdp'), not as the chooser's wire
- * identifiers, so the mapping is by loose match; anything unrecognised is shown
- * verbatim rather than mislabelled as a provider it is not.
- */
-export function providerLabelFromWire(stored: string | null | undefined): string {
-  const key = (stored ?? '').toLowerCase()
-  if (key === 'google') return providerLabel('google')
-  if (key === 'github') return providerLabel('github')
-  if (key === 'builderid' || key === 'builder_id') return providerLabel('builder_id')
-  if (key === 'enterprise' || key === 'idc' || key === 'externalidp') return providerLabel('idc')
-  return stored ?? ''
-}
 
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +

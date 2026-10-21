@@ -335,7 +335,7 @@ def _note_api_outcome(ok: bool, reason: str = "") -> None:
     if not _API_DEGRADED_WARNED:
         _API_DEGRADED_WARNED = True
         logger.warning(
-            "Kiro usage API degraded to text-scrape fallback (%s) — "
+            "Kiro usage API returned no reading (%s); "
             "overage will not be visible until the API path recovers",
             reason,
         )

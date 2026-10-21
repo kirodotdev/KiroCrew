@@ -10,7 +10,7 @@ import os
 import re
 import sys as _sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -226,8 +226,10 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
 )
 from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
+    _REASON_ACCOUNT_UNPROVEN,
     _WHOAMI_DIFFERENT,
     _WHOAMI_SAME,
+    _account_type_only,
     _fetch_whoami,
     _fetch_whoami_or_none,
     _normalize_text_usage,
@@ -524,6 +526,21 @@ def _publish_usage(payload: dict[str, object]) -> None:
     _usage_cache_ts = time.time()
 
 
+def _publish_account_unproven(identity: dict[str, object], reason: str) -> None:
+    """Publish the no-balance marker for an :func:`_account_type_only` sign-in.
+
+    Carries ``identity``'s own public fields (the account type) and nothing of
+    an earlier reading: no number this refresh read is published for that shape.
+    """
+    _publish_usage(
+        {
+            **{k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")},
+            "available": False,
+            "reason": reason,
+        }
+    )
+
+
 def _cache_transient_failure(identity: dict[str, object] | None, reason: str | None = None) -> None:
     """Record a usage-fetch failure without blanking the pill for the same account.
 
@@ -638,6 +655,18 @@ async def _fetch_usage_bg() -> str | None:
     detected. Every failure path judges what it keeps against the whoami
     adjacent to that decision, never the top-of-refresh one.
 
+    A top-of-refresh whoami that reports the ExternalIdP account type and
+    nothing naming a user (:func:`_account_type_only`) ends the refresh
+    without publishing a reading from either source: no reading could be
+    tied to the user, so the cache names the account with no balance and
+    ``reason: account_unproven``. ``signin_required`` is published instead only
+    on evidence the sign-in itself is broken: the API refused the credential
+    (``rejected``), or none was readable (``no_credential``) AND the ``/usage``
+    scrape -- run once, for its outcome alone, and parked like any other scrape
+    -- fails too. ``no_credential`` alone is not that evidence, exactly as on
+    the ordinary path. A timeout or error in this branch leaves the same
+    ``account_unproven`` marker when the adjacent whoami is still this shape.
+
     Returns ``_SKIPPED_SCRAPE_PARKED`` when the API yielded no plan AND the
     scrape is parked -- skipped for being parked already, OR attempted in this
     very refresh and parked by that attempt's failure (the third miss). It is
@@ -657,6 +686,10 @@ async def _fetch_usage_bg() -> str | None:
     # backoff — an API-path error or a missing kiro-cli says nothing about
     # whether the scrape works.
     scrape_attempted = False
+    # The top-of-refresh whoami when it took the account-type-only branch, so a
+    # timeout or error in that branch leaves that branch's marker (see the
+    # handlers below) rather than the ordinary "no reading yet" one.
+    type_only_identity: dict[str, object] | None = None
 
     async def _adjacent_identity() -> dict[str, object] | None:
         """Re-resolve whoami adjacent to a credential read or a cache decision.
@@ -697,8 +730,100 @@ async def _fetch_usage_bg() -> str | None:
         except Exception:
             pass
 
+    async def _run_scrape(
+        binary: str, before_spawn: Callable[[], Awaitable[None]] | None = None
+    ) -> str:
+        """Wrap, spawn and read the ``/usage`` scrape; marks the scrape attempted.
+
+        The wrap and the spawn stay in this one function so the spawn's argv
+        is visibly the sandboxed, cgroup-scoped one. ``before_spawn`` runs
+        after the wrap and immediately before the child starts (the identity
+        bracket in ``_refresh``).
+
+        Route through the OS-level sandbox, consistent with how the main agent
+        kiro-cli process is spawned (AcpClient._spawn -> wrap_argv) — including
+        the TIER. This is a `kiro-cli chat` invocation, so a hardcoded
+        "standard" asks for stricter isolation than the very same chat binary
+        gets on the interactive path, and fail-closes wherever no backend
+        exists. Doubly wasteful here: the refusal also feeds the backoff
+        counter that eventually parks the scrape.
+
+        OFF the loop, for two blocking reads: `configured_sandbox_mode()` stats
+        (and on a cache miss re-reads + revalidates) config.json, and
+        `wrap_argv` -> `detect_backend` can cold-probe the sandbox backend with
+        a synchronous `subprocess.run(..., timeout=5)`. The gate above already
+        offloads its own config read for the same reason; doing one of the two
+        on the loop would leave the freeze this refresh's timer reintroduces
+        every interval. Same form and reason as `papyrus/backend/latex._run`.
+        """
+        nonlocal proc, sandbox_cleanup, scrape_attempted
+        scrape_attempted = True
+        argv, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            _wrap_argv_usage_scrape,
+            binary,
+        )
+        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
+        if before_spawn is not None:
+            await before_spawn()
+        proc = await spawn_supervised_oneshot(
+            argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=scrub_agent_subprocess_env(),
+            # Windows: the gateway has no console, so a helper spawned without
+            # CREATE_NO_WINDOW gets a fresh console allocated and flashes on
+            # screen ~every 30s. Suppress it (no-op on POSIX, where the flag is
+            # 0). Same guard the ACP spawn paths and kiro_prerequisite apply.
+            creationflags=_SUBPROCESS_NO_WINDOW,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+        return (out or err or b"").decode(errors="replace")
+
+    async def _account_type_only_reason(auth_state: str, binary: str) -> str:
+        """The reason an :func:`_account_type_only` sign-in's marker carries.
+
+        ``rejected`` (the API answered 401 for the credential) is a server-side
+        refusal: the remedy is signing in again. ``no_credential`` is not proof
+        on its own -- the reader may simply not see the store kiro-cli
+        authenticates from, or the stored access token lapsed while kiro-cli sat
+        idle with a working refresh token -- so the ``/usage`` scrape runs once
+        and its OUTCOME decides: a parseable plan means kiro-cli can still
+        authenticate (``account_unproven``), no plan means it cannot
+        (``signin_required``). Its number is never read or published, and it
+        feeds the scrape back-off like any other attempt; while the scrape is
+        parked its repeated failures are the evidence, as on the ordinary path.
+        Every other state is ``account_unproven``. The scrape is not bracketed by
+        whoami reads because only the reason depends on it, never a number.
+        """
+        api = kiro_usage_api
+        if auth_state == api.AUTH_REJECTED:
+            return _REASON_SIGNIN_REQUIRED
+        if auth_state != api.AUTH_NO_CREDENTIAL:
+            return _REASON_ACCOUNT_UNPROVEN
+        if _scrape_in_backoff():
+            return _REASON_SIGNIN_REQUIRED
+        raw = await _run_scrape(binary)
+        works = _parse_usage(raw).get("credits_plan") is not None
+        _record_scrape_outcome(works)
+        return _REASON_ACCOUNT_UNPROVEN if works else _REASON_SIGNIN_REQUIRED
+
+    def _cache_failure(adjacent: dict[str, object] | None) -> None:
+        """Record a timed-out or failed refresh against the adjacent whoami.
+
+        A refresh that took the account-type-only branch, whose adjacent whoami
+        is still that shape (or could not be read), leaves that branch's
+        no-balance marker: the sign-in is unchanged as far as anything can show,
+        and a "no reading yet" marker would promise a reading this sign-in never
+        gets. Every other case is :func:`_cache_transient_failure`, as before.
+        """
+        if type_only_identity is not None and (not adjacent or _account_type_only(adjacent)):
+            _publish_account_unproven(adjacent or type_only_identity, _REASON_ACCOUNT_UNPROVEN)
+            return
+        _cache_transient_failure(adjacent)
+
     async def _refresh() -> str | None:
-        nonlocal proc, sandbox_cleanup, kiro_bin, scrape_attempted
+        nonlocal kiro_bin, type_only_identity
         global _usage_cache, _usage_cache_ts
 
         kiro_bin = await _resolve_kiro_bin_for_spawn()
@@ -730,6 +855,31 @@ async def _fetch_usage_bg() -> str | None:
             _publish_usage({"available": False, "reason": "api_key_auth"})
             logger.info("Kiro usage: not available under API key auth; skipping fetch")
             return None
+        # The ExternalIdP type and nothing that names the user: no reading could
+        # be tied to this user, so nothing the API returns is published and no
+        # number is read from the `/usage` scrape (see _account_type_only). The
+        # API call still runs for its ``auth_state``, and the scrape runs only
+        # when that state alone cannot decide (see _account_type_only_reason):
+        # a broken sign-in must keep the ordinary ``signin_required`` remedy,
+        # because "this sign-in never shows a balance" would point the user away
+        # from the fix, and a working one must not be told to sign in again. The
+        # identity fields shown are this whoami's own; no earlier reading is kept.
+        if _account_type_only(identity):
+            type_only_identity = identity
+            type_only_result = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(kiro_usage_api.fetch_usage_limits, expected_arn=None),
+            )
+            _publish_account_unproven(
+                identity, await _account_type_only_reason(type_only_result.auth_state, kiro_bin)
+            )
+            logger.info(
+                "Kiro usage: the sign-in names a provider and no user; showing the "
+                "account without a balance"
+            )
+            # A corroborating scrape that was the third miss parks the scrape,
+            # and the caller learns that as it does on the ordinary path.
+            return _parked_by_this_attempt() if scrape_attempted else None
         raw_arn = identity.get("_profile_arn")
         expected_arn = raw_arn if isinstance(raw_arn, str) and raw_arn else None
         # Primary source: the real GetUsageLimits API. It reads the live bearer
@@ -835,48 +985,18 @@ async def _fetch_usage_bg() -> str | None:
                 api_usage, parked_identity, reason=_unavailable_reason(api_result)
             )
             return _SKIPPED_SCRAPE_PARKED
-        scrape_attempted = True
-        # Route through the OS-level sandbox, consistent with how the main agent
-        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv) — including
-        # the TIER. This is a `kiro-cli chat` invocation, so a hardcoded
-        # "standard" asks for stricter isolation than the very same chat binary
-        # gets on the interactive path, and fail-closes wherever no backend
-        # exists. Doubly wasteful here: the refusal also feeds the backoff
-        # counter that eventually parks the scrape.
-        #
-        # OFF the loop, for two blocking reads: `configured_sandbox_mode()` stats
-        # (and on a cache miss re-reads + revalidates) config.json, and
-        # `wrap_argv` -> `detect_backend` can cold-probe the sandbox backend with
-        # a synchronous `subprocess.run(..., timeout=5)`. The gate above already
-        # offloads its own config read for the same reason; doing one of the two
-        # on the loop would leave the freeze this refresh's timer reintroduces
-        # every interval. Same form and reason as `papyrus/backend/latex._run`.
-        argv, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            _wrap_argv_usage_scrape,
-            kiro_bin,
-        )
-        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         # The scrape reads whichever account kiro-cli has signed in WHEN IT
         # RUNS, so it is bracketed like the API read: one whoami immediately
         # before the spawn (not the top-of-refresh one -- the API attempt and
         # the sandbox wrap sit between) and one immediately after the child
         # returns, before anything is parsed. Only a pair that proves the same
         # account may label and publish what came back between them.
-        before = (await _adjacent_identity()) or {}
-        proc = await spawn_supervised_oneshot(
-            argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=scrub_agent_subprocess_env(),
-            # Windows: the gateway has no console, so a helper spawned without
-            # CREATE_NO_WINDOW gets a fresh console allocated and flashes on
-            # screen ~every 30s. Suppress it (no-op on POSIX, where the flag is
-            # 0). Same guard the ACP spawn paths and kiro_prerequisite apply.
-            creationflags=_SUBPROCESS_NO_WINDOW,
-        )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
-        raw = (out or err or b"").decode(errors="replace")
+        before: dict[str, object] = {}
+
+        async def _read_before() -> None:
+            before.update((await _adjacent_identity()) or {})
+
+        raw = await _run_scrape(kiro_bin, before_spawn=_read_before)
         after = (await _adjacent_identity()) or {}
         parsed = _parse_usage(raw)
         if parsed.get("credits_plan") is not None:
@@ -986,14 +1106,14 @@ async def _fetch_usage_bg() -> str | None:
         await _reap_scrape_proc()
         if scrape_attempted:
             _record_scrape_outcome(False)
-        _cache_transient_failure(await _adjacent_identity())
+        _cache_failure(await _adjacent_identity())
         return _parked_by_this_attempt() if scrape_attempted else None
     except Exception:
         logger.debug("Background usage fetch failed", exc_info=True)
         await _reap_scrape_proc()
         if scrape_attempted:
             _record_scrape_outcome(False)
-        _cache_transient_failure(await _adjacent_identity())
+        _cache_failure(await _adjacent_identity())
         return _parked_by_this_attempt() if scrape_attempted else None
     finally:
         # Always reap the subprocess on any exit path (the handlers above did
