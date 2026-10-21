@@ -35,6 +35,7 @@ from kiro_crew.platform.defaults import (
     DefaultDeniedRuleProvider,
     DefaultEmbeddingSource,
     DefaultExternalAccessPolicy,
+    DefaultFeedbackTrackerProvider,
     DefaultGatewayLifecycleProvider,
     DefaultIdentityProvider,
     DefaultImportSourceProvider,
@@ -224,6 +225,7 @@ def build_default_context(
         jail=DefaultJailProvider(),
         mobile_connect=DefaultMobileConnectProvider(),
         remote_provisioners=DefaultRemoteProvisionerProvider(),
+        feedback=DefaultFeedbackTrackerProvider(),
         feature_apps=(),
         governance=governance,
     )

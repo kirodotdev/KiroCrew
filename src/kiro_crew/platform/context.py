@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         EmbeddingSource,
         ExternalAccessPolicy,
         FeatureApp,
+        FeedbackTrackerProvider,
         GatewayLifecycleProvider,
         IdentityProvider,
         ImportSourceProvider,
@@ -341,6 +342,12 @@ class PlatformContext:
     # plus whatever the edition adds), each backed by a ``LaunchEngine`` the
     # core's launch job drives. v1 addition (no CONTRACT_VERSION bump).
     remote_provisioners: "RemoteProvisionerProvider"
+    # Where Report a Problem / `kirocrew doctor` send the user to file the
+    # bundle. REPLACE-capable like ``tips``: the public pre-filled GitHub link
+    # or the edition's own URL, never a merge of the two. The backend half of
+    # the dashboard's ``setFeedbackTracker`` seam. v1 addition (no
+    # CONTRACT_VERSION bump).
+    feedback: "FeedbackTrackerProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS

@@ -39,6 +39,7 @@ from urllib.parse import quote, urlencode
 from kiro_crew import __version__, agent_scratch, platform_compat, release_channel
 from kiro_crew.config.loader import config_dir
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
+from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -1207,6 +1208,42 @@ def _issue_url(result: BundleResult, note: str, *, prefill: bool = True) -> str:
     return f"{_ISSUE_NEW_URL}?" + urlencode(params, quote_via=quote)
 
 
+def _tracker_issue_url(result: BundleResult, note: str, *, prefill: bool) -> str:
+    """The new-issue link for *result*: the edition's tracker, else the public one.
+
+    Reads the ``feedback`` CPP seam (``FeedbackTrackerProvider.report_issue_url``).
+    ``None`` -- the public Default -- keeps :func:`_issue_url`'s pre-filled GitHub
+    link byte-for-byte. A supplied URL REPLACES it rather than decorating it: the
+    public query string is GitHub's bug-report form and means nothing appended to
+    another tracker.
+
+    Fail-closed per the CPP contract: a ``PlatformCompositionError`` (a
+    non-standalone host whose companion does not compose) logs a warning and
+    returns an empty link, keeping the diagnostic bundle usable without a
+    standalone fallback. Any other adapter error, a non-string or an empty
+    string degrades to the public link through the normal fallback path.
+    """
+    try:
+        url = safe_context_call(
+            lambda: current_context().feedback.report_issue_url(result, note, prefill=prefill),
+            fallback=None,
+            log_message="edition feedback tracker unavailable; using the public tracker",
+        )
+    except PlatformCompositionError:
+        logger.warning("platform companion does not compose; skipping issue link")
+        return ""
+    if url is None:
+        return _issue_url(result, note, prefill=prefill)
+    if not isinstance(url, str) or not url.strip():
+        logger.warning(
+            "FeedbackTrackerProvider.report_issue_url() returned %s, expected a URL; "
+            "using the public tracker",
+            type(url).__name__,
+        )
+        return _issue_url(result, note, prefill=prefill)
+    return url
+
+
 def terminal_issue_url(result: BundleResult, note: str = "") -> str:
     """Issue link shaped for printing to a terminal rather than for a browser.
 
@@ -1215,9 +1252,10 @@ def terminal_issue_url(result: BundleResult, note: str = "") -> str:
     to stdout has no such guarantee — it gets selected into chat, captured from a
     shell tool, or relayed by an agent, and on those paths the pre-filled variant
     is replaced wholesale by ``[REDACTED: suspicious URL to github.com]``. This
-    variant trades the pre-filled body for a link that arrives intact.
+    variant trades the pre-filled body for a link that arrives intact. An edition
+    tracker gets the same ``prefill=False`` signal and owns keeping its query short.
     """
-    return _issue_url(result, note, prefill=False)
+    return _tracker_issue_url(result, note, prefill=False)
 
 
 def _prune_old_bundles(out_dir: Path, keep: int) -> None:
@@ -1395,6 +1433,6 @@ def collect_bundle(
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         result.included.append("manifest.json")
 
-    result.github_issue_url = _issue_url(result, note)
+    result.github_issue_url = _tracker_issue_url(result, note, prefill=True)
     _prune_old_bundles(out_dir, _MAX_KEPT_BUNDLES)
     return result

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from kiro_crew.security import DeniedCommandRule
     from kiro_crew.skill_providers.base import SkillProvider
     from kiro_crew.tips_pool import TipsPool
+    from kiro_crew.diagnostics import BundleResult
 
 from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import (
@@ -751,6 +752,19 @@ MICROVM_REMOTE_PROVISIONER = RemoteProvisioner(
         ("connect", "Add the crew to your Instances list"),
     ),
 )
+
+
+class DefaultFeedbackTrackerProvider:
+    """No edition tracker: Report a Problem links to the public repository.
+
+    ``None`` is the "public link unchanged" answer, so the standalone edition is
+    behaviourally identical to before the seam existed.
+    """
+
+    def report_issue_url(
+        self, bundle: "BundleResult", note: str, *, prefill: bool
+    ) -> Optional[str]:
+        return None
 
 
 class DefaultRemoteProvisionerProvider:

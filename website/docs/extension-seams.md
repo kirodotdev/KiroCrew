@@ -727,8 +727,10 @@ so the surfaces keep working. `src/test/feedbackTrackerSeam.test.ts` exercises
 the seam on a fresh module per test, since the seal is a module singleton.
 
 Out of scope: the **Report a Problem** flow's issue link is built by the
-gateway (`diagnostics.github_issue_url`), so it is a backend Composed Platform
-Provider's to retarget, not this seam's.
+gateway (`diagnostics.github_issue_url`), so the backend `feedback` Composed
+Platform Provider retargets it
+([platform-context](../../docs/system-specs/modules/platform-context.md)), not
+this seam. An edition sets both.
 
 ## API methods: exported transport, not a registry
 
