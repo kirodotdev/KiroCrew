@@ -441,14 +441,14 @@ class TestClosingAnIncidentLeavesAnArtifact(_HomeIsolated):
         store.transition(
             inc.incident_id,
             models.STATUS_RESOLVED,
-            diagnosis="the reproducer used AKIAIOSFODNN7EXAMPLE",
+            diagnosis="the reproducer used glpat-IOSFODNN7EXAMPLE",
             resolution="rotated it; curl used Bearer sk-abcdefghijklmnopqrst",
         )
 
         body = store.read_log(inc.incident_id)
         self.assertTrue(body, "no artifact to check")
         self.assertNotIn(dd_key, body)
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", body)
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", body)
         self.assertNotIn("sk-abcdefghijklmnopqrst", body)
         # Still a usable postmortem: only the secrets are gone, not the narrative.
         self.assertIn("probe failed", body)

@@ -113,11 +113,11 @@ class TestRedaction(unittest.IsolatedAsyncioTestCase):
 
         The pattern required `[:=]` after the keyword, so a token following a SPACE (which
         is what RFC 6750 actually specifies) passed through. Found by handing a leaky
-        evidence adapter four credential shapes: AKIA, PagerDuty and Datadog were redacted
+        evidence adapter four credential shapes: glpat-, PagerDuty and Datadog were redacted
         and this one reached the investigation brief — the model's prompt — in clear text.
         Core's pattern requires the literal `Authorization` by design, so it does not catch
         this shape either — but core is not the weak link: it matches real vendor keys
-        (`sk-proj-`, `sk-ant-`, `xoxb-`, `sk_live_`, `ghp_`, JWT, AKIA) by their own
+        (`sk-proj-`, `sk-ant-`, `xoxb-`, `sk_live_`, `ghp_`, JWT, glpat-) by their own
         patterns whatever precedes them. Only a prefix-less opaque token reaches this
         app-level carrier check.
         """
@@ -173,7 +173,7 @@ class TestRedaction(unittest.IsolatedAsyncioTestCase):
         # fabricated `sk-abcdef…` that matches no provider's actual format, which made core
         # look broken when it was not — the leak was genuine but the diagnosis overreached.
         leaked = {
-            "akia": "AKIAIOSFODNN7EXAMPLE",
+            "akia": "glpat-IOSFODNN7EXAMPLE",
             "pagerduty": "u+AbCdEfGhIjKlMnOpQrStUv",
             "datadog": "d" * 32,
             "openai_bearer": "Bearer sk-proj-AbCdEfGhIjKlMnOpQrStUv",
@@ -821,8 +821,8 @@ class TestEveryRedactionSinkUsesTheSameSeam(unittest.TestCase):
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
 
-        core_shape = slack_out._safe("alarm AKIAIOSFODNN7EXAMPLE fired")
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", core_shape)
+        core_shape = slack_out._safe("alarm glpat-IOSFODNN7EXAMPLE fired")
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", core_shape)
 
         app_shape = slack_out._safe("key ddapp_0123456789abcdef0123456789abcdef01234567")
         self.assertNotIn("ddapp_0123456789abcdef", app_shape)

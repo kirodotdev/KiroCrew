@@ -90,19 +90,19 @@ class TestActivityFeedIsRedacted:
     def test_a_credential_in_agent_text_is_redacted(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import _redact_activity
 
-        event = {"kind": "tool", "detail": "aws_access_" "key_id=AKIAIOSFODNN7EXAMPLE"}
+        event = {"kind": "tool", "detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"}
         out = _redact_activity(event)
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(out)
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(out)
 
     def test_nested_agent_events_are_reached(self) -> None:
         """The agent event is nested under an "agent" key — redacting only the top level
         would miss the field that actually carries the text."""
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import _redact_activity
 
-        nested = {"agent": {"detail": "aws_access_" "key_id=AKIAIOSFODNN7EXAMPLE"}}
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(_redact_activity(nested))
-        listed = {"agent": {"lines": ["aws_access_" "key_id=AKIAIOSFODNN7EXAMPLE"]}}
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(_redact_activity(listed))
+        nested = {"agent": {"detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"}}
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(_redact_activity(nested))
+        listed = {"agent": {"lines": ["aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"]}}
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(_redact_activity(listed))
 
     def test_ordinary_text_and_non_strings_survive(self) -> None:
         """Fail-open feed: it must stay readable, and numbers must stay numbers."""
@@ -116,8 +116,8 @@ class TestActivityFeedIsRedacted:
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import RunSupervisor
 
         sup = RunSupervisor()
-        sup._on_agent_activity({"detail": "aws_access_" "key_id=AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(list(sup._state.activity))
+        sup._on_agent_activity({"detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"})
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(list(sup._state.activity))
 
 
 class TestFallbackAuditsEveryToolItUses:
@@ -178,8 +178,8 @@ class TestFallbackAuditsEveryToolItUses:
         import kiro_crew.sel as sel_mod
 
         monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
-        ar._audit_fallback_tool(tool="Bash", detail="aws s3 cp AKIAIOSFODNN7EXAMPLE", cwd=None)
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged[0]["metadata"]["target"]
+        ar._audit_fallback_tool(tool="Bash", detail="aws s3 cp glpat-IOSFODNN7EXAMPLE", cwd=None)
+        assert "glpat-IOSFODNN7EXAMPLE" not in logged[0]["metadata"]["target"]
         assert "REDACTED" in logged[0]["metadata"]["target"]
 
     def test_a_broken_redactor_never_emits_raw_agent_text(self, monkeypatch) -> None:
@@ -272,7 +272,7 @@ class TestBrowserServedFeedsFailClosed:
         from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 
-        assert "REDACTED" in pr_watchers._redact("aws_secret_" "access_key=AKIAIOSFODNN7EXAMPLE")
+        assert "REDACTED" in pr_watchers._redact("aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE")
         assert pr_watchers._redact("gate: build GREEN") == "gate: build GREEN"
         assert R._redact_activity({"d": "propose: 3 candidates"}) == {"d": "propose: 3 candidates"}
 
@@ -871,9 +871,9 @@ class TestCommitMessageRedactionFailsClosed:
         # not exercising the broken-redactor path this test exists for.
         monkeypatch.setattr(commit_mod, "redact", _boom)
         body = tmp_path / "fp.pr.md"
-        body.write_text("# aws_secret_" "access_key=AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
+        body.write_text("# aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE\n", encoding="utf-8")
         subject = commit_mod._commit_message(body, "deadbeefcafe")
-        assert "AKIAIOSFODNN7EXAMPLE" not in subject, "an unscanned credential reached the commit"
+        assert "glpat-IOSFODNN7EXAMPLE" not in subject, "an unscanned credential reached the commit"
         assert subject == "auto-improvement: apply verified change deadbeefcafe"
 
     def test_driver_commit_message_falls_back_on_a_broken_redactor(self, monkeypatch) -> None:
@@ -884,8 +884,8 @@ class TestCommitMessageRedactionFailsClosed:
             raise RuntimeError("scanner down")
 
         monkeypatch.setattr(security_mod, "redact", _boom)
-        out = Driver._redact_commit_message("leak aws_secret_" "access_key=AKIAIOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = Driver._redact_commit_message("leak aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE")
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert out == "auto-improvement: apply verified change"
 
 
@@ -904,7 +904,7 @@ class TestTerminalErrorsAreRedacted:
     def test_a_credential_in_a_terminal_error_does_not_reach_the_response(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as runner_mod
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         sup = runner_mod.RunSupervisor()
         sup._fail(RuntimeError(f"clone failed: aws_secret_access_key={secret}"))
         status = sup.status()
@@ -918,7 +918,7 @@ class TestTerminalErrorsAreRedacted:
         leaves the same string on the same response."""
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as runner_mod
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         sup = runner_mod.RunSupervisor()
         sup._fail(RuntimeError(f"boom {secret}"))
         assert secret not in str(sup.status()["activity"]), "the feed copy is unredacted"
@@ -1019,8 +1019,8 @@ class TestMcpErrorsAreRedacted:
     JSON-RPC error message, and tool argument values reach exception text by design —
     `_tool_get_finding` raises `f"no finding with fingerprint {fp}"` with the caller's raw
     `fp`. So a credential-shaped argument came back verbatim to the model. Reproduced end to
-    end: `get_finding` with `fp="aws_secret_access_key=AKIA…"` returned
-    `{"error": {"message": "no finding with fingerprint aws_secret_access_key=AKIA…"}}`.
+    end: `get_finding` with `fp="aws_secret_access_key=glpat-…"` returned
+    `{"error": {"message": "no finding with fingerprint aws_secret_access_key=glpat-…"}}`.
 
     This is D-81's defect on a second surface — the same "results scanned, errors not"
     asymmetry — which is why the fix routes every error string through the SAME fail-closed
@@ -1043,7 +1043,7 @@ class TestMcpErrorsAreRedacted:
     def test_a_credential_in_an_argument_does_not_come_back(self, tmp_path, monkeypatch) -> None:
         import json
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         resp = self._call(tmp_path, monkeypatch, f"aws_secret_access_key={secret}")
         assert secret not in json.dumps(
             resp
@@ -1066,7 +1066,7 @@ class TestMcpErrorsAreRedacted:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.apps.builtins.auto_improvement.backend import mcp_server as m
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         resp = m.handle(
             {
                 "jsonrpc": "2.0",
@@ -1136,7 +1136,7 @@ class TestWatcherSnapshotsAreRedacted:
     `as_dict()` carries `target`, `title`, `lastNote`, `verdict`/`verdictReason` and `fixing`,
     all derived from model output or from the pull request's own text (which the watcher
     ingests as untrusted input by design). Measured: a `WatcherState` whose `target` is
-    `src/m.py::aws_secret_access_key=AKIA…` serialized that credential verbatim, and both the
+    `src/m.py::aws_secret_access_key=glpat-…` serialized that credential verbatim, and both the
     reconcile listing and the start response hand it to the browser.
 
     `_redact_tree` already exists in this module and is used for the findings response, so the
@@ -1173,7 +1173,7 @@ class TestWatcherSnapshotsAreRedacted:
         from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers as pw
         from kiro_crew.apps.builtins.auto_improvement.backend import routes as routes_mod
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         st = pw.WatcherState(fp="fp1", pr="https://github.com/o/r/pull/1")
         st.target = f"src/m.py::aws_secret_access_key={secret}"
         st.last_note = f"agent said {secret}"
@@ -1229,7 +1229,7 @@ class TestCommitErrorsReachTheBrowserRedacted:
     def test_a_credential_in_git_stderr_is_scrubbed(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend import routes as routes_mod
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         stderr = f"fatal: could not read Username for 'https://x:{secret}@github.com'"
         assert secret not in routes_mod._redact_for_display(
             stderr

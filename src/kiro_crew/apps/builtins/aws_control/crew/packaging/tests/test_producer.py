@@ -125,9 +125,9 @@ def _child_env() -> dict:
     return env
 
 
-# A synthetic AWS key shape -- not a real credential, built to match the pattern
+# A synthetic GitLab token shape -- not a real credential, built to match the pattern
 # and nothing else, so the scanner has something to fire on.
-FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"[4:] + "ABCD"
+FAKE_AWS_KEY = "gl" + "pat-" + "IOSFODNN7EXAMPLE"
 
 _variant_counter = 0
 

@@ -337,7 +337,7 @@ class TestPushRetriesOnRace:
                 # uppercase `AWS_SECRET_ACCESS_KEY = '...'` spelling is NOT flagged, so a
                 # test using it would pass for the wrong reason.
                 return subprocess.CompletedProcess(
-                    args=a, returncode=0, stdout="AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n", stderr=""
+                    args=a, returncode=0, stdout="AWS_KEY = 'glpat-IOSFODNN7EXAMPLE'\n", stderr=""
                 )
             # `rev-list --count FETCH_HEAD..HEAD` proves the rebase replayed exactly ONE
             # commit: an equivalent upstream patch makes git drop ours, and an

@@ -44,7 +44,7 @@ class TestLlmRedaction(unittest.TestCase):
         })
         r["findings"] = [{
             "dimension": "security", "severity": "red", "file": "a.py", "line": 1,
-            "snippet": "token=AKIA...", "observation": "obs",
+            "snippet": "token=glpat-...", "observation": "obs",
             "consequence": "cons", "suggestion": "fix",
         }]
         return r
@@ -139,7 +139,7 @@ class TestLlmRedaction(unittest.TestCase):
         them from redaction let an injected value carry a secret into report.json
         and the dashboard.
         """
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = "glpat-" + "IOSFODNN7EXAMPLE"
         rec = self._rec_with_llm()
         rec["platform"] = f"github {secret}"
         rec["change_id"] = f"GH-o-r-1 {secret}"
@@ -168,9 +168,9 @@ class TestLlmRedaction(unittest.TestCase):
         row = RP.build_report([rec])["rows"][0]
         self.assertEqual(row["url"], "https://github.com/o/r/pull/42")
 
-        rec["url"] = "https://evil.example/collect?k=AKIA" + "IOSFODNN7EXAMPLE"
+        rec["url"] = "https://evil.example/collect?k=glpat-" + "IOSFODNN7EXAMPLE"
         row = RP.build_report([rec])["rows"][0]
-        self.assertNotIn("AKIA", row["url"])
+        self.assertNotIn("glpat-", row["url"])
 
 
 class TestClassify(unittest.TestCase):
@@ -395,7 +395,7 @@ class TestOverrideReasonRedaction(unittest.TestCase):
         }
 
     def test_a_credential_in_the_override_reason_is_scrubbed(self):
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = "glpat-" + "IOSFODNN7EXAMPLE"
         row = RP.classify(self._rec("leaks " + secret + " here"))
         self.assertIn("AI override", row["why"])
         self.assertNotIn(secret, row["why"])
@@ -413,7 +413,7 @@ class TestFindingRedactionCoversEveryString(unittest.TestCase):
     """
 
     def test_a_credential_in_the_file_field_is_scrubbed(self):
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = "glpat-" + "IOSFODNN7EXAMPLE"
         out = RP._redact_finding({
             "dimension": "Security", "severity": "red",
             "file": f"src/{secret}.py", "line": 5,
@@ -513,7 +513,7 @@ class TestRebandOnDismiss(unittest.TestCase):
         # `why` repeats the record's blast rating when it meets the critical
         # threshold, and the worker can write both. The build path scrubs the
         # row; the re-banded fields must be scrubbed the same way.
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = "glpat-" + "IOSFODNN7EXAMPLE"
         rec = _rec("CR-1", blast=secret, red=1)
         rec["findings"] = [_finding("red")]
         payload = self._written(rec)

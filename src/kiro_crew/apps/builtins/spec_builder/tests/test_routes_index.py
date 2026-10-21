@@ -449,7 +449,7 @@ def test_index_keys_that_cannot_be_served_are_dropped_at_load(tmp_path, monkeypa
     _redirect_state(monkeypatch, tmp_path)
     # A real AWS-key shape satisfies the name grammar, which is why the grammar alone
     # was not enough -- _redact is what recognises it.
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = "glpat-IOSFODNN7EXAMPLE"
     assert routes._valid_name(credential), "precondition: the grammar accepts this"
     assert routes._redact(credential) != credential, "precondition: _redact rewrites it"
 
@@ -469,7 +469,7 @@ def test_usable_name_requires_grammar_and_redaction_stability():
     """The predicate: a key must pass the same grammar create enforces AND survive
     _redact unchanged."""
     assert routes._usable_name("my-spec_2") is True
-    assert routes._usable_name("AKIAIOSFODNN7EXAMPLE") is False
+    assert routes._usable_name("glpat-IOSFODNN7EXAMPLE") is False
     assert routes._usable_name("../escape") is False
     assert routes._usable_name("with space") is False
     assert routes._usable_name("") is False

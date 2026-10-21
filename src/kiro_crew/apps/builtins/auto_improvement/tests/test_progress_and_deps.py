@@ -347,7 +347,7 @@ class TestMcpResultsAreRedacted:
 
     A finding's `note`/`signature`/`hypothesis` are the model's own prose, so a credential
     quoted during discovery lands in the ledger and comes back out through `list_findings`.
-    Measured before fixing: `AKIAIOSFODNN7EXAMPLE` in a ledger note came back verbatim in
+    Measured before fixing: `glpat-IOSFODNN7EXAMPLE` in a ledger note came back verbatim in
     the tool result. This was the last unredacted reader — the browser
     (`routes._redact_for_display`) and the activity feed (`runner._redact_activity`) already
     scanned the same class of text. Raised by review of this branch.
@@ -370,7 +370,7 @@ class TestMcpResultsAreRedacted:
                     "target": "m.py::f",
                     "status": "filed",
                     "cr": "https://github.com/o/r/pull/1",
-                    "note": "aws_access_key_id=AKIAIOSFODNN7EXAMPLE",
+                    "note": "aws_access_key_id=glpat-IOSFODNN7EXAMPLE",
                     "ts": 1.0,
                 }
             )
@@ -386,7 +386,7 @@ class TestMcpResultsAreRedacted:
             }
         )
         text = (out or {}).get("result", {}).get("content", [{}])[0].get("text", "")
-        assert "AKIAIOSFODNN7EXAMPLE" not in text, "a credential reached the LLM"
+        assert "glpat-IOSFODNN7EXAMPLE" not in text, "a credential reached the LLM"
         # The tool must still be USEFUL — redaction that empties the result is not a fix.
         assert "abc123" in text
 
@@ -411,8 +411,8 @@ class TestMcpResultsAreRedacted:
 
         # As above: patch where `redact` is BOUND (this module), not where it is defined.
         monkeypatch.setattr(mcp_server, "redact", _boom)
-        out = mcp_server._redact_result('{"note": "aws_access_key_id=AKIAIOSFODNN7EXAMPLE"}')
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = mcp_server._redact_result('{"note": "aws_access_key_id=glpat-IOSFODNN7EXAMPLE"}')
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert "withheld" in out
 
 

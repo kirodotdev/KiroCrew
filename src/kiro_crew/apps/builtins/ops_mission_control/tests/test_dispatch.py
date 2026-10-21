@@ -1279,17 +1279,17 @@ class TestTheBriefRedactsProviderMetadata(_HomeIsolated):
         return dispatch.investigation_brief(dispatch.ClaimedIncident(incident=incident))
 
     def test_a_credential_in_the_title_is_redacted(self):
-        brief = self._brief_for(title="worker used AKIAIOSFODNN7EXAMPLE and 403'd")
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", brief)
+        brief = self._brief_for(title="worker used glpat-IOSFODNN7EXAMPLE and 403'd")
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", brief)
         self.assertIn("403", brief)  # redaction, not truncation
 
     def test_a_credential_in_the_resource_is_redacted(self):
-        brief = self._brief_for(title="t", resource="arn:aws:x/AKIAIOSFODNN7EXAMPLE")
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", brief)
+        brief = self._brief_for(title="t", resource="arn:aws:x/glpat-IOSFODNN7EXAMPLE")
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", brief)
 
     def test_a_token_in_the_provider_url_query_is_redacted(self):
-        brief = self._brief_for(title="t", url="https://x.example/a?key=AKIAIOSFODNN7EXAMPLE")
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", brief)
+        brief = self._brief_for(title="t", url="https://x.example/a?key=glpat-IOSFODNN7EXAMPLE")
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", brief)
 
     def test_fields_this_app_owns_are_not_mangled(self):
         """`source`/`severity`/`fingerprint` are ours; redacting them could only corrupt a

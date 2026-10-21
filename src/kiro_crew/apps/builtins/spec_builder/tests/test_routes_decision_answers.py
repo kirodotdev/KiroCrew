@@ -382,7 +382,7 @@ async def test_a_recorded_answer_is_redacted_on_egress(tmp_path, monkeypatch):
     """index.json is agent-writable, so the ledger is untrusted input like every
     other field -- and the overlay bypasses the state file's own scrub."""
     _redirect_state(monkeypatch, tmp_path)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     spec_dir, _slot_key = _decision_spec(
         tmp_path,
         state={"decisions": [{"id": "d", "title": "Which key", "answer": None}]},

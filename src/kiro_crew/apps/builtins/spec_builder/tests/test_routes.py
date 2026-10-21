@@ -309,7 +309,7 @@ def test_valid_name_rules():
 
 
 def test_redact_scrubs_credentials():
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     out = routes._redact(f"key is {secret} ok")
     assert secret not in out
 
@@ -323,7 +323,7 @@ async def test_spec_state_is_redacted_on_get(tmp_path, monkeypatch):
     # value — the GET handler must recursively scrub it before serving.
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "demo"
     spec_dir.mkdir(parents=True)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     (spec_dir / ".spec-state.json").write_text(
         json.dumps(
             {

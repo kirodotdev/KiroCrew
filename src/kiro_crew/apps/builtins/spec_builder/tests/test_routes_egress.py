@@ -84,7 +84,7 @@ async def test_persisted_transcript_is_served_and_redacted():
             calls.append(key)
             return [
                 {"role": "system", "content": "internal", "ts": "1"},
-                {"role": "user", "content": "key is AKIAIOSFODNN7EXAMPLE ok", "ts": "2"},
+                {"role": "user", "content": "key is glpat-IOSFODNN7EXAMPLE ok", "ts": "2"},
                 {"role": "assistant", "content": "ok", "ts": "3"},
             ]
 
@@ -98,7 +98,7 @@ async def test_persisted_transcript_is_served_and_redacted():
     assert calls, "the persisted transcript was never read"
     roles = [m["role"] for m in out]
     assert roles == ["user", "assistant"], roles
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(out), "credential not redacted"
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(out), "credential not redacted"
 
 
 # ── redaction fails closed ───────────────────────────────────────────────────
@@ -110,7 +110,7 @@ def test_redaction_fails_closed_without_the_security_module(monkeypatch):
     (spec documents, transcripts, agent-written state), so a credential in an
     agent-written file would have gone straight to the browser. The same
     fail-closed reasoning as the is_sensitive_path fallback."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
 
     # With security available, the credential is scrubbed but the prose survives.
     scrubbed = routes._redact(f"key is {secret} ok")
@@ -339,7 +339,7 @@ async def test_timestamps_are_validated_on_egress(tmp_path, monkeypatch):
             "stamped": {
                 "spec_dir": str(base / "stamped"),
                 "working_dir": str(tmp_path / "wd"),
-                "created_at": "AKIAIOSFODNN7EXAMPLE",
+                "created_at": "glpat-IOSFODNN7EXAMPLE",
                 "updated_at": {"nested": "junk"},
             }
         }
@@ -376,7 +376,7 @@ async def test_status_is_allowlisted_not_echoed(tmp_path, monkeypatch):
     class _Idle:
         running = False
 
-    injected = "planning AKIAIOSFODNN7EXAMPLE"
+    injected = "planning glpat-IOSFODNN7EXAMPLE"
     meta = {"spec_dir": "/p/s", "status": injected}
     routes._save_index({"s": dict(meta)})
     assert await routes._effective_status("s", meta, _Idle()) == "planning"
@@ -400,7 +400,7 @@ async def test_list_serves_only_allowlisted_statuses(tmp_path, monkeypatch):
             "odd": {
                 "spec_dir": str(base / "odd"),
                 "working_dir": str(tmp_path / "wd"),
-                "status": "AKIAIOSFODNN7EXAMPLE",
+                "status": "glpat-IOSFODNN7EXAMPLE",
             }
         }
     )

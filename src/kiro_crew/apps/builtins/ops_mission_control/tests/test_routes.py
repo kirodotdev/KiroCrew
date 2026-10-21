@@ -813,7 +813,7 @@ class TestNeedsHumanNotifiesOnTheEdgeOnly(unittest.IsolatedAsyncioTestCase):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
 
         inc = self._claim()
-        leaked = "AKIAIOSFODNN7EXAMPLE"
+        leaked = "glpat-IOSFODNN7EXAMPLE"
         status, _payload = await self._transition(
             inc.incident_id,
             models.STATUS_NEEDS_HUMAN,
@@ -920,7 +920,7 @@ class TestLedgerWritesAreRedacted(unittest.IsolatedAsyncioTestCase):
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         app = web.Application()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
@@ -956,7 +956,7 @@ class TestLedgerWritesAreRedacted(unittest.IsolatedAsyncioTestCase):
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             async with TestClient(TestServer(app)) as client:
-                for secret in ("AKIAIOSFODNN7EXAMPLE", "AKIAI44QH8DHBEXAMPLE"):
+                for secret in ("glpat-IOSFODNN7EXAMPLE", "glpat-I44QH8DHBEXAMPLE"):
                     resp = await client.post(
                         "/api/apps/ops-mission-control/ledger",
                         json={"pattern": "assume-role denied", "fix": f"key {secret}"},

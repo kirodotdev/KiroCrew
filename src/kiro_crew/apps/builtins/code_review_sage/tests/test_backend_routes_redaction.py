@@ -29,7 +29,7 @@ class TestRedactionReachesNestedValues:
     # test would prove nothing), but a real key shape sitting in the source trips
     # the internal-content-scan credential rules. Splitting it satisfies both — the
     # value is key-shaped when the redactor sees it, and no line here matches.
-    SECRET = "AKIA" + "1234567890EXAMPLE"
+    SECRET = "glpat-" + "1234567890EXAMPLE"
 
     def _leaks(self, obj) -> bool:
         return self.SECRET in repr(obj)
@@ -90,7 +90,7 @@ class TestNoFindingFieldIsExemptFromRedaction:
     still left alone: `_redact_deep` only touches strings.
     """
 
-    SECRET = "AKIA" + "1234567890EXAMPLE"  # split: see the sentinel note above
+    SECRET = "glpat-" + "1234567890EXAMPLE"  # split: see the sentinel note above
 
     def test_a_credential_in_line_is_redacted(self):
         from sage_lib import report
@@ -129,7 +129,7 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
 
     # Assembled at runtime: the scan reads source text, while the redactor only
     # fires on credential-shaped input.
-    _SENTINEL = "AKIA" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -237,7 +237,7 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
     """
 
     # Assembled at runtime so the scan sees no credential-shaped literal.
-    _SENTINEL = "AKIA" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -336,7 +336,7 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
 
     # Assembled at runtime: the scan reads source text, the redactor only fires
     # on credential-shaped input.
-    _SENTINEL = "AKIA" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

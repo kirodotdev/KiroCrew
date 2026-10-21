@@ -481,12 +481,12 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
         leaky = Evidence(
             source="x",
             kind="logs",
-            title="alarm AKIAIOSFODNN7EXAMPLE tripped",
+            title="alarm glpat-IOSFODNN7EXAMPLE tripped",
             body="ok",
         )
         registry.register_evidence_source(_FakeEvidence("x", [leaky]))
         out = await registry.gather_evidence(_signal(), EvidenceBudget())
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", out[0].title)
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out[0].title)
         self.assertIn("tripped", out[0].title)  # redaction, not truncation
 
     async def test_body_is_truncated_to_budget(self):
@@ -497,17 +497,17 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(out[0].body), 100)
 
     async def test_aws_keys_are_redacted_not_just_bearer_tokens(self):
-        """Log lines are where AKIA-shaped keys turn up by accident."""
+        """Log lines are where glpat-shaped keys turn up by accident."""
         registry = OpsProviderRegistry()
         leaky = Evidence(
             source="x",
             kind="logs",
             title="t",
-            body="AccessDenied for AKIAIOSFODNN7EXAMPLE calling sts:AssumeRole",
+            body="AccessDenied for glpat-IOSFODNN7EXAMPLE calling sts:AssumeRole",
         )
         registry.register_evidence_source(_FakeEvidence("x", [leaky]))
         out = await registry.gather_evidence(_signal(), EvidenceBudget())
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", out[0].body)
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out[0].body)
 
     async def test_budget_holds_even_when_redaction_expands_the_body(self):
         """Redaction runs BEFORE the cap, so markers cannot push past the budget.
@@ -518,13 +518,13 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
         model's context, so it has to bound the text actually emitted.
         """
         registry = OpsProviderRegistry()
-        body = " ".join(["AKIAIOSFODNN7EXAMPLE"] * 200)
+        body = " ".join(["glpat-IOSFODNN7EXAMPLE"] * 200)
         registry.register_evidence_source(
             _FakeEvidence("x", [Evidence(source="x", kind="logs", title="t", body=body)])
         )
         out = await registry.gather_evidence(_signal(), EvidenceBudget(max_bytes=1000))
         self.assertLessEqual(len(out[0].body), 1000)
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", out[0].body)
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out[0].body)
 
     async def test_config_flag_accepts_what_an_operator_would_type(self):
         """`include_insufficient_data` compared against the literal string "true".
