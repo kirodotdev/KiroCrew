@@ -569,6 +569,66 @@ class TestBackupEndpoints:
             )
         assert _payload(resp)["nightlySessionsBlocked"] is None
 
+    def test_the_status_payload_says_when_the_snapshot_grant_is_on_the_wrong_account(self):
+        # The snapshot mirror of the transcript notice above. set_nightly records
+        # the snapshot grant per account while the nightly loop runs for the
+        # default one, so a snapshot grant on a non-default account is authorized
+        # and never visited. The payload carries that as nightlyBlocked beside the
+        # grant, or the console shows a schedule that nothing honours.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=True),
+            mock.patch.object(
+                routes_mod.backup_mod, "nightly_sessions_enabled", return_value=False
+            ),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod, "_account_jobs", return_value={}),
+            mock.patch.object(
+                routes_mod.accounts_mod,
+                "default_account_id",
+                AsyncMock(return_value="999988887777"),
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](req)  # type: ignore[operator]
+            )
+        body = _payload(resp)
+        # The grant reads back as set; the notice is a second field beside it.
+        assert body["nightly"] is True
+        assert body["nightlyBlocked"] == routes_mod.backup_mod.BLOCK_OTHER_ACCOUNT
+
+    def test_the_scheduled_account_gets_no_snapshot_account_notice(self):
+        # The other direction, so the snapshot notice cannot be one that renders
+        # always: on the account the loop runs for, the field is EMPTY. The
+        # snapshot kind has no host or redaction block, so the default account
+        # with the grant on is the clean case.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=True),
+            mock.patch.object(
+                routes_mod.backup_mod, "nightly_sessions_enabled", return_value=False
+            ),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod, "_account_jobs", return_value={}),
+            mock.patch.object(
+                routes_mod.accounts_mod, "default_account_id", AsyncMock(return_value=ACCOUNT)
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](req)  # type: ignore[operator]
+            )
+        assert _payload(resp)["nightlyBlocked"] is None
+
     def test_restore_downloads_a_valid_archive_key(self):
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()

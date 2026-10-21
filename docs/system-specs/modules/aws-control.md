@@ -1666,6 +1666,14 @@ why `scheduled_sessions_blocked_reason` covers only the other two conditions.
 A host that cannot produce the archive outranks the account, because naming the
 account would send the operator to a page carrying the same notice.
 
+The snapshot kind carries the same "granted vs will run" split through
+`backup.scheduled_snapshot_blocked_code`, reported as the `nightlyBlocked` status
+field beside the snapshot grant. It has only the account condition -- no
+capability or redaction gate applies to the snapshot payload -- so its
+`scheduled_account` argument is required rather than defaulted: `due_for_nightly`
+reads nothing here, so the only caller is the per-account status route, which
+always answers explicitly.
+
 The scheduled path calls `backup.run_sessions_backup` unchanged, with the same
 arguments the owner-triggered job passes and `CALLER_SCHEDULED`. So the
 archive's CONTENTS, its redaction posture and its size behaviour are not
@@ -1694,7 +1702,7 @@ per responsibility, lowest layer first:
 | `backup_parts/traversal.py` | the descriptor-pinned descent `_add_pinned`, `_CAN_PIN_TRAVERSAL`, and `kind_unavailable_reason` |
 | `backup_parts/ledger.py` | `_record_run`, `_record_skip`, the run identity (`_run_process`, `_run_sequence`), and the projections `uploaded_objects`, `uploaded_versions`, `retention_owned_keys`, `last_runs`, `remembered_archives` |
 | `backup_parts/layer_b.py` | the Layer B grant and its scope marker, `set_sessions_layer_b`, and both Layer B audits |
-| `backup_parts/nightly.py` | the `nightly` and `nightly_sessions` grants, `_NIGHTLY_CONSENT_READERS`, the failure record and its witness, the backoff, and both due checks with `scheduled_sessions_blocked_code` |
+| `backup_parts/nightly.py` | the `nightly` and `nightly_sessions` grants, `_NIGHTLY_CONSENT_READERS`, the failure record and its witness, the backoff, both due checks, and the `scheduled_sessions_blocked_code` / `scheduled_snapshot_blocked_code` reporting predicates |
 | `backup_parts/uploads.py` | `_authorize_upload`, `_refuse_upload`, `_authorize_recovery_read`, the teardown stop, and `_unchanged_baseline` |
 | `backup_parts/catalog.py` | `list_remote_backups`, `other_install_ids`, `_install_folders` and `read_remote_label` |
 | `backup_parts/retention.py` | the keep count and its writer, `_delete_under_the_retention_gate`, `_prune_remote_archives`, its audits and measurements |
