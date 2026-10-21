@@ -51,7 +51,11 @@ def _make_state(job: CronJob | None, *, is_running: bool = False):
     state.crons.get_job_async = AsyncMock(return_value=job)
     state.crons.is_running.return_value = is_running
     state.crons.run_job = AsyncMock(return_value=True)
-    state.push_refresh = MagicMock()
+    # The route's check-and-claim is the shared CronService.trigger_run; run the
+    # REAL one against these mocked primitives so the guard, claim and attach
+    # the assertions below pin are the shipped section, not a stub of it.
+    state.crons.trigger_run = lambda job_id: CronService.trigger_run(state.crons, job_id)
+    state.crons._push_refresh = state.push_refresh = MagicMock()
     return state
 
 
