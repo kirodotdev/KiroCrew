@@ -507,7 +507,7 @@ class TestEffortVerdict:
         monkeypatch.setattr(subagent, "model_supports_effort", lambda m: True)
         codex = subagent.effort_applied_note("gpt-5", "high", backend="codex")
         assert codex == f"gpt-5 → config option {effort_config_option_id('codex')}"
-        # KAS speaks kiro's slash dialect but reads no cli.json; its level rides
+        # KAS is kiro-family but reads no cli.json; its level rides
         # ``effortLevel``, so the receipt must not name a file it never opens.
         kas = subagent.effort_applied_note("gpt-5", "high", backend="kas")
         assert kas == f"gpt-5 → config option {effort_config_option_id('kas')}"
