@@ -174,6 +174,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _registration_source,
         _safe_link_name,
         _skills_dir,
+        app_agent_config_path,
         app_skills_dir,
     )
 

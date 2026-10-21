@@ -18,6 +18,8 @@ export const POLL_IDLE_MS = 15000
 
 /** Slide preview aspect ratio (16:9), as a padding-bottom percentage. */
 export const SLIDE_ASPECT = '56.25%'
+/** CSS `aspect-ratio` for a slide frame until its compose viewBox says otherwise. */
+export const SLIDE_ASPECT_RATIO = '16 / 9'
 
 /** The style/art-direction board's intrinsic slide size, used to scale it to fit. */
 export const BOARD_WIDTH = 1920
@@ -239,4 +241,81 @@ export function templateAccents(colors: Record<string, string> | undefined): str
   return [1, 2, 3, 4, 5, 6]
     .map((n) => colors[`accent${n}`])
     .filter((c): c is string => Boolean(c))
+}
+
+/**
+ * Build an SDPM-standard style/template mention for chat.
+ *
+ * The ASCII prefixes are protocol tokens, not translatable copy. SDPM's mention
+ * grammar requires quotes when the library name contains whitespace.
+ */
+export function libraryChatToken(
+  kind: 'styles' | 'templates',
+  name: string,
+): string {
+  const prefix = kind === 'styles' ? 'style' : 'template'
+  const operand = /\s/.test(name) ? `"${name}"` : name
+  return `@${prefix}:${operand}`
+}
+
+// ── layout regions ──────────────────────────────────────────────────────────
+
+/** The engine's region coordinates are on a canvas 1920px wide, whatever the
+ *  compose viewBox's own units (a non-16:9 template changes the height only). */
+export const REGION_CANVAS_WIDTH = 1920
+
+type Box = { x: number; y: number; w: number; h: number }
+
+function finiteBox(box: unknown): box is Box {
+  if (!box || typeof box !== 'object') return false
+  const b = box as Record<string, unknown>
+  return ['x', 'y', 'w', 'h'].every((k) => typeof b[k] === 'number' && Number.isFinite(b[k]))
+}
+
+/** A component that carries content rather than decoration (same rule as the
+ *  engine's own Web UI: text, a raster, or a table/chart/media object). */
+function isContentComponent(component: { svg?: string; class?: string; text?: string }): boolean {
+  if (component.text) return true
+  if (/<image[\s>]/i.test(component.svg || '')) return true
+  return /Table|Graphic|OLE2|Media/i.test(component.class || '')
+}
+
+/** A component fills a region when at least half of it lies inside, or it
+ *  covers at least half of the region. Any overlap was too eager upstream:
+ *  text-frame padding touching an edge would hide a still-empty region. */
+function fills(bbox: Box, region: Box): boolean {
+  if (bbox.w <= 0 || bbox.h <= 0 || region.w <= 0 || region.h <= 0) return false
+  const ix = Math.max(0, Math.min(bbox.x + bbox.w, region.x + region.w) - Math.max(bbox.x, region.x))
+  const iy = Math.max(0, Math.min(bbox.y + bbox.h, region.y + region.h) - Math.max(bbox.y, region.y))
+  const inter = ix * iy
+  return inter > 0 && (inter >= 0.5 * bbox.w * bbox.h || inter >= 0.5 * region.w * region.h)
+}
+
+/**
+ * The layout regions content has not reached yet, scaled into viewBox units.
+ *
+ * Between the layout pass and the content pass a slide is its frame plus named
+ * empty regions; drawing those is what shows the user where each piece of
+ * content is going to land. A region disappears once a content component
+ * fills it. Malformed entries are dropped rather than trusted.
+ */
+export function unfilledRegions(
+  regions: unknown,
+  components: ReadonlyArray<{ svg?: string; class?: string; text?: string; bbox?: unknown }>,
+  viewBoxWidth: number,
+): Array<Box & { name: string }> {
+  if (!Array.isArray(regions)) return []
+  const scale = (viewBoxWidth || REGION_CANVAS_WIDTH) / REGION_CANVAS_WIDTH
+  const content = components.filter(isContentComponent).map((c) => c.bbox).filter(finiteBox)
+  const out: Array<Box & { name: string }> = []
+  for (const region of regions) {
+    if (!finiteBox(region)) continue
+    const scaled = { x: region.x * scale, y: region.y * scale, w: region.w * scale, h: region.h * scale }
+    if (scaled.w <= 0 || scaled.h <= 0) continue
+    if (content.some((bbox) => fills(bbox, scaled))) continue
+    const rawName = (region as unknown as { name?: unknown }).name
+    const name = typeof rawName === 'string' ? rawName : ''
+    out.push({ ...scaled, name })
+  }
+  return out
 }

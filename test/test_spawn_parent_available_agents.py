@@ -133,9 +133,9 @@ class TestSpecReading:
         The alias needs the VERIFIED app identity: a ``--`` inside any other
         installed name is just a name, so ``rogue--reviewer`` cannot satisfy a
         ``reviewer``-only list."""
-        composer = "pptx-maker--pptx-maker-composer"
-        assert sa.agent_matches_allowlist(composer, ("pptx-maker-composer",), app="pptx-maker")
-        assert not sa.agent_matches_allowlist(composer, ("pptx-maker-composer",))
+        agent = "pptx-maker--pptx-maker"
+        assert sa.agent_matches_allowlist(agent, ("pptx-maker",), app="pptx-maker")
+        assert not sa.agent_matches_allowlist(agent, ("pptx-maker",))
         assert not sa.agent_matches_allowlist("rogue--reviewer", ("reviewer",))
         assert not sa.agent_matches_allowlist("rogue--reviewer", ("reviewer",), app="other-app")
 

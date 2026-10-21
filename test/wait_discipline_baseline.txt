@@ -27,6 +27,7 @@
  1 metrics/test_provider.py
  1 metrics/test_provider_otlp_destinations.py
  1 overload_fakes.py
+ 1 pptx_maker_routes_helpers.py
  1 session_control_revive_helpers.py
  1 slack_handler_helpers.py
  1 slot_close_recreation_race_helpers.py
@@ -182,7 +183,6 @@
  3 test_platform_log_append.py
  1 test_pod_e2e_video_guard.py
  2 test_pod_windows_boot.py
- 1 test_pptx_maker_routes.py
  2 test_private_cron_proxy.py
  1 test_proc_non_utf8_kill_paths.py
  1 test_provider_spawn_off_loop_18172.py

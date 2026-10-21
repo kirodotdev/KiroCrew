@@ -15,7 +15,7 @@ from kiro_crew.apps.builtins.pptx_maker.backend import paths, preview_tools, pro
 
 
 def _make_windows_interpreter(root: Path) -> Path:
-    interpreter = root / "mcp-local" / ".venv" / "Scripts" / "python.exe"
+    interpreter = root / "servers" / "local" / ".venv" / "Scripts" / "python.exe"
     interpreter.parent.mkdir(parents=True)
     interpreter.write_text("", encoding="utf-8")
     return interpreter
@@ -28,7 +28,7 @@ def _make_windows_interpreter(root: Path) -> Path:
 def test_venv_python_follows_the_platform_venv_layout(monkeypatch, tmp_path, is_windows, tail):
     """uv writes the interpreter under ``bin/`` on POSIX and ``Scripts/`` on Windows."""
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", is_windows)
-    assert paths.venv_python(tmp_path) == tmp_path / "mcp-local" / ".venv" / Path(*tail)
+    assert paths.venv_python(tmp_path) == tmp_path / "servers" / "local" / ".venv" / Path(*tail)
 
 
 def test_engine_python_delegates_to_the_single_authority(monkeypatch, tmp_path):

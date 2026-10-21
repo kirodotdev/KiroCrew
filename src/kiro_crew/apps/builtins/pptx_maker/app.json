@@ -1,6 +1,6 @@
 {
   "name": "pptx-maker",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "displayName": "PPTX Maker",
   "description": "Describe the deck you want in chat and get a real .pptx back. An agent interviews you, writes a brief, an outline and an art direction, then composes every slide and generates the file — and you watch each deliverable appear in a live preview beside the conversation. Slides render as animated SVG as they are built, so you can see a deck take shape instead of waiting for a download. Reusable styles and .pptx templates let the same content come out looking like three different presentations.",
   "author": "sktok",
@@ -22,10 +22,7 @@
   ],
   "defaultEnabled": false,
   "agents": [
-    "agents/pptx-maker-spec.json",
-    "agents/pptx-maker-composer.json",
-    "agents/pptx-maker-vibe.json",
-    "agents/pptx-maker-style.json"
+    "agents/pptx-maker.json"
   ],
   "permissions": {
     "api": [
@@ -33,26 +30,26 @@
       "/api/apps/pptx-maker/*"
     ],
     "mcpTools": [
+      "@sdpm/start_presentation",
+      "@sdpm/start_composing",
+      "@sdpm/start_style",
+      "@sdpm/start_translation",
+      "@sdpm/init_deck_workspace",
+      "@sdpm/check_specs",
       "@sdpm/analyze_template",
       "@sdpm/apply_style",
-      "@sdpm/code_to_slide",
       "@sdpm/generate_pptx",
-      "@sdpm/grid",
-      "@sdpm/import_attachment",
-      "@sdpm/init_presentation",
-      "@sdpm/list_asset_sources",
-      "@sdpm/list_guides",
+      "@sdpm/search_assets",
       "@sdpm/list_styles",
       "@sdpm/list_templates",
-      "@sdpm/list_workflows",
-      "@sdpm/measure_slides",
-      "@sdpm/pptx_to_json",
-      "@sdpm/read_examples",
       "@sdpm/read_guides",
-      "@sdpm/read_workflows",
+      "@sdpm/code_to_slide",
+      "@sdpm/grid",
+      "@sdpm/arch_diagram",
+      "@sdpm/read_attachment",
+      "@sdpm/import_attachment",
       "@sdpm/run_python",
-      "@sdpm/run_style_python",
-      "@sdpm/search_assets"
+      "@sdpm/run_style_python"
     ],
     "network": true,
     "storage": true

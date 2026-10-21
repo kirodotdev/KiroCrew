@@ -639,19 +639,29 @@ def _placeholder_values(app_name: str) -> dict[str, str]:
     # Imported lazily and defensively: this is a builtin's own module, and a
     # registration path must not fail because one app's package is unimportable.
     try:
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
         from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_paths
         from kiro_crew.apps.builtins.pptx_maker.backend import provision as pptx_provision
     except Exception:  # pragma: no cover - defensive
         logger.warning("App %s: cannot resolve placeholder values", app_name)
+        return {}
+    if not pptx_engine.engine_status().get("ready"):
+        # Expected before the first install and after an engine pin bump: the
+        # agent would start an MCP server that is absent or stale. Registration
+        # runs again once provisioning succeeds (see the app's provision route).
+        logger.info(
+            "App %s: engine is not installed at the pinned version; agent registration "
+            "is deferred until it is provisioned",
+            app_name,
+        )
         return {}
     uv_bin = pptx_provision.resolve_uv()
     if not uv_bin:
         return {}
     return {
         "{UV_BIN}": uv_bin,
-        "{ENGINE_ROOT}": str(pptx_paths.engine_root()),
         "{ENGINE_MCP_DIR}": str(pptx_paths.engine_mcp_dir()),
-        "{APP_PROMPTS}": str(app_dir(app_name) / "prompts"),
+        "{DECK_ROOT}": str(pptx_paths.deck_root()),
         # The engine invokes `pdftoppm`/`soffice` BY NAME from inside its MCP
         # server, which kiro-cli spawns from this config — not from any gateway
         # subprocess. So the app's managed tool dir has to be on the PATH declared

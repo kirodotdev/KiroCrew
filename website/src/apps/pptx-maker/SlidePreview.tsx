@@ -35,7 +35,7 @@ import {
   type ComposeDefs,
   type ComposePayload,
 } from './api'
-import { COMPOSE_VERSION, SLIDE_ASPECT } from './lib'
+import { COMPOSE_VERSION, REGION_CANVAS_WIDTH, SLIDE_ASPECT_RATIO, unfilledRegions } from './lib'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
@@ -278,6 +278,9 @@ export default function SlidePreview({ composeUrl, defs, label }: SlidePreviewPr
   const lastUrlRef = useRef('')
   const timersRef = useRef<number[]>([])
   const [failed, setFailed] = useState(false)
+  // 16:9 until the payload says otherwise: a non-16:9 template (deck.json
+  // `slideSize`) composes with a matching viewBox, and the frame follows it.
+  const [aspect, setAspect] = useState(SLIDE_ASPECT_RATIO)
 
   const defsReady = Boolean(defs?.defs)
 
@@ -318,6 +321,7 @@ export default function SlidePreview({ composeUrl, defs, label }: SlidePreviewPr
 
       const viewBox = payload.viewBox || '0 0 1920 1080'
       const [, , vbWidth, vbHeight] = viewBox.split(' ').map(Number)
+      if (vbWidth > 0 && vbHeight > 0) setAspect(`${vbWidth} / ${vbHeight}`)
 
       const svg = document.createElementNS(SVG_NS, 'svg')
       svg.setAttribute('viewBox', viewBox)
@@ -373,6 +377,40 @@ export default function SlidePreview({ composeUrl, defs, label }: SlidePreviewPr
         groups.push(group)
       })
 
+      // Layout-pass regions the content pass has not filled yet: a dashed frame
+      // and its name, so a slide between passes shows where content will land.
+      // The name is agent-authored, so it only ever becomes a text node.
+      const regionScale = (vbWidth || REGION_CANVAS_WIDTH) / REGION_CANVAS_WIDTH
+      for (const region of unfilledRegions(payload.regions, components, vbWidth)) {
+        const frame = document.createElementNS(SVG_NS, 'g')
+        frame.setAttribute('data-region', 'true')
+        const rect = document.createElementNS(SVG_NS, 'rect')
+        rect.setAttribute('x', String(region.x))
+        rect.setAttribute('y', String(region.y))
+        rect.setAttribute('width', String(region.w))
+        rect.setAttribute('height', String(region.h))
+        rect.setAttribute('rx', String(6 * regionScale))
+        rect.setAttribute('fill', 'var(--color-accent)')
+        rect.setAttribute('fill-opacity', '0.06')
+        rect.setAttribute('stroke', 'var(--color-accent)')
+        rect.setAttribute('stroke-width', '2')
+        rect.setAttribute('stroke-dasharray', '14 10')
+        rect.setAttribute('vector-effect', 'non-scaling-stroke')
+        frame.appendChild(rect)
+        // Skip the label on a region too small to hold one line of it.
+        if (region.name && region.w >= 120 * regionScale && region.h >= 40 * regionScale) {
+          const text = document.createElementNS(SVG_NS, 'text')
+          text.setAttribute('x', String(region.x + 12 * regionScale))
+          text.setAttribute('y', String(region.y + 30 * regionScale))
+          text.setAttribute('font-size', String(20 * regionScale))
+          text.setAttribute('font-family', 'ui-monospace, monospace')
+          text.setAttribute('fill', 'var(--color-accent)')
+          text.textContent = region.name
+          frame.appendChild(text)
+        }
+        svg.appendChild(frame)
+      }
+
       hostRef.current.replaceChildren(svg)
 
       if (!animate) return
@@ -401,7 +439,7 @@ export default function SlidePreview({ composeUrl, defs, label }: SlidePreviewPr
   return (
     <div
       className="relative w-full rounded-lg overflow-hidden border border-border bg-bg-elevated"
-      style={{ paddingBottom: SLIDE_ASPECT }}
+      style={{ aspectRatio: aspect }}
     >
       <div ref={hostRef} className="absolute inset-0" />
       {failed && (

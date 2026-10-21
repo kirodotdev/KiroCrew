@@ -91,6 +91,11 @@ def _namespace(app_name: str, resource_name: str) -> str:
     return f"{app_name}/{resource_name}"
 
 
+def app_agent_config_path(app_name: str, agent_name: str) -> Path:
+    """Where an app agent's rendered config lands once it is registered."""
+    return _kiro_agents_dir() / f"{_safe_link_name(_namespace(app_name, agent_name))}.json"
+
+
 def _safe_link_name(namespaced: str) -> str:
     """Convert ``app/resource`` to a safe filename for symlinks: ``app--resource``.
 

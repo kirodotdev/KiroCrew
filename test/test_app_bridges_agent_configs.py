@@ -636,23 +636,49 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
     side at all: the bytes come from the immutable package, the values from here.
     """
 
-    def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env):
+    def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env, monkeypatch):
         from kiro_crew.apps.bridges import _placeholder_values
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
 
+        monkeypatch.setattr(pptx_engine, "engine_status", lambda: {"ready": True})
         values = _placeholder_values("pptx-maker")
         assert set(values) == {
             "{UV_BIN}",
-            "{ENGINE_ROOT}",
             "{ENGINE_MCP_DIR}",
-            "{APP_PROMPTS}",
+            "{DECK_ROOT}",
             "{TOOLS_PATH}",
         }
         # Under the data home this fixture set, i.e. derived here rather than read.
-        assert str(app_env["home"]) in values["{ENGINE_ROOT}"]
+        assert str(app_env["home"]) in values["{ENGINE_MCP_DIR}"]
         # `{TOOLS_PATH}` becomes the MCP server's PATH, and an empty element there
         # means the CWD on POSIX — tool resolution would depend on where kiro-cli
         # happened to start the server.
         assert "" not in values["{TOOLS_PATH}"].split(os.pathsep)
+
+    def test_an_outdated_engine_resolves_no_agent_placeholders(self, app_env, monkeypatch):
+        from kiro_crew.apps.bridges import _placeholder_values
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        monkeypatch.setattr(
+            pptx_engine,
+            "engine_status",
+            lambda: {"ready": False, "installedTag": "v0.3.8", "updateRequired": True},
+        )
+        assert _placeholder_values("pptx-maker") == {}
+
+    def test_an_outdated_engine_registers_no_pptx_agent(self, app_env, monkeypatch):
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        app_root = _REPO_ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "pptx_maker"
+        manifest = AppManifest.from_json_file(app_root / "app.json")
+        monkeypatch.setattr(
+            pptx_engine,
+            "engine_status",
+            lambda: {"ready": False, "installedTag": "v0.3.8", "updateRequired": True},
+        )
+        assert bridges._register_agents("pptx-maker", manifest, app_root) == []
+        assert not any(app_env["kiro_agents"].iterdir())
 
     def test_an_unknown_app_resolves_nothing(self, tmp_path, app_env):
         """Fail-closed: adding a placeholder to a new app's config is inert until its
@@ -661,8 +687,11 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
 
         assert _placeholder_values("some-other-app") == {}
 
-    def test_a_template_is_rendered_into_the_data_home(self, tmp_path, app_env):
+    def test_a_template_is_rendered_into_the_data_home(self, tmp_path, app_env, monkeypatch):
         from kiro_crew.apps.bridges import _render_shipped_agent
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        monkeypatch.setattr(pptx_engine, "engine_status", lambda: {"ready": True})
 
         shipped = tmp_path / "package" / "pptx-maker" / "agents"
         shipped.mkdir(parents=True)
@@ -682,10 +711,13 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         # failing everywhere.
         assert Path(rendered["command"]).stem == "uv"
 
-    def test_the_install_dir_copy_is_never_read(self, tmp_path, app_env):
+    def test_the_install_dir_copy_is_never_read(self, tmp_path, app_env, monkeypatch):
         """The whole point of the redesign: an attacker-written copy in the install dir
         has no influence, because it is not consulted."""
         from kiro_crew.apps.bridges import _render_shipped_agent
+        from kiro_crew.apps.builtins.pptx_maker.backend import engine as pptx_engine
+
+        monkeypatch.setattr(pptx_engine, "engine_status", lambda: {"ready": True})
 
         shipped = tmp_path / "package" / "pptx-maker" / "agents"
         shipped.mkdir(parents=True)

@@ -9,14 +9,16 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, FolderOpen, Presentation } from 'lucide-react'
+import { Check, Copy, ExternalLink, FolderOpen, Presentation } from 'lucide-react'
 import { EmptyState } from '../../components/ui'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import OutlineView from './OutlineView'
 import SegmentedControl from '../../components/SegmentedControl'
 import { revealOrOpen, useRevealFailure } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useBranding } from '../../hooks/useBranding'
 import { i18nT } from '../../i18n/t'
+import { copyToClipboard } from '../../utils/clipboard'
 import {
   fetchArtifactJson,
   fetchArtifactText,
@@ -50,7 +52,7 @@ function tabLabel(tab: DeckTab): string {
 }
 
 /** A markdown deliverable, re-read on a slow poll so edits appear live. */
-function DocumentTab({ path }: { path: string }) {
+function DocumentTab({ path, outline = false }: { path: string; outline?: boolean }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['pptx-maker', 'doc', path],
     queryFn: () => fetchArtifactText(path),
@@ -60,6 +62,7 @@ function DocumentTab({ path }: { path: string }) {
   if (isError || data === undefined) {
     return <div className="text-sm text-muted">{i18nT('apps.pptxMaker.deckViewer.unavailable')}</div>
   }
+  if (outline) return <OutlineView markdown={data} />
   return (
     <div className="max-w-3xl">
       <MarkdownRenderer content={data} />
@@ -92,7 +95,7 @@ function SlidesTab({ detail, defs }: { detail: DeckDetail; defs: ComposeDefs | n
     )
   }
   return (
-    <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(320px,1fr))]">
+    <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))]">
       {detail.slides.map((slide, index) => (
         <div key={slide.slug}>
           {slide.composeUrl ? (
@@ -116,7 +119,19 @@ function SlidesTab({ detail, defs }: { detail: DeckDetail; defs: ComposeDefs | n
   )
 }
 
-export default function DeckViewer({ deckId }: { deckId: string }) {
+/** `/Users/me/…/20261002-2140-deck` — keeps the root and the deck folder name. */
+export function middleTruncate(path: string, max = 44): string {
+  if (path.length <= max) return path
+  const tail = Math.ceil(max * 0.6)
+  return `${path.slice(0, max - tail - 1)}…${path.slice(-tail)}`
+}
+
+/**
+ * `handOff` is the page's per-placement hand-off decision for this viewer's
+ * notices: beside the studio ChatPane it is off, because asking an agent
+ * navigates away and discards the unsent message draft in that composer.
+ */
+export default function DeckViewer({ deckId, handOff = true }: { deckId: string; handOff?: boolean }) {
   const [tab, setTab] = useState<DeckTab>('slides')
   const seenRef = useRef<Record<string, number> | null>(null)
   // Reveal shells out on the gateway host, so it is only useful when the browser
@@ -127,6 +142,13 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
   // A failed reveal renders under the header row; askAgent on — the viewer
   // holds no draft.
   const reveal = useRevealFailure(deckId)
+  // 'copied' briefly confirms the copy; 'failed' explains a refused clipboard.
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  useEffect(() => {
+    if (copyState !== 'copied') return
+    const timer = setTimeout(() => setCopyState('idle'), 1500)
+    return () => clearTimeout(timer)
+  }, [copyState])
 
   const detailQuery = useQuery({
     queryKey: ['pptx-maker', 'deck', deckId],
@@ -158,6 +180,7 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
   useEffect(() => {
     seenRef.current = null
     setTab('slides')
+    setCopyState('idle')
   }, [deckId])
 
   if (detailQuery.isLoading) {
@@ -211,9 +234,55 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
           </a>
         )}
       </div>
+      {/* The deck's directory is the `deck_id` every SDPM tool takes, so pasting
+          it into a new chat points the agent at this exact deck (names can
+          repeat; the path cannot). Its copy button sits beside the path in a
+          row of its own, so the header row above keeps its two actions. */}
+      {detail.dirPath && (
+        <div className="flex items-center gap-1 min-w-0 px-3 py-1 border-b border-border shrink-0 text-[12px] text-muted">
+          {/* Middle-truncated so the root and the deck folder name both stay
+              visible; the full path is in the tooltip and in what gets copied. */}
+          <span className="truncate font-mono" title={detail.dirPath} data-testid="deck-viewer-path">
+            {middleTruncate(detail.dirPath)}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void copyToClipboard(detail.dirPath).then((ok) => setCopyState(ok ? 'copied' : 'failed'))
+            }}
+            aria-label={i18nT('apps.pptxMaker.deckViewer.copy_deck_path')}
+            title={i18nT('apps.pptxMaker.deckViewer.copy_deck_path_hint', { path: detail.dirPath })}
+            className="mc-touch-hit shrink-0 inline-flex items-center rounded p-1 text-muted hover:bg-bg-elevated hover:text-text transition-colors bg-transparent border-none cursor-pointer"
+          >
+            <Copy className="lucide-inline" />
+          </button>
+          {copyState === 'copied' && (
+            <span role="status" className="shrink-0 inline-flex items-center gap-1">
+              <Check className="lucide-inline" />
+              {i18nT('apps.pptxMaker.deckViewer.copied_deck_path')}
+            </span>
+          )}
+        </div>
+      )}
+      {copyState === 'failed' && (
+        <div className="px-3 py-2 border-b border-border shrink-0">
+          {/* No hand-off when docked beside the studio chat (handOff=false): it
+              would navigate away and discard that ChatPane's unsent draft. */}
+          <ErrorNotice
+            variant="inline"
+            className="whitespace-normal"
+            title={i18nT('apps.pptxMaker.deckViewer.copy_deck_path_failed')}
+            message={detail.dirPath}
+            askAgent={handOff}
+            onDismiss={() => setCopyState('idle')}
+            testId="deck-viewer-copy-error"
+          />
+        </div>
+      )}
       {reveal.error && (
         <div className="px-3 py-2 border-b border-border shrink-0">
-          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent onDismiss={reveal.clear} testId="deck-viewer-reveal-error" />
+          {/* No hand-off when docked beside the studio chat: same draft as above. */}
+          <ErrorNotice variant="inline" className="whitespace-normal" message={reveal.error} askAgent={handOff} onDismiss={reveal.clear} testId="deck-viewer-reveal-error" />
         </div>
       )}
       <div className="flex-1 min-w-0 overflow-y-auto p-5">
@@ -223,8 +292,11 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
         {activeTab === 'artDirection' && detail.specs.artDirection && (
           <BoardTab path={detail.specs.artDirection} />
         )}
-        {(activeTab === 'brief' || activeTab === 'outline') && detail.specs[activeTab] && (
-          <DocumentTab path={detail.specs[activeTab] as string} />
+        {activeTab === 'brief' && detail.specs.brief && (
+          <DocumentTab path={detail.specs.brief} />
+        )}
+        {activeTab === 'outline' && detail.specs.outline && (
+          <DocumentTab path={detail.specs.outline} outline />
         )}
       </div>
     </div>
