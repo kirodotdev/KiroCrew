@@ -157,6 +157,11 @@ interface DashboardState {
    *  tear apart and there are no orphans to reconcile at boot. */
   unreadSince: Record<string, string>
   slotsLoaded: boolean
+  /** True only once the LIVE socket has pushed a slot list since the last
+   *  (re)connect and no HTTP `fetchSlots` reply has replaced rows since:
+   *  that reply may have been requested before a disconnect. Only this
+   *  flag lets a read retire an uncovered shared unread watermark. */
+  slotsLive?: boolean
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
   // downloaded). Drives the Settings nav dot + the About tab dot. Mirrored
@@ -356,6 +361,7 @@ const initialState: DashboardState = {
   refreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
   slotsLoaded: false,
+  slotsLive: false,
   updateProgress: null,
   desktopUpdateAvailable: false,
   subagentRunning: {},
@@ -1004,8 +1010,8 @@ const dashboardSlice = createSlice({
       state.savedYoloDuration = action.payload
       if (state.status) state.status.yolo_duration = action.payload
     },
-    sseConnected(state) { state.connected = true; state.slotsLoaded = false; state.subagentRunning = {}; state.subagentDetails = {}; state.subagentText = {} },
-    sseDisconnected(state) { state.connected = false },
+    sseConnected(state) { state.connected = true; state.slotsLoaded = false; state.slotsLive = false; state.subagentRunning = {}; state.subagentDetails = {}; state.subagentText = {} },
+    sseDisconnected(state) { state.connected = false; state.slotsLive = false },
     sseSlots(state, action: PayloadAction<ChatSlot[]>) {
       // Read before `slotsLoaded` is set: an empty frame is ambiguous, and this
       // is what disambiguates it. Not yet loaded means a reconnect delivered it
@@ -1020,6 +1026,7 @@ const dashboardSlice = createSlice({
       applySlots(state, action.payload)
       state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
+      state.slotsLive = true
       reconcileSlots(state, new Set(action.payload.map(s => s.key)))
     },
     // Sidebar → shortcut and close-landing order feed (see
@@ -1451,8 +1458,26 @@ const dashboardSlice = createSlice({
       // lagging window (reconnect gap) cannot prove it saw the message a
       // sibling watermarked, so the shared badge survives for siblings and
       // reboots instead of being silently erased.
-      const _readTs = state.slots?.find(sl => sl.key === action.payload)?.last_ts // row-read: reads a watermark, writes only unread state
-      clearSharedUnreadIfCovered(action.payload, _readTs)
+      const _slot = state.slots?.find(sl => sl.key === action.payload) // row-read: last_ts + running flag; writes only unread state
+      const _readTs = _slot?.last_ts // row-read: reads a watermark, writes only unread state
+      const _survivor = clearSharedUnreadIfCovered(action.payload, _readTs)
+      // An uncovered survivor on an IDLE slot is an ORPHAN: the watermark
+      // names a row newer than anything the gateway shows this session, so
+      // no read — this one or any future one — can ever cover it. That is
+      // what a build before #15014 left behind (it watermarked a turn's
+      // `done` row that a gateway restart then dropped), and keeping it
+      // strands the badge forever: every relayed read re-lights it and every
+      // reload restores it. With nothing in flight the slot's last_ts is the
+      // newest row that exists, so the read is authoritative — retire the
+      // record. A running (or unknown) slot keeps the survivor: mid-turn its
+      // last_ts legitimately trails rows it has not been pushed yet. So does
+      // a disconnected window, or one reconnected but not yet pushed a slot
+      // list over the live socket (`slotsLive`; an HTTP `fetchSlots` reply
+      // does not count, it may predate the disconnect): its idle flag and
+      // last_ts may predate a sibling's newer watermark, so it keeps it too.
+      if (_survivor !== undefined && _slot !== undefined && !_slot.running && state.connected && state.slotsLive) {
+        persistSharedUnread({}, [action.payload])
+      }
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     /** A read relayed from ANOTHER window: honors the watermark. Clears only
@@ -1668,6 +1693,9 @@ const dashboardSlice = createSlice({
         applySlots(state, rows)
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
+        // An HTTP reply may predate a disconnect and overwrite a newer live
+        // row, so after it only a fresh live list may retire a watermark.
+        state.slotsLive = false
         reconcileSlots(state, new Set(rows.map((s: { key: string }) => s.key)), fresh)
         settleSlotFetch(state, requestId)
       })
