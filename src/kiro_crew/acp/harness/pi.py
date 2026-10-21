@@ -30,7 +30,8 @@ import stat
 import subprocess as subprocess_mod
 import tempfile
 import uuid
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from kiro_crew import acp_tool_gate, agent_sdk
@@ -39,8 +40,8 @@ from kiro_crew import platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.harness.pi_node import (
-    PI_NODE_FLOOR_FALLBACK,
     PiNodeChoice,
+    ProbeWrap,
     choose_pi_node,
     node_engine_floor,
 )
@@ -249,40 +250,69 @@ def _pi_installed_version(pi_bin: str) -> tuple[tuple[int, ...], str] | None:
     return tuple(int(part) for part in match.groups()), str(data["name"])
 
 
-def _pi_node_floor(pi_bin: str) -> tuple[tuple[int, int, int], bool]:
-    """``(floor, declared)``: the oldest Node.js *pi_bin*'s package admits.
+def _pi_node_floor(pi_bin: str) -> tuple[int, int, int] | None:
+    """The oldest Node.js *pi_bin*'s package admits, or ``None`` when unknown.
 
     From ``engines.node`` in pi's own manifest, so the floor moves with pi's
-    releases; :data:`~kiro_crew.acp.harness.pi_node.PI_NODE_FLOOR_FALLBACK` with
-    ``declared`` false when the manifest is missing or declares no range this can
-    read.
+    releases (every release from ``PI_MIN_VERSION`` to 1.3.0 declares
+    ``>=22.19.0``). No manifest, or no range this can read, answers ``None``: no
+    floor is guessed, and the gate read-back decides as before.
 
     Blocking (reads files); callers run it off the loop.
     """
     data = _pi_manifest(pi_bin)
     engines = data.get("engines") if data is not None else None
-    floor = node_engine_floor(engines.get("node") if isinstance(engines, dict) else None)
-    if floor is None:
-        return PI_NODE_FLOOR_FALLBACK, False
-    return floor, True
+    return node_engine_floor(engines.get("node") if isinstance(engines, dict) else None)
 
 
-def _pi_node_choice(session: ProcessSession, pi_bin: str) -> PiNodeChoice:
+def _pi_probe_wrap(
+    sandbox_mode: str, hidden: tuple[str, ...], expose: tuple[str, ...]
+) -> ProbeWrap:
+    """Confine a Node probe child in the session's sandbox, with its credential mask.
+
+    The same wrap the gate read-back gets (``wrap_argv`` with *hidden* and
+    *expose*), because the probe runs a Node off the session's PATH in the agent's
+    own directory, where a version-manager shim reads that directory's config. The
+    launcher file the wrap writes is removed once the child has exited.
+    """
+
+    @contextmanager
+    def _wrapped(argv: list[str]) -> Iterator[list[str]]:
+        wrapped, cleanup = wrap_argv(
+            argv,
+            mode=sandbox_mode,
+            strip_python_env=True,
+            extra_hidden_dirs=hidden,
+            extra_expose_files=expose,
+        )
+        try:
+            yield wrapped
+        finally:
+            if cleanup:
+                launch_mod._unlink_readback_launcher(cleanup)
+
+    return _wrapped
+
+
+def _pi_node_choice(session: ProcessSession, pi_bin: str, wrap: ProbeWrap) -> PiNodeChoice:
     """How the gate launcher runs *pi_bin* so the Node under it meets pi's floor.
 
     Searched on the PATH the pi child inherits: the session's environment with the
     same augmentation (:func:`kiro_crew.env.augmented_path`) the read-back's
-    environment gets in :func:`_verify_pi_gate`. Blocking (file reads,
-    ``node --version``); callers run it off the loop.
+    environment gets in :func:`_verify_pi_gate`. Each ``node --version`` runs under
+    *wrap* (:func:`_pi_probe_wrap`). Blocking (file reads, short children); callers
+    run it off the loop.
     """
     env = {**os.environ, **session._agent_env_for_spawn(), **session._extra_env}
-    floor, declared = _pi_node_floor(pi_bin)
+    floor = _pi_node_floor(pi_bin)
+    if floor is None:
+        return PiNodeChoice()
     return choose_pi_node(
         pi_bin,
         floor,
         env_mod.augmented_path(env.get("PATH", "")),
         cwd=session._spawn_work_dir,
-        declared=declared,
+        wrap=wrap,
     )
 
 
@@ -905,20 +935,6 @@ class PiLaunch(ProcessAdapter):
         pi_version_issue = await asyncio.to_thread(_pi_version_issue, pi_bin)
         if pi_version_issue:
             raise AcpError(pi_version_issue)
-        # The Node pi's shebang would find, against pi's own engine floor. Also
-        # refused here rather than left to the read-back: a pi under too old a Node
-        # dies at module load, and the read-back can name only an exit code. When a
-        # Node that meets the floor is beside pi or later on the PATH, the launcher
-        # runs pi under it instead.
-        node_choice = await asyncio.to_thread(_pi_node_choice, session, pi_bin)
-        if node_choice.issue:
-            raise AcpError(node_choice.issue)
-        if node_choice.argv:
-            logger.info(
-                "pi: the Node.js its shebang finds is below pi's engine floor; "
-                "launching pi under %s",
-                node_choice.argv[0],
-            )
         argv = pi_acp_argv
         spawn_label = launch_mod._adapter_spawn_label(
             argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
@@ -930,6 +946,23 @@ class PiLaunch(ProcessAdapter):
             launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
         )
         expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
+        # The Node pi's shebang would find, against pi's own engine floor. Refused
+        # here rather than left to the read-back: a pi under too old a Node dies at
+        # module load, and the read-back can name only an exit code. When a Node
+        # that meets the floor is beside pi or later on the PATH, the launcher runs
+        # pi under it instead. After the preflight, because each ``node --version``
+        # is a child in the agent's directory, confined by the same mask.
+        node_choice = await asyncio.to_thread(
+            _pi_node_choice, session, pi_bin, _pi_probe_wrap(ctx.sandbox_mode, hidden, expose)
+        )
+        if node_choice.issue:
+            raise AcpError(node_choice.issue)
+        if node_choice.argv:
+            logger.info(
+                "pi: the Node.js its shebang finds is below pi's engine floor; "
+                "launching pi under %s",
+                node_choice.argv[0],
+            )
         # The gate, and the READ-BACK that is what this harness's Routing member
         # promises. pi runs no gate of its own, so Crew's extension is loaded into
         # it through a launcher the adapter is told to run in place of ``pi``.

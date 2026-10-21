@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,6 @@ from acp_pi_backend_helpers import _no_ambient_pi_env, _PiLaunchRig  # noqa: F40
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import pi_node
 from kiro_crew.acp.harness.pi_node import (
-    PI_NODE_FLOOR_FALLBACK,
     PiNodeChoice,
     choose_pi_node,
     node_engine_floor,
@@ -162,21 +162,40 @@ def test_a_node_whose_version_cannot_be_read_is_left_to_the_read_back(tmp_path) 
 
 def test_the_floor_is_read_from_pis_manifest(tmp_path) -> None:
     pi_bin = _fake_pi(tmp_path / "prefix", engines={"node": ">=24.1.0"})
-    assert pi_mod._pi_node_floor(pi_bin) == ((24, 1, 0), True)
+    assert pi_mod._pi_node_floor(pi_bin) == (24, 1, 0)
 
 
 @pytest.mark.parametrize("engines", [None, {}, {"node": ">22"}, "node>=22"])
-def test_an_absent_or_unreadable_engine_falls_back_to_the_named_floor(tmp_path, engines) -> None:
+def test_an_absent_or_unreadable_engine_is_no_floor(tmp_path, engines) -> None:
     pi_bin = _fake_pi(tmp_path / "prefix", engines=engines)
-    assert pi_mod._pi_node_floor(pi_bin) == (PI_NODE_FLOOR_FALLBACK, False)
+    assert pi_mod._pi_node_floor(pi_bin) is None
 
 
-def test_the_fallback_floor_is_named_as_assumed_in_the_refusal(tmp_path) -> None:
+class _Session:
+    """The three attributes ``_pi_node_choice`` reads off a session."""
+
+    def __init__(self, path: str, work_dir: str) -> None:
+        self._extra_env = {"PATH": path}
+        self._spawn_work_dir = work_dir
+
+    def _agent_env_for_spawn(self) -> dict:
+        return {}
+
+
+def test_without_a_declared_floor_pi_is_left_to_the_read_back(tmp_path) -> None:
+    """No floor is guessed: an old Node is not probed, let alone refused."""
     pi_bin = _fake_pi(tmp_path / "prefix")
-    _fake_node(tmp_path / "old", "20.0.0")
-    floor, declared = pi_mod._pi_node_floor(pi_bin)
-    choice = choose_pi_node(pi_bin, floor, _path(tmp_path / "old"), declared=declared)
-    assert "declares none, so this gateway assumes it" in choice.issue
+    _fake_node(tmp_path / "old", "18.0.0")
+    probed: list = []
+
+    @contextmanager
+    def _wrap(argv):
+        probed.append(argv)
+        yield argv
+
+    session = _Session(_path(tmp_path / "old"), str(tmp_path))
+    assert pi_mod._pi_node_choice(session, pi_bin, _wrap) == PiNodeChoice()
+    assert probed == []
 
 
 def test_the_version_probe_gets_no_gateway_environment(tmp_path, monkeypatch) -> None:
@@ -224,3 +243,55 @@ def test_the_spawn_hands_the_chosen_node_to_the_launcher(monkeypatch, tmp_path) 
     rig.run()
     assert rig.args_of("launcher") == (rig.PI_BIN, rig.SEALED, program)
     assert rig.ran_off_the_loop("node"), "the node probe ran on the event loop"
+
+
+def test_the_node_probe_runs_after_the_sandbox_floor_under_its_mask(monkeypatch, tmp_path) -> None:
+    rig = _PiLaunchRig(monkeypatch, tmp_path)
+    wrapped: list = []
+
+    def _wrap_argv(argv, **kwargs):
+        wrapped.append((list(argv), kwargs))
+        return ["/sandbox", *argv], "/run/probe-launcher"
+
+    unlinked: list = []
+    monkeypatch.setattr(pi_mod, "wrap_argv", _wrap_argv)
+    monkeypatch.setattr(pi_mod.launch_mod, "_unlink_readback_launcher", unlinked.append)
+    rig.run()
+    names = rig.names()
+    assert names.index("preflight") < names.index("node") < names.index("seal")
+    _pi_bin, wrap = rig.args_of("node")
+    unlinked.clear()  # the read-back's own launcher, reclaimed during the run
+    with wrap(["/usr/local/bin/node", "--version"]) as argv:
+        assert argv == ["/sandbox", "/usr/local/bin/node", "--version"]
+        assert unlinked == [], "the launcher was removed before the child ran"
+    assert unlinked == ["/run/probe-launcher"]
+    assert wrapped == [
+        (
+            ["/usr/local/bin/node", "--version"],
+            {
+                "mode": rig.MODE,
+                "strip_python_env": True,
+                "extra_hidden_dirs": rig.HIDDEN,
+                "extra_expose_files": pi_mod.acp_tool_gate.adapter_expose_files(
+                    pi_mod.ACP_BACKEND_PI, rig.HIDDEN
+                ),
+            },
+        )
+    ]
+
+
+def test_every_version_child_runs_through_the_wrap(tmp_path) -> None:
+    prefix = tmp_path / "prefix"
+    pi_bin = _fake_pi(prefix)
+    old = _fake_node(tmp_path / "old", "18.0.0")
+    beside = _fake_node(prefix / "bin", "24.0.0")
+    seen: list[list[str]] = []
+
+    @contextmanager
+    def _wrap(argv):
+        seen.append(list(argv))
+        yield argv
+
+    choice = choose_pi_node(pi_bin, _FLOOR, _path(tmp_path / "old"), wrap=_wrap)
+    assert choice.argv[0] == beside
+    assert seen == [[old, "--version"], [beside, "--version"]]

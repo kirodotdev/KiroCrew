@@ -28,22 +28,24 @@ from __future__ import annotations
 import os
 import re
 import subprocess as subprocess_mod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.constants import format_node_version, parse_node_version
 
 __all__ = [
-    "PI_NODE_FLOOR_FALLBACK",
     "PiNodeChoice",
+    "ProbeWrap",
     "choose_pi_node",
     "node_engine_floor",
 ]
 
-# The floor assumed when pi's manifest declares none (or one this module cannot
-# read): what pi 1.3.0's ``package.json`` declares, ``"node": ">=22.19.0"``.
-PI_NODE_FLOOR_FALLBACK = (22, 19, 0)
+# Wraps a probe argv for the life of its child: yields the argv to run and cleans
+# up whatever the wrapping wrote once the child has exited.
+ProbeWrap = Callable[[list[str]], AbstractContextManager[list[str]]]
 
 _NODE = "node"
 
@@ -52,8 +54,6 @@ _SHEBANG_READ_BYTES = 256
 
 # ``node --version`` prints and exits; the bound is a backstop for a hung shim.
 _NODE_VERSION_TIMEOUT_S = 10.0
-
-_NODE_VERSION_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 
 # One alternative of an npm range, read for its LOWER bound: ``>=22.19.0``,
 # ``^22.19``, ``~22``, ``22.x``. Anything else (``>22``, ``<24``, ``*``) is not
@@ -137,59 +137,54 @@ def _nodes_beside_pi(pi_bin: str) -> Iterator[str]:
             return
 
 
-def _node_version(node: str, search_path: str, cwd: str) -> tuple[int, int, int] | None:
+def _node_version(
+    node: str, search_path: str, cwd: str, wrap: ProbeWrap = nullcontext
+) -> tuple[int, int, int] | None:
     """What ``node --version`` reports for *node*, or ``None`` when it cannot say.
 
     Run by the path given, not its realpath: a version-manager shim answers for
     the Node it selects, and does so by ``cwd``, so the session's directory is
-    used. The environment is only ``PATH`` and ``HOME``: nothing of the gateway's
-    own reaches the child, and a ``NODE_OPTIONS`` cannot break the probe.
+    used. That directory is the agent's, and a shim reads its config there, so the
+    caller passes *wrap*: the session's own sandbox and credential mask, applied to
+    the argv for the life of the child (see ``acp/harness/pi.py``). The environment
+    is only ``PATH`` and ``HOME``: nothing of the gateway's own reaches the child,
+    and a ``NODE_OPTIONS`` cannot break the probe.
     """
     env = {"PATH": search_path}
     if os.environ.get("HOME"):
         env["HOME"] = os.environ["HOME"]
     try:
-        completed = subprocess_mod.run(
-            [node, "--version"],
-            cwd=cwd or None,
-            env=env,
-            stdin=subprocess_mod.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_NODE_VERSION_TIMEOUT_S,
-        )
+        with wrap([node, "--version"]) as argv:
+            completed = subprocess_mod.run(
+                argv,
+                cwd=cwd or None,
+                env=env,
+                stdin=subprocess_mod.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_NODE_VERSION_TIMEOUT_S,
+            )
     except (OSError, ValueError, subprocess_mod.SubprocessError):
         return None
-    match = _NODE_VERSION_RE.fullmatch(completed.stdout.strip())
-    if completed.returncode != 0 or not match:
+    if completed.returncode != 0:
         return None
-    major, minor, patch = (int(part) for part in match.groups())
-    return major, minor, patch
-
-
-def _dotted(version: tuple[int, ...]) -> str:
-    return ".".join(str(part) for part in version)
+    return parse_node_version(completed.stdout)
 
 
 def _too_old_issue(
-    found: str, version: tuple[int, int, int] | None, floor: tuple[int, int, int], declared: bool
+    found: str, version: tuple[int, int, int] | None, floor: tuple[int, int, int]
 ) -> str:
-    floor_text = _dotted(floor)
-    source = (
-        "the 'engines' floor in its package.json"
-        if declared
-        else "its package.json declares none, so this gateway assumes it"
-    )
+    floor_text = format_node_version(floor)
     if found and version is not None:
-        what = f"the Node.js it would run under is {found}, v{_dotted(version)}"
+        what = f"the Node.js it would run under is {found}, v{format_node_version(version)}"
         where = f"put it ahead of {os.path.dirname(found)} on PATH"
     else:
         what = "no 'node' is on the session's PATH"
         where = "put it on PATH"
     return (
-        f"pi needs Node.js {floor_text} or newer ({source}), but {what}, and no Node.js "
+        f"pi needs Node.js {floor_text} or newer (the 'engines' floor in its package.json), but {what}, and no Node.js "
         f"that new was found beside pi or later on that PATH. Install Node.js "
         f"{floor_text} or newer and {where}, then start a new chat."
     )
@@ -201,13 +196,13 @@ def choose_pi_node(
     search_path: str,
     *,
     cwd: str = "",
-    declared: bool = True,
+    wrap: ProbeWrap = nullcontext,
 ) -> PiNodeChoice:
     """How to run *pi_bin* so the Node under it meets *floor*.
 
     *search_path* is the PATH the pi child inherits, which is what its shebang's
-    ``env`` searches. *declared* says whether *floor* came from pi's manifest, for
-    the refusal's wording only.
+    ``env`` searches; *floor* is the one pi's manifest declares. *wrap* confines each ``node --version`` child
+    (:func:`_node_version`).
     """
     if platform_compat.IS_WINDOWS:
         return PiNodeChoice()
@@ -221,7 +216,7 @@ def choose_pi_node(
         current, later = (path_nodes[0], path_nodes[1:]) if path_nodes else ("", [])
     else:
         current, later = name, path_nodes
-    version = _node_version(current, search_path, cwd) if current else None
+    version = _node_version(current, search_path, cwd, wrap) if current else None
     if current and version is None:
         return PiNodeChoice()
     if version is not None and version >= floor:
@@ -232,7 +227,7 @@ def choose_pi_node(
         if real in tried or not platform_compat.is_executable_file(candidate):
             continue
         tried.add(real)
-        candidate_version = _node_version(candidate, search_path, cwd)
+        candidate_version = _node_version(candidate, search_path, cwd, wrap)
         if candidate_version is not None and candidate_version >= floor:
             return PiNodeChoice(argv=(candidate, script))
-    return PiNodeChoice(issue=_too_old_issue(current, version, floor, declared))
+    return PiNodeChoice(issue=_too_old_issue(current, version, floor))

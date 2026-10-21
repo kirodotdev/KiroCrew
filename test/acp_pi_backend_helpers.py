@@ -107,8 +107,8 @@ class _PiLaunchRig:
             _record("version", pi_bin)
             return ""
 
-        def _node_choice(session, pi_bin):
-            _record("node", pi_bin)
+        def _node_choice(session, pi_bin, wrap):
+            _record("node", pi_bin, wrap)
             return node_choice or pi_mod.PiNodeChoice()
 
         async def _preflight(preflight, backend, mode):
