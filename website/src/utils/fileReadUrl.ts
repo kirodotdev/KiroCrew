@@ -116,6 +116,21 @@ export function downloadFileName(filePath: string): string {
   return pathBasename(filePath) || 'download'
 }
 
+/** The name a download of a PARTIAL buffer lands under: `.partial` sits BEFORE
+ *  the extension (`release-checklist.partial.md`), not after it
+ *  (`release-checklist.md.partial`), so the OS still reads the file by its real
+ *  type instead of an unknown `.partial` one. A name with no extension to
+ *  preserve -- `Makefile`, a dotfile like `.env`, a trailing-dot name -- just
+ *  takes the suffix appended, since there is no `stem.ext` to split. */
+export function partialDownloadName(filePath: string): string {
+  const name = downloadFileName(filePath)
+  // The LAST dot that is not the name's first character (a leading dot is a
+  // dotfile marker, not an extension separator) and is not trailing.
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return name + '.partial'
+  return name.slice(0, dot) + '.partial' + name.slice(dot)
+}
+
 /** Build the /api/file-stream URL — Range-capable audio/video serving.
  *
  * Media elements need 206 Partial Content for seeking; file-read and

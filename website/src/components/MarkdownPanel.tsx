@@ -71,7 +71,8 @@ interface Props {
    *  read that fills a tab runs before any panel mounts, and the body cannot
    *  tell about itself (a whole file may quote the redaction tag). Decides only
    *  WORDS and a file name once the file is gone: the banner and the close
-   *  prompt say "only part of it", and a download of it is named `.partial`. */
+   *  prompt say "only part of it", and a download of it carries a `.partial`
+   *  tag before the extension (`notes.partial.md`). */
   partial?: boolean
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch, Refresh). Document tabs restamp
