@@ -2830,6 +2830,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # this app's panel, not a core egress path.
         "apps/builtins/code_review_sage/sage_lib/followup.py",
         "apps/builtins/code_review_sage/backend/routes.py",
+        # `backend/routes_parts/publishing` scrubs a dismissed finding's reason before
+        # the run record stores it. Same classification as `backend/routes` above.
+        "apps/builtins/code_review_sage/backend/routes_parts/publishing.py",
         # Dev Fleet's redactor wrapper and the cohesive owners that apply it to
         # the app's own API/state/worktree surfaces, all carrying the same
         # non-core-egress classification. `gateway_routes` is the same surface

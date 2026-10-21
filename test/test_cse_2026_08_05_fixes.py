@@ -76,7 +76,8 @@ class TestSageRoutesErrorDisclosure:
     def test_no_raw_exception_in_502_response(self):
         src = (Path(__file__).resolve().parent.parent
                / "src" / "kiro_crew" / "apps" / "builtins" / "code_review_sage" / "backend" / "routes.py")
-        text = src.read_text(encoding="utf-8")
+        text = "\n".join(p.read_text(encoding="utf-8")
+                         for p in [src, *sorted(src.with_name("routes_parts").glob("*.py"))])
         # Find all lines with status=502 and ensure none pass str(e)
         lines_502 = [line for line in text.splitlines() if "status=502" in line]
         for line in lines_502:

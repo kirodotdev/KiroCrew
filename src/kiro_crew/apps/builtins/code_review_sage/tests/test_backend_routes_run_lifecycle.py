@@ -241,7 +241,11 @@ class TestGroupedPostAppliesKeysPerChange(unittest.TestCase):
 
     def test_the_module_registers_both_new_background_tasks(self):
         """A collected task would leave `posting` / `_CONSOLIDATING` set forever."""
-        src = Path(self.routes.__file__).read_text(encoding="utf-8")
+        facade = Path(self.routes.__file__)
+        src = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in [facade, *sorted(facade.with_name("routes_parts").glob("*.py"))]
+        )
         # Every create_task in this module must keep a strong ref: the set exists
         # precisely because a dropped task strands the flag it was going to clear.
         dispatches = [i for i in range(len(src)) if src.startswith("asyncio.create_task(", i)]
@@ -545,7 +549,9 @@ class TestRetryRepairsTheReviewedIndex(unittest.TestCase):
 
     def test_the_retry_path_calls_record_reviewed(self):
         """Structural: the delivery handler must reach the index, not just save."""
-        with open(self.mod.__file__, encoding="utf-8") as fh:
+        with open(
+            Path(self.mod.__file__).with_name("routes_parts") / "publishing.py", encoding="utf-8"
+        ) as fh:
             src = fh.read()
         task = src.split("async def _post_comments_bg", 1)[1]
         task = task.split("\nasync def ", 1)[0]
