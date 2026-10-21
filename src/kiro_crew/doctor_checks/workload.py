@@ -448,28 +448,49 @@ def _liveness_platform_line() -> str:
 
 
 def _doctor_cron_quarantine(issues: list[str]) -> bool:
-    """Name every copy the gateway moved aside, and how to put it back.
+    """Name every quarantine copy the gateway set aside, and how to recover it.
 
-    The gateway renames an unparseable ``crons.json`` at startup so it can run
-    on an empty schedule. The jobs in the copy do not run until the user
-    restores it. Returns whether it printed the section header.
+    Two kinds, told apart by the file name. A whole-file move-aside
+    (``crons.json.corrupt-<stamp>``) is an unparseable store the gateway renamed
+    at startup so it could run on an empty schedule; its jobs do not run until
+    the user restores it. A per-record sidecar (``crons.json.skipped-<stamp>``)
+    is a backup copy of records that could not be loaded while the rest of the
+    store loaded fine and is still running; the records themselves stay in
+    ``crons.json`` (every save writes them back). Returns whether it printed the
+    section header.
     """
     store, copies = cli_doctor.cron_store_quarantine_copies()
     if not copies:
         return False
+    corrupt = [c for c in copies if ".corrupt-" in c.name]
+    skipped = [c for c in copies if ".skipped-" in c.name]
     print("\nCron Jobs")
-    print(f"  quarantine:  ⚠️  {len(copies)} unreadable schedule file(s) moved aside")
-    for copy in copies:
-        print(f"               {render._safe_display(str(copy))}")
-    print("               `crons.json` was not a readable schedule (invalid JSON,")
-    print("               or no `jobs` list), so the gateway moved it aside")
-    print("               unchanged and started with no scheduled tasks.")
-    print("               Jobs in the copy do not run.")
-    print("               Restore: fix the copy, run `kirocrew stop`,")
-    print(f"               move the copy back to {store},")
-    print("               then start the gateway. That replaces any task added")
-    print("               since. Delete the copy once you no longer need it.")
-    issues.append(f"{len(copies)} unreadable cron store copy(ies) set aside")
+    if corrupt:
+        print(f"  quarantine:  ⚠️  {len(corrupt)} unreadable schedule file(s) moved aside")
+        for copy in corrupt:
+            print(f"               {render._safe_display(str(copy))}")
+        print("               `crons.json` was not a readable schedule (invalid JSON,")
+        print("               or no `jobs` list), so the gateway moved it aside")
+        print("               unchanged and started with no scheduled tasks.")
+        print("               Jobs in the copy do not run.")
+        print("               Restore: fix the copy, run `kirocrew stop`,")
+        print(f"               move the copy back to {store},")
+        print("               then start the gateway. That replaces any task added")
+        print("               since. Delete the copy once you no longer need it.")
+        issues.append(f"{len(corrupt)} unreadable cron store copy(ies) set aside")
+    if skipped:
+        print(f"  quarantine:  ⚠️  {len(skipped)} skipped-record sidecar(s) kept aside")
+        for copy in skipped:
+            print(f"               {render._safe_display(str(copy))}")
+        print("               one or more records in `crons.json` could not be loaded")
+        print("               (a hand-edit or a partial migration); the rest of the")
+        print("               schedule loaded and is running. The records stay in")
+        print("               `crons.json` unchanged but do not run; each sidecar is a")
+        print("               backup copy of them.")
+        print(f"               Fix: correct or remove the record in {store}")
+        print("               while the gateway is stopped, or re-add the job")
+        print("               (`kirocrew cron add ...`). Delete the sidecar when done.")
+        issues.append(f"{len(skipped)} cron skipped-record sidecar(s) kept aside")
     return True
 
 
