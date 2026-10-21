@@ -37,6 +37,7 @@ from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixt
 
 import kiro_crew.sel as sel_mod
 from kiro_crew import platform_compat
+from kiro_crew.apps import teardown
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
@@ -258,7 +259,15 @@ class TestRevocation(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        # Use platform_compat.rmtree_force instead of TemporaryDirectory.cleanup
+        # so that read-only files written by the crew store (which the Windows
+        # CRT cannot unlink without first clearing the read-only attribute) do
+        # not leave the directory behind and trip the tmp-residue guard.  Also
+        # unregister the process-global slot-close hook that watchdog_cycle
+        # installs with root=self.root, so no background callback can open
+        # files in the directory while it is being removed.
+        self.addCleanup(platform_compat.rmtree_force, self._tmp.name)
+        self.addCleanup(teardown.unregister_slot_close_hook, cr.APP_NAME)
         self.root = Path(self._tmp.name)
         reset_singleton()
         self.addCleanup(reset_singleton)
@@ -444,12 +453,10 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(platform_compat.rmtree_force, self._tmp.name)
         self.root = Path(self._tmp.name)
         reset_singleton()
         self.addCleanup(reset_singleton)
-        from kiro_crew.apps import teardown
-
         # ``watchdog_cycle`` re-registers the dismissal hook, which is process-wide
         # state; drop it again so these tests cannot change another's outcome.
         self.addCleanup(teardown.unregister_slot_close_hook, cr.APP_NAME)
