@@ -1209,6 +1209,9 @@ class WorkspaceService:
             else:
                 self._boards.pop(key, None)
                 self._board_refreshed.pop(key, None)
+            # The PR tabs before the board, so the board (and its Workers tab)
+            # can link each one. Its own failure costs nothing else.
+            await self._publish_pr_tabs(binding, record, board)
             if board is not None and self._publish_board is not None:
                 # First, so the bar below links the board message this pass
                 # posted. The board's pointers live on the channel's surface
@@ -1467,6 +1470,26 @@ class WorkspaceService:
                 await self._send_bar(record, state)
             if (record.bar_hash, record.slack_off) != before:
                 await asyncio.to_thread(self._store.put, record)
+
+    async def _publish_pr_tabs(
+        self, binding: Any, record: WorkspaceRecord, board: BoardSnapshot | None
+    ) -> None:
+        """Native pull-request tabs for the channel's newest open PRs (:mod:`..tabs`).
+
+        The channel's own PR and its workers' -- the ones the context bar and the
+        board show, from this same pass -- at most two, newest first.
+        """
+        if record.slack_off:
+            return
+        from kiro_crew.slack.code_channels import tabs
+
+        own = (
+            tabs.PrRef(record.pr_number, record.pr_url, record.pr_state)
+            if record.pr_number
+            else None
+        )
+        wanted = tabs.wanted_prs(own, board.rows if board is not None else ())
+        await tabs.sync_pr_tabs(binding, wanted)
 
     async def _publish_resource(self, record: WorkspaceRecord) -> None:
         """Set the channel's ``agent_resource`` to its pull request, when that changed.

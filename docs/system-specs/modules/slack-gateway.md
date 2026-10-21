@@ -205,6 +205,8 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
 | `slack/code_channels/workspace/` | A code channel's workspace: per-channel git worktree, the Code-tab diff (`setView type=diff`), the context bar (repo/branch/PR/CI). See [Code-channel workspace](#code-channel-workspace) |
 | `slack/code_channels/board/` | A conductor-led code channel's work board: the pinned, edited-in-place board message, the context bar's Workers item, the combined per-worker Code-tab diff and the wrap-up's worker outcomes. See [Conductor work board](#conductor-work-board) |
+| `slack/code_channels/tabs.py` | The channel's own view tabs: native `pull_request` tabs for its newest open PRs and the interactive Workers `block_kit` tab, inside the five-tab budget of `views.py` |
+| `slack/code_channels/worker_stop.py` | The Workers tab's Stop: one worker's turn, after the channel-button gates, a check that the click came from this channel's own Workers tab, and the context-bar Stop's authorization |
 
 ## Composition
 
@@ -2265,11 +2267,50 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   read-back has its existing comments baselined. At most 20 per read, 1,000 chars each.
 - **View tabs (`views.py`).** Every tab this gateway opens is recorded on the surface
   record; that record is the only proof a view is ours (`listViews` carries no owner).
-  A `setView` refused `too_many_views` reads `listViews`, drops record entries Slack no
-  longer lists (a vanished Plan tab is re-attached on the next publish), removes the
-  least recently written listed view of OURS (never the Plan tab or the diff) and sends
-  the write once more; with nothing of ours to remove the tool says so. The diff
-  publish uses the same path.
+  The five-tab budget has three tiers: the channel's own tabs (Plan `plan`, the Code
+  tab's diff, Workers `workers`) are never removed to make room; then the native PR
+  tabs (`pr-<n>`, type `pull_request`, at most two); then the agent's html/block_kit
+  tabs. A `setView` refused `too_many_views` reads `listViews`, drops record entries
+  Slack no longer lists (a vanished Plan tab is re-attached on the next publish),
+  removes ONE listed view of ours -- an agent tab first (least recently written), the
+  oldest PR tab only to fit a channel tab -- and sends the write once more; a PR tab
+  never displaces another PR tab or makes room for an agent tab. With nothing of ours
+  to remove the tool says so. The agent's tool refuses the reserved keys (`plan`,
+  `workers`, `diff`, `pr-*`) and `type=pull_request`.
+- **PR tabs and the Workers tab (`tabs.py`).** Published by the workspace refresh on
+  its own snapshot, before the board. PR tabs: the channel's own PR and the board's
+  worker PRs, open or draft and forge-confirmed, newest two by number
+  (`tabs.wanted_prs`); upserted by `pr-<n>` (name `PR #<n>`, `pr_url`), removed by
+  recorded view id when no longer wanted; nothing is sent while the record already
+  holds the wanted set. Recorded tabs are re-checked against `listViews` at most every
+  15 minutes so a tab someone removed is reopened. The Workers tab: a `block_kit` view
+  (`render.workers_view_blocks`) from the board's own snapshot (so its text is the
+  board's redacted, de-pinged, host-scrubbed set), per worker the title, a status line
+  (state, the call in flight, elapsed), the PR linked to its tab with the CI count, and
+  Open in dashboard (a url button, no credential) plus Stop (outlined, confirm dialog)
+  while working; settled workers fold into one line each. Written only when its blocks
+  (minus the "Updated" stamp) changed, at most every 15 s, a failure retried with
+  backoff through the board's own re-arm. A refusal is logged once per channel/tab/code
+  and never breaks the channel: `invalid_view_type` / `invalid_pr_url` are not asked
+  again in the process, `too_many_views` with nothing of ours to remove after 10
+  minutes. Archived, stopped or policy-denied channels get no tab writes.
+- **Tab deep links.** A `rich_text` `channel` element with `tab_id` = the `setView`
+  `view_id` (the Code tab's static `code`), only ever from ids recorded as ours and
+  shaped like Slack ids. The board (plan look) gets a `Tabs: Workers · Code` line and
+  each task's `PR #n` links its PR tab (else GitHub); a board refused with the links
+  is resent without them before the plan look is given up. The wrap-up links the Code
+  and PR tabs and is reposted without them if refused. Context-bar items take only a
+  `url` (no tab id), so the bar keeps its GitHub links.
+- **Stop from the Workers tab (`worker_stop.py`).** A `block_actions` click
+  (`kc_cc_worker_stop`) passes `actions.admit` (one user, workspace, `channels`
+  policy, bound channel -- the context bar's gates), then: the payload container's
+  view id must equal the channel's recorded Workers view; the presser must pass
+  `actions._may_stop` (the context-bar Stop's rule); the button value is an item id
+  resolved on THIS channel's board via `board.source.read_board` (the scope-checked
+  conductor ledger read) -- a session key in the payload is never read and the
+  conductor itself is never a target. Then `stop_slot_turn(..., escalate=False)` on
+  that worker's slot only; a repeat within 5 s is answered, not re-sent. Audited as
+  `slack.code_channel.stop`; refusals are ephemeral. `kc_cc_worker_open` is a no-op.
 - **Resource and live summary.** A channel PR sets `agent_resource`
   (`pull_request`, `github`, `<title> (#N[, merged|closed|draft])`, redacted, within
   Slack's limits), resent only when it changes. The work board message is recorded as

@@ -167,28 +167,9 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
     resources = f"channel={click.channel} action={click.key[:64] or '-'}"
     if not _first_delivery(click):
         return "duplicate"
-    if not click.user:
-        surface.audit("", OPERATION, "denied", resources, "no single clicking user")
-        return "denied"
-    if not surface.workspace_admitted(click.team):
-        surface.audit(
-            click.user,
-            OPERATION,
-            "denied",
-            f"{resources} team_id={click.team}",
-            "enterprise_origin_mismatch",
-        )
-        return "denied"
-    from kiro_crew.messaging.identity import channel_inbound_permitted
-
-    if not await channel_inbound_permitted("slack"):
-        surface.audit(click.user, OPERATION, "denied", resources, "channels governance policy")
-        return "denied"
     respond = _responder(click.channel, click.user)
-    binding = await asyncio.to_thread(store().get_binding, click.channel) if click.channel else None
+    binding = await admit(click, respond, resources)
     if binding is None:
-        surface.audit(click.user, OPERATION, "denied", resources, "not a bound code channel")
-        await respond(NOT_A_CODE_CHANNEL_TEXT)
         return "denied"
     if click.key == ACTION_CREATE_PR:
         from kiro_crew.slack.code_channels import commands
@@ -210,6 +191,46 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
     surface.audit(click.user, OPERATION, "denied", resources, "unknown action")
     await respond(UNKNOWN_ACTION_TEXT)
     return "unknown"
+
+
+async def admit(
+    click: Click,
+    respond: Callable[[str], Awaitable[None]],
+    resources: str,
+    *,
+    operation: str = OPERATION,
+) -> Binding | None:
+    """The gates every channel button passes before its own path; the binding, or None.
+
+    One clicking user, the event's workspace admitted, the ``channels`` policy
+    admitting inbound Slack, and a bound code channel. Each refusal is SEL-audited
+    under *operation*; the last is also told to the person privately. Shared by the
+    context bar's actions and the Workers tab's Stop (:mod:`.worker_stop`), so
+    neither adds a rule of its own.
+    """
+    if not click.user:
+        surface.audit("", operation, "denied", resources, "no single clicking user")
+        return None
+    if not surface.workspace_admitted(click.team):
+        surface.audit(
+            click.user,
+            operation,
+            "denied",
+            f"{resources} team_id={click.team}",
+            "enterprise_origin_mismatch",
+        )
+        return None
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+
+    if not await channel_inbound_permitted("slack"):
+        surface.audit(click.user, operation, "denied", resources, "channels governance policy")
+        return None
+    binding = await asyncio.to_thread(store().get_binding, click.channel) if click.channel else None
+    if binding is None:
+        surface.audit(click.user, operation, "denied", resources, "not a bound code channel")
+        await respond(NOT_A_CODE_CHANNEL_TEXT)
+        return None
+    return binding
 
 
 def _may_stop(orch: Any, binding: Binding, user: str) -> bool:
