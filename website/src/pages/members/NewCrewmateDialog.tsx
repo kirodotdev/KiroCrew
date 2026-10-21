@@ -639,8 +639,12 @@ export default function NewCrewmateDialog({
         }
         // The kept memory picked here could not be used (another crewmate took
         // it meanwhile, or it no longer matches its record): nothing was
-        // created, and the list is re-read so the stale row goes.
+        // created, the pick goes back to an empty memory where the user can see
+        // it, and the list is re-read so the stale row goes. A pick is always
+        // sent as picked, so a stale one is refused by the server rather than
+        // quietly becoming a fresh memory.
         if (e.status === 409 && code === 'member_memory_unavailable' && body.adopt_memory_store) {
+          setMemory('')
           void refetchKeptMemory()
           fail(t('pages.membersPage.create_memory_unavailable'))
           return
@@ -782,7 +786,7 @@ export default function NewCrewmateDialog({
       ...(model !== INHERIT_MODEL ? { model } : {}),
       avatar: effectiveLook,
       ...(firstGreeting ? { first_greeting: true as const } : {}),
-      ...(memory && keptStores.some((s) => s.name === memory) ? { adopt_memory_store: memory } : {}),
+      ...(memory ? { adopt_memory_store: memory } : {}),
     })
   }
 

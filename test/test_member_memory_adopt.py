@@ -7,6 +7,7 @@ for a store no crewmate owns, and only when named.
 
 from __future__ import annotations
 
+import json
 import unittest.mock
 
 import pytest
@@ -19,6 +20,7 @@ from kiro_crew.member_memory_adopt import (
     ownerless_member_stores,
     provision_or_adopt_member_memory,
 )
+from kiro_crew.members import member_slot_key
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     UnknownMemoryStore,
@@ -241,6 +243,104 @@ class TestTheListing:
         assert [row["name"] for row in ownerless_member_stores(KiroCrewConfig.load())] == [store]
         shutil.rmtree(memory_store_dir_for(store))
         assert ownerless_member_stores(KiroCrewConfig.load()) == []
+
+
+class TestTheLockedWriteRechecks:
+    """What the snapshot could not see is refused by the create's own locked write."""
+
+    @staticmethod
+    def _kept_store() -> tuple[str, str]:
+        cfg = KiroCrewConfig.load()
+        cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        store = provision_or_adopt_member_memory(cfg, "reviewer")
+        member_id = cfg.agents["reviewer"].member_id
+        del cfg.agents["reviewer"]
+        cfg.save()
+        return store, member_id
+
+    @staticmethod
+    def _adopting(store: str):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["scout"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        provision_or_adopt_member_memory(cfg, "scout", store)
+        return cfg
+
+    def test_an_adopt_that_another_process_published_first_loses(self) -> None:
+        from kiro_crew.memory_stores import persist_member_config
+
+        store, _ = self._kept_store()
+        late = self._adopting(store)
+        early = self._adopting(store)
+        early.agents["ranger"] = early.agents.pop("scout")
+        early.memory_stores[store].owner_member = "ranger"
+        persist_member_config(early, "ranger", create=True)
+        with pytest.raises(UnknownMemoryStore, match="already bound"):
+            persist_member_config(late, "scout", create=True)
+        saved = KiroCrewConfig.load()
+        assert "scout" not in saved.agents
+        assert saved.memory_stores[store].owner_member == "ranger"
+
+    def test_a_legacy_crewmate_written_meanwhile_with_the_same_slug(self) -> None:
+        from kiro_crew.memory_stores import persist_member_config
+
+        store, member_id = self._kept_store()
+        adopting = self._adopting(store)
+        other = KiroCrewConfig.load()
+        other.agents[member_id] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        other.save()
+        with pytest.raises(UnknownMemoryStore, match="added concurrently"):
+            persist_member_config(adopting, "scout", create=True)
+        saved = KiroCrewConfig.load()
+        assert "scout" not in saved.agents
+        assert saved.memory_stores[store].owner_member == "reviewer"
+
+    @pytest.mark.asyncio
+    async def test_a_create_that_fails_after_the_adopt_keeps_the_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.member_workspace import MemberWorkspaceUnavailable
+
+        store, member_id = self._kept_store()
+
+        def _refuse(cfg, name):
+            raise MemberWorkspaceUnavailable("workspace_unavailable", "no room")
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.provision_member_workspace", _refuse
+        )
+        async with TestClient(TestServer(_app())) as client:
+            refused = await _create(client, "scout", adopt_memory_store=store)
+            assert refused.status == 409
+        saved = KiroCrewConfig.load()
+        assert "scout" not in saved.agents
+        assert saved.memory_stores[store].owner_member == "reviewer"
+        assert saved.memory_stores[store].owner_member_id == member_id
+        assert memory_store_dir_for(store).joinpath("memory.db").is_file()
+        assert [row["name"] for row in ownerless_member_stores(saved)] == [store]
+
+    def test_a_thread_kept_under_a_former_name_only_is_refused(self) -> None:
+        from kiro_crew.members import dm_binding_path
+
+        store, member_id = self._kept_store()
+        path = dm_binding_path(member_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # A binding with no member id, attributed by name: the name derives the slug.
+        path.write_text(
+            json.dumps(
+                {
+                    "member_id": "",
+                    "member": member_id,
+                    "slug": member_id,
+                    "slot_key": member_slot_key(member_id, store),
+                    "memory_store": store,
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = KiroCrewConfig.load()
+        cfg.agents["scout"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        with pytest.raises(UnknownMemoryStore, match="kept under another name"):
+            provision_or_adopt_member_memory(cfg, "scout", store)
 
 
 class TestTheCli:

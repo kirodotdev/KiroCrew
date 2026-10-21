@@ -27,7 +27,12 @@ the database identity is unchanged; only the record's display `owner_member`
 follows the new name. It is refused unless no crewmate holds that id or binds the
 store, no legacy crewmate derives that id as its slug, the database identity is
 exactly `(owner_member_id, store)`, and no kept chat-thread binding under the slug
-is keyed by a former name only. A name match never adopts.
+is keyed by a former name only. A name match never adopts. Adopting deliberately
+reuses that identity, so everything keyed by the member id or its slug (the kept
+chat thread, member rules, activity) follows the new crewmate too; this is the
+one exception to the rule above, and only an explicit owner action takes it.
+The create's locked write re-checks that no crewmate on disk binds the store,
+holds the id, or (with no member id) derives it as its slug.
 Manual context resolves captured member IDs strictly; only explicitly named member
 inputs resolve configured aliases, never as a fallback for a missing captured ID.
 Cross-member `target_member` dispatch follows existing tool, delegation and app

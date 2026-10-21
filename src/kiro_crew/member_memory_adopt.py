@@ -44,7 +44,8 @@ from kiro_crew.memory_stores import (
 
 def _owner_id_of(record: object) -> str:
     """The record's ``owner_member_id`` when it is a usable identity, else ``""``."""
-    if getattr(record, "memory_version", 1) != 2:
+    version = getattr(record, "memory_version", 1)
+    if type(version) is not int or version != 2:
         return ""
     owner_id = getattr(record, "owner_member_id", "")
     return owner_id if isinstance(owner_id, str) else ""

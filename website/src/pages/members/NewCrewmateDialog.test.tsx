@@ -514,6 +514,9 @@ describe('NewCrewmateDialog', () => {
         'That kept memory can no longer be used',
       )
       await waitFor(() => expect(vi.mocked(api.memoryOwnerlessStores).mock.calls.length).toBeGreaterThan(reads))
+      // The pick is put back where the user can see it, not kept as a stale value
+      // a retry would quietly drop.
+      expect(screen.getByRole('combobox', { name: 'Memory' }).textContent?.trim()).toBe('Start with an empty memory')
     })
   })
 })
