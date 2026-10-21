@@ -234,13 +234,25 @@ came from a messaging channel still cannot, every other card kind stays refused,
 and `propose_change`, which names its crewmate in the request, stays user-turn
 only. As always, nothing changes until the user presses it.
 
+> **Accepted 2026-10-20 (product owner, rayrayxu):** a `capabilities` card whose
+> additions are only servers this gateway already runs joins the three kinds above,
+> so a worker report that names a missing capability can raise its card from a
+> turn the user did not send; a registry install, a skill or a raw draft stays
+> user-turn only.
+
 This amends [rfc-crewmate-guides-and-mate.md](rfc-crewmate-guides-and-mate.md)'s
-rule that a turn the user did not send gets `not_user_turn`, for these three card
+rule that a turn the user did not send gets `not_user_turn`, for these four card
 kinds in the crewmate's own thread. It is acceptable because a card is a
 proposal, not a change: the turn may have read untrusted content, but whatever it
 proposes is shown to the user as a before-and-after card and does nothing until
-they press Apply, the card can only name the crewmate's own goal, milestones and
-check-ins, and every other kind stays refused.
+they press Apply, and every other kind stays refused. The three goal kinds can
+only name the crewmate's own goal, milestones and check-ins. The `capabilities`
+case widens what the crewmate's worker can call, so it is held tighter: its
+additions are limited to servers this gateway already runs (nothing is installed
+or fetched), the grant stays bounded by `POLICY ∩ PROFILE` like any other, the
+card shows the worker's grants before and after, an approval it would widen
+keeps its acknowledgement, and a turn from a messaging channel is still
+refused.
 
 The weekly report says what moved; the monthly review asks whether the direction
 is still right. Without the monthly step, key results set once would never be

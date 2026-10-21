@@ -194,6 +194,7 @@ from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
     _crew_log_lineage,
     _crew_log_model,
     _crew_log_seed_tree,
+    _crew_log_tree_depth,
     _crew_log_workspace,
     _slot_predecessor_store,
 )
@@ -299,6 +300,7 @@ from kiro_crew.dashboard.chat_turn.native_cards import (
     _retain_terminal_native,
     _safe_native_crew_debug_title,
 )
+from kiro_crew.dashboard.chat_turn.permission_prompt import _on_permission_prompt
 from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
     _checklist_resync,
     _expand_dollar_skills,
@@ -417,6 +419,7 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _credential_tool_hint_for,
     _name_grant_refusal_for,
     _native_crew_should_auto_approve,
+    _on_permission_request,
     _persistable_session_policy,
     _pre_tool_block_reason,
     _pre_tool_hooks_should_block,
@@ -426,8 +429,11 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _spec_keys_notice,
     _spec_withheld_hooks_notice,
 )
+from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result
 from kiro_crew.dashboard.chat_turn.tool_rows import (
     _MAX_TCID_SOURCES,
+    _on_tool_call,
+    _on_tool_call_update,
     _persist_tool_result_rows,
     _refined_tool_row_content,
     _tcid_identity_key,
@@ -570,6 +576,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
+from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -1560,23 +1567,16 @@ async def _run_chat(
     _compaction_started = turn._compaction_started
     _current_replay_message = turn._current_replay_message
     _deferred_cut_text = turn._deferred_cut_text
-    _dir_consumed_out = turn._dir_consumed_out
     _escalation = turn._escalation
-    _failed_write_calls = turn._failed_write_calls
     _incoming_message = turn._incoming_message
     _l1_escalated = turn._l1_escalated
     _l1_interrupted = turn._l1_interrupted
     _leak_card_posted = turn._leak_card_posted
     _native_card_output = turn._native_card_output
     _native_card_output_len = turn._native_card_output_len
-    _native_result_seen = turn._native_result_seen
     _native_tc_card = turn._native_tc_card
     _native_tracker = turn._native_tracker
     _noticed_leak = turn._noticed_leak
-    _pending_dir_for_digest = turn._pending_dir_for_digest
-    _pending_dir_tool = turn._pending_dir_tool
-    _pending_input_digest = turn._pending_input_digest
-    _pending_tools = turn._pending_tools
     _person_steered_turn = turn._person_steered_turn
     _recovering_compaction = turn._recovering_compaction
     _recovering_infra = turn._recovering_infra
@@ -1589,15 +1589,12 @@ async def _run_chat(
     _responsive_recovery = turn._responsive_recovery
     _responsive_turn = turn._responsive_turn
     _retrying_empty = turn._retrying_empty
-    _rows_before_turn = turn._rows_before_turn
     _saw_terminal_event = turn._saw_terminal_event
     _saw_text_chunk = turn._saw_text_chunk
-    _seen_tool_identity = turn._seen_tool_identity
     _shell_tool_calls = turn._shell_tool_calls
     _stop_gen_turn_start = turn._stop_gen_turn_start
     _tcid_collapsed = turn._tcid_collapsed
     _tcid_first_source = turn._tcid_first_source
-    _terminal_directive_tcids = turn._terminal_directive_tcids
     _terminal_synthetic = turn._terminal_synthetic
     _thinkred = turn._thinkred
     _ttft_t0 = turn._ttft_t0
@@ -1605,7 +1602,6 @@ async def _run_chat(
     _turn_billed = turn._turn_billed
     _turn_emitted = turn._turn_emitted
     _turn_flushed_visible_text = turn._turn_flushed_visible_text
-    _turn_started = turn._turn_started
     _turn_successful_tool_call_ids = turn._turn_successful_tool_call_ids
     _turn_thought = turn._turn_thought
     _turn_tool_calls = turn._turn_tool_calls
@@ -1620,17 +1616,19 @@ async def _run_chat(
     _flow = await _turn_slash_gate(turn)
     if _flow is _Flow.END:
         return
-    _batch_cascade_steered = turn._batch_cascade_steered
-    _compact_after_turn_noticed = turn._compact_after_turn_noticed
     _is_monitor_wake = turn._is_monitor_wake
     _is_synthetic = turn._is_synthetic
-    _mirror_active_task = turn._mirror_active_task
-    _mirror_active_task_title = turn._mirror_active_task_title
-    _mirror_task_counter = turn._mirror_task_counter
-    _repeat_loop = turn._repeat_loop
     _this_turn_is_clear = turn._this_turn_is_clear
     first_word = turn.first_word
     is_slash = turn.is_slash
+    # Where the most recent compaction started inside `assistant_text`. A
+    # synthesized terminal arrives only at turn end, so the accumulator still
+    # holds any unfinished pre-compaction fragment, and the continuation gate
+    # judges only the text after this offset. A segment cut empties the
+    # accumulator and the next segment is wholly post-compaction, so the first
+    # chunk appended to an empty accumulator zeroes the offset: no cut site has
+    # to clear it, and a cut with no text after it leaves nothing to judge.
+    _compaction_text_offset = 0
     try:
         _flow = await _turn_admit(turn)
         if _flow is _Flow.END:
@@ -2061,7 +2059,6 @@ async def _run_chat(
         _crew_log_step = turn._crew_log_step
         _crew_log_step_t0 = turn._crew_log_step_t0
         _mirror_chan = turn._mirror_chan
-        _mirror_stream_ts = turn._mirror_stream_ts
         _mirror_thread = turn._mirror_thread
         _stall_command = turn._stall_command
         _stall_evidence = turn._stall_evidence
@@ -2130,7 +2127,9 @@ async def _run_chat(
             if hasattr(event, "tool_call_id") and event.tool_call_id:
                 _raw_tcid = event.tool_call_id
                 _tcid, _ = redact_exfiltration_urls(_raw_tcid)
+                turn._tcid = _tcid
                 _tcid, _ = redact_credentials(_tcid)
+                turn._tcid = _tcid
                 event.tool_call_id = _tcid
                 # The raw id is gone after that assignment, and every later reader
                 # sees only the redacted value, so whether that value still names
@@ -2175,13 +2174,14 @@ async def _run_chat(
                 if in_tool_group:
                     _flush_text_stream(turn)
                     _open_construct = open_construct_at_end(turn.assistant_text)
-                    if turn.assistant_text and _open_construct:
+                    turn._open_construct = _open_construct
+                    if turn.assistant_text and turn._open_construct:
                         _deferred_cut_text = turn.assistant_text
                         turn._deferred_cut_text = _deferred_cut_text
                         logger.debug(
                             "segment cut deferred on %s — %s still open",
                             slot.key,
-                            _open_construct,
+                            turn._open_construct,
                         )
                     elif turn.assistant_text:
                         _flush_segment(state, slot, turn.assistant_text)
@@ -2196,9 +2196,10 @@ async def _run_chat(
                     # are complete — mark any that weren't already marked
                     # (e.g. tools with no output).
                     for m in reversed(slot.messages):
-                        if m.get("role") == "tool" and not m.get("meta", {}).get("done"):
-                            m.setdefault("meta", {})["done"] = True
-                            tcid = m.get("meta", {}).get("tool_call_id", "")
+                        turn.m = m
+                        if turn.m.get("role") == "tool" and not turn.m.get("meta", {}).get("done"):
+                            turn.m.setdefault("meta", {})["done"] = True
+                            tcid = turn.m.get("meta", {}).get("tool_call_id", "")
                             if tcid:
                                 state.broadcast_ws(
                                     "tool_result",
@@ -2212,7 +2213,7 @@ async def _run_chat(
                         # A `card` row is a change card / guide offer the
                         # tool group's own call put into the conversation, so
                         # the scan reads past it like the tool rows around it.
-                        elif m.get("role") not in ("tool", "permission", "chunk", "card"):
+                        elif turn.m.get("role") not in ("tool", "permission", "chunk", "card"):
                             break
                     # The same inference for the log. A tool that produced no
                     # output sent no result frame, so its call is still open here;
@@ -2289,6 +2290,8 @@ async def _run_chat(
                 if event.message_id:
                     slot.segment_message_id = event.message_id
                 _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
+                if not turn.assistant_text:
+                    _compaction_text_offset = 0
                 turn.assistant_text += safe_chunk
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text
@@ -2369,3007 +2372,28 @@ async def _run_chat(
                 _turn_thought = True
                 turn._turn_thought = _turn_thought
             elif event.kind == EVENT_TOOL_CALL:
-                _turn_tool_calls += 1
-                turn._turn_tool_calls = _turn_tool_calls
-                _repeat_loop.note_call(
-                    event.tool_call_id, event.tool_name or "", event.tool_input, event.title
-                )
-                if turn._terminal_directive_applied:
-                    _activity_after_terminal += 1
-                    turn._activity_after_terminal = _activity_after_terminal
-                if (
-                    event.is_shell
-                    and event.tool_call_id
-                    and len(_shell_tool_calls) < _MAX_TCID_SOURCES
-                ):
-                    _shell_tool_calls.add(event.tool_call_id)
-                if event.tool_call_id:
-                    if is_coding_event(
-                        event.tool_name or "",
-                        event.tool_kind or "",
-                        bool(event.is_shell),
-                        event.mcp_server_name or "",
-                    ):
-                        # Retain only ids that the turn's shared identity tracker
-                        # still proves name one call. Its first-source map is
-                        # already capped at `_MAX_TCID_SOURCES`, so this set stays
-                        # within the same bound without an independent admission
-                        # cap. A key omitted by that cap is tallied; a collapsed
-                        # key is withheld as ambiguous rather than misreported as
-                        # a cap drop.
-                        _wt_key = _tcid_identity_key(event.tool_call_id)
-                        if (
-                            _wt_key
-                            and _wt_key in _tcid_first_source
-                            and _wt_key not in _tcid_collapsed
-                        ):
-                            _wt_pending_coding.add(_wt_key)
-                        elif _wt_key and _wt_key not in _tcid_first_source:
-                            _wt_pending_dropped += 1
-                            turn._wt_pending_dropped = _wt_pending_dropped
-                _turn_tool_identities.append(
-                    (
-                        event.tool_call_id or "",
-                        event.mcp_server_name or "",
-                        event.tool_name or "",
-                        event.tool_identity_trusted is True,
-                    )
-                )
-                # Flush pre-tool text silently (no broadcast) so it persists,
-                # but keep the streaming message in place for correct tool ordering.
-                _flush_text_stream(turn)
-                if not in_tool_group and turn.assistant_text:
-                    _open_construct = open_construct_at_end(turn.assistant_text)
-                    if _open_construct:
-                        _deferred_cut_text = turn.assistant_text
-                        turn._deferred_cut_text = _deferred_cut_text
-                        logger.debug(
-                            "segment cut deferred on %s — %s still open",
-                            slot.key,
-                            _open_construct,
-                        )
-                    else:
-                        _flush_segment(state, slot, turn.assistant_text, broadcast=False)
-                        turn.assistant_text = ""
-                        _turn_flushed_visible_text = True
-                        turn._turn_flushed_visible_text = _turn_flushed_visible_text
-                # AFTER the flush, because seq is the order a reader folds on and
-                # the model narrating before it calls a tool is the common case:
-                # `_flush_segment` is what appends this turn's `message/sent`, so
-                # emitting the call first put the tool ahead of the text that
-                # preceded it and a fold would read the narration as the call's
-                # result.
-                crew_log_emit.on_tool_called(
-                    _crew_log_sid,
-                    _crew_log_turn_no,
-                    name=event.tool_name or "",
-                    server=event.mcp_server_name or "",
-                    kind=event.tool_kind or "",
-                    call_id=event.tool_call_id or "",
-                    # Digested to a hash and a size, never recorded: that answers
-                    # "same arguments as last time" and "how big was it" without
-                    # the crew log becoming where a shell command's secrets land.
-                    # This is the already-redacted display string, so a value the
-                    # user could not see is not hashed into a durable file either.
-                    args=event.tool_input or "",
-                )
-                in_tool_group = True
-                turn.in_tool_group = in_tool_group
-                _turn_emitted = True  # tool side effect — transient retry now unsafe
-                turn._turn_emitted = _turn_emitted
-                await _report_consumed(turn, irreversible=True)
-                # Broadcast for real-time visibility and persist
-                _tool_payload = _tool_call_ws_payload(event)
-                _tool_payload["slot"] = slot.key
-                # Snapshot file BEFORE write tools execute. Accumulates per-turn,
-                # flushed to assistant message meta in _flush_file_changes on turn end.
-                # Prefer the in-band diff_old_text from the ACP content block
-                # (authoritative) over a disk read which races with the write.
-                # Offloaded: strReplace reconstruction reads the file from
-                # disk, and a slow/hung filesystem must not stall the loop.
-                _file_snapshot = await asyncio.to_thread(
-                    _snapshot_write_target,
-                    event.raw_tool_params,
-                    diff_old_text=event.diff_old_text,
-                    diff_path=event.diff_path,
-                )
-                if _file_snapshot:
-                    _record_turn_snapshot(
-                        slot,
-                        _file_snapshot,
-                        _tcid_identity_key(getattr(event, "tool_call_id", None)),
-                    )
-                state.broadcast_ws(
-                    "tool_call",
-                    _tool_payload,
-                )
-                # A proposed call is not an executed touch. Snapshot only raw
-                # strings here; the terminal result releases them to the walker.
-                _git_repo_touches.note_tool_call(
-                    slot,
-                    event.raw_tool_params,
-                    tool_call_id=event.tool_call_id or "",
-                    background_tasks=getattr(state, "_background_tasks", None),
-                    tool_kind=event.tool_kind or "",
-                    diff_path=event.diff_path or "",
-                    is_shell=bool(event.is_shell),
-                )
-                # AFTER the live ``tool_call`` broadcast above and BEFORE the
-                # row is appended: the pill the open tab draws is not delayed by
-                # the annotation, and the record reaches both doors -- the
-                # ``chat_message`` frame ``append`` broadcasts from inside the
-                # call, and the persisted transcript line -- from one write.
-                # Returns None for every session this seam is off or unsampled
-                # for, which is every session by default.
-                _tool_row_meta = _tool_meta(event)
-                _risk_meta = await _tool_risk_meta(
-                    state,
-                    slot,
-                    event,
-                    session_key=session_key,
-                    message=message,
-                    calls_this_turn=_turn_tool_calls,
-                )
-                if _risk_meta:
-                    _tool_row_meta = {**(_tool_row_meta or {}), **_risk_meta}
-                slot.append(
-                    "tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_row_meta
-                )
-                sel().log_tool_invocation(
-                    session_key=session_key,
-                    agent=slot.agent or "kirocrew",
-                    source="dashboard",
-                    tool_name=_redact_display_text(event.title),
-                    tool_kind=event.tool_kind,
-                    outcome="invoked",
-                )
-                # AskUserQuestion: validate, then post through the server-side
-                # owner so the card carries a ``card_id`` and retires with the
-                # next user row / consumed steer like every other question card.
-                if event.title == "AskUserQuestion" and event.tool_input:
-                    await _post_native_question_card(state, slot.key, event.tool_input)
-                # Fire PreToolUse hooks for auto-approved tools.
-                # NOTE: For EVENT_TOOL_CALL, hooks are informational only - the tool
-                # is already running (auto-approved by kiro-cli). Hook results cannot
-                # block execution. Hook scripts can log, audit, or trigger side effects.
-                _raw = event.title or ""
-                if _raw.startswith("Running: "):
-                    _raw = _raw[9:]
-                if event.tool_call_id:
-                    _pending_tools[event.tool_call_id] = _raw
-                    # The claim key binds the TOOL to its arguments, so only a call
-                    # that resolves to a directive tool records one: trusted
-                    # _meta.kiro identity first, else kiro-agent's own
-                    # ``@kirocrew-core/<tool>`` WIRE title -- never event.title,
-                    # which select_tool_title fills from a shell call's
-                    # model-authored rawInput.description. A shell call, or any
-                    # other tool, records nothing and can claim nothing.
-                    _dir_for_digest = session_directive.directive_tool_from_call(
-                        event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
-                    )
-                    if _dir_for_digest:
-                        _pending_dir_for_digest[event.tool_call_id] = _dir_for_digest
-                        if event.raw_tool_params is not None:
-                            _pending_input_digest[event.tool_call_id] = (
-                                session_directive.event_input_digest(
-                                    _dir_for_digest,
-                                    event.raw_tool_params,
-                                    event.mcp_server_name,
-                                    event.tool_name,
-                                )
-                            )
-                    # Forgery gate: record the directive-tool name ONLY
-                    # from the trusted _meta.kiro identity — never the title.
-                    # The single shared predicate (also used by the messaging
-                    # TurnDriver) requires Kiro Crew's OWN core MCP server and a
-                    # canonical directive-tool name; a shell tool (no
-                    # mcp_server_name, canonical tool_name "execute_bash") or a
-                    # third-party server exposing a same-named tool can never
-                    # register here. Recorded at EVENT_TOOL_CALL only (the
-                    # UPDATE refinement rewrites titles).
-                    _cannon = session_directive.directive_tool_for(
-                        event.mcp_server_name, event.tool_name
-                    )
-                    if _cannon:
-                        _pending_dir_tool[event.tool_call_id] = _cannon
-                    else:
-                        _seen_tool_identity[event.tool_call_id] = (
-                            event.mcp_server_name or "",
-                            event.tool_name or "",
-                        )
-                # If this tool call belongs to a native sub-agent (mapped via
-                # _kiro.dev/session/update), stream it onto that sub-agent's card.
-                _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-                if _nat_card:
-                    _ntool, _ = redact_exfiltration_urls(_raw or event.title or "")
-                    _ntool, _ = redact_credentials(_ntool)
-                    _ntool = _ntool[:80]
-                    _native_card_output_len[_nat_card] = _append_native_output(
-                        _native_card_output.setdefault(_nat_card, []),
-                        f"\u2192 {_ntool}\n",
-                        _native_card_output_len.get(_nat_card, 0),
-                    )
-                    state.broadcast_ws(
-                        "subagent_chunk",
-                        {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
-                    )
-                # Where Crew fires the spec's hooks, every call a PreToolUse hook
-                # covers comes back as a permission request (the projection
-                # withholds its auto-approval) and KAS sends this frame first, so
-                # the permission request is where the hooks run; firing here too
-                # would run each twice.
-                if not capabilities_of(client).crew_fires_spec_hooks:
-                    await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
-                # Mirror tool call to linked Slack stream. Fenced like the reply
-                # legs: a tool's purpose line is the peer's steer showing through in
-                # what the model chose to do next, published to a thread whose owner
-                # is resolved live. The check is a dict emptiness test on the
-                # overwhelming majority of turns -- `cross_surface_withheld` returns
-                # before probing anything when no peer steer is recorded -- so paying
-                # it per event costs nothing on a turn nobody interfered with. The
-                # stream's destination is the thread cached at turn start, judged
-                # as the room it is beside the live comparison.
-                if (
-                    _mirror_stream_ts
-                    and not cross_surface_withheld(state, slot)
-                    and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
-                ):
-                    try:
-                        if _mirror_active_task:
-                            await state.slack_client.append_task(
-                                _mirror_chan,
-                                _mirror_stream_ts,
-                                _mirror_active_task,
-                                _mirror_active_task_title,
-                                "complete",
-                            )
-                        _mirror_task_counter += 1
-                        turn._mirror_task_counter = _mirror_task_counter
-                        _mirror_active_task = f"tool_{_mirror_task_counter}"
-                        turn._mirror_active_task = _mirror_active_task
-                        _task_title = event.tool_purpose or event.title
-                        _task_title, _ = redact_exfiltration_urls(_task_title)
-                        _task_title, _ = redact_credentials(_task_title)
-                        _task_title = _task_title[:75]
-                        _mirror_active_task_title = _task_title
-                        turn._mirror_active_task_title = _mirror_active_task_title
-                        await state.slack_client.append_task(
-                            _mirror_chan,
-                            _mirror_stream_ts,
-                            _mirror_active_task,
-                            _task_title,
-                            "in_progress",
-                        )
-                    except Exception:
-                        logger.debug("Mirror tool task failed", exc_info=True)
+                await _on_tool_call(turn, event)
+                _activity_after_terminal = turn._activity_after_terminal
+                _deferred_cut_text = turn._deferred_cut_text
+                _turn_emitted = turn._turn_emitted
+                _turn_flushed_visible_text = turn._turn_flushed_visible_text
+                _turn_tool_calls = turn._turn_tool_calls
+                _wt_pending_dropped = turn._wt_pending_dropped
+                in_tool_group = turn.in_tool_group
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
-                if (
-                    event.is_shell
-                    and event.tool_call_id
-                    and len(_shell_tool_calls) < _MAX_TCID_SOURCES
-                ):
-                    _shell_tool_calls.add(event.tool_call_id)
-                # claude-agent-acp emits an initial `tool_call` with empty
-                # input (title falls back to generic name like "Terminal" or
-                # "grep") followed by a `tool_call_update` carrying the
-                # populated rawInput and a refined title from the upstream
-                # `toolInfoFromToolUse`.  Patch the existing pill (toolLog)
-                # and the persisted message in place by tool_call_id so the
-                # user sees the actual command rather than the stub.
-                if not event.tool_call_id:
-                    continue
-                if event.tool_input:
-                    _repeat_loop.note_call(
-                        event.tool_call_id, event.tool_name or "", event.tool_input, event.title
-                    )
-                _dir_refresh = _pending_dir_for_digest.get(event.tool_call_id, "")
-                if not _dir_refresh:
-                    # claude-agent-acp's initial tool_call carries a generic title
-                    # and the refinement carries the real one, so the tool may only
-                    # resolve here. The gate is the same resolver either way.
-                    _dir_refresh = session_directive.directive_tool_from_call(
-                        event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
-                    )
-                    if _dir_refresh:
-                        _pending_dir_for_digest[event.tool_call_id] = _dir_refresh
-                if _dir_refresh and event.raw_tool_params is not None:
-                    # The refinement carries the COMPLETE params; the initial
-                    # tool_call may have streamed none. Same digest the tool took.
-                    _pending_input_digest[event.tool_call_id] = (
-                        session_directive.event_input_digest(
-                            _dir_refresh,
-                            event.raw_tool_params,
-                            event.mcp_server_name,
-                            event.tool_name,
-                        )
-                    )
-                try:
-                    _tcid_upd = _redact_tool_field(event.tool_call_id)
-                    _title_upd = ""
-                    if event.title:
-                        _title_upd, _ = redact_exfiltration_urls(event.title)
-                        _title_upd, _ = redact_credentials(_title_upd)
-                    _kind_upd = ""
-                    if event.tool_kind:
-                        _kind_upd, _ = redact_exfiltration_urls(event.tool_kind)
-                        _kind_upd, _ = redact_credentials(_kind_upd)
-                    _input_upd = _redact_tool_field(event.tool_input) if event.tool_input else ""
-                    _purpose_upd = (
-                        _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE)
-                        if event.tool_purpose
-                        else ""
-                    )
-                    # Snapshot file BEFORE the write tool actually executes.
-                    # Initial tool_call had empty rawInput so no snapshot was
-                    # taken there; this is the first event with the file path.
-                    # Prefer the in-band diff_old_text from the ACP content
-                    # block (authoritative) over a disk read which races with
-                    # the write. Offloaded: reconstruction reads from disk and
-                    # a slow/hung filesystem must not stall the loop.
-                    _file_snapshot_upd = await asyncio.to_thread(
-                        _snapshot_write_target,
-                        event.raw_tool_params,
-                        diff_old_text=event.diff_old_text,
-                        diff_path=event.diff_path,
-                    )
-                    if _file_snapshot_upd:
-                        _record_turn_snapshot(
-                            slot,
-                            _file_snapshot_upd,
-                            _tcid_identity_key(getattr(event, "tool_call_id", None)),
-                        )
-                        # A refinement can follow its failed result, even as the
-                        # call's first snapshot: claim no diff, while the id still
-                        # names one call.
-                        _refined_writer = _tcid_identity_key(event.tool_call_id)
-                        if (
-                            _refined_writer in _failed_write_calls
-                            and _refined_writer not in _tcid_collapsed
-                        ):
-                            for _held in _failed_write_entries(slot, _refined_writer):
-                                _held["unverified_write"] = True
-                    # Refresh the toolLog entry (sseToolActivity merges by id).
-                    state.broadcast_ws(
-                        "tool_call",
-                        {
-                            "slot": slot.key,
-                            "tool": _title_upd,
-                            "kind": _kind_upd,
-                            "tool_call_id": _tcid_upd,
-                            "input_preview": _input_upd,
-                            # The update is the event that supplies the real
-                            # shell title/input, so it must carry the same
-                            # capability signal as the initial tool_call.
-                            "is_shell": event.is_shell,
-                            "is_update": True,
-                            # Omitted rather than sent empty: consumers merge a
-                            # refinement field-by-field and read an absent
-                            # `purpose` as "keep what the initial tool_call
-                            # supplied", so an empty value would blank a good
-                            # purpose (the session list's running-status line).
-                            **({"purpose": _purpose_upd} if _purpose_upd else {}),
-                            **_tool_identity_fields(event),
-                        },
-                    )
-                    # The refinement may supply the first path (Claude streams
-                    # empty input first). Retain it until successful completion.
-                    _git_repo_touches.note_tool_call(
-                        slot,
-                        event.raw_tool_params,
-                        tool_call_id=event.tool_call_id,
-                        background_tasks=getattr(state, "_background_tasks", None),
-                        tool_kind=event.tool_kind or "",
-                        diff_path=event.diff_path or "",
-                        is_shell=bool(event.is_shell),
-                    )
-                    # Update the audit log so the SEL trail captures the
-                    # refined title/kind, not just the "Terminal"/"grep" stub
-                    # logged at the initial EVENT_TOOL_CALL.
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_title_upd,
-                        tool_kind=_kind_upd,
-                        outcome="refined",
-                    )
-                    # Patch the persisted tool message in place so its content
-                    # shows the refined title and meta carries the populated
-                    # input.  Walk in reverse and break on the first match —
-                    # auto-approved tools may have a later "✅ {title}" entry
-                    # with the same tool_call_id, and we don't want to
-                    # overwrite that post-approval marker. Preserve whatever
-                    # leading icon (🔧/✅/🚫) the existing message has.
-                    _meta_patch: dict[str, str] = {}
-                    if _input_upd:
-                        _meta_patch["input"] = _input_upd
-                    # A refinement is the only event carrying the purpose when the
-                    # initial tool_call streamed an empty rawInput, so the patch has
-                    # to reach the PERSISTED meta too: _tool_meta() wrote "" there,
-                    # and the reloaded transcript reads meta.purpose (ToolCallLine),
-                    # so a live-only fix would lose the purpose on the next reload.
-                    if _purpose_upd:
-                        _meta_patch["purpose"] = _purpose_upd
-                    _patched = False
-                    _patched_content: str | None = None
-                    for m in reversed(slot.messages):
-                        if m.get("role") != "tool":
-                            continue
-                        if m.get("meta", {}).get("tool_call_id") != _tcid_upd:
-                            continue
-                        if _title_upd:
-                            _refined = _refined_tool_row_content(
-                                m.get("content", "") or "", _title_upd
-                            )
-                            # None == a refusal row: keep its reason (see the
-                            # helper). Meta patches below still apply; only the
-                            # content rewrite is skipped.
-                            if _refined is not None:
-                                _patched_content = _refined
-                                m["content"] = _patched_content
-                                slot.invalidate_source_links()
-                        if _meta_patch:
-                            m_meta = m.setdefault("meta", {})
-                            m_meta.update(_meta_patch)
-                        _patched = True
-                        break
-                    if _patched:
-                        slot._dirty = True
-                        state.broadcast_ws(
-                            "chat_message_update",
-                            {
-                                "slot": slot.key,
-                                "tool_call_id": _tcid_upd,
-                                **({"content": _patched_content} if _patched_content else {}),
-                                **({"meta": _meta_patch} if _meta_patch else {}),
-                            },
-                        )
-                    # Update _pending_tools so PostToolUse hooks see the
-                    # refined name (e.g. "ls /tmp") instead of the stub
-                    # ("Terminal").  Strip the "Running: " prefix to match
-                    # the EVENT_TOOL_CALL handler's normalization — hooks
-                    # match by tool name and would miss otherwise.
-                    if event.title and event.tool_call_id in _pending_tools:
-                        _refined_name = event.title
-                        if _refined_name.startswith("Running: "):
-                            _refined_name = _refined_name[9:]
-                        _pending_tools[event.tool_call_id] = _refined_name
-                except Exception:
-                    logger.warning(
-                        "EVENT_TOOL_CALL_UPDATE handler failed for tool_call_id=%s",
-                        event.tool_call_id,
-                        exc_info=True,
-                    )
+                await _on_tool_call_update(turn, event)
             elif event.kind == EVENT_TOOL_RESULT:
-                if event.tool_final and event.tool_call_id:
-                    _turn_successful_tool_call_ids.add(event.tool_call_id)
-                    # An auto-approved coding tool reaches its completed frame
-                    # without ever passing through a permission decision, so
-                    # _wt_note_approved never emitted a cadence beat for it and
-                    # its key is still pending (an approved tool's key was
-                    # drained at EVENT_PERMISSION_REQUEST and already got its
-                    # beat). Emit the throttled beat here, where the tool has
-                    # demonstrably executed, so a turn of pre-authorized coding
-                    # tools accrues intra-turn duration like a prompted one. The
-                    # key stays pending for the end-of-turn attribution beat;
-                    # this only adds the mid-turn timestamp. Same throttle and
-                    # scope guard as the per-approval path.
-                    _wt_result_key = _tcid_identity_key(event.tool_call_id)
-                    if _wt_result_key and _wt_result_key in _wt_pending_coding:
-                        _wt_maybe_cadence(turn)
-                _out = _redact_tool_field(event.tool_output)
-                # Redact the join key once for the WS broadcast and the
-                # message-meta comparison below. `_tool_meta` stores the
-                # redacted form, so the comparison must use the redacted form
-                # too — see the `_tool_meta` docstring for the convention.
-                _tcid = _redact_tool_field(event.tool_call_id) if event.tool_call_id else ""
-                # Whether that value still NAMES one call. It cannot be answered by
-                # re-redacting: the loop preamble already replaced
-                # `event.tool_call_id` with the redacted form for every event, so
-                # comparing the two here compares a value with itself and is true
-                # even for a collapsed id. The turn records an identity key at that
-                # preamble, while the raw id still exists, and `_tcid_collapsed` holds
-                # the keys more than one distinct raw id reached. The key is derived
-                # here with the SAME helper, so both ends agree by construction; a key
-                # that was never recorded -- an over-long id, or one past the tracking
-                # bound -- names nothing and is withheld.
-                #
-                # Where this is false, the durable "an app was here" claim is
-                # withheld -- see `_owned_rows` below and the flag write further
-                # down. Both fail towards silence, which a later render repairs; a
-                # flag persisted onto an unrelated row does not, because it is
-                # never written False and the client draws its notice on the first
-                # flagged row it finds for the id. `done` and `output` keep the
-                # id-wide walk they already had: they describe the CALL, not a
-                # claim about which row once held an app.
-                #
-                # Evaluated at the moment of the write, which is sound because a
-                # row can only be wrongly selected if it already exists, and a row
-                # exists only if its own call event passed that preamble and was
-                # counted here.
-                _tcid_identifies = (
-                    bool(_tcid)
-                    and bool(_tcid_row_key := _tcid_identity_key(event.tool_call_id))
-                    and _tcid_row_key in _tcid_first_source
-                    and _tcid_row_key not in _tcid_collapsed
-                )
-                # Every TERMINAL frame, not only the successful one. `tool_final`
-                # is true for `completed` alone -- that is what the transcript
-                # paths need, and changing it would change what they credit and
-                # finalise -- but a durable record cannot skip a tool that FAILED:
-                # its call reached a terminal state, and leaving it open means the
-                # turn-close sweep later records `unknown` for an outcome the
-                # stream actually reported. `stop_reason` on this event describes
-                # the turn, not the tool, so it is not used here.
-                _tool_terminal = event.tool_final or (event.tool_status in TERMINAL_TOOL_STATUSES)
-                _not_written = []
-                if (
-                    _tool_terminal
-                    and _tcid_identifies
-                    and (event.refusal or event.tool_status in ("failed", "refused"))
-                ):
-                    _failed_write_calls.add(_tcid_row_key)
-                    _not_written = _failed_write_entries(slot, _tcid_row_key)
-                    # Cancellation at any await must leave only paths until a
-                    # completed content check proves what the call changed.
-                    for _held in _not_written:
-                        _held["unverified_write"] = True
-                _loop_notice = _repeat_loop.note_result(
-                    event.tool_call_id,
-                    status=event.tool_status,
-                    output=event.tool_output,
-                    output_digest=event.tool_output_digest,
-                    terminal=_tool_terminal,
-                )
-                if _loop_notice:
-                    await _steer_repeat_loop_notice(client, _redact_tool_field(_loop_notice))
-                if event.tool_output_credentials and _tcid_identifies:
-                    # The call's own input (already redacted) names the source;
-                    # the fingerprints say which credentials it produced. An id
-                    # that collapsed onto several calls names none of them, so
-                    # its result records no source rather than borrowing another
-                    # call's input and shell status.
-                    for _row in reversed(slot.messages):
-                        if (
-                            _row.get("role") == "tool"
-                            and _row.get("meta", {}).get("tool_call_id") == _tcid
-                        ):
-                            slot.credential_evidence.record(
-                                str(_row["meta"].get("input") or ""),
-                                event.tool_output_credentials,
-                                is_shell=event.tool_call_id in _shell_tool_calls,
-                            )
-                            break
-                if _tool_terminal:
-                    _git_repo_touches.finish_tool_call(
-                        slot,
-                        event.tool_call_id or "",
-                        executed=event.tool_final and not event.refusal and _tcid_identifies,
-                        background_tasks=getattr(state, "_background_tasks", None),
-                    )
-                    # The backend's own word, unmapped, with the refusal this
-                    # process decided taking precedence -- a refused call never
-                    # reached the tool, whatever the frame says.
-                    _tool_status = (
-                        "refused"
-                        if event.refusal
-                        else (event.tool_status or ("completed" if event.tool_final else "unknown"))
-                    )
-                    crew_log_emit.on_tool_completed(
-                        _crew_log_sid,
-                        _crew_log_turn_no,
-                        name=event.tool_name or "",
-                        server=event.mcp_server_name or "",
-                        status=_tool_status,
-                        call_id=event.tool_call_id or "",
-                        is_error=event.refusal is not None or _tool_status == "failed",
-                        result=event.tool_output or "",
-                        result_digest=event.tool_output_digest,
-                        result_bytes=event.tool_output_bytes,
-                    )
-                    _digest_backed = [held for held in _not_written if held.get("pre_call_digest")]
-                    if _digest_backed:
-                        _same, _changed = await asyncio.to_thread(
-                            _settle_failed_write, _digest_backed
-                        )
-                        _forget_entries(slot, _same)
-                        for _held in _changed:
-                            _held.pop("unverified_write", None)
-                # MCP Apps (flag-independent on this side): if gatewayd spooled a
-                # UI payload it injected an opaque marker into the result text.
-                # Load it, push an mcp_app_render event to this slot, and strip
-                # the marker from the transcript text (cosmetic, like redaction).
-                # Awaited: the spool read inside is thread-offloaded (multi-MB
-                # records must not stall this event loop).
-                # Rows this call already owns, by their own `ts`. Resolved HERE,
-                # synchronously, so the claim below can be attributed to a row
-                # identity rather than to the backend's `tool_call_id`: a `ts`
-                # is minted per row, where a session reset can reissue a
-                # `tool_call_id` an older row already used. A `ts` is not an
-                # identity: an explicit one is preserved verbatim for a replayed
-                # channel row, and a coarse clock stamps two rows appended in one
-                # tick alike, which is the reason `meta.mid` is minted at all. Reading `slot.messages` adds no
-                # await, so the claim stays adjacent to the checks above it.
-                #
-                # Restricted to rows THIS TURN appended. Matching on the id
-                # alone would also return a historical row a transcript-
-                # preserving reset left holding the same id, which would put
-                # that old row's `ts` into the claim and let the old row answer
-                # for this call's app.
-                #
-                # Gated on the id still identifying one call: a redacted id is
-                # one constant shared by every redacted id, so it would select
-                # an unrelated same-turn row as an owner. Empty here is an
-                # already-handled case rather than a failure -- the claim is
-                # still written for its render-once half and simply attributes
-                # nothing, which is what `handle_tool_result` documents for a
-                # claim whose row list is empty.
-                _owned_rows: list[dict] = (
-                    [
-                        m
-                        for m in slot.messages
-                        if m.get("role") == "tool"
-                        and m.get("meta", {}).get("tool_call_id") == _tcid
-                        and str(m.get("ts") or "") not in _rows_before_turn
-                    ]
-                    if _tcid_identifies
-                    else []
-                )
-                # Both identities are derived from ONE row list so they cannot
-                # drift apart. `meta.mid` is what the claim is ATTRIBUTED by: it is
-                # minted per row, so it separates two rows a coarse clock stamped
-                # in the same tick, and a row replayed from a channel transcript
-                # whose own `ts` was kept verbatim. The `ts` rides along as the
-                # fallback identity for a claim body carrying no ids, and is
-                # compared as a set rather than for order.
-                _owned_row_ts: list[str] = [str(m.get("ts") or "") for m in _owned_rows]
-                _owned_row_ids: list[str] = [
-                    str(m.get("meta", {}).get("mid") or "") for m in _owned_rows
-                ]
-                _render = await mcp_apps_render.handle_tool_result(
-                    state,
-                    slot_key=slot.key,
-                    tool_call_id=_tcid,
-                    text=_out,
-                    # WS routes on the bare slot.key, but the gateway recorded
-                    # the CANONICAL producing session on the spool. Pass it for
-                    # the binding check or every real render is refused as a
-                    # bare-vs-prefixed mismatch (silent no-render).
-                    producing_session_key=effective_session_key(slot),
-                    row_ts=_owned_row_ts,
-                    row_ids=_owned_row_ids,
-                    # The claim is durable the moment it is taken; these rows are
-                    # not, until a flush writes them. `rows_only` writes the
-                    # transcript window and leaves the metadata line alone, which
-                    # is all the claim needs to be attributable after a restart.
-                    # This does NOT clear `_dirty` -- only the flush passes do --
-                    # so the `mcp_app_lead` flag written further below is still
-                    # owed to the periodic flush exactly as before.
-                    persist_rows=lambda: _persist_tool_result_rows(state, slot),
-                )
-                _out = _render.text
-                # Rows this frame flags, by their own `ts`. That is enough HERE,
-                # because the flag write is in-memory against the very rows just
-                # selected. It is not enough to identify a row LATER: append
-                # keeps an explicit `ts` verbatim for a row replayed from a
-                # channel, and a coarse clock stamps two appends in one tick
-                # alike, which is the collision `meta.mid` is minted to answer --
-                # so the claim records the mids and is attributed by them. A
-                # tool_call_id identifies even less: an auto-approved call has a
-                # pre- and a post-approval row sharing the id, and the client's
-                # patch reducer takes only the newest of those.
-                _app_flag_rows: list[str] = []
-                # The render payload is LIVE-ONLY by design (owner-scoped WS, a
-                # callback capability, and a record that expires), so a reload
-                # has nothing to rebuild the frame from. Remember that this row
-                # HAD an app and persist it below, so a reader is told the app
-                # exists instead of seeing nothing at all. True as well when the
-                # claim was already spent, which is how a row recovers after a
-                # gateway death between the claim and this flag reaching disk.
-                _app_on_row = _render.app_on_row
-                # Session directive: a stateless session-bound tool
-                # (monitor_start / monitor_update / autonudge_stop / set_project
-                # / suggest_followup / ask_question) returns a directive marker
-                # instead of resolving its own session identity. Apply it HERE,
-                # where slot.key + session_key are the AUTHORITATIVE session for
-                # this turn, then record the applier's real outcome on KiroCrew's
-                # OWN surfaces (transcript / WS / hooks) and drop the marker.
-                # NOTE: gateway-off (the default), the MODEL already received the
-                # tool's own return over the MCP pipe — this does NOT rewrite the
-                # model's tool result, which is why the tool's own message is
-                # written to not over-claim the (consumer-applied) effect.
-                # Gated on _pending_dir_tool — the CANONICAL _meta.kiro tool name
-                # for a genuine MCP call, NOT model-authored result/title text —
-                # so a forged marker under a shell/non-directive tool is ignored.
-                # A native sub-agent's tool calls DO surface here (flat events
-                # tagged in _native_tc_card) but have no independently bindable
-                # slot, so they are refused rather than applied to the parent —
-                # combined with spawn_run sub-agents running their own loop, no
-                # sub-agent can ever arm/mutate its parent (isolation).
-                _dir_tool = _pending_dir_tool.get(event.tool_call_id, "")
-                # DIAGNOSTIC ONLY (never a grant): a marker arrived under a call
-                # the identity gate did not record. That is the correct outcome
-                # for a forged shell result, and ALSO what a backend which emits
-                # no ``_meta.kiro`` produces for a genuine directive tool — and
-                # the gate returns "" with no log, so the two were indistinguish-
-                # able and the second looked like nothing happening at all. Log
-                # the recorded identity so an operator can tell them apart.
-                #
-                # Entered on a marker OR on a parked record for this session whose
-                # call this frame could be: the record is claimed by the call's
-                # input digest, and the result body is not consulted -- a backend
-                # that caps or offloads the result loses the marker entirely, and
-                # the directive must still land. The depth probe keeps an ordinary
-                # tool result (nothing parked) out of this branch at dict-lookup
-                # cost, so the diagnostics below only ever run for a frame that
-                # is directive-shaped on at least one channel.
-                _in_digest_probe = _pending_input_digest.get(event.tool_call_id, "")
-                if (
-                    (
-                        not _dir_tool
-                        or (
-                            event.tool_final
-                            and session_directive.decode(_out, _dir_tool) is None
-                            and not session_directive.is_refusal(_out)
-                        )
-                    )
-                    and event.tool_call_id not in _dir_consumed_out
-                    and (
-                        session_directive.has_marker(_out)
-                        or (
-                            event.tool_final
-                            and _in_digest_probe
-                            and directive_queue.depth(session_key) > 0
-                        )
-                    )
-                ):
-                    # The identity gate found nothing to trust. Before treating
-                    # that as a lost directive, look for the OUT-OF-BAND record:
-                    # the tool publishes its validated payload straight to the
-                    # gateway, so on a backend that emits no ``_meta.kiro`` this is
-                    # the delivery path that still works.
-                    #
-                    # The CALL INPUT selects the record; the marker never does.
-                    # ``_pending_input_digest`` holds the digest of the raw
-                    # arguments this frame's tool_call carried, the tool parked
-                    # its validated payload under the same digest of the same
-                    # arguments, and ``claim`` returns only a record parked under
-                    # it during THIS turn — then the RECORD's payload is what gets
-                    # applied. So the two channels must agree: a record aimed at
-                    # another session (the header is not kernel-attested over TCP,
-                    # and Windows has no AF_UNIX at all) waits for a call that
-                    # session's model never makes, and a call no tool validated
-                    # looks up a record that was never parked. Nothing here reads
-                    # the result body, so a backend that re-serialises, copies,
-                    # offloads or caps that body cannot lose the directive. See
-                    # directive_queue's module docstring.
-                    #
-                    # ISOLATION FIRST, though: a NATIVE sub-agent's tool calls
-                    # surface as flat events on this parent stream (tagged in
-                    # _native_tc_card) and have no independently bindable slot of
-                    # their own. On a backend that emits no ``_meta.kiro`` such a
-                    # frame reaches here with _dir_tool == "", while the record the
-                    # child's tool parked is keyed by the PARENT's session — so
-                    # claiming it would apply the child's directive to the parent,
-                    # the exact mutation the marker path below refuses. Refuse it
-                    # here too, on the same terms and with the same audit, BEFORE
-                    # the claim: a claim is destructive (it removes the record), so
-                    # ordering the check first also keeps a legitimate parent
-                    # directive from being consumed by a child's frame.
-                    _in_digest = _pending_input_digest.get(event.tool_call_id, "")
-                    if event.tool_call_id in _native_tc_card:
-                        # The identity gate files an identified call under
-                        # _pending_dir_tool, not _seen_tool_identity, so the
-                        # directive name for the audit row is _dir_tool.
-                        _denied_tool = (
-                            _dir_tool or _seen_tool_identity.get(event.tool_call_id, ("", ""))[1]
-                        )
-                        # SETTLED HERE: release the identity mapping so the
-                        # marker path below does not refuse this same frame a
-                        # second time (a second denied audit row and a doubled
-                        # not-applied note).
-                        _pending_dir_tool.pop(event.tool_call_id, None)
-                        _dir_tool = ""
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            source="mcp-directive",
-                            tool_name=_denied_tool,
-                            outcome="denied",
-                        )
-                        _out = _redact_tool_field(
-                            session_directive.strip_marker(_out)
-                            + (
-                                "\n\n[Not applied: a session-bound tool called "
-                                "from a sub-agent has no session to act on.]"
-                            )
-                        )
-                        _dir_consumed_out[event.tool_call_id] = _out
-                        # Refusing to APPLY is not enough on its own: the record
-                        # the child's tool parked is keyed by the PARENT, so
-                        # leaving it queued would only defer the mutation to the
-                        # next frame carrying that input. Retire it — but retire
-                        # exactly it, by the same input-digest correlation the
-                        # normal path claims on, so a directive the parent
-                        # legitimately parked in this same turn survives.
-                        if _in_digest:
-                            directive_queue.claim(session_key, _in_digest, not_before=_turn_started)
-                        _oob = None
-                    elif _in_digest and any(
-                        _pending_input_digest.get(_ntc) == _in_digest
-                        for _ntc in _native_tc_card
-                        if _ntc != event.tool_call_id
-                    ):
-                        # PROVENANCE AMBIGUOUS: a native sub-agent call in this
-                        # same turn carries the SAME input digest as this parent
-                        # frame (the same tool called with identical arguments,
-                        # e.g. two ``resource_status({})`` calls). The
-                        # record under that digest may be the child's, and the
-                        # child's own frame will retire it above -- so claiming
-                        # here could apply a sub-agent's directive to the parent.
-                        # Refuse rather than guess; the record stays parked for
-                        # the child frame's isolation path to retire.
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            source="mcp-directive",
-                            tool_name=_seen_tool_identity.get(event.tool_call_id, ("", ""))[1],
-                            outcome="denied",
-                        )
-                        logger.warning(
-                            "session-directive NOT CLAIMED for %s (tool_call_id=%s): a "
-                            "native sub-agent call in this turn shares this frame's input "
-                            "digest, so the parked record's provenance is ambiguous and "
-                            "the parent must not claim it.",
-                            session_key,
-                            event.tool_call_id,
-                        )
-                        _oob = None
-                    else:
-                        _oob = (
-                            directive_queue.claim(session_key, _in_digest, not_before=_turn_started)
-                            if _in_digest
-                            else None
-                        )
-                    if _oob:
-                        _pending_dir_tool.pop(event.tool_call_id, None)
-                        _dir_tool = ""
-                        _applied_kind = str(_oob.get("kind") or "")
-                        _applied_outcome = await apply_session_directive_outcome(
-                            state,
-                            slot,
-                            session_key,
-                            _applied_kind,
-                            dict(_oob.get("args") or {}),
-                            producer_is_user_facing=_directive_user_origin,
-                            producer_is_self_wake=_directive_self_wake,
-                            producer_is_channel=_directive_producer_is_channel(turn),
-                            producer_wake_loop_id=_directive_loop_id,
-                            producer_turn_actor=_turn_actor,
-                        )
-                        _applied_one = _applied_outcome.text
-                        _record_terminal_directive(
-                            turn, _applied_kind, _applied_outcome, event.tool_call_id or ""
-                        )
-                        logger.info(
-                            "session-directive applied OUT OF BAND for %s "
-                            "(tool_call_id=%s, kind=%s): the marker was unavailable; "
-                            "the gateway-parked payload selected by "
-                            "the call's input digest was used.",
-                            session_key,
-                            event.tool_call_id,
-                            _oob.get("kind"),
-                        )
-                        # Same surface contract as the marker path: the applier's
-                        # real outcome replaces the tool's own (deliberately
-                        # non-committal) text, re-redacted because that string
-                        # interpolates LLM-derived values.
-                        _out = _redact_tool_field(
-                            session_directive.strip_marker(_out) + "\n\n" + _applied_one
-                        )
-                        _dir_consumed_out[event.tool_call_id] = _out
-                        _pending_input_digest.pop(event.tool_call_id, None)
-                        _pending_dir_for_digest.pop(event.tool_call_id, None)
-                    elif (
-                        event.tool_call_id not in _dir_consumed_out
-                        and session_directive.has_marker(_out)
-                    ):
-                        # A refusal, so audit it like one. This branch is where a
-                        # FORGED marker lands — the identity gate recorded nothing
-                        # and no record was parked — and the sibling refusals
-                        # (native sub-agent, here and on the marker path) already
-                        # emit a denied event. Leaving this one to a logger line
-                        # meant the single most security-relevant outcome of the
-                        # gate was the only one absent from the SEL trail, so an
-                        # operator auditing denials saw every case but the attack.
-                        # The identity mapping is deliberately LEFT in place: for
-                        # an identified call whose marker did not decode, the
-                        # marker path below owns the lost-marker notice and the
-                        # sentinel strip, and it writes no audit row of its own,
-                        # so this is the frame's only denied event either way.
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            source="mcp-directive",
-                            tool_name=_seen_tool_identity.get(event.tool_call_id, ("", ""))[1],
-                            outcome="denied",
-                        )
-                        logger.warning(
-                            "session-directive NOT APPLIED: marker present but the "
-                            "tool call carried no core-MCP identity and no "
-                            "out-of-band record was parked "
-                            "(tool_call_id=%s, mcp_server_name=%r, tool_name=%r, "
-                            "expected mcp_server_name=%r). Either a forged marker, "
-                            "or this ACP backend emits no _meta.kiro identity AND "
-                            "could not reach the gateway to park the payload. "
-                            "CLAIM was attempted for session_key=%r input_digest=%s; "
-                            "that session's queue currently holds %d parked "
-                            "record(s) — a non-zero depth here means a record WAS "
-                            "parked but did not match this frame's call input or "
-                            "fell outside this turn, while zero means nothing ever "
-                            "reached /api/session-directive for this key.",
-                            event.tool_call_id,
-                            _seen_tool_identity.get(event.tool_call_id, ("", ""))[0],
-                            _seen_tool_identity.get(event.tool_call_id, ("", ""))[1],
-                            session_directive.CORE_MCP_SERVER,
-                            session_key,
-                            _in_digest[:12] or "none",
-                            directive_queue.depth(session_key),
-                        )
-                        if not _in_digest:
-                            logger.warning(
-                                "session-directive NO CALL INPUT for %s: the frame "
-                                "carries the marker sentinel but no tool_call / "
-                                "tool_call_update for tool_call_id=%s carried "
-                                "rawInput, so no input digest exists to claim on. "
-                                "This backend is not emitting the call's arguments.",
-                                session_key,
-                                event.tool_call_id,
-                            )
-                if not _dir_tool and event.tool_call_id in _dir_consumed_out:
-                    # A LATER frame for a directive we already consumed: replay
-                    # the output we produced instead of letting the raw marker
-                    # text overwrite the applied outcome in the transcript.
-                    _out = _dir_consumed_out[event.tool_call_id]
-                elif _dir_tool:
-                    if event.tool_call_id in _native_tc_card:
-                        # SINGLE-CONSUME: one tool call can surface MORE THAN ONE
-                        # result frame (a mid-stream content frame and the final
-                        # status=completed rawOutput frame — the same reason the
-                        # native-card path below keeps _native_result_seen).
-                        # Without this pop, a directive would be applied twice:
-                        # two armed loops, two cards, or a repeated mutation.
-                        _pending_dir_tool.pop(event.tool_call_id, None)
-                        # Isolation denial — audit it (the one place the gate
-                        # actively refuses) so it is not a silent drop.
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            source="mcp-directive",
-                            tool_name=_dir_tool,
-                            outcome="denied",
-                        )
-                        # Re-redact: the applier's string interpolates
-                        # LLM-derived text (autonudge_stop reason, a bad path in
-                        # set_project's error, exception args), and it OVERWRITES
-                        # the entry-point _redact_tool_field(_out) above — so it
-                        # must pass exfil-URL + credential scrubbing before it
-                        # reaches broadcast_ws / the persisted transcript.
-                        _out = _redact_tool_field(
-                            session_directive.strip_marker(_out)
-                            + (
-                                "\n\n[Not applied: a session-bound tool called "
-                                "from a sub-agent has no session to act on.]"
-                            )
-                        )
-                        _dir_consumed_out[event.tool_call_id] = _out
-                    else:
-                        _dir_args = session_directive.decode(_out, _dir_tool)
-                        if _dir_args is None and event.tool_final:
-                            if session_directive.is_refusal(_out):
-                                # The tool DECLINED and said so in its own result
-                                # text: an oversized payload encode() would not
-                                # deliver, a schema rejection ahead of the
-                                # handler, or a session this effect can never
-                                # apply to. Nothing was applied and the model was
-                                # told, so this is the by-design loud failure —
-                                # it must not fire the warning below, which
-                                # exists to surface a LOST marker.
-                                logger.info(
-                                    "session-directive REFUSED for %r "
-                                    "(tool_call_id=%s, out_len=%d): the tool "
-                                    "returned a tagged refusal instead of a "
-                                    "directive; nothing applied",
-                                    _dir_tool,
-                                    event.tool_call_id,
-                                    len(_out or ""),
-                                )
-                                # SINGLE-CONSUME + strip: a refusal is terminal,
-                                # so release the mapping and cache the
-                                # marker-free text for any later frame carrying
-                                # this same tool_call_id (which no longer
-                                # resolves _dir_tool).
-                                _pending_dir_tool.pop(event.tool_call_id, None)
-                                _out = _redact_tool_field(session_directive.strip_marker(_out))
-                                _dir_consumed_out[event.tool_call_id] = _out
-                            else:
-                                # The gate already AUTHENTICATED this as a
-                                # directive tool via the canonical _meta
-                                # identity, and this is the FINAL frame — so a
-                                # marker that does not decode means the effect is
-                                # being dropped outright. Never let that be
-                                # silent: this exact silence can hide a
-                                # rawOutput-envelope escaping bug.
-                                # Mid-stream frames legitimately decode to None
-                                # and are excluded by the tool_final guard.
-                                # TWO causes reach here now that every by-design
-                                # decline is tagged: the marker was mangled in
-                                # transport, or the tool CRASHED past its own
-                                # return (an exception the JSON-RPC layer turned
-                                # into text, which never passes
-                                # refuse_if_markerless). Name both — a line that
-                                # asserts one cause sends an operator hunting an
-                                # escaping bug that is not there.
-                                logger.warning(
-                                    "session-directive decode FAILED for %r "
-                                    "(tool_call_id=%s, out_len=%d) — effect "
-                                    "dropped. Either the marker was lost in "
-                                    "transport (a rawOutput-envelope escaping "
-                                    "regression) or the tool raised past its own "
-                                    "return, so its decline was never tagged a "
-                                    "refusal",
-                                    _dir_tool,
-                                    event.tool_call_id,
-                                    len(_out or ""),
-                                )
-                                append_and_surface(
-                                    state,
-                                    slot,
-                                    "notice",
-                                    unverified_directive_outcome(_dir_tool),
-                                    "msg msg-info",
-                                )
-                                # APPENDED, not substituted: the tool's own text
-                                # is the only account of what it did before the
-                                # marker was lost, and the agent needs both it
-                                # and the recovery instruction.
-                                _out = _redact_tool_field(
-                                    session_directive.strip_marker(_out)
-                                    + "\n\n"
-                                    + unverified_directive_notice(_dir_tool)
-                                )
-                                _pending_dir_tool.pop(event.tool_call_id, None)
-                                _dir_consumed_out[event.tool_call_id] = _out
-                        if _dir_args is not None:
-                            # SINGLE-CONSUME (see the native branch above): drop
-                            # the mapping BEFORE applying, so a second result
-                            # frame for this same tool call cannot re-apply the
-                            # effect. Left in place when no marker decoded yet —
-                            # a mid-stream partial frame must not burn the
-                            # mapping the final frame still needs.
-                            _pending_dir_tool.pop(event.tool_call_id, None)
-                            # The tool ALSO parked this payload out of band (one
-                            # publish per emit, unconditionally — the tool cannot
-                            # know which consumer will run). Applying both would
-                            # arm two loops or render two cards, so retire the
-                            # twin now that the marker path has taken it.
-                            directive_queue.discard(session_key)
-                            _applied_outcome = await apply_session_directive_outcome(
-                                state,
-                                slot,
-                                session_key,
-                                _dir_tool,
-                                _dir_args,
-                                producer_is_user_facing=_directive_user_origin,
-                                producer_is_self_wake=_directive_self_wake,
-                                producer_is_channel=_directive_producer_is_channel(turn),
-                                producer_wake_loop_id=_directive_loop_id,
-                                producer_turn_actor=_turn_actor,
-                            )
-                            _applied_one = _applied_outcome.text
-                            _record_terminal_directive(
-                                turn, _dir_tool, _applied_outcome, event.tool_call_id or ""
-                            )
-                            _out = _redact_tool_field(_applied_one)
-                            _dir_consumed_out[event.tool_call_id] = _out
-                        else:
-                            # Recorded directive tool but no valid marker in the
-                            # result — strip any stray sentinel from the transcript.
-                            _out = session_directive.strip_marker(_out)
-                state.broadcast_ws(
-                    "tool_result",
-                    {
-                        "slot": slot.key,
-                        "tool_call_id": _tcid,
-                        "output": _out,
-                        # False on a mid-stream frame (a shell's streamed stdout
-                        # arrives as a status-less content update while the
-                        # command still runs). The crewmate's live status line
-                        # reads a result as "the call returned, the model is
-                        # thinking again", so without this the first line of a
-                        # long build's output flipped it to "Thinking".
-                        "final": bool(_tool_terminal),
-                    },
-                )
-                # If this tool result belongs to a native sub-agent, stream its
-                # real output onto that sub-agent's card so the OUTPUT section
-                # shows actual results (git log, file contents, summaries) —
-                # not just tool names. Mirrors spawn_sub_agents' subagent_chunk.
-                _nat_card_r = (
-                    _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-                )
-                # Redact the FULL output once, then bound each consumer's copy
-                # (the native card's 4000 and the PostToolUse hook's 2000):
-                # bounding first can cut a credential at the boundary into
-                # fragments no redaction regex matches, and sharing the pass
-                # keeps the full-text cost single.
-                _redacted_out, _ = redact_exfiltration_urls(_out)
-                _redacted_out, _ = redact_credentials(_redacted_out)
-                if (
-                    _nat_card_r
-                    and event.tool_output
-                    and event.tool_call_id not in _native_result_seen
-                ):
-                    _native_result_seen.add(event.tool_call_id)
-                    _native_card_output_len[_nat_card_r] = _append_native_output(
-                        _native_card_output.setdefault(_nat_card_r, []),
-                        f"{_redacted_out[:4000]}\n",
-                        _native_card_output_len.get(_nat_card_r, 0),
-                    )
-                    state.broadcast_ws(
-                        "subagent_chunk",
-                        {
-                            "id": _nat_card_r,
-                            "slot": slot.key,
-                            "text": f"{_redacted_out[:4000]}\n",
-                        },
-                    )
-                # Mark the matching tool message as done so completion state
-                # survives page reload (persisted in message meta, replayed via SSE).
-                # Also persist the redacted output here so the inline detail panel
-                # has data after a chat reload (toolLog Redux state is in-memory).
-                # Iterate ALL matching messages — auto-approved tools create two
-                # tool entries (🔧 pre-approval + ✅ post-approval) with the same
-                # tool_call_id, and both pills should reflect the same output.
-                if _tcid:
-                    for m in slot.messages:
-                        if (
-                            m.get("role") == "tool"
-                            and m.get("meta", {}).get("tool_call_id") == _tcid
-                        ):
-                            _meta = m.setdefault("meta", {})
-                            _meta["done"] = True
-                            if (
-                                _tcid in _terminal_directive_tcids
-                                and _tcid_identifies
-                                and str(m.get("ts") or "") not in _rows_before_turn
-                                and not _meta.get("ends_turn")
-                            ):
-                                # Structured, never prose: the applied terminal
-                                # directive's row is what closes the turn for the
-                                # interrupted-turn scan (``is_quiet_end_row``). A
-                                # REFUSED call carries the same trusted identity
-                                # and no flag, so it reads as an unanswered turn.
-                                # Scoped like the app flag above: only a row THIS
-                                # turn wrote, and only when the id names one call
-                                # -- a transcript-preserving reset can reuse an
-                                # earlier turn's tool_call_id, and stamping that
-                                # older (refused) row would record it as applied.
-                                # Patched live too, or the open client would offer
-                                # Resume until its next transcript fetch.
-                                _meta["ends_turn"] = True
-                                _ends_ts = str(m.get("ts") or "")
-                                if _ends_ts:
-                                    try:
-                                        state.broadcast_ws(
-                                            "chat_message_update",
-                                            {
-                                                "slot": slot.key,
-                                                "ts": _ends_ts,
-                                                "meta": {"ends_turn": True},
-                                            },
-                                        )
-                                    except Exception:
-                                        logger.debug(
-                                            "ends_turn flag broadcast failed", exc_info=True
-                                        )
-                            # Written only when this row HAD an app record, and
-                            # never written False: absent means "no app", which
-                            # is also what every row predating this field says.
-                            # The frontend renders its there-is-an-app-here
-                            # notice from this alone, so a flag on a row that
-                            # never had an app would point at nothing.
-                            # `_app_on_row` is THIS frame's: it is assigned
-                            # unconditionally at the top of this same
-                            # EVENT_TOOL_RESULT branch, which is what keeps one
-                            # tool call's app off another call's row.
-                            #
-                            # Gated on the row being one THIS TURN appended, for
-                            # the same reason the claim is: this walk selects by
-                            # `tool_call_id`, and a transcript-preserving reset
-                            # can leave a historical row holding the id the
-                            # backend has just reissued. Without the gate that
-                            # old row is flagged too -- permanently, since the
-                            # flag is never written False below -- and because
-                            # the client draws the notice on the FIRST flagged
-                            # row for the id, the stale row would answer for the
-                            # app while the row that actually has it is passed
-                            # over. `done` and `output` keep the id-wide walk
-                            # they have always had: both describe the CALL, and
-                            # a row replaying that call is not made wrong by
-                            # them, where a claim of "an app was here" is.
-                            #
-                            # Gated on the id identifying one call for the same
-                            # reason: credential redaction collapses the whole
-                            # field to one constant, so without this a second
-                            # call's row in the same turn takes a permanent flag
-                            # for an app it never had.
-                            if (
-                                _app_on_row
-                                and _tcid_identifies
-                                and str(m.get("ts") or "") not in _rows_before_turn
-                            ):
-                                # ONE update rather than two assignments. The periodic
-                                # flush takes `slot.messages` as a shallow copy of
-                                # REFERENCES and serializes these same live dicts on a
-                                # worker thread, so a snapshot landing between two
-                                # assignments stores `mcp_app` with no `mcp_app_lead`.
-                                # The client draws the notice on the lead alone, so that
-                                # row renders nothing, and the restore pass cannot
-                                # repair it: it reads a surviving `mcp_app` as proof the
-                                # lead survived, marks the claim's lead taken and skips,
-                                # and the claim is swept at its TTL. `dict.update`
-                                # applies both keys in one step, so a reader holding the
-                                # interpreter sees both or neither.
-                                _row_flags: dict[str, Any] = {"mcp_app": True}
-                                # The FIRST row this occurrence flags is its lead,
-                                # and the client draws the notice on that row
-                                # alone. Stamped here because only this loop knows
-                                # which rows belong to THIS call: the client sees
-                                # a flat transcript where a pre-reset row that had
-                                # its own app keeps `mcp_app` forever, so any
-                                # client-side rule that picked the earliest
-                                # flagged row for an id chose that stale row and
-                                # suppressed the notice for the app this turn
-                                # really lost. `slot.messages` is in transcript
-                                # order, so the first row this branch reaches is
-                                # the earliest of the occurrence, and the marker
-                                # needs no ordering comparison to read.
-                                if not _app_flag_rows:
-                                    _row_flags["mcp_app_lead"] = True
-                                _meta.update(_row_flags)
-                                _app_flag_rows.append(str(m.get("ts") or ""))
-                            # A terminal frame carrying no renderable output states a
-                            # STATUS, not an empty output, so it must not overwrite an
-                            # output an earlier frame for this same call already
-                            # persisted -- the panel would then show nothing for a tool
-                            # whose output this process did see. Absent stays absent, so
-                            # a first terminal frame with no output still reads as one.
-                            if _out or "output" not in _meta:
-                                _meta["output"] = _out
-                    # Tell open clients about the app flag as well as storing it.
-                    # `chat.mcpApps` is a BOUNDED cache, so a session that opens
-                    # many apps evicts the oldest payload while its row is still
-                    # on screen; without this the row goes blank there and only
-                    # names the app after a reload. The reducer MERGES meta, so
-                    # the patch carries that one key and nothing else -- notably
-                    # not the row's output, which is capped at 1 MB and already
-                    # delivered.
-                    #
-                    # One patch per flagged row, addressed by that row's own
-                    # `ts`, because a tool_call_id names TWO rows for an
-                    # auto-approved call and the reducer would patch only the
-                    # newest -- so both rows are correct live, as well as after a
-                    # reload from the persisted write above. A `ts` is the right
-                    # address for THIS send and not a durable identity: it is
-                    # resolved against the transcript the sender is holding, in
-                    # the same turn that wrote these rows. The claim, which is
-                    # read back on a later process, records `meta.mid` instead.
-                    for _i, _flag_ts in enumerate(_app_flag_rows):
-                        if not _flag_ts:
-                            continue
-                        # The lead marker travels with the flag, or an open client
-                        # would hold a flagged row that the stored transcript calls
-                        # the lead and the live view calls neither -- the notice
-                        # would then appear only after a reload.
-                        _patch_meta: dict[str, Any] = {"mcp_app": True}
-                        if _i == 0:
-                            _patch_meta["mcp_app_lead"] = True
-                        try:
-                            state.broadcast_ws(
-                                "chat_message_update",
-                                {
-                                    "slot": slot.key,
-                                    "ts": _flag_ts,
-                                    "meta": _patch_meta,
-                                },
-                            )
-                        except Exception:
-                            # The stored rows are already correct; a client
-                            # reconciles from slot detail on its next fetch.
-                            logger.debug("mcp-app flag broadcast failed", exc_info=True)
-                # Fire PostToolUse hooks
-                _tool_name = _pending_tools.pop(event.tool_call_id, "")
-                try:
-                    _redacted_out_bounded = _redacted_out[:2000]
-                    await _fire(
-                        turn,
-                        HOOK_EVENT_POST_TOOL_USE,
-                        tool_name=_tool_name,
-                        tool_response={"output": _redacted_out_bounded},
-                    )
-                except Exception:
-                    logger.debug("PostToolUse hook error", exc_info=True)
-                if (
-                    _tool_terminal
-                    and not _compact_after_turn_noticed
-                    and not is_slash
-                    and not turn.assistant_text
-                    and not _deferred_cut_text
-                ):
-                    # The context crossed the threshold while this turn is still
-                    # working. Compaction waits for the turn to end, so say so to
-                    # the person, once per turn.
-                    _compact_after_turn_noticed = await _notice_compaction_after_turn(
-                        state, slot, client, session_key
-                    )
-                    turn._compact_after_turn_noticed = _compact_after_turn_noticed
+                await _on_tool_result(turn, event)
             elif event.kind == EVENT_PERMISSION_REQUEST:
-                # Drain the key as soon as its permission decision begins. The
-                # stream handles one decision at a time, so one bounded key is
-                # enough for every approval arm below; denials need no state.
-                # The key is the same digest the add site stored, so the two
-                # ends agree by construction.
-                _wt_key = _tcid_identity_key(event.tool_call_id)
-                turn._wt_deciding_coding = bool(_wt_key and _wt_key in _wt_pending_coding)
-                if _wt_key:
-                    _wt_pending_coding.discard(_wt_key)
-                # Permission is part of the tool group, not a break in it —
-                # leaving in_tool_group True ensures the post-tool text fallback
-                # (above, in EVENT_TEXT_CHUNK) still fires once the tool resolves
-                # and the LLM continues with text. Resetting it here was the
-                # cause of pills staying in "running" state until the next tool
-                # call or message end.
-                # Flush accumulated text as a finalized segment before the
-                # permission flow so the frontend renders them in order. The
-                # same open-construct deferral as the tool-call cut applies: an
-                # approval-gated call (parent or child) that lands inside an
-                # open options marker, fence or widget would otherwise split it
-                # and undo a deferral the tool-call site just made.
-                _flush_text_stream(turn)
-                _open_construct = open_construct_at_end(turn.assistant_text)
-                if turn.assistant_text and _open_construct:
-                    _deferred_cut_text = turn.assistant_text
-                    turn._deferred_cut_text = _deferred_cut_text
-                    logger.debug(
-                        "segment cut deferred on %s — %s still open",
-                        slot.key,
-                        _open_construct,
-                    )
-                elif turn.assistant_text:
-                    _flush_segment(state, slot, turn.assistant_text)
-                    turn.assistant_text = ""
-                    _turn_flushed_visible_text = True
-                    turn._turn_flushed_visible_text = _turn_flushed_visible_text
-                _pre_tool_hooks_fired = False
-                # "Not applied — approve this command explicitly" notices from a
-                # rung that declined its grant. Held until the request actually
-                # reaches the interactive card: a later unconditional rung
-                # (native crew, session trust, YOLO) may still approve it, and
-                # then the notice asks for an approval nobody is asked for. Keyed
-                # by the refusal's detail: the hook and trusted-pattern rungs
-                # refuse one shadowed name with the same detail, and one card
-                # needs that sentence once.
-                _declined_grant_notices: dict[str, str] = {}
-                # Backend-subagent request whose SECURITY context is absent
-                # (structured params missing, or shell with no recoverable
-                # command — see AcpEvent.child_low_fidelity): every
-                # auto-approve gate below is skipped for it, falling through
-                # to the interactive card. A child WITH full context takes the
-                # same branches as the main agent (mode parity).
-                _child_low_fidelity = event.child_low_fidelity
-                # Verified-identity half of the fidelity split — see
-                # AcpEvent.child_unconditional_grant_eligible for which grant
-                # paths may honor it (unconditional grants: trust-all / YOLO /
-                # native crew) and which must not (content-matching paths).
-                _child_grant_eligible = event.child_unconditional_grant_eligible
-                if _child_low_fidelity:
-                    # Diagnostic for a path that is otherwise invisible in
-                    # logs: without it a trust-all session watching its
-                    # subagent stall on an approval card has no log line to
-                    # find (the annotate-and-prompt branch is silent).
-                    logger.info(
-                        "low-fidelity child permission request (child=%s, " "mcp_identity=%s): %s",
-                        event.sub_session_id,
-                        (
-                            f"verified {event.mcp_server_name}/{event.tool_name}"
-                            if event.child_mcp_identity_trusted
-                            else "unverified"
-                        ),
-                        (
-                            "unconditional and identity-keyed grants still apply"
-                            if _child_grant_eligible
-                            else "all auto-approve paths skipped"
-                        ),
-                    )
-                # DISPLAY-ONLY warning for the interactive card: the human
-                # must know the title is ALL there is (the params the gates
-                # would verify are absent, so the displayed text is
-                # agent-authored and unverifiable). Computed HERE — outside
-                # the context-builder block — so the card is labeled whenever
-                # the fidelity guards are active, including hosts with no
-                # context builder. Never written into event.title: the
-                # TrustDropdown derives its learned patterns from the title,
-                # and a mutated title would store junk pattern entries for
-                # exactly the requests that need the clearest presentation.
-                _child_lf_warning = (
-                    "⚠️ UNVERIFIED child request (security context "
-                    "missing — title is agent-authored): "
-                    if _child_low_fidelity
-                    else ""
-                )
-                if state.context_builder:
-                    # Pass the raw shell command (not just the display title)
-                    # so the security gate evaluates what actually executes.
-                    # event.title may be an LLM-authored description that hides
-                    # a dangerous command (see HookManager.on_tool_call).
-                    tool_result = await run_in_tool_gate_pool(
-                        state.context_builder.hooks.on_tool_call,
-                        event.title,
-                        on_queue_timeout=hook_gate_busy,
-                        session_key=session_key,
-                        agent=slot.agent or "",
-                        app=slot._app or "",
-                        **hook_gate_kwargs(event),
-                        # The RESOLVED agent (what actually served the turn), not
-                        # slot.agent — that is an alias resolve_agent_bindings
-                        # maps to a concrete kiro agent, so it must never decide
-                        # which builtin app an agent belongs to.
-                        resolved_agent=read_effective_agent(client),
-                    )
-                    if tool_result.action == TOOL_DENY:
-                        # Surface WHY: carry the deny reason into the pill so
-                        # the user sees "Blocked by security policy: ..." rather
-                        # than an opaque "(blocked)" (or, on the claude provider,
-                        # a cryptic "Tool use aborted" with no explanation).
-                        _deny_reason = (tool_result.reason or "blocked").strip()
-                        _deny_title = _redact_display_text(event.title)
-                        _deny_msg, _ = redact_exfiltration_urls(_deny_reason)
-                        _deny_msg, _ = redact_credentials(_deny_msg)
-                        # Audit FIRST, before any wire I/O for this decision
-                        # (see _reject_hook_blocked): a stalled ACP reader
-                        # cancels this coroutine at the turn deadline, and an
-                        # SEL write sequenced after the awaits never runs.
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_deny_title,
-                            tool_kind=event.tool_kind,
-                            outcome="denied",
-                            request_id=event.request_id,
-                            error="hook_deny",
-                        )
-                        # In-band first, and BEFORE the rejection goes on the
-                        # wire: holding the unanswered permission request is what
-                        # guarantees the turn is still in flight, so the notice is
-                        # queued and folded in at the boundary after this tool
-                        # resolves. Without it the model only ever sees kiro-cli's
-                        # generic "User denied tool execution" and concludes the
-                        # user cancelled.
-                        await _steer_policy_notice(
-                            client, _deny_title, _deny_msg, _refusal_notices, slot, state
-                        )
-                        await _reject_attributed(client, event.request_id, attribution="steered")
-                        slot.append(
-                            "tool",
-                            f"🚫 {_deny_title} — {_deny_msg}",
-                            "msg msg-tool",
-                            meta=_tool_meta(event),
-                        )
-                        # Broadcast a visible activity event (mirrors the
-                        # auto-approve branch) so the block isn't silent.
-                        state.broadcast_ws(
-                            "activity_event",
-                            {
-                                "slot": slot.key,
-                                "kind": "permission",
-                                "text": f"Blocked: {_deny_title} — {_deny_msg}",
-                            },
-                        )
-                        # Recoverable host-gate refusal: record for auto-recovery.
-                        # _deny_title/_deny_msg are ALREADY redacted just above
-                        # (redact_exfiltration_urls + redact_credentials) for the
-                        # display pill; reuse those sanitized values so the
-                        # model-bound recovery prompt never sees raw command
-                        # fragments, paths, or credentials.
-                        _refusal_reasons.append((_deny_title, _deny_msg))
-                        continue
-                    if _child_low_fidelity:
-                        # Backend-subagent origin whose tool_call frames never
-                        # reached us (cache miss): command bytes are absent, so
-                        # every gate below would judge the LLM-authored title
-                        # alone. Fail closed past all auto-approve paths — the
-                        # request falls through to the interactive card (which
-                        # carries the _child_lf_warning display prefix). When
-                        # the child's session/update frames WERE routed (the
-                        # normal case), tool_input carries the real command
-                        # bytes and the child takes the exact same mode
-                        # branches as the main agent below.
-                        #
-                        # One grant survives the downgrade: a hook auto-approve
-                        # decided by the call's VERIFIED MCP identity
-                        # (ToolHookResult.identity_grant — the app-own-server
-                        # grant, or an ``auto_approve_tools`` pattern matched
-                        # against ``@server/tool`` from ``_meta.kiro``). Its
-                        # matched input is the same identity
-                        # ``child_mcp_identity_trusted`` verified, so a forged
-                        # title cannot reach it, and it is the user's own NARROW
-                        # grant — the alternative, session trust-all or YOLO,
-                        # approves every tool the child calls. A grant that read
-                        # the title, the payload's kind or a command is still
-                        # downgraded.
-                        _identity_grant_kept = identity_grant_covers_child(tool_result, event)
-                        if tool_result.action == TOOL_AUTO_APPROVE and not _identity_grant_kept:
-                            logger.info(
-                                "downgrading auto-approve to interactive card for "
-                                "low-fidelity subagent permission request (child=%s)",
-                                event.sub_session_id,
-                            )
-                            tool_result = ToolHookResult(action=TOOL_ALLOW)
-                        elif _identity_grant_kept:
-                            logger.info(
-                                "honoring identity-keyed hook auto-approve for "
-                                "identity-verified subagent permission request "
-                                "(child=%s, mcp=%s/%s)",
-                                event.sub_session_id,
-                                event.mcp_server_name,
-                                event.tool_name,
-                            )
-                    if tool_result.action == TOOL_AUTO_APPROVE:
-                        # The hook layer granted this by NAME (its
-                        # `auto_approve_tools` globs, or the read-only allowlist).
-                        # Ask off-loop whether the names still identify the
-                        # programs they appear to name; a shadowed, agent-tree or
-                        # unidentified resolution falls through to the interactive
-                        # card instead. Done HERE rather than inside the hook
-                        # because the answer needs filesystem work that its
-                        # synchronous, loop-bound method must not perform.
-                        _hook_shim = await _name_grant_refusal_for(event)
-                        if _hook_shim is not None:
-                            # The LINE is gated, the audit row below is not: a
-                            # platform-scope refusal says the same thing about
-                            # every command this session runs.
-                            if should_log_decline(session_key, _hook_shim):
-                                logger.warning(
-                                    "declining a hook auto-approve: %s; the request "
-                                    "falls through to interactive approval",
-                                    _hook_shim.log_text,
-                                )
-                            _audit_name_grant_refusal(
-                                session_key=session_key,
-                                slot=slot,
-                                event=event,
-                                refusal=_hook_shim,
-                                tier="hook_auto_approve",
-                            )
-                            _declined_grant_notices.setdefault(
-                                _hook_shim.detail,
-                                "🛡️ Auto-approve not applied — "
-                                f"{_redact_display_text(_hook_shim.detail)}. "
-                                "Approve this command explicitly.",
-                            )
-                            tool_result = ToolHookResult(action=TOOL_ALLOW)
-                    if tool_result.action == TOOL_AUTO_APPROVE:
-                        try:
-                            validated_tool = _validate_tool_name(
-                                event.title,
-                                is_shell=event.is_shell,
-                                canonical_name=event.tool_name,
-                            )
-                        except ValueError as e:
-                            await _reject_invalid_tool(
-                                client,
-                                slot,
-                                event,
-                                session_key=session_key,
-                                error=e,
-                                refusal_notices=_refusal_notices,
-                                state=state,
-                                refusal_reasons=_refusal_reasons,
-                            )
-                        else:
-                            # Declarative auto-approve must NOT bypass scripted
-                            # PreToolUse hooks — those are the audit/policy gate
-                            # and exit-2 BLOCKED takes precedence over auto-approve.
-                            try:
-                                _parsed_input = (
-                                    json.loads(event.tool_input) if event.tool_input else None
-                                )
-                            except Exception:
-                                _parsed_input = None
-                            try:
-                                pre_hook_results = await _fire(
-                                    turn,
-                                    HOOK_EVENT_PRE_TOOL_USE,
-                                    tool_name=validated_tool,
-                                    tool_input=_parsed_input,
-                                    tool_id=event.harness_tool_id,
-                                    tool_identity=event.tool_name,
-                                    mcp_server=event.mcp_server_name,
-                                )
-                            except Exception as hook_exc:
-                                await _reject_hook_error(
-                                    client,
-                                    slot,
-                                    event,
-                                    session_key=session_key,
-                                    error=str(hook_exc),
-                                    refusal_reasons=_refusal_reasons,
-                                    refusal_notices=_refusal_notices,
-                                    state=state,
-                                )
-                                continue
-                            if _pre_tool_hooks_should_block(pre_hook_results):
-                                await _reject_hook_blocked(
-                                    client,
-                                    slot,
-                                    event,
-                                    session_key=session_key,
-                                    pre_hook_results=pre_hook_results,
-                                    refusal_reasons=_refusal_reasons,
-                                    refusal_notices=_refusal_notices,
-                                )
-                                continue
-                            approval_sent = await client.approve_tool(event.request_id)
-                            if approval_sent is False:
-                                sel().log_tool_invocation(
-                                    session_key=session_key,
-                                    agent=slot.agent or "kirocrew",
-                                    source="dashboard",
-                                    tool_name=_redact_display_text(event.title),
-                                    tool_kind=event.tool_kind,
-                                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                                    request_id=event.request_id,
-                                )
-                                continue
-                            _wt_note_approved(turn, event)
-                            _tool_title = _broadcast_auto_tool(state, slot, event)
-                            # Defense-in-depth: _broadcast_auto_tool already
-                            # returns a redacted title, but re-redact before this
-                            # second external surface (activity feed + sel log) so
-                            # the guarantee is local and idempotent — event.title
-                            # is LLM-controlled display text (see below).
-                            _tool_title, _ = redact_exfiltration_urls(_tool_title)
-                            _tool_title, _ = redact_credentials(_tool_title)
-                            state.broadcast_ws(
-                                "activity_event",
-                                {
-                                    "slot": slot.key,
-                                    "kind": "permission",
-                                    "text": f"Auto-approved: {_tool_title}",
-                                },
-                            )
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=_tool_title,
-                                tool_kind=event.tool_kind,
-                                outcome="auto_approved",
-                                request_id=event.request_id,
-                            )
-                        continue
-                    try:
-                        validated_tool = _validate_tool_name(
-                            event.title,
-                            is_shell=event.is_shell,
-                            canonical_name=event.tool_name,
-                        )
-                    except ValueError as e:
-                        await _reject_invalid_tool(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            error=e,
-                            refusal_notices=_refusal_notices,
-                            state=state,
-                            refusal_reasons=_refusal_reasons,
-                        )
-                        continue
-                    try:
-                        _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                    except Exception:
-                        _parsed_input = None
-                    try:
-                        pre_hook_results = await _fire(
-                            turn,
-                            HOOK_EVENT_PRE_TOOL_USE,
-                            tool_name=validated_tool,
-                            tool_input=_parsed_input,
-                            tool_id=event.harness_tool_id,
-                            tool_identity=event.tool_name,
-                            mcp_server=event.mcp_server_name,
-                        )
-                    except Exception as hook_exc:
-                        await _reject_hook_error(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            error=str(hook_exc),
-                            refusal_notices=_refusal_notices,
-                            state=state,
-                            refusal_reasons=_refusal_reasons,
-                        )
-                        continue
-                    if _pre_tool_hooks_should_block(pre_hook_results):
-                        await _reject_hook_blocked(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            pre_hook_results=pre_hook_results,
-                            refusal_reasons=_refusal_reasons,
-                            refusal_notices=_refusal_notices,
-                        )
-                        continue
-                    _pre_tool_hooks_fired = True
-                    # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
-                # Native crew auto-approve: when a native subagent (crew pipeline)
-                # is active and the session is configured to auto-approve subagent
-                # tools, approve immediately to avoid deadlocking the blocked
-                # parent turn. Deny-by-default (CWE-1188): with no active crew this
-                # predicate is False no matter the trust flags, so the tool falls
-                # through to the normal interactive/trust gate below.
-                if (
-                    _native_crew_should_auto_approve(_native_tracker, state, slot)
-                    and _child_grant_eligible
-                ):
-                    logger.debug(
-                        "Native crew auto-approve: %r (request_id=%s)",
-                        _safe_native_crew_debug_title(event.title),
-                        event.request_id,
-                    )
-                    approval_sent = await client.approve_tool(event.request_id)
-                    if approval_sent is False:
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_redact_display_text(event.title),
-                            tool_kind=event.tool_kind,
-                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                            request_id=event.request_id,
-                        )
-                        continue
-                    _wt_note_approved(turn, event)
-                    _tool_title = _broadcast_auto_tool(state, slot, event)
-                    # Defense-in-depth: re-redact before this second external
-                    # surface (activity feed + sel log). event.title is
-                    # LLM-controlled display text; _broadcast_auto_tool already
-                    # redacts, so both passes are idempotent.
-                    _tool_title, _ = redact_exfiltration_urls(_tool_title)
-                    _tool_title, _ = redact_credentials(_tool_title)
-                    state.broadcast_ws(
-                        "activity_event",
-                        {
-                            "slot": slot.key,
-                            "kind": "permission",
-                            "text": f"Auto-approved (crew): {_tool_title}",
-                        },
-                    )
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_tool_title,
-                        tool_kind=event.tool_kind,
-                        outcome="auto_approved",
-                        request_id=event.request_id,
-                        metadata={"reason": "native_crew"},
-                    )
+                _flow = await _on_permission_request(turn, event)
+                _deferred_cut_text = turn._deferred_cut_text
+                _turn_flushed_visible_text = turn._turn_flushed_visible_text
+                if _flow is _Flow.CONTINUE:
                     continue
-                # Session-trusted patterns: auto-approve commands matching user globs.
-                # Security: shell scope comes from structured tool_input; non-shell
-                # scope comes from the ACP-cached canonical server/tool identity.
-                # event.title is model-authored display prose and is NEVER authority.
-                # Missing identity, unrecognized structured input, or transport
-                # redaction skips matching (deny-by-default). Otherwise a reused title
-                # or collapsed redaction marker could authorize a different tool.
-                #
-                # A backend-subagent request whose ARGUMENTS are unverified but whose
-                # canonical MCP identity is (child_mcp_identity_trusted) is admitted
-                # too: approval_command keys a non-shell grant on exactly that
-                # identity and on nothing the agent authors, so the grant the user
-                # clicked for this tool covers the child's call to the same tool. A
-                # child with no verified identity stays excluded. The admission
-                # rule is AcpEvent.child_unconditional_grant_eligible — the same
-                # boolean the unconditional grants below read — bound once above
-                # as _child_grant_eligible, so it cannot drift here.
-                #
-                # Timed grants are checked HERE, at decision time, rather than
-                # by a timer: a grant past its deadline is dropped before the
-                # match, so it can never approve the call in front of it. They
-                # live in their own store, so the set below is the chat-long
-                # patterns plus whichever timed ones are still live.
-                _tp_deadlines = getattr(slot, "_trusted_pattern_deadlines", None)
-                _tp_live = (
-                    _live_trusted_patterns(
-                        slot._trusted_patterns,
-                        _tp_deadlines,
-                        wall=time.time(),
-                        mono=time.monotonic(),
-                    )
-                    if _tp_deadlines
-                    else slot._trusted_patterns
-                )
-                if _tp_live and _child_grant_eligible and not event.tool_input_redacted:
-                    _tp_command = approval_command(
-                        event.tool_input or "",
-                        is_shell=event.is_shell,
-                        tool_name=event.tool_name,
-                        mcp_server_name=event.mcp_server_name,
-                        raw_tool_params=event.raw_tool_params,
-                    )
-                    matched = (
-                        _matches_trusted_pattern(_tp_command, _tp_live) if _tp_command else None
-                    )
-                    if (
-                        matched
-                        and event.is_shell
-                        and _tp_command
-                        and _redirect_outside_grant(_tp_command, _tp_live)
-                    ):
-                        # The user granted a program, not the files the shell
-                        # opens for it: a write redirect needs a grant that
-                        # spells it. Declining costs one interactive prompt;
-                        # the command is neither blocked nor rewritten.
-                        logger.info(
-                            "trusted pattern not applied: the grant does not cover a write redirect"
-                        )
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_redact_display_text(event.title),
-                            tool_kind=event.tool_kind,
-                            outcome="auto_approve_declined",
-                            request_id=event.request_id,
-                            error="the command may write through a redirect the grant does not cover",
-                            metadata={
-                                "reason": "redirect_outside_grant",
-                                "tier": "trusted_pattern",
-                            },
-                        )
-                        _declined_grant_notices.setdefault(
-                            "redirect_outside_grant",
-                            "🛡️ Trusted pattern not applied — the command may write through "
-                            "a redirect, which the grant does not cover. "
-                            "Approve this command explicitly.",
-                        )
-                        matched = None
-                    if matched and event.is_shell and _tp_command:
-                        # The user granted a PROGRAM NAME. Do not honour it when
-                        # that name no longer identifies the program it appears
-                        # to name — the shell resolves it again, through a PATH
-                        # that can lead with directories the agent writes.
-                        # Declining costs one interactive prompt; the command is
-                        # neither blocked nor rewritten.
-                        #
-                        # `is_shell` is tested explicitly because `_tp_command`
-                        # is non-empty for a non-shell grant too, where it is a
-                        # canonical `mcp-trust:v1:...` identity rather than a
-                        # command. There is no program name to vouch for there,
-                        # so that tier stays unchanged.
-                        _tp_shim = await _name_grant_refusal_off_loop(_tp_command)
-                        if _tp_shim:
-                            # The CODE, not the detail and not the pattern: both
-                            # are derived from user/agent input, and a log sink is
-                            # where that becomes a disclosure. The detail still
-                            # reaches the person, on the card below.
-                            logger.warning("trusted pattern not applied: %s", _tp_shim.log_text)
-                            _audit_name_grant_refusal(
-                                session_key=session_key,
-                                slot=slot,
-                                event=event,
-                                refusal=_tp_shim,
-                                tier="trusted_pattern",
-                            )
-                            _declined_grant_notices.setdefault(
-                                _tp_shim.detail,
-                                "🛡️ Trusted pattern not applied — "
-                                f"{_redact_display_text(_tp_shim.detail)}. "
-                                "Approve this command explicitly.",
-                            )
-                            matched = None
-                    # The program-name check above and the transport's own floor
-                    # check are awaited hops, long enough for a timed grant to
-                    # pass its deadline (a slow pool, a host suspended mid-call).
-                    # An approval that rests on timed grants carries their
-                    # deadline down to the send, where the transport checks it
-                    # last; one the chat-long patterns cover alone carries none.
-                    _tp_deadline: GrantDeadline | None = (
-                        _timed_grant_deadline(_tp_command, slot._trusted_patterns, _tp_deadlines)
-                        if matched and _tp_deadlines
-                        else None
-                    )
-                    if matched:
-                        try:
-                            validated_tool = _validate_tool_name(
-                                event.title,
-                                is_shell=event.is_shell,
-                                canonical_name=event.tool_name,
-                            )
-                        except ValueError as e:
-                            await _reject_invalid_tool(
-                                client,
-                                slot,
-                                event,
-                                session_key=session_key,
-                                error=e,
-                                refusal_notices=_refusal_notices,
-                                state=state,
-                                metadata={
-                                    "reason": "invalid_tool_name",
-                                    "pattern": matched,
-                                },
-                                refusal_reasons=_refusal_reasons,
-                            )
-                            continue
-                        if _tp_deadline is None:
-                            approval_sent = await client.approve_tool(event.request_id)
-                        else:
-                            # A timed grant backs this approval: the transport
-                            # checks its deadline again after the floor and, if it
-                            # has passed, sends nothing and raises. The call then
-                            # falls through to the normal prompt below.
-                            try:
-                                approval_sent = await client.approve_tool(
-                                    event.request_id, deadline=_tp_deadline
-                                )
-                            except GrantEnded:
-                                approval_sent = None
-                        if approval_sent is not None:
-                            if approval_sent is False:
-                                sel().log_tool_invocation(
-                                    session_key=session_key,
-                                    agent=slot.agent or "kirocrew",
-                                    source="dashboard",
-                                    tool_name=_redact_display_text(event.title),
-                                    tool_kind=event.tool_kind,
-                                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                                    request_id=event.request_id,
-                                )
-                                continue
-                            _wt_note_approved(turn, event)
-                            _tool_title = _broadcast_auto_tool(state, slot, event)
-                            _tool_title, _ = redact_exfiltration_urls(_tool_title)
-                            _tool_title, _ = redact_credentials(_tool_title)
-                            slot.append(
-                                "tool",
-                                f"🔧 {_tool_title}",
-                                "msg msg-tool",
-                                # `_tool_meta` for parity with every other rung: same
-                                # `_MAX_TOOL_PURPOSE` cap (a hand-rolled 200-char cap
-                                # here truncated restored purposes mid-sentence), same
-                                # redacted `tool_call_id` (the live↔replay join key),
-                                # and `input`/`kind` so historical rows open the same
-                                # inline detail panel as live ones.
-                                meta=_tool_meta(event),
-                            )
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=_tool_title,
-                                tool_kind=event.tool_kind,
-                                outcome="auto_approved",
-                                request_id=event.request_id,
-                                metadata={"reason": "trusted_pattern", "pattern": matched},
-                            )
-                            continue
-                # Trust-reads: auto-approve read-only bash commands
-                # Detect bash tools by tool_input content (title is human-readable)
-                cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-                yolo_active = state.is_yolo_active()
-                # Evaluated ONCE for both branches below. Two separate calls could
-                # straddle a scoped grant's expiry and disagree with each other, and
-                # a scope check is not a pure read — it retires a lapsed grant and
-                # logs that, which must happen once per event, not twice.
-                slot_trusted = _slot_is_trusted(slot)
-                if (
-                    slot._trust_reads
-                    and not slot_trusted
-                    and not yolo_active
-                    and cmd
-                    and not _child_low_fidelity
-                ):
-                    # Trust-reads never auto-approves git: git reads
-                    # ``.git/config`` on every invocation and ``core.fsmonitor``
-                    # / ``core.hooksPath`` name a program there that no text
-                    # classifier sees. A git command falls through to the card.
-                    _tr_read_only = is_read_only_bash(cmd) and not command_invokes_git(cmd)
-                    _tr_shim = await _name_grant_refusal_off_loop(cmd) if _tr_read_only else None
-                    if _tr_shim is not None:
-                        logger.warning("trust-reads not applied: %s", _tr_shim.log_text)
-                        _audit_name_grant_refusal(
-                            session_key=session_key,
-                            slot=slot,
-                            event=event,
-                            refusal=_tr_shim,
-                            tier="trust_reads",
-                        )
-                    if _tr_read_only and _tr_shim is None:
-                        try:
-                            validated_tool = _validate_tool_name(
-                                event.title,
-                                is_shell=event.is_shell,
-                                canonical_name=event.tool_name,
-                            )
-                        except ValueError as e:
-                            await _reject_invalid_tool(
-                                client,
-                                slot,
-                                event,
-                                session_key=session_key,
-                                error=e,
-                                metadata={"reason": "trust_reads"},
-                                refusal_reasons=_refusal_reasons,
-                                refusal_notices=_refusal_notices,
-                                state=state,
-                            )
-                            continue
-                        approval_sent = await client.approve_tool(event.request_id)
-                        if approval_sent is False:
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=_redact_display_text(event.title),
-                                tool_kind=event.tool_kind,
-                                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                                request_id=event.request_id,
-                            )
-                            continue
-                        _wt_note_approved(turn, event)
-                        _tool_title = _broadcast_auto_tool(state, slot, event)
-                        slot.append(
-                            "tool",
-                            f"🔧 {_tool_title}",
-                            "msg msg-tool",
-                            meta=_tool_meta(event),
-                        )
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_redact_display_text(event.title),
-                            tool_kind=event.tool_kind,
-                            outcome="auto_approved",
-                            request_id=event.request_id,
-                            metadata={"reason": "trust_reads"},
-                        )
-                        continue
-                # Trust mode (per-slot) or YOLO mode (global) — auto-approve.
-                # Both are UNCONDITIONAL grants: the decision consumes no
-                # agent-authored event data, so a low-fidelity child event
-                # with a VERIFIED canonical MCP identity still qualifies
-                # (_child_grant_eligible — arguments unverified, but the grant
-                # never reads them). A child with neither full context nor a
-                # verified identity falls through to the interactive card;
-                # children WITH cached bytes take these branches exactly like
-                # the main agent (mode parity).
-                if (slot_trusted or yolo_active) and _child_grant_eligible:
-                    try:
-                        validated_tool = _validate_tool_name(
-                            event.title,
-                            is_shell=event.is_shell,
-                            canonical_name=event.tool_name,
-                        )
-                    except ValueError as e:
-                        await _reject_invalid_tool(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            error=e,
-                            refusal_notices=_refusal_notices,
-                            state=state,
-                            refusal_reasons=_refusal_reasons,
-                        )
-                        continue
-                    if not _pre_tool_hooks_fired:
-                        try:
-                            _parsed_input = (
-                                json.loads(event.tool_input) if event.tool_input else None
-                            )
-                        except Exception:
-                            _parsed_input = None
-                        try:
-                            pre_hook_results = await _fire(
-                                turn,
-                                HOOK_EVENT_PRE_TOOL_USE,
-                                tool_name=validated_tool,
-                                tool_input=_parsed_input,
-                                tool_id=event.harness_tool_id,
-                                tool_identity=event.tool_name,
-                                mcp_server=event.mcp_server_name,
-                            )
-                        except Exception as hook_exc:
-                            await _reject_hook_error(
-                                client,
-                                slot,
-                                event,
-                                session_key=session_key,
-                                error=str(hook_exc),
-                                refusal_notices=_refusal_notices,
-                                state=state,
-                                refusal_reasons=_refusal_reasons,
-                            )
-                            continue
-                        if _pre_tool_hooks_should_block(pre_hook_results):
-                            await _reject_hook_blocked(
-                                client,
-                                slot,
-                                event,
-                                session_key=session_key,
-                                pre_hook_results=pre_hook_results,
-                                refusal_reasons=_refusal_reasons,
-                                refusal_notices=_refusal_notices,
-                            )
-                            continue
-                    # always=False — KiroCrew owns trust scope; per-call request_permission
-                    # is required for PreToolUse hooks to run on every tool invocation.
-                    approval_sent = await client.approve_tool(event.request_id)
-                    if approval_sent is False:
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_redact_display_text(event.title),
-                            tool_kind=event.tool_kind,
-                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                            request_id=event.request_id,
-                        )
-                        continue
-                    _wt_note_approved(turn, event)
-                    _tool_title = _broadcast_auto_tool(state, slot, event)
-                    # Defense-in-depth: re-redact before the sel log (idempotent).
-                    _tool_title, _ = redact_exfiltration_urls(_tool_title)
-                    _tool_title, _ = redact_credentials(_tool_title)
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_tool_title,
-                        tool_kind=event.tool_kind,
-                        outcome="auto_approved",
-                        request_id=event.request_id,
-                        # Provenance, so an auditor can separate a human's session
-                        # trust from an unattended worker's expiring scoped grant.
-                        metadata={"reason": _auto_approve_reason(slot, yolo_active)},
-                    )
-                    continue
-                # Auto-reject remaining tools after one rejection in a batch
-                if getattr(slot, "_batch_rejected", False):
-                    _title = _redact_display_text(event.title)
-                    _cascade_cause = getattr(slot, "_batch_rejected_cause", "")
-                    # Audit FIRST, before any wire I/O for this decision (see
-                    # _reject_hook_blocked): a stalled ACP reader cancels this
-                    # coroutine at the turn deadline, and an SEL write sequenced
-                    # after the awaits never runs.
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_title,
-                        tool_kind=event.tool_kind,
-                        outcome="rejected",
-                        request_id=event.request_id,
-                        # Additive provenance: an auditor separating "the user
-                        # refused this group" from "a host auto-decline cut it
-                        # short" needs the cause on the cascaded members too.
-                        metadata=(
-                            {"reason": "batch_rejection", "cause": _cascade_cause}
-                            if _cascade_cause
-                            else {"reason": "batch_rejection"}
-                        ),
-                    )
-                    if _cascade_cause and not _batch_cascade_steered:
-                        # Host-caused cascade: the batch's originating decline
-                        # was an auto-decline (approval timeout, no budget,
-                        # Slack delivery failure), so kiro-cli's "User denied
-                        # tool execution" is FALSE for every cascaded member.
-                        # Steer the real cause in-band, BEFORE the rejection
-                        # goes on the wire (the unanswered permission request is
-                        # what keeps the steer queued instead of dropped). One
-                        # notice covers the whole cascaded remainder; the latch
-                        # is the steer's own return value, so later members skip
-                        # the send once a notice is actually on the wire, while
-                        # a failed or refused attempt leaves the latch clear and
-                        # the next member retries. A throwaway notices list on
-                        # purpose — the batch's ORIGINAL decline already renders
-                        # its own card, and a best-effort correction of cascade
-                        # attribution is not worth a second billed recovery turn
-                        # when steering is unavailable (that leaves exactly
-                        # today's behaviour). slot/state withheld for the same
-                        # reason: each cascaded tool already appends a visible
-                        # 🚫 row, and the inject card's summary line is keyed on
-                        # causes this one is not.
-                        _batch_cascade_steered = await _steer_policy_notice(
-                            client,
-                            _title,
-                            _cascade_cause,
-                            [],
-                            cause=DENY_CAUSE_BATCH_CASCADE,
-                        )
-                        turn._batch_cascade_steered = _batch_cascade_steered
-                    # User-originated cascade. When the
-                    # person themselves denied the tool that started this
-                    # cascade, that refusal covers the group they refused, so
-                    # kiro-cli's "User denied tool execution" is the TRUE
-                    # attribution for the cascaded remainder and steering a
-                    # host notice would re-attribute the user's own decision.
-                    # Host-caused cascades are corrected by the
-                    # provenance-gated steer above.
-                    await _reject_attributed(
-                        client, event.request_id, attribution="exempt: user-originated cascade"
-                    )
-                    slot.append(
-                        "tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event)
-                    )
-                    # Mark the permission as resolved so UI shows rejection
-                    perm_meta: dict[str, str] = {
-                        "request_id": str(event.request_id),
-                        "tool_call_id": event.tool_call_id or "",
-                        "resolved": "rejected",
-                    }
-                    slot.append("permission", _title, json.dumps(perm_meta))
-                    logger.warning("AUTO-REJECTED tool=%r (batch rejection)", event.title)
-                    continue
-                # Interactive approval — send to frontend, wait for decision
-                #
-                # WHO/WHAT declines this tool, when it is declined. Both stay
-                # empty for an interactive user refusal; each host-side
-                # auto-decline below (Slack delivery failure, no turn budget,
-                # approval timeout) overwrites the cause with its DENY_CAUSE_*
-                # constant and the reason with a short host-authored sentence.
-                # The cause gates the provenance steer at the shared reject
-                # branch below, and the batch setter at the bottom copies the
-                # reason onto ``slot._batch_rejected_cause`` so the cascade
-                # site can tell a person's refusal from a host auto-decline.
-                _host_deny_cause = ""
-                _host_deny_reason = ""
-                # A turn cancelled mid-approval (slot deletion cancels the task)
-                # unwinds through the ``finally`` below with no cause set, so the
-                # decision would read as an anonymous rejection -- which the ledger
-                # scores as a person's answer. This flag lets that path attribute
-                # the decision to the host, the way the timeout and no-budget
-                # declines already do.
-                _host_cancelled = False
-                perm_meta = {
-                    "request_id": str(event.request_id),
-                    "tool_call_id": event.tool_call_id or "",
-                }
-                if event.tool_purpose:
-                    perm_meta["tool_purpose"] = _redact_tool_field(
-                        event.tool_purpose, limit=_MAX_TOOL_PURPOSE
-                    )
-                if event.tool_input:
-                    # Security: scan for exfiltration URLs and credentials
-                    sanitized, _ = redact_exfiltration_urls(event.tool_input)
-                    sanitized, _ = redact_credentials(sanitized)
-                    perm_meta["tool_input"] = sanitized
-                # Flag read-only bash commands for context-aware buttons
-                cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-                if cmd:
-                    # Same rule as the trust-reads branch, so the card never
-                    # offers a trust-reads grant that would not cover git.
-                    perm_meta["is_read_only"] = (
-                        "1" if is_read_only_bash(cmd) and not command_invokes_git(cmd) else ""
-                    )
-                # Pre-compute consent fields for the TrustDropdown.  The title
-                # is presentation text and can be model-authored; shell grant
-                # scope therefore comes only from the canonical command in
-                # ``tool_input``.  Redaction-changing values are displayed but
-                # are not grantable: a user cannot consent to hidden bytes.
-                _safe_title, _ = redact_exfiltration_urls(event.title)
-                _safe_title, _ = redact_credentials(_safe_title)
-                perm_meta["tool_title"] = _safe_title
-                perm_meta["is_shell"] = "1" if event.is_shell else ""
-                # Kind + trusted identity let the approval card derive the same
-                # human title the tool row shows (utils/toolCallTitle). All
-                # optional there: a card missing them still renders its command.
-                perm_meta["tool_kind"] = _redact_tool_field(event.tool_kind or "", limit=64)
-                perm_meta.update(_tool_identity_fields(event))
-                _trust_key = approval_command(
-                    event.tool_input or "",
-                    is_shell=event.is_shell,
-                    tool_name=event.tool_name,
-                    mcp_server_name=event.mcp_server_name,
-                    raw_tool_params=event.raw_tool_params,
-                )
-                _display_command = approval_display_command(
-                    event.tool_input or "",
-                    is_shell=event.is_shell,
-                    tool_name=event.tool_name,
-                    mcp_server_name=event.mcp_server_name,
-                    raw_tool_params=event.raw_tool_params,
-                )
-                _full = _extract_full_command(_display_command)
-                _safe_full, _ = redact_exfiltration_urls(_full)
-                _safe_full, _ = redact_credentials(_safe_full)
-                # ``tool_input`` is already display-redacted by both ACP
-                # transports.  Re-running the redactors cannot reveal that
-                # upstream removed secret bytes, so retain and enforce the
-                # transport's boolean provenance as well.  It contains no
-                # secret itself and prevents two different hidden commands
-                # from collapsing to one durable trust pattern.
-                _command_grantable = (
-                    bool(_full)
-                    and bool(_trust_key)
-                    and not event.tool_input_redacted
-                    and _safe_full == _full
-                )
-                if _command_grantable:
-                    perm_meta["full_command"] = _safe_full
-                    # Authorization authority stays distinct from the
-                    # wire-compatible display label.  MCP server/tool names may
-                    # both contain ``__``; the internal key component-encodes
-                    # them so two different pairs cannot share a durable grant.
-                    perm_meta["trust_command_key"] = _trust_key
-                    perm_meta["trust_command_grantable"] = "1"
-                # A broad per-slot Trust click is still a durable grant, so it
-                # carries an explicit server proof: an alternate approval
-                # surface must not offer it merely because it received a
-                # pending card.  The proof is deliberately NOT conditioned on
-                # ``_command_grantable``.  The session grant names no command —
-                # it auto-approves whatever this slot asks for next — so the
-                # bytes of THIS call are not what the user consents to, and
-                # their derivability cannot bear on it.  Conditioning it there
-                # removed the entire Trust menu, every tier, from any card
-                # whose command the transport redacted or could not
-                # canonicalize; a plain ``cd`` request then rendered with
-                # allow-once and reject alone.  The command-scoped tiers above
-                # stay gated, because those DO name the bytes being consented
-                # to.  This matches the fidelity split already documented on
-                # ``child_unconditional_grant_eligible``, where trust-all is an
-                # unconditional grant and only content-matching paths need the
-                # canonical command.
-                perm_meta["trust_grantable"] = "1"
-                _base = _extract_base_command(_trust_key) if event.is_shell else ""
-                _safe_base, _ = redact_exfiltration_urls(_base)
-                _safe_base, _ = redact_credentials(_safe_base)
-                if _command_grantable and _base and _safe_base == _base:
-                    perm_meta["base_command"] = _safe_base
-                    perm_meta["trust_base_grantable"] = "1"
-                # A decline known before the row exists is born into the row. Spec:
-                # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
-                if tool_approval_timeout_secs() <= 0:
-                    perm_meta["resolved"] = "rejected"
-                else:
-                    # Only a card someone can still answer gets the held notices.
-                    for _notice in _declined_grant_notices.values():
-                        slot.append("system", _notice, "msg msg-info")
-                permission_row = slot.append(
-                    "permission",
-                    f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,
-                    json.dumps(perm_meta),
-                )
-                loop = asyncio.get_running_loop()
-                fut: asyncio.Future[str] = loop.create_future()
-                slot.register_approval(str(event.request_id), fut, permission_row)
-                # Push via global SSE AFTER registering the future, so the
-                # slot dict reflects pending_approval=true and Board cards
-                # move into the Blocked lane without a browser refresh.
-                state.push_slots_update()
-                # Mirror the prompt to the linked Slack thread so a user driving
-                # this session from Slack can actually answer it. Without this,
-                # the prompt only renders in the dashboard and a Slack-only user
-                # never sees it — the turn then parks here for the whole approval
-                # window, holding the slot lock and silently dropping inbound
-                # messages.
-                # The Slack click resolves THIS future (via state.resolve_approval);
-                # we remain the sole caller of approve_tool/reject_tool below.
-                _slack_approval_ts: str | None = None
-                if (
-                    # A row pre-declined at its append is not mirrored. The
-                    # post is the one cancellable await between the future's
-                    # registration above and the ``try``/``finally`` below
-                    # that pops it, and its ``except Exception`` cannot see
-                    # the ``CancelledError`` a turn ceiling raises inside it:
-                    # a pre-declined prompt that went through the post could
-                    # leave a future nothing resolves -- the Board keeps the
-                    # session Blocked and Continue answers 409 until a reload
-                    # or a slot switch rejects it -- for a card the
-                    # ``finally`` would delete the moment the post returned.
-                    # Skipping the post leaves nothing on this path that
-                    # awaits before that ``finally``, so the decline is
-                    # recorded and the future popped exactly as the
-                    # interactive path does it.
-                    "resolved" not in perm_meta
-                    and slot._slack_linked
-                    and slot._slack_channel
-                    and slot._slack_thread_ts
-                    and state.slack_client
-                    # An approval prompt is turn output too, and it asks for a
-                    # decision. Posting one into a thread the user disconnected
-                    # would solicit an answer where they are no longer looking;
-                    # the dashboard carries the same prompt.
-                    and not slack_mirror_is_paused(state, session_key)
-                ):
-                    try:
-                        _slack_approval_ts = await post_linked_approval(
-                            state.slack_client,
-                            slot._slack_channel,
-                            slot._slack_thread_ts,
-                            event.request_id,
-                            session_key,
-                            (
-                                f"{_child_lf_warning}{event.title}"
-                                if _child_lf_warning
-                                else event.title
-                            ),
-                            event.tool_input or "",
-                        )
-                        if _slack_approval_ts is None and not fut.done():
-                            # Delivery failed — do not park for the whole
-                            # approval window.
-                            # Resolve the future now (reject) and tell the user
-                            # the prompt could not be delivered, so they retry
-                            # rather than wait. The dashboard still rendered the
-                            # prompt, so a dashboard user could also answer; but
-                            # resolving keeps a Slack-only user from being stuck.
-                            # The card is retired on every window by the
-                            # ``approval_resolved`` frame the ``finally`` sends
-                            # the moment this decline is recorded.
-                            logger.warning(
-                                "Linked approval delivery to Slack failed; auto-rejecting tool %r",
-                                event.title,
-                            )
-                            slot.append(
-                                "assistant",
-                                "\u26a0\ufe0f A tool approval was required but I couldn't post it to "
-                                "this Slack thread, so I auto-declined it. Please retry, or "
-                                "approve from the dashboard.",
-                                "msg msg-a",
-                            )
-                            state.push_slots_update()
-                            fut.set_result("rejected")
-                            _host_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
-                            _host_deny_reason = (
-                                "the approval prompt could not be delivered to Slack"
-                            )
-                        elif _slack_approval_ts is None:
-                            # Delivery failed, but the dashboard answered the
-                            # prompt while the post was in flight: that answer
-                            # stands, the runner declines nothing, and the user
-                            # gets no notice saying the prompt was auto-declined.
-                            logger.warning(
-                                "Linked approval delivery to Slack failed after the prompt "
-                                "was answered from the dashboard; keeping that answer for "
-                                "tool %r",
-                                event.title,
-                            )
-                    except Exception:
-                        # Any failure before the future is resolved (ImportError,
-                        # post_linked_approval raising, slot.append/push raising in
-                        # the delivery-failure branch) would otherwise fall through
-                        # to the approval wait_for with an unresolved future — the exact
-                        # wedge this fix prevents. Auto-reject so the turn unblocks,
-                        # mirroring the _slack_approval_ts is None branch.
-                        logger.warning("Error mirroring approval prompt to Slack", exc_info=True)
-                        if not fut.done():
-                            fut.set_result("rejected")
-                            _host_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
-                            _host_deny_reason = (
-                                "the approval prompt could not be delivered to Slack"
-                            )
-                # Pre-seeded so the `finally` backstop below is total over EVERY
-                # exit from the await — including CancelledError, which slot
-                # deletion / cleanup endpoints raise by cancelling slot.task.
-                # Assigning only inside try/except would leave `outcome` unbound
-                # on that path: the finally would raise UnboundLocalError,
-                # replacing the CancelledError with a spurious exception and
-                # skipping both the message marking and the Slack cleanup —
-                # reintroducing the orphan-card bug on the cancel path.
-                # "rejected" is the correct reading: a cancelled turn never
-                # obtained consent.
-                #
-                # The wait below first consumes an answer that ALREADY arrived
-                # (``fut.done()``): the row was published before the Slack post
-                # and a person can answer it while the post is in flight, and
-                # the window is computed only after the post from the budget
-                # left then. Without that read, a post slow enough to exhaust
-                # the budget let the no-budget decline overrule a decision the
-                # resolver had already recorded and answer the model with a
-                # rejection the transcript shows as approved. The
-                # delivery-failure arms above guard their own auto-reject the
-                # same way (``if not fut.done()``).
-                outcome = "rejected"
-                # Per-SLOT, not the global config: `approval_timeout_for` is what
-                # gives an app-owned worker with no human responder the background
-                # deny-fast instead of parking for the attended window and being
-                # denied anyway. See DashboardState.approval_timeout_for.
-                #
-                # But it is only ONE of the two bounds. `approval_timeout_for`
-                # returns a flat constant, so on its own it can outlive the turn
-                # it belongs to: the attended 7200s dwarfs the configurable
-                # `tool_approval_timeout_secs()` (600s by default), and neither is
-                # clamped to what is LEFT of a long agentic turn. The outer
-                # `_bounded_turn` then cancels first and the timeout branch below
-                # never runs — no card, no decline line, just a turn that dies
-                # mid-prompt. Taking the MINIMUM keeps both properties: the
-                # unattended deny-fast, and the double bound (ceiling and
-                # remaining budget) that `tool_approval_timeout_secs` applies —
-                # including its 0.0, which is what the no-budget branch reads.
-                # Recorded before the window computation below, and deliberately
-                # not at the future's registration further up. Everything between
-                # the two is cancellable -- the Slack mirror awaits a network post,
-                # and its `except Exception` cannot catch the CancelledError that
-                # slot deletion raises -- so an entry written up there could escape
-                # the try below entirely and leave a request that is never decided,
-                # in a file nothing rewrites. Written here the pair is bound by
-                # control flow: nothing between this call and that `try` awaits, so
-                # either both halves land or neither does. The trade is that a
-                # prompt cancelled during its Slack delivery goes unrecorded, which
-                # is a fact the log is missing rather than a pair it gets wrong. It
-                # is still before the decision on every surviving path, including
-                # the delivery failure that auto-decides above: that branch only
-                # resolves the future, and no decision is recorded until this try's
-                # `finally`.
-                #
-                # ABOVE the window computation on purpose, not just below it:
-                # `test_dashboard_approval_window.py` pins this branch's source
-                # shape by slicing a fixed-length window starting at that
-                # assignment, so anything inserted after it pushes the awaited
-                # call and both cards out of the window the test reads. For the
-                # same reason this comment does not quote the assignment itself:
-                # the test locates the window by searching for that text, and a
-                # second copy above it would move the window to the wrong place.
-                crew_log_emit.on_approval_requested(
-                    _crew_log_sid,
-                    _crew_log_turn_no,
-                    approval_id=str(event.request_id),
-                    tool=event.tool_name or "",
-                    reason=event.title or "",
-                )
-                _approval_window = min(
-                    state.approval_timeout_for(slot), tool_approval_timeout_secs()
-                )
-                _unattended_wait = slot.unattended
-                _approval_card: str | None = None
-                try:
-                    if fut.done():
-                        outcome = fut.result()  # answered during the Slack post; see above
-                    elif _approval_window <= 0:
-                        # Too little of the turn left to both wait and report.
-                        # Waiting anyway guarantees the ceiling fires first and
-                        # relabels the unanswered approval as a turn timeout.
-                        logger.warning(
-                            "Declining approval for %r without waiting: no turn budget left",
-                            event.title,
-                        )
-                        _approval_card = format_approval_no_budget_card()
-                        _host_deny_cause = DENY_CAUSE_APPROVAL_NO_BUDGET
-                        _host_deny_reason = "the turn had no budget left to wait for approval"
-                    else:
-                        outcome = await asyncio.wait_for(fut, timeout=_approval_window)
-                except asyncio.TimeoutError:
-                    outcome = "rejected"
-                    # Name the real cause: an unanswered prompt is otherwise
-                    # indistinguishable from a generic turn timeout whenever the
-                    # window outlives the turn ceiling and the turn dies first
-                    # — an unattended run burns the full ceiling and the user
-                    # is never told an approval was waiting.
-                    logger.warning(
-                        "Tool approval for %r went unanswered for %.0fs; declining",
-                        event.title,
-                        _approval_window,
-                    )
-                    _approval_card = format_approval_timeout_card(_approval_window)
-                    _host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
-                    _host_deny_reason = (
-                        "the approval prompt went unanswered for "
-                        f"{max(1, round(_approval_window))}s"
-                    )
-                    # The in-band correction for this expired prompt is
-                    # steered ONCE at the shared reject branch below, keyed on
-                    # _host_deny_cause — the same site that corrects the other
-                    # host auto-declines (no budget, Slack delivery failure).
-                    # Steering here as well would tell the model the same fact
-                    # twice in one turn.
-                    if _unattended_wait:
-                        # The card is for the human; this line is for the AGENT.
-                        # A denial it cannot read makes it retry the same tool
-                        # forever, because nothing in its transcript explains the
-                        # refusal.
-                        slot.append(
-                            "assistant",
-                            "\u26a0\ufe0f A tool needed approval and no one answered within "
-                            f"{int(_approval_window)}s, so it was declined. This session is "
-                            "running unattended — ask for the permission you need instead of "
-                            "retrying the same call.",
-                            "msg msg-a",
-                        )
-                    # Tell any monitoring loop bound to this slot that a cycle
-                    # could not obtain approval. This branch IS the evidence a
-                    # reactive stop needs: the prompt ran its full window with no
-                    # decision, which an auto-approved tool never reaches. The
-                    # loop stops on its next wake instead of spending the rest of
-                    # its cap on cycles that cannot act. Best-effort and
-                    # non-blocking — a monitoring convenience must never change
-                    # how this turn's denial is reported.
-                    try:
-                        from kiro_crew.autonudge import (
-                            get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_runner
-                        )
-
-                        _autonudge = _autonudge_get()
-                        if _autonudge is not None:
-                            _autonudge.notify_approval_stalled(slot.key)
-                    except Exception:
-                        logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
-                except asyncio.CancelledError:
-                    # The task itself was cancelled (slot deletion, shutdown) while
-                    # the prompt was still open. The decision is host-driven, not a
-                    # person's; flag it so the ``finally`` attributes it to the host
-                    # rather than emitting an anonymous rejection, then re-raise so
-                    # the cancellation is never swallowed.
-                    _host_cancelled = True
-                    raise
-                finally:
-                    if _approval_card is not None:
-                        try:
-                            slot.append("error", _approval_card, "msg msg-err")
-                        except Exception:
-                            logger.debug("Failed to render approval card", exc_info=True)
-                    _owns_approval = slot.unregister_approval(str(event.request_id), fut)
-                    # The decision is final here and nowhere earlier: every path
-                    # out of the await above converges on this ``finally`` -- the
-                    # human's answer, the window expiring, the no-budget decline,
-                    # a failed Slack delivery, and a cancelled turn. Recording it
-                    # at the one convergence point is what keeps a single request
-                    # from being closed twice under two seqs.
-                    #
-                    # ``by`` is written only for a decision the HOST made, which
-                    # is the one attribution this site can prove:
-                    # ``_host_deny_cause`` is set exactly by the gateway's own
-                    # auto-declines, ``_host_cancelled`` marks the task being
-                    # cancelled out from under an open prompt, and
-                    # ``_approval_stopped`` carries the ids a STOP rejected. A
-                    # decision that arrived through the future by none of those
-                    # routes came from a person at the dashboard or in Slack and
-                    # this site cannot tell which, so it names nobody rather than
-                    # guessing "user".
-                    #
-                    # A stop resolves the future with an ordinary "rejected" and
-                    # raises nothing, so it is invisible to both flags; the id is
-                    # recorded where the stop resolves the future instead. Read
-                    # ONCE and discarded here, so a later human rejection on this
-                    # slot cannot inherit the host attribution. No ``cause`` is
-                    # written for it: the cause vocabulary is the user-facing
-                    # denial-message set whose lookup falls back to the policy
-                    # text, so borrowing a name from it would put a sentence about
-                    # policy in front of someone who simply pressed Stop.
-                    _approval_id = str(event.request_id)
-                    _host_stopped = _approval_id in slot._approval_stopped
-                    slot._approval_stopped.discard(_approval_id)
-                    #
-                    # ``decision`` is the coarse ledger enum, not the resolving
-                    # surface's wording: the future can carry ``approved_trust_reads``
-                    # (a scoped-trust approval), which the schema does not list, so
-                    # it folds to ``approved`` here -- the same reading the UI-mark
-                    # below takes. Emitting an unlisted value is schema-refused and
-                    # drops the closer entirely. ``rejected_once`` IS in the enum,
-                    # so it is carried through as itself: the UI-mark below keeps
-                    # that outcome distinct too, and folding it into ``rejected``
-                    # would discard a distinction both the schema and this site's
-                    # own paths hold.
-                    if outcome in ("approved", "approved_trust_reads"):
-                        _crew_log_decision = "approved"
-                    elif outcome == "rejected_once":
-                        _crew_log_decision = "rejected_once"
-                    else:
-                        _crew_log_decision = "rejected"
-                    crew_log_emit.on_approval_decided(
-                        _crew_log_sid,
-                        _crew_log_turn_no,
-                        approval_id=_approval_id,
-                        decision=_crew_log_decision,
-                        by=(
-                            "host" if (_host_deny_cause or _host_cancelled or _host_stopped) else ""
-                        ),
-                        cause=_host_deny_cause,
-                    )
-                    # The same attribution decides the approval hold: a decision
-                    # no host route made came from a person, and a loop paused for
-                    # approval on this slot resumes because someone is back.
-                    if not (_host_deny_cause or _host_cancelled or _host_stopped):
-                        from kiro_crew.autonudge import release_approval_hold_for
-
-                        release_approval_hold_for(slot.key, why="an approval was answered")
-                    # Backstop: the future is now gone, so the permission
-                    # message MUST NOT be left reading pending — the UI would
-                    # keep rendering an approval bar whose every button answers
-                    # 404, and a history reload would resurrect it. The primary
-                    # resolvers (HTTP slot-approve, Slack click) already mark it
-                    # and record richer decisions like "trust"/"yolo", so only
-                    # write when still pending. This is the sole marker for the
-                    # paths that resolve the future in-process: the approval
-                    # timeout above (2h attended / 180s unattended), the
-                    # Slack-delivery auto-reject branches, and a no-budget
-                    # decline the pre-check at the row's append did not already
-                    # write into the row. The ``approval_resolved`` frame below
-                    # is what retires the card on every window for those paths.
-                    _approved = outcome in ("approved", "approved_trust_reads")
-                    if _owns_approval and _mark_permission_resolved(
-                        [permission_row],
-                        str(event.request_id),
-                        "approved" if _approved else "rejected",
-                        only_if_pending=True,
-                    ):
-                        slot._dirty = True
-                        state.broadcast_ws(
-                            "approval_resolved",
-                            {
-                                "id": str(event.request_id),
-                                "approved": _approved,
-                                # Keys the frame for the slot-scoped WS gate.
-                                "slot": slot.key,
-                            },
-                        )
-                        state.push_slots_update()
-                    elif _owns_approval and "resolved" in perm_meta:
-                        # A row born resolved (the no-budget pre-check at its
-                        # append) needs neither the mark nor an
-                        # ``approval_resolved`` frame -- but the future it
-                        # registered is gone only now, and the slots snapshot
-                        # that announced pending_approval=true has to be
-                        # superseded or the Board keeps the session Blocked.
-                        state.push_slots_update()
-                    # Clean up the Slack prompt: remove the registry entry and
-                    # delete the buttons message now the decision is in.
-                    if _slack_approval_ts is not None:
-                        try:
-                            resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
-                            if state.slack_client:
-                                await state.slack_client.delete_message(
-                                    slot._slack_channel, _slack_approval_ts
-                                )
-                        except Exception:
-                            logger.debug(
-                                "Failed to clean up linked Slack approval message",
-                                exc_info=True,
-                            )
-                if outcome == "approved_trust_reads":
-                    slot._trust_reads = True
-                    outcome = "approved"
-                if outcome == "approved":
-                    try:
-                        validated_tool = _validate_tool_name(
-                            event.title,
-                            is_shell=event.is_shell,
-                            canonical_name=event.tool_name,
-                        )
-                    except ValueError as e:
-                        await _reject_invalid_tool(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            error=e,
-                            metadata={"reason": "interactive"},
-                            refusal_reasons=_refusal_reasons,
-                            refusal_notices=_refusal_notices,
-                            state=state,
-                        )
-                        break
-                    try:
-                        _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                    except Exception:
-                        _parsed_input = None
-                    try:
-                        pre_hook_results = await _fire(
-                            turn,
-                            HOOK_EVENT_PRE_TOOL_USE,
-                            tool_name=validated_tool,
-                            tool_input=_parsed_input,
-                            tool_id=event.harness_tool_id,
-                            tool_identity=event.tool_name,
-                            mcp_server=event.mcp_server_name,
-                        )
-                    except Exception as hook_exc:
-                        await _reject_hook_error(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            error=str(hook_exc),
-                            metadata={"reason": "interactive"},
-                            refusal_reasons=_refusal_reasons,
-                            refusal_notices=_refusal_notices,
-                            state=state,
-                        )
-                        break
-                    if _pre_tool_hooks_should_block(pre_hook_results):
-                        await _reject_hook_blocked(
-                            client,
-                            slot,
-                            event,
-                            session_key=session_key,
-                            pre_hook_results=pre_hook_results,
-                            refusal_reasons=_refusal_reasons,
-                            refusal_notices=_refusal_notices,
-                            metadata={"reason": "interactive"},
-                        )
-                    else:
-                        # BEFORE approve_tool, not after: the approval response
-                        # is what starts execution, so a file swapped in that
-                        # window would be the one pinned -- recording a file the
-                        # human never saw. Off-loop because it digests the file.
-                        #
-                        # Scope kept to `cmd`, the command the tiers above already
-                        # extracted. Falling back to `event.shell_command` would
-                        # stop a structured approval of a non-system program from
-                        # re-prompting, but that wider form is an undisclosed
-                        # persistent grant: between "prompts once more than it
-                        # needs to" and "records an identity from a surface the
-                        # human may not read as durable", the extra prompt is the
-                        # safe side, so the narrower form is the one that ships.
-                        #
-                        # `is_shell` is tested explicitly because
-                        # `extract_bash_command` reads a `command` key out of ANY
-                        # structured input and falls back to the raw string, so a
-                        # NON-shell MCP call carrying `{"command": "gh ..."}` would
-                        # otherwise mint a witness for the shell program `gh` --
-                        # a durable grant from an approval that was never about
-                        # running `gh` at all. Same reason the trusted-pattern tier
-                        # above tests it.
-                        if event.is_shell and cmd:
-                            await asyncio.to_thread(pin_human_approval, cmd)
-                        approval_sent = await client.approve_tool(event.request_id)
-                        if approval_sent is False:
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=_redact_display_text(event.title),
-                                tool_kind=event.tool_kind,
-                                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                                request_id=event.request_id,
-                            )
-                            continue
-                        _wt_note_approved(turn, event)
-                        _approved_title = _redact_display_text(event.title)
-                        slot.append(
-                            "tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event)
-                        )
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_approved_title,
-                            tool_kind=event.tool_kind,
-                            outcome="approved",
-                            request_id=event.request_id,
-                            metadata={"reason": "interactive"},
-                        )
-                else:
-                    # Explain WHY when the command tripped the read-only safety
-                    # gate, so the pill reads "Cancelled due to unsafe shell
-                    # pattern …" instead of the bare adapter default.
-                    # unsafe_bash_reason() embeds fragments of the LLM-supplied
-                    # command (base name / pipe target), so redact it — and the
-                    # title — before it reaches the dashboard or SEL metadata.
-                    _safety_reason = unsafe_bash_reason(cmd) if cmd else ""
-                    if _safety_reason:
-                        _safety_reason, _ = redact_exfiltration_urls(_safety_reason)
-                        _safety_reason, _ = redact_credentials(_safety_reason)
-                    _safe_reject_title, _ = redact_exfiltration_urls(event.title)
-                    _safe_reject_title, _ = redact_credentials(_safe_reject_title)
-                    # Audit FIRST, before the rejection goes on the wire (see
-                    # _reject_hook_blocked): a stalled ACP reader cancels this
-                    # coroutine at the turn deadline, and an SEL write sequenced
-                    # after the await never runs.
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_safe_reject_title,
-                        tool_kind=event.tool_kind,
-                        outcome="rejected_once" if outcome == "rejected_once" else "rejected",
-                        request_id=event.request_id,
-                        metadata={"reason": _safety_reason or "interactive"},
-                    )
-                    # Host-originated auto-declines (approval timeout, no
-                    # turn budget, Slack delivery failure) funnel into this
-                    # shared reject, where kiro-cli's "User denied tool
-                    # execution" is FALSE: nobody judged the call. Each arm
-                    # records its cause upstream where it is known; this one
-                    # steer, gated on that provenance, corrects the attribution
-                    # for whichever arm declined — BEFORE the rejection goes on
-                    # the wire, because the still-unanswered permission request
-                    # is what keeps the notice queued instead of dropped.
-                    #
-                    # A THROWAWAY list, deliberately not _refusal_notices: these
-                    # paths append no _refusal_reasons entry (a host
-                    # auto-decline is answered as an ordinary rejection, never
-                    # by a recovery continuation), and
-                    # should_queue_refusal_recovery compares the two lists by
-                    # COUNT, not by pairing. No slot/state either: the cards the
-                    # arms render are already the human's explanation, so the
-                    # display row the policy paths add would paint the same
-                    # event twice.
-                    if _host_deny_cause:
-                        await _steer_policy_notice(
-                            client,
-                            _safe_reject_title,
-                            _host_deny_reason,
-                            [],
-                            cause=_host_deny_cause,
-                        )
-                    # Interactive user denial. The person
-                    # clicked Reject (or "reject once"), so kiro-cli's "User
-                    # denied tool execution" is the true and correct attribution
-                    # here — the sharpest case in the class, because steering a
-                    # policy notice would tell the model a rule blocked a call
-                    # the user personally refused. A genuine user refusal leaves
-                    # _host_deny_cause empty, so the provenance-gated steer
-                    # above never fires for it and this exemption stays true for
-                    # exactly the branch it covers; the host auto-declines are
-                    # that steer's job, not this marker's.
-                    await _reject_attributed(
-                        client, event.request_id, attribution="exempt: interactive user denial"
-                    )
-                    if _safety_reason:
-                        _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
-                    elif outcome == "rejected_once":
-                        _reject_label = f"🚫 {_safe_reject_title} (rejected — this call only)"
-                    else:
-                        _reject_label = f"🚫 {_safe_reject_title} (rejected)"
-                    slot.append("tool", _reject_label, "msg msg-tool")
-                    # NOTE: Do NOT append to _refusal_reasons here.
-                    # This is an interactive user denial — the user chose to reject
-                    # the tool. Refusal-recovery is only for system-side blocks —
-                    # the hook-deny (TOOL_DENY) path, which is the other site that
-                    # appends to _refusal_reasons.
-
-                if outcome == "rejected_once":
-                    # Deny this one tool but do NOT cascade to remaining batch
-                    logger.info(
-                        "PERM REJECTED ONCE tool=%r — remaining batch unaffected",
-                        event.title,
-                    )
-                    continue
-                if outcome != "approved":
-                    # mark batch_rejected as true and continue loop instead of breaking
-                    # This will allow for marking other batched approval requests as rejected too
-                    slot._batch_rejected = True
-                    # Provenance travels with the flag: empty means the person
-                    # refused this tool themselves, non-empty names the host
-                    # auto-decline that did. The cascade site branches on it —
-                    # a user's refusal keeps kiro-cli's "User denied tool
-                    # execution" true for the remainder, a host cause makes it
-                    # false and worth an in-band correction. A sentence (not the
-                    # DENY_CAUSE_* constant) because the cascade notice embeds
-                    # it verbatim as the reason the model reads — and it is
-                    # batch-framed here because that notice shows it under the
-                    # CASCADED member's title, where the bare reason would claim
-                    # the member's own prompt failed when it was never prompted.
-                    # The conditional is load-bearing: a user refusal must copy
-                    # "" so the cascade stays exempt, never a framed empty.
-                    slot._batch_rejected_cause = (
-                        f"the host declined an earlier tool of this batch ({_host_deny_reason})"
-                        if _host_deny_reason
-                        else ""
-                    )
-                    # New denied batch, fresh notice budget for its cascade.
-                    _batch_cascade_steered = False
-                    turn._batch_cascade_steered = _batch_cascade_steered
-                    logger.warning(
-                        "PERM REJECTED tool=%r outcome=%r — auto-rejecting remaining batch",
-                        event.title,
-                        outcome,
-                    )
+                _flow = await _on_permission_prompt(turn, event)
+                if _flow is _Flow.BREAK:
+                    break
+                if _flow is _Flow.CONTINUE:
                     continue
             elif event.kind == EVENT_STEER_CONSUMED:
                 _had_person_steer = bool(getattr(slot, "_pending_steers", None))
@@ -5406,6 +2430,7 @@ async def _run_chat(
                     # AcpClient synthesizes one at turn end.
                     _compaction_started = True
                     turn._compaction_started = _compaction_started
+                    _compaction_text_offset = len(turn.assistant_text)
                     state.broadcast_ws(
                         "chat_message",
                         {"slot": slot.key, "role": "compacting", "content": ""},
@@ -5545,8 +2570,7 @@ async def _run_chat(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
             elif event.kind == EVENT_AGENT_SWITCHED:
-                new_agent, _ = redact_credentials(event.text)
-                new_agent, _ = redact_exfiltration_urls(new_agent)
+                new_agent = redact(event.text)
                 if new_agent and (
                     private_member or (slot.mode == "member" and new_agent != slot.agent)
                 ):
@@ -5606,7 +2630,7 @@ async def _run_chat(
                     # calls alike — would execute as the foreign agent inside
                     # the pinned thread. Breaking stops consumption and the
                     # finally block's session reset tears the switched session
-                    # down, the same way the tool-rejection paths above bail
+                    # down, the same way the tool-rejection paths in _on_permission_prompt bail
                     # out of a turn that must not continue.
                     break
                 elif new_agent:
@@ -5785,15 +2809,13 @@ async def _run_chat(
                 # with no explanation. When the card cannot exist yet, persist
                 # the explanation as a slot notice instead.
                 if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
-                    _txt, _ = redact_exfiltration_urls(event.text)
-                    _txt, _ = redact_credentials(_txt)
+                    _txt = redact(event.text)
                     slot.append("notice", _txt, "msg msg-info")
                 # Some kiro-cli builds also stream the sub-agent's own text via
                 # agent_message_chunk on this channel — surface it on the card.
                 if _sid in _native_tracker and event.text:
                     _card_id = f"native:{_redact_tool_field(_sid)}"
-                    _txt, _ = redact_exfiltration_urls(event.text)
-                    _txt, _ = redact_credentials(_txt)
+                    _txt = redact(event.text)
                     _native_card_output_len[_card_id] = _append_native_output(
                         _native_card_output.setdefault(_card_id, []),
                         _txt,
@@ -6600,8 +3622,7 @@ async def _run_chat(
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
                     _restore_skills_context_after_compaction(turn)
-                    summary, _ = redact_credentials(compaction_result.get("summary", ""))
-                    summary, _ = redact_exfiltration_urls(summary)
+                    summary = redact(compaction_result.get("summary", ""))
                     msg = (
                         f"✅ Conversation compacted: {summary}"
                         if summary
@@ -6622,8 +3643,7 @@ async def _run_chat(
                     # the text is backend-echoed, so it is not trusted to be
                     # free of credentials or exfiltration URLs even though the
                     # provider already redacts once at its own boundary.
-                    error, _ = redact_credentials(compaction_result.get("summary", ""))
-                    error, _ = redact_exfiltration_urls(error)
+                    error = redact(compaction_result.get("summary", ""))
                     error = error.strip()
                     if len(error) > _COMPACT_FAIL_REASON_MAX_CHARS:
                         # A notice is a one-line receipt, not a log: a provider
@@ -6655,9 +3675,20 @@ async def _run_chat(
         # output and must stream, flush and persist — but it is not an answer,
         # and the branch below is what decides whether one was given.
         _answer_text = _answer_text_only(turn.assistant_text, _compaction_notice_chunks)
+        _continuation_answer_text = _answer_text_only(
+            turn.assistant_text[_compaction_text_offset:], _compaction_notice_chunks
+        )
+        # A refusal's explanation answers the turn wherever it streamed: one that
+        # arrived before a compaction still takes the streamed-explanation refusal
+        # path below, instead of the no-text refusal branch, which would retry the
+        # message on the fallback model and word its card as if nothing was said.
+        _branch_answer_text = (
+            _answer_text if _stop_reason == STOP_REASON_REFUSAL else _continuation_answer_text
+        )
 
-        # A turn whose ONLY assistant text was such a notice still has to reach
-        # the wire and the transcript, but it must not take the answer branch:
+        # A turn with no answer after compaction still has to preserve every
+        # pre-compaction fragment and control notice, but it must not take the
+        # answer branch:
         # the post-compaction continuation is an `elif` UNDER that branch, so
         # entering it would shadow the continuation and leave the request
         # unanswered — the exact hang this PR exists to fix. Flush here and fall
@@ -6665,7 +3696,7 @@ async def _run_chat(
         # kept out of `assistant_text`: the answer branch owns the only terminal
         # `_flush_text_stream`, and the rolling redactor withholds the notice
         # until something flushes it, so a skipped notice was emitted nowhere.)
-        if turn.assistant_text and not _answer_text:
+        if turn.assistant_text and not _branch_answer_text:
             _flush_text_stream(turn)
             _flush_segment(state, slot, turn.assistant_text, broadcast=False)
             turn._reply_flushed = True
@@ -6687,7 +3718,7 @@ async def _run_chat(
                 turn._terminal_directive_kind,
             )
 
-        if _answer_text:
+        if _branch_answer_text:
             _flush_text_stream(turn)
             _flush_segment(state, slot, turn.assistant_text, broadcast=False)
             turn._reply_flushed = True
@@ -6725,8 +3756,7 @@ async def _run_chat(
                         # comes from config or the provider envelope.
                         _fb = slot._refusal_fallback_candidate
                         if _fb:
-                            _fb, _ = redact_exfiltration_urls(str(_fb))
-                            _fb, _ = redact_credentials(_fb)
+                            _fb = redact(str(_fb))
                             _fb = _fb[:120]
                         _refusal_card += (
                             f" The configured fallback model ('{_fb}') also declined this request."
@@ -6783,8 +3813,7 @@ async def _run_chat(
                     # the id comes from config or the provider envelope.
                     _fb = slot._refusal_fallback_candidate
                     if _fb:
-                        _fb, _ = redact_exfiltration_urls(str(_fb))
-                        _fb, _ = redact_credentials(_fb)
+                        _fb = redact(str(_fb))
                         _fb = _fb[:120]
                     _refusal_card += (
                         f" The configured fallback model ('{_fb}') also declined this request."
@@ -6824,7 +3853,7 @@ async def _run_chat(
             # The turn's own answer (see `_answer_text` above), not the raw
             # segment: this gate must not mistake "the backend said it was
             # compacting" for "the request was answered".
-            final_segment_text=_answer_text,
+            final_segment_text=_continuation_answer_text,
             stop_reason=_stop_reason,
             end_turn_reason=STOP_REASON_END_TURN,
             prompt_depth=_prompt_depth,
@@ -7401,7 +4430,7 @@ async def _run_chat(
                 #
                 # Gate on BOTH grant sources, not yolo alone: approval is granted
                 # by `slot_trusted or yolo_active`
-                # (the tool-event branch ORs them), and `_slot_is_trusted` is True
+                # (_on_permission_request ORs them), and `_slot_is_trusted` is True
                 # for a per-session trust click or a scoped SafetyOverride grant —
                 # neither of which sets global yolo. Checking yolo alone would leave
                 # every trusted-but-not-yolo session on the auto-continue path with
@@ -7670,6 +4699,8 @@ async def _run_chat(
                 if isinstance(_changes_now, list) and _changes_now
                 else None
             )
+            # Copied before the flush, which clears the reply ids on exit.
+            _note_reply_mids = list(_reply_mids) if isinstance(_reply_mids, list) else []
             _flush_file_changes(
                 slot,
                 turn_boundary=_turn_msg_boundary,
@@ -7687,6 +4718,13 @@ async def _run_chat(
                 _retire_local_turn_marker(slot, _local_turn_marker_generation)
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
+            # A crewmate's answer in its DM thread is one notification per
+            # landed turn. Not for a turn the user stopped (they are here), nor
+            # for one about to re-run (its re-run's reply is the answer).
+            if _stop_reason != STOP_REASON_CANCELLED and not (
+                _recovering_promise or _recovering_compaction or _noticed_leak or _recovering_infra
+            ):
+                post_turn_reply(state, slot, _note_reply_mids)
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
         # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:
@@ -8003,7 +5041,7 @@ async def _run_chat(
         # That pair alone is NOT enough here, because unlike those checks this one
         # can be reached with the answer BEFORE the block: the model answers, then
         # calls a tool, and the tool boundary flushes the answer out of
-        # `assistant_text` (EVENT_TOOL_CALL / the permission flow) while the user
+        # `assistant_text` (_on_tool_call / _on_permission_request) while the user
         # has already read it on screen. `_turn_flushed_visible_text` carries that
         # third case, so the ordering answer-then-block gets the same awareness
         # body as block-then-answer instead of being told to continue and
@@ -8818,13 +5856,14 @@ async def _run_chat(
                 # of this same turn have been appended since it.
                 _tail: dict = {}
                 for _row in reversed(slot.messages):
+                    turn._row = _row
                     if (
-                        _row.get("role") == "inject"
-                        and (_row.get("meta") or {}).get("injectKind")
+                        turn._row.get("role") == "inject"
+                        and (turn._row.get("meta") or {}).get("injectKind")
                         in _TURN_CONTINUING_INJECT_KINDS
                     ):
                         continue
-                    _tail = _row
+                    _tail = turn._row
                     break
                 if not (
                     _in_recovery_window
@@ -8960,8 +5999,7 @@ async def _run_chat(
                 slot._fallback_primary_model or "the selected model"
             )
             _fb_primary_safe, _ = redact_credentials(_fb_primary_safe)
-            _fb_cand_safe, _ = redact_exfiltration_urls(_fb_candidate)
-            _fb_cand_safe, _ = redact_credentials(_fb_cand_safe)
+            _fb_cand_safe = redact(_fb_candidate)
             # Persisted notice card (withheld-pin pattern): the explanation has
             # to survive a reload because the state it explains does (the
             # session stays on the fallback until the restore probe succeeds).
@@ -9155,10 +6193,8 @@ async def _run_chat(
             #     ``rejected_model`` and stays terminal, so a real fault is never
             #     masked as a model switch.
             slot.purge_chunks()
-            _rejected_safe, _ = redact_exfiltration_urls(str(_rejected_id))
-            _rejected_safe, _ = redact_credentials(_rejected_safe)
-            _cand_safe, _ = redact_exfiltration_urls(str(_access_fb_candidate))
-            _cand_safe, _ = redact_credentials(_cand_safe)
+            _rejected_safe = redact(str(_rejected_id))
+            _cand_safe = redact(str(_access_fb_candidate))
             # Move the live session onto the accessible model through the shared
             # substitute set_model seam (the same one the throttle walk uses);
             # candidates are pre-filtered against the advertised list, so the
@@ -9177,8 +6213,7 @@ async def _run_chat(
                     slot.key,
                     _rejected_id,
                 )
-                _entitle_text, _ = redact_exfiltration_urls(str(exc))
-                _entitle_text, _ = redact_credentials(_entitle_text)
+                _entitle_text = redact(str(exc))
                 slot.purge_chunks()
                 slot.append(
                     "error",
@@ -9234,8 +6269,7 @@ async def _run_chat(
                             _access_fb_candidate,
                             exc_info=True,
                         )
-                        _entitle_text, _ = redact_exfiltration_urls(str(exc))
-                        _entitle_text, _ = redact_credentials(_entitle_text)
+                        _entitle_text = redact(str(exc))
                         slot.purge_chunks()
                         slot.append(
                             "error",
@@ -9265,8 +6299,7 @@ async def _run_chat(
                                 _access_fb_candidate,
                                 _raw_after,
                             )
-                            _entitle_text, _ = redact_exfiltration_urls(str(exc))
-                            _entitle_text, _ = redact_credentials(_entitle_text)
+                            _entitle_text = redact(str(exc))
                             slot.purge_chunks()
                             slot.append(
                                 "error",
@@ -9600,8 +6633,7 @@ async def _run_chat(
                 slot._transient_5xx_retries = 0
                 slot._infra_retries = 0
             else:
-                _err_text, _ = redact_exfiltration_urls(str(exc))
-                _err_text, _ = redact_credentials(_err_text)
+                _err_text = redact(str(exc))
                 # Fallback-chain story (agent.fallback_model): when this cycle
                 # walked fallback candidates and STILL landed here, the error
                 # card must tell the whole story — the primary throttled AND
@@ -9614,8 +6646,7 @@ async def _run_chat(
                         f"{slot._fallback_primary_model or 'The selected model'} throttled; "
                         f"fallbacks {', '.join(slot._fallback_walked)} also unavailable. "
                     )
-                    _fb_story, _ = redact_exfiltration_urls(_fb_story)
-                    _fb_story, _ = redact_credentials(_fb_story)
+                    _fb_story = redact(_fb_story)
                     _err_text = _fb_story + _err_text
                 # Structural tag for a model-entitlement rejection, so the
                 # frontend can render the fix (model picker / Settings -> Chat)
@@ -9763,8 +6794,7 @@ async def _run_chat(
             await _persist_partial_reply(turn, "error: terminal")
         except Exception:
             logger.debug("Keeping the partial reply failed for slot %s", slot.key, exc_info=True)
-        _err_text, _ = redact_exfiltration_urls(str(exc))
-        _err_text, _ = redact_credentials(_err_text)
+        _err_text = redact(str(exc))
         from kiro_crew.memory_startup import MemoryStartupUnavailable
         from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F811
 
@@ -10233,8 +7263,8 @@ async def _run_chat(
                 await expire_slack_options(state, session_key)
             if _mirror_stream_ts and state.slack_client and _mirror_chan:
                 try:
-                    # Fenced for the same reason the in-progress append is: if that
-                    # one was withheld, marking it complete here would publish the
+                    # Fenced for the same reason _on_tool_call's in-progress append is:
+                    # if that one was withheld, marking it complete here would publish the
                     # title for the first time. This runs BEFORE the fence is
                     # cleared below, so it still sees the turn's own records.
                     if (
@@ -10314,7 +7344,7 @@ async def _run_chat(
             # Spelling-independent backstop for a directive call whose tool
             # identity and result marker were both lost by the backend. The
             # validated payload reached the gateway, but no frame claimed it,
-            # so every per-frame diagnostic above was structurally unreachable.
+            # so every per-frame diagnostic in _on_tool_result was structurally unreachable.
             # Inspect only records parked during THIS turn: residue from an
             # earlier abandoned turn must not blame the current one. Diagnostic
             # only — claim, refusal, and expiry semantics stay unchanged.

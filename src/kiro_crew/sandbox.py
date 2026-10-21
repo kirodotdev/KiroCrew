@@ -311,7 +311,6 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         sandbox_exec_argv,
     )
     from kiro_crew.sandbox_cgroup import (  # noqa: F401
-        _CGROUP_AGENTS_SLICE,
         _CGROUP_DEFAULT_CPU_WEIGHT,
         _CGROUP_DEFAULT_MAX_PROCESSES,
         _CGROUP_FALLBACK_MAX_MEMORY_MB,
@@ -583,11 +582,15 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     )
     from kiro_crew.sandbox_spawn import (  # noqa: F401
         _CGROUP_SCOPE_BUS_ENV_KEYS,
+        _NAMESPACE_LAUNCHERS,
+        _NAMESPACE_LAUNCHERS_LOCK,
         _SPAWN_SCRUB_ENV_PREFIXES,
+        _namespace_launcher_child_is_confined,
         agent_env_scrub_prefixes,
         cgroup_scope_bus_env,
         corroborate_launcher_refusal,
         credential_mask_applies,
+        remember_namespace_launcher,
         sandboxed_spawn_argv,
         sandboxed_spawn_argv_async,
         scrub_agent_denied_env,
@@ -626,6 +629,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _CC_DIRS,
         _CC_EXPOSE_FILES,
         _CC_FILES,
+        _CGROUP_AGENTS_SLICE,
         _IN_SANDBOX_LEVEL_VAR,
         _IN_SANDBOX_MARKER,
         _PACKAGED_INSTALL_DIR_NAMES,
@@ -668,6 +672,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _SSH_VISIBLE_TIERS,
         _TRUSTED_LAUNCHER_TIMEOUT_SECS,
         CRON_SCRIPT_CHILD_ENV,
+        LAUNCHER_EXEC_FAILURE_RE,
         LAUNCHER_EXIT_PREFIXES,
         UNSANDBOXED_BY_OPERATOR,
         UNSANDBOXED_BY_PLATFORM,
@@ -689,6 +694,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _warn_first_party_unconfined_once,
         _warn_mode_off_unconfined,
         agent_confinement_evidence,
+        agent_confinement_is_kirocrew_own,
         launcher_refusal,
         refuse_unaudited_on_dead_fs,
         unsandboxed_exec_permitted_by,

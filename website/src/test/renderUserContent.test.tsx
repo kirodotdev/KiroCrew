@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
+import { restoreUnreferencedImages } from '../utils/fileTokens'
 
 const noop = () => {}
 
@@ -202,5 +203,74 @@ describe('renderUserContent — markdown rendering', () => {
     expect(container.querySelector('[title="/home/user/Q2 Report.docx"]')).toBeInTheDocument()
     expect(container.querySelector('[title="/home/user/Q2"]')).not.toBeInTheDocument()
     expect(container.textContent).not.toContain('[attached_file')
+  })
+})
+
+describe('renderUserContent — multiple images in one message (issue #22401)', () => {
+  it('renders every image as an <img>, never the raw ![image] markdown source', () => {
+    // The send path joins each staged image into its own producer-form
+    // `![image](dest)` line (prepareSendPayload). A sent/replayed message with
+    // several of them must draw one <img> per image and leak no raw markdown.
+    const content = [
+      '![image](/home/user/uploads/a_pasted-image-1.png)',
+      '![image](/home/user/uploads/b_pasted-image-2.png)',
+      '![image](/home/user/uploads/c_pasted-image-3.png)',
+    ].join('\n')
+    const { container } = render(<>{renderUserContent({ content: content, meta: undefined, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(3)
+    expect(container.textContent).not.toContain('![image]')
+  })
+
+  it('renders images AND keeps a trailing caption, with no raw markdown', () => {
+    // txt = [imgMd, body].join('\n\n'): images lead, caption follows a blank line.
+    const content = [
+      '![image](/home/user/uploads/a_pasted-image-1.png)',
+      '![image](/home/user/uploads/b_pasted-image-2.png)',
+      '',
+      'here are the two shots',
+    ].join('\n')
+    const { container } = render(<>{renderUserContent({ content: content, meta: undefined, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(2)
+    expect(container.textContent).not.toContain('![image]')
+    expect(container).toHaveTextContent('here are the two shots')
+  })
+
+  it('heals a split-pane/member-DM row that carried images only on meta.files', () => {
+    // restoreUnreferencedImages re-emits each image meta.files knows about but
+    // the text never names, so a row written before the pane serialized
+    // attachments as markdown still draws its pictures — never raw text.
+    const files = [
+      '/home/user/uploads/a_pasted-image-1.png',
+      '/home/user/uploads/b_pasted-image-2.png',
+      '/home/user/uploads/c_pasted-image-3.png',
+    ]
+    const { container } = render(<>{renderUserContent({ content: '', meta: { files: files }, onFileOpen: noop })}</>)
+    expect(container.querySelectorAll('img')).toHaveLength(3)
+    expect(container.textContent).not.toContain('![image]')
+  })
+
+  it('a broken raw spaced-path image line renders as literal source BEFORE the heal, and as a working <img> AFTER it', () => {
+    // Pins the render-boundary contract the HOLD on #22406 asked for: the
+    // repair is a real behavior change at the render boundary, not just a
+    // string transform asserted in isolation at the helper. A space is not a
+    // valid CommonMark destination character unwrapped, so the raw line is
+    // genuinely unrenderable before restoreUnreferencedImages runs.
+    const p = '/srv/shared data/uploads/ab.png'
+    const rawContent = `![image](${p})`
+
+    const before = render(<>{renderUserContent({ content: rawContent, meta: undefined, onFileOpen: noop })}</>)
+    expect(before.container.querySelector('img')).not.toBeInTheDocument()
+    expect(before.container.textContent).toContain('![image]')
+    before.unmount()
+
+    const healedContent = restoreUnreferencedImages(rawContent, { files: [p] })
+    const after = render(<>{renderUserContent({ content: healedContent, meta: { files: [p] }, onFileOpen: noop })}</>)
+    const img = after.container.querySelector('img')
+    expect(img).toBeInTheDocument()
+    expect(after.container.textContent).not.toContain('![image]')
+    // The healed <img> resolves to the SAME on-disk path, byte-identical.
+    const src = img!.getAttribute('src') || ''
+    const pathParam = decodeURIComponent(src.replace(/^.*[?&]path=([^&]*).*$/, '$1'))
+    expect(pathParam).toBe(p)
   })
 })

@@ -88,7 +88,8 @@ an edited or shortened prefix refuses acknowledgement. Receipts are not pruned.
   decoding the owning record, member ID lookup, session capture and inherited
   mode tightening. It carries routing data; ordinary auth remains independent.
 - `memory_stores.py` resolves configured store paths and explicit member creation.
-  `members.py` owns persisted member IDs and manual member documents.
+  `members.py` owns persisted member IDs and manual member documents, through its
+  `members_parts/member_space.py` and `members_parts/prompt_layers.py` owners.
 - `memory_schema.py` defines the authoritative member tables.
   `vector_memory_member.py` owns exclusive creation and strict open, and
   `VectorMemoryStore` (`vector_memory.py`) the store's one connection and lock.
@@ -1807,8 +1808,17 @@ a link, a file that changed shape between the walk and the open -- is likewise l
 out unread: the snapshot names it in one core
 `essential-context#unreadable-skipped:<template>` note, and the KAS document reader and `kiro_launch_documents` skip it with a
 warning. The read itself is unchanged, so the file is never opened through the
-second name. Any other declared source the read refuses still refuses the turn,
-and an oversized or non-UTF-8 steering file still raises. There is no mtime-only content cache or automatic
+second name. A steering document on those same paths that is over the per-file
+read cap (`_MAX_SOURCE_BYTES`, 256,000 bytes) is left out the same way, whatever its
+`inclusion` mode, because the read comes before the frontmatter is parsed: nothing
+past the cap is read, the snapshot names the file with its size and the cap in one
+core `essential-context#oversized-skipped:<template>` note, and the KAS document
+reader and `kiro_launch_documents` skip it with a warning. It is never truncated:
+a file that size could not fit the 64,000-character envelope whole, and a prefix
+would present partial rules as complete. Any other declared source the read refuses
+still refuses the turn; an over-cap declared source, `AGENTS.md` or `SOUL.md` still
+raises, with the file, its size and the cap in bytes in the message, and a non-UTF-8
+steering file still raises. There is no mtime-only content cache or automatic
 retrieval on the warm path.
 
 Structural-marker scanning copies contiguous ASCII segments without per-character
@@ -2487,12 +2497,19 @@ caller-supplied filename cannot walk out of it. Which store each surface may add
 [the shared `?store=` rule](#which-store-a-dashboard-route-reads-store) on the
 dashboard and `--store` on the CLI.
 
-**A managed-venv apply and `kirocrew update` take a copy first.** (The git-checkout auto-update and `POST /api/update` take none.) `platform/wheel_apply.snapshot_memory_before_update`
+**Every applier that rewrites this install takes a copy first.** (The gateway's
+unattended policy-provider apply does not yet: #21898.) `platform/wheel_apply.snapshot_memory_before_update`
 calls `back_up_all_stores` with `force=True` (the retention interval is bypassed) and
 `memory.backup_keep`. On a managed venv it is the shadow engine's last step before
 promotion, for the gateway's automatic update, an approved in-app update and
-`kirocrew update` alike; `kirocrew update`'s other updaters run it before they start. A
-copy that did not land refuses the update.
+`kirocrew update` alike; `kirocrew update`'s other updaters run it before they start.
+`POST /api/update` runs it after its last refusal and before the fast-forward or a
+policy apply that can apply, and the git-checkout auto-update runs it just before its
+`reset --hard`. A copy that did not land refuses the update: the CLI exits 1, the
+dashboard answers 500 `memory_snapshot_failed`, and the unattended auto-update skips
+this update with a warning and one dashboard notice, never exiting the gateway, and
+retries on its next check. `test/test_update_memory_copy_placement.py` pins the
+placement in each applier file.
 
 `kirocrew memory backup` / `backups` / `restore` are dispatched **before** the vector
 store is opened, and that ordering is the point: `store.init()` runs
@@ -5026,6 +5043,12 @@ its bundled skills are withheld across all user-facing surfaces: trigger matchin
 `get_context`, `search_skills`), always-injected bodies (`get_always_skills`),
 and explicit `$skill` token resolution (`resolve_dollar_skills`). An unreadable
 app registry fails open so a transient read error never hides enabled skills.
+A skill is the app's when its registration path says so (`skills/<app>/<skill>`,
+or a flat link resolving into the app's tree) or, failing that, when its own
+frontmatter names the app in `app:`. A builtin app's skill shipped in
+`builtin_skills/` relies on the second form, because the builtin sync copies those
+skills rather than linking them. A confined project skill's frontmatter is not
+read for this.
 Internal plumbing helpers (`load_skill`, `_served_key_by_realpath`,
 `resolve_ledger_aliases`, `_resolve_path_and_root`) remain ungated so
 reconciliation and pinned paths function without modification.

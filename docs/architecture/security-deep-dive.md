@@ -398,17 +398,33 @@ The memory recovery, record editor, and member recall/copy APIs each register
 their own output boundary. Their response fields pass through the shared
 credential and exfiltration-URL chain before reaching the dashboard or MCP caller.
 
-- `redact_credentials()` recognizes credential families in plaintext and
-  base64-encoded form (it decodes base64-looking chunks and re-checks the decoded
-  bytes), including cloud access keys and secrets, private-key headers, chat and
-  forge tokens, package-registry tokens, and database connection URIs carrying
-  embedded credentials. Key-value matching is JSON-aware and value classes are
-  bounded at JSON structural delimiters, so a match in compact JSON cannot
-  over-capture and mask the next credential.
-- `redact_exfiltration_urls()` / `scan_exfiltration_urls()` are
-  **domain-agnostic**: they flag the payload, not the destination. A credential in
-  a URL is an unconditional floor; long query strings, base64 blobs and heavy
-  URL-encoding are heuristics. A flagged URL is replaced with a redaction marker.
+- `redact_credentials()` runs four passes:
+  1. Fixed patterns: cloud access key IDs and secret keys, private-key blocks,
+     chat and forge tokens, package-registry tokens, JWTs, `Authorization: Bearer`
+     headers, and database connection URIs carrying embedded credentials.
+  2. Base64: it decodes base64-looking chunks and re-runs pass 1 on the bytes.
+  3. Bare secret key: an entropy and shape heuristic for an unlabelled
+     40-character cloud secret key, with exemptions for shapes it would otherwise
+     misread (digests, document links, code literals and others).
+  4. Token parameter: the value of a `token` URL parameter, keyed on the name.
+
+  Key-value matching is JSON-aware and value classes stop at JSON structural
+  delimiters, so a match in compact JSON does not run into the next field. A
+  labelled match replaces the label together with the value, so
+  `{"AccessKeyId": "..."}` becomes `{"[REDACTED: credential]"}`.
+- `redact_exfiltration_urls()` / `scan_exfiltration_urls()` judge the payload
+  first. A credential in a URL is an unconditional floor; long query strings,
+  base64 blobs and heavy URL-encoding are heuristics. A flagged URL is replaced
+  with a redaction marker. Some destinations get narrower treatment: a valid S3
+  presigned URL is exempt; the ACP OAuth banner path spares standard OAuth
+  parameters at approved authorization endpoints; Kiro Crew's own Slack app-create
+  link keeps only its alias under the heuristics; and a companion's exact hosts and
+  a reader's allowed hosts (*Allow for this host*, kept per workspace in a
+  read-only leaf) skip only the length and base64 heuristics. The credential
+  checks still run on those last three.
+- The owner's switch (Settings → Security) applies only inside the Files view,
+  and there it turns all credential redaction off. A code-text scope spares two
+  source-code shapes from pass 3 and nothing else.
 - `redact()` composes both in order for a single call site.
 - `StreamRedactor` handles the case per-chunk redaction structurally cannot: a
   credential split across a streaming boundary, where neither fragment matches on
@@ -684,8 +700,13 @@ would not be noticed.
 
 **Base64 credential detection has a floor.** Only base64 chunks at or above the
 minimum length are decoded and re-checked, so a shorter encoded fragment, or one
-split across messages, can pass. Cross-message correlation and entropy-based
-detection would extend it.
+split across messages, can pass. Cross-message correlation would extend it.
+
+**A bare secret key is a guess.** Pass 3 judges an unlabelled 40-character run by
+entropy and shape, which cannot tell a random secret from a random digest, so it
+carries exemptions and still misreads some benign values. The recorded direction
+replaces it with case-insensitive labels and key-ID pairing; see
+[the redaction tier decision](../decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md).
 
 **Write protection covers Kiro Crew's own trust root, not the user's shell
 startup files.** Credential directories and the keystone are read+write blocked,

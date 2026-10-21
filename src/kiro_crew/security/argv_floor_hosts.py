@@ -36,9 +36,9 @@ from .host_addresses import (
     _windows_interface_addresses,
 )
 from .hosts_file import (
+    _ctime_is_creation_time,
     _decoded_chunks,
     _hosts_content_digest,
-    _hosts_content_digest_enabled,
     _HostsFileTooLarge,
     _HostsFileUnreadable,
     _parse_hosts_chunks,
@@ -246,21 +246,20 @@ def _read_hosts_bytes(path: str, limit: int, *, strict: bool) -> bytes:
 def _hosts_file_key(path: str) -> "_HostsKey":
     """Cache key for *path*: stat identity, content digest, and the own-address state.
 
-    A same-size rewrite that restores mtime must still be a new key.  On
-    POSIX ``st_ctime`` catches it: any write or chmod sets ctime, and no
-    extra read is done (the digest field is None).  On Windows
-    ``st_ctime`` is creation time and catches nothing, so for a file no
-    larger than one read chunk the key also carries a blake2b digest of
-    that file, from one read bounded by the chunk size; a read that fails
-    or finds more than a chunk raises ``_HostsFileUnreadable``.  A Windows
-    file over one chunk keeps digest None and is never cached or served:
-    its content cannot be verified without a gate read past the chunk, so
+    A same-size rewrite that restores mtime must still be a new key, and
+    ``st_ctime`` cannot promise it: Windows stamps creation time, Linux a
+    coarse clock that two writes inside one tick share.  So a file no
+    larger than one read chunk also keys on a blake2b digest from one read
+    bounded by the chunk; a read that fails or finds more raises
+    ``_HostsFileUnreadable``.  A larger file keeps digest None: on POSIX a
+    same-size rewrite inside its previous write's ctime tick keeps the key
+    (the one window left); on Windows it is never cached or served, so
     ``_hosts_file_verdict`` answers every dotless name pending.  The last
     two fields are the publication flag and the own set.
     """
     stat = os.stat(path)
     digest: "bytes | None" = None
-    if _hosts_content_digest_enabled() and stat.st_size <= _HOSTS_FILE_READ_CHUNK:
+    if stat.st_size <= _HOSTS_FILE_READ_CHUNK:
         try:
             data = _read_hosts_bytes(path, _HOSTS_FILE_READ_CHUNK, strict=True)
         except (OSError, _HostsFileTooLarge) as exc:
@@ -343,10 +342,10 @@ def _parse_and_cache_for_key(
     an everyday ``ssh user@dev-dsk`` from being refused by a worker thread
     this same call started.
 
-    When *key* carries a digest (Windows), the bytes are read once, hashed,
-    and parsed from that same buffer, so the digest names exactly the
-    content the table came from; a digest that differs from *key*'s is
-    ``"changed"``.
+    When *key* carries a digest (a file no larger than one chunk), the
+    bytes are read once, hashed, and parsed from that same buffer, so the
+    digest names exactly the content the table came from; a digest that
+    differs from *key*'s is ``"changed"``.
     """
     try:
         if key[3] is not None:
@@ -377,7 +376,7 @@ def _parse_and_cache_for_key(
 
 def _unverifiable_hosts_file(key: "_HostsKey") -> bool:
     """True for a Windows file over one chunk: no digest, so its content cannot be checked."""
-    return key[3] is None and _hosts_content_digest_enabled()
+    return key[3] is None and _ctime_is_creation_time()
 
 
 def _warm_hosts_file_cache() -> None:
@@ -386,9 +385,9 @@ def _warm_hosts_file_cache() -> None:
     One parse per path per call (``_parse_and_cache_for_key``).  A changed
     key caches nothing; the gate keeps answering pending for a file over the
     in-call cap, and the next pass, or the next gate miss, retries.  An
-    up-to-date table costs a stat and an own-set read (plus, on Windows, a
-    bounded read and hash).  A Windows file over one chunk is skipped: the
-    gate never serves its table.  Best-effort.
+    up-to-date table costs a stat and an own-set read (plus, for a file no
+    larger than one chunk, a bounded read and hash).  A Windows file over
+    one chunk is skipped: the gate never serves its table.  Best-effort.
     """
     for path in _hosts_file_paths():
         try:
@@ -436,8 +435,8 @@ def _hosts_file_verdict(host: str) -> "bool | None":
 
     This is the round-18 attack vector itself — a hosts-file alias for a
     loopback/local address — answered from the table cached for the file's
-    current key.  Per call the gate stats each file (on Windows, also one
-    bounded read and hash of a file no larger than one chunk; a miss adds
+    current key.  Per call the gate stats each file (and for a file no
+    larger than one chunk, one bounded read and hash; a miss adds
     two more, for the parse and its key re-check) and reads the
     own-address set (twice when a remote entry is served: once for the
     key, once to confirm it at return; each read is one lock round-trip
@@ -459,12 +458,13 @@ def _hosts_file_verdict(host: str) -> "bool | None":
     parses a larger file in the call exactly as the warm would, read up to
     ``_HOSTS_FILE_READ_CAP`` and truncated past it.
 
-    A same-size rewrite that restores mtime is a new key: on POSIX through
-    ``st_ctime``, with no extra read; on Windows, where ``st_ctime`` is
-    creation time, through a content digest taken on every call from one
-    read bounded by the chunk size, for a file no larger than one chunk.
-    A Windows file over one chunk cannot be verified without reading past
-    that bound, so every dotless name is pending there (True), with no
+    A same-size rewrite that restores mtime is a new key: for a file no
+    larger than one chunk through a content digest taken on every call
+    from one read bounded by the chunk size, on every platform, since a
+    coarse ctime tick can hide a rewrite; for a larger POSIX file through
+    ``st_ctime`` (see ``_hosts_file_key``).  A Windows file over one chunk
+    cannot be verified without reading past that bound, so every dotless
+    name is pending there (True), with no
     stale window; the refusal note tells the agent to use the full
     hostname or an IP address.  An in-call parse whose FILE changed
     while it ran is also pending; one whose own-address state moved (the

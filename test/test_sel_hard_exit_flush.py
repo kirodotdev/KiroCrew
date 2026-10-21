@@ -211,7 +211,7 @@ class TestFlushAuditQueueBeforeHardExit:
 
 class TestEveryGatewayHardExitFlushesTheAuditQueue:
     """Ratchet: the audit log only survives if EVERY hard exit in the gateway
-    process drains it. ``slack/gateway_runtime/exit_path.py``, ``slack/events.py``
+    process drains it. ``slack/gateway_runtime/exit_path.py``, ``slack/events_slash.py``
     and ``platform_compat.py`` with its ``platform_compat_*.py`` owners are the
     modules that call ``os._exit`` or ``platform_compat.hard_exit`` from inside
     the long-lived gateway process --
@@ -249,7 +249,7 @@ class TestEveryGatewayHardExitFlushesTheAuditQueue:
                 "*.py"
             )
         ),
-        Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/events.py",
+        *sorted((Path(__file__).resolve().parents[1] / "src/kiro_crew/slack").glob("events*.py")),
         *sorted(
             (Path(__file__).resolve().parents[1] / "src/kiro_crew").glob("platform_compat*.py")
         ),
@@ -404,7 +404,7 @@ class TestEveryGatewayHardExitFlushesTheAuditQueue:
 
 class TestSelFlushPrecedesGatewayLogDrain:
     """On every hard-exit path that drains both sinks, the SEL flush must come
-    BEFORE the gateway.log drain -- the order ``slack/events.py`` already uses.
+    BEFORE the gateway.log drain -- the order ``slack/events_slash.py`` already uses.
 
     The gateway.log drain stops the QueueListener. A SEL write failure logs its
     ``"SEL dropped %d events after write failures"`` line through that same
@@ -429,7 +429,7 @@ class TestSelFlushPrecedesGatewayLogDrain:
     _PATHS = {
         "src/kiro_crew/slack/gateway_runtime/exit_path.py": {"_shutdown_and_exit"},
         "src/kiro_crew/platform_compat_runtime.py": {"exit_after_failed_restart_exec"},
-        "src/kiro_crew/slack/events.py": {"_handle_restart"},
+        "src/kiro_crew/slack/events_slash.py": {"_handle_restart"},
     }
 
     @staticmethod

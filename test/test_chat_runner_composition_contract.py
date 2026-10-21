@@ -68,6 +68,7 @@ _OWNER_MODULES = frozenset(
         "mcp_session",
         "model_fallback",
         "native_cards",
+        "permission_prompt",
         "prompt_assembly",
         "queue_cycle",
         "queue_drain",
@@ -78,6 +79,7 @@ _OWNER_MODULES = frozenset(
         "slash_commands",
         "steer_queue",
         "tool_approval",
+        "tool_results",
         "tool_rows",
         "turn_admission",
         "turn_context",
@@ -1254,10 +1256,13 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/native_cards.py",
+        "dashboard/chat_turn/permission_prompt.py",
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
+        "dashboard/chat_turn/tool_approval.py",
+        "dashboard/chat_turn/tool_results.py",
         "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_ledgers.py",
@@ -1271,8 +1276,15 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/turn_locals.py",
     ),
     r"\.reject_tool\(": ("dashboard/chat_turn/deny_chokepoints.py",),
-    r"_reject_attributed\(": (_RUNNER_HOME, "dashboard/chat_turn/deny_chokepoints.py"),
-    r"\.approve_tool\(": (_RUNNER_HOME,),
+    r"_reject_attributed\(": (
+        "dashboard/chat_turn/deny_chokepoints.py",
+        "dashboard/chat_turn/permission_prompt.py",
+        "dashboard/chat_turn/tool_approval.py",
+    ),
+    r"\.approve_tool\(": (
+        "dashboard/chat_turn/permission_prompt.py",
+        "dashboard/chat_turn/tool_approval.py",
+    ),
     r"begin_turn\(": (
         "dashboard/chat_turn/turn_dispatch_gates.py",
         "dashboard/chat_turn/turn_entry.py",
@@ -1312,7 +1324,9 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"\.recent\(": ("dashboard/chat_turn/decisions_hooks.py",),
     r"warm_project_agent_names\(": ("dashboard/chat_turn/turn_admission.py",),
     # The tool-gate consultation: the sync call, or the awaitable form a coroutine uses.
-    r"\.on_tool_call\(|run_in_tool_gate_pool\(\s*[\w.]+\.on_tool_call,": (_RUNNER_HOME,),
+    r"\.on_tool_call\(|run_in_tool_gate_pool\(\s*[\w.]+\.on_tool_call,": (
+        "dashboard/chat_turn/tool_approval.py",
+    ),
     r"spawn_guarded_turn\(": (
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
@@ -1348,12 +1362,13 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         _RUNNER_HOME,
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/slash_commands.py",
+        "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
     ),
     r"classify_stop_reason\(": (_RUNNER_HOME, "dashboard/chat_turn/turn_dispatch_gates.py"),
     r"notify_turn_complete\(": ("dashboard/chat_turn/queue_cycle.py",),
-    r"on_tool_completed\(": (_RUNNER_HOME,),
+    r"on_tool_completed\(": ("dashboard/chat_turn/tool_results.py",),
     r"latch_crew_log_previous\(": (
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/turn_admission.py",
@@ -1364,7 +1379,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"slot\._transient_5xx_retries = 0": (_RUNNER_HOME,),
     r"\bmemory_store=": (_RUNNER_HOME, "dashboard/chat_turn/turn_admission.py"),
     r"compaction_settled=_compaction_completed,": (_RUNNER_HOME,),
-    r"await _post_native_question_card\(": (_RUNNER_HOME,),
+    r"await _post_native_question_card\(": ("dashboard/chat_turn/tool_rows.py",),
     r"\brun_bg_oneliner\(": (_RUNNER_HOME,),
 }
 

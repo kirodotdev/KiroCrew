@@ -62,8 +62,15 @@ def _doctor_signing_key(issues: list[str]) -> None:
     # but the facade (test_cli_doctor_refactor_family_reads.py).
     from kiro_crew.dashboard import token_secret
 
+    # Two bits, same as the boot preflight: a FOREIGN macOS Seatbelt sandbox (which
+    # can leave the key readable) must not report a truncated host key as masked, so
+    # the open-refusal cross-check applies ONLY when the sole confinement signal is
+    # the Seatbelt verdict. Inside Kiro Crew's own sandbox the key is masked whatever
+    # its readability (the Linux mask can fall back to a readable empty stand-in).
+    confined = cli_doctor.sandbox.agent_confinement_evidence() is not None
     state, key_path = token_secret.signing_key_health(
-        confined=cli_doctor.sandbox.agent_confinement_evidence() is not None
+        confined=confined,
+        require_denied_open=confined and not cli_doctor.sandbox.agent_confinement_is_kirocrew_own(),
     )
     if state == "masked":
         # The agent sandbox bind-mounts an empty file over the key, so a size read

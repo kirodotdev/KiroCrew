@@ -3322,7 +3322,7 @@ process-local and monotonic for the slot lifetime; unlike `task`, normal turn te
 does not clear it, so code spanning an await can detect a turn that started and finished
 inside that interval.
 
-**Slash commands** (`slack/events.py`):
+**Slash commands** (`slack/events_slash.py`):
 - `/kirocrew sessions [all|ended]` — lists the last `slack.sessions_limit` recent
   sessions as task cards, each with a Resume button (`mc_session_resume_{key}`)
 
@@ -4852,7 +4852,7 @@ NOT-applied notice; acknowledgement alone never confirms activation. The
 subagent, caller, single-consumption and argument-matching fences still apply.
 
 
-The session-bound MCP tools in `session_directive.DIRECTIVE_TOOLS` (the monitor verbs, `autonudge_stop`, `set_project`, `suggest_followup`, `nothing_to_do`, `reset_conversation`, `chat_tag`) are **stateless**, so they need no per-process identity source and work with MCP-gateway pooling off (`ask_question` is not in the set: it blocks on the `/api/agent-ask/*` routes and returns the answers as its result): the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, `dashboard/chat_runner._run_chat`'s `EVENT_TOOL_RESULT` handler, decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session. The directives that act on the user's own surface (`_USER_SURFACE_DIRECTIVES`: `set_project`, `reset_conversation`, `chat_tag`) additionally require a user-turn provenance.
+The session-bound MCP tools in `session_directive.DIRECTIVE_TOOLS` (the monitor verbs, `autonudge_stop`, `set_project`, `suggest_followup`, `nothing_to_do`, `reset_conversation`, `chat_tag`) are **stateless**, so they need no per-process identity source and work with MCP-gateway pooling off (`ask_question` is not in the set: it blocks on the `/api/agent-ask/*` routes and returns the answers as its result): the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, the `EVENT_TOOL_RESULT` phase `_on_tool_result` (`dashboard/chat_turn/tool_results.py`), decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session. The directives that act on the user's own surface (`_USER_SURFACE_DIRECTIVES`: `set_project`, `reset_conversation`, `chat_tag`) additionally require a user-turn provenance.
 
 Subagent isolation is therefore **structural, not cryptographic**: a subagent's tool result flows through the subagent's own runner and can only ever bind to the subagent's session, never its parent's — there is no `/proc` walk to get wrong. The tools still call `_resolve_session_key_strict()`, but only as a context guard to short-circuit sessions where a directive can never be applied (cron/hook/subagent) — not to bind the effect. `ask_question` is NOT a directive: it blocks on the strict `/api/agent-ask/*` routes, which attest the key the tool resolves and address the card to that session's own slot, so a sub-agent (no strict key) is refused before any card is shown.
 
@@ -4870,7 +4870,7 @@ Gateway-off (the default topology this targets), the model's tool result is the 
 sequenceDiagram
     participant M as Model
     participant T as MCP tool (kirocrew-core)
-    participant R as chat_runner._run_chat<br/>(EVENT_TOOL_RESULT)
+    participant R as chat_turn.tool_results._on_tool_result<br/>(EVENT_TOOL_RESULT)
     participant A as session_directive_apply
     M->>T: call e.g. monitor_start(args)
     T->>T: validate args (resolves NO session identity for the effect)

@@ -82,7 +82,7 @@ class TestPreparePrPreSubmitReview:
         findings = PREPARE_PR_FINDINGS.read_text(encoding="utf-8")
 
         assert "fix all legitimate Critical/High" in skill
-        assert "advisory unless a human escalates them" in skill
+        assert "do not block unless a human escalates them" in skill
         assert "one focused verifier" in skill
         assert "fix every legitimate Critical/High finding + failing check" in findings
         assert "fix every legitimate High/Medium" not in findings
@@ -285,7 +285,7 @@ class TestOpusTwoStageArchitecture:
         # And the precision enforcement really lives in validation.
         vflat, dflat = _flat(validate), _flat(discovery)
         assert "Keep only survivors at 80 or above" in vflat
-        assert "Nothing else blocks" in vflat
+        assert "A BLOCKING item is not demoted on fix cost" in vflat
         # Discovery is pushed the other way.
         assert "Recall is yours" in dflat
         assert "Err on the side of recording" in dflat
@@ -328,60 +328,37 @@ class TestOpusTwoStageArchitecture:
         # And the old prohibition must not creep back in beside the permission.
         assert "You may NOT add findings of your own" not in vflat
 
-    def test_a_fix_outside_the_diff_is_demoted_not_dropped(self) -> None:
-        """The old FIX BAR deleted these findings outright. Keep the signal,
-        just refuse to gate the merge on work the author cannot land here."""
+    def test_a_fix_outside_the_diff_is_never_a_reason_to_demote(self) -> None:
+        """There is no soft tier to demote into: a survivor whose minimal fix needs
+        new machinery or an untouched file stays BLOCKING, and the adjudication
+        pass weighs proportionality downstream."""
         validate = _review_prompt("opus-validate")
         flat = _flat(validate)
-        assert "did not touch" in flat
-        assert "**Do not drop it**" in flat
-        # ...but a regression the diff CAUSED still blocks when the author can
-        # actually land the remedy here. Without that carve-out the demotion
-        # swallows exactly the class this reform exists to surface -- a deleted
-        # guard whose tidier fix-forward happens to live in an untouched helper.
-        assert "stays BLOCKING when reverting the hunk really is available" in flat
-        assert "the fix-forward fits inside the changed lines" in flat
-        # The carve-out must NOT price every remedy as a revert, though. Revert
-        # is only a remedy for a hunk the PR can do without; for a hunk the PR
-        # NEEDS, "revert it" is abandoning the change, and pricing the fix that
-        # way is precisely how a demand to build new machinery arrives stamped
-        # BLOCKING -- the over-engineering pressure this lane is meant to resist.
-        assert "ONLY when the hunk is a pure addition" in flat
-        assert "revert is not a remedy the author can ship" in flat
+        assert "A BLOCKING item is not demoted on fix cost" in flat
+        assert "stays BLOCKING and the fix clause names that remedy" in flat
+        assert "weighed downstream, by the adjudication pass" in flat
+        # Revert is only a remedy for a hunk the PR can do without; for a hunk the
+        # PR NEEDS, "revert it" is abandoning the change.
+        assert "only when the hunk is a pure addition" in flat
         assert "makes every fix look free" in flat
-        # When the PR needs the hunk AND the fix-forward needs new machinery,
-        # the demotion stands -- with the remedy still named, never dropped.
-        assert "the override stands and it is a **FINDING**" in flat
-        # One class is exempt from that weighing because its harm has no
-        # ceiling: a cheap remedy is not the reason it blocks.
-        assert "harm has no ceiling for a cost to be weighed against" in flat
-        assert "no matter what the remedy costs or where it lives" in flat
-        # The plain demotion keeps its narrow scope.
-        assert "Reserve the plain demotion for a defect the diff merely exposes" in flat
+        assert "**FINDING**" not in flat
 
-    def test_gpt_lanes_defer_proportionality_to_adjudication_not_the_fix_bar(self) -> None:
+    def test_gpt_lanes_defer_proportionality_to_adjudication_not_a_fix_bar(self) -> None:
         """The GPT lanes feed the Opus adjudication pass, so proportionality is
         weighed THERE, on the full evidence and behind the security fence -- never
-        by demoting a blocking defect to advisory at the review stage. An earlier
-        draft let the FIX BAR demote a WHAT-BLOCKS finding (e.g. a reachable crash
-        whose fix touches an untouched helper) to advisory, which silently
-        bypassed adjudication. The opposite lane -- opus-validate, which has NO
-        adjudication downstream -- keeps its own in-lane demotion valve and is
-        deliberately NOT changed here."""
+        by demoting a defect at the review stage."""
         core = _review_prompt("gpt-review-core")
         mandate = _review_prompt("gpt-falsification-mandate")
-        # The FIX BAR's drop rule is scoped to advisory findings only.
-        assert "FIX BAR (advisory findings only)" in core
-        # A WHAT-BLOCKS finding is exempt and stays blocking regardless of cost.
-        assert "A finding that meets WHAT BLOCKS is NOT subject to that bar" in core
+        assert "FIX BAR" not in core
+        assert "A BLOCKING item is not subject to a cost test on its fix" in core
         assert "weighed DOWNSTREAM, by the adjudication pass" in _flat(core)
-        # The old clause that demoted a WHAT-BLOCKS finding on fix cost is gone.
-        assert "FIX BAR applies even to a finding that meets WHAT BLOCKS" not in _flat(core)
-        # Falsification: a BLOCKING candidate is not dropped/demoted on fix cost.
+        # Falsification: a BLOCK-BAR candidate is not dropped/demoted on fix cost.
         assert "NOT dropped or demoted on fix cost" in mandate
         assert "weighed DOWNSTREAM by the adjudication pass" in mandate
-        # The drop-on-FIX-BAR kill is now scoped to advisory candidates.
-        assert "any ADVISORY candidate" in mandate
+        # The only candidates it drops outright fail the impact floor or lack a
+        # re-derived Trigger and Outcome.
+        assert "IMPACT FLOOR" in mandate
+        assert "lacks a Trigger line or an Outcome line" in mandate
 
     def test_a_cleared_review_comment_defuses_the_block_merge_marker(self) -> None:
         """pr_status.py greps comment text for `[BLOCK-MERGE] <sha>`. When
@@ -1370,13 +1347,13 @@ class TestClaudeReviewQualityDimensions:
         # candidate list, which is untrusted notes from the discovery stage.
         assert "re-derived all three of these" in validate
 
-    def test_quality_dimensions_are_advisory_only(self) -> None:
-        """The blocking set stays closed; everything else is advisory."""
+    def test_a_note_never_gates(self) -> None:
+        """A point with no Trigger and no Outcome is a note, and a note never gates."""
         validate = _flat(_prompt("opus-validate.md"))
-        assert "Advisory, never blocks" in validate
-        assert "Never emit `[BLOCK-MERGE]` for an advisory FINDING" in validate
+        assert "the gate never reads it" in validate
+        assert "Never emit `[BLOCK-MERGE]` for a `Notes:` bullet" in validate
         # The rule's own flag decides, never the reviewer's sense of severity.
-        assert "FLAG IS AUTHORITATIVE" in validate
+        assert "WITHOUT `blocking: true` is judged by the Step 1 bar" in validate
 
     def test_finding_budget_is_capped(self) -> None:
         """Validation caps BLOCKING so a noisy round cannot bury the real one."""
@@ -1389,7 +1366,8 @@ class TestClaudeReviewQualityDimensions:
         validate = _flat(_prompt("opus-validate.md"))
         assert "NO methodology narration" in validate
         assert "NO praise" in validate
-        assert "FINDING — file:line" in validate
+        assert "`Trigger: <the input or condition that occurs in practice" in validate
+        assert "`Outcome: <the observable wrong result>`" in validate
 
     def test_no_contradictory_linter_exclusion(self) -> None:
         """What the mechanical checks own is not this reviewer's to report."""

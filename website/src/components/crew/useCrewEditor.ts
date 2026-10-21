@@ -8,14 +8,13 @@
  * page. The invariant-dense logic that makes editing correct (the stale-write
  * epoch guard, the serialized template-switch chain, avatar staging, the
  * discard question) must not be re-implemented per surface, so it lives here
- * once and `CrewEditorNextDialog` renders it. Today the ONLY consumer is
- * `MembersPage` (the in-place Crewmates modal); folding `KiroCrewAgentsPage`'s
- * own inline edit sheet onto this hook/dialog is the committed follow-up, after
- * which both surfaces share this one state machine.
+ * once and `CrewEditorNextDialog` renders it. Both crewmate editing surfaces
+ * consume it: `MembersPage` (the in-place Crewmates modal) and
+ * `KiroCrewAgentsPage` (Customize > Crewmates), so there is one state machine
+ * reached from two entry points.
  *
- * This hook owns EDIT only. Creating a crew stays in `KiroCrewAgentsPage`'s own
- * form: the two share field COMPONENTS, not this state machine, and a create
- * wizard is a separate decision (see the page's create branch).
+ * This hook owns EDIT only. Creating a crew opens `NewCrewmateDialog` from
+ * either host: the two share field COMPONENTS, not this state machine.
  *
  * Every reference-carrying comment below (issue numbers, the epoch rationale,
  * the avatar tier spellings) is moved verbatim from the page — this is a

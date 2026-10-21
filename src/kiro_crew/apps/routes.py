@@ -137,6 +137,11 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import forget_app_hooks, teardown_app_runtime
+from kiro_crew.apps.update_notify import (
+    deliver_app_update_notes,
+    prepare_app_update_notes,
+)
+from kiro_crew.apps.update_status import attach_update, attach_updates
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.config.loader import (
     ConfigReadError,
@@ -176,25 +181,31 @@ logger = logging.getLogger(__name__)
 #: accident. ``XDG_RUNTIME_DIR`` is absent because the allowlist already
 #: carries it.
 #:
-#: ``DBUS_SESSION_BUS_ADDRESS`` belongs here, and withholding it would buy
-#: nothing. Three things decide that.
+#: ``DBUS_SESSION_BUS_ADDRESS`` belongs here, and the child KEEPS it. Two
+#: things to know about that.
 #:
-#: The sandbox owns it, not this list. ``sandbox._CGROUP_SCOPE_BUS_ENV_KEYS``
-#: pairs it with ``XDG_RUNTIME_DIR`` as the ``systemd-run --user`` wrapper's
-#: OWN dependency: the cgroup ceiling needs the caller's session bus to place
-#: the child in a scope, so both are restored after the credential scrub and
-#: then dropped again INSIDE the scope with an ``env -u`` shim. A sandboxed
-#: child therefore never keeps either one, whatever this list says.
+#: This list decides it, not the sandbox. :func:`handle_open_app` wraps with
+#: ``wrap_argv`` + ``cgroup_scope_argv`` and spawns with an explicit ``env``
+#: built from ``scrub_env(minimal_env())`` plus these keys. The standard-mode
+#: credential scrub names neither locator, and ``cgroup_scope_argv`` only
+#: prepends the ``systemd-run`` wrapper. The restore-then-drop that
+#: ``sandbox._CGROUP_SCOPE_BUS_ENV_KEYS`` describes -- both locators put back
+#: after the scrub for ``systemd-run``'s own use, then removed again INSIDE
+#: the scope with an ``env -u`` shim -- happens only in
+#: ``sandbox.sandboxed_spawn_argv``, and this path does not call it. So the
+#: ``openCommand`` child holds ``XDG_RUNTIME_DIR`` (from the allowlist) and
+#: ``DBUS_SESSION_BUS_ADDRESS`` (from here) in every sandbox mode. The
+#: positive control in ``test/test_s29_spawn_env_regression.py`` pins the env
+#: and ``test/test_open_command_bus_locators.py`` pins the argv chain; change
+#: this comment and those tests together.
 #:
-#: Dropping the address closes no door anyway. libdbus falls back to
+#: Dropping the address alone would close no door. libdbus falls back to
 #: ``$XDG_RUNTIME_DIR/bus``, and ``XDG_RUNTIME_DIR`` is in ``minimal_env``'s
 #: allowlist because it is also where the Wayland socket lives -- so removing
 #: it to close the fallback would break every Wayland launch, which is the
-#: legitimate use this endpoint exists for.
-#:
-#: What is left reaches only the operator's opt-in unconfined mode, where the
-#: same shell can already run any program it likes. Withholding a bus address
-#: from a process that can spawn anything is not a control.
+#: legitimate use this endpoint exists for. Whether a standard-mode
+#: ``openCommand`` child should hold a live user-bus address at all is a
+#: sandbox question, and not one this list settles.
 _OPEN_COMMAND_DESKTOP_ENV_KEYS = (
     "DISPLAY",
     "WAYLAND_DISPLAY",
@@ -225,10 +236,9 @@ def _check_min_version(manifest_data: dict[str, Any]) -> str | None:
 
 def _redact_warning(msg: str) -> str:
     """Redact credentials and exfiltration URLs from warning strings."""
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
-    msg, _ = redact_credentials(msg)
-    msg, _ = redact_exfiltration_urls(msg)
+    msg = redact(msg)
     return msg
 
 
@@ -367,6 +377,16 @@ def _stamp_installed_trust_repository(app: dict[str, Any]) -> dict[str, Any]:
     return app
 
 
+def _installed_app_detail(name: str, app: dict[str, Any]) -> dict[str, Any]:
+    """One installed app's row: trust stamp, then its cached update state.
+
+    Blocking (both halves touch disk), so async handlers offload the whole
+    helper. What ``update`` means, and why it is absent rather than false when
+    nothing is known: :func:`~kiro_crew.apps.update_status.attach_update`.
+    """
+    return attach_update(name, _stamp_installed_trust_repository(app))
+
+
 def _listed_apps_with_trust() -> list[dict[str, Any]]:
     """Read installed apps and resolve their consent coordinates synchronously.
 
@@ -377,7 +397,12 @@ def _listed_apps_with_trust() -> list[dict[str, Any]]:
     installed = list_apps()
     for app in installed:
         _stamp_installed_trust_repository(app)
-    return installed
+    # Same ``update`` field the single-app route carries, and for a reason that
+    # is not symmetry for its own sake: a side-panel tab reads its row from this
+    # endpoint while a routed page reads the other, so an app's own
+    # "new version" banner would appear on one surface and silently never on the
+    # other. Batched, so the caches are read once rather than once per app.
+    return attach_updates(installed)
 
 
 async def handle_list_apps(request: web.Request) -> web.Response:
@@ -618,7 +643,7 @@ async def handle_get_app(request: web.Request) -> web.Response:
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(await asyncio.to_thread(_stamp_installed_trust_repository, info))
+    return web.json_response(await asyncio.to_thread(_installed_app_detail, name, info))
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:
@@ -1633,10 +1658,9 @@ async def _run_uninstall(
                 action="on_uninstall",
             )
             if script_output.get("output"):
-                from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+                from kiro_crew.security import redact
 
-                cleaned, _ = redact_exfiltration_urls(script_output["output"])
-                cleaned, _ = redact_credentials(cleaned)
+                cleaned = redact(script_output["output"])
                 uninstall_log.append(cleaned)
             if script_output.get("failed"):
                 uninstall_log.append("onUninstall script failed (exit code non-zero)")
@@ -1938,11 +1962,10 @@ async def _run_uninstall(
     )
     resp = result.to_dict()
     if retired_builtin:
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
         for index, warning in enumerate(backend_warnings):
-            cleaned, _ = redact_exfiltration_urls(warning)
-            backend_warnings[index], _ = redact_credentials(cleaned)
+            backend_warnings[index] = redact(warning)
         notices = list(backend_warnings)
         if pointer_flush_failed:
             notices.append(
@@ -1950,8 +1973,7 @@ async def _run_uninstall(
                 "did not persist -- a reinstall may still resume one"
             )
         if notices:
-            notice, _ = redact_exfiltration_urls("\n".join(notices))
-            resp["notice"], _ = redact_credentials(notice)
+            resp["notice"] = redact("\n".join(notices))
     if uninstall_log:
         resp["uninstall_log"] = "\n".join(uninstall_log)
     if backend_warnings:
@@ -2542,13 +2564,35 @@ async def handle_open_app(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+async def _announce_app_updates(request: web.Request, rows: list[dict[str, Any]]) -> None:
+    """Bell-note the app updates these listing rows reveal, once each.
+
+    Called with CATALOG rows only. The seed fallback answers when the catalog
+    is unreachable, and its rows can name an older version than the catalog
+    does -- announcing from them would report a "new" version that is not the
+    newest, and their absent rows say nothing about an app either way.
+
+    The ledger half runs off the loop (disk); delivery runs on it, because
+    ``state.notify`` off the serving loop persists outside the notification
+    coordinator's FIFO executor. Both halves are total.
+    """
+    state = request.app.get("state")
+    if state is None:
+        return
+    notes = await asyncio.to_thread(prepare_app_update_notes, rows)
+    if notes:
+        deliver_app_update_notes(state, notes)
+
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     # The published catalog is the storefront's source of truth when it is
     # reachable: its rows replace the seed + per-app manifest fetch. Offline the
     # catalog is empty and the seed listing answers instead.
     apps = await list_catalog_apps()
-    if not apps:
+    if apps:
+        await _announce_app_updates(request, apps)
+    else:
         apps = await list_registry()
     # Published rail order and layout ride along on the response the store already
     # makes, rather than endpoints the page would have to wait on separately. They
@@ -2651,16 +2695,14 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         # Redact install log and error before returning to client — build output
         # may contain internal hostnames, package URLs, or credential fragments.
         if result.get("log"):
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            from kiro_crew.security import redact
 
-            cleaned_log, _ = redact_exfiltration_urls(result["log"])
-            cleaned_log, _ = redact_credentials(cleaned_log)
+            cleaned_log = redact(result["log"])
             result["log"] = cleaned_log
         if result.get("error"):
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            from kiro_crew.security import redact
 
-            cleaned_err, _ = redact_exfiltration_urls(result["error"])
-            cleaned_err, _ = redact_credentials(cleaned_err)
+            cleaned_err = redact(result["error"])
             result["error"] = cleaned_err
 
         if result.get("needsClientInstall"):
@@ -2783,14 +2825,13 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
 
     async def _drain_queue() -> None:
         """Forward queued log lines to the SSE stream until sentinel."""
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
         while True:
             line = await queue.get()
             if line is None:
                 break  # sentinel — install finished
-            cleaned, _ = redact_exfiltration_urls(line)
-            cleaned, _ = redact_credentials(cleaned)
+            cleaned = redact(line)
             await _send_sse("log", cleaned)
 
     # Run install + drain concurrently. The complete lifecycle transaction —
@@ -2837,16 +2878,14 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # error may contain internal hostnames, git URLs, or credential
     # fragments from subprocess failures.
     if result.get("log"):
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
-        cleaned_log, _ = redact_exfiltration_urls(result["log"])
-        cleaned_log, _ = redact_credentials(cleaned_log)
+        cleaned_log = redact(result["log"])
         result["log"] = cleaned_log
     if result.get("error"):
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
-        cleaned_err, _ = redact_exfiltration_urls(result["error"])
-        cleaned_err, _ = redact_credentials(cleaned_err)
+        cleaned_err = redact(result["error"])
         result["error"] = cleaned_err
 
     if result.get("needsClientInstall"):

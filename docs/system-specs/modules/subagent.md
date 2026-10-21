@@ -2545,7 +2545,7 @@ The snapshot is retired only on a **`tool_final`** result. `EVENT_TOOL_RESULT` i
 The verdict and its evidence are recorded in the reaper's log line but are deliberately **not** on the `subagent_stalled` wire: no consumer reads them today (the frontend narrows the payload on arrival and the coalesced batch update forwards only `stalled`), and the event is app-sdk-forwarded, so unread keys would become semi-permanent surface.
 
 
-The slow-command record (`record_slow_command`, `subagent_persistence.py`) is append-only and deliberately NOT a tombstone: a tombstone marks an agent dead and is consumed by orphan-reconciliation / TTL cleanup, whereas a stalled subagent is still running. Fields: `id`, `flagged` (ts), `last_tool` (redacted), `tool_count`, `turns`, `idle_secs`, `elapsed_secs`, `parent_session`, `session_sharing`.
+The slow-command record (`record_slow_command`, `subagent_persistence_tombstones.py`) is append-only and deliberately NOT a tombstone: a tombstone marks an agent dead and is consumed by orphan-reconciliation / TTL cleanup, whereas a stalled subagent is still running. Fields: `id`, `flagged` (ts), `last_tool` (redacted), `tool_count`, `turns`, `idle_secs`, `elapsed_secs`, `parent_session`, `session_sharing`.
 
 `_awaiting_approval` is set around **both** human approval awaits — the mid-run tool approval in the `EVENT_PERMISSION_REQUEST` branch (reset in `finally`, which also refreshes `last_activity`) and the pre-execution spawn gate in `_spawn_with_approval` (also reset in `finally`) — so a slow approval never looks stalled. The two are told apart by `_exec_started`: it is set for the mid-run prompt and `None` at the spawn gate, which is what lets the reaper name the right cause (see Reaper Loop).
 
@@ -3467,8 +3467,8 @@ Delivery debt captures the member id, elapsed time, and credits when a completio
 ### PostToolUse Firing
 
 The subagent loop fires `PreToolUse` and `PostToolUse` (on `EVENT_TOOL_RESULT`),
-mirroring `chat_runner.py`. Where `PreToolUse` runs depends on the backend
-(`agent_sdk/spec_hooks.py:turn_spec_hooks`):
+mirroring the dashboard's tool phases (`dashboard/chat_turn/tool_rows.py`, `tool_results.py`).
+Where `PreToolUse` runs depends on the backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
 
 - On a backend that receives the agent spec's `hooks` itself, `PreToolUse` is an
   informational fire on `EVENT_TOOL_CALL` (`fire_tool_hooks`) and cannot refuse
@@ -3507,7 +3507,7 @@ Caller sites:
   `permission_pre_tool_block` through the ladder's `SpecHooks` floor
 - `task_executor.py`: passes `parent_session_key` and `agent_role` (no
   `subagent_id`), with the same gated/ungated split
-- `chat_runner.py` / `llm_helpers_parts/turn_stream.py`: unchanged (parent context, defaults to None)
+- `chat_turn/` / `llm_helpers_parts/turn_stream.py`: unchanged (parent context, defaults to None)
 
 ## Prompt and CLI integration
 
@@ -3721,6 +3721,20 @@ Folder-per-agent persistence at `~/.kiro/crew/subagents/{id}/`:
   result.txt      # result text (APPENDED per streamed chunk, started afresh at each attempt's first chunk; rewritten whole from memory by a claimed completed ending, capped in place by any other)
   tombstone.json  # {error, elapsed, timestamp} (written on failure/orphan)
 ```
+
+`subagent_persistence.py` is the import path for this layer. It keeps two of the readers
+that sweep every run folder -- the panel records (`read_panel_records`) and
+`prune_stale_tombstones` with its session-file cleanup -- and is a
+`kiro_crew._facade_mirror` facade over four owners: `subagent_persistence_layout.py`
+(run-folder paths, the registry root, the cleanup identities, the owner-only record
+write), `subagent_persistence_dismissals.py` (panel dismissals and the record-key
+ceilings), `subagent_persistence_state.py` (creating the folder, its execution context,
+`state.json` reads and locked writes, the tombstone reads, retention promotion, result
+streaming, a session's memory mode) and `subagent_persistence_tombstones.py` (the
+finished result, the tombstone, owed and retried, delivery, the slow-command log,
+deletion, orphans and leaked processes). New work goes to the owner of its
+responsibility; a patch of `subagent_persistence.<name>` reaches every owner holding the
+name.
 
 `state.json` carries no run status. No ending writes one back (a completed
 ending rewrites the file only to record `result_complete`), so a status written

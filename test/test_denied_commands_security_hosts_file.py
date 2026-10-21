@@ -156,10 +156,10 @@ class TestHostsFileWarmUp:
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_CACHE", {})
         monkeypatch.setattr(_argv_floor, "_HOSTS_WARM_IN_FLIGHT", False, raising=False)
-        # The POSIX key (ctime, no content read) on every runner; a Windows
-        # runner would otherwise refuse every dotless name on a file over the
-        # chunk cap.  The Windows tests turn the digest on with _windows().
-        monkeypatch.setattr(_argv_floor, "_hosts_content_digest_enabled", lambda: False)
+        # POSIX ctime semantics on every runner; a Windows runner would
+        # otherwise refuse every dotless name on a file over the chunk cap.
+        # The Windows tests pin ctime to creation time with _windows().
+        monkeypatch.setattr(_argv_floor, "_ctime_is_creation_time", lambda: False)
         if _REAL_SCHEDULE_HOSTS_WARM is not None:
             monkeypatch.setattr(_argv_floor, "_schedule_hosts_file_warm", _REAL_SCHEDULE_HOSTS_WARM)
         assert _REAL_RESOLVED_HOST_VERDICT is not None
@@ -835,13 +835,13 @@ class TestHostsFileWarmUp:
     # --- Windows: a content digest, since st_ctime is creation time ------
 
     def _windows(self, monkeypatch):
-        """Digest mode on, and ``st_ctime`` pinned to creation time as on Windows.
+        """``st_ctime`` pinned to creation time, as on Windows.
 
         The stat seen by the code under test keeps each path's first
         ``st_ctime`` (its creation time), so a rewrite that restores mtime
         leaves mtime, ctime and size all unchanged, which is the Windows case.
         """
-        monkeypatch.setattr(_argv_floor, "_hosts_content_digest_enabled", lambda: True)
+        monkeypatch.setattr(_argv_floor, "_ctime_is_creation_time", lambda: True)
         born: "dict[str, float]" = {}
         real_os = _argv_floor.os
 
@@ -901,8 +901,10 @@ class TestHostsFileWarmUp:
         assert _argv_floor._host_is_self("swapbox") is True
         assert _denied_by("ssh loopalias uptime") == self._RULE
 
-    def test_windows_small_file_read_failure_on_the_digest_is_pending(self, monkeypatch):
-        self._windows(monkeypatch)
+    @pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+    def test_small_file_read_failure_on_the_digest_is_pending(self, monkeypatch, windows):
+        if windows:
+            self._windows(monkeypatch)
         self._hosts(monkeypatch, "10.44.4.4 swapbox\n")
         _argv_floor._warm_hosts_file_cache()
 
@@ -915,20 +917,37 @@ class TestHostsFileWarmUp:
         assert _argv_floor._host_is_self("swapbox") is True
         assert scheduled == [1]
 
-    def test_posix_key_does_no_content_read(self, monkeypatch):
-        def _boom(*_a, **_k):
-            raise AssertionError("POSIX read the hosts file for a digest")
+    def test_posix_same_size_rewrite_inside_one_ctime_tick_re_parses(self, monkeypatch):
+        # Two writes inside one coarse ctime tick leave mtime, ctime and size
+        # all unchanged; the stat seam returns the first stat for every call,
+        # so no real clock is involved.  The digest is what moves the key.
+        own = frozenset({"127.0.0.1", "10.4.4.4"})
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", own)
+        path = self._hosts(monkeypatch, "10.9.9.9 farbox\n")
+        first = os.stat(path)
+        real_os = _argv_floor.os
 
-        monkeypatch.setattr(_argv_floor, "_hosts_content_digest", _boom, raising=False)
-        path = self._hosts(monkeypatch, "10.44.4.4 swapbox\n127.0.0.1 loopalias\n")
-        with monkeypatch.context() as m:
-            # The key itself reads nothing on POSIX; only a parse reads.
-            m.setattr(_argv_floor, "_read_hosts_bytes", _boom, raising=False)
-            assert _argv_floor._hosts_file_key(path)[3] is None
-        assert _argv_floor._host_is_self("swapbox") is False
-        assert _argv_floor._host_is_self("loopalias") is True
-        assert _argv_floor._HOSTS_FILE_CACHE[path][0][3] is None
+        class _OneTickOs:
+            def __getattr__(self, name):
+                return getattr(real_os, name)
+
+            @staticmethod
+            def stat(_path, *_a, **_k):
+                return first
+
+        monkeypatch.setattr(_argv_floor, "os", _OneTickOs())
+        assert _argv_floor._hosts_file_verdict("farbox") is False
+        with open(path, "r+b") as fh:
+            fh.write(b"10.4.4.4 farbox\n")
+        assert os.stat(path).st_size == first.st_size
+        assert _argv_floor._hosts_file_verdict("farbox") is True
+        assert _argv_floor._HOSTS_FILE_CACHE[path][1] == {"farbox": True}
+
+    def test_posix_large_file_keeps_a_stat_key_and_is_served(self, monkeypatch):
+        path = self._hosts(monkeypatch, "10.44.4.4 swapbox\n")
+        assert _argv_floor._hosts_file_key(path)[3] is not None
         big = self._big_hosts(monkeypatch, "10.44.4.4 swapbox\n", name="hosts-big")
         monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (big,))
+        assert _argv_floor._hosts_file_key(big)[3] is None
         _argv_floor._hosts_file_warm_worker()
         assert _argv_floor._host_is_self("swapbox") is False

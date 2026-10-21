@@ -65,6 +65,19 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # A dashboard terminal shell that exited with a non-zero code; its tab
     # closed with it, so the note is where the code is left to read.
     "system.terminal": _DEFAULT_PRIORITY,
+    # A crewmate's message in its DM thread (dashboard/member_message_notes.py).
+    # Its own channel so the user can mute crewmate chatter without muting
+    # system.agent; the note keeps kind "agent", as system.monitor's do.
+    # Passive: the note lands in the bell without a banner, sound or OS toast
+    # until the user raises the channel in Settings -> Notifications.
+    "system.member": "passive",
+    # An installed app has a newer version published. Its own channel for the
+    # same reason system.monitor has one: this is the one system note a user
+    # may reasonably never want, and without a channel of its own it would
+    # fall back to system.agent, where muting it also mutes the notes agents
+    # write for a human decision. Default priority -- nothing is blocked, the
+    # app keeps working on the version it has.
+    "system.apps": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

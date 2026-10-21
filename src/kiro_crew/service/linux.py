@@ -40,20 +40,25 @@ module goes wrong.
 Trusted resolution buys one thing, on both paths: the interpreter is root-owned,
 resolved from a fixed list of trusted system directories, and never
 ``sys.executable`` — which rules out escalating the venv python, the one that is
-user-writable. It says nothing about what that interpreter then loads. Invoked
-without ``-I``/``-S``, CPython prepends the caller's working directory to
-``sys.path`` and imports ``site``, so code from that working directory,
-``PYTHONPATH``, a user-site ``.pth`` line, ``sitecustomize`` or ``usercustomize``
-runs before or during the payload's own first import — ``ctypes``, which a planted
-module on any of those paths shadows.
+user-writable. It says nothing about what that interpreter then loads, so the
+probe also runs it ISOLATED: ``python3 -I`` (no working directory on
+``sys.path``, no user site, no ``PYTHON*`` variables), from the fixed directory
+``/``, with every ``PYTHON*`` variable dropped from the environment it inherits.
+Without that, CPython prepends the caller's working directory to ``sys.path``
+and imports ``site``, so code from that working directory, ``PYTHONPATH``, a
+user-site ``.pth`` line, ``sitecustomize`` or ``usercustomize`` would run before
+or during the payload's own first import — ``ctypes``, which a planted module on
+any of those paths shadows. ``cd /tmp && sudo kirocrew service install`` is the
+case that needs no privilege at all.
 
 WHOSE privileges that loaded code gets is what ``setpriv`` decides, and both
 install paths are live. It reuids to the account the INSTALLER was invoked as
 (``os.getuid()``): started as an ordinary user — the default, where this module
 escalates individual commands through ``sudo`` — it reuids from sudo's root back
-to that user, so the probe and anything it loads stay unprivileged; started as
-``sudo kirocrew service install`` it reuids to 0, which is a no-op, and only on
-that path does the loaded code run as root.
+to that user, so the probe stays unprivileged; started as
+``sudo kirocrew service install`` it reuids to 0, which is a no-op, so on that
+path the probe runs as root and the isolation above is what keeps planted code
+out of it.
 
 What IS bounded on both paths is the PAYLOAD: a constant stdlib snippet importing
 no ``kiro_crew``, so no MCP / LLM / agent code is reached deliberately.
@@ -493,6 +498,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.service.linux_install import (  # noqa: F401
+        _PROBE_CWD,
         _env_file_is_untouched_seed,
         _install_file_via_sudo,
         _seed_env_file,

@@ -241,7 +241,12 @@ def test_the_windows_narrowing_is_the_repos_own_settled_answer() -> None:
     """
     import kiro_crew.pinned_fs as pinned_fs
 
-    src = pathlib.Path(pinned_fs.__file__).read_text(encoding="utf-8")
+    # pinned_fs is a facade over owner modules; its text is the facade's and theirs.
+    home = pathlib.Path(pinned_fs.__file__).parent
+    src = "\n".join(
+        (home / f"{name.rpartition('.')[2]}.py").read_text(encoding="utf-8")
+        for name in ("kiro_crew.pinned_fs", *pinned_fs._OWNERS)
+    )
     assert "os.open in os.supports_dir_fd" in src, (
         "supports_pinned_walk stopped gating on dir_fd support; if the repo has gained "
         "pinned traversal on Windows, this build should use it"

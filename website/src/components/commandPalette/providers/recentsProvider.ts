@@ -348,7 +348,7 @@ export function useRecentsProvider(): ResourceProvider {
               // Await the create BEFORE navigating: landing on /chat with no
               // active slot triggers ChatPage's auto-create, which would race
               // this thunk into a duplicate session.
-              void dispatch(createSlot(undefined))
+              void dispatch(createSlot({ defaultFolder: true }))
                 .unwrap()
                 .catch(() => {})
                 .finally(() => navigate('/chat'))

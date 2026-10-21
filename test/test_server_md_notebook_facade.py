@@ -12,13 +12,14 @@ tests pin what is particular to this one:
 * its owners are exactly the ``server_*.py`` siblings, each importing only the owners before
   it, and every name it serves from outside the family stays visible to type checkers;
 * the per-process state stays in the facade and no owner reads it. The gateway runs ``server``
-  as ``__main__`` and ``syncer`` imports it again under its own name, so one backend process
-  holds two copies of the facade, and each keeps its own locks, caches and token memo;
+  as ``__main__``; ``main()`` aliases that running copy under the canonical name before
+  ``create_app()`` imports ``syncer``, so ``syncer`` reads the same object and the whole
+  backend process shares one facade — one set of locks, caches and token memo;
 * a patch through the facade reaches every module holding the name, and its undo restores
   each, for the seams the test trees patch -- most of them through a fixture-unpacked alias
   the shared corpus scan cannot follow;
-* the gateway's ``__main__`` launch installs the mirror on that copy too, with the one logger
-  named for the facade;
+* the gateway's ``__main__`` launch installs the mirror on the running copy, with the one
+  logger named for the facade, and the dotted import resolves to that same copy;
 * the derived ``__all__`` keeps the star-import surface, and ``ApiError`` keeps the facade's
   module name.
 """
@@ -276,7 +277,10 @@ def test_a_patch_through_the_facade_reaches_every_holder_and_its_undo_restores_e
 
 
 #: The gateway's launch (``apps/backend.py``), with the server start replaced by a probe of
-#: the two copies: the ``__main__`` one the launch runs and the one ``syncer`` imports.
+#: the module the launch runs as ``__main__`` and the one ``syncer`` imports — which the fix
+#: makes the SAME object (``main()`` aliases the running copy under the canonical name before
+#: ``create_app()`` imports ``syncer``). ``runpy`` restores ``sys.modules["__main__"]`` to the
+#: launcher script after the run, so the shared identity is read off the canonical key.
 _LAUNCH = """
 import json, runpy, sys
 import aiohttp.web
@@ -286,25 +290,33 @@ seen = {}
 def _run_app(app, **kwargs):
     main = sys.modules["__main__"]
     index = vars(main)[_facade_mirror.INDEX_ATTRIBUTE]
+    # divergent() is empty whenever no patch is active (_facade_mirror.py): one
+    # object per name on the launched copy. Read here, during the run, while the
+    # launched copy IS __main__ — after the run runpy restores __main__ to the
+    # launcher's own -c script, whose globals (e.g. json) leak into the facade
+    # dict and make a post-run read of divergent() meaningless.
     seen["main"] = [type(main).__name__, list(index.divergent()), main.logger.name]
-    seen["two_copies"] = main is not sys.modules[FACADE]
+    # The fix ran in main() before this: the canonical key now IS the running copy.
+    seen["one_copy_at_launch"] = main is sys.modules[FACADE]
 aiohttp.web.run_app = _run_app
 try:
     runpy.run_module(FACADE, run_name="__main__", alter_sys=True)
 except SystemExit as exc:
     seen["exit"] = exc.code
 from kiro_crew.apps.builtins.md_notebook import server, syncer
-index = vars(server)[_facade_mirror.INDEX_ATTRIBUTE]
-seen["canonical"] = [type(server).__name__, list(index.divergent()), server.logger.name]
+seen["canonical"] = [type(server).__name__, server.logger.name]
 seen["syncer_reads_canonical"] = syncer.server is server
+seen["canonical_is_mirror"] = server is sys.modules[FACADE]
 print(json.dumps(seen))
 """
 
 
-def test_the_gateway_launch_installs_the_mirror_on_both_copies(tmp_path: Path) -> None:
+def test_the_gateway_launch_runs_one_copy_with_the_mirror(tmp_path: Path) -> None:
     """Run as ``__main__``, the facade installs the mirror before ``main()`` starts the
-    server, and the copy ``syncer`` imports installs it again over the same owners. Both
-    hold one object per name, ``logger`` included, and every record carries its name."""
+    server, and ``main()`` aliases the running copy under the canonical name so ``syncer``
+    imports that same object rather than loading a second copy. The launched copy holds one
+    mirror per name (``divergent()`` empty, ``logger`` included), and the whole process
+    shares one facade — so its locks, caches and token memo are process-wide."""
     env = dict(os.environ)
     env["HOME"] = str(tmp_path / "user")
     env["MD_NOTEBOOK_HOME"] = str(tmp_path / "home")
@@ -324,10 +336,11 @@ def test_the_gateway_launch_installs_the_mirror_on_both_copies(tmp_path: Path) -
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.splitlines()[-1]) == {
         "main": ["MirroredModule", [], FACADE],
-        "two_copies": True,
+        "one_copy_at_launch": True,
         "exit": 0,
-        "canonical": ["MirroredModule", [], FACADE],
+        "canonical": ["MirroredModule", FACADE],
         "syncer_reads_canonical": True,
+        "canonical_is_mirror": True,
     }
     assert f" {FACADE} INFO Notes backend starting on 127.0.0.1:" in out.stderr
 

@@ -235,9 +235,9 @@ describe('ErrorCard — member agent file changed', () => {
 })
 
 describe('ErrorCard — sibling capability refusals', () => {
-  const vars = { file: 'reviewer-private.json', project: '/work/reviewer-project', name: 'reviewer', button: i18nT('crewCapabilities.detach'), field: i18nT('pages.kiroCrewAgentsPage.built_from') }
+  const vars = { file: 'reviewer-private.json', project: '/work/reviewer-project', name: 'reviewer', field: i18nT('pages.kiroCrewAgentsPage.built_from') }
   const cases = [
-    { code: 'parent_identity_changed', copy: 'capabilities_parent_changed', button: 'open_capabilities' },
+    { code: 'parent_identity_changed', copy: 'capabilities_parent_changed', button: 'open_crewmate' },
     { code: 'foreign_private_copy', copy: 'capabilities_foreign_copy', button: 'open_crewmate' },
     { code: 'project_identity_changed', copy: 'capabilities_project_changed', button: null },
     { code: 'private_template_shadowed', copy: 'capabilities_template_shadowed', button: null },

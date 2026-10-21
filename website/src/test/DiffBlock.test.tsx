@@ -26,6 +26,33 @@ const simpleDiff = `--- a/file.ts
 +const c = 4
  const d = 5`
 
+const multiFileDiff = `diff --git a/alpha.ts b/alpha.ts
+--- a/alpha.ts
++++ b/alpha.ts
+@@ -1 +1 @@
+-old alpha
++new alpha
+diff --git a/beta.ts b/beta.ts
+--- a/beta.ts
++++ b/beta.ts
+@@ -1 +1 @@
+-old beta
++new beta`
+
+function expectMarkedSections(container: HTMLElement, bodySelector: string): HTMLElement[] {
+  const sections = [...container.querySelectorAll<HTMLElement>('[data-diff-section]')]
+  expect(sections).toHaveLength(2)
+  expect(sections.map(section => section.dataset.diffSection)).toEqual(['0', '1'])
+  expect(sections.every(section => section.classList.contains('contents'))).toBe(true)
+  expect(sections.map(section => section.querySelectorAll('[data-diffs-header]').length)).toEqual([1, 1])
+  expect(sections.map(section => section.querySelectorAll(bodySelector).length)).toEqual([1, 1])
+  expect(sections[0]).toHaveTextContent('alpha.ts')
+  expect(sections[0]).not.toHaveTextContent('beta.ts')
+  expect(sections[1]).toHaveTextContent('beta.ts')
+  expect(sections[1]).not.toHaveTextContent('alpha.ts')
+  return sections
+}
+
 /* Pierre owns the diff BODY: the rows, the gutters and the hunk folding are
  * painted inside a shadow root, behind a lazy chunk that only resolves once a
  * test awaits. The block's title row — filename, ± counts, and the Open /
@@ -55,6 +82,45 @@ describe('DiffBlock', () => {
   it('hides generating indicator when complete', () => {
     render(<DiffBlock code={simpleDiff} complete={true} />)
     expect(screen.queryByText('generating diff…')).not.toBeInTheDocument()
+  })
+
+  it('marks each file section around its header and streaming body', () => {
+    const { container } = render(<DiffBlock code={multiFileDiff} complete={false} />)
+    const sections = expectMarkedSections(container, '.pierre-plain')
+    expect(sections[0]).toHaveTextContent('-old alpha')
+    expect(sections[0]).not.toHaveTextContent('-old beta')
+    expect(sections[1]).toHaveTextContent('-old beta')
+    expect(sections[1]).not.toHaveTextContent('-old alpha')
+  })
+
+  it('marks each file section around its header and plain-mode body', () => {
+    localStorage.setItem('mc-diff-plain', '1')
+    const { container } = render(<DiffBlock code={multiFileDiff} complete={true} />)
+    const sections = expectMarkedSections(container, '.pierre-plain')
+    expect(sections[0]).toHaveTextContent('-old alpha')
+    expect(sections[0]).not.toHaveTextContent('-old beta')
+    expect(sections[1]).toHaveTextContent('-old beta')
+    expect(sections[1]).not.toHaveTextContent('-old alpha')
+  })
+
+  it('marks each file section around its header and normal Pierre body', async () => {
+    const { container } = render(<DiffBlock code={multiFileDiff} complete={true} />)
+    // Wait for the lazy Pierre chunk to replace both per-file stand-ins.
+    await waitFor(
+      () => expect(container.querySelectorAll('[data-diff-section] diffs-container')).toHaveLength(2),
+      { timeout: 5000 },
+    )
+    expectMarkedSections(container, 'diffs-container')
+  })
+
+  it('marks a one-file patch as one diff section', () => {
+    const { container } = render(<DiffBlock code={simpleDiff} complete={false} />)
+    const sections = [...container.querySelectorAll<HTMLElement>('[data-diff-section]')]
+    expect(sections).toHaveLength(1)
+    expect(sections[0].dataset.diffSection).toBe('0')
+    expect(sections[0]).toHaveClass('contents')
+    expect(sections[0].querySelectorAll('[data-diffs-header]')).toHaveLength(1)
+    expect(sections[0].querySelectorAll('.pierre-plain')).toHaveLength(1)
   })
 
   it('has copy button on hover', async () => {

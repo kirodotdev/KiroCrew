@@ -42,6 +42,7 @@ from collections.abc import Callable
 
 __all__ = [
     "build_loopback_opener",
+    "deadline_expired",
     "loopback_urlopen",
     "unix_socket_urlopen",
 ]
@@ -349,3 +350,19 @@ def loopback_urlopen(
                 # Stale socket file (gateway died / restarted TCP-only):
                 # connect never delivered anything, so TCP retry is safe.
     return build_loopback_opener().open(req, timeout=timeout)
+
+
+def deadline_expired(exc: BaseException) -> bool:
+    """Whether a failed gateway request ended on OUR read deadline, not the peer.
+
+    ``urllib`` surfaces a read timeout as ``TimeoutError`` (``socket.timeout``)
+    and a connect timeout wrapped in ``URLError.reason``; either means a gateway
+    is listening and may still be working, so a CLI must report it busy, not as
+    "not running". A refused connection (no ``TimeoutError`` in play) is the
+    only shape that means nothing is listening. This is the one supported
+    classifier for the ``except (urllib.error.URLError, OSError)`` arms at every
+    loopback call site -- it lives here, beside ``loopback_urlopen``, so no
+    caller re-derives it.
+    """
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, TimeoutError)

@@ -313,7 +313,7 @@ def _scan_raw_uncached(sid_for_stem: Mapping[str, str], *, strict: bool = False)
                     continue
                 uid = attribute(stem)
                 add_stem(uid, stem)
-                sids.setdefault(uid, sid_for_stem.get(stem, "") if uid != stem else "")
+                sids.setdefault(uid, "")
                 record(uid, st.st_size, st.st_mtime)
     except OSError:
         logger.debug("transcript store unreadable", exc_info=True)

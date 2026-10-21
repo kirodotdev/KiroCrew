@@ -483,10 +483,9 @@ def scrubbed(text: object, limit: int) -> str:
     if not raw or limit <= 0:
         return ""
     try:
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
-        cleaned, _ = redact_credentials(raw)
-        cleaned, _ = redact_exfiltration_urls(cleaned)
+        cleaned = redact(raw)
     except Exception:
         # A scan that did not complete cannot clear text for the wire. Dropping
         # the snippet is a worse question, not a worse outcome: the gate would

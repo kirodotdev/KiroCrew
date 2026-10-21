@@ -10,6 +10,7 @@ commits, a branch that does not track the remote).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import threading
@@ -228,6 +229,172 @@ class TestAutoApplyUpdateResetPath:
                         with patch("os.execv"):
                             with patch("shutil.which", return_value=None):
                                 await orch._auto_apply_update()
+
+    @staticmethod
+    async def _run_with_copy(
+        orch,
+        copy_result,
+        *,
+        status_out=b"",
+        added_out=b"",
+        project_dir="/tmp/proj",
+        status_after_copy=None,
+    ):
+        """Run the git apply with the shared memory copy stubbed; return spawns and copies.
+
+        The copy is recorded into the same list as every git spawn, so the order
+        between it and the reset is read off one sequence. ``status_after_copy``
+        is what `git status` reports once the copy has run, standing in for an
+        edit made while it ran.
+        """
+        events: list = []
+        copied = threading.Event()
+        before = _git_exec_fake(status_out=status_out, added_out=added_out, record=events)
+        after = _git_exec_fake(
+            status_out=status_out if status_after_copy is None else status_after_copy,
+            added_out=added_out,
+            record=events,
+        )
+
+        def _copy():
+            events.append(("memory-copy",))
+            copied.set()
+            return copy_result
+
+        async def _exec(*args, **kwargs):
+            return await (after if copied.is_set() else before)(*args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(project_dir)}),
+            patch("asyncio.create_subprocess_exec", side_effect=_exec),
+            patch(
+                "kiro_crew.platform.wheel_apply.snapshot_memory_before_update", side_effect=_copy
+            ),
+            patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0),
+            patch("kiro_crew.slack.gateway.build_frontend_async", AsyncMock()),
+            patch("os.execv"),
+            patch("shutil.which", return_value=None),
+        ):
+            await orch._auto_apply_update()
+        return [tuple(str(a) for a in e) for e in events]
+
+    @pytest.mark.asyncio
+    async def test_memory_is_copied_before_the_reset(self):
+        """The same copy `kirocrew update` takes lands before the tree is rewritten."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        events = await self._run_with_copy(orch, (1, ""))
+
+        resets = [i for i, e in enumerate(events) if e[1:3] == ("reset", "--hard")]
+        assert events.count(("memory-copy",)) == 1 and len(resets) == 1
+        assert events.index(("memory-copy",)) < resets[0]
+
+    @pytest.mark.asyncio
+    async def test_memory_copy_runs_before_the_last_moment_checks(self):
+        """A slow copy must not sit between the revalidation and the reset it guards."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        events = await self._run_with_copy(orch, (1, ""))
+
+        reset = next(i for i, e in enumerate(events) if e[1:3] == ("reset", "--hard"))
+        statuses = [i for i, e in enumerate(events[:reset]) if e[1:3] == ("status", "--porcelain")]
+        added = [
+            i
+            for i, e in enumerate(events[:reset])
+            if e[1:2] == ("diff",) and "--diff-filter=A" in e
+        ]
+        assert statuses and added
+        copy_at = events.index(("memory-copy",))
+        assert copy_at < statuses[-1]
+        assert copy_at < added[-1]
+
+    # Each refusal, driven with the fakes this class already uses. ``patches``
+    # are (target, return_value); ``run`` goes to `_run_with_copy`.
+    _REFUSALS = {
+        "ahead": ([("kiro_crew.slack.gateway.commits_ahead", 2)], {}),
+        "exec-config": (
+            [("kiro_crew.slack.gateway.repo_exec_config_reason", "core.fsmonitor is set")],
+            {},
+        ),
+        "dirty-status": ([], {"status_out": b" M file.py"}),
+        "hidden-edit": ([("kiro_crew.slack.gateway.hidden_worktree_edits", ["file.py"])], {}),
+        "untracked-collision": ([], {"added_out": b"newfile.txt\0"}),
+        "interpreter-floor": (
+            [
+                (
+                    "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
+                    "the incoming revision requires Python >=9.0",
+                )
+            ],
+            {},
+        ),
+    }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refusal", sorted(_REFUSALS))
+    async def test_every_refusal_runs_before_any_memory_copy(self, refusal, tmp_path):
+        """A checkout any check keeps refusing must not rotate backups every check."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+        (tmp_path / "newfile.txt").write_text("untracked\n")
+        patches, run = self._REFUSALS[refusal]
+
+        with contextlib.ExitStack() as stack:
+            for target, value in patches:
+                stack.enter_context(patch(target, return_value=value))
+            events = await self._run_with_copy(orch, (1, ""), project_dir=tmp_path, **run)
+
+        assert ("memory-copy",) not in events
+        assert not any(e[1:3] == ("reset", "--hard") for e in events)
+        orch._restart_after_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
+
+    @pytest.mark.asyncio
+    async def test_an_edit_made_during_the_copy_refuses_the_reset(self):
+        """The checks re-run after the copy, so a tree dirtied while it ran is kept."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        events = await self._run_with_copy(orch, (1, ""), status_after_copy=b" M file.py")
+
+        assert events.count(("memory-copy",)) == 1
+        assert not any(e[1:3] == ("reset", "--hard") for e in events)
+        orch._restart_after_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_memory_copy_skips_the_update_and_says_so(self):
+        """Nobody is watching: no reset, no exit, a notice and a failed progress line."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        events = await self._run_with_copy(orch, (0, "1 store(s) not copied"))
+
+        assert ("memory-copy",) in events
+        assert not any(e[1:3] == ("reset", "--hard") for e in events)
+        orch._restart_after_update.assert_not_awaited()
+        failed = [
+            c.args[1] for c in ds.push_update_progress.call_args_list if c.args[0] == "failed"
+        ]
+        assert len(failed) == 1 and "memory snapshot failed: 1 store(s) not copied" in failed[0]
+        assert "kirocrew memory backups" in failed[0]
+        ds.notify.assert_called_once()
+        assert ds.notify.call_args.args[:2] == ("update", "Kiro Crew update skipped")
 
     @pytest.mark.asyncio
     async def test_the_rewrite_owns_the_bundle_gap(self):

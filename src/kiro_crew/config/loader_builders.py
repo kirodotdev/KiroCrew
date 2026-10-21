@@ -540,6 +540,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         acp_backend=_read_backend_choice(section, agent_data, "acp_backend"),
         member_acp_backend=_read_backend_choice(section, agent_data, "member_acp_backend"),
         kas_bundle=section.read("kas_bundle", _safe_bool),
+        kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         default_agent=section.get("default_agent"),
         # Through the module alias rather than a new top-level import: the loader's
@@ -906,6 +907,15 @@ def _session_folder_root_or_empty(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _default_session_folder_or_empty(value: object) -> str:
+    """``dashboard.default_session_folder`` as a trimmed string; "" (unfiled) for a non-string.
+
+    Whether the value names a folder is decided at each create, against the
+    folder store, so a value that names none reads as unfiled there.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> DashboardConfig:
     section = _sections.SectionReader(DashboardConfig, dashboard_data)
     gitlab_hosts = _coerce_gitlab_hosts(section.get("gitlab_hosts"))
@@ -1005,6 +1015,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         terminal=section.get("terminal"),
         default_project=section.get("default_project"),
         session_folder_root=_session_folder_root_or_empty(section.get("session_folder_root")),
+        default_session_folder=_default_session_folder_or_empty(
+            section.get("default_session_folder")
+        ),
         theme_mode=section.get("theme_mode"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),

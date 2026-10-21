@@ -749,6 +749,20 @@ class DashboardConfig:
             "project. Empty = off; new chats use the default project.",
         ),
     )
+    # A folder ID, not a name or path, so renaming or moving the folder keeps it.
+    # Read at each create and ignored when the folder is gone, so a deleted or
+    # hand-edited value leaves new chats unfiled instead of refusing them.
+    default_session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Default Sidebar Folder for New Chats",
+            "ID of the sidebar folder that new dashboard chats are filed into when "
+            "they are started from New without choosing a folder. A chat started in "
+            "a specific folder still goes there, and every other create path, such "
+            "as apps, crons, channels and agents, keeps its own placement. Empty = "
+            "new chats are unfiled.",
+        ),
+    )
     theme_mode: str = field(
         default="",
         metadata=_meta(

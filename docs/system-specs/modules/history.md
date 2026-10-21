@@ -301,6 +301,15 @@ instead of a page that silently omits the archive.
 
 `dashboard/wire_render.py` keeps rendered row JSON in a process-local bounded
 LRU. Unfilled pages use `_prepare_messages`; a delayed worker fills their rows.
+Each memo entry records the page that last stored or read it. When the cap
+evicts an entry, a filled page that a read has used is forgotten, so its next
+read is `_prepare_messages` again and schedules a fresh fill instead of missing
+row by row. A fill the cap undoes before any read used it (the page lost a row
+while its own fill ran, or the reader cycles through more pages than the memo
+holds) marks the page plain for eight reads before it is filled again. A memo
+read digests the redaction context before and after its rows; when the context
+moved, every row the memo answered is rendered again against the live context,
+nothing from that read is stored and no row identity is issued.
 Filled pages reuse fragments only when the complete source row and render
 context match. The context reuses `_display_redaction_cache_key("")`, so changes
 to that key's redaction dependencies invalidate row fragments too. Workspace
@@ -435,7 +444,10 @@ permanent-delete lifecycle.
 A change card (`propose_change`) or a guide offer (`guide_start`) is part of the
 conversation, so it is a transcript row: `dashboard/chat_cards.py` appends ONE
 `card` row to the proposing slot when the agent-half propose/start route accepts
-it. The proposal is an MCP tool call of the running turn, so the row lands after
+it. A proposal identical to a card the same slot still has waiting (same kind, same
+params, pending or applying and not expired) is refused with `409 duplicate_card`
+naming the waiting card (`CardStore._open_duplicate`), so no row is written for it.
+The proposal is an MCP tool call of the running turn, so the row lands after
 that call's `tool` row and before the turn's later text, and the turn-end refresh
 keeps it there. The live frame is placed the same way client-side (ahead of the
 open streaming row, like a tool row), and the "tools finished" scan that runs when
@@ -1745,6 +1757,21 @@ and a caller deleting "the session" removes one half and leaves the other behind
 
 - `set_title(key, title)` — persists a title into the session's metadata line (first line of JSONL)
 
+### A crewmate's own DM thread is never auto-titled
+
+A slot with `mode == "member"` is one long-lived conversation with one
+crewmate, and the sidebar names its row after the crewmate (its display name,
+else its name), derived from the member binding at render time
+(`lib/memberThreadTitle.ts`). `chat_title.py` therefore skips it on
+every background path: `_maybe_auto_title`, the refresh (`_refresh_blocked`) and
+`generate_manual_title`, which answers `""`. Opening the thread
+(`POST /api/members/{slug}/thread`) stores the crewmate's display name as its
+title with origin `member` (`name_member_thread`; a title a person set, origin `user`, is kept, and a stored name follows a renamed crewmate on the next open),
+so the tab title and command palette read the same name. The Members page
+header and the chat page never draw a member thread's title row, so no rename
+or regenerate control exists for it there. Sessions a crewmate opens for its workers are
+ordinary slots and are titled as usual.
+
 ### Session titling is independent of `memory_mode`
 
 Auto-titling (`dashboard/chat_title.py:_maybe_auto_title`) runs for **every**
@@ -2498,7 +2525,7 @@ conversation is the chat. Any message, the user's or the crewmate's, can carry
 one.
 
 **Flag.** The feature ships behind `dashboard.crewmate_threads` (`config/sections_dashboard.py`,
-default `False`; editable from the dashboard, `handlers/core.py` `_EDITABLE_CONFIG`,
+default `False`; editable from the dashboard, `handlers/core_config_schema.py` `_EDITABLE_CONFIG`,
 and read live -- the config watcher's snapshot, else a load off the loop -- so a
 toggle takes effect on the next request without a restart). Off, the three routes
 below answer `404 {"error": "not found", "code": "slot_not_found"}` -- the same

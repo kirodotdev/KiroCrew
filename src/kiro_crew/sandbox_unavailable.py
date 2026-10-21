@@ -27,6 +27,7 @@ from kiro_crew.sandbox_probe import (
     _remedy_for_step,
 )
 from kiro_crew.sandbox_tiers import (
+    _CGROUP_AGENTS_SLICE,
     _IN_SANDBOX_MARKER,
     _SANDBOX_MODE_ALIASES,
     _STANDARD_DIRS,
@@ -411,14 +412,30 @@ def _classify_unavailable(transient: bool) -> str:
     return "foreign_sandbox" if _inside_macos_sandbox() else "no_backend"
 
 
-def agent_confinement_evidence() -> str | None:
+def agent_confinement_evidence(cgroup_path: str = "/proc/self/cgroup") -> str | None:
     """Evidence that THIS process runs under agent-shell confinement, or ``None``.
 
     The runtime half of the operator-attestation check used by authorization
     gates whose input must come from a human at a host terminal and never from
-    an agent-spawned process (the app dev-mode out-of-install confirmation).
+    an agent-spawned process (the app dev-mode out-of-install confirmation), and
+    the single confinement probe behind the signing-key ``"masked"`` state
+    (``token_secret.signing_key_health``, its doctor and boot-preflight callers).
     Returns a short human-readable reason when there is ANY evidence of
     confinement, ``None`` when there is none.
+
+    Three signals, each read in a way that survives the next one being absent:
+
+    * ``KIROCREW_SANDBOX_ACTIVE`` — exported only by the namespace launcher /
+      seatbelt env prefix. Cheap, but ``cli.main()`` pops it before any
+      subcommand, so it is an extra, never the sole signal a subcommand sees.
+    * the macOS kernel's Seatbelt verdict — the only cheap signal on Darwin,
+      which has no cgroup to read.
+    * on Linux, membership in the ``kirocrew-agents.slice`` cgroup scope that
+      ``cgroup_scope_argv`` places every agent process under. ``cli.main()``
+      cannot pop a cgroup, and ``/proc/self/cgroup`` cannot be edited from
+      inside, so this is the durable signal that outlives an environment scrub.
+      Matched against :data:`sandbox_cgroup._CGROUP_AGENTS_SLICE`, never a
+      literal, so a renamed slice moves in one place.
 
     Deny-direction only, and deliberately so: each signal is unforgeable *in
     the direction of refusal*. A present ``KIROCREW_SANDBOX_ACTIVE`` marker in
@@ -426,18 +443,59 @@ def agent_confinement_evidence() -> str | None:
     was forged or leaked — see :func:`_macos_sandbox_state`); a kernel verdict
     of "Seatbelt-confined" for a non-KiroCrew sandbox (kiro-cli's internal
     seatbelt, an operator-wrapped process) still means "not a bare operator
-    terminal", which is the question being asked. The converse is NOT
-    guaranteed: a ``None`` does not prove a human — an agent can strip the
-    marker with ``env -u``, and Linux offers no cheap kernel verdict — which
-    is why callers pair this with a structural probe of a sealed artifact
-    (``_CREW_READONLY_LEAVES``) that the OS sandbox denies regardless of the
-    environment. Never use this function to *grant* anything.
+    terminal", which is the question being asked. An unreadable or absent
+    ``/proc/self/cgroup`` yields no evidence, which is fail-safe here: it only
+    withholds the extra reason, never fabricates one, so a confined process is
+    never read as unconfined on the basis of this signal (the converse — a
+    ``None`` proving a human — is never claimed). That converse is NOT
+    guaranteed in general: a ``None`` does not prove a human — an agent can
+    strip the marker with ``env -u``, and off a cgroup host Linux offers no
+    cheap kernel verdict — which is why callers pair this with a structural
+    probe of a sealed artifact (``_CREW_READONLY_LEAVES``) that the OS sandbox
+    denies regardless of the environment. Never use this function to *grant*
+    anything.
     """
     if os.environ.get(_IN_SANDBOX_MARKER):
         return f"the {_IN_SANDBOX_MARKER} marker is set (agent-sandboxed process)"
     if _macos_sandbox_state() is True:
         return "the kernel reports this process is Seatbelt-confined"
+    # The single name for the slice is sandbox_tiers (beside _IN_SANDBOX_MARKER),
+    # a lower layer this module already depends on — never a literal.
+    try:
+        with open(cgroup_path, encoding="utf-8") as fh:
+            if _CGROUP_AGENTS_SLICE in fh.read():
+                return f"this process is in the {_CGROUP_AGENTS_SLICE} cgroup scope"
+    except OSError:
+        pass
     return None
+
+
+def agent_confinement_is_kirocrew_own(cgroup_path: str = "/proc/self/cgroup") -> bool:
+    """Whether THIS process is confined by Kiro Crew's OWN sandbox, specifically.
+
+    A strict subset of :func:`agent_confinement_evidence`: it reads only the two
+    signals that mean *Kiro Crew built this confinement* — the
+    ``KIROCREW_SANDBOX_ACTIVE`` marker and membership in the
+    ``kirocrew-agents.slice`` cgroup scope — and deliberately does NOT consult the
+    macOS Seatbelt verdict, which is true for ANY Seatbelt profile including one
+    Kiro Crew did not create (kiro-cli's own, an operator-wrapped process).
+
+    The signing-key ``"masked"`` state uses it to tell apart the two reasons the
+    key read is withheld: inside Kiro Crew's own sandbox the launcher masks the
+    key (unreadable where it can, but a *readable* empty stand-in on a Linux host
+    whose private-tmpfs mount failed), so the mask must be honoured regardless of
+    readability; whereas the Seatbelt-only case cannot prove the mask is ours, so
+    that path additionally requires the open to be refused. Fail-safe like its
+    sibling: an unreadable/absent cgroup file yields ``False`` (withholds the
+    stronger "ours" claim), never a spurious ``True``.
+    """
+    if os.environ.get(_IN_SANDBOX_MARKER):
+        return True
+    try:
+        with open(cgroup_path, encoding="utf-8") as fh:
+            return _CGROUP_AGENTS_SLICE in fh.read()
+    except OSError:
+        return False
 
 
 def _warn_mode_off_unconfined(argv: list[str], is_kiro_spawn: bool) -> None:
@@ -692,11 +750,12 @@ SandboxUnavailableError.__module__ = "kiro_crew.sandbox"
 #: Leading text of every line the Linux launcher writes when it ends WITHOUT
 #: exec'ing its child: ``_mount_or_die`` and the seccomp/prctl installs say
 #: ``sandbox: BLOCKED``, the two unshare steps say ``sandbox: unshare(``, a
-#: broken parent/child handshake or an unreadable ``known_hosts`` says
-#: ``sandbox: FATAL``, and a launcher invoked with no command says
-#: ``sandbox_launcher:``. The launcher is the only Kiro Crew code that writes
-#: a line shaped this way to a child's stderr, and it exits right after, so a
-#: refused child's captured output carries exactly one of these. Public because
+#: broken parent/child handshake, an unreadable ``known_hosts`` or a command
+#: the kernel will not exec says ``sandbox: FATAL``, and a launcher invoked
+#: with no command says ``sandbox_launcher:``. The launcher is the only Kiro
+#: Crew code that writes a line shaped this way to a child's stderr, and it
+#: exits right after, so a refused child's captured output carries exactly one
+#: of these. Public because
 #: it is the ONE definition every consumer keys on — :func:`launcher_refusal`
 #: here and the clone probe's exit classifier in
 #: ``apps/builtins/auto_improvement/backend/clone_setup.py`` — and each prefix
@@ -712,6 +771,15 @@ LAUNCHER_EXIT_PREFIXES = (
 _LAUNCHER_REFUSAL_RE = re.compile(
     r"^sandbox: (?:BLOCKED (?:--|—) )?(?P<what>.+?) failed: errno (?P<errno>\d+)"
 )
+#: The launcher's failed-exec line, ``sandbox: FATAL — cannot exec <command>
+#: (<reason>)``, matched against one line of stderr. The sandbox was built and the
+#: command did not start inside it, so no reader takes the line for a refusal:
+#: :func:`launcher_refusal` returns ``None`` for it, and the worktree handler in
+#: ``dashboard/handlers/worktree.py`` reads it as git's own failure. Both match it
+#: before reading anything else in the line, because the command's path can hold any
+#: words. The dash is any one token: the launcher inherits the gateway's locale, and
+#: where stderr is not UTF-8 the dash arrives as the escape for U+2014.
+LAUNCHER_EXEC_FAILURE_RE = re.compile(r"^sandbox: FATAL \S+ cannot exec ")
 
 
 def launcher_refusal(output: str) -> tuple[str, str, str] | None:
@@ -756,7 +824,9 @@ def launcher_refusal(output: str) -> tuple[str, str, str] | None:
       host and self-heals on the next spawn.
     * A refusal about HOST STATE is NOT a sandbox failure at all — a hardlinked
       credential, an unreadable ``known_hosts``: the sandbox worked and found
-      something it must not paper over. Reported as ``None`` so the launcher's
+      something it must not paper over. A command the kernel will not exec is
+      the same kind: the sandbox was built, and the command is missing or not
+      executable inside it. Reported as ``None`` so the launcher's
       line reaches the operator as the child's own complaint, which names the
       file to fix. A launcher invoked with no command (``sandbox_launcher:``)
       is the caller's defect, ``None`` for the same reason. Advisory
@@ -769,6 +839,10 @@ def launcher_refusal(output: str) -> tuple[str, str, str] | None:
         if line.startswith("sandbox_launcher:"):
             return None
         if line.startswith("sandbox: FATAL"):
+            # A failed exec's line carries the command's own path, which can hold any
+            # words, the handshake's among them, so that line is matched first.
+            if LAUNCHER_EXEC_FAILURE_RE.match(line):
+                return None
             return ("transient", line, "") if "did not publish" in line else None
         if "hardlink" in line:
             return None

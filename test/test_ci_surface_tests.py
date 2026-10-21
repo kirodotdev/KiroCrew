@@ -345,7 +345,7 @@ def test_own_surface_config_references_stay_single_surface(selector, tmp_path) -
 # ---------------------------------------------------------------------------
 #
 # The reduced target list is passed to pytest as EXPLICIT file arguments, and an
-# explicit argument bypasses conftest's Windows `collect_ignore`. So a POSIX-only
+# explicit argument bypasses conftest's Windows ignore hook. So a POSIX-only
 # suite that reaches this list gets collected on the Windows shards and fails
 # there -- on every diff that takes the reduced scope, which is any
 # frontend-only diff. The suites below are the ones observed failing that way.
@@ -378,7 +378,7 @@ def test_ignore_list_exists_and_is_non_empty() -> None:
 def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     """The extraction into a file must be lossless.
 
-    conftest's `collect_ignore` branch only executes on Windows, so a parsing
+    conftest applies the list only on Windows, so a parsing
     typo here would silently re-enable a suite that fails at import on win32 and
     would not be caught on a POSIX dev machine. Pin the exact set.
 
@@ -507,7 +507,7 @@ def test_every_ignored_suite_exists() -> None:
 def test_conftest_and_selector_read_the_same_ignore_list(selector) -> None:
     """One file, two readers -- so the two cannot drift apart.
 
-    conftest builds `collect_ignore` from it for the recursive path; the selector
+    conftest's ignore hook reads it for the recursive path; the selector
     filters it out of the explicit-argument path. If a future change re-inlines
     either copy, this fails.
     """
@@ -564,10 +564,12 @@ def test_missing_ignore_list_fails_open(selector, tmp_path) -> None:
 def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
     """Why the filter lives in the selector and not only in conftest.
 
-    pytest honours `collect_ignore` when it RECURSES into a directory and ignores
-    it when the file is named on the command line. That asymmetry is the entire
-    bug, so pin it: if a future pytest starts honouring `collect_ignore` for
-    explicit arguments, this fails and the selector-side filter can be dropped.
+    pytest honours a conftest's `collect_ignore` list, and its
+    ``pytest_ignore_collect`` hook -- the form ``test/conftest.py`` applies the
+    platform list through -- when it RECURSES into a directory, and neither when the
+    file is named on the command line. That asymmetry is the entire bug, so pin it
+    for both forms: if a future pytest starts honouring either for explicit
+    arguments, this fails and the selector-side filter can be dropped.
     """
     import os
     import subprocess
@@ -575,10 +577,14 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
 
     suite = tmp_path / "t"
     suite.mkdir()
-    (suite / "conftest.py").write_text('collect_ignore = ["test_boom.py"]\n', encoding="utf-8")
-    (suite / "test_boom.py").write_text(
-        'raise RuntimeError("import-time failure")\n', encoding="utf-8"
+    (suite / "conftest.py").write_text(
+        'collect_ignore = ["test_boom.py"]\n\n\n'
+        "def pytest_ignore_collect(collection_path, config):\n"
+        "    return True if collection_path.name == 'test_boom_hook.py' else None\n",
+        encoding="utf-8",
     )
+    for name in ("test_boom.py", "test_boom_hook.py"):
+        (suite / name).write_text('raise RuntimeError("import-time failure")\n', encoding="utf-8")
     (suite / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
     def run(*target: str) -> int:
@@ -612,11 +618,12 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
             encoding="utf-8",
         ).returncode
 
-    assert run(str(suite)) == 0, "recursive collection should honour collect_ignore"
-    assert run(str(suite / "test_boom.py")) != 0, (
-        "explicit argument now honours collect_ignore -- the selector-side "
-        "filter may no longer be required"
-    )
+    assert run(str(suite)) == 0, "recursive collection should honour both ignore forms"
+    for name in ("test_boom.py", "test_boom_hook.py"):
+        assert run(str(suite / name)) != 0, (
+            f"explicit argument {name} is now ignored -- the selector-side "
+            "filter may no longer be required"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -632,9 +639,9 @@ def _seed(path: Path, text: str) -> None:
 def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> None:
     """The ignore list governs ``test/`` only, so the filter must too.
 
-    The list holds BARE filenames and ``test/conftest.py`` resolves its
-    ``collect_ignore`` entries relative to its own directory -- so the exclusion
-    covers ``test/<name>`` and nothing else. Matching the emitted paths on their
+    The list holds BARE filenames and ``test/conftest.py``'s ignore hook matches a
+    listed name only directly under ``test/`` -- so the exclusion covers
+    ``test/<name>`` and nothing else. Matching the emitted paths on their
     basename instead also drops a same-named suite under ``transfer/`` or the
     apps-builtins tree, which no conftest excludes and Windows collects fine.
     That is a silently skipped cross-surface guard, which is the one outcome
@@ -668,7 +675,7 @@ def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> Non
     ), "the POSIX-only suite conftest names must still be filtered out"
     assert app_suite in selected, (
         "a same-named suite outside test/ is not covered by conftest's "
-        f"collect_ignore and must keep running on Windows; got {selected}"
+        f"ignore hook and must keep running on Windows; got {selected}"
     )
 
 

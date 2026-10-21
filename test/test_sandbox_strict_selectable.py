@@ -79,7 +79,7 @@ class TestStrictIsSelectable:
     def test_the_dashboard_schema_offers_the_same_tiers_as_the_config_schema(self) -> None:
         """Settings and the CLI must never disagree about which tiers exist.
 
-        ``dashboard/handlers/core.py`` hand-maintains its own ``_EDITABLE_CONFIG``
+        ``dashboard/handlers/core_config_schema.py`` hand-maintains its own ``_EDITABLE_CONFIG``
         enum for ``agent.sandbox``; a tier admitted on one surface and refused on
         the other is the drift this pins against.
         """

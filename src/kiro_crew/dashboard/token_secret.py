@@ -93,7 +93,10 @@ def signing_key_remedy(key_path: "Path", restart: str) -> "list[str]":
 
 
 def signing_key_health(
-    key_path: "Path | None" = None, *, confined: bool = False
+    key_path: "Path | None" = None,
+    *,
+    confined: bool = False,
+    require_denied_open: bool = False,
 ) -> "tuple[str, Path]":
     """Read-only look at the persisted signing key: ``(state, path)``.
 
@@ -115,22 +118,34 @@ def signing_key_health(
       real load and refuses only when that load answers ``"short"``; an
       ephemeral fallback boots on the loader's WARNING and doctor reports it;
     * ``"masked"``: this process runs inside a Kiro Crew agent sandbox, where the
-      launcher bind-mounts an EMPTY file over the key (on macOS, denies the
-      ``lstat``), so the size seen here says nothing about the real file. Reading
-      the mask as ``"short"`` would hand an operator a remedy that deletes a
-      healthy key by hand, so the answer is keyed on evidence that the PROCESS
-      is confined, never on the file's shape alone: on Linux the process's cgroup is under
-      ``kirocrew-agents.slice``, and the caller may pass *confined* for evidence
-      this module does not probe itself (``kirocrew doctor`` passes the macOS
-      kernel's Seatbelt verdict from ``sandbox.agent_confinement_evidence``). The
-      launcher's ``KIROCREW_SANDBOX_ACTIVE`` marker counts too, but only as an
-      extra: ``cli.main()`` pops it before any subcommand runs. A file on another
+      launcher masks the key so the size seen here says nothing about the real
+      file. Reading the mask as ``"short"`` would hand an operator a remedy that
+      deletes a healthy key by hand, so the answer is keyed on confinement, with
+      the readability of the leaf consulted only where it has to be. The caller
+      passes two bits (this module keeps ``kiro_crew.sandbox`` off its import
+      chain): *confined* — any confinement evidence from the single probe — and
+      *require_denied_open*. Inside Kiro Crew's OWN sandbox (the
+      ``KIROCREW_SANDBOX_ACTIVE`` marker on any OS, or the
+      ``kirocrew-agents.slice`` cgroup on Linux) the key IS masked, so *confined*
+      alone answers ``"masked"`` regardless of readability — the Linux mask falls
+      back to a READABLE empty stand-in when its private-tmpfs mount fails, and a
+      gate on the open being refused would then misread a healthy masked key as
+      ``"short"``. The caller sets *require_denied_open* only when the sole
+      confinement signal is the macOS kernel's Seatbelt verdict
+      (``agent_confinement_is_kirocrew_own()`` is false): that verdict is true for
+      a sandbox Kiro Crew did not create (kiro-cli's own Seatbelt, an
+      operator-wrapped process) which can leave the real key readable, so
+      ``"masked"`` there additionally requires the open to be refused (the
+      Kiro Crew macOS mask denies it; a foreign one may not), and a readable short
+      key under a foreign sandbox falls through to its real size and is refused.
+      A file on another
       device from its directory is NOT evidence on its own: an operator can mount
       a filesystem at the key leaf on a host, and reading that as a mask would
       withhold the refusal from a truncated key there.
 
-    Never creates, moves or reads the key bytes: ``lstat`` only, so asking the
-    question from ``doctor`` or a boot preflight has no side effect.
+    Never creates, moves or reads the key bytes: ``lstat`` plus (for the
+    Seatbelt-only case) a byte-free, symlink-safe ``open`` probe only, so asking
+    the question from ``doctor`` or a boot preflight has no side effect.
     """
     if key_path is None:
         # Local import for the same reason _load_or_create_secret has one:
@@ -139,7 +154,20 @@ def signing_key_health(
         from kiro_crew.config.loader import config_dir
 
         key_path = config_dir() / _SECRET_KEY_FILE
-    if confined or _inside_agent_sandbox():
+    if confined and (not require_denied_open or open_is_denied(key_path)):
+        # "masked" when the process is confined. Inside Kiro Crew's OWN sandbox
+        # (the marker or the kirocrew-agents.slice cgroup) the launcher has masked
+        # this leaf, so the size seen here says nothing about the real key — honour
+        # that regardless of readability, because the Linux mask falls back to a
+        # READABLE empty stand-in when its private-tmpfs mount fails
+        # (sandbox_launcher_program: "the caller falls back to the readable empty
+        # mask"). When the ONLY confinement signal is the macOS Seatbelt verdict,
+        # the caller sets require_denied_open=True: that verdict is true for ANY
+        # Seatbelt profile, including a sandbox Kiro Crew did not create that can
+        # leave the real key readable, so "masked" there additionally requires the
+        # open to be refused — the Kiro Crew macOS mask denies it, a foreign one
+        # may not, and a readable short key under a foreign sandbox then falls
+        # through to the lstat classification and is refused as "short".
         return "masked", key_path
     try:
         info = os.lstat(key_path)
@@ -172,26 +200,6 @@ def open_is_denied(key_path: Path) -> bool:
         return False
     os.close(fd)
     return False
-
-
-def _inside_agent_sandbox(cgroup_path: str = "/proc/self/cgroup") -> bool:
-    """Confinement evidence that survives an environment scrub.
-
-    The launcher-only ``KIROCREW_SANDBOX_ACTIVE`` marker is checked first because
-    it is cheap and, in the direction of refusal, harmless when forged (an
-    over-answer of ``"masked"`` withholds a remedy, never hands one out). It is
-    not sufficient: ``cli.main()`` removes it before dispatch. On Linux every
-    agent process is placed under ``kirocrew-agents.slice`` by the sandbox
-    launcher, and ``/proc/self/cgroup`` cannot be edited from inside, so that
-    membership is the durable signal.
-    """
-    if os.environ.get("KIROCREW_SANDBOX_ACTIVE"):
-        return True
-    try:
-        with open(cgroup_path, encoding="utf-8") as fh:
-            return "kirocrew-agents.slice" in fh.read()
-    except OSError:
-        return False
 
 
 # The staging directory and its validator live in ``kiro_crew.hidden_leaf_staging`` so

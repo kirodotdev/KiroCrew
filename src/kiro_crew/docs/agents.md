@@ -115,11 +115,11 @@ What differs from a JSON agent:
 
 ## Managing Agents
 
-**Customize → Crewmates** shows your crewmates; select one and open its **Built from** pane to see its definition — model, system prompt, skills, tools, and MCP servers. Drop a new JSON or markdown file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Customize.
+**Customize → Custom agents** lists every agent definition and is where one is edited — model, system prompt, skills and tools. A crewmate's editor (**Customize → Crewmates**, or the Crewmates page) shows the agent it is built from in its **Built from** section, read-only: a crewmate does not own that definition, so editing it there would change every crewmate built from the same agent. Drop a new JSON or markdown file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Customize.
 
 ## Mapping Skills to an Agent
 
-Each agent template can be given its own set of [skills](skills.md). Open **Customize → Crewmates**, select a crewmate, open its **Built from** pane, and use the **Skills** section to add or remove them. Every edit saves immediately.
+Each agent template can be given its own set of [skills](skills.md). Open **Customize → Custom agents**, select the agent, and use its **Skills** section to add or remove them. Every edit saves immediately.
 
 Under the hood a mapped skill is a `skill://` entry in the agent's `resources`. Kiro Crew reads that entry to scope the agent's skill directory and its `skill_search`/read access; it does not rely on the native backend loading `skill://` resources. Native launch views carry no `skill://` resources (see `src/kiro_crew/acp/skill_projection_parts/preparation.py`), and Kiro Crew supplies the skill directory itself:
 

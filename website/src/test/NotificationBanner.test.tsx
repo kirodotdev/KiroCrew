@@ -14,7 +14,8 @@ import { createRef } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationBanner, { computeExitDelta, exitTarget } from '../components/notifications/NotificationBanner'
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
-import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
+import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
+import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
 import type { RootState } from '../store'
 import { setActiveId } from '../store/instancesSlice'
 import { LocalOverlayRoot } from '../components/overlayRoot'
@@ -232,6 +233,39 @@ describe('shouldBannerNote / targetsCurrentView (pure)', () => {
     expect(targetsCurrentView(mkN({ url: '/schedule?job=1' }), { pathname: '/schedule', activeSlot: null, windowFocused: true })).toBe(true)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/schedule', activeSlot: null, windowFocused: false })).toBe(false)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/settings', activeSlot: null, windowFocused: true })).toBe(false)
+  })
+  it("treats a crewmate's message as on screen only while its own thread is", () => {
+    const ada = mkN({ channel: MEMBER_MESSAGE_CHANNEL, kind: 'agent', slot: 'member-ada', url: '/members?member=Ada', member: { slug: 'ada', name: 'Ada' } })
+    const onMembers = { pathname: '/members', activeSlot: null, windowFocused: true }
+    expect(targetsCurrentView(ada, { ...onMembers, viewedThread: 'member-ada' })).toBe(true)
+    // Another crewmate's thread, or the page with no thread open: the route
+    // alone is not this message's view, so it still banners.
+    expect(targetsCurrentView(ada, { ...onMembers, viewedThread: 'member-bo' })).toBe(false)
+    expect(targetsCurrentView(ada, { ...onMembers, viewedThread: null })).toBe(false)
+    expect(targetsCurrentView(ada, { ...onMembers, viewedThread: 'member-ada', windowFocused: false })).toBe(false)
+    // The same thread open as a chat is on screen through the chat rule.
+    expect(targetsCurrentView(ada, { pathname: '/chat', activeSlot: 'member-ada', windowFocused: true })).toBe(true)
+    // Any other note keeps the route rule.
+    expect(targetsCurrentView(mkN({ url: '/members?member=Ada' }), { ...onMembers, viewedThread: 'member-bo' })).toBe(true)
+  })
+})
+
+describe("NotificationBanner: a crewmate's message", () => {
+  afterEach(() => { _resetViewedThreadForTests() })
+  const adaNote = () => mkN({ channel: MEMBER_MESSAGE_CHANNEL, kind: 'agent', slot: 'member-ada', url: '/members?member=Ada', title: 'Ada' })
+
+  it('banners on the Members page while another thread is open', () => {
+    renderBanner({ route: '/members' })
+    setViewedThreadSlot('member-bo')
+    arrive(adaNote())
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('stays in the bell while its own thread is open', () => {
+    renderBanner({ route: '/members' })
+    setViewedThreadSlot('member-ada')
+    arrive(adaNote())
+    expect(cards()).toHaveLength(0)
   })
 })
 

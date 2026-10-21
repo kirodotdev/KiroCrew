@@ -114,11 +114,11 @@ test.describe('Capabilities Page — /capabilities', () => {
       // The editor is a rail plus one pane, so removal lives on its own pane and
       // the button is not mounted until that pane is showing. This is the click a
       // user makes; without it the button below is simply absent.
-      await editSheet.getByTestId('crew-rail-danger').click()
+      await editSheet.getByTestId('next-rail-danger').click()
       await editSheet.getByRole('button', { name: 'Delete crewmate', exact: true }).click()
       // Delete is a two-step confirm: the first press only arms it, so without
       // this second press the sheet never closes and the delete never happens.
-      await editSheet.getByTestId('confirm-delete-crew').click()
+      await editSheet.getByTestId('next-confirm-delete-crew').click()
 
       await expect(editSheet).toBeHidden({ timeout: 10000 })
       await expect(card).toHaveCount(0, { timeout: 10000 })

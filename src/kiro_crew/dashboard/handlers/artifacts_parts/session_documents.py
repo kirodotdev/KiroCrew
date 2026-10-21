@@ -34,7 +34,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     logger,
 )
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_with_identity, stat_identity
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path
 
 
 def _collect_session_docs(
@@ -150,8 +150,9 @@ def _scan_session_docs(
     """
 
     def _redact(text: str) -> str:
-        cleaned, _ = redact_credentials(text or "")
-        cleaned, _ = redact_exfiltration_urls(cleaned)
+        from kiro_crew.security import redact
+
+        cleaned = redact(text or "")
         return cleaned
 
     out = _collect_session_docs(conversation_log, saved_map, session_key)
@@ -323,8 +324,9 @@ async def api_artifact_session_docs(request: web.Request) -> web.Response:
     try:
         docs = await _run_off_loop(work)
     except Exception as exc:  # noqa: BLE001 — audit + redacted 500 on any scan/list failure
-        _rc, _ = redact_credentials(str(exc))
-        safe_err, _ = redact_exfiltration_urls(_rc)
+        from kiro_crew.security import redact
+
+        safe_err = redact(str(exc))
         _audit(
             tool="artifact_session_docs",
             request=request,
@@ -374,8 +376,9 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
     path = path.strip()
     # Redacted copy for audit/error metadata — never emit a raw (LLM-influenced)
     # path into the SEL audit log (credential/exfiltration redaction rule).
-    _rc, _ = redact_credentials(path)
-    audit_path, _ = redact_exfiltration_urls(_rc)
+    from kiro_crew.security import redact
+
+    audit_path = redact(path)
     clog = getattr(state, "conversation_log", None)
     if clog is None:
         _audit(

@@ -21,8 +21,6 @@ if TYPE_CHECKING:
         _is_slack_ts,
         _sel,
         logger,
-        redact_credentials,
-        redact_exfiltration_urls,
     )
 
 
@@ -92,8 +90,9 @@ async def api_slack_pins(request: web.Request) -> web.Response:
             # it to the caller (same output contract as send_message).
             pins = await slack.list_pins(channel)
             for pin in pins:
-                safe_text, _ = redact_credentials(pin.get("text", ""))
-                safe_text, _ = redact_exfiltration_urls(safe_text)
+                from kiro_crew.security import redact
+
+                safe_text = redact(pin.get("text", ""))
                 pin["text"] = safe_text
             result["pins"] = pins
         _sel().log_tool_invocation(
@@ -107,8 +106,9 @@ async def api_slack_pins(request: web.Request) -> web.Response:
         )
         return web.json_response(result)
     except Exception as e:
-        safe_error, _ = redact_credentials(str(e))
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        from kiro_crew.security import redact
+
+        safe_error = redact(str(e))
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -195,8 +195,9 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True})
     except Exception as e:
-        safe_error, _ = redact_credentials(str(e))
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        from kiro_crew.security import redact
+
+        safe_error = redact(str(e))
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -232,7 +233,7 @@ def _missing_scope_message(needed: str) -> str:
 
 async def api_slack_profile(request: web.Request) -> web.Response:
     """POST /api/slack-profile — read a Slack user's profile."""
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.security import redact
     from kiro_crew.validation import USER_ID_RE  # noqa: F811
 
     state: DashboardState = request.app["state"]
@@ -250,8 +251,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     # Validate format first, then redact (#2)
     if not USER_ID_RE.match(user_id):
         return web.json_response({"error": "invalid user ID format"}, status=400)
-    user_id, _ = redact_exfiltration_urls(user_id)
-    user_id, _ = redact_credentials(user_id)
+    user_id = redact(user_id)
 
     # Authorization first (deny-by-default) — reject before any side effects
     from kiro_crew.slack.handler import is_allowed_user  # noqa: F811
@@ -315,8 +315,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
                     downstream_service="slack",
                     resources=f"user={user_id} reason=missing_scope needed={needed}",
                 )
-                needed, _ = redact_credentials(needed)
-                needed, _ = redact_exfiltration_urls(needed)
+                needed = redact(needed)
                 return web.json_response({"error": _missing_scope_message(needed)}, status=403)
         logger.exception("slack-profile: failed for %s", user_id)
         _sel().log_tool_invocation(
@@ -332,8 +331,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     for key in list(profile):
         val = profile[key]
         if isinstance(val, str) and key not in ("id",):
-            val, _ = redact_exfiltration_urls(val)
-            val, _ = redact_credentials(val)
+            val = redact(val)
             profile[key] = val
 
     _sel().log_tool_invocation(

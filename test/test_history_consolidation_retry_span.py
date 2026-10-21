@@ -16,6 +16,7 @@ import pytest
 from history_consolidation_retry_helpers import (
     KEY,
     _make_consolidator,
+    _off_loop,
     _seed_log,
     _span,
     _total,
@@ -76,7 +77,8 @@ class TestRotationDoesNotClearACappedBudget:
     @pytest.mark.asyncio
     async def test_a_generation_change_retains_the_capped_state(self, tmp_path):
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
+
+        def _write() -> None:
             log.update_metadata(
                 KEY,
                 {
@@ -88,6 +90,8 @@ class TestRotationDoesNotClearACappedBudget:
             # The caller's snapshot generation (2) does not match, so
             # mark_consolidated resets the offset to 0 instead of applying it.
             log.mark_consolidated(KEY, 3, 2)
+
+        await _off_loop(_write)
 
         meta = log.get_metadata(KEY)
         assert meta["last_consolidated"] == 0
@@ -101,7 +105,8 @@ class TestRotationDoesNotClearACappedBudget:
     async def test_an_offset_beyond_the_message_count_retains_the_capped_state(self, tmp_path):
         """The count fallback also resets to 0 without advancing the marker."""
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
+
+        def _write() -> None:
             log.update_metadata(
                 KEY,
                 {
@@ -111,6 +116,8 @@ class TestRotationDoesNotClearACappedBudget:
             )
             log.mark_consolidated(KEY, 999, 0)
 
+        await _off_loop(_write)
+
         assert log.get_metadata(KEY)["last_consolidated"] == 0
         assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS
 
@@ -118,7 +125,8 @@ class TestRotationDoesNotClearACappedBudget:
     async def test_an_applied_offset_still_releases_the_budget(self, tmp_path):
         """The success path is unchanged: a marked span drops its accounting."""
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
+
+        def _write() -> None:
             log.update_metadata(
                 KEY,
                 {
@@ -130,6 +138,8 @@ class TestRotationDoesNotClearACappedBudget:
                 },
             )
             log.mark_consolidated(KEY, 3, 0)
+
+        await _off_loop(_write)
 
         meta = log.get_metadata(KEY)
         assert meta["last_consolidated"] == 3
@@ -169,8 +179,8 @@ class TestRotationReleasesTheBudgetForNewContent:
     @pytest.mark.asyncio
     async def test_a_new_generation_gets_a_fresh_budget(self, tmp_path):
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
+        await _off_loop(
+            lambda: log.update_metadata(
                 KEY,
                 {
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
@@ -180,6 +190,7 @@ class TestRotationReleasesTheBudgetForNewContent:
                     "rotation_generation": 1,
                 },
             )
+        )
 
         assert log.consolidation_retry_state(KEY)[0] == 0, (
             "a capped count from an archived span disabled consolidation for "
@@ -191,8 +202,8 @@ class TestRotationReleasesTheBudgetForNewContent:
     async def test_the_same_span_stays_capped(self, tmp_path):
         """No free attempt while the span is unchanged."""
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
+        await _off_loop(
+            lambda: log.update_metadata(
                 KEY,
                 {
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
@@ -201,6 +212,7 @@ class TestRotationReleasesTheBudgetForNewContent:
                     "consolidation_attempts_offset": 0,
                 },
             )
+        )
 
         assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS
         assert (
@@ -211,8 +223,8 @@ class TestRotationReleasesTheBudgetForNewContent:
     async def test_a_fresh_budget_still_waits_out_the_backoff(self, tmp_path):
         """A new span is not a free immediate turn on a host that keeps failing."""
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
+        await _off_loop(
+            lambda: log.update_metadata(
                 KEY,
                 {
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
@@ -222,6 +234,7 @@ class TestRotationReleasesTheBudgetForNewContent:
                     "rotation_generation": 1,
                 },
             )
+        )
 
         assert log.consolidation_retry_state(KEY)[0] == 0
         assert _make_consolidator(log).retry_eligible(KEY) is False
@@ -230,8 +243,8 @@ class TestRotationReleasesTheBudgetForNewContent:
     async def test_unstamped_accounting_keeps_the_cap(self, tmp_path):
         """Unknown provenance must fail closed, not grant unbounded retries."""
         log = _seed_log(tmp_path)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
+        await _off_loop(
+            lambda: log.update_metadata(
                 KEY,
                 {
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
@@ -239,6 +252,7 @@ class TestRotationReleasesTheBudgetForNewContent:
                     "rotation_generation": 7,
                 },
             )
+        )
 
         assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS
 
@@ -252,7 +266,8 @@ class TestRotationReleasesTheBudgetForNewContent:
         """
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        with history_mod.allow_on_loop_persist():
+
+        def _plant_and_rotate() -> None:
             log.update_metadata(
                 KEY,
                 {
@@ -274,10 +289,11 @@ class TestRotationReleasesTheBudgetForNewContent:
             rows_to_rotate = (_SESSION_MAX_BYTES // len(row)) + 4
             for i in range(rows_to_rotate):
                 log.append(KEY, "user", f"{i}:{row}")
+
+        await _off_loop(_plant_and_rotate)
         assert log.get_metadata(KEY)["rotation_generation"] >= 1, "no rotation fired"
 
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+        await _off_loop(lambda: log.update_metadata(KEY, {"consolidation_retry_at": 0.0}))
         assert (
             c.retry_eligible(KEY) is True
         ), "a rotation left the session permanently unable to consolidate"
@@ -325,11 +341,13 @@ class TestARotationDuringTheTurnStampsTheAttemptedSpan:
         """An LLM turn that rotates the transcript, then fails."""
 
         async def _turn(*_a, **_kw):
-            with history_mod.allow_on_loop_persist():
+            def _rotate() -> None:
                 # Blow the byte budget so the real _maybe_rotate archives the
                 # attempted messages and bumps the generation mid-turn.
                 for i in range(5):
                     log.append(KEY, "user", f"{i}" * _OVER_CAP_ROW_CHARS)
+
+            await _off_loop(_rotate)
             assert (
                 log.get_metadata(KEY)["rotation_generation"] >= 1
             ), "premise broken: no rotation fired during the turn"
@@ -398,7 +416,8 @@ class TestForeignWritersCannotEraseTheAccounting:
     async def test_a_compaction_preserves_the_retry_accounting(self, tmp_path):
         log = _seed_log(tmp_path)
         deadline = time.time() + 3600
-        with history_mod.allow_on_loop_persist():
+
+        def _write() -> None:
             log.update_metadata(
                 KEY,
                 {
@@ -410,6 +429,8 @@ class TestForeignWritersCannotEraseTheAccounting:
                 },
             )
             log.rewrite_session(KEY, log._read_messages(KEY)[-1:])
+
+        await _off_loop(_write)
 
         attempts, retry_at = log.consolidation_retry_state(KEY)
         assert attempts == 3, "a compaction reset the backoff and re-billed the span"
@@ -677,10 +698,10 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
     session's history would never be consolidated again.
     """
 
-    def _plant_capped(self, log, count: int | None = None, retry_at: float = -1.0):
+    async def _plant_capped(self, log, count: int | None = None, retry_at: float = -1.0):
         """A span charged to the cap whose abandon-marker write did not land."""
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
+        await _off_loop(
+            lambda: log.update_metadata(
                 KEY,
                 {
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
@@ -692,6 +713,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
                     "consolidation_attempts_count": (_total(log) if count is None else count),
                 },
             )
+        )
 
     @pytest.mark.asyncio
     async def test_a_charged_attempt_records_the_spans_extent(self, tmp_path):
@@ -715,8 +737,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
         c = _make_consolidator(log)
 
         async def _append_then_fail(_prompt, *, memory_store: str = "", session_key: str = ""):
-            with history_mod.allow_on_loop_persist():
-                log.append(KEY, "user", "arrived mid-turn")
+            await _off_loop(lambda: log.append(KEY, "user", "arrived mid-turn"))
             return None
 
         with patch.object(c, "_call_llm", AsyncMock(side_effect=_append_then_fail)):
@@ -734,7 +755,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
     async def test_a_capped_span_with_no_growth_stays_ineligible(self, tmp_path):
         """An unchanged failing span cannot burn forever."""
         log = _seed_log(tmp_path)
-        self._plant_capped(log)
+        await self._plant_capped(log)
 
         assert log.consolidation_retry_state(KEY, _total(log))[0] == (_CONSOLIDATION_MAX_ATTEMPTS)
         assert _eligible(_make_consolidator(log), log) is False
@@ -743,11 +764,10 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
     async def test_transcript_growth_releases_the_cap(self, tmp_path):
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        self._plant_capped(log)
+        await self._plant_capped(log)
         assert _eligible(c, log) is False
 
-        with history_mod.allow_on_loop_persist():
-            log.append(KEY, "user", "arrived after the cap")
+        await _off_loop(lambda: log.append(KEY, "user", "arrived after the cap"))
 
         assert log.consolidation_retry_state(KEY, _total(log))[0] == 0, (
             "one failed abandon write refused every message the session will " "ever write again"
@@ -758,9 +778,8 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
     async def test_growth_still_waits_out_the_armed_backoff(self, tmp_path):
         """A fresh budget is not a free immediate turn."""
         log = _seed_log(tmp_path)
-        self._plant_capped(log, retry_at=3600.0)
-        with history_mod.allow_on_loop_persist():
-            log.append(KEY, "user", "arrived after the cap")
+        await self._plant_capped(log, retry_at=3600.0)
+        await _off_loop(lambda: log.append(KEY, "user", "arrived after the cap"))
 
         assert log.consolidation_retry_state(KEY, _total(log))[0] == 0
         assert _eligible(_make_consolidator(log), log) is False
@@ -770,15 +789,16 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
         """Growth buys ONE bounded budget, not an escape from the cap."""
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        self._plant_capped(log)
-        with history_mod.allow_on_loop_persist():
-            log.append(KEY, "user", "arrived after the cap")
+        await self._plant_capped(log)
+        await _off_loop(lambda: log.append(KEY, "user", "arrived after the cap"))
         assert _eligible(c, log) is True
 
-        with history_mod.allow_on_loop_persist():
+        def _rearm() -> None:
             for _ in range(_CONSOLIDATION_MAX_ATTEMPTS):
                 log.record_consolidation_failure(KEY, 900.0, 86400.0, _span(log))
                 log.update_metadata(KEY, {"consolidation_retry_at": time.time() - 1})
+
+        await _off_loop(_rearm)
 
         meta = log.get_metadata(KEY)
         assert meta["consolidation_attempts"] == _CONSOLIDATION_MAX_ATTEMPTS
@@ -792,7 +812,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
     async def test_a_shrink_alone_does_not_release_the_cap(self, tmp_path):
         """Growth is `>`, not `!=` — a rewrite that only drops content adds none."""
         log = _seed_log(tmp_path)
-        self._plant_capped(log, count=99)
+        await self._plant_capped(log, count=99)
 
         assert log.consolidation_retry_state(KEY, _total(log))[0] == (_CONSOLIDATION_MAX_ATTEMPTS)
         assert _eligible(_make_consolidator(log), log) is False
@@ -802,7 +822,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
         """It runs on the gateway loop; a full-file read there stalls everything."""
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        self._plant_capped(log)
+        await self._plant_capped(log)
         total = _total(log)
 
         reads: list[str] = []
@@ -829,7 +849,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
         """
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        self._plant_capped(log)
+        await self._plant_capped(log)
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "x"})) as spy:
             c.consolidate_session(KEY)
@@ -837,8 +857,7 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
         assert spy.await_count == 0, "a capped span with no growth still fired a turn"
 
-        with history_mod.allow_on_loop_persist():
-            log.append(KEY, "user", "arrived after the cap")
+        await _off_loop(lambda: log.append(KEY, "user", "arrived after the cap"))
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "recovered"})):
             c.consolidate_session(KEY)

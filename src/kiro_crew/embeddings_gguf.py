@@ -37,6 +37,14 @@ _GGUF_TYPE_ARRAY = 9
 _GGUF_MAX_METADATA_ITEMS = 100_000
 _GGUF_MAX_ARRAY_ITEMS = 2_000_000
 _GGUF_MAX_DECODED_STRING_BYTES = 1_000_000
+# The header is read in chunks of this size: large enough that the shipped
+# model's ~6 MiB KV section takes six reads, small enough that the overshoot
+# past the last field stays one chunk.
+_GGUF_READ_CHUNK_BYTES = 1 << 20
+_GGUF_U8 = struct.Struct("<B")
+_GGUF_U32 = struct.Struct("<I")
+_GGUF_I32 = struct.Struct("<i")
+_GGUF_U64 = struct.Struct("<Q")
 _GGUF_CAUSAL_SUFFIX = ".attention.causal"
 # `<architecture>.context_length`: the position count the model was trained
 # with, which llama.cpp reads into ``hparams.n_ctx_train``. For an encoder with
@@ -80,58 +88,106 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
     """Parse the KV header from ``source``, a binary stream positioned at its start.
 
     ``file_size`` is the byte count the file had when it was opened; it bounds
-    every field the header declares. The parser reads only what it inspects --
-    fixed-width fields, keys and captured strings, each at most
-    _GGUF_MAX_DECODED_STRING_BYTES -- with one ``read()`` per field, and seeks
-    past every value it does not need, so no byte beyond the caps is read. A
-    field reaching past ``file_size``, or a read returning fewer bytes than
-    asked (the file shrank under the parse), is ``truncated GGUF header``.
+    every field the header declares. The header is read forward in buffered
+    chunks of at most _GGUF_READ_CHUNK_BYTES, each also capped at the bytes
+    ``file_size`` still allows, and every field is decoded in place with
+    ``struct.unpack_from``; a value it does not need that reaches past the
+    buffer is seeked over, so the walk reads at most one chunk beyond the
+    header. A string array (the tokenizer vocabulary holds ~150,000 of them) is
+    stepped over in one loop rather than one call per string. A captured string
+    is at most _GGUF_MAX_DECODED_STRING_BYTES. A field reaching past
+    ``file_size``, or a read returning fewer bytes than the field needs (the
+    file shrank under the parse), is ``truncated GGUF header``.
     """
-    offset = 0
+    # The buffered bytes, the cursor inside them, and the file offset of buf[0].
+    buf = b""
+    pos = 0
+    base = 0
 
-    def _claim(size: int) -> None:
-        nonlocal offset
-        if size > file_size - offset:
+    def _need(size: int) -> None:
+        # Make buf[pos : pos + size] present, reading one bounded chunk.
+        nonlocal buf, pos, base
+        if size > file_size - (base + pos):
             raise ValueError("truncated GGUF header")
-        offset += size
-
-    def _read_exact(size: int) -> bytes:
-        _claim(size)
-        chunk = source.read(size)
-        if len(chunk) != size:
+        missing = size - (len(buf) - pos)
+        if missing <= 0:
+            return
+        want = min(max(missing, _GGUF_READ_CHUNK_BYTES), file_size - (base + len(buf)))
+        chunk = source.read(want)
+        if len(chunk) < missing:
             raise ValueError("truncated GGUF header")
-        return chunk
+        base += pos
+        buf = buf[pos:] + chunk
+        pos = 0
 
     def _skip(size: int) -> None:
-        _claim(size)
-        source.seek(size, os.SEEK_CUR)
+        nonlocal buf, pos, base
+        if size > file_size - (base + pos):
+            raise ValueError("truncated GGUF header")
+        beyond = size - (len(buf) - pos)
+        if beyond <= 0:
+            pos += size
+            return
+        source.seek(beyond, os.SEEK_CUR)
+        base += pos + size
+        buf = b""
+        pos = 0
 
-    def _unpack(fmt: str) -> int:
-        return int(struct.unpack(fmt, _read_exact(struct.calcsize(fmt)))[0])
+    def _read_exact(size: int) -> bytes:
+        nonlocal pos
+        _need(size)
+        chunk = buf[pos : pos + size]
+        pos += size
+        return chunk
+
+    def _unpack(fmt: struct.Struct) -> int:
+        nonlocal pos
+        _need(fmt.size)
+        value = int(fmt.unpack_from(buf, pos)[0])
+        pos += fmt.size
+        return value
 
     def _read_string() -> str:
-        length = _unpack("<Q")
+        length = _unpack(_GGUF_U64)
         if length > _GGUF_MAX_DECODED_STRING_BYTES:
             raise ValueError("oversized GGUF metadata string")
         return _read_exact(length).decode("utf-8")
 
-    def _skip_string() -> None:
-        _skip(_unpack("<Q"))
+    def _skip_string_array(count: int) -> None:
+        # The hot loop of the walk: buf, pos and the buffer end live in locals
+        # and are refreshed only when a length prefix or a string body leaves
+        # the buffer, so a string inside it costs one unpack_from.
+        nonlocal pos
+        unpack_length = _GGUF_U64.unpack_from
+        data, at, end = buf, pos, len(buf)
+        for _ in range(count):
+            if end - at < 8:
+                pos = at
+                _need(8)
+                data, at, end = buf, pos, len(buf)
+            length = unpack_length(data, at)[0]
+            at += 8
+            if end - at >= length:
+                at += length
+            else:
+                pos = at
+                _skip(length)
+                data, at, end = buf, pos, len(buf)
+        pos = at
 
     def _read_value(value_type: int, *, capture: bool) -> object | None:
         if value_type == _GGUF_TYPE_STRING:
             if capture:
                 return _read_string()
-            _skip_string()
+            _skip(_unpack(_GGUF_U64))
             return None
         if value_type == _GGUF_TYPE_ARRAY:
-            element_type = _unpack("<I")
-            count = _unpack("<Q")
+            element_type = _unpack(_GGUF_U32)
+            count = _unpack(_GGUF_U64)
             if count > _GGUF_MAX_ARRAY_ITEMS:
                 raise ValueError("oversized GGUF metadata array")
             if element_type == _GGUF_TYPE_STRING:
-                for _ in range(count):
-                    _skip_string()
+                _skip_string_array(count)
                 return None
             element_size = _GGUF_SCALAR_BYTES.get(element_type)
             if element_size is None:
@@ -142,21 +198,21 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
         if value_size is None:
             raise ValueError(f"unsupported GGUF metadata type {value_type}")
         if capture and value_type == _GGUF_TYPE_UINT32:
-            return _unpack("<I")
+            return _unpack(_GGUF_U32)
         if capture and value_type == _GGUF_TYPE_INT32:
-            return _unpack("<i")
+            return _unpack(_GGUF_I32)
         if capture and value_type == _GGUF_TYPE_BOOL:
-            return _unpack("<B") != 0
+            return _unpack(_GGUF_U8) != 0
         _skip(value_size)
         return None
 
     if _read_exact(4) != b"GGUF":
         raise ValueError("invalid GGUF magic")
-    version = _unpack("<I")
+    version = _unpack(_GGUF_U32)
     if version not in {2, 3}:
         raise ValueError(f"unsupported GGUF version {version}")
-    _unpack("<Q")  # tensor count; only the following KV section is needed
-    metadata_count = _unpack("<Q")
+    _unpack(_GGUF_U64)  # tensor count; only the following KV section is needed
+    metadata_count = _unpack(_GGUF_U64)
     if metadata_count > _GGUF_MAX_METADATA_ITEMS:
         raise ValueError("oversized GGUF metadata table")
 
@@ -172,7 +228,7 @@ def _parse_gguf_embedding_metadata(source: BinaryIO, file_size: int) -> _GGUFEmb
             or key.endswith(_GGUF_CONTEXT_LENGTH_SUFFIX)
             or key.endswith(_GGUF_POOLING_TYPE_SUFFIX)
         )
-        value = _read_value(_unpack("<I"), capture=capture)
+        value = _read_value(_unpack(_GGUF_U32), capture=capture)
         if key == "general.architecture" and isinstance(value, str):
             architecture = value.strip().lower()
         elif key.endswith(_GGUF_CAUSAL_SUFFIX) and isinstance(value, bool):

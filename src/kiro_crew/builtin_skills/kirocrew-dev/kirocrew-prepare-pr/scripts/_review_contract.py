@@ -198,7 +198,7 @@ DEFAULT_OVERRIDE_TARGET_KEYS = (
     ("first-principles", "first-principles-review"),
 )
 FINDING_RE = re.compile(
-    r"^\s*(?:\*\*)?(BLOCKING|FINDING)(?:\*\*)?\s*(?:--|\u2014)\s*"
+    r"^\s*(?:\*\*)?(BLOCKING)(?:\*\*)?\s*(?:--|\u2014)\s*"
     r"(?:\*\*)?(\S+?):(\d+)(?:\*\*)?\s*(?:(?:--|\u2014)\s*)?(.*)$",
     re.MULTILINE,
 )
@@ -924,21 +924,17 @@ def extract_findings(
 # them above the line-level lanes in triage, which is only possible if their
 # items reach the loop with span ids of their own.
 WHOLE_DESIGN_LANES = ("DESIGN", "UX", "FIRST-PRINCIPLES")
-# `Design-Verdict: CONCERNS`, `UX-Verdict: PASS`, `First-Principles-Verdict: BLOCK`
-VERDICT_LINE_RE = re.compile(
-    r"^[A-Za-z-]+-Verdict:\s*(PASS|CONCERNS|BLOCK)\b", re.MULTILINE | re.IGNORECASE
-)
-# The item-bearing sections of those lanes' output templates. Deliberately an
-# allowlist rather than "every `###` heading": First Principles also emits a
-# `### What this change ships` INVENTORY and UX a `### Evidence gaps` note, and
-# neither is an item an author disposes of one by one.
-DESIGN_ITEM_SECTIONS = (
-    "Blockers",
-    "Watch",
-    "Subtractions",
-    "Suggestions",
-    "Not justified as shipped",
-)
+# `Design-Verdict: PASS`, `UX-Verdict: BLOCK`, `First-Principles-Verdict: BLOCK`.
+# A lane has exactly two verdicts; any other word (including the retired
+# CONCERNS) is not a verdict and reads as "no verdict for this head".
+VERDICT_LINE_RE = re.compile(r"^[A-Za-z-]+-Verdict:\s*(PASS|BLOCK)\b", re.MULTILINE | re.IGNORECASE)
+# The item-bearing section of those lanes' output templates: a BLOCK lists its
+# items under `### Blockers`, each with a `Trigger:` and an `Outcome:` line.
+# Deliberately an allowlist rather than "every `###` heading": First Principles
+# also emits a `### What this change ships` INVENTORY, UX a `### Evidence gaps`
+# note, and every lane may add `### Notes` -- none of them an item an author
+# disposes of one by one, and `Notes` never gates.
+DESIGN_ITEM_SECTIONS = ("Blockers",)
 # A per-item trailing line naming what would retire the item. Optional: it is
 # absent from every lane's older output, so parsing must not depend on it.
 CLEARS_WHEN_RE = re.compile(r"clears\s+when\s*:\s*(.+?)\s*$", re.IGNORECASE)
@@ -975,7 +971,7 @@ def design_section_items(body):
     continuation lines (the consequence chain and the fix the templates ask
     for). A section whose lane wrote PROSE instead of a list still yields its
     paragraphs: the templates say "one or two lines each" without mandating a
-    bullet, and silently yielding nothing there would hide exactly the CONCERNS
+    bullet, and silently yielding nothing there would hide exactly the Blockers
     items this extractor exists to surface.
     """
     wanted = {name.lower(): name for name in DESIGN_ITEM_SECTIONS}
@@ -1065,11 +1061,10 @@ def design_lane_verdicts(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES)
     }
 
 
-# The bold sentence a whole-design lane writes right under its verdict line. The
-# lane prompts make it the core problem on CONCERNS or BLOCK and, on a PASS, the
-# one thing a human should still verify before merge, or exactly
-# NOTHING_TO_CHECK. It sits outside every item section, so design_section_items
-# never yields it, and on a PASS it is usually the lane's only ask.
+# The bold sentence a whole-design lane writes right under its verdict line: the
+# lane's REASON, one to three sentences. On a BLOCK it is the core problem; on a
+# PASS it says in a few words why nothing blocks (or exactly NOTHING_TO_CHECK).
+# It sits outside every item section, so design_section_items never yields it.
 NOTHING_TO_CHECK = "Nothing to check."
 _ENCLOSING_BOLD_RE = re.compile(r"\A\*\*(.+)\*\*\Z")
 
@@ -1077,8 +1072,7 @@ _ENCLOSING_BOLD_RE = re.compile(r"\A\*\*(.+)\*\*\Z")
 def lane_punchline(body):
     """The punchline under a whole-design body's verdict line, without its bold.
 
-    Read the way the lane workflows' own CONCERNS digest reads it, as the first
-    text after the verdict line. The whole paragraph is taken, so a punchline
+    Read as the first text after the verdict line. The whole paragraph is taken, so a punchline
     wrapped over two lines survives. A heading or one of the body's own trailers
     in that place means the lane wrote no punchline.
     """
@@ -1125,7 +1119,7 @@ def extract_design_items(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES)
     would silently reclassify a today-valid spanless ``target=design``
     disposition as a violation and fail the required status on PRs nobody
     touched, so the design items feed only local reporting (pr_findings.py) and
-    the local unanswered-CONCERNS check (pr_status.py). A disposition may still
+    the local loop's block summary (pr_status.py). A disposition may still
     CLAIM one of these spans: an unknown span for a lane with no
     extract_findings identities is not a violation.
     """
@@ -1143,43 +1137,6 @@ def extract_design_items(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES)
                 "block_merge": verdict == "BLOCK",
                 "span": span_hash(name, normalize_design_item_text(text)),
             }
-
-
-def unanswered_concern_lanes(verdicts, records, head_sha):
-    """Whole-design lanes at CONCERNS for this head with no disposition yet.
-
-    LOCAL ONLY -- the kirocrew-prepare-pr loop's own stop condition. SKILL.md says a
-    green rollup with an unanswered CONCERNS is not converged, and nothing
-    enforced it: the loop armed auto-merge straight past a fresh CONCERNS. The
-    server-side required status is deliberately NOT changed, because CONCERNS
-    is advisory by contract for every writer who never runs this loop.
-
-    Answered means a repository writer's disposition record targets that lane
-    and names this head (a short ``head=`` prefix counts, as everywhere else).
-    """
-    out = []
-    for name, verdict in sorted((verdicts or {}).items()):
-        if verdict != "CONCERNS" or name.upper() not in WHOLE_DESIGN_LANES:
-            continue
-        target = name.lower()
-        answered = any(
-            not record.get("malformed")
-            and (record.get("target") or "").lower() == target
-            and sha_matches(record.get("head") or "", head_sha)
-            for record in records or []
-        )
-        if not answered:
-            out.append(name)
-    return out
-
-
-def unanswered_concerns_reason(lane, head_sha):
-    """The one blocking reason text for an unanswered whole-design CONCERNS."""
-    return (
-        "unanswered CONCERNS from {} on current head - answer each Watch item "
-        "with an <!-- ai-review-disposition target={} head={} --> comment "
-        "(fix, rebut, or accept-and-defer)".format(lane, lane.lower(), head_sha)
-    )
 
 
 def parse_disposition_record(comment):

@@ -2254,12 +2254,12 @@ async def start_dashboard(
     # must not sit in front of the publish (``no-new-work-on-gateway-boot-path``). See
     # ``maintenance._kick_otel_crew_log_subscriber``.
     #
-    # WHAT THE GATE DOES NOT COVER, said plainly: the ``otel_usage`` FOLD itself is a
-    # member of the crew log's own ``_FOLDS``, so it advances in the eager worker's
-    # pass and is written into the savepoint on every host that keeps a crew log,
+    # WHAT THE GATE DOES NOT COVER, said plainly: the usage FOLDS themselves are
+    # members of the crew log's own ``_FOLDS``, so they advance in the eager worker's
+    # pass and are written into the savepoint on every host that keeps a crew log,
     # consent or none. That cost is a handful of integers per session and the enum
-    # this fold folds an agent name down to; only the egress is behind the consent
-    # flag. See ``crew_log_export.install_otel_crew_log_subscriber``.
+    # ``otel_usage`` folds an agent name down to; only the egress is behind the
+    # consent flag. See ``crew_log_export.install_otel_crew_log_subscriber``.
     _kick_otel_crew_log_subscriber(state)
 
     # Event-loop heartbeat and its off-loop stall watchdog (see the heartbeat owner).

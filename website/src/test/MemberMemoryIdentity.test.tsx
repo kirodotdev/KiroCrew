@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
-import { MemoryStoreField, memberMemoryState } from '../pages/KiroCrewAgentsPage'
+import { memberMemoryState } from '../pages/KiroCrewAgentsPage'
 import JobForm from '../components/JobForm'
 import { wakesCrew } from '../components/crew/wakesCrew'
 import type { CronJob } from '../types'
@@ -31,45 +31,6 @@ describe('private member memory controls', () => {
     expect(memberMemoryState('old-member', 'ownerless-private', {
       'ownerless-private': { memory_version: 2 },
     })).toBe('unavailable')
-  })
-
-  it('creates private memory automatically without a store picker', () => {
-    renderWithProviders(<MemoryStoreField />)
-    expect(screen.getByText(/empty member memory/i)).toBeInTheDocument()
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
-  })
-
-  it('keeps existing V1 memory without offering database creation', () => {
-    renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" />)
-    expect(screen.getByText('default', { exact: true })).toBeVisible()
-    expect(screen.getByText(/^This crewmate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new crewmate\.$/)).toBeVisible()
-    expect(screen.queryByRole('button', { name: /Create.*memory/i })).toBeNull()
-    expect(screen.queryByRole('combobox')).toBeNull()
-  })
-
-  it('displays an immutable private identity and protects unsaved edits before navigation', () => {
-    const manage = vi.fn()
-    renderWithProviders(<MemoryStoreField member="reviewer" value="member-reviewer-123" memoryState="private" onManage={manage} manageDisabled />)
-    expect(screen.getByText('member-reviewer-123')).toBeInTheDocument()
-    const button = screen.getByRole('button', { name: 'Manage memory' })
-    expect(button).toBeDisabled()
-    expect(button).not.toHaveAttribute('title')
-    expect(screen.getByText('Save or discard changes first', { exact: true })).toBeVisible()
-    fireEvent.click(button)
-    expect(manage).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['unavailable', 'This member’s configured memory store is unavailable. Inspect the cause on the gateway: kirocrew doctor'],
-    ['ownership_mismatch', 'This member’s configured memory store belongs to another member. It cannot be used here. Inspect the cause on the gateway: kirocrew doctor'],
-  ] as const)('does not offer V1 creation or V2 management for an %s binding', (memoryState, reason) => {
-    renderWithProviders(<MemoryStoreField member="reviewer" value="missing-store" memoryState={memoryState} onManage={() => {}} />)
-    expect(screen.getByText(reason, { exact: true })).toBeVisible()
-    expect(screen.queryByText(/Open the crew manager/i)).toBeNull()
-    expect(screen.queryByText(/unavailable or belongs/i)).toBeNull()
-    expect(screen.queryByText(/This crewmate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new crewmate\./)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Create member memory' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Manage memory' })).toBeNull()
   })
 })
 

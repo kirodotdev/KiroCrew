@@ -260,9 +260,9 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _windows_interface_addresses,
     )
     from kiro_crew.security.hosts_file import (  # noqa: F401
+        _ctime_is_creation_time,
         _decoded_chunks,
         _hosts_content_digest,
-        _hosts_content_digest_enabled,
         _HostsFileTooLarge,
         _HostsFileUnreadable,
         _parse_hosts_chunks,

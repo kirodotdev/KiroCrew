@@ -125,13 +125,6 @@ export interface ChatSidebarProps {
   /** Where a crew row's window opens, for a host with no chat pane of its
    *  own (embed/sessions). Omit to open it over this page's pane. */
   onOpenPeerSession?: (instanceId: string, key: string) => void
-  /** Opts the list into the scroll peek: while the user scrolls the session
-   *  lane, titles the row clips are shown in full in a floating layer laid
-   *  over them. Rows keep the stored width. Omit (mobile drawer, embedded
-   *  view) to turn it off: a phone's near-full-width drawer leaves no room
-   *  beside the pane for an overflowing title, and the embedded view has no
-   *  chat beside it either. See chat-sidebar/scrollPeek. */
-  scrollPeek?: boolean
 }
 
 /** A setter from `useState`. */

@@ -235,6 +235,8 @@ export function useTouchPushToTalk(
   /** Where the press began, in client coords — the origin the drag measures from. */
   const originYRef = useRef(0)
   const originXRef = useRef(0)
+  /** The zone of the latest move, so the hold can arm its cue on arrival. */
+  const lastZoneRef = useRef<'cancel' | 'draft' | null>(null)
   /** The pointer this gesture owns. A second finger must not steer it. */
   const pointerIdRef = useRef<number | null>(null)
 
@@ -424,8 +426,14 @@ export function useTouchPushToTalk(
       setPhase('arming')
       session.launch('gesture')
       const gen = session.generation()
+      lastZoneRef.current = null
       armTimerRef.current = setTimeout(() => {
-        if (session.generation() === gen && phaseRef.current === 'arming') session.beginHold()
+        if (session.generation() !== gen || phaseRef.current !== 'arming') return
+        session.beginHold()
+        // A finger already in the draft zone when the press becomes a hold
+        // stays there with no further move, so arm the cue now rather than
+        // waiting for one.
+        setArmedDraft(lastZoneRef.current === 'draft')
       }, cfgRef.current.holdMs)
     }
 
@@ -433,6 +441,7 @@ export function useTouchPushToTalk(
       if (pointerIdRef.current !== e.pointerId) return
       if (phaseRef.current === 'idle') return
       const zone = holdZone(e.clientX - originXRef.current, e.clientY - originYRef.current, !!draftZoneRef.current)
+      lastZoneRef.current = zone
       setArmedCancel(zone === 'cancel')
       // Only a hold can keep a draft: a release while still arming is a tap,
       // which discards, so the bar must not promise a draft before then.

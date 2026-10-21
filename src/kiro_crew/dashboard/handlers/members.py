@@ -1305,6 +1305,24 @@ async def api_member_thread(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # The thread is named after its crewmate, as a final title no background
+    # path rewrites (see chat_title.name_member_thread). The first crewmate with no
+    # display name reads "Mate", as it does in the sidebar.
+    from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, is_assistant_member
+    from kiro_crew.dashboard.chat_title import name_member_thread
+
+    named_crew = cfg.agents[member_name]
+    name_member_thread(
+        state,
+        slot,
+        getattr(named_crew, "display_name", "")
+        or (
+            ASSISTANT_DEFAULT_DISPLAY_NAME
+            if is_assistant_member(member_name, named_crew)
+            else member_name
+        ),
+    )
+
     if not minted:
         # Live (restart-restored) and rehydrated threads alike: the fresh mint
         # above already carries the binding, every other path converges here.

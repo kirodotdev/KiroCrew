@@ -569,13 +569,18 @@ async def test_kas_readiness_delays_prompt_until_active_managed_tools(
         "authorization",
         "timeout",
         "unreported",
+        "foreign-only",
         "missing-catalog",
         "legacy-provenance",
     ],
 )
-async def test_kas_readiness_refuses_failure_or_missing_report(kas_readiness_wire, resume, state):
+async def test_kas_readiness_refuses_failure_or_missing_report(
+    kas_readiness_wire, monkeypatch, resume, state
+):
+    import kiro_crew.acp.runtime_session_load as load_mod
     from kiro_crew.acp.session_handle import AcpRequestTimeout
 
+    monkeypatch.setattr(load_mod, "_declared_governed", lambda: False)
     wire = kas_readiness_wire
     reader_task = await _start_reader(wire.runtime)
     start = None
@@ -586,10 +591,17 @@ async def test_kas_readiness_refuses_failure_or_missing_report(kas_readiness_wir
             wire.clock[0] = 31.0
             wire.status("connected" if state == "missing-catalog" else "connecting")
         elif state == "unreported":
+            # No report at all and registry mode off: silence is not proof of a
+            # governed drop, so the start still fails.
             wire.clock[0] = 31.0
             _feed(
                 wire.reader, {"method": "session/update", "params": {"sessionId": "ready-session"}}
             )
+        elif state == "foreign-only":
+            # Only a same-named server that is not this session's own: it stays
+            # pending and must never pass for a server the host did not start.
+            wire.clock[0] = 31.0
+            wire.status("connected", origin="global")
         elif state == "authorization":
             wire.status(
                 "connecting", failedAuthorization=True, errorMessage="authorization required"
@@ -605,7 +617,7 @@ async def test_kas_readiness_refuses_failure_or_missing_report(kas_readiness_wir
             wire.status(state, errorMessage="managed test failure")
         expected = (
             AcpRequestTimeout
-            if state in ("timeout", "unreported", "missing-catalog")
+            if state in ("timeout", "unreported", "foreign-only", "missing-catalog")
             else AcpRuntimeError
         )
         if not resume:
@@ -620,6 +632,44 @@ async def test_kas_readiness_refuses_failure_or_missing_report(kas_readiness_wir
             assert "reports no MCP server origin" in str(raised.value)
         assert wire.sent.empty(), "A failed startup must not prompt or delete a retained session"
         assert "ready-session" not in wire.runtime._session_queues
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_kas_readiness_under_registry_mode_starts_without_waiting(
+    kas_readiness_wire, monkeypatch, resume
+):
+    """Under registry mode a governed MCP profile drops Crew's servers unreported.
+
+    Waiting for them spends the whole budget and then fails, and the retry meets
+    the same filter, so the chat never starts. The session starts after a short
+    settle instead (7s on the fake clock, under the 30s budget), each managed
+    server named as not started, and nothing is torn down.
+    """
+    import kiro_crew.acp.runtime_session_load as load_mod
+
+    monkeypatch.setattr(load_mod, "_declared_governed", lambda: True)
+    wire = kas_readiness_wire
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(resume)
+        await wire.take(wire.reads)
+        wire.clock[0] = 7.0
+        _feed(wire.reader, {"method": "session/update", "params": {"sessionId": "ready-session"}})
+        handle = await await_until(start, what="the session start")
+        assert wire.sent.empty(), "Starting degraded must not delete the session"
+        assert "ready-session" in wire.runtime._session_queues
+        report = handle.mcp_session_report()
+        for name in ("kirocrew-core", "kirocrew-dashboard"):
+            assert name in report._failed
+            assert "not started by the host" in report._failures[name]
     finally:
         if start is not None and not start.done():
             start.cancel()

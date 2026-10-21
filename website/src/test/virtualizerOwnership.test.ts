@@ -97,7 +97,7 @@ describe('phase order (source guard)', () => {
       'usePinning',
       'useGeometrySync',
       'useRowMeasurement',
-      'useShiftCompensation', // pre-paint: part 1, promotion, part 2, height anchor
+      'useShiftCompensation', // pre-paint: part 1, part 2, height anchor
       'useFollowPlacementPins', // pre-paint: leading chrome, append pin
       'useVisibilityReplacement',
       'useScrollListener',
@@ -122,7 +122,6 @@ describe('phase order (source guard)', () => {
         ['[anchorIdOf, elIndexRef, itemsRef],', false], // captureAnchorCands
         ['}, [scrollerRef, captureAnchorCands, stickRef, elIndexRef, itemsRef, getKeyRef])', false], // captureHeightSyncAnchor
         ['}, [itemCount])', true], // part 1: re-running would re-fire a consumed prepend
-        ['}, [windowRange, rebaseScheduledRef, shiftStageRef])', false], // stage promotion
         ['}, [windowRange, itemCount, spliceCommit, scrollerRef, writeScrollTop, recomputeWindow])', true], // part 2
         ['}, [heightCommit, offsetIndex, scrollerRef, writeScrollTop])', true], // height-sync anchor (+ the owner identity: TRIGGER 7 stands down on the swap commit)
       ]],
@@ -185,7 +184,6 @@ describe('phase order (source guard)', () => {
       'shiftCompensation.ts': [
         [L, 'prependPrevRef.current = prependMirrorNext'], // prepend baseline mirror
         [L, 'prependNetRef.current = 0'], // part 1
-        [L, "shiftStageRef.current = 'ready'"], // stage promotion
         [L, 'shiftInsertedRef.current = 0'], // part 2
         [L, 'heightAnchorPendingRef.current = null'], // height-sync anchor
       ],

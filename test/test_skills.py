@@ -2994,6 +2994,63 @@ class TestDisabledAppSkillsAreNotTriggered:
         assert len(results) == 1
         assert results[0]["key"] == "deploy_web/artifact-deploy"
 
+    def test_a_skill_naming_its_app_is_gated_by_that_app(self, tmp_path, monkeypatch):
+        """The builtin sync COPIES an app skill shipped in ``builtin_skills/``
+        into the skills directory, so no path names its app: its ``app:`` line
+        has to."""
+        skills = tmp_path / "skills"
+        d = skills / "papyrus-writing"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: papyrus-writing\napp: papyrus\ndescription: d\ntriggers: latex\n---\n\nb\n"
+        )
+        self._apps(monkeypatch, papyrus=False)
+        loader = _settled(
+            SkillsLoader(
+                skills_path=skills,
+                install_builtins=False,
+                config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+            )
+        )
+
+        assert loader.get_triggered_skills("fix my latex") == []
+
+        loader._invalidate_iter_cache()
+        self._apps(monkeypatch, papyrus=True)
+        assert _settled(loader).get_triggered_skills("fix my latex") == ["papyrus-writing"]
+
+    def test_every_packaged_app_skill_names_its_app(self):
+        """A packaged skill named for a builtin app (``<app>`` or ``<app>-...``, the
+        convention every app skill shipped in ``builtin_skills/`` follows) must carry
+        ``app: <app>``, and no ``app:`` line may name an app that does not exist.
+        Either mistake leaves the skill loading while its app is disabled, and
+        nothing else reports it."""
+        import json
+
+        import kiro_crew
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        pkg = Path(kiro_crew.__file__).resolve().parent
+        apps = {
+            json.loads(p.read_text(encoding="utf-8"))["name"]
+            for p in (pkg / "apps" / "builtins").glob("*/app.json")
+        }
+        skill_files = sorted((pkg / "builtin_skills").glob("*/SKILL.md"))
+        assert apps and skill_files
+        wrong = {}
+        for skill_md in skill_files:
+            name = skill_md.parent.name
+            meta = parse_frontmatter(skill_md.read_text(encoding="utf-8"), SKILL_LOADER)
+            declared = meta.get("app", "")
+            named_for = max(
+                (a for a in apps if name == a or name.startswith(f"{a}-")), key=len, default=""
+            )
+            if declared and declared not in apps:
+                wrong[name] = declared
+            elif named_for and declared != named_for:
+                wrong[name] = declared
+        assert wrong == {}
+
 
 class TestStripFrontmatterCloserParity:
     """strip_frontmatter's closer must accept everything the display

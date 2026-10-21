@@ -60,7 +60,6 @@ from kiro_crew.hooks import HOOK_EVENT_POST_TOOL_USE, fire_tool_hooks, get_globa
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.jsonl_util import bounded_raw_records_with_offsets
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import tool_output_fingerprints
 from kiro_crew.sel import sel
 
@@ -221,16 +220,18 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
         # Redact tool_input before firing user hooks (parity with Post path); addresses security-controls review.
         _redacted_input = tool_event.tool_input
         if isinstance(_redacted_input, str):
-            _redacted_input, _ = redact_credentials(_redacted_input)
-            _redacted_input, _ = redact_exfiltration_urls(_redacted_input)
+            from kiro_crew.security import redact
+
+            _redacted_input = redact(_redacted_input)
         elif _redacted_input is not None:
             # Non-str (dict/list) inputs must ALSO be redacted, not bypassed by
             # the isinstance(str) guard. Serialize to JSON, redact the string,
             # and pass the redacted JSON string (fire_tool_hooks json.loads it,
             # so it expects a str | None — do NOT deserialize back to an object).
             _serialized = json.dumps(_redacted_input)
-            _serialized, _ = redact_credentials(_serialized)
-            _serialized, _ = redact_exfiltration_urls(_serialized)
+            from kiro_crew.security import redact
+
+            _serialized = redact(_serialized)
             _redacted_input = _serialized
         await fire_tool_hooks(
             hook_store,
@@ -281,8 +282,9 @@ async def _maybe_fire_post_tool_hooks(self: AcpClient, tool_result_event: "AcpEv
         tool_name = tool_name[9:]
     try:
         # Redact before firing user hooks (parity with chat_runner PostToolUse); addresses security-controls review.
-        _redacted_output, _ = redact_credentials(tool_result_event.tool_output or "")
-        _redacted_output, _ = redact_exfiltration_urls(_redacted_output)
+        from kiro_crew.security import redact
+
+        _redacted_output = redact(tool_result_event.tool_output or "")
         # Bound the payload handed to user hook scripts to the first 2000 chars
         # (parity with chat_runner/subagent.py [:2000]). Redact-then-truncate is
         # deliberate: redact the FULL output first so secrets anywhere are scrubbed,
@@ -419,8 +421,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # Redact sensitive content before caching/displaying
         input_redacted = False
         if input_str:
-            safe_input, _ = redact_exfiltration_urls(input_str)
-            safe_input, _ = redact_credentials(safe_input)
+            from kiro_crew.security import redact
+
+            safe_input = redact(input_str)
             input_redacted = safe_input != input_str
             input_str = safe_input
         if tool_call_id and input_str:
@@ -442,8 +445,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             self._tool_call_params[tool_call_id] = raw_input
         # Redact LLM-influenced fields before dashboard display
         if purpose:
-            purpose, _ = redact_exfiltration_urls(purpose)
-            purpose, _ = redact_credentials(purpose)
+            from kiro_crew.security import redact
+
+            purpose = redact(purpose)
         # Prefer rawInput.description over the SDK-provided title (e.g.
         # some backends' Bash tool emits "List Kiro Crew ACP module files"
         # alongside `ls <workspace>/...`). For claude-agent-acp this rarely
@@ -503,11 +507,13 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                 self._tool_call_identity_unreadable[tool_call_id] = True
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
-            title, _ = redact_exfiltration_urls(title)
-            title, _ = redact_credentials(title)
+            from kiro_crew.security import redact
+
+            title = redact(title)
         if kind:
-            kind, _ = redact_exfiltration_urls(kind)
-            kind, _ = redact_credentials(kind)
+            from kiro_crew.security import redact
+
+            kind = redact(kind)
         self.last_prompt_stats.tool_calls.append((kind, title))
         # Trusted identity from adapter-authored markers (NOT the
         # LLM-authored title), shared with the dispatch builder so both
@@ -669,9 +675,9 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     (e.g. `"ls <workspace>/notes"`).
 
     We yield an EVENT_TOOL_CALL_UPDATE so the dashboard can patch the
-    existing pill / persisted message in place — see the matching
-    handler in `chat_runner.py`. Returns None when the update only
-    carries output (handled separately by `_extract_tool_call_update`).
+    existing pill / persisted message in place — see the matching handler,
+    `_on_tool_call_update` in `dashboard/chat_turn/tool_rows.py`. Returns None when the
+    update only carries output (handled separately by `_extract_tool_call_update`).
     """
     params = msg.params or {}
     update = params.get("update", {})
@@ -721,8 +727,9 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
                 break
     input_redacted = False
     if input_str:
-        safe_input, _ = redact_exfiltration_urls(input_str)
-        safe_input, _ = redact_credentials(safe_input)
+        from kiro_crew.security import redact
+
+        safe_input = redact(input_str)
         input_redacted = safe_input != input_str
         input_str = safe_input
         self._tool_call_inputs[tool_use_id] = input_str
@@ -750,12 +757,14 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     title_source = _select_tool_title(title, _title_params, kind, is_shell=is_shell)
     title_str = ""
     if title_source:
-        title_str, _ = redact_exfiltration_urls(title_source)
-        title_str, _ = redact_credentials(title_str)
+        from kiro_crew.security import redact
+
+        title_str = redact(title_source)
     kind_str = ""
     if isinstance(kind, str) and kind:
-        kind_str, _ = redact_exfiltration_urls(kind)
-        kind_str, _ = redact_credentials(kind_str)
+        from kiro_crew.security import redact
+
+        kind_str = redact(kind)
     # The refinement's rawInput is the COMPLETE params object, so it carries
     # the reserved purpose argument too. Read it here or the purpose is lost
     # whenever the initial tool_call streamed an empty rawInput — and
@@ -764,8 +773,9 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     # with a command. Mirrors `_dispatch._build_tool_refinement_event`.
     purpose = extract_tool_purpose(raw_input)
     if purpose:
-        purpose, _ = redact_exfiltration_urls(purpose)
-        purpose, _ = redact_credentials(purpose)
+        from kiro_crew.security import redact
+
+        purpose = redact(purpose)
     return AcpEvent(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,

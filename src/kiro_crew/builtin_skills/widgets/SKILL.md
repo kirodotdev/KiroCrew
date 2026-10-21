@@ -125,6 +125,7 @@ renders in the same themed iframe:
 The opening tag takes two attributes: `title=` and `slug=`. A `slug=` binds the
 impression to an artifact that already exists and suppresses registration; omit
 it for new content.
+Put `<mcwidget>` on its own line after a blank line, never glued to a closing ``` fence.
 
 ## Every widget is already an artifact
 

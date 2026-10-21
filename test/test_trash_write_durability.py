@@ -208,6 +208,33 @@ class TestCrossFilesystemStaging:
         assert not (dst_dir / "dashboard_chat-1.jsonl").exists()
         assert _incoming_files(dst_dir) == []
 
+    def test_a_rename_refused_for_any_other_reason_is_raised_and_copies_nothing(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only EXDEV selects the copy fallback.
+
+        Any other rename failure reaches the caller unchanged, and the source stays
+        where it was with nothing written beside the destination.
+        """
+        crew_home, _ = stores
+        transcript = _transcript(crew_home, "dashboard_chat-1", size=64, age_days=400)
+        original = transcript.read_bytes()
+        dst_dir = crew_home / "elsewhere"
+        dst_dir.mkdir()
+        dst = dst_dir / "dashboard_chat-1.jsonl"
+
+        def _refuse(*args: Any, **kwargs: Any) -> None:
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(session_storage.os, "rename", _refuse)
+
+        with pytest.raises(PermissionError):
+            session_storage._move_file(transcript, dst)
+
+        assert transcript.read_bytes() == original
+        assert not dst.exists()
+        assert _incoming_files(dst_dir) == []
+
     def test_an_interrupted_copy_never_appears_under_the_final_name(
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:

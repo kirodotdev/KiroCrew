@@ -72,7 +72,7 @@ _APP_OWNED_TOP_KEYS: frozenset = frozenset({"dev_fleet"})
 # Excluded only in the shape the reader keeps -- a JSON object -- so a scalar
 # written by hand keeps the one warning that says it is being ignored.
 #   * voice_reply -- the dashboard/Slack voice settings block. Written by
-#     slack/interactions.py (``data.setdefault("voice_reply", {})``) and
+#     slack/interactions_modals.py (``data.setdefault("voice_reply", {})``) and
 #     dashboard/chat_voice.py (persisted with json.dump), and read back on
 #     startup by slack/handler_runtime/voice.py::load_voice_reply_config
 #     (``cfg.raw.get("voice_reply")``), and also by

@@ -301,7 +301,7 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
     # it -- dies with the os._exit below unless it is drained first. This is a gateway
     # hard exit like the normal shutdown, so it drains SEL
     # the same bounded way. Flush SEL BEFORE the gateway.log tail (the order
-    # ``slack/events.py`` already uses): a SEL write failure logs its "dropped N events"
+    # ``slack/events_slash.py`` already uses): a SEL write failure logs its "dropped N events"
     # line, and draining gateway.log first would stop the listener that line needs, so
     # the audit loss would leave no trace. The shared helper offloads to this pool under
     # its own deadline and never raises.

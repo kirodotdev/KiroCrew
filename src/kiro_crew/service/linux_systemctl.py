@@ -90,6 +90,8 @@ def _require_privilege() -> None:
 def _sudo_run(
     *args: str,
     input_text: str | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command with root privilege, capturing output.
 
@@ -109,6 +111,8 @@ def _sudo_run(
         return subprocess.run(
             [*_privilege_prefix(), *args],
             input=input_text,
+            cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,  # subprocess-encoding: locale -- sudo and coreutils write in the locale
             check=False,

@@ -137,31 +137,6 @@ OFF_CARD_CONCERNS: Mapping[str, str] = {
 }
 
 
-#: Per-tool deny reaches whose cost falls on a WHOLE server rather than one tool.
-#:
-#: Two of the three, and the second one is the reason this is a set rather than a
-#: comparison against ``whole-server``. ``whole-server`` has no per-call identity to
-#: match, so withholding the server entire is the only faithful answer -- Crew's own
-#: control plane included. ``per-call`` stays per tool on Crew's OWN servers and
-#: withholds any other server whole, so a reader with a third-party server meets the
-#: same accident. ``settings-file`` is the one reach that costs exactly the tool it
-#: names, everywhere, which is why it is not here.
-#:
-#: Named here rather than in each renderer: a consumer that spelled the comparison
-#: itself would author "which reaches are dangerous" for its own surface, and a reach
-#: added to the vocabulary would render as ordinary on one surface and prominent on
-#: another. Held against the vocabulary by the same completeness test that holds
-#: :data:`OFF_CARD_CONCERNS`, so a new member is a failing test rather than a value
-#: quietly classified as harmless.
-COSTS_WHOLE_SERVER: Tuple[str, ...] = ("whole-server", "per-call")
-
-#: Reaches whose cost is the single tool the restriction names, and nothing more.
-#:
-#: The other half of the classification, spelled out for the completeness test: a
-#: reach in NEITHER tuple is one nobody ruled on, which is the state the test fails.
-COSTS_ONE_TOOL: Tuple[str, ...] = ("settings-file",)
-
-
 @dataclass(frozen=True)
 class McpAbility:
     """What one harness's declaration says about Crew's MCP servers reaching it."""
@@ -232,12 +207,18 @@ class McpAbility:
     def costs_whole_server(self) -> bool:
         """Whether switching ONE tool off here can cost a whole server.
 
-        Derived from :attr:`per_tool_deny` against :data:`COSTS_WHOLE_SERVER`, so
-        every surface that gives this fact a prominent slot gives it to the same
-        reaches. ``False`` for a harness that declares no reach, which is the honest
-        answer: nothing is established about it.
+        Read off the reach's own declaration
+        (``registry.PerToolDeny.costs_whole_server``), so every surface that gives
+        this fact a prominent slot gives it to the same reaches, and a reach added
+        to the vocabulary carries its cost with it. ``False`` for a harness that
+        declares no reach, which is the honest answer: nothing is established.
         """
-        return self.per_tool_deny in COSTS_WHOLE_SERVER
+        try:
+            # circular import -- see :func:`_declaration`.
+            from kiro_crew.providers.mirrors import PerToolDeny
+        except Exception:
+            return False
+        return any(m.costs_whole_server for m in PerToolDeny if m.value == self.per_tool_deny)
 
 
 def _declaration(backend: str) -> Any | None:

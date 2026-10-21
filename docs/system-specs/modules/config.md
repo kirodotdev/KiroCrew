@@ -1351,6 +1351,19 @@ Contract:
 
 ## Settings import (dashboard Merge)
 
+**Module layout.** `portability.py` is the import path for every `portability` name
+this section cites, and it keeps the import itself: `apply_import_zip` and the settings
+and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
+`_merge_sessions`). It is a `kiro_crew._facade_mirror` facade over four owners, and new
+work goes to the one that owns it: `portability_archive.py` (what an archive holds,
+member names and limits both ways), `portability_templates.py` (agent templates, bundled
+on export and installed on import), `portability_export.py` (what an export reads: the
+walk, the SQLite backups, the session planner and writer) and `portability_vetting.py`
+(`validate_import_zip` and the staged cron and store checks). A patch of
+`portability.<name>` reaches every owner holding the name. The archive builders
+(`create_export_zip`, `stream_export_zip`, `plan_export`) live in `portability_stream.py`,
+which the facade re-exports and which reads these names as `portability.<name>`.
+
 **HTTP refusals** of `/api/portability/*` (`dashboard/handlers/portability.py`)
 each carry a machine-readable `code`: `file_field_required` (400),
 `invalid_import_mode` (400), `import_archive_invalid` (400, with the validator's
@@ -1482,7 +1495,7 @@ keys`. Three exclusions from that warning are named in code:
   is the point at which this becomes an app-declared registration.
 - `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
   writes and reads but does not model as a field. The settings UI persists it
-  (`slack/interactions.py`, `dashboard/chat_voice.py`) and the gateway reads it
+  (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
   back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
   section, and NOT reported as unrecognized because the product wrote it itself.
@@ -2862,7 +2875,7 @@ happens to notice — which is the bug class this closes.
 | `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`. A safety net rather than a route: no handler writes `config.json` through it — the per-channel savers (`messaging._LockedSectionWrite`), the STT PUT and the MCP gateway-enable toggle all go through `update_config_locked`, and `TestTheAtomicJsonWriteConfigFamilyIsRatcheted` pins that population to an empty baseline so a new saver cannot reopen it |
 
 A handler that must answer only after the new value is in force calls
-`ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which
+`ConfigWatch.refresh_now()` (`handlers/core_config_view.py::_hot_apply_after_write`), which
 forces one cycle and is a no-op before the watcher is started. The config PUT
 and every per-channel saver (the `*_settings.py` owners in `dashboard/messaging_api/`,
 the WhatsApp saver in `handlers/whatsapp_setup.py`) do, because their writes carry authorization: a
@@ -3483,7 +3496,7 @@ a prompt-injected agent with file-write access) bypassed that gate entirely. Eac
 knob controls a resource-consumption dimension (concurrent subagent processes,
 per-subagent turn budget, pre-warmed pool processes), so an inflated on-disk value
 could exhaust host memory/CPU/the process table (DoS). The dashboard write gate
-(`dashboard/handlers/core.py`) and the runtime pool cap **import these same
+(`dashboard/handlers/core_config_view.py`) and the runtime pool cap **import these same
 constants**, so write-gate / load-clamp / runtime-cap cannot drift apart —
 closing the direct-config-edit DoS gap.
 

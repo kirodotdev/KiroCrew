@@ -179,6 +179,14 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
 # messaging channel would silently leave the user with no record of what
 # changed. Only the tool-vs-shell distinction stays with the model (clause (a)
 # below): the runtime cannot see HOW a file was changed.
+#
+# The fence contract is stated in both variants and again in prompt.md's
+# Output Format: a custom agent gets these rules without prompt.md, and a
+# minimal-context run gets prompt.md without these rules.
+_FENCE_RULE = (
+    "Each opening and closing ``` stands alone on its line, and a blank line "
+    "follows a closing fence.\n"
+)
 _DIFF_RULE_DASHBOARD = (
     "File changes and diff blocks: edits made through the BUILT-IN "
     "file-editing tools already render as structured diff cards in this "
@@ -189,7 +197,8 @@ _DIFF_RULE_DASHBOARD = (
     "`+++ new_path` headers and an `@@` hunk line; use /dev/null for new "
     "files / deletions — the headers let the dashboard's diff viewer link to "
     "the file), because no card is rendered for those.\n"
-    "When a substantive report, synthesis, or results table is NOT your turn's "
+    + _FENCE_RULE
+    + "When a substantive report, synthesis, or results table is NOT your turn's "
     "final message (more tool calls or messages follow it), end that message "
     "with <!-- keep-visible --> as its final line. The dashboard transcript's "
     "collapse-all mode shows only the turn's last substantive message and folds "
@@ -209,7 +218,7 @@ _DIFF_RULE_CHANNEL = (
     "(use /dev/null for new files / deletions). This surface renders no tool "
     "cards, so your message text is the only place the user can see what "
     "changed. No exceptions — even single-line changes MUST get a diff "
-    "block.\n"
+    "block.\n" + _FENCE_RULE
 )
 
 

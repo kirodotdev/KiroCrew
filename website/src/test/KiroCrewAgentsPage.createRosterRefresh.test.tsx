@@ -21,7 +21,7 @@
  * again.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { screen, fireEvent, cleanup } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 
@@ -97,11 +97,13 @@ describe('NewCrewmateDialog opened from KiroCrewAgentsPage', () => {
     // The Crewmates page's own roster leaf, seeded so this test can see whether
     // that door is still served too: the fix adds a reader, it does not swap one.
     queryClient.setQueryData(MEMBERS_ROSTER_QUERY_KEY, [])
+    // The config the editor and the Crewmates page read, seeded for the same
+    // reason: this page no longer reads it itself until a crewmate is edited.
+    queryClient.setQueryData(['kirocrewConfig'], { memory_stores: {} })
     expect(mockApi.kirocrewAgents).toHaveBeenCalledTimes(1)
 
     // No answer at all (a dropped connection), and the reconcile read then finds
     // the row — the create may well have committed.
-    const configReadsBefore = mockApi.kirocrewConfig.mock.calls.length
     mockApi.createKirocrewAgent.mockRejectedValueOnce(new TypeError('Failed to fetch'))
     mockApi.members.mockResolvedValue({ members: [{ name: 'radar', slug: 'radar' }] })
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
@@ -113,15 +115,11 @@ describe('NewCrewmateDialog opened from KiroCrewAgentsPage', () => {
     expect(mockApi.kirocrewAgents).toHaveBeenCalledTimes(2)
     // And the Crewmates-page door is still invalidated by the same reconcile.
     expect(queryClient.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.isInvalidated).toBe(true)
-    // And the crew manager's config-derived list, which the SAME write lands in,
-    // is refreshed too: the reconcile must refresh the identical pair the success
-    // path does, or a committed-but-lost create stays absent from the config view
-    // until a manual reload. (The config query is active on the page, so its
-    // invalidation triggers an immediate refetch — observed as a fresh read, not
-    // a lingering isInvalidated flag, which an active query clears on refetch.)
-    await waitFor(() =>
-      expect(mockApi.kirocrewConfig.mock.calls.length).toBeGreaterThan(configReadsBefore),
-    )
+    // And the config-derived lists, which the SAME write lands in, are
+    // invalidated too: the reconcile must refresh the identical pair the success
+    // path does, or a committed-but-lost create stays absent from the editor's
+    // memory section until a manual reload.
+    expect(queryClient.getQueryState(['kirocrewConfig'])?.isInvalidated).toBe(true)
   })
 
   it('refreshes this page\'s roster when a dropped create cannot be reconciled at all', async () => {

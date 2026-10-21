@@ -286,8 +286,8 @@ class TestApprovalModes:
         and a human/batch could resume — a call the gate denied.
 
         Checking ``request_id not in slot._approval_futures`` AFTER the turn is
-        not enough: the runner's ``finally`` (``chat_runner.py`` ~7396) pops
-        every future at end-of-turn, so the interactive path also leaves it
+        not enough: ``_on_permission_prompt``'s ``finally`` (chat_turn/permission_prompt.py) pops
+        the future it registered, so the interactive path also leaves it
         absent — the residue is identical for allow and deny. So this test
         instead OBSERVES THE REGISTRATION ITSELF by recording every key ever
         assigned to ``_approval_futures`` during the turn. On a deny that key

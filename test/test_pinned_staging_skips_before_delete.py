@@ -571,7 +571,12 @@ def test_no_name_based_filesystem_question_where_a_descriptor_is_held() -> None:
     }
     offenders: list[str] = []
 
-    for module in ("src/kiro_crew/pinned_fs.py",):
+    for module in (
+        "src/kiro_crew/pinned_fs.py",
+        "src/kiro_crew/pinned_fs_primitives.py",
+        "src/kiro_crew/pinned_fs_dirs.py",
+        "src/kiro_crew/pinned_fs_files.py",
+    ):
         path = repo_root / module
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for func in ast.walk(tree):

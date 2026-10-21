@@ -203,6 +203,7 @@ _CANONICAL_BOOT_MATRIX_EXPR = (
     "(needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}"
 )
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
+    ("ci.yml", "lint-gate"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "backend-lint"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "backend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "backend-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
@@ -504,8 +505,8 @@ def test_merge_queue_readiness_rollout_values() -> None:
     job = _readiness_job()
     (step,) = job["steps"]
     values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
-    assert values == {"TOTAL_BUDGET": "10800"}
-    assert job["timeout-minutes"] == 185
+    assert values == {"TOTAL_BUDGET": "12000"}
+    assert job["timeout-minutes"] == 205
 
 
 def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:

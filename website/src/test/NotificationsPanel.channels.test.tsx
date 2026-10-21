@@ -18,6 +18,8 @@ const CHANNELS: NotificationChannel[] = [
   { channel: 'system.approval', source: 'system', registered: true, default_priority: 'critical', protected: true, settings: {} },
   { channel: 'system.cron', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
   { channel: 'system.heartbeat', source: 'system', registered: true, default_priority: 'passive', protected: false, settings: { muted: true } },
+  { channel: 'system.member', source: 'system', registered: true, default_priority: 'passive', protected: false, settings: {} },
+  { channel: 'system.apps', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
   { channel: 'oncall-radar.ticket-update', source: 'oncall-radar', registered: true, default_priority: 'default', protected: false, settings: { priority: 'critical' } },
   { channel: 'oncall-radar.sync-status', source: 'oncall-radar', registered: false, default_priority: null, protected: false, settings: { muted: true } },
 ]
@@ -54,6 +56,20 @@ describe('NotificationsPanel channels section', () => {
     // Channel labels drop the source prefix
     expect(screen.getByText('ticket-update')).toBeTruthy()
     expect(screen.queryByText('oncall-radar.ticket-update')).toBeNull()
+  })
+
+  it('names the crewmate-message channel in words, not by its id', async () => {
+    renderPanel()
+    expect(await screen.findByText('Crewmate messages')).toBeTruthy()
+    expect(screen.queryByText('member')).toBeNull()
+  })
+
+  it('names the app-update channel in words, so muting it reads as what it does', async () => {
+    // The bare id "apps" reads as "every app's notifications"; muting it only
+    // silences the "a newer version is published" notes.
+    renderPanel()
+    expect(await screen.findByText('App updates')).toBeTruthy()
+    expect(screen.queryByText('apps')).toBeNull()
   })
 
   it('renders protected channels locked without controls', async () => {

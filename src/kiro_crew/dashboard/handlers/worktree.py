@@ -78,7 +78,7 @@ from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
 from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args_sandboxed
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import LAUNCHER_EXEC_FAILURE_RE, run_limited, sandboxed_spawn_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.subprocess_utf8 import utf8_path_stdout, utf8_stdout
@@ -283,7 +283,7 @@ def _run_git(
 
 
 def _launcher_failure_line(stderr: str) -> str:
-    """The sandbox launcher's FATAL line in *stderr*, or ``""`` when it did not fail.
+    """The sandbox launcher's refusal line in *stderr*, or ``""`` when it did not refuse.
 
     Line-wise and WARNING-aware, and both properties are load-bearing.
 
@@ -298,10 +298,18 @@ def _launcher_failure_line(stderr: str) -> str:
 
     Scanning per line rather than only the head also catches the opposite order: a
     real fatal line that an advisory happens to precede.
+
+    A command the kernel would not exec is not a refusal either. The launcher built
+    the sandbox and git could not start inside it, so answering "this host has no OS
+    sandbox backend" would name the wrong cause on a host that has one. The line is
+    left as git's stderr, and the caller reports the failed call as it reports any
+    other git failure.
     """
     for line in stderr.splitlines():
-        if line.startswith(_SANDBOX_LAUNCHER_PREFIX) and not line.startswith(
-            _SANDBOX_LAUNCHER_WARNING_PREFIX
+        if (
+            line.startswith(_SANDBOX_LAUNCHER_PREFIX)
+            and not line.startswith(_SANDBOX_LAUNCHER_WARNING_PREFIX)
+            and not LAUNCHER_EXEC_FAILURE_RE.match(line)
         ):
             return line.strip()
     return ""

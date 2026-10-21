@@ -12,7 +12,7 @@ from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
-from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,10 @@ ESSENTIAL_MISSING_SKIP_SOURCE = "essential-context#missing-skipped"
 #: link) and that were left out instead of refusing the whole turn; the full
 #: label appends ``:<template>``.
 ESSENTIAL_UNREADABLE_SKIP_SOURCE = "essential-context#unreadable-skipped"
+#: Source-label prefix of the in-band notice that names steering documents over
+#: the per-file read cap, left out instead of refusing the whole turn; the full
+#: label appends ``:<template>``.
+ESSENTIAL_OVERSIZED_SKIP_SOURCE = "essential-context#oversized-skipped"
 _MAX_SKIPPED_LISTED = 10
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
@@ -93,6 +97,21 @@ class _UnreadableEssentialSourceError(MemberEssentialContextError):
     steering document refused this way is left out unread and named; every other
     source keeps failing closed.
     """
+
+
+class _OversizedEssentialSourceError(_UnreadableEssentialSourceError):
+    """An admitted source larger than the per-file read cap, ``_MAX_SOURCE_BYTES``.
+
+    Nothing past the cap is read. A steering document refused this way is left
+    out and named with its *size*, like any other unreadable steering, because
+    it could never fit the essentials envelope whole and a truncated prefix would
+    present partial rules as complete. Every other source keeps failing closed,
+    and the message names the file, its size and the cap.
+    """
+
+    def __init__(self, message: str, *, size: int) -> None:
+        super().__init__(message)
+        self.size = size
 
 
 #: Top-level workspace names the product itself writes as managed state. An entry
@@ -239,12 +258,23 @@ def _read(path: Path, root: Path) -> str:
         _refuse_managed_source(Path(admitted))
         # Pin this admitted parent, not the whole home. A racing ancestor
         # redirect cannot reach managed data allowed by the generic V1 gate.
-        data = safe_read_file_bytes_nolink(
-            str(path),
-            within_root=str(Path(admitted).parent),
-            max_bytes=_MAX_SOURCE_BYTES,
-            allow_truncate=False,
-        )
+        try:
+            data = safe_read_file_bytes_nolink(
+                str(path),
+                within_root=str(Path(admitted).parent),
+                max_bytes=_MAX_SOURCE_BYTES,
+                allow_truncate=False,
+            )
+        except FileTooLargeError as exc:
+            # Not an OSError or ValueError, so without this it escaped with no path.
+            # The size is the one the read measured on the descriptor it opened;
+            # an error without a measured size fails closed instead of skipping,
+            # and the ValueError handler below names the path.
+            if exc.size is None:
+                raise MemberEssentialContextError(str(exc)) from exc
+            raise _OversizedEssentialSourceError(
+                f"Essential source {path}: {exc}", size=exc.size
+            ) from exc
         if data is None:
             raise _UnreadableEssentialSourceError(
                 f"Essential source {path}: missing, unreadable, or outside the admitted "
@@ -273,6 +303,8 @@ def _read_implicit_guide(path: Path, root: Path) -> str | None:
     """
     try:
         return _read(path, root)
+    except _OversizedEssentialSourceError:
+        raise
     except MemberEssentialContextError as exc:
         reason = str(exc.__cause__ or exc)
         logger.warning("Project guide %s not loaded: %s", path, reason)
@@ -373,6 +405,35 @@ def _skipped_unreadable_note(unreadable: list[Path], template: str) -> tuple[str
         f"{'was' if len(unique) == 1 else 'were'} left out: {listed}. The host may "
         "still load them natively, so their text can appear elsewhere in your context; "
         "this note only says the snapshot does not carry them.",
+    )
+
+
+def _skipped_oversized_note(
+    oversized: list[tuple[Path, int]], template: str
+) -> tuple[str, str] | None:
+    """The in-band note naming steering documents over the read cap, or ``None``.
+
+    Each entry is ``(path, measured size in bytes)``. The file is not read past
+    the cap and is left out whole, so the member starts and the agent does not assume
+    its contents; the note gives the size and the cap so the user knows what to
+    trim. kiro-cli applies its own limits when it loads the file natively.
+    """
+    unique = list(dict.fromkeys(oversized))
+    if not unique:
+        return None
+    listed = ", ".join(f"{path} ({size:,} bytes)" for path, size in unique[:_MAX_SKIPPED_LISTED])
+    more = len(unique) - _MAX_SKIPPED_LISTED
+    if more > 0:
+        listed += f", and {more} more"
+    return (
+        f"{ESSENTIAL_OVERSIZED_SKIP_SOURCE}:{template}",
+        f"STEERING NOT IN THIS SNAPSHOT. {len(unique)} steering "
+        f"file{'' if len(unique) == 1 else 's'} {'is' if len(unique) == 1 else 'are'} "
+        f"over the {_MAX_SOURCE_BYTES:,}-byte per-file limit and "
+        f"{'was' if len(unique) == 1 else 'were'} left out: {listed}. The host may "
+        "still load them natively, so their text can appear elsewhere in your context; "
+        "this note only says the snapshot does not carry them. To load one here, "
+        "ask the user to shorten it or split it into smaller files.",
     )
 
 
@@ -731,6 +792,7 @@ def documents_for_member(
     linked: list[Path] = []
     missing: list[Path] = []
     unreadable: list[Path] = []
+    oversized: list[tuple[Path, int]] = []
     project_root = _admitted_project_root(project)
 
     def _mark_core(source: str) -> None:
@@ -746,6 +808,7 @@ def documents_for_member(
             else (
                 _skipped_linked_note(linked),
                 _skipped_unreadable_note(unreadable, template),
+                _skipped_oversized_note(oversized, template),
                 _skipped_managed_note(skipped, template),
                 _missing_declared_note(
                     [path for path in missing if path.suffix.lower() == ".md"], template
@@ -768,10 +831,15 @@ def documents_for_member(
                 if not steering:
                     raise
                 # Contained and admitted, but the descriptor read refused it (a
-                # hard link an installer placed, a non-link reparse point). Left
-                # out unread and named, as a linked steering entry is.
+                # hard link an installer placed, a non-link reparse point) or it
+                # is over the read cap. Left out unread and named, as a linked
+                # steering entry is. The read precedes the inclusion check, so
+                # this holds for every inclusion mode.
                 logger.warning("Steering %s not loaded: %s", path, exc)
-                unreadable.append(path)
+                if isinstance(exc, _OversizedEssentialSourceError):
+                    oversized.append((path, exc.size))
+                else:
+                    unreadable.append(path)
                 return
         if steering:
             fields, _ = split_frontmatter(body, STEERING_LOADER)

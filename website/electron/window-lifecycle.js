@@ -10,6 +10,7 @@ const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
+const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
   watchFullScreenTransitions,
   repairStalledFullScreenExit,
@@ -336,20 +337,28 @@ function createWindowLifecycle(options) {
     updateViewBounds();
     win.on("resize", updateViewBounds);
 
+    // `menuBarOverlap` tells the renderer whether to keep its menu-bar band
+    // clear: false when macOS already placed the fullscreen window below the
+    // menu bar (a notched built-in display).
     const sendFullScreen = () => {
       if (win.isDestroyed() || view.webContents.isDestroyed()) return;
-      view.webContents.send("fullscreen-changed", win.isFullScreen());
+      view.webContents.send("fullscreen-changed", win.isFullScreen(), {
+        menuBarOverlap: menuBarCanOverlap(win, screen),
+      });
     };
 
     // Fullscreen events can precede the window manager's final reflow. Keep the
     // immediate recompute (no flash where reflow is synchronous) and bounded
-    // deferred passes, including the late backstop slow Linux WMs need.
+    // deferred passes, including the late backstop slow Linux WMs need. Each
+    // pass re-sends the fullscreen state too, because the menu-bar verdict reads
+    // the window's position, which is only final once the reflow lands.
     let fullscreenSettleTimers = [];
     const scheduleFullscreenSettle = () => {
       for (const timer of fullscreenSettleTimers) clearTimeout(timer);
-      fullscreenSettleTimers = FULLSCREEN_SETTLE_MS.map(
-        (ms) => setTimeout(updateViewBounds, ms),
-      );
+      fullscreenSettleTimers = [
+        ...FULLSCREEN_SETTLE_MS.map((ms) => setTimeout(updateViewBounds, ms)),
+        ...FULLSCREEN_SETTLE_MS.map((ms) => setTimeout(sendFullScreen, ms)),
+      ];
     };
     win.on("closed", () => {
       for (const timer of fullscreenSettleTimers) clearTimeout(timer);

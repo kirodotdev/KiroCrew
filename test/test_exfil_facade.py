@@ -74,7 +74,6 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
             "_OAUTH_EXTENSION_MEMO",
             "_emit_oauth_extension_used_event",
             "_slack_manifest_re_slot",
-            "redact_exfiltration_urls",
         }
     ),
 }

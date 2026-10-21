@@ -1,5 +1,6 @@
 ---
 name: papyrus-writing
+app: papyrus
 description: Base skill for the Papyrus writing assistant — conduct, paper-quality principles and LaTeX house style every Papyrus edit builds on. Load first when working on a .tex paper in Papyrus, then the task skill (papyrus-latex-comments, -suggestions, -make-fluent or -diagnose-compilation).
 triggers: latex, .tex, papyrus, pdflatex, tectonic, bibtex, bibliography, manuscript, latex paper, writing assistant
 ---

@@ -44,6 +44,7 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `class` *(internal)* | session | What KIND of session this log belongs to, over the log's whole life |
 | `outline` *(internal)* | session | The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output |
 | `otel_usage` *(internal)* | session | Whether this session opened and which closed agent_kind value it opened under -- never the raw agent name, which the fold folds to that enum and does not keep -- and how many turns it has started per actor: the counts the OTel usage export reads to mint session and turn counters |
+| `otel_session_tree` *(internal)* | session | How many creators stood above this session in the session tree when it opened, and how many child sessions it has created -- the numbers the OTel export reads to count sessions by tree depth and children by ordinal |
 | `ledger` | slot | One workstream's goal, phase and next step, what was tried and rejected, and its artifacts |
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
 | `work` | slot | A conductor's board: the header, every work item, and what the fold dropped |
@@ -219,6 +220,19 @@ Moved by: `session/opened`, `turn/started`.
 | `opened_agent_kind` | `string` | no |
 | `opened_ts` | `number` | no |
 | `turns` | `object` | no |
+
+## `otel_session_tree`
+
+How many creators stood above this session in the session tree when it opened, and how many child sessions it has created -- the numbers the OTel export reads to count sessions by tree depth and children by ordinal.
+
+Moved by: `session/opened`, `session/spawned`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `agent_kind` | `string` | no |
+| `children` | `number` | no |
+| `depth` | `number` | yes |
+| `opened_ts` | `number` | no |
 
 ## `ledger`
 

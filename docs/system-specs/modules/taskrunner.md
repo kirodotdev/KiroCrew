@@ -610,7 +610,7 @@ already handed back to its run:
 | any row still `queued` (accepted, never claimed: the crash landed while it waited for a lane slot) whose `params.accepted_by` is a DEAD incarnation | `cancelled` ("never started") -- nothing ran under it, and a resume re-accepts a new row, so leaving it claimable would only park it forever: `taskrunner_step` has no dispatcher |
 | still leased by this incarnation, or `queued` under THIS incarnation (its owner is parked in a live `admit`) | skipped |
 
-Pinned by `test/test_taskrunner_taskq.py` and `test/test_taskq_runner_adapter.py`.
+Pinned by `test/test_taskrunner_taskq.py` and `test/test_taskq_runner_adapter_durability.py`.
 
 ## Pause / Resume
 

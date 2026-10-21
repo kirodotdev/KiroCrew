@@ -685,6 +685,20 @@ class SlackRenderer(Renderer):
         self._task_counter = 0
         self._active_task_id = ""
         self._active_task_title = ""
+        #: ACP tool_call_id of the task card ``_active_task_id`` is showing, so a
+        #: ``tool_result`` can be matched to the card it finalizes. "" when no
+        #: card is open or the transport sent no id.
+        self._active_tool_call_id = ""
+        #: Terminal outcomes seen for THIS turn's tool calls, keyed by ACP
+        #: ``tool_call_id`` -> a ``TERMINAL_TOOL_STATUSES`` value. A call's card
+        #: is finalized against this: "completed" is the ✓ card, anything else is
+        #: an error card naming the exact outcome. Entries are consumed as their
+        #: card closes.
+        self._tool_outcomes: dict[str, str] = {}
+        #: Cards already finalized this turn, keyed by ACP ``tool_call_id`` ->
+        #: (task_id, final title), so a result that lands after its card closed
+        #: (out-of-order parallel tool use) can re-emit that exact card.
+        self._closed_task_ids: dict[str, tuple[str, str]] = {}
         self._tool_start_time = 0.0  # monotonic ts of current tool start
         self._tool_timer_task: asyncio.Task | None = None  # 30s elapsed updater
         self._controller: Any = None
@@ -1173,6 +1187,66 @@ class SlackRenderer(Renderer):
             logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
             return False
 
+    async def on_tool_result(self, tool_call_id: str, tool_status: str) -> None:
+        """Record a tool call's terminal outcome for its card.
+
+        The card for the ACTIVE call is finalized later (at the next
+        ``on_tool_call``, a ``wait`` boundary, or ``on_done``), where the
+        elapsed time is known — so the outcome is remembered for that finalize.
+        A result that arrives for a card ALREADY CLOSED (parallel / out-of-order
+        tool use, where the next call opened before this call's result landed)
+        is applied immediately: re-emitting that card's ``task_id`` with the
+        ``error`` status replaces it in place, so a late failure is not lost to
+        the ✓ its card was closed with. A terminal status other than
+        "completed" is a call that did not succeed.
+        """
+        if not tool_call_id:
+            return
+        self._tool_outcomes[tool_call_id] = tool_status
+        # Active card: leave it for the deferred finalize, which reads the
+        # outcome and adds elapsed time. An already-closed card: update it now.
+        if tool_call_id == self._active_tool_call_id or tool_call_id not in self._closed_task_ids:
+            return
+        if tool_status and tool_status != "completed":
+            task_id, title = self._closed_task_ids[tool_call_id]
+            self._tool_outcomes.pop(tool_call_id, None)
+            await self._append_task(task_id, title, "error", details=tool_status)
+
+    async def _finalize_active_task(self) -> None:
+        """Close the open task card against its recorded outcome, if any.
+
+        Replaces the three bare ``_append_task(..., "complete")`` calls that
+        marked EVERY tool card complete regardless of what the call did. A call
+        whose ``on_tool_result`` recorded a non-"completed" terminal status gets
+        an ``error`` card whose detail names the EXACT outcome (``failed`` /
+        ``cancelled`` / ``canceled`` / ``refused``), so a declined or cancelled
+        call is never relabelled as a failure; everything else (a success, or a
+        call whose transport sent no result event) keeps the ✓ card, so
+        behaviour is unchanged wherever no outcome was reported. The card's
+        ``task_id`` and final title are remembered under its ``tool_call_id`` so
+        a result that lands AFTER this close (out-of-order parallel use) can
+        re-emit the card. Idempotent: clears ``_active_task_id`` so a second
+        call is a no-op.
+        """
+        if not self._active_task_id:
+            return
+        elapsed = self._tool_elapsed_str()
+        title = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
+        outcome = self._tool_outcomes.pop(self._active_tool_call_id, "") or ""
+        succeeded = not outcome or outcome == "completed"
+        if succeeded:
+            await self._append_task(self._active_task_id, title, "complete")
+        else:
+            # Slack's ``task_update`` status is one of error/pending/in_progress/
+            # complete — "error" is the non-✓ card. The detail carries the exact
+            # outcome string, so refused/cancelled read as themselves rather than
+            # as a failure.
+            await self._append_task(self._active_task_id, title, "error", details=outcome)
+        if self._active_tool_call_id:
+            self._closed_task_ids[self._active_tool_call_id] = (self._active_task_id, title)
+        self._active_task_id = ""
+        self._active_tool_call_id = ""
+
     def _tool_elapsed_str(self) -> str:
         """Formatted elapsed time for the active tool, or '' (native helper)."""
         if not self._tool_start_time:
@@ -1452,12 +1526,11 @@ class SlackRenderer(Renderer):
         if self._use_slack_stream:
             await self._flush_stream_buffer(final=True)
         if self._active_task_id:
-            elapsed = self._tool_elapsed_str()
             self._cancel_tool_timer()
-            ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-            await self._append_task(self._active_task_id, ct, "complete")
+            await self._finalize_active_task()
         self._task_counter += 1
         self._active_task_id = f"tool_{self._task_counter}"
+        self._active_tool_call_id = tool_call_id or ""
         self._active_task_title = tool_purpose or tool_name
         await self._append_task(
             self._active_task_id, self._active_task_title, "in_progress", details=tool_name
@@ -1477,11 +1550,8 @@ class SlackRenderer(Renderer):
         )
         if is_wait and self._use_slack_stream and self._stream_ts:
             if self._active_task_id:
-                elapsed = self._tool_elapsed_str()
                 self._cancel_tool_timer()
-                ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-                await self._append_task(self._active_task_id, ct, "complete")
-                self._active_task_id = ""
+                await self._finalize_active_task()
             # This message ends here and its accumulated source is discarded, so
             # no seal will ever extract the withheld markup. Append it as written:
             # a visible path is the honest degradation, a dropped picture is not.
@@ -1594,11 +1664,8 @@ class SlackRenderer(Renderer):
         # the flag past the delivery, the answer-carrying send simply propagates
         # on failure and no call site has to reset a flag.
         if self._active_task_id and self._stream_ts is not None:
-            elapsed = self._tool_elapsed_str()
             self._cancel_tool_timer()
-            ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-            await self._append_task(self._active_task_id, ct, "complete")
-            self._active_task_id = ""
+            await self._finalize_active_task()
         self._cancel_tool_timer()
         # The stream is over, so a held comment is the reply's tail: drop it
         # when the tail grammar recognizes it on the whole reply, release it

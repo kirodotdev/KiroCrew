@@ -1,5 +1,7 @@
 """Credential regex spellings shared by the log-redaction leaf and the scrubber.
 
+It is also the home of the rule tier table (:data:`RULE_TIERS`, at the foot).
+
 ``log_redaction`` installs at CLI bootstrap, before heavy modules load, so it
 cannot import ``security``. The two AWS-key-ID and JWT spellings were therefore
 written out twice -- once in each home -- and parity was held only by tests that
@@ -20,8 +22,8 @@ flags. A compiled pattern could not be reused at four of those five sites.
 
 Why this module imports NOTHING
 -------------------------------
-Not even ``re``, and not even ``from __future__ import annotations`` -- there is
-nothing here to annotate. ``log_redaction`` is a deliberate import leaf -- it is
+Not even ``re``, and not even ``from __future__ import annotations`` -- the one
+annotation here needs none. ``log_redaction`` is a deliberate import leaf -- it is
 installed before the heavy modules load -- so anything it imports is on the
 bootstrap path. Exporting plain strings keeps this module's import cost at zero
 and makes it impossible for a future edit here to drag a dependency into that
@@ -129,3 +131,80 @@ VENDOR_TOKEN_PATTERNS = (
     ("npm-token", NPM_TOKEN),
     ("pypi-token", PYPI_TOKEN),
 )
+
+
+# ── Tiers ──
+# Every redaction rule carries one tier: what a value it matches can do alone,
+# or combined only with public data.
+#
+# * ``secret``      -- authenticates or signs (secret keys, session tokens,
+#                      private keys, vendor API tokens, URI passwords, JWTs).
+# * ``bearer_link`` -- a URL that grants access by itself until it expires
+#                      (``?token=`` links, suspicious outbound URLs).
+# * ``identifier``  -- names or describes and cannot authenticate (key IDs,
+#                      account IDs, ARNs, request IDs, digests).
+#
+# The tier is METADATA today: no redactor reads it, so what gets redacted is
+# unchanged. An ``identifier`` rule is still redacted until its behaviour is
+# changed deliberately, in its own reviewed change.
+
+TIER_SECRET = "secret"
+TIER_BEARER_LINK = "bearer_link"
+TIER_IDENTIFIER = "identifier"
+
+#: The three tiers, in order of what a value can do.
+TIERS = (TIER_SECRET, TIER_BEARER_LINK, TIER_IDENTIFIER)
+
+#: Tier of every rule id a redactor in ``security`` can name, plus the labels
+#: of :data:`VENDOR_TOKEN_PATTERNS`. A rule id missing here is a test failure,
+#: so a new rule cannot ship without a tier.
+RULE_TIERS = {
+    # Core redactor, pass 1 (fixed patterns) and its labelled AWS forms.
+    "aws_access_key_id": TIER_IDENTIFIER,
+    "aws_secret_access_key": TIER_SECRET,
+    "aws_session_token": TIER_SECRET,
+    "private_key": TIER_SECRET,
+    "slack_token": TIER_SECRET,
+    "telegram_bot_token": TIER_SECRET,
+    "discord_bot_token": TIER_SECRET,
+    "github_token": TIER_SECRET,
+    "gitlab_token": TIER_SECRET,
+    "stripe_key": TIER_SECRET,
+    "sendgrid_key": TIER_SECRET,
+    "openai_key": TIER_SECRET,
+    "anthropic_key": TIER_SECRET,
+    "npm_token": TIER_SECRET,
+    "pypi_token": TIER_SECRET,
+    "digitalocean_token": TIER_SECRET,
+    "google_oauth_secret": TIER_SECRET,
+    "url_userinfo": TIER_SECRET,
+    "jwt": TIER_SECRET,
+    # Pass-1 match no named rule claims (e.g. an ``Authorization: Bearer`` header).
+    "credential_pattern": TIER_SECRET,
+    # Passes 2-4.
+    "encoded_credential": TIER_SECRET,
+    "bare_aws_secret": TIER_SECRET,
+    "token_parameter": TIER_BEARER_LINK,
+    # Outbound-URL pass: each rule removes or blocks a whole URL.
+    "exfil_decode_saturated": TIER_BEARER_LINK,
+    "exfil_encoded_credential": TIER_BEARER_LINK,
+    "exfil_fixed_credential": TIER_BEARER_LINK,
+    "exfil_hard_credential": TIER_BEARER_LINK,
+    "exfil_percent_encoding": TIER_BEARER_LINK,
+    "exfil_query_length": TIER_BEARER_LINK,
+    "exfil_query_pattern": TIER_BEARER_LINK,
+    "exfil_unknown": TIER_BEARER_LINK,
+    # Labels of VENDOR_TOKEN_PATTERNS.
+    "openai-project-key": TIER_SECRET,
+    "anthropic-key": TIER_SECRET,
+    "vendor-key": TIER_SECRET,
+    "github-fine-grained-pat": TIER_SECRET,
+    "gitlab-pat": TIER_SECRET,
+    "npm-token": TIER_SECRET,
+    "pypi-token": TIER_SECRET,
+}
+
+
+def rule_tier(rule_id: str) -> str:
+    """The tier of *rule_id*; ``KeyError`` for a rule with no tier."""
+    return RULE_TIERS[rule_id]

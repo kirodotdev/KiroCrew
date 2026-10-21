@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
-import { isKeyboardRepaste, REPASTE_KEY_WINDOW_MS } from '../components/chat-input/paste'
+import { isKeyboardRepaste, REPASTE_KEY_WINDOW_MS } from '../chat-core/composer/pasteEditor'
 
 /**
  * The iOS 27 keyboard's one-tap Paste stays armed after it lands in a web

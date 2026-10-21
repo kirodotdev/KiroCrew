@@ -50,6 +50,7 @@ _GATEWAY_LAUNCH_FIXTURE_EXEMPTIONS = frozenset(
         "test_mcp_gateway_spawn_gate.py",
         "test_mcp_gateway_stub_session_token.py",
         "test_mcp_gatewayd_coverage.py",
+        "test_mcp_gatewayd_coverage_acquire_respawn.py",
         "test_runloop_integration.py",
     }
 )

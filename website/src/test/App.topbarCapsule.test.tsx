@@ -208,6 +208,31 @@ describe('App shell — macOS fullscreen class', () => {
     delete (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
   })
 
+  it('keeps no band when the shell says the menu bar cannot overlap (notched display)', async () => {
+    // A notched display already puts the fullscreen window below the menu bar,
+    // so a band there is only an empty gap under it.
+    let fsCallback: ((fs: boolean, menuBarOverlap?: boolean) => void) | undefined
+    ;(window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean, menuBarOverlap?: boolean) => void) => () => void } }).electronAPI = {
+      onFullScreenChanged: (cb: (fs: boolean, menuBarOverlap?: boolean) => void) => { fsCallback = cb; return () => { fsCallback = undefined } },
+    }
+    const { container } = renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByTestId('chat-page')
+    const root = container.querySelector('.mac-electron') as HTMLElement
+    const frame = screen.getByTestId('app-frame')
+
+    act(() => fsCallback?.(true, false))
+    expect(root.classList.contains('mac-fullscreen')).toBe(true)
+    expect(frame.style.paddingTop).toBe('')
+
+    // The same window moved to a display without a notch: the band returns.
+    act(() => fsCallback?.(true, true))
+    expect(frame.style.paddingTop).toBe(`${MAC_FULLSCREEN_TOP_RESERVE_PX}px`)
+
+    act(() => fsCallback?.(false, false))
+    expect(frame.style.paddingTop).toBe('')
+    delete (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean, menuBarOverlap?: boolean) => void) => () => void } }).electronAPI
+  })
+
   it('scales the fullscreen reserve by native zoom so it still covers the strip', async () => {
     // The strip is in screen points; at zoom 0.5 a CSS px is half a point, so
     // the reserve doubles in CSS px to stay the same height on screen.

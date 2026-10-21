@@ -83,16 +83,16 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert '"consistency", "symmetry" or "matches the other panel" is not it' in contract
 
     def test_an_unverified_premise_on_an_availability_path_is_the_block_case(self) -> None:
-        # "When torn, choose CONCERNS" made BLOCK unreachable exactly where the
+        # "When torn, choose the soft verdict" made BLOCK unreachable exactly where the
         # reviewer cannot verify the premise at all -- it has no shell and no
         # second platform -- so the tie-breaker is scoped to reversible cases
         # and this one is named as a trigger.
         contract = _fp_contract()
         assert "UNVERIFIED PREMISE ON A CORE\n  AVAILABILITY PATH" in contract
         assert "ONLY where being wrong is REVERSIBLE" in contract
-        assert 'Here "unclear" is the BLOCK case, not the CONCERNS case' in contract
+        assert 'Here "unclear" is the BLOCK case, not the PASS case' in contract
         assert "the author can" in contract
-        assert "Do not soften this to a CONCERNS item" in contract
+        assert "Do not soften this to a note" in contract
         # The carve-outs stay a CLOSED set -- now three: (a) availability
         # premise, (b) rider, (c) product shape without a recorded decision,
         # which is also this lane's only "cannot evaluate". An open-ended
@@ -103,30 +103,27 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "The single exception is the combination" not in contract
 
     def test_undeclared_and_rides_along_are_inventory_tags_not_verdicts(self) -> None:
-        # ~50% of PRs drew CONCERNS, so the signal cost nothing to ignore.
         # These two tags print as inventory and do not carry the verdict by
-        # themselves; CONCERNS is reserved for premise and depth risks.
+        # themselves; a note is reserved for premise and depth risks.
         contract = _fp_contract()
         assert "`undeclared` and `rides along`\n  are INVENTORY TAGS ONLY" in contract
-        assert "on\n  their own they do NOT reach CONCERNS" in contract
+        assert "on\n  their own they are not even a note" in contract
         assert "a harm-free rider is inventory" in contract
         # The tags themselves survive on the item line.
         assert "undeclared | rides" in contract
-        # A premise risk carried BY the rider still reaches CONCERNS.
-        assert "when the rider itself\n  carries one of the premise risks" in contract
+        # A premise risk carried BY the rider is still a note.
+        assert "itself carries one of the premise risks" in " ".join(contract.split())
 
     def test_output_leads_with_problems_and_drops_the_praise_punchline(self) -> None:
         contract = _fp_contract()
         # The PASS punchline does not argue the author's case.
         assert "why every item earns its place" not in contract.split("Output EXACTLY")[0]
-        assert "Never\nexplain why every item earns its place" in contract
-        assert "the ONE thing a human should still verify before merge" in contract
+        assert "Never explain why every item earns its place" in " ".join(contract.split())
+        assert "ONE bold REASON (one to three sentences" in contract
         assert "`Nothing to check.`" in contract
-        # Non-justified items are read FIRST, above the inventory.
-        assert "### Not justified as shipped" in contract
-        assert contract.index("### Not justified as shipped") < contract.index(
-            "### What this change ships"
-        )
+        # Notes are read FIRST, above the inventory.
+        assert "### Notes" in contract
+        assert contract.index("### Notes") < contract.index("### What this change ships")
         # `justified` carries no reason -- the parenthetical was the praise.
         assert "`justified` is exactly that ONE word" in contract
         assert "Only a NON-justified tag carries a reason" in contract
@@ -152,16 +149,16 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "this block is the audit trail, not the summary" in contract
 
     def test_every_finding_states_what_would_clear_it(self) -> None:
-        # A finding with no statable resolution is what produced 31 of 57
-        # unanswered CONCERNS: nothing told the author when they were done.
+        # A finding with no statable resolution left the author not knowing when
+        # they were done. A Blocker carries its Trigger, its Outcome and the line
+        # that retires it, and the Clears-when line is the LAST line of the item.
         contract = _fp_contract()
-        # Once on the item entry, once on the Blocker -- the two places a
-        # finding can appear -- and nowhere else, because there is nowhere else.
         assert (
-            contract.count("`Clears when: <the concrete evidence or change that resolves it>`") == 2
+            contract.count("`Clears when: <the concrete evidence or change that resolves it>`") == 1
         )
-        assert "REQUIRED on every\nitem whose tag reaches CONCERNS" in contract
-        assert "is not a finding -- retag it or drop it" in contract
+        assert "`Trigger: <the situation that occurs in practice" in contract
+        assert "`Outcome: <the observable cost carried>`" in contract
+        assert "A Blocker without a Trigger line and an\nOutcome line is read as PASS" in contract
 
     def test_the_output_diet_tightened_and_kept_its_machine_read_lines(self) -> None:
         contract = _fp_contract()
@@ -169,7 +166,7 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "~250 words" not in contract
         # The two lines the workflows grep for are untouched, and still first
         # and last in the emitted shape.
-        assert "First-Principles-Verdict: <PASS | CONCERNS | BLOCK>" in contract
+        assert "First-Principles-Verdict: <PASS | BLOCK>" in contract
         assert contract.rstrip().endswith("[FIRST-PRINCIPLES-REVIEWED] <head sha>")
         for name in FP_LANES:
             workflow = _workflow(name)
@@ -215,26 +212,21 @@ class TestFirstPrinciplesOneStatementPerProblem:
     def test_the_item_entry_is_the_only_place_a_problem_appears(self) -> None:
         contract = _fp_contract()
         shape = contract.split("Output EXACTLY this shape")[1]
-        assert "that entry is the item's ONLY\nappearance outside the inventory" in contract
-        assert "there is no later section that\nsays it again" in contract
+        assert "the item's entry under `### Blockers` is" in contract
         assert "Never write a Watch, Subtractions or Suggestions heading" in contract
-        assert "a second section that restates them\nis what buried the finding" in contract
-        # The two restating sections are gone from the emitted shape.
+        # The restating sections are gone from the emitted shape.
         assert "### Watch" not in shape
         assert "### Subtractions" not in shape
-        # What survives: the problems, the collapsed audit trail, the blockers.
+        assert "### Not justified as shipped" not in shape
+        # What survives: the notes, the collapsed audit trail, the blockers.
         assert (
-            shape.index("### Not justified as shipped")
+            shape.index("### Notes")
             < shape.index("### What this change ships")
             < shape.index("### Blockers")
         )
-        # Both per-item lines are named as lines ON the entry, not sections.
-        assert "`Clears when: <the concrete evidence or change that resolves it>` --" in shape
+        # The per-item lines are named as lines ON the entry, not sections.
+        assert "`Clears when: <the concrete evidence or change that resolves it>`" in shape
         assert "`Subtraction: <the exact symbol/field/file" in shape
-        # A Blocker is evidence for an item already listed once, not a copy.
-        assert (
-            "the Blockers entry carries the evidence, not a\nsecond copy of the reason" in contract
-        )
 
     def test_the_style_bans_narration_and_says_each_problem_once(self) -> None:
         contract = _fp_contract()
@@ -244,37 +236,38 @@ class TestFirstPrinciplesOneStatementPerProblem:
         assert "the\nworkflow counts them and flags an overrun" in contract
 
     def test_the_rule_the_local_loop_parses_still_holds(self) -> None:
-        # The kirocrew-prepare-pr loop reads items out of `### Not justified as shipped`
-        # by bullet + continuation lines, so an entry shaped as the contract
-        # now asks (bullet, then indented `Clears when:` / `Subtraction:`)
-        # must yield ONE item carrying both lines, not three.
+        # The kirocrew-prepare-pr loop reads items out of `### Blockers` by
+        # bullet + continuation lines, so an entry shaped as the contract asks
+        # (title, then Trigger / Outcome / Subtraction / Clears when) must yield
+        # ONE item carrying every line, not four.
         mod = _review_contract_module()
         body = (
-            "First-Principles-Verdict: CONCERNS\n\n"
+            "First-Principles-Verdict: BLOCK\n\n"
             "**punchline**\n\n"
-            "### Not justified as shipped\n"
+            "### Blockers\n"
             "- Item 4 — unjustified move: reinstates pills against SidePanel.tsx:1459.\n"
+            "  Trigger: a user opens the side panel after this change.\n"
+            "  Outcome: two active-tab styles render at once.\n"
             "  Subtraction: defer `panelTabStyles.ts`; keep `.side-tab-active`.\n"
             "  Clears when: a linked report names who misread the fused tabs.\n"
-            "- Item 5 — undeclared: hide controls relabelled to X, description silent.\n\n"
+            "- Item 5 — duplicate: a second spelling of `structuredClone`.\n\n"
+            "### Notes\n"
+            "- Item 6 — undeclared: hide controls relabelled to X.\n\n"
             "### What this change ships\n"
             "<details><summary>Inventory (2 items) — 0 justified</summary>\n"
             "1. pills — unjustified move\n2. X icon — undeclared\n</details>\n\n"
             "[FIRST-PRINCIPLES-REVIEWED] abc\n"
         )
         items = mod.design_section_items(body)
-        assert [section for section, _ in items] == [
-            "Not justified as shipped",
-            "Not justified as shipped",
-        ]
+        assert [section for section, _ in items] == ["Blockers", "Blockers"]
         first = items[0][1]
-        assert "Clears when: a linked report" in first
+        assert "Trigger: a user opens the side panel" in first
+        assert "Outcome: two active-tab styles render at once" in first
         assert "Subtraction: defer `panelTabStyles.ts`" in first
         assert "Item 5" not in first
         # `Clears when:` is the entry's LAST line for a reason: CLEARS_WHEN_RE
         # runs on the collapsed item and reads to its end, so a line after it
-        # would be swallowed into the clearance. The contract orders
-        # `Subtraction:` first, and the extracted clearance stays clean.
+        # would be swallowed into the clearance.
         clears = mod.CLEARS_WHEN_RE.search(first)
         assert clears is not None
         assert clears.group(1).strip() == "a linked report names who misread the fused tabs."
@@ -282,7 +275,7 @@ class TestFirstPrinciplesOneStatementPerProblem:
         contract = _fp_contract()
         shape = contract.split("Output EXACTLY this shape")[1]
         assert shape.index("`Subtraction: <") < shape.index("`Clears when: <")
-        assert "It is the\nLAST line of the entry" in contract
+        assert "so no line may follow it" in " ".join(contract.split())
 
 
 class TestFirstPrinciplesExistenceLadder:
@@ -308,13 +301,15 @@ class TestFirstPrinciplesExistenceLadder:
         # What an API or a dependency does is recall, not a grep, so only an
         # in-repository duplicate can BLOCK, here and in the BLOCK list alike.
         assert (
-            "a rung (b) or (c) duplicate reaches CONCERNS at most and is never the duplicate that BLOCKs"
+            "a rung (b) or (c) duplicate is a note at most and is never the duplicate that BLOCKs"
             in lens
         )
-        verdicts = flat.split("VERDICT (advisory")[1].split("Tie-breaker:")[0]
+        verdicts = flat.split("VERDICT (pick exactly one; there are two)")[1].split("Tie-breaker:")[
+            0
+        ]
         assert (
             "an existing mechanism you can name in this repository (lens 4's rung (a); "
-            "a rung (b) or (c) duplicate stays at CONCERNS)" in verdicts
+            "a rung (b) or (c) duplicate is a note)" in verdicts
         )
         assert "A NEW dependency added for a few lines" in lens
 

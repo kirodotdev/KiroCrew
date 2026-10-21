@@ -650,23 +650,20 @@ def default_confinement() -> "str | None":
     Worse, the detached child shares the backend's scope, so a scope kill
     mid-restart could strand the host with NO gateway.
 
-    Detection is deny-by-default on the two purpose-built signals:
-
-    * ``KIROCREW_SANDBOX_ACTIVE`` — exported only by the namespace launcher /
-      seatbelt env prefix, i.e. only ever present INSIDE the sandbox.
-    * ``kirocrew-agents.slice`` in ``/proc/self/cgroup`` — the transient scope
-      ``cgroup_scope_argv`` places every backend in (Linux only; the file does
-      not exist elsewhere and an unreadable file is treated as unconfined,
-      matching hosts where the scope probe failed and no scope was applied).
+    Detection is deny-by-default and defers to the one confinement probe,
+    ``sandbox.agent_confinement_evidence()``: the ``KIROCREW_SANDBOX_ACTIVE``
+    marker, the ``kirocrew-agents.slice`` cgroup scope (Linux, matched against
+    ``_CGROUP_AGENTS_SLICE``), and the macOS Seatbelt verdict — all three
+    inherited by a spawned child. Routing through that single helper means a
+    renamed slice or a new marker moves in one place; this returns the
+    Dev-Fleet-specific reason so the restart gate's message names what a
+    replacement would inherit, while the probe owns the signals.
     """
-    if os.environ.get("KIROCREW_SANDBOX_ACTIVE"):
-        return "the Dev Fleet backend runs inside the Kiro Crew OS sandbox"
-    try:
-        cgroup = Path("/proc/self/cgroup").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if "kirocrew-agents.slice" in cgroup:
-        return "the Dev Fleet backend runs inside the kirocrew-agents cgroup scope"
+    from kiro_crew.sandbox import agent_confinement_evidence
+
+    evidence = agent_confinement_evidence()
+    if evidence is not None:
+        return f"the Dev Fleet backend is confined: {evidence}"
     return None
 
 

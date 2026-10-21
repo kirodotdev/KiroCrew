@@ -367,7 +367,16 @@ def _gateway_adaptive_state() -> tuple[int, dict[str, Any] | None, str]:
             payload = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         return port, None, f"the gateway refused the read (HTTP {exc.code})"
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError) as exc:
+        # Only a bare read timeout (the connection was accepted and the gateway
+        # then stalled -- a loop thread starved of the GIL) means it is up but
+        # busy. A connect-phase failure is reported as no answer: this read uses
+        # a 2 s deadline, which on native Windows coincides with the SYN-retry
+        # before a closed loopback port reports a refusal, so a connect timeout
+        # here must not read busy. The non-doctor sites, whose deadlines sit past
+        # that window, use loopback_http.deadline_expired.
+        if isinstance(exc, TimeoutError):
+            return port, None, "the gateway is busy (up but did not answer)"
         return port, None, "no gateway answered"
     except ValueError:
         return port, None, "the gateway's answer was not JSON"

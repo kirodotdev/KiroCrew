@@ -57,7 +57,20 @@ from facade_mirror_scan import (
 from kiro_crew import _facade_mirror
 
 # The checks and both guards parse the test trees; keep them on one worker.
-pytestmark = pytest.mark.xdist_group(name="tree_scan_facade_mirror_guards")
+#
+# The corpus scans (``_corpus_patched_names`` / ``_corpus_events``) read every
+# test-tree file and ``ast.parse`` each one that needs the syntax tree -- over a
+# thousand files for all mirrored facades at once. Unlike the single-facade
+# reader (``facade_patched_names``), the all-facades builder here cannot skip
+# files by one facade's leaf name. Several tests here each spend 30-40s on that
+# scan locally, and the cost scales with the runner, so on a slow CI host any of
+# them can exceed the 120s per-test default. The ceiling is raised for this
+# module so a legitimately large scan is not read as a hang; a genuine runaway
+# still trips at 300s.
+pytestmark = [
+    pytest.mark.xdist_group(name="tree_scan_facade_mirror_guards"),
+    pytest.mark.timeout(300),
+]
 
 
 @pytest.fixture

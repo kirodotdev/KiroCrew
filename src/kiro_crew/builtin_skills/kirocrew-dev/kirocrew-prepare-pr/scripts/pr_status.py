@@ -51,11 +51,9 @@ Exit codes:
                   a blocking review marker on the current head, no
                   pull_request-event run for the current head, a disposition
                   comment violating the one-lane / one-rationale-per-finding
-                  rule, an unanswered whole-design CONCERNS verdict for the
-                  current head (local loop only -- --disposition-gate and the
-                  required status are unchanged), a superseded verdict (a lane
-                  blocked this head in a sample a later one replaced), or
-                  anything that cannot be confirmed
+                  rule, a superseded verdict (a lane blocked this head in a
+                  sample a later one replaced), or anything that cannot be
+                  confirmed
    2  ENV ERROR - gh missing or not authenticated, or PR not found
 """
 
@@ -118,8 +116,6 @@ extract_design_items = _review_contract.extract_design_items
 design_lane_verdicts = _review_contract.design_lane_verdicts
 design_lane_punchlines = _review_contract.design_lane_punchlines
 redact = _review_contract.redact
-unanswered_concern_lanes = _review_contract.unanswered_concern_lanes
-unanswered_concerns_reason = _review_contract.unanswered_concerns_reason
 parse_disposition_record = _review_contract.parse_disposition_record
 human_override_actors = _review_contract.human_override_actors
 
@@ -691,7 +687,7 @@ def closing_link_reason(body, closing_refs, repo=None):
 _MAX_THREAD_PAGES = 50
 _MAX_COMMENT_PAGES = 50
 
-FINDING_LINE_RE = re.compile(r"^\s*FINDING\b", re.MULTILINE)
+BLOCKING_LINE_RE = re.compile(r"^\s*BLOCKING\b", re.MULTILINE)
 
 # Any revision a lane's stampless notice names. Every such notice writes the head
 # it declined to review into its own prose, and that is what scopes the notice's
@@ -1270,12 +1266,12 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
       ok        -- False when the comments could not be read (fail-closed)
       stale     -- sorted reviewer names with no fresh stamp for the head
       blocking  -- sorted reviewer names with [BLOCK-MERGE] <current head>
-      findings  -- {name: advisory FINDING-line count} for fresh comments
+      findings  -- {name: BLOCKING-line count} for fresh comments
       overridden -- {name: actor} for lanes a repository writer adjudicated at
                    this head instead of the model (see human_override_actors)
       stampless -- sorted bound lane names whose own slot carries no stamp of
                    its own AND whose body names this head: the "skipped" /
-                   "could not complete" notice the advisory lanes rewrite their
+                   "could not complete" notice the whole-design lanes rewrite their
                    slot to, scoped to the revision it declined. A notice left by
                    an EARLIER head excuses nothing, or a lane that DID review
                    this head and failed to upsert its verdict would read as
@@ -1338,9 +1334,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
     findings: dict = {}
     blocking = set()
     # Whole-design lanes (Design, UX, First Principles) end their body with a
-    # `<Lane>-Verdict: PASS|CONCERNS|BLOCK` line. Only BLOCK gates; CONCERNS is
-    # advisory -- but an unanswered CONCERNS is the review the loop most often
-    # misses, because nothing else prints it. Surface it, never gate on it.
+    # `<Lane>-Verdict: PASS|BLOCK` line. Only BLOCK gates.
     verdicts: dict = {}
     # Reviewers whose freshness rests on an ELIDED stamp (see sha_matches). The
     # gate accepts those, but silently swallowing them would hide the emitter
@@ -1384,15 +1378,15 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
             # A bound lane is held to freshness in DISCOVERY mode only when
             # its comment carries at least one of its own stamps: the UX and
             # Design workflows rewrite their keyed comment to a stampless
-            # "skipped"/"could not complete" notice by design (advisory lanes
-            # must not block), and enrolling those would pin exit 20 on a
+            # "skipped"/"could not complete" notice by design (a lane that
+            # could not run must not block), and enrolling those would pin exit 20 on a
             # green PR forever. A PINNED lane stays required regardless --
             # that is what pinning means.
             if only is not None or own_stamps:
                 fresh = any(sha_matches(sha, head_sha) for sha in own_stamps)
                 fresh_by_name[name] = fresh_by_name.get(name, False) or fresh
                 if fresh:
-                    findings[name] = len(FINDING_LINE_RE.findall(body))
+                    findings[name] = len(BLOCKING_LINE_RE.findall(body))
                     if not any(head_sha.startswith(sha) for sha in own_stamps):
                         elided.add(name)
                     vm = VERDICT_LINE_RE.search(body)
@@ -1646,7 +1640,6 @@ def decide(
     head_run="skip",
     rollup_notice="",
     disposition_eval=None,
-    concerns_eval=None,
     supersession_eval=None,
 ):
     """Resolve PR state to (exit_code, status line). Fail-closed.
@@ -1690,23 +1683,12 @@ def decide(
        running gate: while a round is in flight the reviewer bots may simply
        not have posted yet, and a stale stamp mid-round is expected, not a
        defect. Both fail closed on "could not read".
-       Advisory FINDING counts never gate -- whether a non-blocking finding
-       should hold the loop open is a judgment call the exit code deliberately
-       does not make.
        ``rollup_notice`` -- the non-empty NOTICE string when the rollup read
        degraded (fetch failure, or a concurrent push between the two reads) --
        never changes the exit code either, only which reason an empty rollup
        earns: a degraded read names its environment cause, so the reason (and
        ``progress_key.status``, which carries it) distinguishes an environment
        gap from a genuinely check-less PR.
-       ``concerns_eval`` (from unanswered_concern_lanes; None skips the gate)
-       belongs here for the same reason the marker conditions do: mid-round a
-       fresh CONCERNS with no ruling yet is expected, not a defect -- the
-       author has not been shown it. It gates only once the round has settled,
-       which is exactly the state that would otherwise return 0 and arm auto-merge
-       past an unanswered whole-design review. LOCAL ONLY: --disposition-gate
-       never reaches this function, so the repository's required status keeps
-       treating CONCERNS as advisory.
     """
     if state != "OPEN":
         return 20, "STATUS: BLOCKED - PR state is {} (not OPEN; terminal)".format(state or "?")
@@ -1827,10 +1809,6 @@ def decide(
                     "stale reviewer stamp(s) - no [<NAME>-REVIEWED] for current head: "
                     + ", ".join(marker_eval["stale"])
                 )
-    for lane in (concerns_eval or {}).get("unanswered") or []:
-        reasons.append(
-            unanswered_concerns_reason(lane, (concerns_eval or {}).get("head_sha") or "")
-        )
     # A block this lane raised for THIS head, replaced by a later sample that does
     # not block. Waiting cannot fix it -- the replacement already happened -- so it
     # is an act reason, matching what the required status does with the same field.
@@ -2310,7 +2288,7 @@ def main(argv):
                     sanitize(name),
                     "  [BLOCK-MERGE]" if name in marker_eval["blocking"] else "",
                     (
-                        "  ({} advisory FINDING line(s))".format(marker_eval["findings"][name])
+                        "  ({} BLOCKING line(s))".format(marker_eval["findings"][name])
                         if marker_eval["findings"][name]
                         else ""
                     ),
@@ -2324,9 +2302,9 @@ def main(argv):
                         "  verdict={}{}".format(
                             marker_eval["verdicts"][name],
                             (
-                                "  <- whole-design review: answer per item, and read it "
-                                "BEFORE fixing line-level findings"
-                                if marker_eval["verdicts"][name] == "CONCERNS"
+                                "  <- whole-design review: read it BEFORE fixing "
+                                "line-level findings"
+                                if marker_eval["verdicts"][name] == "BLOCK"
                                 else ""
                             ),
                         )
@@ -2346,11 +2324,10 @@ def main(argv):
                 "the model was not re-run)".format(sanitize(name), sanitize(actor))
             )
 
-    # Each whole-design lane's punchline, read from the lane bodies rather than
+    # Each whole-design lane's reason, read from the lane bodies rather than
     # from the marker rows above: a pinned fleet such as `--reviewers gpt,opus`
-    # lists no whole-design lane there, and on a PASS the punchline is the lane's
-    # one ask. Printed every cycle so a green head cannot hide it. Advisory: it
-    # changes no exit code.
+    # lists no whole-design lane there. Printed every cycle so a BLOCK cannot hide
+    # behind a pin. It changes no exit code.
     if marker_eval.get("ok") and bot_comments is not None:
         punchlines = design_lane_punchlines(bot_comments, head_sha, marker_bindings)
         lane_verdicts = design_lane_verdicts(bot_comments, head_sha, marker_bindings)
@@ -2388,25 +2365,6 @@ def main(argv):
             disposition_records, bot_comments, head_sha, marker_bindings
         )
     disposition_eval = {"ok": disposition_ok, "violations": disposition_violation_list}
-    # A whole-design lane at CONCERNS for this head with no matching
-    # disposition record is the review the loop most often walked past: the
-    # rollup is green, so exit 0 armed auto-merge over it. Requires BOTH reads
-    # to have succeeded -- an unreadable side already gates above, and guessing
-    # "no CONCERNS" from an unread comment list is the wrong direction.
-    concerns_eval = None
-    if marker_eval.get("ok") and disposition_records is not None:
-        # marker_eval["verdicts"] is filtered by the --reviewers pin, so a
-        # pinned fleet such as --reviewers gpt,opus carries no whole-design
-        # lane verdict there. Merge design_lane_verdicts() (pin-independent)
-        # so an unanswered DESIGN/FIRST-PRINCIPLES/UX CONCERNS still stops
-        # the loop regardless of the reviewer pin.
-        merged_verdicts = dict(marker_eval.get("verdicts") or {})
-        if bot_comments is not None:
-            merged_verdicts.update(design_lane_verdicts(bot_comments, head_sha, marker_bindings))
-        concerns_eval = {
-            "unanswered": unanswered_concern_lanes(merged_verdicts, disposition_records, head_sha),
-            "head_sha": head_sha,
-        }
     # A second sample at ONE head replaces the first in the lane's slot, so the
     # board keeps only the survivor and the replaced verdict is presented
     # nowhere. Report it here from the stored history rather than leaving the
@@ -2445,7 +2403,7 @@ def main(argv):
                                 else ""
                             ),
                             (
-                                "  ({} FINDING line(s))".format(sample["findings"])
+                                "  ({} BLOCKING line(s))".format(sample["findings"])
                                 if sample["findings"]
                                 else ""
                             ),
@@ -2499,14 +2457,6 @@ def main(argv):
             print("  VIOLATION: " + sanitize(v))
         if not disposition_violation_list:
             print("  (no disposition-rule violations)")
-    for lane in (concerns_eval or {}).get("unanswered") or []:
-        print(
-            "  UNANSWERED: {} reported CONCERNS for this head and no "
-            "target={} disposition record names it - run pr_findings.py for "
-            "the Watch/Subtraction items and their span ids".format(
-                sanitize(lane), sanitize(lane.lower())
-            )
-        )
 
     # Assert a pull_request-event run exists for the current head, but only on
     # a PR that demonstrably uses Actions (a rollup entry with a workflowName);
@@ -2550,7 +2500,6 @@ def main(argv):
         head_run=head_run,
         rollup_notice=rollup_notice,
         disposition_eval=disposition_eval,
-        concerns_eval=concerns_eval,
         supersession_eval=supersession_eval,
     )
     print(status)

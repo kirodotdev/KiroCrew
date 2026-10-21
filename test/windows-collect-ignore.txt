@@ -9,14 +9,14 @@
 #
 # TWO readers, which is why this is a file and not a literal list:
 #
-#   1. test/conftest.py builds `collect_ignore` from it. That covers the normal
-#      invocation, where pytest recurses into this directory.
+#   1. test/conftest.py's `pytest_ignore_collect` hook reads it. That covers the
+#      normal invocation, where pytest recurses into this directory.
 #   2. scripts/ci-surface-tests.py filters it out of the reduced target list it
 #      emits on Windows. That is NOT redundant: naming a file explicitly on the
-#      pytest command line bypasses BOTH `collect_ignore` and the
-#      `pytest_ignore_collect` hook, so a caller that passes explicit paths --
-#      as the reduced frontend-only scope does -- would collect these files and
-#      fail. The exclusion has to be applied by whoever builds that list.
+#      pytest command line bypasses the `pytest_ignore_collect` hook, so a caller
+#      that passes explicit paths -- as the reduced frontend-only scope does --
+#      would collect these files and fail. The exclusion has to be applied by
+#      whoever builds that list.
 #
 # Adding a file here excludes it from both paths. Removing one re-enables it on
 # Windows; residual per-test gaps belong in windows-expected-failures.txt.

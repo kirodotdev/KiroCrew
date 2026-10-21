@@ -348,20 +348,23 @@ def test_an_unreadable_rulings_read_is_told_apart_from_a_kind_with_no_rulings() 
 def test_every_reach_is_classified_as_costly_or_not() -> None:
     """A new ``PerToolDeny`` member is a failing test, not a harmless default.
 
-    Which reaches cost a WHOLE server is a judgement, and both renderers now read it
-    off this module instead of spelling a comparison each. That only holds if the
-    classification is total: a member in neither tuple would answer ``False``, which
-    reads as "switching a tool off here costs the tool" -- the claim the card exists
-    to stop being made by default.
+    Which reaches cost a WHOLE server is a judgement, and both renderers read it off
+    the reach's own declaration instead of spelling a comparison each. That only holds
+    if the classification is total: a member with no ruling would answer ``False``,
+    which reads as "switching a tool off here costs the tool" -- the claim the card
+    exists to stop being made by default. The ruling is part of each member's
+    definition, so a member that omits it does not build; this holds the shipped
+    members to an explicit ``bool`` and holds the ability to the member's own answer.
     """
-    classified = {*mcp_mod.COSTS_WHOLE_SERVER, *mcp_mod.COSTS_ONE_TOOL}
-    declared = {member.value for member in PerToolDeny}
-    assert classified == declared, (
-        "every PerToolDeny value must be in COSTS_WHOLE_SERVER (a tool-off can cost a "
-        "whole server) or in COSTS_ONE_TOOL (it costs the tool it names), and neither "
-        f"tuple may name a value the vocabulary dropped: {classified ^ declared}"
-    )
-    assert not set(mcp_mod.COSTS_WHOLE_SERVER) & set(mcp_mod.COSTS_ONE_TOOL)
+    for member in PerToolDeny:
+        assert member.costs_whole_server in (True, False), member
+        assert type(member.costs_whole_server) is bool, member
+    assert "COSTS_WHOLE_SERVER" not in vars(mcp_mod), "a second classification table"
+    assert "COSTS_ONE_TOOL" not in vars(mcp_mod), "a second classification table"
+    for backend, declared in PROJECTIONS.items():
+        got = mcp_mod.ability_for(backend).costs_whole_server
+        reach = declared.per_tool_deny
+        assert got is (reach is not None and reach.costs_whole_server), backend
 
 
 def test_every_reach_is_told_apart_by_both_costs() -> None:
@@ -417,11 +420,9 @@ def test_the_two_reaches_that_cost_a_whole_server_are_the_shipped_ones() -> None
     a third-party server. ``settings-file`` reaches the harness as a rule it reads, so
     the narrowed server stays mounted and the cost is the tool.
     """
-    assert set(mcp_mod.COSTS_WHOLE_SERVER) == {
-        PerToolDeny.WHOLE_SERVER.value,
-        PerToolDeny.PER_CALL.value,
-    }
-    assert set(mcp_mod.COSTS_ONE_TOOL) == {PerToolDeny.SETTINGS_FILE.value}
+    costly = {member for member in PerToolDeny if member.costs_whole_server}
+    assert costly == {PerToolDeny.WHOLE_SERVER, PerToolDeny.PER_CALL}
+    assert not PerToolDeny.SETTINGS_FILE.costs_whole_server
 
 
 def test_a_harness_with_no_reach_is_not_called_costly() -> None:
@@ -441,12 +442,12 @@ def test_the_classification_reaches_the_wire_for_every_shipped_harness() -> None
     """End to end: the payload's flag agrees with the reach it travels beside.
 
     The point of shipping it is that no renderer re-derives it, so the value a
-    renderer reads is asserted here against the declaration rather than against the
-    tuple alone.
+    renderer reads is asserted here against the declared reach's own ruling.
     """
     for backend in sorted(PROJECTIONS):
         payload = mcp_mod.ability_payload(backend)
-        expected = payload["per_tool_deny"] in mcp_mod.COSTS_WHOLE_SERVER
+        reach = payload["per_tool_deny"]
+        expected = any(m.costs_whole_server for m in PerToolDeny if m.value == reach)
         assert payload["costs_whole_server"] is expected, backend
         assert isinstance(payload["costs_whole_server"], bool), backend
 

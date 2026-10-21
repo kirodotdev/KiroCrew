@@ -1,12 +1,11 @@
-/* The crew editor's schedule-draft guard.
+/* The crewmate editor's schedule-draft guard.
  *
  * An open inline schedule-create form is component-local state that unmounts
- * with its pane — so before this guard, the one pane whose dirty dot the rail
- * showed was the one pane whose typed work a rail click destroyed, instantly
- * and silently. The editor's footer already refuses Save while the draft is
- * open ("finishing the crew save closes the sheet"); these tests pin that the
- * OTHER two destruction paths get the same one-guard-one-reason treatment:
- * a rail pane switch and editor dismissal both confirm before discarding.
+ * with its section, so a typed draft must survive every path that would
+ * unmount it. The editor's footer already refuses Save while the draft is open
+ * (it would close the editor); these tests pin the rest: the section rail is
+ * locked while the draft is typed, and dismissal and the form's own cancel
+ * toggle both confirm before discarding.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
@@ -46,91 +45,89 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-/** Open the edit sheet for the seeded crew and put a TYPED schedule draft on
+/** Opening the editor is a lazy `CrewEditorModal` chunk import followed by a
+ *  fresh-roster read (`staleTime: 0`) before the dialog renders, which can
+ *  outlast RTL's 1s default on a loaded runner. An explicit deadline. */
+const EDITOR_OPEN_TIMEOUT_MS = 5000
+
+/** Open the editor for the seeded crew and put a TYPED schedule draft on
  *  screen. The guard keys on typed work, not on the form being open, so the
- *  helper types into Name — a pristine form must never arm the confirm. */
+ *  helper types into Name — a pristine form must never arm the guard. */
 async function openDraft() {
   renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('crew-card'))
-  fireEvent.click(await screen.findByTestId('crew-rail-schedules'))
+  fireEvent.click(await screen.findByTestId('next-rail-schedules', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS }))
   fireEvent.click(await screen.findByTestId('crew-wake-add'))
   await screen.findByTestId('crew-wake-create')
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } })
 }
 
+/** The rail is locked while a typed draft is open: the Schedules section stays
+ *  live, every other section is disabled, so a click cannot unmount the form. */
+const railLocked = () => (screen.getByTestId('next-rail-general') as HTMLButtonElement).disabled
+
 beforeEach(() => vi.clearAllMocks())
 
 describe('crew editor — schedule-draft discard guard', () => {
-  it('a rail pane switch away from an open draft asks before destroying it', async () => {
+  it('locks the section rail while a typed draft is open, keeping the draft alive', async () => {
     await openDraft()
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
-    // The confirm is the guard: the draft form must still be alive behind it.
-    expect(await screen.findByText('Discard the new schedule?')).toBeTruthy()
+    expect(railLocked()).toBe(true)
+    expect(screen.getByTestId('next-rail-schedules')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('next-rail-general'))
+    // Nothing unmounted: same section, same form, same typed value.
     expect(screen.getByTestId('crew-wake-create')).toBeTruthy()
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('draft')
   })
 
-  it('Keep editing returns to the intact draft on the schedules pane', async () => {
+  it('editor dismissal asks first; Keep editing returns to the intact draft', async () => {
     await openDraft()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'half-typed' } })
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(await screen.findByTestId('crew-sched-discard-keep'))
     await waitFor(() => expect(screen.queryByText('Discard the new schedule?')).toBeNull())
-    // Same pane, same form, same typed value — nothing was destroyed.
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('half-typed')
   })
 
-  it('Discard schedule completes the pane switch and clears the draft accounting', async () => {
-    await openDraft()
-    expect(screen.getByTestId('crew-rail-dirty-schedules')).toBeTruthy()
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
-    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
-    // The switch lands and the form (with its dirty accounting) unmounts.
-    await waitFor(() => expect(screen.queryByTestId('crew-wake-create')).toBeNull())
-    expect(screen.queryByTestId('crew-rail-dirty-schedules')).toBeNull()
-  })
-
-  it('editor dismissal is guarded by the same confirm, and discard closes the sheet', async () => {
+  it('editor dismissal is guarded by the same confirm, and discard closes the editor', async () => {
     await openDraft()
     // The footer's own Cancel — the widest destruction path the draft has.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
     await waitFor(() => expect(screen.queryByTestId('crew-wake-create')).toBeNull())
-    expect(screen.queryByTestId('crew-rail-schedules')).toBeNull()
+    expect(screen.queryByTestId('next-rail-schedules')).toBeNull()
   })
 
-  it('without a draft, pane switches and dismissal stay unprompted', async () => {
+  it('without a draft, section switches and dismissal stay unprompted', async () => {
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    fireEvent.click(await screen.findByTestId('crew-rail-schedules'))
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
+    fireEvent.click(await screen.findByTestId('next-rail-schedules', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS }))
+    fireEvent.click(screen.getByTestId('next-rail-general'))
     expect(screen.queryByText('Discard the new schedule?')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByTestId('crew-rail-overview')).toBeNull())
+    await waitFor(() => expect(screen.queryByTestId('next-rail-general')).toBeNull())
   })
 
-  it('a PRISTINE open form never arms the confirm — looking is not work', async () => {
+  it('a PRISTINE open form never arms the guard — looking is not work', async () => {
     // "The schedule you typed will be lost" over nothing typed is a false
     // warning that trains users to click through the confirm guarding real
-    // drafts. Open the form, type nothing, leave: no prompt, no dirty dot.
+    // drafts. Open the form, type nothing, leave: no lock, no prompt.
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    fireEvent.click(await screen.findByTestId('crew-rail-schedules'))
+    fireEvent.click(await screen.findByTestId('next-rail-schedules', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS }))
     fireEvent.click(await screen.findByTestId('crew-wake-add'))
     await screen.findByTestId('crew-wake-create')
-    expect(screen.queryByTestId('crew-rail-dirty-schedules')).toBeNull()
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
+    expect(railLocked()).toBe(false)
+    fireEvent.click(screen.getByTestId('next-rail-general'))
     expect(screen.queryByText('Discard the new schedule?')).toBeNull()
-    // The switch went through: the schedules pane (and its form) unmounted.
+    // The switch went through: the schedules section (and its form) unmounted.
     expect(screen.queryByTestId('crew-wake-create')).toBeNull()
   })
 
   it('typing and erasing returns the form to not-a-draft', async () => {
     await openDraft()
-    expect(screen.getByTestId('crew-rail-dirty-schedules')).toBeTruthy()
+    expect(railLocked()).toBe(true)
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: '' } })
-    await waitFor(() => expect(screen.queryByTestId('crew-rail-dirty-schedules')).toBeNull())
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
-    expect(screen.queryByText('Discard the new schedule?')).toBeNull()
+    await waitFor(() => expect(railLocked()).toBe(false))
   })
 
   it("the section's own cancel toggle asks before collapsing a dirty draft", async () => {
@@ -147,13 +144,13 @@ describe('crew editor — schedule-draft discard guard', () => {
     fireEvent.click(screen.getByTestId('crew-wake-add'))
     fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
     await waitFor(() => expect(screen.queryByTestId('crew-wake-create')).toBeNull())
-    expect(screen.queryByTestId('crew-rail-dirty-schedules')).toBeNull()
+    expect(railLocked()).toBe(false)
   })
 
   it('the toggle collapses a PRISTINE form directly, no confirm', async () => {
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    fireEvent.click(await screen.findByTestId('crew-rail-schedules'))
+    fireEvent.click(await screen.findByTestId('next-rail-schedules', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS }))
     fireEvent.click(await screen.findByTestId('crew-wake-add'))
     await screen.findByTestId('crew-wake-create')
     fireEvent.click(screen.getByTestId('crew-wake-add'))
@@ -161,26 +158,12 @@ describe('crew editor — schedule-draft discard guard', () => {
     expect(screen.queryByTestId('crew-wake-create')).toBeNull()
   })
 
-  it('Chat with this crew asks before destroying an open draft', async () => {
-    // The header's chat jump creates a slot, closes the sheet and navigates --
-    // it would eat the typed schedule as silently as an unguarded Escape, so
-    // it routes through the same confirm as every other destruction path.
+  it('the footer note points at the section’s own Save while the draft is open', async () => {
     await openDraft()
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'half-typed' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Chat with this crewmate' }))
-    expect(await screen.findByText('Discard the new schedule?')).toBeTruthy()
-    // No navigation happened: the sheet and the intact draft are still here.
-    fireEvent.click(screen.getByTestId('crew-sched-discard-keep'))
-    await waitFor(() => expect(screen.queryByText('Discard the new schedule?')).toBeNull())
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('half-typed')
-  })
-
-  it('the footer note names the disabled-Save reason while the draft is open', async () => {
-    await openDraft()
-    // Visible text, not the hover-only `title`: keyboard and touch users see
-    // a disabled Save and must be told why in the note itself.
-    expect(screen.getByTestId('crew-unsaved-note').textContent)
-      .toBe('Finish or cancel the new schedule first')
+    // Visible text, not a hover-only `title`: keyboard and touch users see a
+    // disabled Save and must be told why in the note itself.
+    expect(screen.getByTestId('next-unsaved-note').textContent)
+      .toBe('Not saved — use Save in this section')
   })
 
   it('Discard is locked while the create request is in flight', async () => {
@@ -195,14 +178,14 @@ describe('crew editor — schedule-draft discard guard', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'n' } })
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'm' } })
     fireEvent.click(screen.getByTestId('crew-wake-create-submit'))
-    fireEvent.click(screen.getByTestId('crew-rail-overview'))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     const discard = await screen.findByTestId('crew-sched-discard-confirm')
     await waitFor(() => expect(discard).toBeDisabled())
     // The reason is VISIBLE text in the dialog, not a hover title keyboard
     // and touch users never see.
-    expect(screen.getByTestId('crew-sched-discard-saving-note')).toBeTruthy()
+    expect(screen.getByTestId('next-sched-discard-saving-note')).toBeTruthy()
     fireEvent.click(discard)
-    // Still on the schedules pane, form still mounted, nothing destroyed.
+    // Still on the schedules section, form still mounted, nothing destroyed.
     expect(screen.getByTestId('crew-wake-create')).toBeTruthy()
     resolveCreate({})
     // The save lands: the form collapses on its own and Discard unlocks.
@@ -214,7 +197,7 @@ describe('crew editor — schedule-draft discard guard', () => {
     // The create POST has no client timeout. Without this escape, a stalled
     // request seals EVERY exit from the modal editor for as long as it
     // stalls: the toggle is disabled, footer Cancel routes to a confirm whose
-    // Discard is locked, Escape and the chat jump are gated the same way.
+    // Discard is locked, and Escape is gated the same way.
     // shouldAdvanceTime keeps RTL waitFor/findBy live under fake timers
     // (repo convention, see AboutPanel.inAppApply.test.tsx).
     vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -225,22 +208,22 @@ describe('crew editor — schedule-draft discard guard', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'n' } })
       fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'm' } })
       fireEvent.click(screen.getByTestId('crew-wake-create-submit'))
-      fireEvent.click(screen.getByTestId('crew-rail-overview'))
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
       const discard = await screen.findByTestId('crew-sched-discard-confirm')
       expect(discard).toBeDisabled()
       // Before the grace elapses, the note names the lock, not the caveat.
-      expect(screen.getByTestId('crew-sched-discard-saving-note').textContent)
+      expect(screen.getByTestId('next-sched-discard-saving-note').textContent)
         .not.toMatch(/may still be created/i)
       await vi.advanceTimersByTimeAsync(8000)
       // The escape: Discard unlocks and the visible note switches to the
       // honest caveat — the request is not cancelled, so the schedule may
       // still be created.
       expect(discard).not.toBeDisabled()
-      expect(screen.getByTestId('crew-sched-discard-saving-note').textContent)
+      expect(screen.getByTestId('next-sched-discard-saving-note').textContent)
         .toMatch(/may still be created/i)
       fireEvent.click(discard)
-      // The forced discard completes the pane switch: the draft is gone.
-      expect(screen.queryByTestId('crew-wake-create')).toBeNull()
+      // The forced discard completes the close: the draft is gone.
+      await waitFor(() => expect(screen.queryByTestId('crew-wake-create')).toBeNull())
     } finally {
       vi.useRealTimers()
     }

@@ -1,4 +1,4 @@
-import { Fragment, memo, useState, useMemo } from 'react'
+import { memo, useState, useMemo } from 'react'
 import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { usePathKind } from '../hooks/usePathKind'
@@ -366,7 +366,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
         {sections.map((section, i) => {
           const words = changeWords(section)
           return (
-            <Fragment key={`${section.name ?? ''}:${i}`}>
+            <div key={`${section.name ?? ''}:${i}`} data-diff-section={i} className="contents">
               <PlainFilePairHeader
                 filename={sectionTitle(section, i === 0 ? headerPath : null)}
                 label={cardRow ? undefined : plainViewLabel}
@@ -384,7 +384,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
                   ? <PlainCodeFallback text={section.text} />
                   : <PierrePatch patch={section.text} options={options} />}
               </PlainPatchBodyContext.Provider>
-            </Fragment>
+            </div>
           )
         })}
         {!complete && <div className="px-3 py-1 text-muted text-[12px] italic animate-pulse">{i18nT('components.diffBlock.generating_diff')}</div>}

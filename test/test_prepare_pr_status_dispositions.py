@@ -29,7 +29,7 @@ from prepare_pr_status_helpers import (
 
 def _gpt_finding_comment(module: ModuleType) -> tuple[dict, str]:
     """A trusted GPT-lane comment with one advisory finding for the head."""
-    span = module.span_hash("src/x.py", "gpt/FINDING")
+    span = module.span_hash("src/x.py", "gpt/BLOCKING")
     comment = {
         # Real comments carry a node id; without one the supersession reader
         # cannot address the stored history and fails closed.
@@ -37,7 +37,7 @@ def _gpt_finding_comment(module: ModuleType) -> tuple[dict, str]:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
-            "FINDING -- src/x.py:10 -- tighten -> Fix: x\n"
+            "BLOCKING -- src/x.py:10 -- tighten -> Fix: x\n"
             "[GPT-REVIEWED] " + "f" * 40
         ),
     }
@@ -210,7 +210,7 @@ def test_prior_head_record_still_blocks_after_the_fix_push(capsys) -> None:
     module = _load_script()
     prior = "f" * 40
     current = "e" * 40
-    span = module.span_hash("src/x.py", "gpt/FINDING")
+    span = module.span_hash("src/x.py", "gpt/BLOCKING")
     bot_comment = {
         # Real comments carry a node id; without one the supersession reader
         # cannot address the stored history and fails closed.
@@ -218,7 +218,7 @@ def test_prior_head_record_still_blocks_after_the_fix_push(capsys) -> None:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
-            "FINDING -- src/x.py:10 -- tighten -> Fix: x\n"
+            "BLOCKING -- src/x.py:10 -- tighten -> Fix: x\n"
             "[GPT-REVIEWED] " + prior
         ),
     }
@@ -285,7 +285,7 @@ def test_disposition_gate_reports_a_blanket_record_as_a_violation(capsys) -> Non
 
 def test_disposition_gate_is_clean_when_the_record_claims_one_span(capsys) -> None:
     module = _load_script()
-    span = module.span_hash("src/x.py", "gpt/FINDING")
+    span = module.span_hash("src/x.py", "gpt/BLOCKING")
     ruling = {
         "id": 901,
         "user": {"type": "User", "login": "alice"},
@@ -370,7 +370,7 @@ def test_disposition_gate_reads_the_comment_pages_once(capsys) -> None:
     the last page, and that each page is requested exactly once.
     """
     module = _load_script()
-    span = module.span_hash("src/x.py", "gpt/FINDING")
+    span = module.span_hash("src/x.py", "gpt/BLOCKING")
     ruling = {
         "id": 903,
         "user": {"type": "User", "login": "alice"},

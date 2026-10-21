@@ -175,7 +175,7 @@ Two bounds, and the tighter wins:
 | Surface | What's Logged | Module |
 |---------|---------------|--------|
 | Slack handler | `tool_invocation` rows (`operation` = tool name; `outcome` invoked / denied / approved / rejected / …) for tool calls and every permission decision | `slack/handler_runtime/permission_ladder.py` |
-| Dashboard chat | `tool_invocation` rows (`operation` = tool name; `outcome` invoked and every permission decision) | `dashboard/chat_runner.py` |
+| Dashboard chat | `tool_invocation` rows (`operation` = tool name; `outcome` invoked and every permission decision) | `dashboard/chat_turn/tool_rows.py` (invoked), `tool_approval.py` and `permission_prompt.py` (the permission decisions) |
 | Transport permission floor | `tool_invocation` refusals from `permission_floor.audit_refusal` (`source=transport_floor`, `outcome=rejected_transport_floor`) | `permission_floor.py` |
 | ACP session cancel | `approval_cancel` rows with `outcome=rejected_on_cancel` for approvals pending when the session is cancelled | `acp/client_turn_control.py` |
 | Chat persist seams | `output_anomaly` / `options_footer_glued_text` (`outcome=labelled`, `source` from the turn's session key, `metadata` `{count, chars, preview (redacted, 200 chars), directive_shaped}`) when a persisted turn carried text glued to its own `[OPTIONS:]` footer; skipped while SEL is cold so the first open never runs on the event loop | `dashboard/chat_turn/segment_flush.py` (`_log_glued_footer_text`) |

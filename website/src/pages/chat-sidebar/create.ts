@@ -305,7 +305,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   const createChatMutation = useMutation({
     mutationFn: ({ inNewTab }: { inNewTab: NewTabMode }) => {
       setNewChatError('')
-      return createSlotWithOrigin(dispatch, { mode: mode || '', activate: !inNewTab })
+      return createSlotWithOrigin(dispatch, { mode: mode || '', activate: !inNewTab, defaultFolder: true })
     },
     onSuccess: ({ slot, originSlot }, { inNewTab: requested }) => {
       const inNewTab = settledTabMode(store, requested, originSlot)
@@ -376,7 +376,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   const createEphemeralChatMutation = useMutation({
     mutationFn: (memoryMode: 'incognito' | 'temporary') => {
       setNewChatError('')
-      return dispatch(createSlot({ mode: mode || '', memory_mode: memoryMode })).unwrap()
+      return dispatch(createSlot({ mode: mode || '', memory_mode: memoryMode, defaultFolder: true })).unwrap()
     },
     // Incognito/temporary always activate the new slot, so always leave Split
     // View and show it, then focus the composer (#21935). Guard on the live

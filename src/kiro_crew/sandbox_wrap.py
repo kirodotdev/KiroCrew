@@ -1046,7 +1046,7 @@ def wrap_argv(
                         "This is a container policy restriction, not a host kernel "
                         "limitation. To resolve, choose one of:\n"
                         "  (a) Use the Kiro Crew custom seccomp profile (adds "
-                        "unconditional unshare/clone/mount allows to the Docker "
+                        "unconditional unshare/clone/mount/umount2 allows to the Docker "
                         "default — less permissive than seccomp=unconfined):\n"
                         "        # With a repo checkout:\n"
                         "        docker run --security-opt "

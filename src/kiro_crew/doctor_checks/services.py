@@ -241,8 +241,18 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
                 print("  gateway:     ✅ running (token auth enabled)")
             else:
                 print(f"  gateway:     ⚠️  HTTP {he.code}")
-        except (urllib.error.URLError, OSError):
-            print("  gateway:     ⏹  not running")
+        except (urllib.error.URLError, OSError) as e:
+            # Only a bare read timeout (the connection was accepted and the
+            # gateway then stalled -- a loop thread starved of the GIL) means it
+            # is up but busy. A connect-phase failure is reported as not running:
+            # this read uses a 2 s deadline, which on native Windows coincides
+            # with the SYN-retry before a closed loopback port reports a refusal,
+            # so a connect timeout here must not read busy. The non-doctor sites,
+            # whose deadlines sit past that window, use loopback_http.deadline_expired.
+            if isinstance(e, TimeoutError):
+                print("  gateway:     ⏳ busy (up but did not answer)")
+            else:
+                print("  gateway:     ⏹  not running")
         except Exception:
             print("  gateway:     ⚠️  running but returned unexpected response")
 

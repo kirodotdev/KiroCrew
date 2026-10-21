@@ -433,8 +433,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _turn_emitted = False
     turn._turn_emitted = _turn_emitted
     # Did this turn stream text the user has ALREADY READ, which a later tool
-    # boundary then flushed out of `assistant_text`? The three tool-boundary flushes
-    # in _run_chat's stream loop (post-tool-group text, EVENT_TOOL_CALL, the permission flow)
+    # boundary then flushed out of `assistant_text`? The three tool-boundary flushes (_run_chat's
+    # post-tool-group text, _on_tool_call in tool_rows, _on_permission_request in tool_approval)
     # persist the segment and reset the buffer, so a turn that answered and THEN
     # hit a blocked tool call reaches end-of-turn with an empty `assistant_text`
     # even though its answer is on screen. Kept separate from
@@ -598,7 +598,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # tool_call_id -> canonical directive-tool name (forgery gate). Written
     # ONLY at EVENT_TOOL_CALL, ONLY from the out-of-band _meta.kiro identity
     # (event.tool_name + event.mcp_server_name), never from the title. This is
-    # the ONLY map the session-directive gate in _run_chat's stream loop trusts.
+    # the ONLY map the session-directive gate in _on_tool_result (tool_results) trusts.
     _pending_dir_tool: dict[str, str] = {}
     turn._pending_dir_tool = _pending_dir_tool
     # tool_call_id -> digest of the RAW arguments the model called the tool

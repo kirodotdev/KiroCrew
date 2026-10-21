@@ -50,12 +50,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
-from kiro_crew.security import (
-    is_sensitive_path,
-    is_sensitive_write_path,
-    redact_credentials,
-    redact_exfiltration_urls,
-)
+from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
 
 from ._shared import (
     _is_restricted_session,
@@ -199,8 +194,8 @@ def _redact_meta(text: str) -> str:
     detail response is what the textarea saves back, so a redaction there would
     overwrite the user's own file with ``[REDACTED]`` markers.
     """
-    out, _ = redact_credentials(text)
-    out, _ = redact_exfiltration_urls(out)
+    from kiro_crew.security import redact
+    out = redact(text)
     return out
 
 

@@ -14,6 +14,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
@@ -23,7 +25,11 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
-from kiro_crew.sandbox_argv import _unset_env_argv
+from kiro_crew.sandbox_argv import (
+    _LAUNCHER_INTERPRETER_FLAGS,
+    _SANDBOX_ARTIFACT_PREFIX,
+    _unset_env_argv,
+)
 from kiro_crew.sandbox_cgroup import _probe_cgroup_scope
 from kiro_crew.sandbox_delegation import kiro_internal_sandbox_enabled
 from kiro_crew.sandbox_probe import _inside_kirocrew_sandbox, _macos_sandbox_state
@@ -44,7 +50,7 @@ from kiro_crew.sandbox_unavailable import (
 from kiro_crew.sandbox_wrap import detect_backend, wrap_argv
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from concurrent.futures import ThreadPoolExecutor
     from typing import Any
 
@@ -254,13 +260,24 @@ def unconfined_live_agent_pid(pids: "Iterable[int]") -> int | None:
     Native Windows has no Crew confinement to verify, so every pid there answers
     unconfined and a caller whose security argument needs the mask refuses on
     that platform, which is the same posture ``spawn_delegates_masking`` takes.
+
+    On Linux the pid a session records for a namespace-confined spawn is Crew's
+    sandbox launcher, and the launcher STAYS in the host namespaces by design: it
+    forks, writes the child's uid/gid maps from outside, and waits. Only its child
+    unshares and execs the agent. So a pid whose namespaces match the gateway's is
+    judged by :func:`_namespace_launcher_child_is_confined` before it counts as
+    unconfined; anything that check cannot positively confirm stays unconfined.
     """
     for pid in pids:
         if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
             return pid if isinstance(pid, int) and not isinstance(pid, bool) else -1
         try:
             if sys.platform == "linux":
-                if platform_compat.process_namespaces_match(pid, os.getpid()) is not False:
+                gateway_pid = os.getpid()
+                shared = platform_compat.process_namespaces_match(pid, gateway_pid)
+                if shared is None:
+                    return pid
+                if shared and not _namespace_launcher_child_is_confined(pid, gateway_pid):
                     return pid
             elif sys.platform == "darwin":
                 if platform_compat.process_is_sandboxed(pid) is not True:
@@ -270,6 +287,99 @@ def unconfined_live_agent_pid(pids: "Iterable[int]") -> int | None:
         except Exception:  # noqa: BLE001 -- unreadable is unconfined, never confined
             return pid
     return None
+
+
+#: Incarnations (pid -> start id) THIS gateway spawned through its Linux
+#: namespace launcher, written by the spawn itself. The confinement check below
+#: trusts a launcher only from this record: nothing on a process's own command
+#: line or image proves Crew launched it, because an unconfined process can exec
+#: the same interpreter on a script shaped like the launcher.
+_NAMESPACE_LAUNCHERS: dict[int, str] = {}
+_NAMESPACE_LAUNCHERS_LOCK = threading.Lock()
+
+
+def remember_namespace_launcher(
+    pid: int, wrapped_argv: "Sequence[str]", launcher_script: str | None
+) -> None:
+    """Record *pid* when this gateway spawned it through its own namespace launcher.
+
+    Called by the agent spawn with the pid it created, the argv ``wrap_argv``
+    returned and the cleanup path ``wrap_argv`` returned beside it. Records only
+    when that path is a launcher script the wrap just generated AND the argv runs
+    exactly it (``<this interpreter> -I -S <that script> ...``). Both values come
+    from the wrap's own return, never from a configured command: an argv token
+    that merely looks like a launcher name, with no generated script behind it,
+    records nothing.
+
+    Entries whose process is gone or replaced are dropped on each call, so the
+    record stays as small as the live set. Never raises: a spawn must not fail on
+    bookkeeping, and an unrecorded launcher only reads as unconfined, which is the
+    refusing direction.
+    """
+    try:
+        if sys.platform != "linux" or type(pid) is not int or pid <= 1:
+            return
+        if not isinstance(launcher_script, str) or not os.path.basename(launcher_script).startswith(
+            _SANDBOX_ARTIFACT_PREFIX
+        ):
+            return
+        expected = [sys.executable, *_LAUNCHER_INTERPRETER_FLAGS, launcher_script]
+        if list(wrapped_argv[: len(expected)]) != expected or len(wrapped_argv) <= len(expected):
+            return
+        start = platform_compat.get_process_start_id(pid)
+        if not start:
+            return
+        with _NAMESPACE_LAUNCHERS_LOCK:
+            for known, known_start in list(_NAMESPACE_LAUNCHERS.items()):
+                if platform_compat.get_process_start_id(known) != known_start:
+                    del _NAMESPACE_LAUNCHERS[known]
+            _NAMESPACE_LAUNCHERS[pid] = start
+    except Exception:  # noqa: BLE001 -- unrecorded is unconfined, never confined
+        logger.debug("could not record namespace launcher pid %s", pid, exc_info=True)
+
+
+def _namespace_launcher_child_is_confined(pid: int, gateway_pid: int) -> bool:
+    """Whether *pid* is a namespace launcher this gateway spawned, with ONE confined child.
+
+    Every fact must hold, and none is one an agent can supply for itself:
+
+    * this gateway recorded *pid*, at this same incarnation, as a namespace
+      launcher it spawned (:func:`remember_namespace_launcher`). A session started
+      unconfined records its harness pid, never a launcher, so it cannot pass by
+      exec-ing anything later;
+    * *pid* has exactly one direct child, and that child names *pid* as its
+      parent. A launcher only ever forks once, so a second child refuses;
+    * that child's namespaces are not the gateway's
+      (``process_namespaces_match`` is ``False``);
+    * both incarnations are unchanged after the reads, so pid reuse cannot join
+      one process's parentage to another's namespaces.
+
+    A child that has forked but not yet unshared still shares the host
+    namespaces, so the launcher reads as unconfined for that moment. Any error
+    or unreadable value answers ``False``, which keeps the pid unconfined.
+    """
+    try:
+        launcher_start = platform_compat.get_process_start_id(pid)
+        if not launcher_start:
+            return False
+        with _NAMESPACE_LAUNCHERS_LOCK:
+            recorded = _NAMESPACE_LAUNCHERS.get(pid)
+        if recorded != launcher_start:
+            return False
+        children = platform_compat._linux_direct_child_pids(pid, Path("/proc"))
+        if children is None or len(children) != 1:
+            return False
+        child = children[0]
+        child_identity = platform_compat.get_process_start_identity(child)
+        if child_identity is None or child_identity.ppid != pid:
+            return False
+        if platform_compat.process_namespaces_match(child, gateway_pid) is not False:
+            return False
+        if platform_compat.get_process_start_identity(child) != child_identity:
+            return False
+        return platform_compat.get_process_start_id(pid) == launcher_start
+    except Exception:  # noqa: BLE001 -- an unprovable launcher is not a confined one
+        return False
 
 
 async def wrap_argv_async(

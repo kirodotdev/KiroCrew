@@ -145,7 +145,7 @@ one.
 full-viewport magnify overlays — the image viewer (`Lightbox` in
 `components/markdown/Lightbox.tsx`, exported through `MarkdownRenderer.tsx`), the
 diagram viewer (`DiagramLightbox.tsx`), and the
-screenshot viewer in `pages/AppDetailPage.tsx`. Each one needs its own gesture: a
+screenshot viewer in `pages/AppDetailPageArt.tsx`. Each one needs its own gesture: a
 diagram viewer without one is unmagnifiable by any gesture, because its content is
 fit-scaled vector whose labels are smallest at exactly the state it opens in. Checking the
 documented example is not enough — count the instances, because a rule reads as satisfied

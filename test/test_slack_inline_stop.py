@@ -3,8 +3,8 @@
 Covers:
 - build_working_blocks (blocks.py)
 - session_task_card End button (blocks.py)
-- _handle_inline_stop denied/allowed/idle paths (interactions.py)
-- _handle_session_end key fallback (interactions.py)
+- _handle_inline_stop denied/allowed/idle paths (interactions_sessions.py)
+- _handle_session_end key fallback (interactions_sessions.py)
 """
 
 from __future__ import annotations

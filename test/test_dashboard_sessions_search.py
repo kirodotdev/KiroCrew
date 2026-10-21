@@ -80,24 +80,16 @@ class TestSessionsSearchHandler:
         # Inject a title with a credential-like pattern via monkeypatch
         calls = []
 
-        def _fake_redact_creds(text):
-            calls.append(("creds", text))
-            return ("[REDACTED]", [])
+        def _fake_compose(text):
+            calls.append(text)
+            return ("[REDACTED]", [], [])
 
-        def _fake_redact_urls(text):
-            calls.append(("urls", text))
-            return (text, [])
-
-        # Patched on `kiro_crew.security`, not on the `handlers` re-exports: the
-        # handler redacts through `security.redact`, which resolves both passes
-        # from security's own globals, so patching the handlers-level names would
-        # not reach it -- and this test's subject is that BOTH passes run
-        # over the title, which is what these two fakes assert.
-        monkeypatch.setattr("kiro_crew.security.redact_credentials", _fake_redact_creds)
-        monkeypatch.setattr("kiro_crew.security.redact_exfiltration_urls", _fake_redact_urls)
+        # Patched on the one composed pass that `security.redact` runs: it finds
+        # credential and outbound-URL spans together, so this one fake standing in
+        # for it is what proves the title goes through both.
+        monkeypatch.setattr("kiro_crew.security.pass_compose.compose", _fake_compose)
         async with TestClient(TestServer(_make_app(log))) as client:
             resp = await client.get("/api/sessions/search?q=matches")
             sessions = (await resp.json())["sessions"]
             assert sessions and sessions[0]["title"] == "[REDACTED]"
-            assert any(c[0] == "creds" for c in calls)
-            assert any(c[0] == "urls" for c in calls)
+            assert calls

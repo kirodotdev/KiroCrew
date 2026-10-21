@@ -32,7 +32,9 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _GIT_FAILURE_CLASS_LABELS,
     _entry_git_url,
+    _git_output_is_auth_shaped,
     _git_target_is_unsupported,
     _loggable_git_transport_output,
     _looks_like_git_url,
@@ -199,11 +201,28 @@ async def _owner_tier_confirmed(entry: dict[str, Any]) -> bool:
     return False
 
 
+# Registries whose latest index fetch failed because git refused the sign-in,
+# keyed by (public repo, branch). The fetch keeps returning ``None`` on failure
+# (callers and tests depend on that shape), so this travels beside it for the
+# refresh path to report. A refused sign-in is the one failure the user fixes
+# themselves, so it is the only one the dashboard names.
+_SIGN_IN_REFUSED: set[tuple[str, str]] = set()
+
+
+def _registry_sign_in_refused(repo: str, branch: str) -> bool:
+    """Whether the last fetch of *repo*@*branch* failed on a refused sign-in."""
+    return (_strip_git_target_userinfo(repo), branch) in _SIGN_IN_REFUSED
+
+
 async def _fetch_external_registry_index(
     repo: str,
     branch: str,
 ) -> list[dict[str, Any]] | None:
     """Fetch app-registry.json from an external repo via a shallow git clone.
+
+    When the clone fails because git refused the sign-in, that is recorded for
+    :func:`_registry_sign_in_refused`; any later fetch of the same registry
+    clears the record first.
 
     *repo* is a git-cloneable URL (https/ssh/git/scp-style).  The repo is
     shallow-cloned into a throwaway temp directory.  If it contains an
@@ -227,6 +246,8 @@ async def _fetch_external_registry_index(
     - Read-only: only ``git clone`` (no write operations to the remote).
     - SEL audit (best-effort): start/outcome events logged when SEL is present.
     """
+    sign_in_key = (_strip_git_target_userinfo(repo), branch)
+    _SIGN_IN_REFUSED.discard(sign_in_key)
     # Input validation — reject values that could be used for command injection.
     if not _looks_like_git_url(repo):
         logger.warning("Rejecting non-cloneable external registry repo")
@@ -268,17 +289,36 @@ async def _fetch_external_registry_index(
             # See `_git_fetch_branch`: a combined credentialed clone would let
             # checkout-time filters inherit the one-shot credential mapping.
             clone_path /= "branch"
+            fetch_log: list[str] = []
             err = await _git_fetch_branch(
                 git_url,
                 branch,
                 clone_path,
-                [],
+                fetch_log,
                 credential_target=credential_target,
                 clone_env=minimal_env(),
                 sandbox_mode=_context_clone_sandbox_mode(git_url),
             )
             if err is not None:
                 _sel_outcome("failed")
+                fetch_text = "\n".join(fetch_log)
+                sign_in_refused = _git_output_is_auth_shaped(fetch_text)
+                # The credentialed fetch already replaced git's output with a fixed
+                # label, so match the labels, not git's raw markers.
+                failure_class = next(
+                    (label for _, label in _GIT_FAILURE_CLASS_LABELS if label in fetch_text), ""
+                )
+                # A credentialed remote's output is never logged, only a fixed label.
+                logger.warning(
+                    "external registry clone failed: %s",
+                    (
+                        "git refused the sign-in"
+                        if sign_in_refused
+                        else failure_class or "unclassified git failure"
+                    ),
+                )
+                if sign_in_refused:
+                    _SIGN_IN_REFUSED.add(sign_in_key)
                 return None
         else:
             clone_cmd = [
@@ -314,6 +354,8 @@ async def _fetch_external_registry_index(
                 tail = _loggable_git_transport_output(text, credentialed=False)[-400:]
                 logger.warning("external registry clone failed: %r", tail)
                 _sel_outcome("failed")
+                if _git_output_is_auth_shaped(text):
+                    _SIGN_IN_REFUSED.add(sign_in_key)
                 return None
 
         # Prefer an explicit app-registry.json index.

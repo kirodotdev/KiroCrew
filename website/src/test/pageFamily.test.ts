@@ -50,6 +50,6 @@ describe('pageFamily', () => {
     expect(pageFamilyFiles('ArtifactsPage')[0]).toBe('ArtifactsPage.tsx')
     expect(pageFamilyFiles('ArtifactsPage')).toEqual(expect.arrayContaining(['ArtifactsPageGallery.tsx', 'ArtifactsPageFolders.tsx']))
     expect(pageFamilyFiles('KiroCrewAgentsPage')[0]).toBe('KiroCrewAgentsPage.tsx')
-    expect(pageFamilyFiles('KiroCrewAgentsPage')).toEqual(expect.arrayContaining(['KiroCrewAgentsPagePanes.tsx', 'KiroCrewAgentsPageRoster.tsx']))
+    expect(pageFamilyFiles('KiroCrewAgentsPage')).toEqual(expect.arrayContaining(['KiroCrewAgentsPageFields.tsx', 'KiroCrewAgentsPageRoster.tsx']))
   })
 })

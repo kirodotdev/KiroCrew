@@ -49,7 +49,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   // trigger + open state. Mounted once at the app shell (`shell/appShell.tsx`).
   const commandPalette = useCommandPalette()
   const newChatMutation = useMutation({
-    mutationFn: () => dispatch(createSlot(undefined)).unwrap(),
+    mutationFn: () => dispatch(createSlot({ defaultFolder: true })).unwrap(),
     onSuccess: () => {
       navigate('/chat')
       // Unguarded on purpose: this mutation only fires from the new-chat

@@ -95,9 +95,8 @@ export const UI_CONDITIONS = {
   job_enabled: 'the open job is active (not paused)',
   job_paused: 'the open job is paused',
   // Crewmates
-  crewmate_place_pane_open: "the crewmate editor shows its Workspace · Memory section (choose it in the editor's section list)",
-  crewmate_model_pane_open: "the crewmate editor shows its Model section (choose it in the editor's section list)",
-  crewmate_memory_manageable: 'the crewmate keeps a private memory of its own, or is the default crewmate, whose memory is the shared global one (with any other binding there is nothing to manage here)',
+  crewmate_place_pane_open: "the crewmate editor shows its Memory section (choose it in the editor's section list)",
+  crewmate_model_pane_open: "the crewmate editor shows its General section, which holds the model (choose it in the editor's section list)",
   // Artifacts
   artifact_open: "an artifact's own page is open (click the artifact in the library)",
   // Shell: the docked terminal panel (BottomTerminalPanel)
@@ -169,7 +168,6 @@ export const UI_RUNTIME_PREDICATES = [
   'crewmate_danger_zone_open',
   'crewmate_place_pane_open',
   'crewmate_model_pane_open',
-  'crewmate_memory_manageable',
   'no_response_running',
   'mouse_input',
   'phone_connect_available',

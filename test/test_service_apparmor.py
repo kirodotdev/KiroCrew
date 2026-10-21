@@ -659,6 +659,109 @@ class TestEnforcementVerificationIsSafeAndFaithful:
         # And the payload must not import our own (user-writable) package.
         assert "kiro_crew" not in " ".join(argv)
 
+    def test_runs_the_trusted_python_in_isolated_mode(self, monkeypatch):
+        """Under `sudo kirocrew service install` this python is root."""
+        from kiro_crew.service import apparmor as aa
+
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(aa, "_resolve_trusted", lambda name: f"/usr/bin/{name}")
+        aa.verify_enforcement(lambda *argv: (calls.append(argv), (0, ""))[1], 1000, 1000)
+
+        argv = calls[0]
+        at = argv.index("/usr/bin/python3")
+        assert argv[at + 1 : at + 4] == ("-I", "-c", aa._VERIFY_SNIPPET)
+
+    def test_privileged_capture_starts_in_root_without_python_env(self, monkeypatch):
+        """Never the operator's cwd, never an inherited PYTHON* variable."""
+        from kiro_crew.service import linux
+
+        seen: dict = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(kwargs, argv=argv)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(linux.subprocess, "run", fake_run)
+        monkeypatch.setattr(linux, "_privilege_prefix", lambda: ["sudo"])
+        monkeypatch.setenv("PYTHONPATH", "/tmp/planted")
+        monkeypatch.setenv("PYTHONSTARTUP", "/tmp/planted/s.py")
+        monkeypatch.setenv("KC_8414_KEEP", "kept")
+
+        assert linux._sudo_capture("aa-exec", "-p", "x") == (0, "")
+
+        assert seen["argv"] == ["sudo", "aa-exec", "-p", "x"]
+        assert seen["cwd"] == "/"
+        assert not [k for k in seen["env"] if k.startswith("PYTHON")]
+        assert seen["env"]["KC_8414_KEEP"] == "kept"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX service install path")
+    @pytest.mark.parametrize("via", ["bare-runner", "service-capture"])
+    def test_code_planted_in_cwd_or_pythonpath_never_runs(self, monkeypatch, tmp_path, via):
+        """End to end: `cd /tmp && sudo kirocrew service install` with a
+        planted ctypes.py / sitecustomize.py. The probe's own first import must
+        resolve to the stdlib, and no planted file may run.
+
+        `bare-runner` runs the built argv from the planted cwd with PYTHONPATH
+        set, so only `-I` stands between it and the plant. `service-capture`
+        goes through the real privileged-capture helper (sudo stubbed out).
+        """
+        from kiro_crew.service import apparmor as aa
+        from kiro_crew.service import linux
+
+        planted = tmp_path / "planted"
+        planted.mkdir()
+        marker = tmp_path / "PLANTED_RAN"
+        hook = f"open({str(marker)!r}, 'a').write(__name__ + '\\n')\n"
+        (planted / "ctypes.py").write_text(hook, encoding="utf-8")
+        (planted / "sitecustomize.py").write_text(hook, encoding="utf-8")
+        (planted / "usercustomize.py").write_text(hook, encoding="utf-8")
+
+        python = sys.executable
+        monkeypatch.setattr(
+            aa, "_resolve_trusted", lambda name: python if name == "python3" else f"/usr/bin/{name}"
+        )
+        # The snippet's real first line (its import), then report what it got.
+        first_line = aa._VERIFY_SNIPPET.splitlines()[0]
+        assert first_line.startswith("import ctypes")
+        monkeypatch.setattr(
+            aa,
+            "_VERIFY_SNIPPET",
+            first_line + "\nprint(ctypes.__file__)\n",
+        )
+        monkeypatch.chdir(planted)
+        monkeypatch.setenv("PYTHONPATH", str(planted))
+        monkeypatch.setenv("PYTHONUSERBASE", str(planted))
+
+        import subprocess as _sp
+
+        def python_part(argv):
+            # Drop the aa-exec / setpriv wrappers: they need root and a loaded
+            # profile; the interpreter and its flags are what is under test.
+            return argv[argv.index(python) :]
+
+        if via == "bare-runner":
+
+            def sudo_capture(*argv):
+                res = _sp.run(
+                    python_part(argv),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                )
+                return (res.returncode, res.stderr + res.stdout)
+
+        else:
+            monkeypatch.setattr(linux, "_privilege_prefix", lambda: [])
+
+            def sudo_capture(*argv):
+                return linux._sudo_capture(*python_part(argv))
+
+        ok, problem = aa.verify_enforcement(sudo_capture, os.getuid(), os.getgid())
+
+        assert ok is True, problem
+        assert not marker.exists(), marker.read_text(encoding="utf-8")
+
     def test_a_missing_trusted_tool_is_inconclusive_not_a_failure_claim(self, monkeypatch):
         from kiro_crew.service import apparmor as aa
 

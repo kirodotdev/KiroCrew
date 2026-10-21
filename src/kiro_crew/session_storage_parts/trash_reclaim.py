@@ -584,9 +584,10 @@ def _move_to_trash_locked(
                     # is only true of a manifest that reached disk: sync before
                     # raising, because nothing after this point will.
                     #
-                    # A sync failure here is logged rather than raised — the one place
-                    # in this module where that is right. This path is ALREADY
-                    # failing, with an error that names which session was resumed and
+                    # A sync failure here is logged rather than raised, like every
+                    # other sync in this module that runs just before a raise
+                    # (:func:`_sync_batch_or_warn`). This path is ALREADY failing,
+                    # with an error that names which session was resumed and
                     # where its fragment is; replacing that with an OSError would cost
                     # the operator the only pointer to the fragment in exchange for
                     # information the log line already carries.

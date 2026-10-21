@@ -6,7 +6,7 @@
  * switch, the status strip and Check again are pinned in AgentBackendTab.test.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import React from 'react'
@@ -87,7 +87,7 @@ function mcp(
     mcp: {
       per_tool_deny: reach,
       // The server ships its classification beside the reach
-      // (`backend_mcp_ability.COSTS_WHOLE_SERVER`), so the fixture ships one too and
+      // (`registry.PerToolDeny.costs_whole_server`), so the fixture ships one too and
       // a test that states only a reach gets the payload the gateway would send.
       // Overridable, because the point of a server-side flag is that the two can be
       // stated independently — an unclassified reach, or one this frontend has never
@@ -544,6 +544,23 @@ describe('AgentBackendTab MCP ability card', () => {
     const rule = await screen.findByText(/stops every tool on the same server/)
     expect(rule.closest('details')).toBeNull()
     expect(rule.textContent).toContain('Kiro CLI')
+  })
+
+  it('links the deny rule to the MCP Servers list, where the reader acts on it', async () => {
+    // #21303: the rule names a cost on whole servers; the link lands on the list of
+    // them, which the Connections page opens from its `?view=` param.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('kiro', { ...card(), ...mcp({ per_tool_deny: 'whole-server' }) })],
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/settings/agent']}><AgentBackendTab /></MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const rule = await screen.findByText(/stops every tool on the same server/)
+    const link = within(rule).getByRole('link', { name: 'Open the MCP Servers list in Connections' })
+    expect(link).toHaveAttribute('href', '/capabilities?tab=mcp&view=mcp-servers')
   })
 
   it('marks the per-call exception as an exception, right under the rule', async () => {

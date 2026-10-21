@@ -78,7 +78,10 @@ from kiro_crew.apps.builtins.aws_control.backend.storage_versions import (
 )
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError, _checked
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (  # noqa: F401 - pinned by test_campaign_facades_base_public_names.py
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +156,9 @@ def list_section(
         # other tools): a key embedding a credential or beacon URL must not
         # reach the dashboard verbatim. Same double-pass discipline as every
         # other egress surface.
-        name, _ = redact_credentials(name)
-        name, _ = redact_exfiltration_urls(name)
+        from kiro_crew.security import redact
+
+        name = redact(name)
         return name
 
     files = [
@@ -1109,8 +1113,9 @@ def search_keys(
     """
 
     def _safe_name(name: str) -> str:
-        name, _ = redact_credentials(name)
-        name, _ = redact_exfiltration_urls(name)
+        from kiro_crew.security import redact
+
+        name = redact(name)
         return name
 
     prefix = SECTION_PREFIXES[section]

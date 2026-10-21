@@ -1,10 +1,10 @@
 """Pure helpers for the ssh self-target floor's hosts-file table.
 
 The line parser that turns hosts-file text, fed one chunk at a time, into
-``{name -> maps-to-local}``, the content digest a Windows cache key carries,
-and the two exceptions the reads raise.  ``argv_floor_hosts`` owns every read,
-the cache and the gate; this parsing plumbing sits in its own module, which
-keeps it out of that module's per-module liveness cap.
+``{name -> maps-to-local}``, the content digest a small file's cache key
+carries, and the two exceptions the reads raise.  ``argv_floor_hosts`` owns
+every read, the cache and the gate; this parsing plumbing sits in its own
+module, which keeps it out of that module's per-module liveness cap.
 
 Layer.  This module imports nothing from the package: ``argv_floor_hosts`` imports
 these names and re-binds them in its own namespace, which a patch through
@@ -28,8 +28,8 @@ class _HostsFileUnreadable(Exception):
     """The key's digest read failed; not an OSError, so the gate cannot take it as absent."""
 
 
-def _hosts_content_digest_enabled() -> bool:
-    """True where ``st_ctime`` is creation time (Windows); a seam for tests."""
+def _ctime_is_creation_time() -> bool:
+    """True where ``st_ctime`` is creation time, not change time (Windows); a seam for tests."""
     return os.name == "nt"
 
 

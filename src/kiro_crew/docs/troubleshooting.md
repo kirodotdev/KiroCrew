@@ -415,7 +415,19 @@ directory beside the others instead, named `<UTC time of the move>-<its own
 name>`, and deleted from there 14 days after the move (later, if something was
 written into it in the last hour). The gateway log names every move in one
 INFO line: `agent-scratch: moved <name> to <path in .quarantine> instead of
-deleting it`, with the date it will be deleted. To keep the work, move the
+deleting it`, with the date it will be deleted.
+
+The quarantine keeps the work, not what tools rebuild from it. Each kept
+directory loses its `node_modules`, `__pycache__`, `.pytest_cache`,
+`.mypy_cache`, `.ruff_cache`, `.tox` and `.nox` directories, its Python
+virtual environments (any directory holding a `pyvenv.cfg` file and no git
+repository) and its pytest temp directories (`pytest-of-*` at its top), on
+every hourly sweep, so edits under `node_modules` are not kept and a
+dependency installed inside `.quarantine` is removed again. Nothing inside a
+`.git` directory is touched. A repository that sits only inside one of those, such as
+the throwaway ones a test suite creates, does not count, so a directory whose
+only repositories are there is deleted at once. Run `npm ci` or recreate the
+venv after restoring one. To keep the work, move the
 directory out of `.quarantine` before that date (copying files out of it does
 not delay the delete), or commit and push it from there; to restore it for its
 session, move it back beside the others under its original name.

@@ -109,12 +109,12 @@ only the app adapter that supplies the declared-path grant and the scoped
 pins the shared hook as store-free. A pasted or dropped file on an
 ungranted host is refused in the composer with a visible notice; a drop with
 files is always default-prevented so the browser never navigates to the file.
-The send reuses chat-core's `buildOutgoingTurn`, so the wire text and
-`meta.files` match the main chat's, with `meta.sendId` alongside. It uses the
-text-only `'steer'` serialization: this surface carries no `meta.dirs`, so an
-`@rel/` folder token stays as typed instead of becoming an `[attached_dir N]`
-marker naming a path nothing travels with -- the same text a send without a
-file carries. The refusal notice names the page that accepts files by its rail
+The send reuses chat-core's `buildOutgoingTurn`, so the wire text,
+`meta.files` and `meta.pastes` match the main chat's, with `meta.sendId`
+alongside. It is a `'send'` turn with `keepFolderTokens`: this surface has no
+project root and carries no `meta.dirs`, so an `@rel/` folder token stays as
+typed instead of becoming an `[attached_dir N]` marker naming a path nothing
+travels with -- the same text a send without a file carries. The refusal notice names the page that accepts files by its rail
 label (`nav.sessions`), as text, never a link that would leave the unsaved
 draft. While an upload runs, the composer shows the files' names, refuses the
 picker (its label reads "Uploading files…") and refuses Send through the Send
@@ -127,7 +127,8 @@ the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
 the composer, as it takes the text back, so they are not sent twice. That
 proof is the send's own `sendId`. A host `onSend` send carries none, so its
-only proof is its text arriving as a user row after the send's anchor row;
+only proof is its text arriving as a user row after the send's anchor row,
+compared with edge whitespace trimmed since a host may strip what it stores;
 text cannot say which send landed, so that proof never touches the composer:
 the warning becomes a calm line saying the message is in the conversation and
 its text is still in the composer, or simply goes away when there is no kept
@@ -166,6 +167,36 @@ folder cut from the start, so same-named results stay apart in the narrow
 menu. Both menus are opt-in and fail closed per path: a host that declares
 only `/api/slash-commands` gets the `/` menu and an `@` that stays plain text,
 with no file search sent. Tests: `ChatEmbed.pickers.test.tsx`.
+
+Long pastes collapse through the same chat-core Paste atom the main composer
+uses, not a copy: `ChatEmbed` binds its textarea to
+`chat-core/composer/pasteEditor.ts` (`usePasteTokens`, which `ChatInput` also
+binds), keeps the blocks in `useComposerPastes` and hands them to the
+`Composer` root as `pastes`. The chip background is the shared
+`PasteHighlightLayer` mirror behind a transparent textarea, given the embed's
+own box classes through its `typo` prop, and the hover/caret preview is the
+shared `PasteHoverLayer`. A file paste goes to the attach path first; only a
+paste it leaves alone can collapse. The user's `showFullPastes` chat setting
+and the `Cmd/Ctrl+Shift+V` raw chord are honoured as in the main chat. On send
+each live token expands on the wire and its block rides `meta.pastes` (and the
+paste side table, `storeSentPastes`), and the optimistic row carries the same
+blocks so it draws the chip. Recovery hands the blocks back with the text
+(`restorePastes` on the parked receipt), carried through
+`useComposerPastes().carry` so a block whose number the composer already uses
+is renumbered. Undo/redo is the main composer's own snapshot history,
+`chat-core/composer/undoHistory.ts` (`useUndoHistory`, which `ChatInput` also
+mounts): each snapshot carries the blocks, so Cmd/Ctrl+Z after a chip is
+deleted restores its content with its token, and the send never carries a
+token without its block. Every user change to the draft (typing, a chip
+delete or expand, a picker insert) goes through `setDraftFromUser`, which
+marks it as the user's own, so the history records even the first edit after
+a slot switch instead of reseeding at it as if the parent had restored that
+slot's draft. `ChatEmbed.longPaste.test.tsx` covers collapse, the
+wire shape, the optimistic row, the refused-send hand-back, atomic delete,
+undo after a delete (also as the first edit after a slot switch) and the
+setting; the import-graph test pins
+`pasteEditor.ts`, `undoHistory.ts`, `composerPastes.ts` and both layers as
+store-free.
 
 The host owns session attribution. Chat hosts bind their session; routed app
 pages bind the established `dashboard:ui` page identity. A provided host key
@@ -2910,6 +2941,16 @@ it: a `subdirectory` the lexical gate rejects is not joined, an absolute path or
 URL is left untouched, and no normalisation happens, so a `..` in the asset path
 still reaches the blob route's own rejection.
 
+**Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
+page and its only import path: it loads the app (`load()` resolves the art fields
+described here), holds the page's state, and renders the actions and the info
+cards. Two owners beside it never import it. `AppDetailPageArt.tsx` renders the
+art, `HeroBanner` and `ScreenshotGallery`, each with its local-art second chance and
+the same-origin gate on that fallback, so new work on the banner, the gallery or its
+lightbox goes there. `appDetailPageTypes.ts` holds the page's view model (`AppInfo`
+and the manifest and registry-row types it joins), which is where a new view-model
+field goes.
+
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes
 the install itself wrote, and the four surfaces that render an installed app's
@@ -3131,7 +3172,8 @@ Writers: builtin `app.json` manifests, `apps/registry_pipeline/manifests.py`
 `apps/routes.py` (`handle_app_art_file`),
 `website/src/components/appstore/appManifest.ts`,
 `website/src/components/appstore/useHeroArt.ts`,
-`website/src/pages/AppDetailPage.tsx`, and
+`website/src/pages/AppDetailPage.tsx`,
+`website/src/pages/AppDetailPageArt.tsx`, and
 `website/scripts/check-app-manifest-sync.mjs`.
 
 ## 17. A backend's health is a standing observation, not a startup verdict

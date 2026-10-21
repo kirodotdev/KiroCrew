@@ -167,8 +167,13 @@ def open_turn_crew_log(
     ``session/class`` move whenever two statements of one session's class differ:
     every member the dashboard states, this opener states from the same source, or
     the two writers would take turns recording a move that never happened. No
-    ``parent``: a
-    conversation the person opened themselves is nobody's child. ``previous_sid``
+    ``parent``, and ``depth`` zero whenever the session tree can answer at all: a
+    conversation the person opened themselves is nobody's child, and because this
+    writer owns the channel's own sessions it can say so as a fact rather than
+    leave the depth absent, which every other reading of an uncited creator has to
+    mean -- while a tree too incomplete to place a CHILD withholds this zero too,
+    so the depth distribution is never censored on one side only
+    (:func:`~kiro_crew.crew_log.session_tree_projection.root_depth`). ``previous_sid``
     is the crew log this conversation's live session superseded, as the
     allocation boundary captured it while registering that session
     (:func:`predecessor_sid`, consumed by the dispatcher right after
@@ -192,7 +197,10 @@ def open_turn_crew_log(
     # ``work_ledger.rebuild_from_projection`` import the emitter the same way. The
     # ``top-level-imports`` convention is advisory; this boot-path invariant is
     # enforced, so the invariant wins.
+    # The session-tree fold below it is function-local for the same reason, and the
+    # one call this makes reads only memory that fold already holds.
     from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import session_tree_projection as crew_log_tree
 
     try:
         session_id = crew_log_emit.session_id_of(provider)
@@ -213,6 +221,18 @@ def open_turn_crew_log(
             model_requested=model_requested,
             cwd=str(getattr(provider, "cwd", "") or ""),
             resumed=bool(resumed),
+            # A root, stated rather than left absent -- but only against a tree
+            # that can place sessions at all. This path writes no ``parent``
+            # because a conversation the person opened themselves is nobody's
+            # child, and that is a FACT here rather than a gap: the dispatcher
+            # owns the channel's own sessions, and no other writer can give one of
+            # them a creator. An absent depth would read as "not established" and
+            # leave every channel conversation out of the tree count it is
+            # actually the root of. ``root_depth`` is what keeps the other error
+            # off: a zero written while the fold is unseeded or over its unit cap
+            # -- the state in which a child's depth is withheld -- would make the
+            # distribution all roots on exactly the busiest installs.
+            depth=crew_log_tree.root_depth(),
             memory=memory_mode,
             channel=True,
             workspace=workspace,

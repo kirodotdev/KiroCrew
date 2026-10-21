@@ -1,5 +1,6 @@
 ---
 name: papyrus-make-fluent
+app: papyrus
 description: Polish the English of a LaTeX passage — fluency, grammar, and clarity — as tracked suggestions, without changing structure or meaning. Use when the author asks to make text fluent/readable, fix the English, proofread, or tighten wording. Includes a mandatory global-consistency (ripple) check.
 triggers: make fluent, polish my writing, proofread latex, fix english, tighten prose, rephrase paragraph
 ---

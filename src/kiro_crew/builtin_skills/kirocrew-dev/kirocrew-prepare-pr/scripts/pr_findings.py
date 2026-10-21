@@ -801,9 +801,7 @@ def main(argv):
                 if item["clears_when"]:
                     print("  Clears when: " + sanitize(redact(item["clears_when"]))[:280])
             if verdicts and not design_items:
-                print("(no Blockers/Watch/Subtraction/Suggestion items in those bodies)")
-            if any(verdicts.get(lane) == "PASS" for lane in punchlines):
-                print("(a PASS lane's punchline is its one ask: it still needs an answer)")
+                print("(no Blockers items in those bodies)")
             print("-- line-level findings (GPT / Opus)")
             findings = list(extract_findings(bot_comments, head_sha, bindings))
             for f in findings:
@@ -819,7 +817,7 @@ def main(argv):
                 )
                 print("  " + sanitize(redact(f["text"]))[:280])
             if not findings:
-                print("(no BLOCKING/FINDING lines in comments stamped for the current head)")
+                print("(no BLOCKING lines in comments stamped for the current head)")
 
     print()
     print("=== Disposition-rule check (one lane / one rationale per finding) ===")
@@ -832,10 +830,9 @@ def main(argv):
     print()
     print(
         "NOTE: fix every legitimate Critical/High finding + failing check; "
-        "push back on false positives; Medium/Low are advisory. Every "
-        "whole-design item above needs its OWN disposition comment naming its "
-        "span (one lane, one finding per comment) - an unanswered CONCERNS is "
-        "pr_status.py exit 20."
+        "push back on false positives. Every BLOCK item above needs its OWN "
+        "disposition comment naming its span (one lane, one finding per "
+        "comment) or a fix."
     )
     return 0
 

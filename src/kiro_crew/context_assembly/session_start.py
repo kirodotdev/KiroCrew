@@ -228,10 +228,21 @@ def build_session_context(
         )
         return "".join(parts) + essentials
 
+    # Whether this agent gets skills is decided by the injection plan, not by
+    # ``is_custom`` alone: a custom agent that maps skills via ``skill://``
+    # resources — or, on kiro-cli, one that inherits the default skill trees —
+    # DOES receive a skill directory, so logging "skipping skills" for every
+    # custom agent misread exactly the case skill-scope debugging cares about.
+    # Compute the plan once and reuse it at the skills block below so the log
+    # and the injection cannot diverge.
+    inject_skills, skill_globs = ctx._skills_injection_plan(
+        agent, is_cc=is_cc, project_dir=project, provider_type=provider_type
+    )
     if is_custom:
         logger.info(
-            "Custom agent %r: injecting memory/lessons/rules, skipping skills",
+            "Custom agent %r: injecting memory/lessons/rules, %s",
             agent,
+            "injecting skills" if inject_skills else "skipping skills",
         )
     else:
         logger.debug("Building session context for kirocrew agent")
@@ -534,10 +545,9 @@ def build_session_context(
     # skill_search, keeping the block bounded instead of dumping every
     # skill's summary. The slice below is a defensive backstop only.
     # Mapped agents get scoped discovery on both backends. Unmapped: kirocrew only.
-    # Shared with the post-compaction re-injection in build_message.
-    inject_skills, skill_globs = ctx._skills_injection_plan(
-        agent, is_cc=is_cc, project_dir=project, provider_type=provider_type
-    )
+    # ``inject_skills``/``skill_globs`` come from the plan computed at the
+    # section top, so the "skipping skills" log and the injection here read the
+    # same decision. Shared with the post-compaction re-injection in build_message.
     if inject_skills:
         required_skills, skills_ctx = _inclusion.skill_parts(
             self, globs=skill_globs, project=project, caps=caps, lazy_skills=lazy_skills

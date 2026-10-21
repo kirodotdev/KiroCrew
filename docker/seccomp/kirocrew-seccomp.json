@@ -826,26 +826,33 @@
       }
     },
     {
-      "_comment": "Allow unshare(CLONE_NEWUSER) and unshare(CLONE_NEWNS). Blocked by the Docker default profile; required for the inner sandbox probe.",
+      "_comment": "Allow unshare unconditionally. The Docker default profile blocks it; the inner sandbox needs unshare(CLONE_NEWUSER) then unshare(CLONE_NEWNS). Rule is unconditional \u2014 arg filters cannot reliably cover all kernel/glibc combinations.",
       "names": [
         "unshare"
       ],
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "Allow clone unconditionally. Docker's default profile allows clone but only without CLONE_NEWUSER; adding an unrestricted allow rule here takes precedence (last rule wins in seccomp BPF), enabling the inner sandbox's fork->unshare(CLONE_NEWUSER) handshake while preserving all normal fork() usage.",
+      "_comment": "Allow clone unconditionally. Docker's default restricts clone via arg filters; an unrestricted ALLOW appended here takes precedence (last rule wins in seccomp BPF) and covers the inner sandbox's fork->unshare(CLONE_NEWUSER) handshake as well as normal fork() and glibc thread creation.",
       "names": [
         "clone"
       ],
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "Allow mount inside an already-established user+mount namespace. Needed by the inner sandbox's bind-mount step after unshare(CLONE_NEWNS).",
+      "_comment": "Allow mount. Needed by the inner sandbox's bind-mount step after unshare(CLONE_NEWNS). Only reachable inside an already-established user+mount namespace.",
       "names": [
         "mount"
       ],
       "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Allow umount2 unconditionally. The Docker default profile only allows umount/umount2 with CAP_SYS_ADMIN, which containers do not have, so the launcher's umount2(MNT_DETACH) teardown of a private window's staging bind-mount failed with EPERM. Like mount, umount2 is only reachable inside an already-established user+mount namespace, and the sandboxed payload itself stays denied by the launcher's namespace-escape filter (mount/umount2/unshare/setns/pivot_root).",
+      "names": [
+        "umount2"
+      ],
+      "action": "SCMP_ACT_ALLOW"
     }
   ],
-  "_comment": "Kiro Crew custom seccomp profile \u2014 extends the Docker default by adding unshare(CLONE_NEWUSER/NEWNS), clone(CLONE_NEWUSER), and mount (inside a user namespace). Required for Kiro Crew's inner Linux user-namespace sandbox to work inside Docker containers. Less permissive than --security-opt seccomp=unconfined and far less permissive than --privileged. See docs/docker.md for usage."
+  "_comment": "Kiro Crew custom seccomp profile \u2014 extends the Docker default by adding unconditional ALLOW rules for unshare, clone, mount, and umount2. Required for Kiro Crew's inner Linux user-namespace sandbox to work inside Docker containers (the default profile blocks these syscalls). Less permissive than --security-opt seccomp=unconfined and far less permissive than --privileged; all other Docker default restrictions apply. Note: unshare/clone rules are unconditional (no arg filters) \u2014 see docker/seccomp/gen_profile.py for the rationale. See docs/guides/docker.md for usage."
 }

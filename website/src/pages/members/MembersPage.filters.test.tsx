@@ -435,6 +435,96 @@ describe('MembersPage hides unlisted crewmates', () => {
     expect(names()).toEqual(['radar', 'kirocrew', 'oncall'])
   })
 
+  // #21852: "2 crewmates" over a crew of three read as the whole crew, and the
+  // third only turned up when a search happened to match it. The rule and the
+  // count stay; the list now ends by naming the rest, saying the count above
+  // leaves them out, and how to reach them.
+  it('ends the list by naming the crewmates the rule hides and saying the search finds them', async () => {
+    await renderPage(MIXED)
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    expect(screen.getByTestId('member-count')).toHaveTextContent('3 crewmates')
+    expect(screen.getByTestId('member-hidden-hint')).toHaveTextContent(
+      "legacy-aim and pkg-tool are hidden because you haven't used them yet, and aren't counted above. Search to find them.",
+    )
+    // The hint is the list's last item, after every listed row.
+    const list = screen.getByTestId('member-hidden-hint').closest('ul')
+    expect(list?.lastElementChild).toBe(screen.getByTestId('member-hidden-hint'))
+    // A typed search decides the list alone, so the hint gives way to it...
+    fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })
+    expect(names()).toEqual(['pkg-tool'])
+    expect(screen.queryByTestId('member-hidden-hint')).toBeNull()
+    // ...and comes back with the default list.
+    fireEvent.click(screen.getByTestId('member-search-clear'))
+    expect(screen.getByTestId('member-hidden-hint')).toBeInTheDocument()
+  })
+
+  it('names a single hidden crewmate by the label its row shows, in the singular', async () => {
+    await renderPage([
+      ...MIXED.filter((m) => m.name !== 'pkg-tool' && m.name !== 'legacy-aim'),
+      row('nova-sky', { ...NO, dashboard_created: true, display_name: 'Nova Sky' }),
+    ])
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    expect(screen.getByTestId('member-hidden-hint')).toHaveTextContent(
+      "Nova Sky is hidden because you haven't used it yet, and isn't counted above. Search to find it.",
+    )
+  })
+
+  it('past three hidden crewmates, names the first three in roster order and counts the rest', async () => {
+    await renderPage([
+      ...MIXED,
+      row('pkg-two', { ...NO }),
+      row('pkg-three', { ...NO }),
+    ])
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    // The whole line: the counted form names no action.
+    expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
+      "legacy-aim, pkg-three, pkg-tool and 1 more crewmate you haven't used yet are hidden and aren't counted above.",
+    )
+  })
+
+  it('names the crewmates the user made ahead of package and app rows', async () => {
+    // A crewmate the user just created sorts last by name here, behind four
+    // package rows; it is still one of the three named, and named first.
+    await renderPage([
+      ...MIXED,
+      row('pkg-two', { ...NO }),
+      row('pkg-three', { ...NO }),
+      row('zebra-notes', { source: 'kirocrew', ...NO, dashboard_created: true, display_name: 'Zebra Notes' }),
+    ])
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
+      "Zebra Notes, legacy-aim, pkg-three and 2 more crewmates you haven't used yet are hidden and aren't counted above.",
+    )
+  })
+
+  it('counts every hidden crewmate past the three it names', async () => {
+    await renderPage([
+      ...MIXED,
+      row('pkg-two', { ...NO }),
+      row('pkg-three', { ...NO }),
+      row('pkg-four', { ...NO }),
+    ])
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
+      "legacy-aim, pkg-four, pkg-three and 2 more crewmates you haven't used yet are hidden and aren't counted above.",
+    )
+  })
+
+  it('says nothing when the rule hides no crewmate', async () => {
+    await renderPage(MIXED.filter((m) => m.name !== 'pkg-tool' && m.name !== 'legacy-aim'))
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    expect(screen.queryByTestId('member-hidden-hint')).toBeNull()
+  })
+
+  it('says nothing while a filter narrows the list', async () => {
+    await renderPage(MIXED)
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await openFilters()
+    fireEvent.click(screen.getByTestId('member-filter-starred'))
+    expect(names()).toEqual(['oncall'])
+    expect(screen.queryByTestId('member-hidden-hint')).toBeNull()
+  })
+
   it('filter tallies count listed rows only, and "N of M" reads M from them', async () => {
     await renderPage(MIXED)
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))

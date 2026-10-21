@@ -194,7 +194,8 @@ class TestUserAgentEditsSurviveRefresh:
         # survive a template refresh — the same reasoning as `description`.
         #
         # `skills` belongs here too, not in `_FRAMEWORK_OWNED_AGENT_KEYS`: it is a live field
-        # (`agent_discovery.py` reads `row.get("skills")` into `AgentInfo.skills`) naming which
+        # (`agent_discovery_parts/agent_roster.py` reads `row.get("skills")` into
+        # `AgentInfo.skills`) naming which
         # skills an agent loads, which is exactly the kind of choice an operator should be able
         # to change and keep across a refresh — same category as `model`. Framework ownership is
         # reserved for identity and CONTAINMENT keys, which this is not. Added when the

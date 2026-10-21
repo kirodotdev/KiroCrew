@@ -512,8 +512,10 @@ class SttConfig:
             "Send when I stop recording",
             "Send the message once the transcript is ready when you deliberately "
             "stop dictating: letting go of hold-to-talk, releasing the push-to-talk "
-            "key, or pressing the mic or the key again. Press Shift as you finish, or "
-            "slide sideways on the phone's hold bar, to keep a draft instead. "
+            "key, or pressing the mic or the key again. Shift-click the mic, or slide "
+            "sideways on the phone's hold bar, to keep a draft instead; with a "
+            "push-to-talk binding that does not use Shift, Shift as you release works "
+            "too. "
             "Cancelling, losing focus and the recording time limit never send. Works "
             "with streaming and batch transcription; off by default.",
         ),

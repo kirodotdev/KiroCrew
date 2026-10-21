@@ -191,7 +191,7 @@ export function useActionsProvider(opts: { openShortcuts: () => void }): Resourc
   // mutation (`use-react-query` lint rule). onSuccess navigates to /chat so the
   // user lands in the new session rather than staying on the current page.
   const { mutate: doNewSession } = useMutation({
-    mutationFn: () => dispatch(createSlot(undefined)).unwrap(),
+    mutationFn: () => dispatch(createSlot({ defaultFolder: true })).unwrap(),
     onSuccess: () => navigate('/chat'),
   })
 

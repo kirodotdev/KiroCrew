@@ -15,7 +15,7 @@
  *   the composer; an unknown id changes nothing.
  */
 import { describe, it, expect } from 'vitest'
-import { retireSendTail, type SendTail } from '../app-sdk/embedSendTails'
+import { retireSendTail, sendTailProof, type SendTail } from '../app-sdk/embedSendTails'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 
 const notice = (sendId: string, restore?: SendTail['restore']): SendTail =>
@@ -99,5 +99,14 @@ describe('retireSendTail', () => {
     const r = retireSendTail([a], 'zzz', 'hello', mergeRecoveredDraft)
     expect(r.tails).toEqual([a])
     expect(r.draft).toBeNull()
+  })
+})
+
+describe('sendTailProof', () => {
+  it('a host row whose stored text differs from the sent text only by edge whitespace still proves the send', () => {
+    const tail = { sendId: 's1', hostProof: { text: 'pasted block\n', slot: 'slot-a', anchor: null } } as Pick<SendTail, 'sendId' | 'hostProof'>
+    const rows = [{ role: 'user', content: 'pasted block', ts: 't1' }] as Parameters<typeof sendTailProof>[1]
+    expect(sendTailProof(tail, rows, 'slot-a')).toBe('text')
+    expect(sendTailProof(tail, [{ role: 'user', content: 'other', ts: 't1' }] as Parameters<typeof sendTailProof>[1], 'slot-a')).toBeNull()
   })
 })

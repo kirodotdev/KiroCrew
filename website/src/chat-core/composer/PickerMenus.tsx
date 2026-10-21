@@ -93,7 +93,7 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
         onSelect={({ leaf }) => {
           // Token left literal — backend appends the skill body; the user still
           // sees their $token marker. Caret-relative replace via shared helper.
-          applyPickedToken(/(^|[\s])\$[a-z0-9/_-]*$/, `$${leaf} `)
+          applyPickedToken(/(^|[\s])[$\u00A5\uFFE5\uFF04][a-z0-9/_-]*$/u, `$${leaf} `)
           setSkillPickerOpen(false); setSkillQuery('')
         }}
         onTrustRequest={({ leaf }) => {
@@ -141,7 +141,7 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
           setTrustPrompt(null)
           // The grant makes the token resolvable, so insert it now — the user
           // asked for this skill and has just consented to its directory.
-          applyPickedToken(/(^|[\s])\$[a-z0-9/_-]*$/, `$${completedPrompt.leaf} `)
+          applyPickedToken(/(^|[\s])[$\u00A5\uFFE5\uFF04][a-z0-9/_-]*$/u, `$${completedPrompt.leaf} `)
         }}
       />}
     </ComposerPickerSourceProvider>

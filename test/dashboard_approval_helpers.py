@@ -123,9 +123,9 @@ async def _answer_approval(
     """Resolve *owner*'s approval future for *request_id* once the turn registers it.
 
     Stands in for a user clicking Approve/Reject. The future is created inside
-    ``_run_chat`` when the permission event is processed, so an answerer that
-    pokes at a fixed offset races the stream: on a loaded runner the event can
-    arrive after the poke, leaving the turn parked on an approval nobody will
+    ``_on_permission_prompt`` (chat_turn/permission_prompt.py) when the permission event is
+    processed, so an answerer that pokes at a fixed offset races the stream: on a loaded
+    runner the event can arrive after the poke, leaving the turn parked on an approval nobody will
     ever answer.
     """
     loop = asyncio.get_running_loop()

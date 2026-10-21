@@ -52,7 +52,7 @@ function probeRow(id: string, perToolDeny: string, policyId = id): AcpBackendPro
     missing_components: [],
     install_command: '',
     // The server ships its own classification beside the reach
-    // (`backend_mcp_ability.COSTS_WHOLE_SERVER`).
+    // (`registry.PerToolDeny.costs_whole_server`).
     mcp: {
       per_tool_deny: perToolDeny,
       costs_whole_server: perToolDeny === 'whole-server' || perToolDeny === 'per-call',

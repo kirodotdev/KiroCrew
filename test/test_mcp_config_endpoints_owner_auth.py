@@ -23,6 +23,8 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _TARGET_HANDLER_MODULES = frozenset(
     {
         "kiro_crew.dashboard.handlers.core",
+        "kiro_crew.dashboard.handlers.core_config_patch",
+        "kiro_crew.dashboard.handlers.core_config_view",
         "kiro_crew.dashboard.handlers.mcp",
         "kiro_crew.dashboard.handlers.mcp_custom",
         "kiro_crew.dashboard.handlers.mcp_discover",

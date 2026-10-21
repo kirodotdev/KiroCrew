@@ -34,7 +34,24 @@ _CONFIG_WRITERS = (
 
 #: The native handler's owners under ``slack/handler_runtime/`` are composed into
 #: handler.py and hold its ``!agent`` / ``!channel`` writes, so they are scanned too.
-_SLACK_SOURCES = ("interactions.py", "handler.py", "events.py", "allowlist.py") + tuple(
+_SLACK_SOURCES = (
+    "interactions.py",
+    "interactions_approvals.py",
+    "interactions_context.py",
+    "interactions_modals.py",
+    "interactions_options.py",
+    "interactions_sessions.py",
+    "interactions_settings.py",
+    "handler.py",
+    "events.py",
+    "events_block_text.py",
+    "events_home_tab.py",
+    "events_inbound.py",
+    "events_queue.py",
+    "events_slash.py",
+    "events_voice.py",
+    "allowlist.py",
+) + tuple(
     f"handler_runtime/{path.name}"
     for path in sorted((SRC / "slack" / "handler_runtime").glob("[!_]*.py"))
 )

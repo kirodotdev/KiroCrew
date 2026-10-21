@@ -1178,6 +1178,195 @@ class TestGitTreesAreQuarantined:
         assert self._sweep_later() == 1
         assert not path.exists()
 
+    def test_repositories_only_in_rebuildable_dirs_are_not_work(self, scratch_root: Path) -> None:
+        # Test suites ``git init`` throwaway repositories in pytest's basetemp,
+        # which lands at the top of the scratch tree; package installs can
+        # carry a ``.git`` too.
+        path = self._dead_scratch()
+        basetemp = path / "pytest-of-agent" / "pytest-3" / "test_commit0"
+        basetemp.mkdir(parents=True)
+        _git(basetemp, "init", "-q", "repo")
+        (path / "work" / "node_modules" / "dep").mkdir(parents=True)
+        _git(path / "work" / "node_modules" / "dep", "init", "-q")
+
+        assert not sc.holds_git_repository(path)
+        assert self._sweep_later() == 1
+        assert not path.exists()
+        assert not sc.quarantine_dir().exists()
+
+    def test_a_basetemp_name_below_the_top_is_searched(self, scratch_root: Path) -> None:
+        # Only pytest's own spot, the top of the tree, is a basetemp.
+        path = self._dead_scratch()
+        (path / "work").mkdir()
+        _git(path / "work", "init", "-q", "pytest-of-agent")
+
+        assert sc.holds_git_repository(path)
+        self._swept(path)
+
+    # -- what the quarantine keeps -----------------------------------------
+
+    @staticmethod
+    def _rebuildable(tree: Path) -> None:
+        """Fill *tree* with what tools rebuild: installs, a venv, caches, a basetemp."""
+        for relative in (
+            "clone/node_modules/dep/index.js",
+            "clone/__pycache__/mod.cpython-312.pyc",
+            "clone/.pytest_cache/v/cache/lastfailed",
+            "clone/.mypy_cache/3.12/mod.json",
+            "clone/.ruff_cache/0.1/cache",
+            "clone/.tox/py312/log",
+            "clone/.nox/tests/log",
+            "clone/.venv/pyvenv.cfg",
+            "clone/.venv/lib/site.py",
+            "clone/env312/pyvenv.cfg",
+            "pytest-of-agent/pytest-0/test_x0/repo/.git/HEAD",
+        ):
+            (tree / relative).parent.mkdir(parents=True, exist_ok=True)
+            (tree / relative).write_text("rebuilt\n")
+
+    def test_the_quarantine_keeps_the_work_and_drops_what_tools_rebuild(
+        self, scratch_root: Path, upstream: Path, caplog
+    ) -> None:
+        caplog.set_level("INFO", logger=sc.__name__)
+        path, clone = self._clone_into(upstream)
+        (clone / "draft.txt").write_text("uncommitted\n")
+        # Named like a venv, but no pyvenv.cfg: somebody's files.
+        (clone / "work" / ".venv").mkdir(parents=True)
+        (clone / "work" / ".venv" / "notes.txt").write_text("not a venv\n")
+        # A link named pyvenv.cfg does not make a venv either.
+        _symlink_or_skip(clone / "work" / "pyvenv.cfg", Path(".venv"))
+        # A repository is work whatever its directory is called.
+        _git(path, "clone", "-q", str(upstream), "node_modules")
+        kept = _snapshot(path)
+        self._rebuildable(path)
+
+        assert self._sweep_later() == 0
+        moved = self._moved(path)
+        assert _snapshot(moved) == kept
+        assert "?? draft.txt" in _git(moved / "clone", "status", "--porcelain")
+        assert f"removed 10 rebuildable dir(s) from {moved}" in caplog.text
+
+    def test_a_venv_holding_a_repository_is_work(self, scratch_root: Path, upstream: Path) -> None:
+        # A venv used as a project folder, or one ``pip install -e git+...``
+        # cloned into, holds work below its pyvenv.cfg.
+        path = self._dead_scratch()
+        (path / "work").mkdir()
+        (path / "work" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (path / "work" / "src").mkdir()
+        _git(path / "work" / "src", "clone", "-q", str(upstream), "pkg")
+
+        assert sc.holds_git_repository(path)
+        self._swept(path)
+
+    def test_a_basetemp_name_inside_a_venv_is_work(
+        self, scratch_root: Path, upstream: Path
+    ) -> None:
+        path, _clone = self._clone_into(upstream, inside="env/pytest-of-agent/repo")
+        (path / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+
+        self._swept(path)
+
+    def test_a_quarantined_venv_keeps_a_repository_below_a_basetemp_name(
+        self, scratch_root: Path, upstream: Path
+    ) -> None:
+        path, _clone = self._clone_into(upstream, inside="env/pytest-of-agent/repo")
+        moved = self._swept(path)
+        (moved / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        kept = _snapshot(moved)
+
+        assert self._sweep_later(extra=3600) == 0
+        assert (moved / "env").is_dir()
+        assert _snapshot(moved) == kept
+
+    def test_nested_venvs_are_searched_once(
+        self, scratch_root: Path, upstream: Path, monkeypatch
+    ) -> None:
+        # Each venv is judged by searching below it; searching it again as the
+        # walk descends made the work double with every level of nesting.
+        path = self._dead_scratch()
+        venv = path
+        for level in range(8):
+            venv = venv / f"e{level}"
+            venv.mkdir()
+            (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        # A ``.git`` file, not a clone: a clone's object paths this deep pass
+        # Windows' 260-character path limit.
+        (venv / "pkg").mkdir()
+        (venv / "pkg" / ".git").write_text("gitdir: elsewhere\n")
+        dirs = 1 + sum(len(names) for _root, names, _files in os.walk(path))
+
+        listed: list[str] = []
+        real_scandir = os.scandir
+
+        def _counting(target):
+            listed.append(os.fspath(target))
+            return real_scandir(target)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(sc.os, "scandir", _counting)
+            assert sc.holds_git_repository(path)
+        assert len(listed) <= dirs, (len(listed), dirs)
+        assert len(listed) == len(set(listed))
+        self._swept(path)
+
+    def test_nothing_inside_a_git_directory_is_stripped(
+        self, scratch_root: Path, upstream: Path
+    ) -> None:
+        path, clone = self._clone_into(upstream)
+        _git(path, "init", "-q", "--bare", "backup.git")
+        for relative in (
+            "clone/.git/node_modules/dep/index.js",
+            "clone/.git/hooks/__pycache__/hook.pyc",
+            "clone/.git/env/pyvenv.cfg",
+            "backup.git/node_modules/dep/index.js",
+            "backup.git/hooks/.venv/pyvenv.cfg",
+        ):
+            (path / relative).parent.mkdir(parents=True, exist_ok=True)
+            (path / relative).write_text("inside a git directory\n")
+
+        self._swept(path)
+
+    def test_a_linked_install_is_never_followed(
+        self, scratch_root: Path, upstream: Path, tmp_path: Path
+    ) -> None:
+        # A link holds no bytes of its own, so it stays, and what it names is
+        # never entered, whether in the tree or outside it.
+        path, clone = self._clone_into(upstream)
+        (clone / "store" / "dep").mkdir(parents=True)
+        (clone / "store" / "dep" / "index.js").write_text("in the tree\n")
+        outside = tmp_path / "shared-modules"
+        (outside / "dep").mkdir(parents=True)
+        (outside / "dep" / "index.js").write_text("outside the tree\n")
+        (outside / "__pycache__").mkdir()
+        (clone / "web").mkdir()
+        _symlink_or_skip(clone / "node_modules", Path("store"))
+        _symlink_or_skip(clone / "web" / "node_modules", outside)
+        _symlink_or_skip(clone / "web" / "lib", outside)
+        _symlink_or_skip(path / "pytest-of-agent", clone / "store")
+        kept, outside_before = _snapshot(path), _snapshot(outside)
+
+        assert self._sweep_later() == 0
+        moved = self._moved(path)
+        assert _snapshot(moved) == kept
+        assert _snapshot(outside) == outside_before
+
+    def test_a_tree_already_in_the_quarantine_is_stripped_on_a_later_sweep(
+        self, scratch_root: Path, upstream: Path
+    ) -> None:
+        # A tree moved before the strip existed, or whose strip was cut short.
+        path, _clone = self._local_feature(upstream)
+        moved_at = time.time() + self.LATER
+        assert sc.sweep_dead_scratch(now=moved_at) == 0
+        moved = self._moved(path)
+        kept = _snapshot(moved)
+        self._rebuildable(moved)
+
+        assert sc.sweep_dead_scratch(now=moved_at + 3600) == 0
+        assert _snapshot(moved) == kept
+        assert sc.sweep_dead_scratch(now=moved_at + 7200) == 0
+        assert _snapshot(moved) == kept
+        assert _git(moved / "clone", "log", "-1", "--format=%s") == "feature\n"
+
     # -- the move ----------------------------------------------------------
 
     def test_every_move_logs_one_info_line_naming_where_it_went(

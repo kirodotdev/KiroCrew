@@ -1,4 +1,4 @@
-"""Tests for _handle_session_end in slack/interactions.py."""
+"""Tests for _handle_session_end in slack/interactions_sessions.py."""
 from __future__ import annotations
 
 import asyncio

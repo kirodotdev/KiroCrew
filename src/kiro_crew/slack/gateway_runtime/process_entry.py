@@ -160,7 +160,28 @@ def signing_key_preflight() -> None:
     alone when an earlier caller already memoized the secret.
     Blocking filesystem I/O: call it off the event loop.
     """
-    state, key_path = token_secret.signing_key_health()
+    # The single confinement probe (sandbox.agent_confinement_evidence) reads the
+    # kirocrew-agents.slice cgroup on Linux, so a masked key inside the sandbox is
+    # not read as truncated here. Local import: cli.main() has popped the launcher
+    # marker by now, and token_secret keeps kiro_crew.sandbox off its import chain,
+    # so the caller supplies the verdict.
+    #
+    # Two bits, so a FOREIGN macOS Seatbelt sandbox (one Kiro Crew did not create,
+    # which can leave the real key readable) does not skip the truncated-key
+    # refusal: masked requires the open to be refused ONLY when the sole signal is
+    # the Seatbelt verdict (agent_confinement_is_kirocrew_own() is false). Inside
+    # Kiro Crew's own sandbox the key is masked regardless of readability — the
+    # Linux mask falls back to a readable empty stand-in when its tmpfs mount fails.
+    from kiro_crew.sandbox import (
+        agent_confinement_evidence,
+        agent_confinement_is_kirocrew_own,
+    )
+
+    confined = agent_confinement_evidence() is not None
+    state, key_path = token_secret.signing_key_health(
+        confined=confined,
+        require_denied_open=confined and not agent_confinement_is_kirocrew_own(),
+    )
     if state in ("ok", "absent", "short", "unstatable"):
         loaded = token_secret.load_boot_secret()
         if loaded in ("loaded", "short"):

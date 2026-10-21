@@ -103,8 +103,8 @@ _STABLE_TEXT = {
 
 _STABLE_TEXT_SHA256 = {
     "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
-    "critical_rules": "06ea61438802e0538dbf1f107e2e6b07cf2416348734f330e0cf0ec3ef52e899",
-    "critical_rules_channel": "7e0dc53a1e4db382d51bb8ead062cd94ed5752dbb30b40149b6d9728ba734742",
+    "critical_rules": "16827ce030089653769a3f16a6fb96e6c9fcda799ef4750630080011b5ac1647",
+    "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
     "member_how_you_work": "aecaa26113f1d8909cc3188cece6f3455c02354fefe72b4ed5f6fa9d2db68f14",
     "member_how_you_work_unavailable": "d7e0fda68e64a84f1bc17dc3a8b2fa0fbbeec42a352dc0ea06d0808eadb04f3d",

@@ -105,7 +105,7 @@ interface RosterRowLike {
 /** What the roster row RENDERS as its title: the display label when set, the
  *  name otherwise. Sort and search go through the same accessor so the list
  *  the user reads is the list these functions order and narrow. */
-function rowLabel(m: RosterRowLike): string {
+export function rowLabel(m: RosterRowLike): string {
   return m.display_name?.trim() || m.name
 }
 

@@ -55,6 +55,14 @@ from kiro_crew.crew_log.projection_internal import (
     _outline_step,
 )
 from kiro_crew.crew_log.projection_ledger import _ledger_render, _ledger_start, _ledger_step
+from kiro_crew.crew_log.projection_otel_session_tree import (
+    OTEL_SESSION_TREE_FOLD_NAME,
+    OTEL_SESSION_TREE_TYPES,
+    _otel_session_tree_copy,
+    _otel_session_tree_render,
+    _otel_session_tree_start,
+    _otel_session_tree_step,
+)
 from kiro_crew.crew_log.projection_otel_usage import (
     OTEL_USAGE_FOLD_NAME,
     OTEL_USAGE_TYPES,
@@ -539,6 +547,20 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # resuming such a file would serve that wrong value for the life of the unit --
         # which is exactly what this number retires.
         state_version=_FOLD_STATE_VERSION_BASE + 3,
+    ),
+    # Keyed by one SESSION and NOT advertised, for the same reason as ``otel_usage``
+    # beside it: its one reader is the OTel export subscriber, which asks for it by
+    # name through the crew-log bus rather than through the side panel. ``affects`` is
+    # the two entry types it reads (``session/opened`` and ``session/spawned``), small
+    # and rare next to a session's message bodies, so ``copy_state`` is spelled out
+    # rather than falling back to a deep copy of a state that is already scalars.
+    OTEL_SESSION_TREE_FOLD_NAME: _Fold(
+        OTEL_SESSION_TREE_FOLD_NAME,
+        _otel_session_tree_start,
+        _otel_session_tree_step,
+        _otel_session_tree_render,
+        affects=OTEL_SESSION_TREE_TYPES,
+        copy_state=_otel_session_tree_copy,
     ),
     # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``
     # returns on its first line for anything else -- so ``affects`` names that type and

@@ -201,18 +201,25 @@ def read_effective_model(source: object) -> str:
 
 
 def _source_requests_auto(source: object) -> bool:
-    """Whether the provider chain still reports Auto as its model request.
+    """Whether the provider chain reports Auto, as a request or from the backend.
 
     This is deliberately separate from :func:`read_effective_model`: ``auto``
     is not a resolved model id, but it is useful attribution when a completed
-    turn has no more specific id from the backend. A blank request does not
-    prove Auto was selected, so it remains blank in the row store.
+    turn has no more specific id from the backend. Two signals count: a
+    ``_model`` request of ``auto``, and a ``_resolved_model_id`` of ``auto``.
+    The second is what a session on the default model holds: the start path
+    never calls ``set_model`` for it, so ``_model`` stays ``""``, while
+    ``session/new`` stores the backend's ``currentModelId`` (``auto``) as the
+    resolved id. That is the backend saying Auto served the session. A blank
+    ``_model`` with a blank or missing ``_resolved_model_id`` proves nothing
+    was selected, so it remains blank in the row store.
     """
     try:
         return any(
-            isinstance(candidate := getattr(node, "_model", ""), str)
+            isinstance(candidate := getattr(node, attr, ""), str)
             and candidate.strip().lower() == "auto"
             for node in _wrapper_chain(source)
+            for attr in ("_model", "_resolved_model_id")
         )
     except Exception:
         return False
@@ -231,7 +238,10 @@ def read_turn_model(source: object) -> str:
     honest answer to "who chose", which is all the backend discloses when
     Auto routes a turn (the ACP per-turn metadata frame carries context and
     metering only). Callers that need a concrete id for a pricing or window
-    lookup must keep using :func:`read_effective_model`. Never raises.
+    lookup must keep using :func:`read_effective_model`. ``"auto"`` comes back
+    when the chain requests Auto or the backend reported ``auto`` as the
+    resolved id (a session left on the default model); a chain with neither
+    stays ``""``. Never raises.
     """
     resolved = read_effective_model(source)
     if resolved:
@@ -777,9 +787,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parse_token_history,
     )
     from kiro_crew.dashboard.handlers.usage_sessions import (  # noqa: F401
-        _CLI_SESSION_JSON_MAX_BYTES,
-        _EST_CHARS_PER_TOKEN,
-        _EST_COUNT_MAX,
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
@@ -787,12 +794,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _USAGE_SESSION_WAIT_SECONDS,
         _cached_parse_sessions,
         _empty_session_summary,
-        _est_count,
-        _est_percent,
-        _estimate_cli_tokens,
         _parse_sessions,
-        _sum_estimate,
-        _turn_window,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
@@ -833,10 +835,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401
-    from kiro_crew.hooks import (  # noqa: F401
-        FileTooLargeError,
-        safe_read_file_bytes_nolink,
-        validate_file_path,
-    )
+    from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.jsonl_util import bounded_records  # noqa: F401
     from kiro_crew.messaging.link import telemetry_channel_of  # noqa: F401

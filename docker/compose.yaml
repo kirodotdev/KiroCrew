@@ -50,7 +50,7 @@ services:
       # sandbox), agent command execution stays disabled unless you
       # explicitly accept container-as-only-boundary by setting this to 1.
       # Alternative: use the custom seccomp profile to enable the inner
-      # sandbox (adds unconditional unshare/clone/mount allows to the Docker
+      # sandbox (adds unconditional unshare/clone/mount/umount2 allows to the Docker
       # default; see docs/guides/docker.md "Sandbox troubleshooting"):
       #   security_opt:
       #     - seccomp:./docker/seccomp/kirocrew-seccomp.json

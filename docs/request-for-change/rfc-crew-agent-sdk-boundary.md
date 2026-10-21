@@ -117,9 +117,9 @@ are not domain facts:
 | `raw_params_trusted`, `shell_classified`, `mcp_identity_trusted`, `mcp_identity_ambiguous` | Driver-internal provenance/cache flags |
 
 The `request_id` leak is the sharpest instance. `approve_tool(request_id)` /
-`reject_tool(request_id)` take the wire id straight through; `chat_runner.py:7300`
-keys `slot._approval_futures` on `str(event.request_id)`, and
-`chat_runner.py:7487` ships `{"id": str(event.request_id)}` to the browser. A raw
+`reject_tool(request_id)` take the wire id straight through; `_on_permission_prompt`
+(`dashboard/chat_turn/permission_prompt.py`) keys `slot._approval_futures` on
+`str(event.request_id)` and ships `{"id": str(event.request_id)}` to the browser. A raw
 JSON-RPC id is part of the frontend contract.
 
 The first domain vocabulary now owned by `kiro_crew.agent_sdk` is the minimal
@@ -531,7 +531,7 @@ reflow — re-derive them rather than trusting a line number here.
 That is why the fourth row reads *do not cross **as fields***. It does not mean
 the values are unused: `raw_tool_params` is passed as a security-decision argument
 at 20 sites in 12 non-ACP files — `hooks.on_tool_call(raw_params=…)`
-(`chat_runner.py:6637`), `approval_command(raw_tool_params=…)`, and so on — so it crosses as an opaque `Mapping | None` for
+(`chat_turn/tool_approval.py`), `approval_command(raw_tool_params=…)`, and so on — so it crosses as an opaque `Mapping | None` for
 the duration of PRs 2-5 and is deleted per-file by PR 5 alongside its last
 consumer. The other three are consumed by the driver only; their read count
 outside `acp/` is zero, which is exactly why an earlier draft missed that four
@@ -545,7 +545,7 @@ the driver asserts equality with the ACP ones in a parity test.
 **`ApprovalToken`.** An opaque, stable-serializable string minted by the SDK when
 it emits a permission event, valid only for the live turn on the session that
 minted it. Chosen over an integer handle or a structured object specifically so
-`chat_runner.py:7487`'s `{"id": "..."}` payload to the browser does not change
+`chat_turn/permission_prompt.py`'s `{"id": "..."}` payload to the browser does not change
 shape. The driver keeps the private token → JSON-RPC id map. Consumers never see
 a wire id again.
 

@@ -129,6 +129,72 @@ class TestWalkReachesTheModelRegardlessOfDepth:
         assert read_effective_model(wrapper) == "claude-opus-5"
 
 
+def _default_model_session(extra_layers: int, *, resolved: str = "auto") -> object:
+    """The chain a kiro session on the default model really produces.
+
+    Built on the real classes, with no constructor run: the start path skips
+    ``set_model`` for the default model, so the handle's ``_model`` stays
+    ``""``, and ``session/new`` stores the backend's ``currentModelId`` as
+    ``_resolved_model_id``. ``extra_layers`` wrappers sit on top, as in
+    :func:`_documented_shape`.
+    """
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.session_handle import AcpSessionHandle
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+
+    runtime = object.__new__(AcpRuntime)
+    handle = object.__new__(AcpSessionHandle)
+    handle._runtime = runtime
+    handle._model = ""
+    handle._resolved_model_id = resolved
+    session_provider = object.__new__(AcpSessionProvider)
+    session_provider._handle = handle
+    session_provider._runtime = runtime
+    provider = object.__new__(AcpProvider)
+    provider._client = session_provider
+    node: object = provider
+    for i in range(extra_layers):
+        node = _Node(
+            f"wrapper{i}",
+            client=_Node(f"a{i}"),
+            _client=_Node(f"b{i}"),
+            _handle=node,
+            _runtime=_Node(f"c{i}"),
+        )
+    return node
+
+
+class TestBackendReportedAutoIsAttributed:
+    """A default-model session's rows and footer read ``auto``, not blank."""
+
+    @pytest.mark.parametrize("extra_layers", [0, 1, 4])
+    def test_backend_reported_auto_resolves_auto(self, extra_layers):
+        source = _default_model_session(extra_layers)
+        assert read_effective_model(source) == "", "auto is never a concrete id"
+        assert _resolve_model("", source) == "auto"
+
+    @pytest.mark.parametrize("resolved", ["AUTO", " auto "])
+    def test_backend_reported_auto_is_case_and_space_insensitive(self, resolved):
+        assert _resolve_model("", _default_model_session(1, resolved=resolved)) == "auto"
+
+    def test_footer_reads_auto_for_the_default_model_session(self):
+        assert read_turn_model(_default_model_session(0)) == "auto"
+
+    @pytest.mark.parametrize("extra_layers", [0, 4])
+    def test_blank_request_and_blank_resolved_id_stay_blank(self, extra_layers):
+        source = _default_model_session(extra_layers, resolved="")
+        assert read_turn_model(source) == ""
+        assert _resolve_model("", source) == ""
+
+    def test_concrete_resolved_id_still_wins_over_auto(self):
+        source = _default_model_session(2, resolved="claude-opus-5")
+        outer = _Node("outer", _handle=source)
+        outer._resolved_model_id = "auto"
+        assert read_turn_model(outer) == "claude-opus-5"
+        assert _resolve_model("", outer) == "claude-opus-5"
+
+
 class TestWalkTerminates:
     """Cycle safety and the runaway guard."""
 

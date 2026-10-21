@@ -49,7 +49,6 @@ from kiro_crew.llm_helpers import (
     unfinished_turn_error,
 )
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.trust_patterns import extract_bash_command
 
 logger = logging.getLogger(__name__)
@@ -1407,8 +1406,9 @@ async def _stream_task(
                 tool_seen = True
                 # Don't post messages — broadcast status like chat page footer
                 tool_name = event.text or ""
-                tool_name, _ = redact_exfiltration_urls(tool_name)
-                tool_name, _ = redact_credentials(tool_name)
+                from kiro_crew.security import redact
+
+                tool_name = redact(tool_name)
                 channel._broadcast(
                     "channel_agent_status",
                     {
@@ -1616,8 +1616,9 @@ async def _stream_task(
                 # authority. ``tool_input_redacted`` is transport provenance:
                 # re-running the scanners cannot reveal bytes an ACP transport
                 # already removed. Either signal makes the command display-only.
-                _safe_cmd, _cmd_credential_redacted = redact_credentials(_cmd)
-                _safe_cmd, _cmd_url_redacted = redact_exfiltration_urls(_safe_cmd)
+                from kiro_crew.security import redact_with_findings
+
+                _safe_cmd, _cmd_credential_redacted, _cmd_url_redacted = redact_with_findings(_cmd)
                 _command_grantable = bool(_cmd) and not (
                     bool(getattr(event, "tool_input_redacted", False))
                     or _cmd_credential_redacted
@@ -1654,8 +1655,9 @@ async def _stream_task(
                     )
                 else:
                     _card_name = event.text or event.title or ""
-                sanitized_name, _ = redact_exfiltration_urls(_card_name)
-                sanitized_name, _ = redact_credentials(sanitized_name)
+                from kiro_crew.security import redact
+
+                sanitized_name = redact(_card_name)
                 if len(sanitized_name) > _APPROVAL_FIELD_MAX_CHARS:
                     # Fail closed. Cutting the title would put a live Approve
                     # button beside a command the reader cannot read in full
@@ -1872,8 +1874,9 @@ async def _stream_task(
     if not full_text:
         return _STREAM_OK
     # Sanitize LLM output before posting
-    full_text, _ = redact_exfiltration_urls(full_text)
-    full_text, _ = redact_credentials(full_text)
+    from kiro_crew.security import redact
+
+    full_text = redact(full_text)
     # Extract @mentions from agent's response
     mention_ids = [
         m.id for m in channel.members.values() if m.id != agent.id and f"@{m.role}" in full_text

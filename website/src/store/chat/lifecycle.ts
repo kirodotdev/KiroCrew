@@ -41,7 +41,7 @@ const configuredDefaultMemoryMode = () =>
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -74,6 +74,13 @@ export const createSlot = createAsyncThunk<
     // owner turned on a fresh folder per new chat. A carried project opts out
     // too: the server would otherwise make a folder the carry then replaces.
     const skipSessionFolder = !!project || (typeof opts !== 'string' && opts?.sessionFolder === false)
+    // The person's default sidebar folder is OPT-IN: only the plain New entry
+    // points pass `defaultFolder: true`, so a create path that has not chosen
+    // it (an app's launch, a hand-off, a recreated slot) keeps today's unfiled
+    // placement instead of moving into another folder and its project. A
+    // folder or project named on the same call still wins over the default.
+    const useDefaultFolder = typeof opts === 'object' && opts.defaultFolder === true
+      && opts.folder_id === undefined && !project
     // Capture the active slot BEFORE the (potentially slow) create round-trip.
     // The fulfilled reducer compares this against the active slot at resolution
     // time: if the user switched to a different session while the create was
@@ -84,7 +91,7 @@ export const createSlot = createAsyncThunk<
     // entry points resolve the persisted preference here, before the first turn
     // can read or write memory.
     const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -185,6 +192,15 @@ export const resumeFromHistory = createAsyncThunk(
   },
 )
 
+/** The action that lists a successful fork in the sidebar. Every fork path
+ *  dispatches this before activating the fork: the chat page clears an active
+ *  session its slot list lacks. memory_mode is the parent's, echoed by the
+ *  server; without it the new tab would read as persistent until the next
+ *  slots refresh. */
+export function listForkedSlot(d: Pick<ChatSlot, 'key'> & Partial<Pick<ChatSlot, 'title' | 'messages' | 'folder_id' | 'memory_mode' | 'pinned'>>) {
+  return addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode, ...(d.pinned ? { pinned: true } : {}) })
+}
+
 export const forkSlot = createAsyncThunk(
   'chat/forkSlot',
   async (
@@ -212,11 +228,7 @@ export const forkSlot = createAsyncThunk(
       }
       throw e
     }
-    if (d.ok) {
-      // memory_mode is the parent's, echoed by the server; without it the new
-      // tab would read as persistent until the next slots refresh.
-      dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode, ...(d.pinned ? { pinned: true } : {}) }))
-    }
+    if (d.ok) dispatch(listForkedSlot(d))
     return d
   },
 )

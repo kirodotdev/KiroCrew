@@ -582,14 +582,14 @@ The browser and private-namespace lanes above are Linux-only.
 `test/e2e/test_gateway_boot_matrix.py` is the one asset that boots a real gateway
 on **macOS and Windows too**, and `ci.yml`'s
 `e2e-boot-matrix` job is what runs it: `fail-fast: false`,
-`needs: [changes, await-fast-gate]`, 20 minutes. `strategy.matrix.os` has three
+`needs: [changes, await-fast-gate, lint-gate]`, 20 minutes. `strategy.matrix.os` has three
 states:
 
 | Event | OS legs | `needs` |
 |---|---|---|
-| `pull_request`, `merge_group` | `ubuntu-latest`, `windows-latest` | must succeed |
-| push to `main`, `MERGE_QUEUE_ENABLED == 'true'` | `macos-15` alone | skipped; the condition admits the push |
-| push to `main`, variable not `'true'` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed |
+| `pull_request`, `merge_group` | `ubuntu-latest`, `windows-latest` | must succeed (`lint-gate` too) |
+| push to `main`, `MERGE_QUEUE_ENABLED == 'true'` | `macos-15` alone | skipped (including `lint-gate`); the condition admits the push |
+| push to `main`, variable not `'true'` | `ubuntu-latest`, `macos-15`, `windows-latest` | must succeed (`lint-gate` too) |
 
 The mac leg is event-conditional for the queue, not the runtime: a `macos-15`
 runner waits about 200 minutes, so a mac leg on every pull request would hold

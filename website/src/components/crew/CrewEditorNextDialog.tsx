@@ -9,7 +9,7 @@
  * DialogContent itself.
  */
 import { Loader2, Terminal, Globe, ChevronRight, Lock } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
@@ -37,8 +37,10 @@ import MemoryRetiredCard from '../../pages/overview/MemoryRetiredCard'
 import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
 import { type CrewEditorController } from './useCrewEditor'
+import CrewEditorNextRail from './CrewEditorNextRail'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
-type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
+export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type BuiltFromTab = 'details' | 'tools' | 'mcp' | 'skills'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
 
@@ -409,12 +411,30 @@ function SkillsTab({ rows, filter, onFilter }: { rows: CapabilityRow[]; filter: 
 
 export default function CrewEditorNextDialog({
   ctl,
+  initialSection,
+  onSectionChange,
 }: {
   ctl: CrewEditorController
+  /** The section to show when the editor opens on a crewmate (a deep link's
+   *  landing). Applied once per opening; the user's own navigation wins after. */
+  initialSection?: NextSection
+  /** Told which section is showing while the editor is open, and `null` once it
+   *  closes, so a host can report guide facts about it. */
+  onSectionChange?: (section: NextSection | null) => void
 }) {
   // Which sidebar section is showing. Local; hook declared before any early
   // return so hook order stays stable.
   const [section, setSection] = useState<NextSection>('general')
+  // Land on the requested section once per opening of a crewmate. Keyed on the
+  // edited name so reopening the same crewmate from a fresh deep link lands
+  // again, while a section the user picks afterwards is never overridden.
+  const landedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!ctl.open) { landedFor.current = null; return }
+    if (landedFor.current === ctl.editing) return
+    landedFor.current = ctl.editing
+    if (initialSection) setSection(initialSection)
+  }, [ctl.open, ctl.editing, initialSection])
   // Which Built From sub-tab is showing.
   const [builtFromTab, setBuiltFromTab] = useState<BuiltFromTab>('details')
   // Which Memory sub-tab is showing.
@@ -446,6 +466,16 @@ export default function CrewEditorNextDialog({
     retry: false,
   })
   const { confirm, confirmDialog } = useConfirm()
+
+  // The section a host sees: what the rail shows, which falls back to General
+  // when the remembered section is absent from this crewmate's rail (only the
+  // Danger zone ever is, for the default crewmate). Same rule as
+  // `effectiveSection` below, computed before the early return so the effect
+  // keeps a stable hook order.
+  const shownSection: NextSection | null = !ctl.open
+    ? null
+    : section === 'danger' && ctl.isDefaultCrew ? 'general' : section
+  useEffect(() => { onSectionChange?.(shownSection) }, [onSectionChange, shownSection])
 
   if (!ctl.open) {
     if (ctl.loading) {
@@ -501,6 +531,7 @@ export default function CrewEditorNextDialog({
     if (navBlocked) return
     perform()
   }
+  const selectSection = (key: NextSection) => guardNav(() => setSection(key))
 
   // Switching "Built from" rebinds the mate. If the current binding is this
   // mate's OWN private copy (private_to === editing), the switch silently drops
@@ -562,7 +593,22 @@ export default function CrewEditorNextDialog({
   // privateMemory is NOT always true: the default mate's store is the global
   // legacy store, where MemoryRecordsEditor must run in global (not private)
   // mode. Resolve the real state and pass private only when it is private V2.
-  const memoryIsPrivate = memberMemoryState(editing, memoryStore, kirocrewCfg?.memory_stores) === 'private'
+  // Null while the config read is in flight, so a broken-binding diagnostic
+  // never flashes before the stores are known.
+  const memoryState = kirocrewCfg ? memberMemoryState(editing, memoryStore, kirocrewCfg.memory_stores) : null
+  const memoryIsPrivate = memoryState === 'private'
+  const memoryBroken = memoryState === 'ownership_mismatch' || memoryState === 'unavailable'
+  // A binding that breaks while a memory draft is open (another session or
+  // the CLI re-points the store) keeps the editors mounted but read-only, so
+  // the typed text is never discarded; a clean one shows only the diagnostic.
+  const hideMemoryEditors = memoryBroken && !memoryDirty
+  const memoryStatus = memoryState === null
+    ? ''
+    : memoryState === 'private'
+      ? i18nT('pages.kiroCrewAgentsPage.private_memory_owned')
+      : memoryState === 'legacy'
+        ? (editing === 'default' ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1') : i18nT('pages.kiroCrewAgentsPage.private_memory_legacy'))
+        : `${i18nT(memoryState === 'ownership_mismatch' ? 'pages.kiroCrewAgentsPage.memory_binding_mismatch' : 'pages.kiroCrewAgentsPage.memory_binding_unavailable')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
 
   const builtFromTabs: { key: BuiltFromTab; label: string }[] = [
     { key: 'details', label: i18nT('crewEditorNext.tab_details') },
@@ -583,7 +629,7 @@ export default function CrewEditorNextDialog({
         <DialogContent
           maxWidth={1200}
           style={{ height: 'min(90vh, 760px)' }}
-          aria-label={i18nT('crewEditorNext.editor_aria')}
+          aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: displayName.trim() || editing })}
           data-testid="crew-editor-next-dialog"
         >
           {/* Header: the mate's identity (avatar + name). The X lives in
@@ -611,53 +657,21 @@ export default function CrewEditorNextDialog({
           />
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
-            {/* Sidebar */}
-            <div
-              role="tablist"
-              aria-orientation="vertical"
-              aria-label={i18nT("crewEditorNext.sections_aria")}
-              className="flex shrink-0 gap-px overflow-x-auto border-b border-border bg-bg-accent p-2
-                         sm:w-[180px] sm:flex-col sm:overflow-x-visible sm:border-b-0 sm:border-r"
-            >
-              {sections.map(s => {
-                const isActive = s.key === effectiveSection
-                const isDanger = s.key === 'danger'
-                return (
-                  <button
-                    key={s.key}
-                    type="button"
-                    role="tab"
-                    aria-selected={isActive}
-                    data-testid={`next-rail-${s.key}`}
-                    onClick={() => guardNav(() => setSection(s.key))}
-                    disabled={!isActive && navBlocked}
-                    className={[
-                      'flex w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] focus-ring',
-                      // While a draft that would be lost on unmount is live (a
-                      // memory doc or schedule draft) or a save is running,
-                      // every inactive rail item is disabled. Give that lock a
-                      // visible cue — dimmed + not-allowed cursor — so the user
-                      // sees WHY the section won't switch, not just a dead
-                      // click (matches the approvals editor's disabled styling).
-                      'disabled:opacity-50 disabled:cursor-not-allowed',
-                      // Danger Zone sits directly below the ordinary sections,
-                      // with a small top margin to set it off from the group
-                      // above; its resting tint is danger-toned so it never
-                      // reads as a routine pane.
-                      isDanger ? 'mt-2' : '',
-                      isActive
-                        ? (isDanger ? 'bg-danger-subtle text-danger-text' : 'bg-accent-subtle text-text')
-                        : (isDanger
-                            ? 'text-danger-text hover:bg-danger-subtle'
-                            : 'text-muted hover:bg-bg-hover hover:text-text'),
-                    ].join(' ')}
-                  >
-                    {s.label}
-                  </button>
-                )
-              })}
-            </div>
-
+            {/* Sidebar. The two registered sections are the ones a guide
+                opens on the way to a control drawn only there: Model and Edit
+                avatar sit on General, and Delete is in the Danger zone. */}
+            <CrewEditorNextRail
+              sections={sections}
+              value={effectiveSection}
+              onSelect={selectSection}
+              locked={navBlocked}
+              dangerKey="danger"
+              ariaLabel={i18nT("crewEditorNext.sections_aria")}
+              segments={[
+                { key: 'general', label: i18nT('crewEditorNext.section_general'), ...uiLocation('agents.section-model') },
+                { key: 'danger', label: i18nT('crewEditorNext.section_danger'), ...uiLocation('agents.section-danger') },
+              ]}
+            />
             {/* Panel */}
             <div
               role="tabpanel"
@@ -678,7 +692,7 @@ export default function CrewEditorNextDialog({
                       <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={56} onImageError={onAvatarImageError} />
                     </CrewAvatarButton>
                     <div className="flex flex-col gap-1">
-                      <Btn onClick={openAvatarBuilder} disabled={sheetBusy} data-testid="next-open-avatar-builder">
+                      <Btn onClick={openAvatarBuilder} disabled={sheetBusy} data-testid="next-open-avatar-builder" {...uiLocation('agents.edit-avatar')}>
                         {i18nT('components.avatarBuilder.edit_avatar')}
                       </Btn>
                       {editAvatar && (
@@ -1023,6 +1037,15 @@ export default function CrewEditorNextDialog({
 
               {effectiveSection === 'memory' && (
                 <div className="flex min-h-0 flex-1 flex-col" data-testid="next-pane-memory">
+                  {memoryStatus && (
+                    <p
+                      className={`m-0 mb-3 break-words text-[12px] ${memoryBroken ? 'text-danger' : 'text-muted'}`}
+                      data-testid="next-memory-status"
+                    >
+                      {memoryStatus}
+                    </p>
+                  )}
+                  {!hideMemoryEditors && (<>
                   {/* Memory sub-tabs — mirrors the global V2 memory surface. */}
                   <div
                     role="tablist"
@@ -1061,7 +1084,7 @@ export default function CrewEditorNextDialog({
                     ) : (
                       <>
                         {memoryTab === 'profile' && (
-                          <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-memory-profile">
+                          <fieldset disabled={sheetBusy || memoryBroken} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-memory-profile">
                             <p className="text-[12px] text-muted">
                               {i18nT('crewEditorNext.memory_profile_frame')}
                             </p>
@@ -1092,7 +1115,7 @@ export default function CrewEditorNextDialog({
                           </fieldset>
                         )}
                         {memoryTab === 'memories' && (
-                          <fieldset disabled={sheetBusy} className="border-0 p-0 m-0 min-w-0" data-testid="next-memory-memories">
+                          <fieldset disabled={sheetBusy || memoryBroken} className="border-0 p-0 m-0 min-w-0" data-testid="next-memory-memories">
                             <MemoryRecordsEditor
                               key={`memories-${memoryStore}`}
                               store={memoryStore}
@@ -1103,7 +1126,7 @@ export default function CrewEditorNextDialog({
                           </fieldset>
                         )}
                         {memoryTab === 'recovery' && (
-                          <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-memory-recovery">
+                          <fieldset disabled={sheetBusy || memoryBroken} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-memory-recovery">
                             <MemoryBackupsCard key={`backups-${memoryStore}`} store={memoryStore} privateMemory={memoryIsPrivate} />
                             <MemoryRetiredCard key={`retired-${memoryStore}`} store={memoryStore} privateMemory={memoryIsPrivate} />
                             <MemoryCarveCard key={`carve-${memoryStore}`} store={memoryStore} />
@@ -1112,6 +1135,7 @@ export default function CrewEditorNextDialog({
                       </>
                     )}
                   </div>
+                  </>)}
                 </div>
               )}
 
@@ -1143,7 +1167,7 @@ export default function CrewEditorNextDialog({
                           </Btn>
                         </>
                       ) : (
-                        <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew">
+                        <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
                           {i18nT('pages.kiroCrewAgentsPage.delete_crew')}
                         </Btn>
                       )}

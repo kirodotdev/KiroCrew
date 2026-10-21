@@ -1,13 +1,16 @@
 """
 Generate kirocrew-seccomp.json by patching Docker's built-in default profile.
 
-Extends the Docker default allow-list with three unconditional ALLOW rules:
+Extends the Docker default allow-list with four unconditional ALLOW rules:
   - unshare  — lets the inner sandbox call unshare(CLONE_NEWUSER/CLONE_NEWNS)
   - clone    — lets fork() / clone() proceed with any flag combination
   - mount    — lets the inner sandbox bind-mount credential dirs after NEWNS
+  - umount2  — lets the inner sandbox retire that staging bind-mount with
+               umount2(MNT_DETACH) when a private window is torn down
 
-All three are blocked or arg-filtered by the Docker default seccomp profile,
-causing Kiro Crew's sandbox probe to fail with EPERM inside containers.
+All four are blocked, arg-filtered, or capability-gated by the Docker default
+seccomp profile, causing Kiro Crew's sandbox probe to fail with EPERM inside
+containers.
 
 NOTE: these rules are unconditional (no arg filters), so they grant unshare
 and clone for ANY namespace type, not just CLONE_NEWUSER/CLONE_NEWNS.  This
@@ -41,7 +44,7 @@ DOCKER_DEFAULT_PROFILE_URL = (
 
 COMMENT = (
     "Kiro Crew custom seccomp profile — extends the Docker default by adding "
-    "unconditional ALLOW rules for unshare, clone, and mount. "
+    "unconditional ALLOW rules for unshare, clone, mount, and umount2. "
     "Required for Kiro Crew's inner Linux user-namespace sandbox to work inside "
     "Docker containers (the default profile blocks these syscalls). "
     "Less permissive than --security-opt seccomp=unconfined and far less "
@@ -81,6 +84,20 @@ EXTRA_RULES = [
             "Only reachable inside an already-established user+mount namespace."
         ),
         "names": ["mount"],
+        "action": "SCMP_ACT_ALLOW",
+    },
+    {
+        "_comment": (
+            "Allow umount2 unconditionally. "
+            "The Docker default profile only allows umount/umount2 with "
+            "CAP_SYS_ADMIN, which containers do not have, so the launcher's "
+            "umount2(MNT_DETACH) teardown of a private window's staging "
+            "bind-mount failed with EPERM. Like mount, umount2 is only "
+            "reachable inside an already-established user+mount namespace, and "
+            "the sandboxed payload itself stays denied by the launcher's "
+            "namespace-escape filter (mount/umount2/unshare/setns/pivot_root)."
+        ),
+        "names": ["umount2"],
         "action": "SCMP_ACT_ALLOW",
     },
 ]

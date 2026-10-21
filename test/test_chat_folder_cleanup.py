@@ -238,6 +238,28 @@ class TestCleanupRoute:
         assert {"goal", "worker"} <= _ids(state)
 
     @pytest.mark.asyncio
+    async def test_the_default_folder_for_new_chats_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An empty folder picked in Settings as the default still receives every
+        # later New chat; deleting it would leave them all unfiled.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folder_cleanup.default_session_folder_ids",
+            lambda: {"worker"},
+        )
+        state = _state(_slot("chat-1-1", "lead"))
+        async with TestClient(TestServer(_app(state))) as client:
+            dry = await (
+                await client.post("/api/chat/folders/cleanup", json={"dry_run": True})
+            ).json()
+            real = await (
+                await client.post("/api/chat/folders/cleanup", json={"ids": ["goal", "worker"]})
+            ).json()
+        assert dry["ids"] == []
+        assert real["deleted"] == []
+        assert {"goal", "worker"} <= _ids(state)
+
+    @pytest.mark.asyncio
     async def test_the_delete_reads_saved_jobs_under_the_folder_lock(self) -> None:
         # A job save that names a folder writes while holding the same lock, so
         # reading jobs under it means no save can land between read and delete.
@@ -444,3 +466,33 @@ class TestChannelFolderNames:
         )
         monkeypatch.setattr(mod.KiroCrewConfig, "load", staticmethod(lambda: cfg))
         assert mod.channel_folder_names() == {"slack inbox"}
+
+
+class TestDefaultSessionFolderIds:
+    @pytest.mark.parametrize("degraded", [{"*"}, {"dashboard"}])
+    def test_a_degraded_load_raises_instead_of_reading_as_unset(
+        self, monkeypatch: pytest.MonkeyPatch, degraded: set[str]
+    ) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard import chat_folder_cleanup as mod
+
+        cfg = SimpleNamespace(degraded_sections=frozenset(degraded))
+        monkeypatch.setattr(mod.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+        with pytest.raises(mod._ConfigUnreadable):
+            mod.default_session_folder_ids()
+
+    @pytest.mark.parametrize(("value", "expected"), [("f-1", {"f-1"}), ("", set())])
+    def test_reads_the_configured_folder_id(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: set[str]
+    ) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard import chat_folder_cleanup as mod
+
+        cfg = SimpleNamespace(
+            degraded_sections=frozenset({"memory"}),
+            dashboard=SimpleNamespace(default_session_folder=value),
+        )
+        monkeypatch.setattr(mod.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+        assert mod.default_session_folder_ids() == expected

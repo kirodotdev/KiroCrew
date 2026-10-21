@@ -173,8 +173,8 @@ class TestRunnerBackstopContract:
     Every exit from a prompt's wait -- an answer, an expiry, a Stop, the turn
     being cancelled out from under it -- converges on one ``finally`` that marks
     the card resolved, tells the clients, and records who decided. These drive
-    the real ``_run_chat`` approval branch (``turn_harness.run_turn``) down each
-    exit and read what reached the clients and the crew log.
+    the real approval branch, ``_on_permission_prompt`` (chat_turn/permission_prompt.py),
+    via ``turn_harness.run_turn`` down each exit and read what reached the clients and the crew log.
     """
 
     @pytest.mark.asyncio

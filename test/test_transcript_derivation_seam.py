@@ -97,7 +97,7 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         # Rendering the transcript's own artifacts / rows to its user.
         ("kiro_crew/dashboard/handlers/artifacts_parts/session_documents.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
-        ("kiro_crew/dashboard/handlers/core.py", "recent"),
+        ("kiro_crew/dashboard/handlers/core_security.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron_runs.py", "read_messages"),
         ("kiro_crew/dashboard/handlers/session_control.py", "read_messages"),
         # The History browser showing the user their own transcript. Its

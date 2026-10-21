@@ -66,13 +66,14 @@ from kiro_crew.security import (
 TEXT_CHUNK = "text_chunk"
 THINKING = "thinking"
 TOOL_CALL = "tool_call"
+TOOL_RESULT = "tool_result"  # a tool call reached a terminal outcome (see tool_status)
 PROMPT_CHOICE = "prompt_choice"
 COMPACTION = "compaction"
 DONE = "done"
 STEER_CONSUMED = "steer_consumed"  # kiro-cli folded a mid-turn steer at a boundary
 
 OUTPUT_KINDS = frozenset(
-    {TEXT_CHUNK, THINKING, TOOL_CALL, PROMPT_CHOICE, COMPACTION, DONE, STEER_CONSUMED}
+    {TEXT_CHUNK, THINKING, TOOL_CALL, TOOL_RESULT, PROMPT_CHOICE, COMPACTION, DONE, STEER_CONSUMED}
 )
 
 
@@ -97,6 +98,12 @@ class OutputEvent:
     tool_name: str = ""
     tool_kind: str = ""  # tool_call (e.g. "read"/"execute" — drives phase emoji)
     tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
+    # tool_result: the call's TERMINAL outcome as the ACP layer reported it, one
+    # of ``acp.types.TERMINAL_TOOL_STATUSES`` ("completed" / "failed" /
+    # "cancelled" / "canceled" / "refused"). A renderer reads it to finalize that
+    # call's card honestly instead of marking every call complete; anything other
+    # than "completed" is a call that did NOT succeed. Empty on every other kind.
+    tool_status: str = ""
     options: list[dict[str, Any]] = field(default_factory=list)  # prompt_choice
     request_id: str | int = ""  # prompt_choice correlation
     # prompt_choice: the tool's own arguments, redacted, so a renderer can show
@@ -119,6 +126,7 @@ class OutputEvent:
             "title": self.title,
             "tool_kind": self.tool_kind,
             "tool_purpose": self.tool_purpose,
+            "tool_status": self.tool_status,
             "options": [dict(o) for o in self.options],
             "tool_input": self.tool_input,
             "request_id": self.request_id,
@@ -956,6 +964,22 @@ class Renderer(ABC):
         marks the previous task complete and starts a new in-progress task.
         """
 
+    async def on_tool_result(self, tool_call_id: str, tool_status: str) -> None:
+        """Record a tool call's TERMINAL outcome, so its card is honest.
+
+        ``tool_status`` is one of ``acp.types.TERMINAL_TOOL_STATUSES``;
+        "completed" is success and anything else ("failed" / "cancelled" /
+        "canceled" / "refused") is a call that did not succeed. The default is a
+        no-op: ``on_tool_call`` already marks the PREVIOUS task complete when the
+        next call starts, so a renderer that does not distinguish outcomes keeps
+        its existing behaviour. A renderer that wants per-call accounting (a
+        failed card, an "N succeeded · M failed" summary) overrides this and
+        keys the open call's finalization on the status instead of marking every
+        card complete. Not abstract, for the same reason ``on_steer_consumed``
+        is not: a channel that has nowhere to show an outcome owes nothing here.
+        """
+        return None
+
     @abstractmethod
     async def on_prompt_choice(
         self,
@@ -1013,6 +1037,8 @@ class Renderer(ABC):
             await self.on_tool_call(
                 event.tool_call_id, event.title, event.tool_kind, event.tool_purpose
             )
+        elif event.kind == TOOL_RESULT:
+            await self.on_tool_result(event.tool_call_id, event.tool_status)
         elif event.kind == PROMPT_CHOICE:
             await self.on_prompt_choice(
                 event.options,

@@ -193,6 +193,17 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     expect(errs[0].content).toContain('Could not start a new session')
   })
 
+  it('does not ask for the default sidebar folder on an auto-send launch', async () => {
+    // Projects / Dev Fleet / Prompts launch through ?autoSend=1&newSession=1.
+    // That chat is the page's, not a New the person pressed, so it stays
+    // unfiled instead of taking the default folder's project and agent.
+    createChatSlot.mockRejectedValue(new Error('gateway unavailable'))
+    await renderPage(makeStore())
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
+    // The 12th argument is `defaultFolder` (see api.createChatSlot).
+    for (const call of createChatSlot.mock.calls) expect(call[11]).toBeFalsy()
+  })
+
   it('merges into an existing composer draft instead of overwriting it', async () => {
     // The reachable forceNew path passes the prompt as optionText, so send()
     // never clears the composer: the user's own draft is still sitting there.

@@ -182,7 +182,7 @@ _SCANNED_PACKAGES = {
     # The owners composed into the Slack gateway facade, slack/gateway.py.
     "src/kiro_crew/slack/gateway_runtime": 5,
     # The owners composed into the dashboard chat runner, dashboard/chat_runner.py.
-    "src/kiro_crew/dashboard/chat_turn": 17,
+    "src/kiro_crew/dashboard/chat_turn": 20,
     # The owners mirrored beside the session control tools, mcp_tools/control.py.
     "src/kiro_crew/mcp_tools/control_parts": 1,
     # The owners mirrored beside the spawn tools, mcp_tools/spawn.py.

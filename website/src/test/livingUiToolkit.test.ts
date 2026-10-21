@@ -23,13 +23,16 @@ const SKILL_DIR = resolve(__dirname, '../../../src/kiro_crew/builtin_skills/livi
 const SOURCE = readFileSync(join(SKILL_DIR, 'toolkit', 'living-ui.js'), 'utf8')
 const LOOKS_DIR = join(SKILL_DIR, 'looks')
 const BUDGET_BYTES = 5120
-const HELPERS = ['loop', 'follow', 'spring', 'settle', 'smooth', 'burst', 'tour', 'readout', 'focusOne', 'css']
+const HELPERS = ['loop', 'follow', 'spring', 'settle', 'smooth', 'burst', 'tour', 'readout', 'focusOne', 'explode', 'css']
 
 interface Motion { x: number; v: number }
 interface LoopHandle { kick(): void; stop(): void; readonly calm: boolean }
 interface TourOptions { start?: number; resume?: number; period?: number; loops?: number }
 interface TourHandle { readonly active: boolean; play(): void; pause(): void; takeOver(): void }
 interface Words { say(text: string): void; describe(text: string): void; phase(text: string): void }
+interface Part { el: Element & ElementCSSInlineStyle; move: [number, number] }
+interface ExplodeOptions { stagger?: number; k?: number; c?: number }
+interface Exploded { open(apart: boolean): void; toggle(): void; step(dt: number, calm: boolean): boolean }
 interface Toolkit {
   loop(stage: object, tick: (dt: number, calm: boolean) => boolean): LoopHandle
   follow(x: number, target: number, dt: number, tau?: number, calm?: boolean): number
@@ -40,6 +43,7 @@ interface Toolkit {
   tour(stage: Element, at: (t: number) => void, options?: TourOptions): TourHandle
   readout(el: Element, options?: { target?: Element; live?: Element }): Words
   focusOne(root: Element, chosen: Element | null): void
+  explode(items: Part[], options?: ExplodeOptions): Exploded
   css: string
 }
 
@@ -1008,6 +1012,289 @@ describe('focusOne', () => {
       expect(document.activeElement).toBe(root)
     } finally {
       root.remove()
+    }
+  })
+})
+
+describe('explode', () => {
+  const SVG = 'http://www.w3.org/2000/svg'
+  const FRAME = 1 / 60
+
+  /** `count` parts, each an SVG <g> of its own, part i moving by [10(i + 1), -5(i + 1)] when apart. */
+  function figure(count: number, options?: ExplodeOptions, code = block('explode'), settings = {}) {
+    const p = page(code, settings)
+    const stage = document.createElementNS(SVG, 'svg')
+    const parts: Part[] = Array.from({ length: count }, (_, i) => ({
+      el: stage.appendChild(document.createElementNS(SVG, 'g')),
+      move: [10 * (i + 1), -5 * (i + 1)],
+    }))
+    return { p, stage, parts, view: p.lui.explode(parts, options) }
+  }
+
+  /** How far a part is along its move now, read from its translate: 0 when it has none. */
+  function share(part: Part): number {
+    const transform = part.el.style.transform
+    if (!transform) return 0
+    const found = /^translate\((\S+)px, (\S+)px\)$/.exec(transform)
+    if (!found) throw new Error(`not a translate in px: ${transform}`)
+    return Number(found[1]) / part.move[0]
+  }
+
+  const transforms = (parts: Part[]) => parts.map((part) => part.el.style.transform)
+
+  /** Steps the view a frame at a time until every part has landed; the number of frames it took. */
+  function settle(view: Exploded): number {
+    let frames = 1
+    while (view.step(FRAME, false)) {
+      if (++frames > 1000) throw new Error('the view never settled')
+    }
+    return frames
+  }
+
+  /** Steps the view 1 ms at a time for `ms` ms: the first ms at which each part's translate changed. */
+  function firstMoves(view: Exploded, parts: Part[], ms: number): Array<number | null> {
+    const before = transforms(parts)
+    const first: Array<number | null> = parts.map(() => null)
+    for (let t = 1; t <= ms; t++) {
+      view.step(0.001, false)
+      parts.forEach((part, i) => {
+        if (first[i] === null && part.el.style.transform !== before[i]) first[i] = t
+      })
+    }
+    return first
+  }
+
+  /**
+   * Steps two views 1 ms at a time for `ms` ms after `turn(t)` acts on the first
+   * one at each step: the first ms at which each part of the first is drawn
+   * anywhere other than the same part of the second.
+   */
+  function parting(one: ReturnType<typeof figure>, two: ReturnType<typeof figure>, ms: number, turn: (t: number) => void) {
+    const first: Array<number | null> = one.parts.map(() => null)
+    for (let t = 1; t <= ms; t++) {
+      turn(t)
+      one.view.step(0.001, false)
+      two.view.step(0.001, false)
+      one.parts.forEach((part, i) => {
+        if (first[i] === null && part.el.style.transform !== two.parts[i].el.style.transform) first[i] = t
+      })
+    }
+    return first
+  }
+
+  it('opens the parts in order, each `stagger` ms after the one before, 35 by default', () => {
+    const { view, parts } = figure(4)
+    view.open(true)
+    expect(firstMoves(view, parts, 300)).toEqual([1, 35, 70, 105])
+    for (const [stagger, starts] of [[100, [1, 100, 200]], [0, [1, 1, 1]]] as const) {
+      const custom = figure(3, { stagger })
+      custom.view.open(true)
+      expect(firstMoves(custom.view, custom.parts, 300), `stagger ${stagger}`).toEqual(starts)
+    }
+  })
+
+  it('closes in reverse order, so the last part out is the first to leave for home', () => {
+    const { view, parts } = figure(4)
+    view.open(true)
+    settle(view)
+    expect(parts.map(share)).toEqual([1, 1, 1, 1])
+    view.open(false)
+    expect(firstMoves(view, parts, 300)).toEqual([105, 70, 35, 1])
+    settle(view)
+    expect(parts.map(share)).toEqual([0, 0, 0, 0])
+  })
+
+  it('re-staggers only the parts whose target changes when it closes part-way through opening', () => {
+    // 50 ms in, parts 0 and 1 are on their way out and parts 2 and 3 still wait.
+    const [closed, opened] = [figure(4), figure(4)]
+    closed.view.open(true)
+    opened.view.open(true)
+    const taken = closed.parts.map((part) => writes(part.el))
+    const parted = parting(closed, opened, 400, (t) => { if (t === 51) closed.view.open(false) })
+    // Part 1, the last one out, turns back at once, part 0 turns 35 ms later,
+    // and parts 2 and 3 never leave home.
+    expect(parted.slice(0, 2)).toEqual([85, 51])
+    expect(taken.map((take) => take().length > 0)).toEqual([true, true, false, false])
+    settle(closed.view)
+    expect(closed.parts.map(share)).toEqual([0, 0, 0, 0])
+  })
+
+  it('re-staggers only the parts whose target changes when it opens part-way through closing', () => {
+    // 50 ms into closing, parts 3 and 2 are on their way home and parts 1 and 0 still wait.
+    const [opened, closed] = [figure(4), figure(4)]
+    for (const { view } of [opened, closed]) {
+      view.open(true)
+      settle(view)
+      view.open(false)
+    }
+    const taken = opened.parts.map((part) => writes(part.el))
+    const parted = parting(opened, closed, 400, (t) => { if (t === 51) opened.view.open(true) })
+    // Part 2, the last one in, goes back out at once, part 3 goes 35 ms later,
+    // and parts 0 and 1 never leave where they rest apart.
+    expect(parted.slice(2)).toEqual([51, 85])
+    expect(taken.map((take) => take().length > 0)).toEqual([false, false, true, true])
+    settle(opened.view)
+    expect(opened.parts.map(share)).toEqual([1, 1, 1, 1])
+  })
+
+  it('changes nothing when told to open while it opens, or to close while it is closed', () => {
+    const [again, once] = [figure(4), figure(4)]
+    again.view.open(true)
+    once.view.open(true)
+    expect(parting(again, once, 400, (t) => { if (t === 51) again.view.open(true) })).toEqual([null, null, null, null])
+
+    const shut = figure(2)
+    const taken = shut.parts.map((part) => writes(part.el))
+    shut.view.open(false)
+    expect([shut.view.step(FRAME, false), shut.view.step(FRAME, false)]).toEqual([false, false])
+    expect(taken.flatMap((take) => take())).toEqual([])
+  })
+
+  it('toggle() opens a closed view and closes an open one, part-way too', () => {
+    const [toggled, told] = [figure(3), figure(3)]
+    toggled.view.toggle()
+    told.view.open(true)
+    const turns: Record<number, boolean> = { 41: false, 300: true, 1600: false }
+    const parted = parting(toggled, told, 3600, (t) => {
+      if (!(t in turns)) return
+      toggled.view.toggle()
+      told.view.open(turns[t])
+    })
+    expect(parted).toEqual([null, null, null])
+    expect(toggled.parts.map(share)).toEqual([0, 0, 0])
+  })
+
+  it('answers true while a part moves or waits to start, and false once every part has landed', () => {
+    // With 2 s between starts, part 0 lands long before part 1 leaves.
+    const { view, parts } = figure(2, { stagger: 2000 })
+    view.open(true)
+    const answers: boolean[] = []
+    for (let frame = 1; frame <= 400 && answers.at(-1) !== false; frame++) {
+      answers.push(view.step(FRAME, false))
+      if (frame === 100) expect(parts.map(share)).toEqual([1, 0])
+    }
+    expect(answers.slice(0, -1).every(Boolean)).toBe(true)
+    expect(answers.at(-1)).toBe(false)
+    expect(answers.length).toBeGreaterThan(190)
+    expect(parts.map(share)).toEqual([1, 1])
+    const taken = parts.map((part) => writes(part.el))
+    expect([view.step(FRAME, false), view.step(FRAME, true)]).toEqual([false, false])
+    expect(taken.flatMap((take) => take())).toEqual([])
+  })
+
+  it('drops the wait of a part a reversal keeps home, so it answers false once the moved parts land', () => {
+    // 100 ms in, part 0 is on its way out and part 1 waits for its start at 2 s.
+    const { view, parts } = figure(2, { stagger: 2000 })
+    view.open(true)
+    for (let frame = 0; frame < 6; frame++) view.step(FRAME, false)
+    view.open(false)
+    expect(settle(view) * FRAME).toBeLessThan(1.6)
+    expect(parts.map(share)).toEqual([0, 0])
+  })
+
+  it('lands every part on its target in one step under calm, the waiting ones too', () => {
+    const { view, parts } = figure(4)
+    view.open(true)
+    view.step(FRAME, false)
+    expect(parts.map((part) => share(part) > 0)).toEqual([true, false, false, false])
+    expect(view.step(FRAME, true)).toBe(false)
+    expect(transforms(parts)).toEqual([
+      'translate(10px, -5px)', 'translate(20px, -10px)', 'translate(30px, -15px)', 'translate(40px, -20px)',
+    ])
+    view.open(false)
+    expect(view.step(FRAME, true)).toBe(false)
+    expect(transforms(parts)).toEqual(['', '', '', ''])
+    expect(view.step(FRAME, false)).toBe(false)
+  })
+
+  it('moves each el by its share of move in px, and takes the translate away once it is home', () => {
+    const { view, parts } = figure(2)
+    const taken = parts.map((part) => writes(part.el))
+    for (let frame = 0; frame < 5; frame++) view.step(FRAME, false)
+    expect(taken.flatMap((take) => take())).toEqual([])
+    view.open(true)
+    let checked = 0
+    for (let frame = 0; frame < 20; frame++) {
+      view.step(FRAME, false)
+      for (const part of parts.filter((one) => one.el.style.transform)) {
+        const [x, y] = (/^translate\((\S+)px, (\S+)px\)$/.exec(part.el.style.transform) ?? []).slice(1).map(Number)
+        expect(y / part.move[1]).toBeCloseTo(x / part.move[0], 12)
+        checked++
+      }
+    }
+    expect(checked).toBe(20 + 18)
+    settle(view)
+    expect(transforms(parts)).toEqual(['translate(10px, -5px)', 'translate(20px, -10px)'])
+    view.open(false)
+    settle(view)
+    expect(transforms(parts)).toEqual(['', ''])
+  })
+
+  it('springs each part with k and c: the defaults pass the target by under 1% and land about 1.4 s after it starts', () => {
+    const path = (options?: ExplodeOptions) => {
+      const { view, parts } = figure(1, options)
+      view.open(true)
+      const shares: number[] = []
+      while (view.step(FRAME, false) && shares.length < 1000) shares.push(share(parts[0]))
+      return shares
+    }
+    const defaults = path()
+    expect(Math.max(...defaults)).toBeGreaterThan(1)
+    expect(Math.max(...defaults)).toBeLessThan(1.01)
+    expect(defaults.length * FRAME).toBeGreaterThan(1.2)
+    expect(defaults.length * FRAME).toBeLessThan(1.6)
+    const firm = path({ k: 400, c: 40 })
+    expect(firm.length).toBeLessThan(defaults.length * 0.6)
+    expect(Math.max(...firm)).toBeLessThanOrEqual(1)
+    expect(Math.max(...path({ c: 4 }))).toBeGreaterThan(1.3)
+  })
+
+  it('moves each part exactly as the spring block moves its { x, v }, frame for frame', () => {
+    // explode carries its own copy of spring's step so it can be copied alone;
+    // this keeps the two copies the same, so a fix to one shows up in the other.
+    const p = page(block('spring') + block('explode'))
+    for (const [k, c] of [[64, 14.2], [400, 40], [64, 4]]) {
+      const part: Part = { el: document.createElementNS(SVG, 'g'), move: [1, 1] }
+      const view = p.lui.explode([part], { k, c })
+      const s = { x: 0, v: 0 }
+      view.open(true)
+      let frames = 0
+      for (let moving = true; moving && frames < 1000; frames++) {
+        moving = view.step(FRAME, false)
+        expect(p.lui.spring(s, 1, FRAME, k, c), `k ${k}, c ${c}, frame ${frames}`).toBe(moving)
+        expect(share(part), `k ${k}, c ${c}, frame ${frames}`).toBe(s.x)
+      }
+      expect([frames > 20, s]).toEqual([true, { x: 1, v: 0 }])
+    }
+  })
+
+  it('lands a part only within 0.0005 of its target, never at the top of a swing where it stands still', () => {
+    // A loose spring swings past its target many times; at the top of each swing
+    // its speed passes through 0, which 0.1 ms steps are sure to catch.
+    const { view, parts } = figure(1, { c: 4 })
+    view.open(true)
+    let before = 0
+    for (let t = 0; t < 100_000 && view.step(0.0001, false); t++) before = share(parts[0])
+    expect(share(parts[0])).toBe(1)
+    expect(Math.abs(before - 1)).toBeLessThan(6e-4)
+  })
+
+  it('runs from loop, which sleeps once every part has landed, after one frame under reduced motion', () => {
+    for (const reduced of [false, true]) {
+      const { p, stage, parts, view } = figure(3, undefined, block('loop') + block('explode'), { reduced })
+      let ticks = 0
+      const run = p.lui.loop(stage, (dt, calm) => {
+        ticks++
+        return view.step(dt, calm)
+      })
+      view.open(true)
+      p.view(true)
+      for (let frame = 0; frame < 400 && p.waiting(); frame++) p.frame()
+      expect(p.waiting(), `reduced ${reduced}`).toBe(0)
+      expect(parts.map(share), `reduced ${reduced}`).toEqual([1, 1, 1])
+      if (reduced) expect(ticks).toBe(1)
+      else expect(ticks).toBeGreaterThan(80)
+      run.stop()
     }
   })
 })

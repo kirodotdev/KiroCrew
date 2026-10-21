@@ -1,6 +1,6 @@
 """Apply a decoded session directive against the consumer's OWN session.
 
-Called from ``dashboard/chat_runner.py``'s ``EVENT_TOOL_RESULT`` handler — the
+Called from ``_on_tool_result`` (``dashboard/chat_turn/tool_results.py``), a phase of the
 shared turn loop for every dashboard-driven surface (dashboard, Slack mirror,
 taskrunner, …) — and from ``messaging/driver.py``'s ``TurnDriver`` directive
 consumer, which covers the standalone channel transports (Telegram, Discord,

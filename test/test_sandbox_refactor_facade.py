@@ -171,6 +171,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _CC_EXPOSE_FILES _CC_FILES _SENSITIVE_ENV_PREFIXES _PYTHON_ENV_PREFIXES
         _AGENT_DENIED_ENV_KEYS _sandbox_policy _SANDBOX_MODE_FALLBACK configured_sandbox_mode
         _IN_SANDBOX_MARKER _IN_SANDBOX_LEVEL_VAR _TIER_ORDINALS _mode_to_level _SANDBOX_MODE_ALIASES
+        _CGROUP_AGENTS_SLICE
         effective_sandbox_mode _governance_sandbox_floor _clamp_sandbox_mode _floor_mandates_sandbox
         _clamp_sandbox_mode_to_floor
         """.split()),
@@ -269,11 +270,11 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SSH_VISIBLE_TIERS _ssh_dir_masked _tier_lists_ssh _forward_ssh_auth_sock
         _forward_for_effective_tier unsandboxed_exec_permitted_by _bundled_cli_invocation
         _apparmor_userns_restricted _no_backend_guidance _classify_unavailable
-        agent_confinement_evidence _warn_mode_off_unconfined
+        agent_confinement_evidence agent_confinement_is_kirocrew_own _warn_mode_off_unconfined
         _warn_first_party_unconfined_once _first_party_no_backend_passthrough
         CRON_SCRIPT_CHILD_ENV UnauditedSpawnRefused refuse_unaudited_on_dead_fs
         SandboxUnavailableError LAUNCHER_EXIT_PREFIXES _LAUNCHER_REFUSAL_RE launcher_refusal
-        _TRUSTED_LAUNCHER_TIMEOUT_SECS
+        _TRUSTED_LAUNCHER_TIMEOUT_SECS LAUNCHER_EXEC_FAILURE_RE
         """.split()),
     "kiro_crew.sandbox_wrap": tuple("""
         _last_unshare_failure unavailable_remedy unavailable_reason remedy_guidance
@@ -283,7 +284,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.sandbox_cgroup": tuple("""
         _CGROUP_DEFAULT_MAX_PROCESSES _CGROUP_DEFAULT_CPU_WEIGHT _CGROUP_MEMORY_FRACTION
-        _CGROUP_FALLBACK_MAX_MEMORY_MB _CGROUP_AGENTS_SLICE _instance_slice_token
+        _CGROUP_FALLBACK_MAX_MEMORY_MB _instance_slice_token
         _agents_slice_name _default_max_memory_mb _CGROUP_SCOPE_PROBE
         _CGROUP_SCOPE_PROBE_SESSION _CGROUP_SCOPE_PROBE_AT _CGROUP_SCOPE_PROBE_TTL_SECONDS
         _CGROUP_SCOPE_PROBE_LOCK _CGROUP_WARNED _CGROUP_LINGER_REMEDY
@@ -330,6 +331,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         agent_env_scrub_prefixes scrub_agent_denied_env scrub_agent_subprocess_env
         sandboxed_spawn_argv shielded_prepare_off_loop sandboxed_spawn_argv_async
         _CGROUP_SCOPE_BUS_ENV_KEYS cgroup_scope_bus_env without_python_env
+        _namespace_launcher_child_is_confined _NAMESPACE_LAUNCHERS
+        _NAMESPACE_LAUNCHERS_LOCK remember_namespace_launcher
         """.split()),
 }
 
@@ -398,6 +401,7 @@ _CARVED_IMPORTS: dict[str, frozenset[str]] = {
         }
     ),
     "kiro_crew.sandbox_slice": frozenset({"kiro_crew.sandbox_cgroup"}),
+    "kiro_crew.sandbox_cgroup": frozenset({"kiro_crew.sandbox_tiers"}),
     "kiro_crew.sandbox_rlimit": frozenset({"kiro_crew.sandbox_workspace"}),
     "kiro_crew.sandbox_spawn": frozenset(
         {

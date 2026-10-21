@@ -22,7 +22,6 @@ from typing import Any
 
 from kiro_crew import mcp_core
 from kiro_crew.knowledge import store as knowledge_store
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
     KNOWLEDGE_DEDUP_SCHEMA,
@@ -232,8 +231,9 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     # dashboard-readable, so redact it before any audit write (mirrors
     # knowledge_add_document's audit_title). The search itself keeps the
     # raw query.
-    audit_query, _ = redact_credentials(query)
-    audit_query, _ = redact_exfiltration_urls(audit_query)
+    from kiro_crew.security import redact
+
+    audit_query = redact(query)
 
     if source_id is not None:
         # An unknown source would silently degrade the seed legs to empty; tell
@@ -252,8 +252,9 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
                 "Call knowledge_list_sources to see the valid source IDs."
             )
             # The id is caller-supplied free text echoed back into chat.
-            message, _ = redact_exfiltration_urls(message)
-            message, _ = redact_credentials(message)
+            from kiro_crew.security import redact
+
+            message = redact(message)
             return message
 
     available = bool(embedder) and embedder.is_available()
@@ -326,8 +327,9 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
         lines.append(f"\n{content}")
 
     output = "\n".join(lines)
-    output, _ = redact_exfiltration_urls(output)
-    output, _ = redact_credentials(output)
+    from kiro_crew.security import redact
+
+    output = redact(output)
     mcp_core.sel().log_tool_invocation(
         session_key=mcp_core._resolve_session_key(),
         source="mcp",
@@ -359,8 +361,9 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
     # The title arrives straight from the tool call, so it reaches the audit
     # log before the server-side redaction the document body gets. SEL is
     # persisted and readable, so redact it here.
-    audit_title, _ = redact_credentials(title)
-    audit_title, _ = redact_exfiltration_urls(audit_title)
+    from kiro_crew.security import redact
+
+    audit_title = redact(title)
     if resp.get("error"):
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
@@ -440,8 +443,9 @@ def knowledge_dedup(name: str, args: dict[str, Any]) -> str:
             f"{r['winner']} [{r['reason']}]"
         )
     output = "\n".join(lines)
-    output, _ = redact_exfiltration_urls(output)
-    output, _ = redact_credentials(output)
+    from kiro_crew.security import redact
+
+    output = redact(output)
     return output
 
 
@@ -532,8 +536,9 @@ def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
             "sources' search scope and is counted on each of their lines."
         )
     output = "\n".join(lines)
-    output, _ = redact_exfiltration_urls(output)
-    output, _ = redact_credentials(output)
+    from kiro_crew.security import redact
+
+    output = redact(output)
     return output
 
 

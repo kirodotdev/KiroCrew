@@ -12,6 +12,9 @@ const captureSeam = vi.hoisted(() => ({
   captureScreen: vi.fn(),
   screenshot: vi.fn(),
   hold: vi.fn(),
+  release: vi.fn(),
+  showActionError: vi.fn(),
+  Refused: class ScreenSnipRefusedError extends Error {},
 }))
 const panelTabs = vi.hoisted(() => ({
   tabs: [] as Array<{ kind: string }>,
@@ -42,6 +45,7 @@ vi.mock('../hooks/useScreenSnip', () => ({
   get screenSnipSupported() { return captureSeam.supported },
   captureScreen: captureSeam.captureScreen,
   currentTabCaptureDeps: vi.fn(),
+  ScreenSnipRefusedError: captureSeam.Refused,
 }))
 vi.mock('../api/client', () => ({
   api: {
@@ -54,7 +58,7 @@ vi.mock('../utils/composerSendHolds', () => ({
   finishComposerAttachment: vi.fn(),
   holdComposerSend: captureSeam.hold,
   registerComposerUpload: vi.fn(),
-  releaseComposerSend: vi.fn(),
+  releaseComposerSend: captureSeam.release,
   unregisterComposerUpload: vi.fn(),
   useComposerUploadCount: () => 0,
 }))
@@ -82,7 +86,7 @@ function useSlotlessController(slot: string | null = null, locked = false) {
     slotLoading: false,
     dispatch: vi.fn() as unknown as AppDispatch,
     queryClient,
-    showActionError: vi.fn(),
+    showActionError: captureSeam.showActionError,
     composer: {
       inputRef,
       setInput: vi.fn() as Dispatch<SetStateAction<string>>,
@@ -171,5 +175,35 @@ describe('capture entry points while a memory-mode switch locks the composer', (
     await act(async () => { await result.current.handleCapture() })
 
     expect(captureSeam.captureScreen).toHaveBeenCalled()
+  })
+})
+
+describe('a snip the embedded-pane trust gate refuses', () => {
+  // The packaged app refuses every pane capture. Before this, captureScreen
+  // read that as a cancel and the click did nothing, with no notice.
+  beforeEach(() => {
+    vi.clearAllMocks()
+    captureSeam.supported = true
+    captureSeam.captureScreen.mockRejectedValue(new captureSeam.Refused('refused'))
+  })
+
+  it('the attach-menu snip shows a notice and releases its hold', async () => {
+    const { result } = renderHook(() => useSlotlessController('slot-a'), { wrapper })
+
+    await act(async () => { await result.current.handleCapture() })
+
+    expect(captureSeam.showActionError).toHaveBeenCalledWith(
+      "Screen snip isn't available in this tab. Take a screenshot yourself and attach it.",
+    )
+    expect(captureSeam.release).toHaveBeenCalledWith('slot-a')
+  })
+
+  it('the Web Preview snip shows the same notice', async () => {
+    renderHook(() => useSlotlessController('slot-a'), { wrapper })
+
+    await act(async () => { window.dispatchEvent(new Event('kirocrew-web-preview-snip')) })
+
+    expect(captureSeam.showActionError).toHaveBeenCalledTimes(1)
+    expect(captureSeam.release).toHaveBeenCalledWith('slot-a')
   })
 })

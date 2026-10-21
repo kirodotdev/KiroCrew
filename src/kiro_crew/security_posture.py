@@ -1833,7 +1833,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `is_dispatchable_member_name` asks whether a stored Crew Member name
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
-        "members.py",
+        "members_parts/member_space.py",
+        "members_parts/self_edit.py",
         # Gate-side, like `link_meta.py` above: the UI-guide catalog asks whether
         # the redactor WOULD change a proposed crewmate name/goal or MCP command,
         # args or url, and REFUSES the guide when it would. Nothing it returns is
@@ -1918,7 +1919,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # gateway log, so a credential-shaped name never enters the log ring /
         # /api/logs stream. The parsed spec it returns is untouched; the surfaces
         # that emit text derived from it are the registered sinks.
-        "agent_discovery.py",
+        "agent_discovery_parts/spec_reads.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier
@@ -2330,22 +2331,25 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
         # The owners composed into dashboard/chat_runner.py: the redactor calls of the runner's
-        # helpers, _run_chat's closures and its prologue phases, unchanged (deny rows, the
-        # eager-spawn error detail, file-change snapshots, the MCP sign-in banner, the fallback
-        # hop's model id, native cards, prompt and skill mentions, the queued-turn drain, the
-        # admission logs, the stream redactors, cross-surface legs, the segment flush, tool rows,
-        # the terminal directive's tool-call ids, the partial reply and stream flushes, spec-hook
-        # notices, the stats footer). Their output reaches the surfaces it reached from the runner.
+        # helpers, _run_chat's closures, its prologue phases and its tool and permission arms,
+        # unchanged (deny rows, eager-spawn errors, file-change snapshots, the MCP sign-in banner,
+        # the fallback model id, native cards, prompt and skill mentions, the queued-turn drain, the
+        # admission and permission logs, the stream redactors, cross-surface legs, the segment
+        # flush, tool rows and results, directive tool-call ids, the partial reply and stream
+        # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/native_cards.py",
+        "dashboard/chat_turn/permission_prompt.py",
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
+        "dashboard/chat_turn/tool_approval.py",
+        "dashboard/chat_turn/tool_results.py",
         "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_entry.py",
@@ -2463,6 +2467,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/artifacts_parts/route_plumbing.py",
         "dashboard/handlers/artifacts_parts/session_documents.py",
         "dashboard/handlers/core.py",
+        "dashboard/handlers/core_config_view.py",
+        "dashboard/handlers/core_stt_speech.py",
         "dashboard/handlers/cron_board.py",
         "dashboard/handlers/cron_jobs.py",
         "dashboard/handlers/cron_lessons.py",
@@ -2652,11 +2658,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_commands_learn.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
+        "slack/events_home_tab.py",
+        "slack/events_slash.py",
         # Inbound attachment ingestion: redacts text extracted FROM a user's
         # own uploaded file before it enters the prompt. Inbound sanitisation,
         # not agent output on its way to a user.
         "messaging/attachments.py",
         "slack/interactions.py",
+        "slack/interactions_approvals.py",
+        "slack/interactions_modals.py",
+        "slack/interactions_options.py",
+        "slack/interactions_sessions.py",
         "slack/renderer.py",
         "slack/sessions_view.py",
         # The Slack handler facade and the owners composed into it: the facade defines

@@ -1043,6 +1043,6 @@ export { clearSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotA
 export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
 export { wireTurnIdentity } from './chat/runState'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'
-export { clearHistorySessions, createSlot, deleteHistorySession, fetchHistory, forkSlot, resumeFromHistory } from './chat/lifecycle'
+export { clearHistorySessions, createSlot, deleteHistorySession, fetchHistory, forkSlot, listForkedSlot, resumeFromHistory } from './chat/lifecycle'
 
 export default withRefreshRevision(chatSlice.reducer)

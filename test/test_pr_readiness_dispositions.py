@@ -103,7 +103,7 @@ def _bot_comment(head: str = HEAD) -> dict:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
-            "FINDING -- src/x.py:10 -- tighten the guard -> Fix: widen it\n"
+            "BLOCKING -- src/x.py:10 -- tighten the guard -> Fix: widen it\n"
             "[GPT-REVIEWED] " + head
         ),
     }
@@ -221,7 +221,7 @@ class TestTheStepEvaluatesTheRealRule:
         assert "comment 900 by alice" in outputs["violations"]
 
     def test_a_conforming_record_produces_no_violation(self, gate: GateRunner):
-        span = _span_of("src/x.py", "gpt/FINDING")
+        span = _span_of("src/x.py", "gpt/BLOCKING")
         proc, outputs = gate.run(
             comments=[
                 _bot_comment(),
@@ -239,7 +239,7 @@ class TestTheStepEvaluatesTheRealRule:
     def test_a_cross_lane_claim_is_reported(self, gate: GateRunner):
         """One comment covers exactly one lane: a record targeting opus cannot
         rule on a GPT finding."""
-        span = _span_of("src/x.py", "gpt/FINDING")
+        span = _span_of("src/x.py", "gpt/BLOCKING")
         proc, outputs = gate.run(
             comments=[
                 _bot_comment(),

@@ -113,6 +113,18 @@ describe('touch hold completion', () => {
     expect(voice.stop).not.toHaveBeenCalled()
   })
 
+  it('a finger already in the draft zone when the press becomes a hold arms the cue', () => {
+    const voice = makeVoice()
+    const { result } = mount(voice, true)
+    pointer('pointerdown')
+    pointer('pointermove', X0 + DRAFT_THRESHOLD_PX)
+    expect(result.current.bar).not.toBe('armed-draft')
+    act(() => { vi.advanceTimersByTime(HYBRID.holdMs) })
+    expect(result.current.bar).toBe('armed-draft')
+    pointer('pointerup', X0 + DRAFT_THRESHOLD_PX)
+    expect(voice.stop).toHaveBeenCalledWith(undefined)
+  })
+
   it('ordinary finger drift arms nothing', () => {
     const voice = makeVoice()
     const { result } = mount(voice, true)

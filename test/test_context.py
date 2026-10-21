@@ -1313,6 +1313,53 @@ class TestDocsSection:
         assert "[DOCUMENTATION]" not in ctx
 
 
+class TestCustomAgentSkillLog:
+    """The 'injecting memory/lessons/rules, ...' log reports the real skill decision.
+
+    ``_skills_injection_plan`` is the single source of truth for whether an
+    agent receives skills: a custom agent that maps skills via ``skill://``
+    (or, on kiro-cli, inherits the default skill trees) gets a skill directory,
+    while a custom agent the plan gives no globs gets none. The session-start
+    log must read that decision, not assume every custom agent skips skills.
+    """
+
+    def _builder(self, tmp_path):
+        return ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+
+    def test_custom_agent_with_skills_logs_injecting_not_skipping(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A custom agent the plan gives skill globs logs that skills are injected."""
+        from kiro_crew import context as ctx_mod
+
+        monkeypatch.setattr(
+            ctx_mod, "_skills_injection_plan", lambda *a, **k: (True, ["some-skill/**"])
+        )
+        builder = self._builder(tmp_path)
+        with caplog.at_level("INFO", logger="kiro_crew.context"):
+            builder.build_session_context(agent="code-reviewer")
+
+        line = next(r.getMessage() for r in caplog.records if "code-reviewer" in r.getMessage())
+        assert "injecting skills" in line
+        assert "skipping skills" not in line
+
+    def test_unmapped_custom_agent_logs_skipping(self, tmp_path, monkeypatch, caplog):
+        """A custom agent with no skill globs still logs that skills are skipped."""
+        from kiro_crew import context as ctx_mod
+
+        monkeypatch.setattr(ctx_mod, "_skills_injection_plan", lambda *a, **k: (False, []))
+        builder = self._builder(tmp_path)
+        with caplog.at_level("INFO", logger="kiro_crew.context"):
+            builder.build_session_context(agent="code-reviewer")
+
+        line = next(r.getMessage() for r in caplog.records if "code-reviewer" in r.getMessage())
+        assert "skipping skills" in line
+        assert "injecting skills" not in line
+
+
 class TestCompressedHistory:
     def test_build_session_context_uses_compressed_history(self, tmp_path):
         """When compressed_history is passed, it replaces naive truncation."""

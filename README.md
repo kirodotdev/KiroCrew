@@ -553,6 +553,7 @@ make this tool possible:
 <a href="https://github.com/DeryFerd" title="Dery Ferdika"><img src="https://github.com/DeryFerd.png?size=64" width="64" height="64" alt="Dery Ferdika" /></a>
 <a href="https://github.com/desaip05" title="Parikshit Desai"><img src="https://github.com/desaip05.png?size=64" width="64" height="64" alt="Parikshit Desai" /></a>
 <a href="https://github.com/developer-front" title="Pylyp Borysov"><img src="https://github.com/developer-front.png?size=64" width="64" height="64" alt="Pylyp Borysov" /></a>
+<a href="https://github.com/devreeda" title="devreeda"><img src="https://github.com/devreeda.png?size=64" width="64" height="64" alt="devreeda" /></a>
 <a href="https://github.com/devsdmf" title="Lucas Mendes"><img src="https://github.com/devsdmf.png?size=64" width="64" height="64" alt="Lucas Mendes" /></a>
 <a href="https://github.com/DFayerman" title="DFayerman"><img src="https://github.com/DFayerman.png?size=64" width="64" height="64" alt="DFayerman" /></a>
 <a href="https://github.com/dgomesbr" title="Diego Magalhães"><img src="https://github.com/dgomesbr.png?size=64" width="64" height="64" alt="Diego Magalhães" /></a>

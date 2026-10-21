@@ -143,9 +143,21 @@ const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, 'critical', 'default', 'passive']
  *  visually identical, so both compose from this one string. */
 const TEST_BTN_CLASS = 'px-3 py-1.5 rounded-md border border-border text-[12px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong disabled:opacity-40 disabled:cursor-not-allowed transition-all font-body'
 
+/** Channels whose bare id is not a word a user would look for. A crewmate's
+ *  messages arrive on `system.member`, but the product calls them crewmates. */
+const CHANNEL_LABELS: Record<string, () => string> = {
+  'system.member': () => i18nT('pages.settings.notificationsPanel.channel_member'),
+  // The bare id is "apps", which reads as "every app's notifications" -- the
+  // opposite of what muting it does, which is silence only the gateway's
+  // "a newer version is published" notes.
+  'system.apps': () => i18nT('pages.settings.notificationsPanel.channel_apps'),
+}
+
 /** Human label for a channel within its group (drop the source prefix apps
  *  and system channels share with their group header). */
 function channelLabel(c: NotificationChannel): string {
+  const named = CHANNEL_LABELS[c.channel]
+  if (named) return named()
   return c.channel.startsWith(`${c.source}.`) ? c.channel.slice(c.source.length + 1) : c.channel
 }
 

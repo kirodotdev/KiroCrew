@@ -238,6 +238,139 @@ async def _drain_fills() -> None:
         await asyncio.sleep(0)
 
 
+class TestContextMovedMidRender:
+    def test_rows_rendered_while_the_context_moved_are_served_but_not_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = _rows()
+        readings = iter([b"before" * 3, b"after!" * 3])
+        monkeypatch.setattr(wire_render, "_context_digest", lambda: next(readings))
+        fragments, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        assert "[" + ", ".join(f for f in fragments if f is not None) + "]" == _expected(rows)
+        assert wire_render.render_memo_info() == (0, 0)
+        # No identity may vouch for a render whose context is not known.
+        assert identities == [None] * len(identities)
+
+    def test_a_steady_context_keeps_the_rows(self) -> None:
+        rows = _rows()
+        _, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        assert wire_render.render_memo_info()[0] > 0
+        assert any(i is not None for i in identities)
+
+    def test_an_exemption_dropped_mid_read_is_not_served_from_the_memo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fill the memo while the tenant host is exempt, so its entries hold the
+        # tenant URL unredacted under that context's digest.
+        hosts: dict[str, frozenset[str]] = {"v": frozenset({"tenant.example.com"})}
+        monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: hosts["v"])
+        monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: hosts["v"])
+        rows = _rows()
+        real = wire_render._context_digest
+        exempt_context = {"v": b""}
+
+        def recording() -> bytes:
+            exempt_context["v"] = real()
+            return exempt_context["v"]
+
+        monkeypatch.setattr(wire_render, "_context_digest", recording)
+        relaxed, _ = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        assert any(f and "tenant.example.com/collect?data=" in f for f in relaxed)
+        # The exemption is withdrawn after the read took its first reading, so
+        # every lookup still uses the exempt context's key.
+        hosts["v"] = frozenset()
+        readings = iter([exempt_context["v"]])
+        monkeypatch.setattr(wire_render, "_context_digest", lambda: next(readings, None) or real())
+        entries = wire_render.render_memo_info()
+        fragments, identities = wire_render.prepare_message_rows(rows, False, live_child="c-1")
+        served = "[" + ", ".join(f for f in fragments if f is not None) + "]"
+        assert served == _expected(rows)
+        assert "tenant.example.com/collect?data=" not in served
+        assert identities == [None] * len(identities)
+        assert wire_render.render_memo_info() == entries
+
+
+class TestEvictionForgetsTheFill:
+    """The cap evicting a row of a filled page sends that page back to the plain render."""
+
+    @staticmethod
+    def _fill(scope: tuple[object, ...], rows: list[dict]) -> None:
+        assert wire_render.plan_read(scope) == (False, True)
+        wire_render.prepare_messages_json(rows, False, live_child="c-1", scope=scope)
+        wire_render._settle_scope(scope, True)
+
+    @staticmethod
+    def _cap_for(rows: list[dict], pages: float) -> int:
+        """A byte cap holding about *pages* copies of *rows*' memo entries."""
+        wire_render.clear_render_memo()
+        wire_render.prepare_messages_json(rows, False, live_child="c-1")
+        _, charged = wire_render.render_memo_info()
+        wire_render.clear_render_memo()
+        return int(charged * pages)
+
+    def test_a_filled_page_whose_row_was_evicted_is_read_plain_and_refilled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        page_a = [dict(r, ts=f"a-{r.get('ts')}") for r in _rows()]
+        page_b = [dict(r, ts=f"b-{r.get('ts')}") for r in _rows()]
+        monkeypatch.setattr(wire_render, "RENDER_MEMO_MAX_BYTES", self._cap_for(page_a, 1.5))
+        self._fill(("a",), page_a)
+        assert wire_render.plan_read(("a",)) == (True, False)
+        # Filling another page pushes some of page a's rows out of the memo.
+        self._fill(("b",), page_b)
+        # Page a is not read row by row through a memo that lost part of it:
+        # its next read is the plain render and asks for a fresh fill.
+        assert wire_render.plan_read(("a",)) == (False, True)
+        assert wire_render.plan_read(("b",)) == (True, False)
+
+    def test_a_page_that_cannot_stay_whole_through_its_fill_is_kept_plain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = _rows()
+        monkeypatch.setattr(wire_render, "RENDER_MEMO_MAX_BYTES", self._cap_for(rows, 0.5))
+        self._fill(("big",), rows)
+        # Refilling it at once would evict it again, so it is read plain for a
+        # few reads before one asks for a fill again.
+        for _ in range(wire_render._PLAIN_READS - 1):
+            assert wire_render.plan_read(("big",)) == (False, False)
+        assert wire_render.plan_read(("big",)) == (False, True)
+
+    def test_a_row_another_page_read_last_is_charged_to_that_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shared = _rows()
+        other = [dict(r, ts=f"o-{r.get('ts')}") for r in _rows()]
+        monkeypatch.setattr(wire_render, "RENDER_MEMO_MAX_BYTES", self._cap_for(shared, 1.5))
+        self._fill(("first",), shared)
+        self._fill(("second",), shared)  # every row a hit, now read last by "second"
+        assert wire_render.plan_read(("first",)) == (True, False)
+        assert wire_render.plan_read(("second",)) == (True, False)
+        self._fill(("other",), other)
+        assert wire_render.plan_read(("second",)) == (False, True)
+        assert wire_render.plan_read(("first",)) == (True, False)
+
+    def test_a_fill_evicted_before_any_read_used_it_waits_before_refilling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A reader cycling through more pages than the memo holds: each fill is
+        # evicted before the page is read again, so filling it on its next read
+        # would be wasted again. It is read plain for a few reads instead.
+        page_a = [dict(r, ts=f"a-{r.get('ts')}") for r in _rows()]
+        page_b = [dict(r, ts=f"b-{r.get('ts')}") for r in _rows()]
+        monkeypatch.setattr(wire_render, "RENDER_MEMO_MAX_BYTES", self._cap_for(page_a, 1.5))
+        self._fill(("a",), page_a)
+        self._fill(("b",), page_b)
+        for _ in range(wire_render._PLAIN_READS - 1):
+            assert wire_render.plan_read(("a",)) == (False, False)
+        assert wire_render.plan_read(("a",)) == (False, True)
+
+    def test_eviction_never_changes_the_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        rows = _rows()
+        monkeypatch.setattr(wire_render, "RENDER_MEMO_MAX_BYTES", self._cap_for(rows, 0.5))
+        for _ in range(3):
+            assert _actual(rows) == _expected(rows)
+
+
 class TestBounded:
     def test_accounted_bytes_stay_under_the_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(wire_render, "RENDER_MEMO_MAX_BYTES", 4096)
@@ -319,7 +452,8 @@ class TestEndpointDoesNotRehashUnchangedRows:
         rows = len(bodies[0]["messages"])
         assert rows == (100 if query else 700)
         assert counts[0] >= rows
-        # The title and render context are digested; no message string is.
-        assert counts[1] <= 2
+        # The title and the render context are digested, the context before and
+        # after the rows so a change mid-read is caught; no message string is.
+        assert counts[1] <= 3
         assert bodies[0] == bodies[1]
         assert SECRET not in json.dumps([m for m in bodies[1]["messages"] if m["role"] != "user"])

@@ -75,6 +75,18 @@ def _setup_env(tmp_path, monkeypatch):
 
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+    # The single confinement probe now also reads the Linux kirocrew-agents.slice
+    # cgroup, which the suite's own process is under; point its read at a cgroup
+    # with no slice so the baseline is a host terminal. The agent-refusal tests
+    # below re-set the marker or re-patch the structural probe on purpose.
+    _plain_cgroup = tmp_path / "cgroup-host"
+    _plain_cgroup.write_text("0::/user.slice/user-1000.slice/session-1.scope\n")
+    _real_evidence = sandbox_mod.agent_confinement_evidence
+    monkeypatch.setattr(
+        sandbox_mod,
+        "agent_confinement_evidence",
+        lambda cgroup_path=str(_plain_cgroup): _real_evidence(cgroup_path=cgroup_path),
+    )
     return home
 
 

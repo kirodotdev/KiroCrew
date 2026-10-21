@@ -998,6 +998,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.default-sidebar-folder-for-new-chats",
+    "label": "Default Sidebar Folder for New Chats",
+    "labelKey": "pages.settings.chatPanel.default_session_folder",
+    "description": "The sidebar folder new chats are filed into when you start one without choosing a folder. It groups chats in the sidebar; it is not a folder on disk.",
+    "hint": "The chat uses the folder's linked project and agent, as New chat in folder does.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.default_session_folder"
+  },
+  {
     "id": "chat.describe-your-role",
     "label": "Describe your role",
     "labelKey": "pages.settings.chatPanel.describe_your_role",
@@ -1342,7 +1356,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.show-full-titles-while-scrolling",
     "label": "Show Full Titles While Scrolling",
     "labelKey": "pages.settings.chatPanel.full_titles_on_scroll",
-    "hint": "While you scroll the session list, titles cut off by the sidebar show in full over it; they hide when the pointer leaves or shortly after scrolling stops",
+    "hint": "While you scroll the session list, titles the sidebar cuts off show in full",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -2725,7 +2739,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.send-when-i-stop-recording",
     "label": "Send when I stop recording",
     "labelKey": "pages.settings.sttSettings.submit_on_release",
-    "hint": "Stopping sends the message. Hold Shift, or slide sideways on the phone, to keep a draft.",
+    "hint": "Stopping sends the message. Shift-click the mic, or slide sideways on the phone, to keep a draft.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1,

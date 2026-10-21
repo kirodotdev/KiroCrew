@@ -122,7 +122,7 @@ shown as text, only as the header's hover tooltip.
 | `placeholder` | `string` | localized "Message..." (`appSdk.chatEmbed.message`) | Composer placeholder while the session is idle. While a turn runs the composer shows its own "agent is working" text instead. |
 | `frameless` | `boolean` | `false` | Drops the outer border, rounding, background and title strip, and makes the input row transparent, so a host card can hold the chat flush. |
 | `startAtBottom` | `boolean` | `false` | Opens scrolled to the newest row and stays pinned there as rows arrive, until the user scrolls up; shows a jump-to-bottom button while unpinned. Without it the embed opens at the top and smooth-scrolls to each new message. |
-| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. A send with non-image attachments passes `meta` (`{ files?: string[] }`); forward it as `meta` on your own chat POST (see [Attachments](#attachments)). |
+| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. A send with non-image attachments or a collapsed paste passes `meta` (`{ files?: string[]; pastes?: PasteBlock[] }`); forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)). |
 | `aboveComposer` | `ReactNode` | none | Content placed in normal flow directly above the composer, such as a docked quote bar. |
 | `composerMaxHeight` | `number` (px) | `240` | Cap for the composer's auto-grow (see below). |
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
@@ -370,6 +370,25 @@ The main chat's `./` path completion and `$` skill menu are not offered: path
 completion resolves against a project directory the embed does not name, and
 the skill list is resolved against the chat's session key, which the scoped
 client does not let an app choose.
+
+### Long pastes
+
+A long paste collapses the way it does in the main chat. Text of four lines or
+more, or over 200 characters, goes into the draft as one
+`[ Paste #N · M lines ]` chip instead of its full text. The chip moves and
+deletes as one unit, hovering it (or putting the caret inside it) previews the
+text, and a double-click (a tap on touch) expands it back into the draft.
+Copy and cut of a selection that covers a chip copy the full text, and
+Cmd/Ctrl+Z after deleting a chip brings it back with its text.
+`Cmd/Ctrl+Shift+V` pastes in full once, and the user's **Show Pasted Text in
+Full** chat setting turns collapsing off.
+
+On send each chip is expanded in `message`, and its block rides
+`meta.pastes`, the main chat's send shape, so the transcript folds the text
+back into the same chip. A refused send hands the chip back with its block, so
+pressing Send again still sends the full text. A host that passes `onSend`
+receives that meta, `onSend(message, { pastes })`, and forwards it as `meta`
+on its own chat POST. No permission is involved: nothing is uploaded.
 
 ## Native Chat Panel
 
@@ -1361,14 +1380,14 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/apps` | List all installed apps |
+| GET | `/api/apps` | List all installed apps, each with cached `update` state |
 | GET | `/api/apps/registry` | List available apps from registry |
 | GET | `/api/apps/blob?repo=&path=&ref=` | Proxy images from a registry app's git repo |
 | POST | `/api/apps/install` | Install from local path (owner only) |
 | POST | `/api/apps/register` | Register a self-managed app (owner only) |
 | POST | `/api/apps/registry/install` | Install from registry (owner only) |
 | POST | `/api/apps/registry/install-stream` | Install from registry with an SSE progress stream (owner only) |
-| GET | `/api/apps/{name}` | Get app details |
+| GET | `/api/apps/{name}` | Get app details, including cached `update` state |
 | GET | `/api/apps/{name}/manifest` | Get app manifest |
 | GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only) |
 | POST | `/api/apps/{name}/update` | Update installed app (owner only) |

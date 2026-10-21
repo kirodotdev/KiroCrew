@@ -231,7 +231,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `step/started` | the stream opening, and each tool-group-to-text transition | turn, step |
 | `step/completed` | the next transition, and `EVENT_COMPLETE` | turn, step, ms |
 | `message/queued` | `chat_delivery.queue_for_next_turn` | source, bytes, queue id -- no turn |
-| `approval/requested` | `_run_chat`, one statement before the try whose `finally` records the decision | turn, request id, tool name and the redacted title the human is shown, each omitted when the frame named neither |
+| `approval/requested` | `_on_permission_prompt` (`chat_turn/permission_prompt.py`), one statement before the try whose `finally` records the decision | turn, request id, tool name and the redacted title the human is shown, each omitted when the frame named neither |
 | `approval/decided` | the same prompt's `finally`, where every exit converges | turn, request id, decision, `by: host` and the host's `cause` for an auto-decline |
 | `approval/requested` / `approval/decided` (subagent spawn gate) | `_spawn_with_approval_impl` in `subagent_manager/admission/pump.py`, when a spawn needs approval, through the writer in `subagent_manager/admission/gate_reporting.py`; decided in a `finally`, including a host-attributed cancel | in the PARENT's log under the turn that asked (`dispatch_origin`): approval id `spawn:<agent_id>`, tool `spawn_run` |
 | `approval/requested` / `approval/decided` (a running child's tool prompt) | `subagent_manager/run.py`, when a child asks for a tool | in the PARENT's log under the turn that asked (`child_origin`): approval id `<child_id>:<request_id>` |
@@ -905,9 +905,9 @@ behind; one that files a fact under the wrong session is wrong, and nothing down
 
 The previous revision of this document said approvals had no emitter because "the approval
 coordinator carries a slot key, not a session id". That is true of `ApprovalCoordinator` and false
-of the site that actually raises the prompt: the permission-request arm lives inside `_run_chat`,
-where `_crew_log_sid` and `_crew_log_turn_no` have been in scope since the turn began. No resolver is
-involved.
+of the site that actually raises the prompt: the permission-request arm's prompt phase,
+`_on_permission_prompt` (`chat_turn/permission_prompt.py`), reads `_crew_log_sid` and
+`_crew_log_turn_no` off the turn, set since the turn began. No resolver is involved.
 
 The request is recorded ONE STATEMENT before the `try` whose `finally` records the decision, and
 deliberately not at the future's registration further up. Everything between those two points is
@@ -1178,9 +1178,9 @@ fallback fills it in, and the log states a person typed a message no person touc
 
 `approval/requested` and `approval/decided` ARE emitted, and no plumbing was needed for
 them -- see "Approvals were never a resolver problem" above. `ApprovalCoordinator` does
-carry only a slot key, but it is not the site that raises the prompt: that arm lives inside
-`_run_chat`, where the session id and the turn ordinal have been in scope since the turn
-began.
+carry only a slot key, but it is not the site that raises the prompt: that site is
+`_on_permission_prompt` (`chat_turn/permission_prompt.py`), which reads the session id and
+the turn ordinal off the turn, set since the turn began.
 
 ## What is deliberately not recorded
 

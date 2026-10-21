@@ -455,8 +455,10 @@ def staged_targets(
     session data the user was never shown and never approved. The delete re-checks the
     pair against the descriptor it actually opened, which is the object every later
     operation uses, so a replacement is refused rather than destroyed. A batch whose
-    directory cannot be stat'd here is dropped from the set: no identity means no
-    check, and deleting it unchecked is the one outcome worth avoiding.
+    identity or manifest cannot be read here gets no entry in the identity map: no
+    identity means no check, and deleting it unchecked is the one outcome worth
+    avoiding. On a sweep its id is still returned in the list, so :func:`empty_trash`
+    refuses it as a skip; a named selection holding one raises here instead.
     """
     with _mutation_lock():
         # Explicit ids go through the SAME resolver every other caller uses, before

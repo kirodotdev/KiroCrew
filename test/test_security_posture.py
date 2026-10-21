@@ -265,11 +265,16 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "acp/transport_errors.py": 1,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
-    "dashboard/chat_runner.py": 8,
+    "dashboard/chat_runner.py": 2,
     "dashboard/chat_title.py": 1,
     # The native sub-agent card sync's gate-side log, moved out of chat_runner.py with
     # its helper; the same gateway process as the runner's sites.
     "dashboard/chat_turn/native_cards.py": 1,
+    # The permission and tool arms' gate-side logs, moved out of chat_runner.py with
+    # their phases; the same gateway process as the runner's sites.
+    "dashboard/chat_turn/permission_prompt.py": 1,
+    "dashboard/chat_turn/tool_approval.py": 4,
+    "dashboard/chat_turn/tool_rows.py": 1,
     # The outbox owner composed into dashboard/handlers/files.py: api_outbox_notify's
     # refusal audit, in the same gateway process as the facade.
     "dashboard/file_api/outbox.py": 1,
@@ -292,7 +297,10 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "mcp_tools/messaging.py": 1,
     "mcp_tools/skills.py": 2,
     "messaging/sessions_view.py": 1,
-    "slack/events.py": 2,
+    # The sessions slash command and the Home tab, moved out of slack/events.py to the
+    # owners behind that facade: the same gateway process.
+    "slack/events_home_tab.py": 1,
+    "slack/events_slash.py": 1,
     # Owners composed into slack/gateway.py (the cron script arm, boot-time install
     # repair, the unattended result delivery, a sub-agent completion's injection
     # into its parent, the tool-approval callbacks): the gateway process.

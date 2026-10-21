@@ -44,7 +44,6 @@ from kiro_crew.mcp_discovery import (
     redact_mcp_headers,
 )
 from kiro_crew.mcp_gateway.rewriter import records_dir
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import process_shutdown_requested
 from kiro_crew.user_json import loads_mcp_config
@@ -503,8 +502,9 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
         _stamp_config_state(d, global_mcps, kirocrew_mcps)
         err = d.get("error")
         if err:
-            err, _ = redact_credentials(err)
-            err, _ = redact_exfiltration_urls(err)
+            from kiro_crew.security import redact
+
+            err = redact(err)
             d["error"] = err
         result.append(d)
     # Annotated HERE too, not only on the probe endpoints. This is the endpoint

@@ -17,7 +17,10 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (  # noqa: F401 - pinned by test_handlers_deploy_facade.py
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 
 # --- restricted-session guard (consistent across all mutating endpoints) -----
@@ -65,8 +68,9 @@ def _redact_text(s: str) -> str:
     _mask_credential is applied at Finding creation time, this catches any path
     where raw matched content leaks through.
     """
-    s, _ = redact_credentials(s)
-    s, _ = redact_exfiltration_urls(s)
+    from kiro_crew.security import redact
+
+    s = redact(s)
     return s
 
 

@@ -1,6 +1,5 @@
 {
  "base_public_names": [
-  "FileTooLargeError",
   "LoopBoundLock",
   "MAX_WINDOW_DAYS",
   "NAVIGABLE_CATEGORY",
@@ -35,7 +34,6 @@
   "read_effective_model",
   "read_turn_model",
   "resolve_window",
-  "safe_read_file_bytes_nolink",
   "session_category",
   "slot_spend",
   "slot_turn_usage",
@@ -45,7 +43,6 @@
   "validate_file_path"
  ],
  "rebound": {
-  "FileTooLargeError": "kiro_crew.hooks",
   "LoopBoundLock": "kiro_crew.loop_lock",
   "OUTCOME_UNCLASSIFIED": "kiro_crew.metrics.turns",
   "TurnUsage": "kiro_crew.acp.types",
@@ -59,7 +56,6 @@
   "kiro_sessions_dir": "kiro_crew.config.paths",
   "model_registry": "kiro_crew",
   "owner_only_opener_for": "kiro_crew.owner_only_files",
-  "safe_read_file_bytes_nolink": "kiro_crew.hooks",
   "telemetry_channel_of": "kiro_crew.messaging.link",
   "turn_outcome": "kiro_crew.metrics.turns",
   "validate_file_path": "kiro_crew.hooks"

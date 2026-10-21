@@ -1328,6 +1328,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     live_child=live_child,
                     workspace=workspace,
                     use_memo=use_memo,
+                    scope=memo_scope,
                 )
                 plan = slot_detail_delta.plan_page(
                     fragments,
@@ -1340,7 +1341,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 messages_json = "[" + ", ".join(plan.fragments) + "]"
             elif use_memo:
                 messages_json = wire_render.prepare_messages_json(
-                    messages, running, live_child=live_child, workspace=workspace
+                    messages,
+                    running,
+                    live_child=live_child,
+                    workspace=workspace,
+                    scope=memo_scope,
                 )
             else:
                 messages_json = json.dumps(

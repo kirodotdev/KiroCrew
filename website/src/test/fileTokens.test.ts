@@ -992,6 +992,98 @@ describe('restoreUnreferencedImages (legacy pane rows: image only on meta.files)
   it('an image-only legacy row (empty caption) yields just the image line', () => {
     expect(restoreUnreferencedImages('', { files: ['/tmp/a.png'] })).toBe('![image](/tmp/a.png)')
   })
+
+  // Issue #22401: a stored row whose content already carries the image line but
+  // with the RAW, unwrapped path is the bug this heals. A path containing a
+  // space, `(`, or `)` is not a CommonMark destination unwrapped, so
+  // `![image](/a b.png)` renders as its literal markdown source, not the
+  // picture. The common trigger is a data home / uploads dir with a space in
+  // it (e.g. a shared mount like `/srv/shared data/...`). A bare `%` is
+  // deliberately NOT one of these triggers -- see the %-only cases below.
+  it('repairs an unwrapped spaced-path image line in place to the wrapped form', () => {
+    const p = '/srv/shared data/uploads/ab_pasted-image-1.png'
+    // The old raw-is-named rule treated this broken line as "named" and left it.
+    expect(restoreUnreferencedImages(`![image](${p})`, { files: [p] }))
+      .toBe(`![image](${mdImageDest(p)})`)
+  })
+
+  it('does not duplicate the image when it repairs the raw line', () => {
+    const p = '/srv/shared data/uploads/ab.png'
+    const out = restoreUnreferencedImages(`![image](${p})`, { files: [p] })
+    expect(out.match(/!\[image\]/g)?.length).toBe(1)
+  })
+
+  it('repairs the raw line AND keeps a surrounding caption', () => {
+    const p = '/srv/shared data/uploads/ab.png'
+    expect(restoreUnreferencedImages(`![image](${p})\n\nlook at this`, { files: [p] }))
+      .toBe(`![image](${mdImageDest(p)})\n\nlook at this`)
+  })
+
+  it('repairs only the paths meta.files knows, leaving unrelated text untouched', () => {
+    const p = '/srv/shared data/uploads/ab.png'
+    // A prose mention of a DIFFERENT spaced path is not an image destination and
+    // is not in meta.files, so it is left exactly as written.
+    const content = `![image](${p})\n\nnot a dest: /srv/shared data/notes.txt`
+    expect(restoreUnreferencedImages(content, { files: [p] }))
+      .toBe(`![image](${mdImageDest(p)})\n\nnot a dest: /srv/shared data/notes.txt`)
+  })
+
+  it('still heals a spaced path that is missing from the content entirely', () => {
+    const p = '/srv/shared data/uploads/ab.png'
+    expect(restoreUnreferencedImages('', { files: [p] })).toBe(`![image](${mdImageDest(p)})`)
+  })
+
+  // Reviewer HOLD on #22406: a path whose ONLY unsafe character is a literal
+  // `%` is not actually broken unwrapped -- `%` does not terminate CommonMark's
+  // destination grammar, so `remark-parse` returns it byte-identical and the
+  // real img-src sink (ImgWithFallback) keys its decode on whether the SOURCE
+  // TEXT was `<...>`-wrapped, not on `%`'s presence. An unwrapped %-only
+  // destination already resolves to the exact on-disk path today, so the
+  // repair must leave it alone -- wrapping it would be the bug, not the fix.
+  it('leaves an unwrapped %-only destination alone -- it already renders (no false repair)', () => {
+    const p = '/home/user/uploads/photo%20copy.png'
+    const content = `![image](${p})`
+    expect(restoreUnreferencedImages(content, { files: [p] })).toBe(content)
+  })
+
+  it('does not duplicate a %-only path left unrepaired (named() must match its own unwrapped spelling)', () => {
+    const p = '/home/user/uploads/photo%20copy.png'
+    const content = `![image](${p})\n\nlook at this`
+    const out = restoreUnreferencedImages(content, { files: [p] })
+    expect(out).toBe(content)
+    expect(out.match(/!\[image\]/g)?.length).toBe(1)
+  })
+
+  // Design Review BLOCK on #22406 (c75be1244): a prior revision of this fix
+  // narrowed named() to the UNWRAPPED spelling only, which missed every path
+  // mdImageDest wraps for a reason OTHER than needsDestRepair (non-ASCII,
+  // `+`, `,`, `'`, `&` -- anything outside the safe charset besides space/
+  // parens) and duplicated the image on every render of a freshly-sent row.
+  it('does not duplicate a freshly-sent image whose path mdImageDest wraps for a non-%, non-repair reason (non-ASCII)', () => {
+    const p = '/tmp/uploads/café.png'
+    const { displayTxt } = prepareSendPayload('look', [p])
+    const out = restoreUnreferencedImages(displayTxt, { files: [p] })
+    expect(out).toBe(displayTxt)
+    expect(out.match(/!\[image\]/g)?.length).toBe(1)
+  })
+
+  it('does not duplicate a freshly-sent image whose path mdImageDest wraps for punctuation (+ , \' &)', () => {
+    const p = "/tmp/uploads/a+b,c'd&e.png"
+    const { displayTxt } = prepareSendPayload('look', [p])
+    const out = restoreUnreferencedImages(displayTxt, { files: [p] })
+    expect(out).toBe(displayTxt)
+    expect(out.match(/!\[image\]/g)?.length).toBe(1)
+  })
+
+  it('still heals a %-only path missing from the content entirely, via the normal producer form', () => {
+    // A genuinely-missing image is prepended fresh, same as any other image --
+    // mdImageDest's own %-escaping for FRESHLY PRODUCED destinations is a
+    // separate concern from the repair loop (which must not rewrite an
+    // already-renderable existing line); this case has no existing line to
+    // preserve, so it takes the normal producer path.
+    const p = '/home/user/uploads/photo%20copy.png'
+    expect(restoreUnreferencedImages('', { files: [p] })).toBe(`![image](${mdImageDest(p)})`)
+  })
 })
 
 describe('servedUploadMb', () => {

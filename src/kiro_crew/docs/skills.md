@@ -50,6 +50,7 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `triggers` | No | Comma-separated phrases. A positive phrase matches when at least 70% of its words appear in the user text. Case is ignored. Prefix a phrase with `=` to match it exactly as written, for a name that is also an ordinary word: `=Word` fires on "Word" but not on "word". Prefix with `!` for a negative trigger; every negative-trigger word must appear to exclude the skill. |
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
+| `app` | No | The name of the app this skill belongs to, as its `app.json` spells it (`ops-mission-control`, not the display name). While that app is disabled the skill is withheld everywhere, as the app's own bundled skills are. Needed only by an app skill shipped outside its app's folder; ignored on a trusted project skill. |
 
 `SKILL.md` must be UTF-8 text; a UTF-8 byte-order mark is accepted. A file in any
 other encoding (for example UTF-16 from PowerShell) is skipped, with one log

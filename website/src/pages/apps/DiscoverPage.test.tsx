@@ -99,7 +99,7 @@ import DiscoverPage from './DiscoverPage'
 /** The registries response shape (api/client/apps.ts `refreshRegistries`). */
 function registriesResult(over: Partial<{
   ok: boolean; refreshed: string[]; failed: string[]
-  results: { name: string; ok: boolean }[]; apps: number; lastSyncedAt: string
+  results: { name: string; ok: boolean; reason?: 'auth'; host?: string }[]; apps: number; lastSyncedAt: string
 }> = {}) {
   return {
     ok: true, refreshed: [], failed: [], results: [], apps: 0, lastSyncedAt: '',
@@ -147,6 +147,24 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     renderWithProviders(<DiscoverPage />)
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
+  })
+
+  it('leads with the fix and names the host when a registry refused sign-in', async () => {
+    refreshRegistries.mockResolvedValue(registriesResult({
+      ok: false,
+      failed: ['locked-registry', 'down-registry'],
+      results: [
+        { name: 'locked-registry', ok: false, reason: 'auth', host: 'git.example.com' },
+        { name: 'down-registry', ok: false },
+      ],
+    }))
+    renderWithProviders(<DiscoverPage />)
+    await clickRefresh()
+    expect(await screen.findByText(
+      'components.registryManager.refresh_sign_in_refused '
+      + '{"host":"git.example.com","names":"locked-registry"} '
+      + `${PARTIAL_FAILURE_KEY} {"names":"locked-registry, down-registry"}`,
+    )).toBeInTheDocument()
   })
 
   it('surfaces a rejected refresh POST via its error message, and still refetches', async () => {

@@ -291,8 +291,8 @@ own result string, and the turn loop decodes and applies it in-process.
 - Registry: `DIRECTIVE_TOOLS` (`session_directive.py`) — add `section_marker`.
 - Tool side: return `session_directive.encode(kind, validated_args, human)`
   (`session_directive.py`); see `mcp_tools/control_parts/directive.py` for the pattern.
-- Consumer side: `chat_runner.py` decodes at the tool-result event and
-  calls `apply_session_directive`.
+- Consumer side: `_on_tool_result` (`dashboard/chat_turn/tool_results.py`) decodes at the
+  tool-result event and calls `apply_session_directive`.
 - Applier: a new branch in `dashboard/session_directive_apply.py` alongside
   `_suggest_followup`, dashboard-gated via `_DASHBOARD_ONLY_DIRECTIVES`.
 

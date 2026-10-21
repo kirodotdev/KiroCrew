@@ -1049,7 +1049,7 @@ class TestHookGateKwargs:
         # match set would make the assertion above vacuous.
         assert helper_sites >= {
             "permission_floor.py",
-            "dashboard/chat_runner.py",
+            "dashboard/chat_turn/tool_approval.py",
             "dashboard/handlers/hooks.py",
             "llm_helpers_parts/tool_approval.py",
             "messaging/dispatch_tools.py",

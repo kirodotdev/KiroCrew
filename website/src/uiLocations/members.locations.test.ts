@@ -4,7 +4,6 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { readPageFamily } from '../test/pageFamily'
 
 interface Placement {
   surface_id: string
@@ -51,16 +50,13 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   'members.details': ['toggle', 'pages.membersPage.panel_toggle', 'Dashboard & files', '仪表板和文件', ['page.members'], 'header', '/members', [CREW_PREVIEW, cond('crewmate_selected'), cond('crewmate_panel_not_docked')]],
   'agents.add': ['button', 'pages.kiroCrewAgentsPage.add_crew_member', 'New crewmate', '新建队友', ['page.capabilities', 'tab.capabilities.crews'], 'toolbar', '/capabilities?tab=crews', []],
   'agents.create-first': ['button', 'pages.kiroCrewAgentsPage.create_your_first_crew', 'Create your first crewmate', '创建你的第一位队友', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('no_crewmates')]],
-  'agents.edit-avatar': ['button', 'components.avatarBuilder.edit_avatar', 'Edit avatar', '编辑头像', ['page.capabilities', 'tab.capabilities.crews'], 'header', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
+  'agents.edit-avatar': ['button', 'components.avatarBuilder.edit_avatar', 'Edit avatar', '编辑头像', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-model'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
   'agents.delete': ['button', 'pages.kiroCrewAgentsPage.delete_crew', 'Delete crewmate', '删除队友', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-danger'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
-  'agents.chat': ['button', 'memoryV2.chat_member', 'Chat with this crewmate', '与这位队友聊天', ['page.capabilities', 'tab.capabilities.crews'], 'header', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
-  'agents.manage-memory': ['button', 'pages.kiroCrewAgentsPage.manage_private_memory', 'Manage memory', '管理记忆', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-place'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open'), cond('crewmate_memory_manageable')]],
   'agents.crew-list': ['list', 'pages.kiroCrewAgentsPage.agents', 'Agents', '代理', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', []],
   'agents.model': ['field', 'pages.kiroCrewAgentsPage.edit_model', 'Edit default model', '编辑默认模型', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-model'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
-  // The editor's section rail rows a guide opens on the way (CrewEditorRail).
-  'agents.section-model': ['tab', 'pages.kiroCrewAgentsPage.model', 'Model', '模型', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
-  'agents.section-place': ['tab', 'components.crewEditor.pane_workspace_memory', 'Workspace · Memory', '工作区 · 记忆存储', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
-  'agents.section-danger': ['tab', 'pages.kiroCrewAgentsPage.danger_zone', 'Danger zone', '危险操作区', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
+  // The editor's section rail rows a guide opens on the way (CrewEditorNextRail).
+  'agents.section-model': ['tab', 'crewEditorNext.section_general', 'General', '常规', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
+  'agents.section-danger': ['tab', 'crewEditorNext.section_danger', 'Danger Zone', '危险区域', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
 }
 
 describe('the Crewmates area in the index', () => {
@@ -98,9 +94,9 @@ describe('the Crewmates area in the index', () => {
   })
 
   it("marks agents.delete on the Danger zone's unarmed delete only, never the armed confirm", () => {
-    const page = readPageFamily('KiroCrewAgentsPage')
-    expect(page.split("uiLocation('agents.delete')").length - 1).toBe(1)
-    const confirm = page.split('\n').find(l => l.includes('data-testid="confirm-delete-crew"'))!
+    const editor = fs.readFileSync(path.resolve(__dirname, '../components/crew/CrewEditorNextDialog.tsx'), 'utf8')
+    expect(editor.split("uiLocation('agents.delete')").length - 1).toBe(1)
+    const confirm = editor.split('\n').find(l => l.includes('data-testid="next-confirm-delete-crew"'))!
     expect(confirm).not.toContain('uiLocation(')
   })
 

@@ -87,6 +87,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     drained_to_thread,
     run_config_write,
 )
+from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
+    default_session_folder_choosable,
+)
 from kiro_crew.dashboard.file_api import browse as _owner_browse
 from kiro_crew.dashboard.file_api import channel_upload as _owner_channel_upload
 from kiro_crew.dashboard.file_api import dashboard_config as _owner_dashboard_config

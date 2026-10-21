@@ -4,7 +4,7 @@
 session identity or make HTTP calls. Each VALIDATES its arguments and returns a
 DIRECTIVE string — a human-readable confirmation plus an opaque marker carrying
 the validated payload (and NO session key). The session-aware consumer
-(``dashboard.chat_runner._run_chat``'s ``EVENT_TOOL_RESULT`` handler) decodes the
+(``_on_tool_result`` in ``dashboard/chat_turn/tool_results.py``) decodes the
 marker and applies the effect against ITS OWN slot via
 ``dashboard.session_directive_apply.apply_session_directive``.
 

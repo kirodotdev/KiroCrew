@@ -796,6 +796,47 @@ class TestScopeConclusionLadderLivesInOnePlace:
         assert f"grep -qF '{needle}' \"$SC\" && lane_flag=(--lane same-repo)" in run
         assert needle not in (ROOT / "scripts" / "scope_candidates.py").read_text(encoding="utf-8")
 
+    @pytest.mark.parametrize(
+        ("token", "same_repo", "fork"),
+        [
+            ("pass", "PASS", "success"),
+            ("nothing-new", "NOTHING-NEW", "neutral"),
+            ("block", "BLOCK", "failure"),
+            # The conclusion table is staged from the BASE commit, so until this
+            # contract is on the base it can still answer `concerns`. There is no
+            # soft tier any more: that is a PASS, never "no verdict".
+            ("concerns", "PASS", "success"),
+            ("error", "UNKNOWN", "failure"),
+        ],
+    )
+    def test_each_lane_maps_every_table_token_including_a_staged_concerns(
+        self, token: str, same_repo: str, fork: str
+    ) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the lanes are Bash")
+
+        def mapping(workflow: str, step: str) -> str:
+            run = _step_script(_workflow(workflow), step)
+            start = run.index('case "$token" in\n')
+            return run[start : run.index("esac", start) + len("esac")]
+
+        for workflow, step, var, want in (
+            (self.SAME_REPO, "Post the scope verdict", "verdict", same_repo),
+            (self.FORK, "Decide the lane's conclusion", "conclusion", fork),
+        ):
+            script = f'token={token!r}\n{mapping(workflow, step)}\nprintf "%s" "${var}"\n'
+            result = subprocess.run(
+                [bash, "-c", script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=60,
+                check=False,
+            )
+            assert result.returncode == 0, _proc_log(result)
+            assert result.stdout == want, (workflow, token, result.stdout)
+
     def test_same_repo_keeps_no_shell_conclusion_ladder(self) -> None:
         run = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
         # The model-verdict `case` was the heart of the old shell ladder; it may

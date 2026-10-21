@@ -239,7 +239,7 @@ def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
         assert all('-m "not ipv6_required"' in command for command in commands)
         assert jobs[name]["strategy"]["matrix"]["group"] == list(range(1, 9))
     hosted = jobs["backend-test-ipv6"]
-    assert hosted["needs"] == ["changes", "await-fast-gate"]
+    assert hosted["needs"] == ["changes", "await-fast-gate", "lint-gate"]
     assert hosted["runs-on"] == "${{ matrix.os }}"
     assert hosted["strategy"] == {
         "max-parallel": 4,

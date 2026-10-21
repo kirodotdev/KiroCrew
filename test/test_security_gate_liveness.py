@@ -416,7 +416,21 @@ def _url_payload_command(n: int) -> str:
 #: paragraphs, glue comments, owner imports, owner list, install, class swap and ``__all__``; and
 #: their ``TYPE_CHECKING`` manifests (two each in ``redaction`` and ``exfil``, one in
 #: ``denied_rules``). Every moved statement is unchanged; no rule, threshold or pass changed.
-_PACKAGE_LINE_BUDGET = 31_509
+#:
+#: Raised again, from 31,509, for the stream redactor's AWS key-value anchor: a
+#: recognised AWS label holds its value past the 512 floor up to the JWT ceiling and
+#: fails closed beyond it, the way the Bearer anchor already does. 217 lines are the
+#: new ``stream_aws_anchor`` module (the label grammar read off the batch label rules,
+#: its linear finder, the multi-carrier discard and the glued-label back-off) and 139
+#: the ``feed`` call sites, including the cut that lands only at whitespace or the
+#: buffer start, and the check that keeps a key name ending another credential
+#: inside that credential. No credential branch moved.
+#:
+#: Raised again, from 31,865, for ``pass_compose.py``: the one composed pass that finds
+#: credential and outbound-URL spans on the same text and rewrites it once. It is new
+#: behaviour, not moved code, so no other file shrinks to pay for it, and it belongs in
+#: this package because egress code must reach the raw passes only through it.
+_PACKAGE_LINE_BUDGET = 32_056
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

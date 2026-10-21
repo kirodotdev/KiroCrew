@@ -301,23 +301,18 @@ def test_charter_budgets_match_the_ci_workflows():
     assert opus_match, f"no BLOCKING budget in {opus_contract.name}"
     opus_blocking = opus_match.group(1)
 
-    advisory_match = re.search(r"At most (\d+) advisory FINDING", claude)
-    assert advisory_match, f"no advisory-FINDING budget in {opus_contract.name}"
-    opus_advisory = advisory_match.group(1)
-
-    assert (
-        f"≤{opus_blocking} BLOCKING, ≤{opus_advisory} advisory FINDING" in skill
-    ), (
-        "the opus charter's budget no longer matches claude-review.yml "
-        f"({opus_blocking} BLOCKING / {opus_advisory} advisory)"
+    assert f"≤{opus_blocking} BLOCKING" in skill, (
+        "the opus charter's budget no longer matches the validation prompt "
+        f"({opus_blocking} BLOCKING)"
     )
+    assert "advisory FINDING" not in claude, "the soft tier is gone from the opus prompt"
 
     # The GPT lane's budget lives with the contract that applies it -- the
     # shared review-core prompt -- not in the workflow that splices it.
     gpt_contract = (
         REPO_ROOT / ".github" / "review-prompts" / "gpt-review-core.md"
     ).read_text(encoding="utf-8")
-    assert "BUDGET: report ALL findings that genuinely meet WHAT BLOCKS" in gpt_contract, (
+    assert "BUDGET: report ALL defects that genuinely pass the BLOCK BAR" in gpt_contract, (
         "gpt-review-core.md's BUDGET is expected to be report-ALL; if a numeric "
         "cap returned, restore the numeric charter assertions here"
     )

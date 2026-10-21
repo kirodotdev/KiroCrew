@@ -3,8 +3,11 @@ import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
 import { MessageSquare } from 'lucide-react'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
+import { useState } from 'react'
 import { createSlot } from '../../../store/chatSlice'
 import { EmptyState, Btn } from '../../../components/ui'
+import ErrorNotice from '../../../components/ErrorNotice'
+import { errMessage } from '../../../utils/thunkError'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 
@@ -27,6 +30,9 @@ interface ChatEmptyStateProps {
 export default function ChatEmptyState({
   mode, dispatch, pendingAgent, pendingAgentKindRef, pendingModel, newSessionRef, newSlotFailed, newSlotMutation, setNewSlotFailed, setSidError,
 }: ChatEmptyStateProps) {
+  // A failed create from this button has no session pane to report into, so
+  // the failure is shown here, beside the button that retries it.
+  const [createError, setCreateError] = useState('')
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8">
       <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} subtitle={i18nT('pages.chatPage.start_a_new_chat_to_begin')} />
@@ -43,11 +49,22 @@ export default function ChatEmptyState({
             newSlotMutation.mutate()
             return
           }
-          dispatch(createSlot({ agent: pendingAgent || undefined, agent_kind: pendingAgent ? pendingAgentKindRef.current : undefined, model: pendingModel || undefined, mode }))
+          setCreateError('')
+          dispatch(createSlot({ agent: pendingAgent || undefined, agent_kind: pendingAgent ? pendingAgentKindRef.current : undefined, model: pendingModel || undefined, mode, defaultFolder: true }))
+            .unwrap()
+            .catch((error: unknown) => setCreateError(errMessage(error) || i18nT('pages.chatPage.unknown_error')))
         }}
       >
         {i18nT('pages.chatPage.start_a_new_chat')}
       </Btn>
+      {/* The hand-off loses nothing: no session exists yet, so nothing is unsaved. */}
+      <ErrorNotice
+        title={i18nT('pages.chatPage.could_not_start_a_new_session')}
+        message={createError || null}
+        askAgent
+        onDismiss={() => setCreateError('')}
+        testId="empty-state-create-error"
+      />
     </div>
   )
 }

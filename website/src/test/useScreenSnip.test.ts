@@ -1,5 +1,8 @@
-import { describe, it, expect, vi } from 'vitest'
-import { isScreenSnipSupported, normalizeRect, canvasToFile, captureScreen, cropCanvas, currentTabCaptureDeps } from '../hooks/useScreenSnip'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+
+const pane = vi.hoisted(() => ({ embedded: false }))
+vi.mock('../lib/embedded', () => ({ isEmbeddedPane: () => pane.embedded }))
+import { isScreenSnipSupported, normalizeRect, canvasToFile, captureScreen, cropCanvas, currentTabCaptureDeps, ScreenSnipRefusedError } from '../hooks/useScreenSnip'
 
 describe('currentTabCaptureDeps', () => {
   it('requests getDisplayMedia with preferCurrentTab (streamlined browser prompt)', () => {
@@ -126,6 +129,30 @@ describe('captureScreen', () => {
       createCanvas: () => ({}) as HTMLCanvasElement,
     })
     expect(out).toBeNull()
+  })
+
+  describe('inside an embedded instance pane', () => {
+    afterEach(() => { pane.embedded = false })
+    const rejecting = (name: string) => ({
+      getDisplayMedia: vi.fn().mockRejectedValue(new DOMException('refused', name)),
+      createVideo: () => ({}) as HTMLVideoElement,
+      createCanvas: () => ({}) as HTMLCanvasElement,
+    })
+
+    it('throws ScreenSnipRefusedError for the trust gate\'s AbortError, not a silent null', async () => {
+      pane.embedded = true
+      await expect(captureScreen(rejecting('AbortError'))).rejects.toBeInstanceOf(ScreenSnipRefusedError)
+    })
+
+    it('still returns null when the user dismisses the picker', async () => {
+      pane.embedded = true
+      await expect(captureScreen(rejecting('NotAllowedError'))).resolves.toBeNull()
+    })
+
+    it('keeps the top-level window\'s null for the same AbortError', async () => {
+      pane.embedded = false
+      await expect(captureScreen(rejecting('AbortError'))).resolves.toBeNull()
+    })
   })
 
   it('returns null and stops tracks when the frame grab fails', async () => {

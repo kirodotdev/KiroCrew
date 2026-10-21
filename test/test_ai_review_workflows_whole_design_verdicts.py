@@ -1,6 +1,6 @@
 """Review-workflow tests for how the design, UX and first-principles lanes reach a
 verdict and present it: calibration, current-head markers, take-away checks and
-CONCERNS in the Checks UI.
+the PASS-or-BLOCK status steps.
 """
 
 from __future__ import annotations
@@ -13,12 +13,9 @@ from pathlib import Path
 import pytest
 from ai_review_workflows_helpers import (
     DESIGN_LANES,
-    SCRUB_CALL,
     _bash,
     _flat,
-    _line_containing,
-    _shell_function,
-    _step_env,
+    _proc_log,
     _step_script,
     _workflow,
 )
@@ -99,10 +96,13 @@ class TestDesignTakeAwayCheck:
                 "an entry label outside that set (e.g. prompt builder) does not unlist it" in flat
             ), name
             assert "is not listed -> BLOCK (the take-away trigger under VERDICT)" in flat, name
-            assert "does not exercise that reader -> CONCERNS" in flat, name
+            assert (
+                "does not exercise that reader -> BLOCK only if you can write its Trigger and Outcome"
+                in flat
+            ), name
             # A capped description cannot prove the section absent.
             assert (
-                "is the last section before that notice, its list may sit past the cut: cap this check at CONCERNS"
+                "is the last section before that notice, its list may sit past the cut: do not BLOCK on the missing section"
                 in flat
             ), name
             # The cap reaches only a section the reviewer could not see.
@@ -177,11 +177,11 @@ class TestDesignVerdictCalibration:
     def test_tie_breaker_is_decided_by_the_consequence_not_by_certainty(self) -> None:
         for name in DESIGN_LANES:
             flat = _flat(self._calibration(name))
-            # Reversible -> CONCERNS is retained, so an ordinary judgement call
-            # still lands where it did.
+            # Reversible -> PASS with a note, so an ordinary judgement call
+            # does not block.
             assert "the consequence is REVERSIBLE" in flat, name
             assert "a regression a revert fixes cleanly" in flat, name
-            assert "-> CONCERNS" in flat, name
+            assert "-> PASS, with the risk as a note" in flat, name
             # Irreversible-in-product -> BLOCK is the new half.
             assert "STOPS WORKING" in flat, name
             assert "session start, spawn, auth, gateway boot" in flat, name
@@ -241,362 +241,95 @@ class TestDesignVerdictCalibration:
                 _workflow(name)
             ), name
 
-    def test_every_blocker_and_watch_item_says_what_clears_it(self) -> None:
+    def test_every_blocker_states_a_trigger_an_outcome_and_what_clears_it(self) -> None:
         # A finding a coding loop cannot act on is a finding that does not get
-        # acted on. `Clears when:` is the actionable half, so the output
-        # contract demands it on BOTH sections, not just on Blockers.
+        # acted on. `Clears when:` is the actionable half; Trigger and Outcome are
+        # what make it a BLOCK at all (an item without both is read as PASS).
         for name in DESIGN_LANES:
             workflow = _workflow(name)
             blockers = workflow.index("### Blockers")
-            watch = workflow.index("### Watch", blockers)
-            suggestions = workflow.index("### Suggestions", watch)
-            for label, section in (
-                ("Blockers", workflow[blockers:watch]),
-                ("Watch", workflow[watch:suggestions]),
-            ):
-                assert (
-                    "`Clears when: <the concrete evidence or change that resolves this>`"
-                    in _flat(section)
-                ), (f"{name}: the {label} section does not require a Clears when line")
-            assert "an item with no `Clears when:` is not actionable" in _flat(
-                workflow[watch:suggestions]
-            ), name
+            notes = workflow.index("### Notes", blockers)
+            section = _flat(workflow[blockers:notes])
+            assert "`Clears when: <the concrete evidence or change that resolves this>`" in section
+            assert "`Trigger: <the situation that occurs in practice" in section, name
+            assert "`Outcome: <the observable cost carried" in section, name
+            assert "a BLOCK with no Trigger or no Outcome is read as PASS" in section, name
+            assert "### Watch" not in workflow and "### Suggestions" not in workflow, name
 
 
-class TestConcernsIsVisibleInTheChecksUi:
-    """A CONCERNS verdict must be legible without opening the PR comment.
+class TestThereIsNoSoftTier:
+    """A lane says PASS or BLOCK. The CONCERNS tier, its digest and its neutral
+    check-run conclusion are gone from every whole-design lane."""
 
-    31 of 57 CONCERNS drew no human reply at all, and the mechanism is simple:
-    the lane reported a green check, so nothing in the Checks UI said there was
-    anything to read. The fork lanes own a check-run, so CONCERNS becomes
-    `neutral` -- still a pass to pr-readiness.yml, but its own state in the list
-    -- carrying the punchline and Watch items in `output.summary`. The same-repo
-    lanes own a JOB, which cannot be neutral, so they emit a warning annotation
-    and a step summary instead. No new command, no convention to learn.
-    """
-
-    def _digest_fn(self, workflow: str, step: str) -> str:
-        return _shell_function(_step_script(_workflow(workflow), step), "concerns_digest")
-
-    def test_fork_lanes_finalize_concerns_as_neutral(self) -> None:
-        for name, _, _ in CONCERNS_FORK_LANES:
-            finalize = _step_script(_workflow(name), "Finalize check-run (advisory)")
-            assert 'conclusion="neutral"; title="CONCERNS — read the Watch items"' in finalize, name
-            # The green tick must not come back: it is what made CONCERNS
-            # indistinguishable from PASS in the Checks list.
-            assert 'CONCERNS) conclusion="success"' not in finalize, name
-            assert 'title="CONCERNS (advisory)"' not in finalize, name
-            # A real BLOCK still fails, and an incomplete run still resolves
-            # neutral -- neither end of the contract moved.
-            assert 'conclusion="failure"' in finalize, name
-
-    def test_fork_lanes_put_the_punchline_and_watch_items_in_the_summary(self) -> None:
-        for name, header, marker in CONCERNS_FORK_LANES:
-            finalize = _step_script(_workflow(name), "Finalize check-run (advisory)")
-            assert 'concerns_digest "' in finalize, name
-            assert f'"{header}" "{marker}"' in finalize, name
-            # The digest REPLACES the generic "see the PR comment" summary only
-            # when it actually parsed something.
-            assert 'if [ "${VERDICT:-}" = "CONCERNS" ]; then' in finalize, name
-            assert 'if [ -n "$digest" ]; then' in finalize, name
-            assert '-f "output[summary]=$summary"' in finalize, name
-
-    def test_the_summary_reads_an_already_redacted_body(self) -> None:
-        # The publish boundary stays where it is. Each lane's digest reads the
-        # file its own redaction step rewrote in place, so no un-redacted text
-        # can reach a check-run summary.
-        bodies = {
-            "fork-design-review.yml": "design-review-output.md",
-            "fork-first-principles-review.yml": "first-principles-output.md",
-            "fork-ux-review.yml": "ux-comment.md",
-        }
-        for name, body in bodies.items():
+    def test_no_lane_carries_a_soft_verdict_arm_or_digest(self) -> None:
+        for name in ALL_CONCERNS_LANES:
             workflow = _workflow(name)
-            finalize = _step_script(workflow, "Finalize check-run (advisory)")
-            assert body in finalize, name
-            # The same file is the one the base-owned redactor rewrites.
-            redaction = _line_containing(workflow, SCRUB_CALL)
-            assert body in redaction or f'f="$RUNNER_TEMP/{body}"' in workflow, name
+            assert "concerns_digest" not in workflow, name
+            assert "CONCERNS_DIGEST" not in workflow, name
+            assert "CONCERNS_PUNCHLINE" not in workflow, name
+            assert "### Watch" not in workflow.replace("There is no `### Watch`", ""), name
+            assert 'badge="🟡 CONCERNS"' not in workflow, name
+            for line in workflow.splitlines():
+                if "CONCERNS" in line:
+                    # The only mention left is the comment naming the retired word.
+                    assert line.lstrip().startswith("#"), (name, line)
 
-    def test_pr_readiness_still_counts_neutral_as_a_pass(self) -> None:
-        # This is what makes the change safe: `neutral` is visible to a human
-        # and invisible to the gate, so an advisory CONCERNS cannot start
-        # blocking merges.
-        readiness = _workflow("pr-readiness.yml")
-        assert 'IN("success","neutral")' in readiness
-        # Bound to the SAME-REPO advisory case block -- the second of the two
-        # readers that name all three lanes -- so the arm scoring `neutral`
-        # cannot be confused with the generic lane reader's own arm below it.
-        # Whatever else that arm does, `neutral` reaches `passed` and never the
-        # BLOCK-only failing arm, which is the property this pins.
-        branch = (
-            '[ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] '
-            '|| [ "$label" = "First Principles Review" ]'
-        )
-        region = readiness.split(branch)[2].split("esac", 1)[0]
-        arms = [arm for arm in region.split(";;") if "neutral" in arm]
-        assert len(arms) == 1, "exactly one arm may score a neutral conclusion"
-        assert 'passed+=("$label")' in arms[0]
-        assert "failed+=" not in arms[0]
-
-    def test_same_repo_lanes_annotate_concerns_and_still_exit_zero(self) -> None:
-        for name, _, status_step, lane in CONCERNS_SAME_LANES:
-            status = _step_script(_workflow(name), status_step)
-            assert f"::warning title={lane} CONCERNS::" in status, name
-            assert 'if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then' in status, name
-            assert '>> "$GITHUB_STEP_SUMMARY"' in status, name
-            # The exit contract does not move: CONCERNS stays inside the
-            # PASS|CONCERNS branch, so only BLOCK can fail this gate.
-            assert "\n  PASS|CONCERNS)\n" in status, name
-            assert '  if [ "$VERDICT" = "CONCERNS" ]; then' in status, name
-            assert "::error::" in status, name
-            block_at = status.index("\n  BLOCK)\n")
-            concerns_at = status.index("\n  PASS|CONCERNS)\n")
-            assert "exit 1" not in status[concerns_at:block_at], name
-
-    def test_the_annotation_falls_back_when_no_digest_was_threaded(self) -> None:
-        # A CONCERNS verdict whose body could not be parsed must still say that
-        # something needs reading, or the annotation goes missing on exactly the
-        # malformed output a human most needs to look at.
-        for name, _, status_step, lane in CONCERNS_SAME_LANES:
-            status = _step_script(_workflow(name), status_step)
-            assert (
-                f"${{CONCERNS_PUNCHLINE:-read the Watch items in the {lane} comment" in status
-            ), name
-            assert '"${CONCERNS_DIGEST:-$punchline}"' in status, name
-
-    def test_the_digest_is_threaded_through_github_output(self) -> None:
-        for name, post_step, _, _ in CONCERNS_SAME_LANES:
-            post = _step_script(_workflow(name), post_step)
-            assert 'if [ "$verdict" = "CONCERNS" ]; then' in post, name
-            assert "printf 'concerns_punchline=%s\\n'" in post, name
-            # Multi-line values need a delimiter the value cannot forge.
-            assert 'delim="CONCERNS_DIGEST_${RANDOM}${RANDOM}_EOF"' in post, name
-            assert "printf 'concerns_digest<<%s\\n' \"$delim\"" in post, name
-            # And the status step must actually receive them.
-            env = _step_env(name, [s for w, _, s, _ in CONCERNS_SAME_LANES if w == name][0])
-            assert env["CONCERNS_PUNCHLINE"] == "${{ steps.post.outputs.concerns_punchline }}", name
-            assert env["CONCERNS_DIGEST"] == "${{ steps.post.outputs.concerns_digest }}", name
-
-    def test_no_lane_caps_the_digest_with_a_pipe(self) -> None:
-        # `head -c` exits as soon as it has its bytes, so the writer takes
-        # SIGPIPE and `pipefail` turns that 141 into a step failure -- on
-        # exactly the over-long review the cap exists for. Same reason the
-        # first-principles intent cap uses perl rather than a pipe.
+    def test_fork_lanes_finalize_pass_and_block_and_nothing_between(self) -> None:
         for name, _, _ in CONCERNS_FORK_LANES:
-            finalize = _step_script(_workflow(name), "Finalize check-run (advisory)")
-            assert "| head -c" not in finalize, name
-            assert "${digest:0:2000}" in finalize, name
-        for name, post_step, _, _ in CONCERNS_SAME_LANES:
-            post = _step_script(_workflow(name), post_step)
-            assert "| head -c" not in post, name
-            # The punchline is the first line; awk exits there, so it must not
-            # sit downstream of a pipe either.
-            assert "printf '%s\\n' \"$concerns_body\" | awk" not in post, name
-            assert "awk 'NF { print; exit }' <<< \"$concerns_body\"" in post, name
+            finalize = _step_script(_workflow(name), "Finalize check-run")
+            assert "CONCERNS" not in finalize, name
+            assert 'conclusion="success"' in finalize, name
+            assert 'conclusion="failure"' in finalize, name
+            # An incomplete run still resolves neutral, and a green tick is not
+            # what a verdict-less run earns.
+            assert 'title="review incomplete"' in finalize, name
 
-    def test_the_digest_helper_is_byte_identical_in_every_lane(self) -> None:
-        # Six copies, one body. The header and marker are ARGUMENTS, so nothing
-        # about a lane needs its own version -- and a per-lane version is how
-        # one lane quietly stops publishing its Watch items.
-        copies = {
-            name: self._digest_fn(name, "Finalize check-run (advisory)")
-            for name, _, _ in CONCERNS_FORK_LANES
-        }
-        copies.update(
-            {name: self._digest_fn(name, post) for name, post, _, _ in CONCERNS_SAME_LANES}
-        )
-        reference = copies["fork-design-review.yml"]
-        for name, body in copies.items():
-            assert body == reference, f"{name}: concerns_digest drifted from fork-design-review.yml"
-
-    def test_digest_extracts_the_punchline_and_watch_section_only(self, tmp_path: Path) -> None:
-        # Execute the REAL helper: a wrong awk here publishes the whole review
-        # (or nothing) into a check-run summary, and no static assertion sees it.
-        bash = _bash()
-        if bash is None:
-            pytest.skip("the digest helper is Bash")
-        body = tmp_path / "comment.md"
-        body.write_text(
-            "<!-- design-review -->\n"
-            "## Design Review (Opus 5.5) — 🟡 CONCERNS\n"
-            "\n"
-            "_Design-level review of `abc`._\n"
-            "\n"
-            "Design-Verdict: CONCERNS\n"
-            "\n"
-            "**win32 delegation now hangs off a macOS-only settings file.**\n"
-            "\n"
-            "### Watch\n"
-            "- absent-file->False fails every classified spawn closed on Windows.\n"
-            "  Clears when: kiro-cli confirms the key's win32 semantics.\n"
-            "\n"
-            "### Suggestions\n"
-            "- drop the probe entirely.\n"
-            "\n"
-            "[DESIGN-REVIEWED] abc\n",
-            encoding="utf-8",
-        )
-        script = (
-            self._digest_fn("design-review.yml", "Post design review summary")
-            + f'\nconcerns_digest "{body}" "Design-Verdict:" "[DESIGN-REVIEWED]"\n'
-        )
-        result = subprocess.run(
-            [bash, "-euo", "pipefail", "-c", script],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=tmp_path,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        out = result.stdout
-        assert out.startswith("**win32 delegation now hangs off a macOS-only settings file.**")
-        assert "### Watch" in out
-        assert "Clears when: kiro-cli confirms the key's win32 semantics." in out
-        # Neither the comment header nor the sections after Watch may ride along.
-        assert "<!-- design-review -->" not in out
-        assert "Design-Verdict:" not in out
-        assert "### Suggestions" not in out
-        assert "drop the probe entirely" not in out
-        assert "[DESIGN-REVIEWED]" not in out
-
-    def test_digest_caps_a_long_body_without_failing_the_step(self, tmp_path: Path) -> None:
-        bash = _bash()
-        if bash is None:
-            pytest.skip("the digest helper is Bash")
-        body = tmp_path / "comment.md"
-        body.write_text(
-            "UX-Verdict: CONCERNS\n\n**punchline**\n\n### Watch\n"
-            + ("- a very long watch item\n" * 500)
-            + "[UX-REVIEWED] abc\n",
-            encoding="utf-8",
-        )
-        script = (
-            self._digest_fn("fork-ux-review.yml", "Finalize check-run (advisory)")
-            + f'\nconcerns_digest "{body}" "UX-Verdict:" "[UX-REVIEWED]"\n'
-        )
-        result = subprocess.run(
-            [bash, "-euo", "pipefail", "-c", script],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=tmp_path,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert len(result.stdout) == 2000
-
-    def test_digest_of_a_missing_body_is_empty_and_not_a_failure(self, tmp_path: Path) -> None:
-        # The finalize step is `if: always()`, so it runs on jobs that never
-        # wrote a body. A `set -e` failure there would strand the check-run.
-        bash = _bash()
-        if bash is None:
-            pytest.skip("the digest helper is Bash")
-        script = (
-            self._digest_fn("fork-design-review.yml", "Finalize check-run (advisory)")
-            + f'\nconcerns_digest "{tmp_path / "absent.md"}" "Design-Verdict:" "[DESIGN-REVIEWED]"\n'
-            + 'echo "rc=$?"\n'
-        )
-        result = subprocess.run(
-            [bash, "-euo", "pipefail", "-c", script],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=tmp_path,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout == "rc=0\n"
+    def test_same_repo_status_steps_gate_on_block_only(self) -> None:
+        for name, _, status_step, lane in CONCERNS_SAME_LANES:
+            script = _step_script(_workflow(name), status_step)
+            assert "PASS)" in script, name
+            assert "PASS|CONCERNS" not in script, name
+            assert "BLOCK)" in script, name
+            assert "exit 1" in script, name
+            assert f"{lane.split()[0]}" in script, name
 
     @pytest.mark.parametrize(
-        "lane",
+        "entry",
         [pytest.param(entry, id=entry[0].removesuffix(".yml")) for entry in CONCERNS_SAME_LANES],
     )
-    def test_same_repo_status_step_emits_the_annotation_and_summary(
-        self, lane: tuple[str, str, str, str], tmp_path: Path
+    @pytest.mark.parametrize(
+        ("verdict", "exit_code"),
+        [("PASS", 0), ("BLOCK", 1), ("CONCERNS", 0), ("UNKNOWN", 0), ("", 0)],
+    )
+    def test_same_repo_status_step_exit_codes(
+        self, entry: tuple[str, str, str, str], verdict: str, exit_code: int
     ) -> None:
-        # Execute the REAL status step on a CONCERNS verdict: the annotation and
-        # the step summary are the whole point of the change, and a mistyped
-        # workflow-command prefix produces no annotation and no error either.
-        name, _, status_step, label = lane
+        """Execute the real status step. A word that is not PASS or BLOCK (the
+        retired CONCERNS included) is not a verdict, and a lane that produced no
+        verdict never fails the gate."""
         bash = _bash()
         if bash is None:
             pytest.skip("the status step is Bash")
-        summary_file = tmp_path / "step-summary.md"
-        summary_file.write_text("", encoding="utf-8")
+        name, _, status_step, _ = entry
         script = _step_script(_workflow(name), status_step)
+        env = {
+            **os.environ,
+            "HEAD": "abc123",
+            "ACTOR": "alice",
+            "VERDICT": verdict,
+            "HUMAN_OVERRIDE": "",
+            "OVERRIDE_ACTOR": "",
+        }
         result = subprocess.run(
-            [bash, "-e", "-c", script],
-            check=False,
+            [bash, "-c", script],
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
-            cwd=tmp_path,
-            env={
-                "PATH": os.environ.get("PATH", ""),
-                "LC_ALL": "C.UTF-8",
-                "HEAD": "0" * 40,
-                "ACTOR": "someone",
-                "VERDICT": "CONCERNS",
-                "HUMAN_OVERRIDE": "false",
-                "OVERRIDE_ACTOR": "",
-                "CONCERNS_PUNCHLINE": "**the win32 probe reads a macOS-only file**",
-                "CONCERNS_DIGEST": (
-                    "**the win32 probe reads a macOS-only file**\n"
-                    "### Watch\n"
-                    "- every classified spawn fails closed on Windows.\n"
-                    "  Clears when: kiro-cli confirms the win32 semantics."
-                ),
-                "GITHUB_STEP_SUMMARY": str(summary_file),
-            },
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert (
-            f"::warning title={label} CONCERNS::**the win32 probe reads a macOS-only file**"
-            in result.stdout
-        )
-        written = summary_file.read_text(encoding="utf-8")
-        assert f"## {label} — 🟡 CONCERNS (advisory)" in written
-        assert "### Watch" in written
-        assert "Clears when: kiro-cli confirms the win32 semantics." in written
-
-    @pytest.mark.parametrize(
-        "lane",
-        [pytest.param(entry, id=entry[0].removesuffix(".yml")) for entry in CONCERNS_SAME_LANES],
-    )
-    def test_a_pass_verdict_emits_no_concerns_annotation(
-        self, lane: tuple[str, str, str, str], tmp_path: Path
-    ) -> None:
-        # The annotation must be a CONCERNS signal, not a per-run banner: a
-        # warning on every green run is a warning nobody reads.
-        name, _, status_step, label = lane
-        bash = _bash()
-        if bash is None:
-            pytest.skip("the status step is Bash")
-        summary_file = tmp_path / "step-summary.md"
-        summary_file.write_text("", encoding="utf-8")
-        result = subprocess.run(
-            [bash, "-e", "-c", _step_script(_workflow(name), status_step)],
+            timeout=60,
             check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=tmp_path,
-            env={
-                "PATH": os.environ.get("PATH", ""),
-                "LC_ALL": "C.UTF-8",
-                "HEAD": "0" * 40,
-                "ACTOR": "someone",
-                "VERDICT": "PASS",
-                "HUMAN_OVERRIDE": "false",
-                "OVERRIDE_ACTOR": "",
-                "GITHUB_STEP_SUMMARY": str(summary_file),
-            },
         )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "::warning" not in result.stdout
-        assert summary_file.read_text(encoding="utf-8") == ""
+        assert result.returncode == exit_code, _proc_log(result)
 
 
 ALL_CONCERNS_LANES = tuple(name for name, *_ in CONCERNS_FORK_LANES) + tuple(
@@ -725,53 +458,6 @@ class TestReviewLanesPublishOnlyTheReview:
         # excludes them and lands on the ~20 words of prose.
         assert int(words) < 40, words
 
-    def test_the_digest_publishes_the_not_justified_items(self, tmp_path: Path) -> None:
-        # The check-run summary / warning annotation reads `### Watch`, which
-        # First Principles does not emit; its items live under
-        # `### Not justified as shipped`, so the digest carries that section
-        # too -- in every lane, since the helper is pinned byte-identical.
-        bash = _bash()
-        if bash is None:
-            pytest.skip("the digest helper is Bash")
-        body = tmp_path / "comment.md"
-        body.write_text(
-            "First-Principles-Verdict: CONCERNS\n\n"
-            "**pills reverse SidePanel.tsx:1459 on symmetry alone.**\n\n"
-            "### Not justified as shipped\n"
-            "- Item 4 — unjustified move: reinstates pills.\n"
-            "  Clears when: a report names who misread the fused tabs.\n\n"
-            "### What this change ships\n<details><summary>Inventory (1 items) — 0 justified</summary>\n"
-            "1. pills — unjustified move\n</details>\n\n"
-            "[FIRST-PRINCIPLES-REVIEWED] abc\n",
-            encoding="utf-8",
-        )
-        digest_fn = _shell_function(
-            _step_script(
-                _workflow("first-principles-review.yml"), "Post first-principles review summary"
-            ),
-            "concerns_digest",
-        )
-        script = (
-            digest_fn
-            + f'\nconcerns_digest "{body}" "First-Principles-Verdict:" "[FIRST-PRINCIPLES-REVIEWED]"\n'
-        )
-        result = subprocess.run(
-            [bash, "-euo", "pipefail", "-c", script],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=tmp_path,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        out = result.stdout
-        assert out.startswith("**pills reverse SidePanel.tsx:1459 on symmetry alone.**")
-        assert "### Not justified as shipped" in out
-        assert "Clears when: a report names who misread the fused tabs." in out
-        assert "### What this change ships" not in out
-        assert "<details>" not in out
-        assert "[FIRST-PRINCIPLES-REVIEWED]" not in out
-
 
 class TestDesignAndUxPunchlinesOpenWithTheProblem:
     """Design and UX already report only problems by section, but their
@@ -787,7 +473,7 @@ class TestDesignAndUxPunchlinesOpenWithTheProblem:
 
     def _punchline_rule(self, name: str) -> str:
         workflow = _workflow(name)
-        start = workflow.index("Then a blank line and ONE bold punchline")
+        start = workflow.index("Then a blank line and ONE bold REASON")
         return workflow[start : workflow.index("###", start)]
 
     def test_the_punchline_opens_with_the_problem(self) -> None:
@@ -801,9 +487,10 @@ class TestDesignAndUxPunchlinesOpenWithTheProblem:
                 assert "never why the experience holds" in rule, name
             else:
                 assert "never `<what is sound>, but <problem>`" in rule, name
-                assert "never why the design is sound" in rule, name
-            # PASS is the one thing to verify, or nothing -- not praise.
-            assert "the ONE thing a human should still verify before merge" in rule, name
+                assert "never an argument for the author's case" in rule, name
+            # PASS is nothing to check, or a few words on why nothing blocks --
+            # not praise.
+            assert "one to three sentences" in rule, name
             assert "`Nothing to check.`" in rule, name
             assert "a reviewer that argues the author's case is not reviewing" in rule, name
             # The old wording is gone in both lanes.

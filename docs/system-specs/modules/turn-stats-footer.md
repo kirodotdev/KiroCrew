@@ -52,7 +52,7 @@ The attach is gated on `_turn_boundary_set`, which dispatch sets when it capture
 
 ### Model attribution
 
-`dashboard.handlers.usage.read_turn_model` returns a concrete resolved model identifier when one is available, the `auto` sentinel for an Auto request without a resolved identifier, or an empty string when neither is known. `TestReadTurnModel` enforces the precedence and the unattributable case. The sentinel distinguishes an explicit Auto selection from absent attribution; callers that need a concrete identifier for pricing or context-window lookup use `read_effective_model` instead.
+`dashboard.handlers.usage.read_turn_model` returns a concrete resolved model identifier when one is available, the `auto` sentinel for an Auto request without a resolved identifier, or an empty string when neither is known. A session on the default model counts as an Auto request: its start path never calls `set_model`, so `_model` stays empty, while `session/new` stores the backend's `currentModelId` of `auto` as `_resolved_model_id`, and that backend-reported `auto` yields the sentinel. An empty `_model` with an empty or missing `_resolved_model_id` stays empty. `TestReadTurnModel` enforces the precedence and the unattributable case, and `TestBackendReportedAutoIsAttributed` (`test/test_usage_blank_model_8531.py`) pins the default-model session shape on the real provider classes. The sentinel distinguishes an explicit Auto selection from absent attribution; callers that need a concrete identifier for pricing or context-window lookup use `read_effective_model` instead.
 
 ## Frontend
 

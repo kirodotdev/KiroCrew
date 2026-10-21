@@ -77,7 +77,9 @@ export const TRAFFIC_LIGHT_INSET_PX = 84
  * owns the top strip there: pointing at it slides the menu bar down over the
  * window, so a control laid out at y=0 (the header and its crew switcher) can
  * no longer be clicked. Shifting the dashboard down by the menu bar's height
- * puts the header below that strip.
+ * puts the header below that strip. Not applied when the shell reports the
+ * menu bar cannot overlap (a notched display, where macOS already places the
+ * fullscreen window below the menu bar).
  */
 export const MAC_FULLSCREEN_TOP_RESERVE_PX = 24
 

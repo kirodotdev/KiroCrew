@@ -752,11 +752,7 @@ def test_delete_crewmate_walks_through_the_editor_and_never_finishes_on_its_own(
     assert steps[-1]["caution"] is True
 
 
-def test_crewmate_memory_and_model_walk_through_the_editor() -> None:
-    memory = _steps("agents.manage-memory", "any")
-    assert memory[0]["selection"] == "crewmate_editor_open"
-    assert memory[1]["location"] == "agents.section-place"
-    assert memory[-1]["requires"] == ["crewmate_memory_manageable"]
+def test_crewmate_model_walks_through_the_editor() -> None:
     model = _steps("agents.model", "any")
     assert [s["location"] for s in model] == [
         "agents.crew-list",

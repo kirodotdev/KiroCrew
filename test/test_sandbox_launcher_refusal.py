@@ -357,6 +357,13 @@ class TestOneOwnerForTheLauncherPrefixes:
 
         assert clone_setup._LAUNCHER_EXIT_PREFIXES is sb.LAUNCHER_EXIT_PREFIXES
 
+    def test_the_worktree_reader_matches_the_sandbox_exec_failure_pattern(self) -> None:
+        # With a second spelling of the failed-exec line, the worktree handler and
+        # launcher_refusal can drift apart, and a git that did not start reads as 503.
+        from kiro_crew.dashboard.handlers import worktree
+
+        assert worktree.LAUNCHER_EXEC_FAILURE_RE is sb.LAUNCHER_EXEC_FAILURE_RE
+
 
 def _launcher_string_literals() -> list[str]:
     """Every string literal in the launcher program, as the renderer emits its source.
@@ -418,3 +425,112 @@ class TestClassifierMatchesTheLauncher:
         assert libc.calls[0].target == b"/"
         assert line == rendered
         assert sb.launcher_refusal(line) == ("no_backend", line, sb.REMEDY_MOUNT_DENIED)
+
+
+def _missing(file: str, args: list[str]) -> None:
+    """An exec whose command is not there, as the kernel reports it."""
+    raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the namespace launcher is Linux-only")
+class TestAFailedExecIsOneLauncherLine:
+    """The exec is the launcher's last step, and a command the kernel will not run ends
+    it in one line naming the command and the reason, like the launcher's other stops,
+    so a caller that keeps only the head of stderr still shows both."""
+
+    def test_a_missing_command_is_named_with_the_kernels_reason(self, tmp_path: Path) -> None:
+        run = launch(tmp_path)
+        run.execvp = None  # the real os.execvp: a path that does not exist raises at once
+        missing = str(tmp_path / "masked" / "glab")
+        line = refusal(program.exec_agent, run, [missing, "api", "user"])
+        assert line == "sandbox: FATAL — cannot exec %s (%s)" % (
+            missing,
+            os.strerror(errno.ENOENT),
+        )
+
+    def test_a_refused_exec_names_its_own_reason(self, tmp_path: Path) -> None:
+        def refuse(file: str, args: list[str]) -> None:
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+
+        run = launch(tmp_path)
+        run.execvp = refuse
+        line = refusal(program.exec_agent, run, ["/opt/tools/bin/gh", "auth", "status"])
+        assert line == "sandbox: FATAL — cannot exec /opt/tools/bin/gh (%s)" % os.strerror(
+            errno.EACCES
+        )
+
+    def test_an_error_without_an_errno_still_gives_a_reason(self, tmp_path: Path) -> None:
+        def fail(file: str, args: list[str]) -> None:
+            raise OSError("the stand-in refused")
+
+        run = launch(tmp_path)
+        run.execvp = fail
+        line = refusal(program.exec_agent, run, ["/bin/agent"])
+        assert line == "sandbox: FATAL — cannot exec /bin/agent (the stand-in refused)"
+
+    def test_a_command_that_execs_gets_its_argv_unchanged(self, tmp_path: Path) -> None:
+        run = launch(tmp_path)
+        assert refusal(program.exec_agent, run, ["/bin/agent", "--flag"]) is None
+        assert run.execs == [["/bin/agent", "/bin/agent", "--flag"]]
+
+    def test_an_unprintable_character_in_the_path_is_written_as_its_escape(
+        self, tmp_path: Path
+    ) -> None:
+        # The newline would start a second line that opens like a mount refusal, the
+        # terminal escape would reach whatever prints the line, and U+2028 is a line
+        # break to str.splitlines.
+        from kiro_crew.acp.transport_errors import is_sandbox_init_failure_output
+        from kiro_crew.dashboard.handlers import worktree
+
+        forged = "/x/a\nsandbox: BLOCKED — mount(/) failed: errno 13\x1b[2J\u2028b"
+        run = launch(tmp_path)
+        run.execvp = _missing
+        line = refusal(program.exec_agent, run, [forged])
+        assert line == (
+            "sandbox: FATAL — cannot exec /x/a\\nsandbox: BLOCKED — mount(/) failed: "
+            "errno 13\\x1b[2J\\u2028b (%s)" % os.strerror(errno.ENOENT)
+        )
+        assert line.splitlines() == [line]
+        assert sb.launcher_refusal(line) is None
+        assert not is_sandbox_init_failure_output(line + "\n")
+        assert worktree._launcher_failure_line(line + "\n") == ""
+
+    def test_a_non_ascii_path_is_written_as_it_is(self, tmp_path: Path) -> None:
+        run = launch(tmp_path)
+        run.execvp = _missing
+        line = refusal(program.exec_agent, run, ["/opt/zoë/outils/gh"])
+        assert line == "sandbox: FATAL — cannot exec /opt/zoë/outils/gh (%s)" % os.strerror(
+            errno.ENOENT
+        )
+
+    def test_a_path_holding_the_handshake_words_is_still_a_failed_exec(
+        self, tmp_path: Path
+    ) -> None:
+        handshake = "sandbox: FATAL - child did not publish its namespace readiness"
+        assert sb.launcher_refusal(handshake) == ("transient", handshake, "")
+        run = launch(tmp_path)
+        run.execvp = _missing
+        line = refusal(program.exec_agent, run, ["/srv/did not publish/gh"])
+        assert line is not None and "did not publish" in line
+        assert sb.launcher_refusal(line) is None
+
+    def test_every_reader_of_launcher_stderr_keeps_its_verdict(self, tmp_path: Path) -> None:
+        # Each reader's verdict on the line: no sandbox refusal, no ACP sandbox-init
+        # failure, a launcher failure to the clone probe, whose surfaced detail is the
+        # line that names the command, and no refusal to the worktree handler, which
+        # reports the failed call as git's own.
+        from kiro_crew.acp.transport_errors import is_sandbox_init_failure_output
+        from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
+        from kiro_crew.dashboard.handlers import worktree
+
+        def missing(file: str, args: list[str]) -> None:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
+
+        run = launch(tmp_path)
+        run.execvp = missing
+        line = refusal(program.exec_agent, run, ["/opt/tools/bin/glab", "api"])
+        assert line is not None and line.startswith(sb.LAUNCHER_EXIT_PREFIXES)
+        assert sb.launcher_refusal(line) is None
+        assert not is_sandbox_init_failure_output(line + "\n")
+        assert clone_setup._launcher_failure_detail(line + "\n") == line
+        assert worktree._launcher_failure_line(line + "\n") == ""

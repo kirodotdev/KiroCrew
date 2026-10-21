@@ -411,10 +411,9 @@ def _trimmed_stderr(err: str, limit: int = 200) -> str:
 
     Callers may redact again at their own boundary; these passes are idempotent.
     """
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
-    text, _ = redact_credentials(err.strip())
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(err.strip())
     return text[:limit]
 
 

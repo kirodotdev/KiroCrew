@@ -566,13 +566,34 @@ def _confirm_tool_patterns() -> tuple[str, ...] | None:
     watcher's last good values while it keeps them, and the real values once
     the loader's process-lifetime degradation flag has gone stale.
     """
+    global _CONFIRM_PATTERNS_MEMO
     loaded = True
+    memo_key: tuple | None = None
     try:
         from kiro_crew.config import live
-        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.loader import KiroCrewConfig, _config_fingerprint
         from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+        from kiro_crew.config.validation import _CONFIG_CACHE
 
-        cfg = live.snapshot() or KiroCrewConfig.load()
+        cfg = live.snapshot()
+        if cfg is None:
+            # Until the watcher holds a snapshot (all of boot, and every process
+            # that never starts one) each grant writer and gate check asked for a
+            # full load: 572 of them in the first 90 s of one gateway boot. The
+            # answer depends only on the config files, so reuse it while their
+            # fingerprint is unchanged; any edit, create or delete moves the
+            # fingerprint and reloads. The loader cache's invalidation generation
+            # is part of the key, read before the load as the loader reads it, so
+            # an in-process save() reloads even where a same-size replacement
+            # leaves the fingerprint unchanged.
+            memo_key = (
+                _config_fingerprint(),
+                _CONFIG_CACHE.generation(),
+            )
+            memo = _CONFIRM_PATTERNS_MEMO
+            if memo is not None and memo[0] == memo_key:
+                return memo[1]
+            cfg = KiroCrewConfig.load()
         degraded: frozenset[str] = getattr(cfg, "degraded_sections", frozenset())
         hooks = cfg.hooks
         stood_in = (
@@ -593,6 +614,24 @@ def _confirm_tool_patterns() -> tuple[str, ...] | None:
             return ()
         # Every file reads as written, or none that does not names the key:
         # the loaded values below are the whole story.
+        # A load that stood in defaults also reads process state the file
+        # fingerprint does not carry, so its answer is never reused.
+        memo_key = None
+    patterns = _patterns_from_hooks(hooks)
+    if memo_key is not None:
+        _CONFIRM_PATTERNS_MEMO = (memo_key, patterns)
+    return patterns
+
+
+#: ``(key, patterns)`` of the last :func:`_confirm_tool_patterns` answer read
+#: from a clean load, keyed on the config files' fingerprint and the loader
+#: cache's invalidation generation. Process-wide cache of file-derived data,
+#: never per-caller state.
+_CONFIRM_PATTERNS_MEMO: tuple[tuple, tuple[str, ...] | None] | None = None
+
+
+def _patterns_from_hooks(hooks: object) -> tuple[str, ...] | None:
+    """The ``confirm_tools`` patterns a loaded ``hooks`` section names."""
     if not isinstance(hooks, dict) or "confirm_tools" not in hooks:
         return ()
     raw = hooks["confirm_tools"]

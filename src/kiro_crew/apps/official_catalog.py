@@ -155,6 +155,50 @@ def forget_cache() -> None:
         logger.debug("could not drop the official catalog cache", exc_info=True)
 
 
+def cached_entries() -> tuple[list[dict[str, Any]], float | None]:
+    """The cached document's entries and when that cache was written, no fetch.
+
+    ``([], None)`` when there is no usable cache, so a caller reads a cold start
+    as "the catalog has not been consulted" rather than "the shelf is empty".
+    The timestamp is the cache file's mtime, which is what lets a caller publish
+    how old its answer is instead of implying it is current.
+
+    ``CACHE_TTL`` is deliberately not applied. A caller that cannot fetch has a
+    stale answer or no answer, and the mtime returned beside the entries is what
+    makes the staleness visible rather than silent -- whereas dropping the
+    entries past an hour would leave a surface with nothing to show and no way
+    to say why. Readers that must not act on a stale shelf use ``_read_cache``,
+    which does enforce it.
+
+    Deliberately does NOT go through ``_envelope_error``: a refused envelope
+    (unknown schema, a non-empty tombstone list) must not yield entries, and the
+    two readers that materialise rows already enforce that. This reader is for
+    annotating a row that exists ANYWAY -- the ``apps`` list is filtered to
+    well-formed, named entries and nothing more.
+
+    **Never a source of install coordinates.** The cache lives under the data
+    home and is agent-writable, so a planted entry here could carry any field it
+    likes. That is the reason this module materialises install coordinates only
+    from a fresh fetch (``fetch_inventory_entries``), and this function does not
+    widen that: use it for display facts about an app the caller already knows
+    is installed, where a planted value costs a wrong label and no more.
+    """
+    path = _cache_path()
+    try:
+        if not path.is_file():
+            return [], None
+        mtime = path.stat().st_mtime
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], None
+    if not isinstance(data, dict) or _FAILED_KEY in data:
+        return [], None
+    apps = data.get("apps")
+    if not isinstance(apps, list):
+        return [], mtime
+    return [a for a in apps if isinstance(a, dict) and isinstance(a.get("name"), str)], mtime
+
+
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """Refuse to follow a redirect instead of quietly changing origin.
 

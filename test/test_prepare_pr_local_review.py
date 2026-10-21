@@ -24,10 +24,13 @@ synthetic repos are real local git repos (as in test_push_guard.py) and every
 import inspect
 import json
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -305,8 +308,8 @@ def test_gpt_prompt_carries_the_contract_sentinels():
         "SYSTEM RULES",
         "REPO CONTEXT",
         "DIVISION OF LABOUR",
-        "FINDING BAR",
-        "WHAT BLOCKS",
+        "BLOCK BAR",
+        "SENSITIVE CLASSES",
         "OUTPUT STYLE",
         "OUTPUT MARKERS",
     ):
@@ -1068,9 +1071,9 @@ def test_default_out_and_stage_dirs_are_unique_per_run(parity_repo, tmp_path, mo
     seen = []
     real = local_review.assemble
 
-    def capture(worktree, base, out_dir, stage_dir):
+    def capture(worktree, base, out_dir, stage_dir, resolved=None):
         seen.append((out_dir, stage_dir))
-        return real(worktree, base, out_dir, stage_dir)
+        return real(worktree, base, out_dir, stage_dir, resolved)
 
     monkeypatch.setattr(local_review, "assemble", capture)
     for _ in range(2):
@@ -1233,7 +1236,7 @@ def test_contract_workflow_is_read_from_base_not_from_the_branch(
     brief = Path(summary["tasks"]["gpt"]).read_text(encoding="utf-8")
     assert "TAMPER_SENTINEL" not in brief
     # The base text - which the branch replaced wholesale - is what got lifted.
-    for sentinel in ("WHAT BLOCKS", "OUTPUT MARKERS", "FALSIFICATION PASS"):
+    for sentinel in ("SENSITIVE CLASSES", "OUTPUT MARKERS", "FALSIFICATION PASS"):
         assert sentinel in brief, "{} missing - the brief did not come from base".format(
             sentinel
         )
@@ -1352,7 +1355,7 @@ def test_extraction_still_works_when_head_has_moved_past_base(
     assert summary["base_sha"] == _git(parity_repo, "rev-parse", "main")
     assert summary["head_sha"] != summary["base_sha"]
     brief = Path(summary["tasks"]["gpt"]).read_text(encoding="utf-8")
-    assert "WHAT BLOCKS" in brief
+    assert "SENSITIVE CLASSES" in brief
     assert summary["base_sha"] in brief
     # The later commits are part of what is under review, not of the contract.
     assert "LATER = 1" in Path(summary["diff"]["path"]).read_text(encoding="utf-8")
@@ -1729,3 +1732,160 @@ def test_skill_dispatches_reviewers_from_the_extractor():
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert "local_review.py" in skill
     assert "fallback" in skill.lower()
+
+
+# --------------------------------------------------------------------------
+# A parity failure from an out-of-date copy of the script says so
+# --------------------------------------------------------------------------
+SKILL_RELPATH = posixpath.join(local_review.SKILL_REPO_DIR, "scripts", "local_review.py")
+
+#: The mapping the base's workflow needs and an older copy of the script lacks.
+TREE_MAPPING = '        "steps.merge_base.outputs.tree": base_sha,\n'
+
+
+def _skill_on_base(root):
+    """Commit this skill under SKILL_REPO_DIR on main and rebase feature onto it,
+    so the merge base - the commit the extractor reads - carries the copy."""
+    _git(root, "checkout", "-q", "main")
+    shutil.copytree(
+        SKILL_DIR, root / local_review.SKILL_REPO_DIR,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "skill on base")
+    _git(root, "checkout", "-q", "feature")
+    _git(root, "rebase", "-q", "main")
+    return _git(root, "rev-parse", "main")
+
+
+def _older_install(tmp_path):
+    """A copy of the skill as an install from before the tree mapping landed."""
+    installed = tmp_path / "installed"
+    shutil.copytree(SKILL_DIR, installed, ignore=shutil.ignore_patterns("__pycache__"))
+    scripts = installed / "scripts"
+    text = (scripts / "local_review.py").read_text(encoding="utf-8")
+    assert TREE_MAPPING in text
+    (scripts / "local_review.py").write_text(text.replace(TREE_MAPPING, ""), encoding="utf-8")
+    return scripts / "local_review.py"
+
+
+def _run_copy(script, repo, out, stage, tmpdir):
+    # TMPDIR places the hint's detached worktree under a directory the test owns.
+    return subprocess.run(
+        [
+            sys.executable, str(script), "--worktree", str(repo), "--base", "main",
+            "--out-dir", str(out), "--stage-dir", str(stage),
+        ],
+        capture_output=True, text=True, encoding="utf-8", cwd=repo,
+        env={**os.environ, **NO_PYC, "TMPDIR": str(tmpdir), "TEMP": str(tmpdir), "TMP": str(tmpdir)},
+    )
+
+
+def test_an_older_install_names_the_base_copy_instead_of_the_extractor(parity_repo, tmp_path):
+    """An install from before the base changed a workflow and its extractor
+    together still fails closed, but it is told its copy is not the base's and
+    given the command that runs the base's copy - which then succeeds."""
+    base_sha = _skill_on_base(parity_repo)
+    old = _older_install(tmp_path)
+    # A short temp root, not tmp_path: Windows checks the base out under it, and
+    # tmp_path plus the skill's deepest path passes the 260-character limit.
+    short = tempfile.mkdtemp(prefix="lr-")
+    try:
+        _check_older_install_hint(parity_repo, tmp_path, old, base_sha, short)
+    finally:
+        _git(parity_repo, "worktree", "prune")
+        shutil.rmtree(short, ignore_errors=True)
+
+
+def _check_older_install_hint(parity_repo, tmp_path, old, base_sha, short):
+    proc = _run_copy(old, parity_repo, tmp_path / "out1", tmp_path / "stage1", short)
+    assert proc.returncode == local_review.EXIT_PARITY, proc.stderr
+    assert "PARITY FAILURE" in proc.stderr
+    assert "is not the base commit's copy" in proc.stderr
+    assert "{} at {}".format(SKILL_RELPATH, base_sha[:12]) in proc.stderr
+    assert "fix the extractor" not in proc.stderr
+    assert not list((tmp_path / "out1").glob("local-review-*.md"))
+
+    # The printed commands run, in order, and the base's copy assembles briefs.
+    checkout_copy = parity_repo / local_review.SKILL_REPO_DIR / "scripts" / "local_review.py"
+    assert str(checkout_copy) not in proc.stderr
+    commands = [line[4:] for line in proc.stderr.splitlines() if line.startswith("    ")]
+    assert len(commands) == 3, proc.stderr
+    add, rerun, remove = (
+        [token.strip('"') for token in shlex.split(c, posix=os.name != "nt")] for c in commands
+    )
+    detached = add[-2]
+    # The hint made the directory itself: new, empty, and private to this user.
+    assert os.path.dirname(detached) == short
+    assert os.path.basename(detached).startswith("kirocrew-prepare-pr-base-")
+    assert os.listdir(detached) == []
+    if os.name != "nt":
+        assert os.stat(detached).st_mode & 0o077 == 0
+    subprocess.run(add, check=True, capture_output=True, env=_fixture_git_env())
+    out2 = tmp_path / "out2"
+    fixed = subprocess.run(
+        rerun + ["--out-dir", str(out2), "--stage-dir", str(tmp_path / "stage2")],
+        capture_output=True, text=True, encoding="utf-8", cwd=parity_repo,
+        env={**os.environ, **NO_PYC},
+    )
+    assert fixed.returncode == local_review.EXIT_OK, fixed.stderr
+    assert sorted(p.name for p in out2.glob("local-review-*.md")) == [
+        "local-review-gpt.md", "local-review-opus.md",
+    ]
+    subprocess.run(remove, check=True, capture_output=True, env=_fixture_git_env())
+    assert not os.path.exists(detached)
+
+
+def test_no_hint_when_the_base_carries_no_copy_of_the_script(parity_repo):
+    """Another repository has no copy at SKILL_REPO_DIR: the original message stands."""
+    base_sha = _git(parity_repo, "rev-parse", "main")
+    assert local_review.stale_copy_hint(str(parity_repo), base_sha, "main") is None
+
+
+def test_no_hint_when_the_running_copy_matches_the_base(parity_repo):
+    """Same script as the base: the extractor really is behind its workflows."""
+    base_sha = _skill_on_base(parity_repo)
+    assert local_review.stale_copy_hint(str(parity_repo), base_sha, "main") is None
+
+
+def test_no_hint_when_the_running_copy_is_the_checkouts(parity_repo, monkeypatch):
+    """The branch under review edits the extractor and runs its own copy: that is
+    a real parity failure for the branch to fix, not an out-of-date install."""
+    base_sha = _skill_on_base(parity_repo)
+    checkout_copy = parity_repo / local_review.SKILL_REPO_DIR / "scripts" / "local_review.py"
+    checkout_copy.write_text(
+        checkout_copy.read_text(encoding="utf-8") + "# branch edit\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(local_review, "__file__", str(checkout_copy))
+    assert local_review.stale_copy_hint(str(parity_repo), base_sha, "main") is None
+
+
+def test_the_hint_never_runs_branch_controlled_siblings(parity_repo, tmp_path, monkeypatch):
+    """The checkout's local_review.py matches the base, but the branch edits the
+    sibling resolver it would load. The hint must not name the checkout's copy:
+    only a detached base worktree supplies every sibling from the base."""
+    base_sha = _skill_on_base(parity_repo)
+    scripts = parity_repo / local_review.SKILL_REPO_DIR / "scripts"
+    checkout_copy = scripts / "local_review.py"
+    resolver = scripts / "resolve_profile.py"
+    resolver.write_text(resolver.read_text(encoding="utf-8") + "# branch edit\n", encoding="utf-8")
+    _git(parity_repo, "commit", "-q", "-am", "branch edits the resolver")
+    old = _older_install(tmp_path)
+    monkeypatch.setattr(local_review, "__file__", str(old))
+    # The hint creates its detached-worktree directory; keep it inside tmp_path.
+    monkeypatch.setattr(local_review.tempfile, "tempdir", str(tmp_path))
+    # The three preconditions the hint needs, checked one by one so a failure
+    # names the one that did not hold.
+    rc, base_text, stderr = local_review.run(
+        ["git", "cat-file", "blob", "{}:{}".format(base_sha, SKILL_RELPATH)],
+        cwd=str(parity_repo),
+    )
+    assert rc == 0 and base_text, (rc, stderr)
+    assert local_review._read_text(str(old)) != base_text
+    assert not os.path.samefile(old, checkout_copy)
+    hint = local_review.stale_copy_hint(str(parity_repo), base_sha, "main")
+    assert hint is not None
+    text = "\n".join(hint)
+    assert "worktree add --detach" in text and base_sha in text
+    assert "worktree remove" in text
+    assert str(checkout_copy) not in text

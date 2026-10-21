@@ -12,6 +12,7 @@ too.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 from pathlib import Path
@@ -237,11 +238,41 @@ def test_vet_script_file_missing_file_errors(tmp_path):
     assert err is not None and err.startswith("Error:")
 
 
-def _assert_descriptors_closed(descriptors):
-    """Every descriptor the vetter opened must be released before it returns."""
-    for descriptor in descriptors:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
+@contextlib.contextmanager
+def _recording_closes(monkeypatch):
+    """Record every descriptor the vetter hands to ``os.close``.
+
+    The vetter runs in a process shared with background threads
+    (``mc-pathres-reaper``, ``sel-writer``), so a number it closes can be handed
+    straight back to another thread's ``os.open`` before the test looks at it.
+    Proving release with ``os.fstat(number)`` therefore races fd reuse: the
+    number is already live again and ``fstat`` succeeds against an unrelated
+    file, failing the assertion though the vetter did close its descriptor.
+    Recording the closes the vetter actually performs is a fact about the
+    descriptor, not about whatever currently occupies its number.
+    """
+    closed: list[int] = []
+    original_close = os.close
+
+    def record_then_close(descriptor):
+        closed.append(descriptor)
+        return original_close(descriptor)
+
+    monkeypatch.setattr(os, "close", record_then_close)
+    yield closed
+
+
+def _assert_descriptors_closed(opened, closed):
+    """Every descriptor the vetter opened must be released before it returns.
+
+    An empty ``opened`` is a valid outcome, not a failure: when the guarded
+    open is itself refused (e.g. ``O_NOFOLLOW`` rejects a swapped-in symlink
+    with ``ELOOP``), the vetter may open no descriptor of its own, and there is
+    then nothing to leak. A test that needs to prove a descriptor was exercised
+    asserts that on its own recorded list before calling this.
+    """
+    outstanding = [descriptor for descriptor in opened if descriptor not in closed]
+    assert not outstanding, f"vetter left descriptor(s) open: {outstanding}"
 
 
 def _refuse_content_read(*args, **kwargs):
@@ -298,11 +329,12 @@ def test_script_leaf_swap_never_reads_the_target(monkeypatch, tmp_path, without_
 
     monkeypatch.setattr(os, "open", swap_then_open)
     monkeypatch.setattr(os, "fdopen", _refuse_content_read)
-    err = _vet_script_file(str(script))
+    with _recording_closes(monkeypatch) as closed:
+        err = _vet_script_file(str(script))
     assert swapped
     assert err is not None and err.startswith("Error:")
     assert "private content" not in err
-    _assert_descriptors_closed(descriptors)
+    _assert_descriptors_closed(descriptors, closed)
 
 
 def test_fifo_substituted_during_open_is_nonblocking_and_refused(monkeypatch, tmp_path):
@@ -324,10 +356,11 @@ def test_fifo_substituted_during_open_is_nonblocking_and_refused(monkeypatch, tm
         return descriptor
 
     monkeypatch.setattr(os, "open", swap_then_open)
-    err = _vet_script_file(str(script))
+    with _recording_closes(monkeypatch) as closed:
+        err = _vet_script_file(str(script))
     assert err is not None and "regular file" in err
     assert descriptors
-    _assert_descriptors_closed(descriptors)
+    _assert_descriptors_closed(descriptors, closed)
 
 
 def test_regular_script_keeps_utf8_replacement_and_universal_newlines(monkeypatch, tmp_path):
@@ -371,11 +404,12 @@ def test_script_parent_swap_before_metadata_never_reads_the_target(monkeypatch, 
     monkeypatch.setattr(mcp_cron, "sensitive_path_refusal", swap_after_path_check)
     monkeypatch.setattr(mcp_cron, "fd_real_path", observed_fd_path)
     monkeypatch.setattr(os, "fdopen", _refuse_content_read)
-    err = _vet_script_file(str(script))
+    with _recording_closes(monkeypatch) as closed:
+        err = _vet_script_file(str(script))
     assert swapped and descriptors
     assert err is not None and "cannot verify cron script path" in err
     assert "private content" not in err
-    _assert_descriptors_closed(descriptors)
+    _assert_descriptors_closed(descriptors, closed)
 
 
 def test_script_unknown_descriptor_path_is_refused_before_read(monkeypatch, tmp_path):
@@ -389,10 +423,11 @@ def test_script_unknown_descriptor_path_is_refused_before_read(monkeypatch, tmp_
 
     monkeypatch.setattr(mcp_cron, "fd_real_path", unavailable_fd_path)
     monkeypatch.setattr(os, "fdopen", _refuse_content_read)
-    err = _vet_script_file(str(script))
+    with _recording_closes(monkeypatch) as closed:
+        err = _vet_script_file(str(script))
     assert descriptors
     assert err is not None and "cannot verify cron script path" in err
-    _assert_descriptors_closed(descriptors)
+    _assert_descriptors_closed(descriptors, closed)
 
 
 class TestOversizedScriptIsRefusedNotTruncated:

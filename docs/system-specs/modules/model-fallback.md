@@ -27,7 +27,7 @@ is the shared derivation used by the fallback callers:
 `TestFallbackModelLoad` in `test/test_config_loader_agent_section.py` and
 `TestCoerceFallbackModel` in `test/test_role_models.py` pin the default,
 normalization, concrete-value ordering, and empty-value opt-out. The dashboard
-PATCH schema in `dashboard/handlers/core.py` applies the model-id grammar and
+PATCH schema in `dashboard/handlers/core_config_schema.py` applies the model-id grammar and
 `_validate_role_model`; that validator allows the automatic and empty values,
 rejects a known unusable concrete value, and permits a concrete value when no
 advertised-model set is available.

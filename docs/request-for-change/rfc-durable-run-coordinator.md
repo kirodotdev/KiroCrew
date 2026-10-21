@@ -80,10 +80,10 @@ across one very broad class and tested mostly through its private surface.
 
 Every run currently gets a folder containing `state.json`, `result.txt`, and,
 when terminal, `tombstone.json` (`src/kiro_crew/subagent_persistence.py:1-7`).
-Folder creation writes a running snapshot (`subagent_persistence.py:88-125`),
-updates rewrite that JSON (`132-147`), output appends to `result.txt`
-(`153-163`), and terminal classification writes a tombstone
-(`180-218`). Startup recovery scans non-tombstoned directories and infers what
+Folder creation writes a running snapshot (`create_agent_folder`),
+updates rewrite that JSON (`update_state`), output appends to `result.txt`
+(`write_result_chunk`), and terminal classification writes a tombstone
+(`write_tombstone`). Startup recovery scans non-tombstoned directories and infers what
 happened from PID liveness and result presence
 (`docs/system-specs/modules/subagent.md:447-490`).
 

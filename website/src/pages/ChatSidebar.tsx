@@ -127,7 +127,7 @@ function ChatSidebar({
   // to say which collection it means.
   slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
-  chatDropTarget, onDropSessionRef, staticRows, scrollPeek,
+  chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
@@ -561,15 +561,16 @@ function ChatSidebar({
   } = useLaneCycle({ lineageAvailable, boardLaneActive, folders, lane, setLanePersisted })
 
   const sidebarRootRef = useRef<HTMLDivElement>(null)
-  // Scroll peek (desktop list lanes only); see chat-sidebar/scrollPeek.
-  // Desktop-only by design (the narrow-viewport-required exemption): the peek
-  // draws a clipped title in full past the sidebar's edge, over the chat
-  // beside it. The phone sessions pane is a near-full-width drawer that leaves
-  // no room right of the pane for an overflowing title, and nothing beside it
-  // to draw over; there the row's `title` attribute and the rename box stay
-  // the path to the full string. The board lane has no list rows to peek.
+  // Scroll peek (list lanes of a sidebar with a chat beside it); see
+  // chat-sidebar/scrollPeek. Desktop-only by design (the
+  // narrow-viewport-required exemption): the peek draws a clipped title in
+  // full past the sidebar's edge, over the chat beside it. A host that fills
+  // its pane (the phone drawer, the sessions embed) has no chat beside it and
+  // no room right of the pane, so `fillsHost` turns the peek off; there the
+  // row's `title` attribute and the rename box stay the path to the full
+  // string. The board lane has no list rows to peek.
   const peekTitles = useSidebarScrollPeek({
-    enabled: fullTitlesOnScroll && !!scrollPeek && !isMobile && !boardLaneActive,
+    enabled: fullTitlesOnScroll && !fillsHost && !boardLaneActive,
     rootRef: sidebarRootRef,
     laneRef: laneScrollRef,
   })

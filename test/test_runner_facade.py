@@ -454,7 +454,7 @@ def test_the_test_tree_walk_reaches_every_collected_tree() -> None:
 
 
 def test_the_patch_scan_sees_the_facade_patches_it_must() -> None:
-    # test_taskq_runner_adapter.py pages the adoption sweep through _ADOPT_SCAN_PAGE, and
+    # test_taskq_runner_adapter_durability.py pages the adoption sweep through _ADOPT_SCAN_PAGE, and
     # test_taskrunner_taskq.py counts adopt_orphaned_rows calls; both are read by kept code.
     assert {"_ADOPT_SCAN_PAGE", "adopt_orphaned_rows"} <= _corpus_patched_names()
 

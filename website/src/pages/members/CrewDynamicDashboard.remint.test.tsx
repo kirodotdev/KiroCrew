@@ -113,9 +113,16 @@ describe('a re-minted document', () => {
     const newSrc = next.getAttribute('src')
     const { stub } = stubWindow(next)
 
-    act(() => beacon(stub, false))
-
-    await waitFor(() => expect(offscreen()).toBeNull())
+    // The ready beacon is a one-shot message: the component only acts on it when its
+    // staging effect has attached the listener and stageRef points at this frame, and
+    // a beacon dispatched before that settles is dropped with nothing to re-send it,
+    // so promotion never fires and the off-screen frame stays. Re-send inside waitFor
+    // until promotion takes -- a ready report is idempotent, like the staged-preview
+    // test below already relies on.
+    await waitFor(() => {
+      act(() => beacon(stub, false))
+      expect(offscreen()).toBeNull()
+    })
     // The SAME element moved on screen: a second element at the same url would load
     // the document again, which is the blank frame this exists to avoid.
     expect(visible()).toBe(next)
@@ -216,8 +223,15 @@ describe('a re-minted document', () => {
     const next = await screen.findByTestId('crew-dashboard-swap')
     const { stub, posted } = stubWindow(next)
 
-    act(() => beacon(stub, true))
-    await waitFor(() => expect(offscreen()).toBeNull())
+    // One-shot beacon: re-send inside waitFor until promotion lands, so a beacon that
+    // arrives before the staging listener is attached is not simply lost (see the
+    // "replaces the open frame" test). A ready report is idempotent; `before` is
+    // snapshotted only after promotion, so any re-sent posts are counted into the
+    // baseline rather than the +1 the next read must add.
+    await waitFor(() => {
+      act(() => beacon(stub, true))
+      expect(offscreen()).toBeNull()
+    })
     // The values the document missed while it loaded are posted into it as it comes up.
     expect(posted.map((m) => m.type)).toContain(DATA_MESSAGE_TYPE)
     const before = posted.length

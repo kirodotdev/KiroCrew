@@ -93,7 +93,7 @@ def test_no_owed_lane_reruns_nothing(monkeypatch, capsys):
     rec = _Recorder(monkeypatch, owed=[])
     assert MOD.republish(REPO, "7", HEAD) == 0
     assert rec.rerun_calls == []
-    assert "no advisory lane owes" in capsys.readouterr().out
+    assert "no whole-design lane owes" in capsys.readouterr().out
 
 
 def test_unreadable_gate_reruns_nothing(monkeypatch, capsys):

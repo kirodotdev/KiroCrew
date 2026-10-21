@@ -3212,7 +3212,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   repeat would time `re`'s compile cache rather than the translator, and the cheaper of
   two readings would let a stall that reproduces intermittently pass.
 - **A helper that counts WARNINGs over unfiltered `caplog.records` asserts on every thread
-  in the worker.** `test_taskq_runner_adapter.py`'s `_one_warning` demanded exactly one
+  in the worker.** `test_taskq_runner_adapter_durability.py`'s `_one_warning` demanded exactly one
   record while the test had scoped `at_level` to `kiro_crew.taskq.adapters.runner`; the
   second record was `kiro_crew.sandbox`'s mount-source sweep, finishing on the shared
   `mc-maint` executor seconds after the `SessionManager` test that armed it had torn down
@@ -3442,7 +3442,15 @@ that survives neither is the probe's.
   `test_a_nested_collection_reads_only_the_named_files` pins that only the named files
   reach `pytest_collect_file`. A Windows runner is slower at the per-entry `stat` and
   `relative_to` work this removes, so the saving is likely larger there; this pass did not
-  measure it on Windows.
+  measure it on Windows. What kept the Windows children at 44-64 s against about 4 s on
+  Linux was `test/conftest.py`'s Windows `collect_ignore` list (91 names): pytest's own
+  `pytest_ignore_collect` rebuilds a conftest ignore list into absolute paths for every
+  entry it is offered, before it reads `--ignore-glob`, and it walks `test/` (~5,400
+  entries) once per file argument, so each three-file child built ~1.47 million paths, one
+  `GetFullPathNameW` call each. A Linux child given the same list goes from 4 s to 17 s.
+  The list is now a frozenset behind the conftest's own `pytest_ignore_collect`
+  (`platform_collect_ignore_helpers.py`), which builds none, and
+  `test_platform_collect_ignore.py` pins that on every platform. The 60 s cap stays.
 - **Reading a claim's task after the POST names whichever task won the race.**
   `test_cron_manual_run_claim_window.py::test_the_manual_wrappers_backstop_leaves_a_replacement_claim_alone`
   took `first = svc._claims[job.id].task` after the route answered; when the first run's
@@ -3500,7 +3508,7 @@ that survives neither is the probe's.
 
 #### What not to re-derive
 
-`test_plugin_import.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
+`test_plugin_import_bounds.py::test_the_frontier_is_bounded_when_no_directory_carries_a_marker`
 took 101 s once (round 1) and 30-41 s after: a nested-pytest test on a loaded host, the
 same shape as the ipv6 one, left as is.
 `test_instances_proxy.py::TestProxyRequest::test_failed_exchange_sends_no_link_and_remints`

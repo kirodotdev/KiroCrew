@@ -63,7 +63,7 @@ def test_convergence_rules_the_skill_leans_on_are_present():
     assert (
         "A DEFERRAL is not an adjudication for security" in text
     ), "rule 5 (no deferral for security/data-loss/corruption) changed or moved"
-    assert "Deferral covers advisory-class findings" in text
+    assert "A deferral covers a defect with Anchor: defect only" in text
 
 
 def test_skill_states_the_dependency_and_the_three_line_shapes():
@@ -104,15 +104,13 @@ DESIGN_LANE_TEMPLATES = {
 }
 
 
-# The heading each lane files its CONCERNS-level items under. Design and UX
-# use `### Watch`; First Principles folds its items into `### Not justified as
-# shipped` (one entry per item, carrying its own `Clears when:` /
-# `Subtraction:` lines) and emits no Watch or Subtractions section, so that a
-# finding is stated once. Both headings are on the extractor's allowlist.
+# Every whole-design lane files its items under `### Blockers` (a BLOCK lists a
+# Trigger, an Outcome and a Clears-when line for each) and may add a `### Notes`
+# block that no reader treats as an item.
 DESIGN_LANE_ITEM_HEADINGS = {
-    "DESIGN": "### Watch",
-    "UX": "### Watch",
-    "FIRST-PRINCIPLES": "### Not justified as shipped",
+    "DESIGN": "### Blockers",
+    "UX": "### Blockers",
+    "FIRST-PRINCIPLES": "### Blockers",
 }
 
 
@@ -124,17 +122,23 @@ def test_each_whole_design_lane_still_emits_the_anchors_the_extractor_reads():
         assert heading in text, f"{lane}: the {heading} section heading moved"
         assert "### Blockers" in text, f"{lane}: the Blockers section heading moved"
         assert f"[{lane}-REVIEWED]" in text, f"{lane}: the freshness stamp moved"
-    # First Principles must not grow the restating sections back: they are
-    # what buried its findings under three copies of the same item.
-    fp = DESIGN_LANE_TEMPLATES["FIRST-PRINCIPLES"][0].read_text(encoding="utf-8")
-    assert "### Watch" not in fp
-    assert "### Subtractions" not in fp
+    # No lane grows the restating or soft sections back: they are what buried
+    # findings under copies of the same item, and the soft tier is gone.
+    for lane, (path, _key) in DESIGN_LANE_TEMPLATES.items():
+        text = path.read_text(encoding="utf-8")
+        assert "### Watch" not in text, lane
+        assert "### Subtractions" not in text, lane
+        assert "### Suggestions" not in text, lane
+        assert "### Not justified as shipped" not in text, lane
+        assert "### Notes" in text, lane
 
 
 def test_the_extractor_allowlist_covers_the_shared_item_sections():
     contract = CONTRACT.read_text(encoding="utf-8")
-    for section in ("Blockers", "Watch", "Subtractions", "Suggestions"):
-        assert f'"{section}"' in contract, section
+    assert 'DESIGN_ITEM_SECTIONS = ("Blockers",)' in contract
+    for retired in ("Watch", "Subtractions", "Suggestions", "Not justified as shipped"):
+        assert f'"{retired}"' not in contract, retired
+    assert '"Notes"' not in contract
     # Deliberately EXCLUDED: an inventory line and an evidence note are not
     # items an author rules on one by one.
     assert "What this change ships" in (
@@ -144,10 +148,11 @@ def test_the_extractor_allowlist_covers_the_shared_item_sections():
     assert '"Evidence gaps"' not in contract
 
 
-def test_the_skill_states_the_local_only_scope_of_the_concerns_stop():
-    """The stop is the LOCAL loop's, never the required status: CONCERNS stays
-    advisory server-side, and SKILL.md has to say so or a reader will expect a
-    red check that never comes."""
+def test_the_skill_says_a_block_is_answered_and_a_note_needs_no_reply():
+    """A BLOCK blocks readiness and is fixed, rebutted or overridden; a PASS and a
+    `Notes:` bullet need no reply. SKILL.md has to say so, or a reader will expect a
+    soft tier, and there is none."""
     skill = SKILL.read_text(encoding="utf-8")
-    assert "unanswered CONCERNS" in skill
-    assert "required status" in skill
+    assert "It never stays unanswered." in skill
+    assert "A PASS, and every `Notes:` bullet, needs no reply." in skill
+    assert "CONCERNS" not in skill

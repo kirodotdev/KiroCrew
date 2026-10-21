@@ -15,12 +15,34 @@
 export function findCoords(content: string, selected: string): { line: number; column: number } | undefined {
   if (!selected) return undefined
   const idx = content.indexOf(selected)
-  if (idx < 0) return undefined
+  return idx < 0 ? undefined : coordsAt(content, idx)
+}
+
+/** 1-based (line, column) of character `idx` of `content`. */
+function coordsAt(content: string, idx: number): { line: number; column: number } {
   const before = content.slice(0, idx)
   const nl = before.lastIndexOf('\n')
   const line = (before.match(/\n/g)?.length ?? 0) + 1
   const column = (nl < 0 ? idx : idx - nl - 1) + 1
   return { line, column }
+}
+
+/** `needle`'s position in `content` when it occurs once. */
+function uniqueCoords(content: string, needle: string): { line: number; column: number } | undefined {
+  const at = content.indexOf(needle)
+  if (at < 0 || at !== content.lastIndexOf(needle)) return undefined
+  return coordsAt(content, at)
+}
+
+/**
+ * Where the first visible character of `selected` sits in `content`, or undefined when
+ * its first row is absent or occurs more than once. Only the first row is looked up
+ * because rendered line separators and source prefixes can differ.
+ */
+export function findUniqueCoords(content: string, selected: string): { line: number; column: number } | undefined {
+  const text = selected.trimStart()
+  const row = text.split('\n')[0].trimEnd()
+  return uniqueCoords(content, row)
 }
 
 /**

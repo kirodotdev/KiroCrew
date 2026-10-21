@@ -258,7 +258,7 @@ class TestSubagentWiring:
         assert subagent._subagent_default_model() == "haiku-4.5"
 
 
-# ── set-time validation (core.py) ────────────────────────────────────────────
+# ── set-time validation (core_config_models.py) ──────────────────────────────
 class TestValidateRoleModel:
     def _req(self):  # minimal stand-in; validator only touches app["state"]
         return object()

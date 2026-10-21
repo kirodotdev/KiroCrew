@@ -17,7 +17,7 @@ What is pinned, over ``_run_chat`` and every owner function whose first paramete
   by its copy onto the turn, unless the store is itself that read (``x = turn.x``);
 * a name a closure writes is never bare, so it is never aliased either;
 * no closure of the turn declares a ``nonlocal``;
-* after a function awaits a phase (a ``_turn_*`` coroutine), a name the phase may have
+* after a function awaits a phase (a ``_turn_*`` or ``_on_*`` coroutine), a name the phase may have
   changed on the turn is read bare only after its reload (``x = turn.x``), on every path to
   the read, an exception's included;
 * reading a value the turn never set raises ``UnboundLocalError``.
@@ -508,12 +508,12 @@ def _bare_reads(nodes: list[ast.AST]) -> Iterator[ast.Name]:
 
 
 def phase_writes(functions: list[tuple[str, ast.AST]]) -> dict[str, frozenset[str]]:
-    """What each phase (an async ``_turn_*`` owner function) may leave changed on the turn: its
-    own ``turn.x`` stores, copies included, and those of every phase it awaits."""
+    """What each phase (an async ``_turn_*`` or ``_on_*`` owner function) may leave changed on
+    the turn: its own ``turn.x`` stores, copies included, and those of every phase it awaits."""
     phases = {
         name: fn
         for name, fn in functions
-        if isinstance(fn, ast.AsyncFunctionDef) and name.startswith("_turn_")
+        if isinstance(fn, ast.AsyncFunctionDef) and name.startswith(("_turn_", "_on_"))
     }
     own = {
         name: frozenset(
@@ -707,6 +707,14 @@ def test_no_read_after_a_phase_sees_a_value_the_phase_replaced() -> None:
     functions = list(_functions())
     writes = phase_writes(functions)
     assert "_turn_open" in writes, "the turn's opening phase moved; this check went stale"
+    arms = {
+        "_on_tool_call",
+        "_on_tool_call_update",
+        "_on_tool_result",
+        "_on_permission_request",
+        "_on_permission_prompt",
+    }
+    assert arms <= set(writes), sorted(arms - set(writes))
     found, calls = [], []
     for name, fn in functions:
         rule = StaleReads(writes)

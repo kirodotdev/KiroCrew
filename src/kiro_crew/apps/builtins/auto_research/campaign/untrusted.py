@@ -14,7 +14,11 @@ import uuid
 from typing import Any
 
 try:
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import (  # noqa: F401 - pinned by test_auto_research_campaign_contract.py
+        redact,
+        redact_credentials,
+        redact_exfiltration_urls,
+    )
 
     _HAS_SECURITY = True
 except ImportError:
@@ -66,9 +70,7 @@ def _redact_finding(finding: dict) -> dict:
         return {k: _mask(v) for k, v in finding.items()}
 
     def _redact_str(s: str) -> str:
-        cleaned, _ = redact_credentials(s)
-        cleaned, _ = redact_exfiltration_urls(cleaned)
-        return cleaned
+        return redact(s)
 
     def _redact_value(val: Any) -> Any:
         if isinstance(val, str):

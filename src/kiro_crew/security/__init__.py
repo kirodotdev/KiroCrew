@@ -67,6 +67,7 @@ from . import (
     redaction,
     rm_floor,
     shell_normalizer,
+    stream_aws_anchor,
     vocabulary,
 )
 

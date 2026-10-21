@@ -142,7 +142,7 @@ guard, an approval tier — then no verdict is available to you, and:
 - You MUST NOT report `PASS` on the strength of an empty adjudicated set. "No
   confirmed regressions" over a guard nothing could classify is not evidence, and
   reporting it as one is the false green this lane exists to prevent.
-- The honest verdict there is `CONCERNS`, with the gap named.
+- The honest verdict there is `PASS` with the gap named in the Reason and under `UNADJUDICATED`, unless you can demonstrate the gap with the call path, and then it is a `BLOCK`.
 
 Likewise, per platform — and note WHICH half of the lane owns that statement.
 You cannot say whether a platform obtained a verdict: the adjudication legs run
@@ -189,7 +189,9 @@ OUTPUT CONTRACT (emit verbatim; the gate parses these lines)
 NO preamble, NO diff restatement, NO methodology narration, NO praise, NO end
 summary. The review is these sections and nothing else:
 
-    Scope-Verdict: <PASS | CONCERNS | BLOCK>
+    Scope-Verdict: <PASS | BLOCK>
+
+    Reason: <one to three sentences: why it passes, or the core problem>
 
     TIGHTENING: <the mechanism that got stricter> -- <the ONE threat it refuses,
     quoting the hunk it lives in>
@@ -212,14 +214,15 @@ summary. The review is these sections and nothing else:
     you could not get a verdict for.>
 
 Verdict rules, and they are not yours to bend:
-- `BLOCK` requires EITHER at least one script-confirmed regression, OR a platform
-  gap you can demonstrate with the call path. Nothing else earns it.
-- `CONCERNS` is the verdict for an unadjudicated guard, a platform assumption
-  your candidates do not cover, or a narrowing you can argue but not confirm.
-- `PASS` requires the tightening to have been adjudicated, with candidates
-  covering every platform spelling the diff assumes, and zero confirmed
-  regressions. It never rests on a platform verdict you assert yourself — you have
-  none to assert.
+- There are two verdicts. `BLOCK` requires EITHER at least one script-confirmed
+  regression (its `REGRESSION` entry is the Trigger, in `Who loses it:`, and the
+  Outcome, in `Refused by:`), OR a platform gap you can demonstrate with the call
+  path. Nothing else earns it.
+- `PASS` means no confirmed regression and no demonstrated gap. A guard you could
+  not adjudicate, a platform assumption your candidates do not cover, or a
+  narrowing you can argue but not confirm is NAMED, in the Reason and under
+  `UNADJUDICATED`, and does not block. `PASS` never rests on a platform verdict
+  you assert yourself — you have none to assert.
 - You cannot clear a script-confirmed regression by reasoning about it. The
   harness reds on the script's verdict whatever you write; a `PASS` over a
   confirmed row is a contradiction the gate will publish.

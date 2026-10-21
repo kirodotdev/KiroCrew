@@ -234,18 +234,69 @@ export function findUnreferencedAttachments(text: string, orderedFiles: string[]
  * image-free), and a row whose markdown already names the path is left alone,
  * so a healed row and a freshly sent one draw identically.
  */
+// Characters that break CommonMark's UNWRAPPED destination grammar: ASCII
+// whitespace/control, and `(`/`)` (an unbalanced paren ends the destination
+// early). A literal `%` is NOT in this set -- `%` is an ordinary destination
+// character to the parser (confirmed: `remark-parse` returns
+// `/a%20copy.png` untouched as the image `url`), and the real img-src sink
+// (ImgWithFallback) keys its decode on whether the SOURCE TEXT was
+// `<...>`-wrapped, not on `%`'s presence -- so an unwrapped `%` destination
+// already resolves to the exact, byte-identical on-disk path today. Only
+// this grammar-breaking subset makes a raw `](path)` spelling unparseable
+// and in need of repair; `mdImageDest` itself still escapes `%` (to `%25`)
+// for freshly-produced wrapped destinations, which is a separate concern
+// from what already renders.
+const BREAKS_UNWRAPPED_DEST_RE = /[\s()]/
+
+/** Whether `p`'s raw, unwrapped `](p)` spelling is NOT a destination
+ *  CommonMark can parse -- the condition restoreUnreferencedImages repairs.
+ *  Narrower than "mdImageDest(p) !== p": a path whose only escape-worthy
+ *  character is `%` still parses fine unwrapped and must be left alone. */
+function needsDestRepair(p: string): boolean {
+  return BREAKS_UNWRAPPED_DEST_RE.test(normalizeWindowsPath(p))
+}
+
 export function restoreUnreferencedImages(content: string, meta?: Record<string, unknown>): string {
   const files = Array.isArray(meta?.files) ? (meta.files as unknown[]).filter((p): p is string => typeof p === 'string') : []
-  // "Named" means the path is an actual markdown DESTINATION -- `](dest)` --
-  // in either the raw or the mdImageDest-wrapped spelling. A bare substring
-  // test would let a caption that merely mentions the path in prose
-  // ("compare with /tmp/a.png") suppress the restore, and the picture would
-  // stay missing on exactly the row this exists to heal.
-  const named = (p: string) => [p, mdImageDest(p)].some(d => content.includes(`](${d})`))
+  let out = content
+  // A path needs wrapping when its raw spelling breaks CommonMark's unwrapped
+  // destination grammar (a space, `(`, `)`): then its RAW `](path)` spelling is
+  // not a destination CommonMark can parse, so a stored `![image](/a b.png)`
+  // line renders as the literal markdown source instead of the picture (issue
+  // #22401 - a data home or uploads dir with a space in it is the common
+  // trigger). An older surface that emitted the raw path (before mdImageDest),
+  // or any content that reached us unwrapped, leaves exactly such a broken
+  // line. Repair it in place to the wrapped form the renderer draws, so the
+  // fix also heals rows already on disk. A path whose only unsafe character is
+  // `%` is deliberately excluded (needsDestRepair) -- it already renders.
+  for (const p of files) {
+    if (!IMG_EXT.test(p) || !needsDestRepair(p)) continue
+    const dest = mdImageDest(p)
+    if (dest === p) continue // already a safe, renderable destination
+    out = out.split(`](${p})`).join(`](${dest})`)
+  }
+  // "Named" means a RENDERABLE `](dest)` destination is present. Two spellings
+  // can legitimately be in `out` for the same path, and both must count:
+  //  - the wrapped `mdImageDest(p)` form -- what every live producer writes
+  //    for any path outside the safe subset (non-ASCII, `+`, `,`, `'`, `&`,
+  //    `%`, a space, parens, ...), and what the repair loop above rewrites a
+  //    broken grammar-breaking line to;
+  //  - the raw unwrapped `p` form -- correct for a safe path (mdImageDest(p)
+  //    === p, so the two spellings coincide), and for a %-only path, which
+  //    the repair loop deliberately leaves unwrapped because it already
+  //    renders (see needsDestRepair above). A grammar-breaking path never
+  //    reaches this unwrapped check as "named", because any broken raw
+  //    occurrence was already rewritten to the wrapped form above.
+  //  Checking ONLY the unwrapped form (as a prior revision of this fix did)
+  //  missed every producer-wrapped non-%-only path (café.png, a+b.png, ...)
+  //  and duplicated the image on every render (Design Review BLOCK). A bare
+  //  substring test is deliberately avoided: a caption that merely mentions
+  //  the path in prose ("compare with /tmp/a.png") must not suppress it.
+  const named = (p: string) => out.includes(`](${mdImageDest(p)})`) || (!needsDestRepair(p) && out.includes(`](${p})`))
   const missing = files.filter(p => IMG_EXT.test(p) && !named(p))
-  if (!missing.length) return content
+  if (!missing.length) return out
   const imgMd = missing.map(p => `![image](${mdImageDest(p)})`).join('\n')
-  return [imgMd, content].filter(Boolean).join('\n\n')
+  return [imgMd, out].filter(Boolean).join('\n\n')
 }
 
 /** Every `@rel` spelling the send path accepts for `p`: its trailing path

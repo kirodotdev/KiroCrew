@@ -62,7 +62,8 @@ coalesced fold batch, so counting against zero is what keeps that first turn). E
 other first sight -- a resumed session (``opened_ts`` predates install), or an evicted
 session seen again (its ``opened_ts`` is at most the evicted maximum) -- is BASELINED:
 its render becomes the floor and nothing is emitted, so no restart or eviction replay
-re-adds a total already exported.
+re-adds a total already exported. The S2 session-tree counters ride the same "new"
+test.
 
 THE RULE IS NEVER OVER-COUNT, AND EVERY UNDER-COUNT IS NAMED. There are three, all in
 the fail-safe direction, and a reader of these counters is owed all three rather than a
@@ -205,6 +206,23 @@ SESSION_STARTED_METRIC: Final[str] = "kirocrew.crew.session.started"
 #: conductor sessions and worker sessions can be told apart.
 TURN_STARTED_METRIC: Final[str] = "kirocrew.crew.turn.started"
 
+#: ``kirocrew.crew.session.tree.depth`` -- one COUNTER add per session whose
+#: ``session/opened`` recorded a depth (how many creators stood above it in the session
+#: tree), attributed by ``depth`` in the closed bucket set ``0`` / ``1`` / ``2`` / ``3+``
+#: (:data:`~kiro_crew.crew_log.otel_session_tree_fold.DEPTH_BUCKETS`). A counter per
+#: bucket label rather than a histogram, so the distribution survives backends that do
+#: not keep explicit histogram buckets.
+SESSION_TREE_DEPTH_METRIC: Final[str] = "kirocrew.crew.session.tree.depth"
+
+#: ``kirocrew.crew.session.tree.child`` -- one COUNTER add per child session a creator
+#: makes, attributed by ``parent_kind`` (the creator session's closed ``agent_kind``, the
+#: same set ``session.started`` uses) and by ``nth``, the child's ordinal among its
+#: creator's children, in the closed bucket set ``1`` / ``2`` / ``3`` / ``4-7`` / ``8+``
+#: (:data:`~kiro_crew.crew_log.otel_session_tree_fold.NTH_BUCKETS`). The number of
+#: creators with at least ``k`` children is the sum of the adds at ``nth >= k``, so the
+#: width distribution is read off a counter without waiting for a creator to end.
+SESSION_TREE_CHILD_METRIC: Final[str] = "kirocrew.crew.session.tree.child"
+
 
 def _otel_usage_diff(
     previous: "Mapping[str, Any] | None", current: Mapping[str, Any]
@@ -302,12 +320,91 @@ def _agent_kind_attr(render: Mapping[str, Any]) -> str:
     return kind
 
 
+def _otel_session_tree_diff(
+    previous: "Mapping[str, Any] | None", current: Mapping[str, Any]
+) -> "list[Metric]":
+    """The depth and child counter adds owed by one session's ``otel_session_tree``
+    render.
+
+    ``previous is None`` is the FIRST sight of the session in this process (see
+    :class:`UsageExporter`), and it follows the same rule ``_otel_usage_diff`` does:
+
+    - A session this process can prove is NEW (:func:`_opened_in_this_process`) is
+      counted WHOLE against zero: one depth add when its ``session/opened`` carried a
+      depth, and one child add for every ``session/spawned`` already in this first
+      render.
+    - A session NOT provably new (resumed, or opened no later than an evicted session)
+      is BASELINED: its render becomes the floor and nothing is emitted, so a restart
+      or an eviction replay never re-adds a depth or a child already exported.
+
+    A later delivery (``previous`` not ``None``) emits no depth add -- the depth is
+    counted once per session -- and one child add per ordinal its ``children`` total
+    moved past since the stored floor, bucketed by
+    :func:`~kiro_crew.crew_log.otel_session_tree_fold.nth_bucket_counts`. The fold
+    keeps that total across restarts in its savepoint, so the ordinal stays the
+    child's true position among its creator's children; only the adds in a resumed
+    creator's first post-restart delivery are lost to the baseline, the same bounded
+    under-count the turn counter carries.
+    """
+    from kiro_crew.crew_log.otel_session_tree_fold import depth_bucket, nth_bucket_counts
+
+    metrics: "list[Metric]" = []
+    first_sight = previous is None
+    is_new = first_sight and _opened_in_this_process(current.get("opened_ts"))
+    if first_sight and not is_new:
+        return metrics
+    if is_new:
+        depth = current.get("depth")
+        if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0:
+            metrics.append(
+                Metric(
+                    SESSION_TREE_DEPTH_METRIC,
+                    1,
+                    {"depth": depth_bucket(depth)},
+                )
+            )
+    prev: Mapping[str, Any] = previous if isinstance(previous, Mapping) else {}
+    before = _child_total(prev)
+    after = _child_total(current)
+    if after > before:
+        # The creator's own closed kind, read through the same backstop the usage
+        # counters use, so a damaged render cannot put an unbounded value here.
+        parent_kind = _agent_kind_attr({"opened_agent_kind": current.get("agent_kind")})
+        for label, count in nth_bucket_counts(before, after):
+            metrics.append(
+                Metric(
+                    SESSION_TREE_CHILD_METRIC,
+                    count,
+                    {"parent_kind": parent_kind, "nth": label},
+                )
+            )
+    return metrics
+
+
+def _child_total(render: Mapping[str, Any]) -> int:
+    """The ``children`` count of one ``otel_session_tree`` render, ``0`` when absent or
+    malformed."""
+    value = render.get("children")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0
+
+
 #: Every usage fold this export subscribes to. ONE ROW PER FOLD -- a later story
-#: (S2's session tree, a later work-ledger story) adds its own session-keyed row here
-#: with its own ``diff``, and nothing else in this module changes:
-#: :func:`on_fold_advanced` dispatches by the event's fold name, so a new row is live
-#: the moment it is added. This is the file-plus-tuple a later story extends.
-_EXPORTERS: Final[tuple[UsageExporter, ...]] = (UsageExporter("otel_usage", _otel_usage_diff),)
+#: A new session-keyed usage fold adds its own row here with its own ``diff``, and
+#: nothing else in this module changes: :func:`on_fold_advanced` dispatches by the
+#: event's fold name, so a new row is live the moment it is added. ``otel_session_tree``
+#: is the source of the session-tree depth and child counters; the roots metric is NOT
+#: here because its source is the whole session tree, which no session-keyed
+#: ``FoldAdvanced`` carries
+#: -- it is an observable gauge read at collect time
+#: (:func:`kiro_crew.crew_log.otel_session_tree_roots.register_session_tree_gauge`,
+#: registered from :mod:`kiro_crew.metrics.provider` the same way the inventory and
+#: process gauges are).
+_EXPORTERS: Final[tuple[UsageExporter, ...]] = (
+    UsageExporter("otel_usage", _otel_usage_diff),
+    UsageExporter("otel_session_tree", _otel_session_tree_diff),
+)
 
 
 # --------------------------------------------------------------------------- #

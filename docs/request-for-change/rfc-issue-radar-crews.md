@@ -361,7 +361,7 @@ own usage shards (3,241 records over 10 days):
 
 Anything appended to `slot.messages` **accumulates**: a nudge is appended as a user
 message (`state_parts/chat_slot.py`, `enqueue_or_run_prompt`), and so is a tool result
-(`dashboard/chat_runner.py`). A brief re-sent on all ~80 turns of a day is therefore
+(`dashboard/chat_turn/tool_results.py`). A brief re-sent on all ~80 turns of a day is therefore
 present ~80 times, costing about 0.5·N² ≈ **3,200 credits/day/crew** — three times
 the entire real session above. Reading it from a file each turn is worse still: the
 tool result accumulates identically *and* costs an extra full-context round-trip.
@@ -488,7 +488,7 @@ which is also astronomically correct. Uniqueness is enforced server-side on crea
 All crews run allow-all-tools and unattended. What that means, and what is left:
 
 **Still enforced in code.** The PreToolUse hook path fires independently of
-`allowedTools` (the PreToolUse path in `dashboard/chat_runner.py` — `allowedTools` skips *approval*, not the
+`allowedTools` (the PreToolUse paths in `dashboard/chat_turn/tool_rows.py` and `tool_approval.py` — `allowedTools` skips *approval*, not the
 hook), so Kiro Crew's own policy still hard-refuses destructive commands,
 force-pushes to protected branches, and credential-file reads. Branch protection
 keeps crews off `main`. Every PR needs human approval before merge, so nothing

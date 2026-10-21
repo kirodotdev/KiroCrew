@@ -38,7 +38,7 @@ from kiro_crew import (
     platform_compat,
     runtime_death,
 )
-from kiro_crew.acp import runtime_process_tree
+from kiro_crew.acp import kas_secret_storage, runtime_process_tree
 from kiro_crew.acp import runtime_session_create as _rt_create
 from kiro_crew.acp import runtime_session_load as _rt_load
 from kiro_crew.acp import runtime_session_setup as _rt_setup
@@ -449,6 +449,8 @@ _MCP_SIGN_IN_TIMEOUT = 630.0
 _MCP_REATTEMPT_TIMEOUT = 75.0
 # JSON-RPC server-error code for a consent URL Crew did not show anyone.
 _MCP_URL_NOT_OPENED = -32000
+# JSON-RPC server-error code for a ``_kiro/secret/*`` request Crew refused.
+_MCP_SECRET_REFUSED = -32000
 
 
 class _PendingRequests(dict):
@@ -513,8 +515,9 @@ def _sanitize_progress_name(name: str) -> str:
     Whitespace collapse and the control strip run AFTER redaction so a
     redaction marker cannot reintroduce a break.
     """
-    scrubbed, _ = redact_exfiltration_urls(name)
-    scrubbed, _ = redact_credentials(scrubbed)
+    from kiro_crew.security import redact
+
+    scrubbed = redact(name)
     return _strip_unprintable(" ".join(scrubbed.split()))[:_MCP_PROGRESS_NAME_LEN_CAP]
 
 
@@ -969,6 +972,10 @@ class AcpRuntime:
         # read by the reader loop: a credential callback is answered from the
         # vault only on a process that was spawned expecting it.
         self._kas_host_auth = False
+        # Answers this process's ``_kiro/secret/*`` requests when its handshake
+        # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
+        # otherwise, and those requests then get -32601. Set at each handshake.
+        self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
         # First answered credential callback per runtime is logged at INFO as a
         # positive "the engine is drawing its credential from Crew" signal; later
         # ones (the engine refreshes ahead of expiry) drop to DEBUG.
@@ -2248,7 +2255,11 @@ class AcpRuntime:
                 # because a filesystem syscall on this loop stalls every
                 # multiplexed session. It never raises -- see
                 # kiro_crew.acp._frame_record.
-                if self.recording_allowed:
+                # A secret-storage frame is never recorded: its value is an MCP
+                # OAuth grant, and the recorder's redaction is best-effort.
+                if self.recording_allowed and not kas_secret_storage.is_secret_method(
+                    data.get("method")
+                ):
                     await record_frame(self._acp_backend, data, len(line))
 
                 projection = getattr(self, "_native_skill_projection", None)
@@ -2356,6 +2367,25 @@ class AcpRuntime:
                     )
                     self._answer_tasks.add(_url_task)
                     _url_task.add_done_callback(self._answer_tasks.discard)
+                    continue
+                # The engine's MCP sign-in store, answered only on a process whose
+                # handshake declared secretStorage; otherwise -32601 below.
+                if (
+                    msg.id is not None
+                    and msg.result is None
+                    and msg.error is None
+                    and kas_secret_storage.is_secret_method(msg.method)
+                    and self._mcp_secret_server is not None
+                ):
+                    if not await self._wait_for_answer_capacity(msg, request_kind="MCP secret"):
+                        continue
+                    _secret_task = asyncio.ensure_future(
+                        self._answer_secret_request(
+                            self._mcp_secret_server, msg.id, msg.method or "", msg.params
+                        )
+                    )
+                    self._answer_tasks.add(_secret_task)
+                    _secret_task.add_done_callback(self._answer_tasks.discard)
                     continue
                 # Any other request that arrives without a sessionId is
                 # unroutable and is answered -32601 by
@@ -2813,6 +2843,32 @@ class AcpRuntime:
         except AcpRuntimeDead:
             return
 
+    async def _answer_secret_request(
+        self,
+        server: kas_secret_storage.SecretStorageServer,
+        request_id: int | str,
+        method: str,
+        params: Any,
+    ) -> None:
+        """Answer one ``_kiro/secret/*`` request from *server*, off the reader loop.
+
+        A refusal goes back as a JSON-RPC error whose message names only the
+        category; the request's value is never logged.
+        """
+        try:
+            result = await server.answer(method, params)
+        except kas_secret_storage.SecretStorageRefused as exc:
+            logger.info("MCP grant store request refused: %s", exc)
+            try:
+                await self.send_error(request_id, _MCP_SECRET_REFUSED, str(exc))
+            except AcpRuntimeDead:
+                pass
+            return
+        try:
+            await self.send_response(request_id, result)
+        except AcpRuntimeDead:
+            return
+
     async def _answer_ownerless_request(self, request_id: int | str, method: str) -> None:
         """Answer a server→client request that names no session with -32601.
 
@@ -2908,8 +2964,9 @@ class AcpRuntime:
         if not self._stderr_lines:
             return ""
         tail = "\n".join(self._stderr_lines)
-        tail, _ = redact_exfiltration_urls(tail)
-        tail, _ = redact_credentials(tail)
+        from kiro_crew.security import redact
+
+        tail = redact(tail)
         return tail
 
     @property
@@ -3067,8 +3124,9 @@ class AcpRuntime:
         # the SEL, the debug line lands in the gateway log -- so redact before
         # either, and before any cut, which then cannot split a secret into a
         # half the redactor fails to recognise.
-        tail, _ = redact_credentials(tail)
-        tail, _ = redact_exfiltration_urls(tail)
+        from kiro_crew.security import redact
+
+        tail = redact(tail)
         last = next((ln for ln in reversed(tail.splitlines()) if ln.strip()), "")
         if last:
             logger.debug(
@@ -3230,8 +3288,9 @@ class AcpRuntime:
         # which persists to sandbox-visible crons.json. Child stderr is
         # external-subprocess output that can carry credential material
         # (same treatment as the send-path's 'ACP process exited' detail).
-        tail, _ = redact_exfiltration_urls(tail)
-        tail, _ = redact_credentials(tail)
+        from kiro_crew.security import redact
+
+        tail = redact(tail)
         # Retain the summary for death_summary(): consumers that learn of the
         # death only through a poisoned queue (a live turn's frame wait) can
         # then attach WHO/WHY to their own error instead of raising bare.
@@ -4055,8 +4114,9 @@ class AcpRuntime:
                 # A failed server's error text can carry connection strings or
                 # tokens from its startup, so it takes the same scrub the
                 # dashboard banner applies before it lands in an exception.
-                err, _ = redact_exfiltration_urls(str(params.get("error") or ""))
-                err, _ = redact_credentials(err)
+                from kiro_crew.security import redact
+
+                err = redact(str(params.get("error") or ""))
                 err = _strip_unprintable(" ".join(err.split()))[:_MCP_PROGRESS_ERROR_CAP]
                 if name not in failed:
                     failed.append(name)

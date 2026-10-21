@@ -31,8 +31,8 @@ A bundle carries the crewmate's shape: name, description, avatar, rules, skill r
 
 ### Current state
 
-- **There is no one-crewmate export.** `GET /api/portability/export` (`create_export_zip` in `portability.py`, route in `dashboard/routes/taskrunner.py`) writes the whole install. Its Merge import installs `config.json` only when absent (`_merge_settings` in `portability.py`), so it cannot add one crewmate to a running install.
-- **Template bundling exists inside that zip and is the closest reusable piece.** `placeholder_mcp_values` (`portability.py`) replaces every MCP `env`, `headers` and `oauth.clientSecret` value with a placeholder and keeps the keys. `_install_agent_templates` (`portability.py`) writes each template with `O_EXCL` and runs `sanitize_agent_config_governance` (`portability.py`) so `allowedTools` and `autoApprove` are cut to this host's ceiling.
+- **There is no one-crewmate export.** `GET /api/portability/export` (`create_export_zip` in `portability_stream.py`, route in `dashboard/routes/taskrunner.py`) writes the whole install. Its Merge import installs `config.json` only when absent (`_merge_settings` in `portability.py`), so it cannot add one crewmate to a running install.
+- **Template bundling exists inside that zip and is the closest reusable piece.** `placeholder_mcp_values` (`portability_templates.py`) replaces every MCP `env`, `headers` and `oauth.clientSecret` value with a placeholder and keeps the keys. `_install_agent_templates` (`portability_templates.py`) writes each template with `O_EXCL` and runs `sanitize_agent_config_governance` (`portability_templates.py`) so `allowedTools` and `autoApprove` are cut to this host's ceiling.
 - **Apps cannot create a crewmate.** `POST /api/agents` runs `_require_owner(request, "agent.create")` (`_api_kirocrew_agents_create` in `dashboard/agent_admin/crew_records.py`). The template read `GET /api/agents/detail/{name}` is also owner-only (`api_agent_detail` in `dashboard/agent_admin/agent_detail.py`). An App Kit manifest can register namespaced agent templates, skills and crons (`docs/app-kit/manifest-reference.md`, `_register_agents` in `apps/bridges_agents.py`), never a crew record.
 - **An owner-press path for creating a crewmate already exists for agents.** The change-card kind `crewmate.create` (`KIND_CREWMATE_CREATE` in `change_card_catalog.py`) builds a plan against the owner routes `POST /api/agents` and `PUT /api/members/{slug}/goals/long-term` (`build_preview` in `change_card_catalog.py`). `change_card_middleware` refuses an app token, an internal-secret caller or an agent on those routes (`dashboard/handlers/change_cards.py` module docstring; route set `HOOKED_ROUTES`, `change_card_catalog.py`). The guide action `crewmate.create` (`guide_catalog.py`) follows the same rule: "The crewmate is created only by the human's own click on the existing owner-only `POST /api/agents`."
 - **No MCP tool or App SDK call exports or imports a crewmate.**
@@ -126,7 +126,7 @@ Rules on the file:
 - Every JSON entry is UTF-8. Every key set is exact: an unknown key refuses the bundle.
 - `formatVersion` is an integer. A reader accepts only versions it knows. A newer version refuses with "this file needs a newer Kiro Crew". Any added field bumps the version, so a reader never guesses at a field it does not know.
 - `agent.json` holds no `prompt` or `tools` content beyond defaults, because the worker base is source-defined (mate-owned config RFC §5.1).
-- Every MCP `env`, `headers` and `oauth.clientSecret` value in `agent.json` is the placeholder `placeholder_mcp_values` writes (`portability.py`). Keys stay so the card can list what the receiver fills in.
+- Every MCP `env`, `headers` and `oauth.clientSecret` value in `agent.json` is the placeholder `placeholder_mcp_values` writes (`portability_templates.py`). Keys stay so the card can list what the receiver fills in.
 - `agent.json` carries no `allowedTools`, `autoApprove` or `permissions` grant. Export drops them; import refuses a bundle that carries one.
 - `skills` are references by name and source. A bundle carries no skill code (open question 2).
 - `modelHint` is a hint. The card shows it; a model this host lacks falls back to the host default and the card says so.
@@ -137,7 +137,7 @@ What a bundle never carries:
 
 | Left out | Why |
 |---|---|
-| `.env`, `.local_secret`, keys, any `EXPORT_EXCLUDE` name (`portability.py`) | credentials |
+| `.env`, `.local_secret`, keys, any `EXPORT_EXCLUDE` name (`portability_archive.py`) | credentials |
 | MCP secret values | credentials; placeholders only |
 | memory DB, lessons, briefing | memory is identity: a store is owned by one `member_id` and `memory_stores.py` fails closed on a mismatch |
 | transcripts, activity log, DM bindings | private history and runtime state |
@@ -180,7 +180,7 @@ The press applies an ordered plan through existing owner routes, the same way `c
 1. `POST /api/agents` creates the record with `approval_mode: "normal"` in the same write. The create path mints a fresh `member_id` (`memory_stores._allocate_member_id`), an empty memory store and its own workspace. The mode rides on the create because an unset mode resolves to `trust` (`MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE` in `config/sections_agent_fields.py`), and `_api_kirocrew_agents_create` takes no `approval_mode`. Phase 1 adds that one optional create field, validated against `MEMBER_APPROVAL_MODES`. No imported crewmate exists for any moment in `trust`.
 2. The mate-owned file `~/.kiro/mates/agents/<id>.json` receives the bundle's `mcpServers` and `skills` through the in-place edit path of the mate-owned config RFC (§5.4 there). `sanitize_agent_config_governance` runs on the way to disk.
 3. Rules, goals and the avatar are written through their own owner routes when present.
-4. Crons are written paused, after the same vetting `_sanitize_imported_crons` applies (`portability.py`).
+4. Crons are written paused, after the same vetting `_sanitize_imported_crons` applies (`portability_vetting.py`).
 5. The record is stamped with provenance: `imported: {format_version, sender_label, sha256, imported_at}`. Provenance rides on the crew record, not the spec, because kiro-cli refuses an agent spec with an unknown field.
 
 Name collisions: the card proposes the first free name (`Release Captain 2`) and the owner can edit it before the press. The crew key comes from `crew_id_for_display_name` in `members.py`, which slugs the name and adds `-2`, `-3` past any taken key, so two crewmates never share one folder on a case-insensitive file system.
@@ -236,7 +236,7 @@ No new field is added to the card record.
 
 ### 5.7 Dependency on the mate-owned config RFC
 
-`agent.json` and plan step 2 use the per-mate file of [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md). Plan step 2 waits on that one: until its per-mate file, or the template fallback below, is built, `propose_crewmate` refuses a bundle whose `agent.json` carries any `mcpServers` or `skills` entry, so a crewmate imported before then has neither. If that RFC is rejected, the fallback is the existing template path: `agent.json` is written as a crew-named template with `O_EXCL` and `sanitize_agent_config_governance`, exactly as `_install_agent_templates` in `portability.py` writes a bundled template, and the new record's `kiro_agent` names it. The bundle format does not change under the fallback, because `agent.json` is already the custom-agent schema.
+`agent.json` and plan step 2 use the per-mate file of [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md). Plan step 2 waits on that one: until its per-mate file, or the template fallback below, is built, `propose_crewmate` refuses a bundle whose `agent.json` carries any `mcpServers` or `skills` entry, so a crewmate imported before then has neither. If that RFC is rejected, the fallback is the existing template path: `agent.json` is written as a crew-named template with `O_EXCL` and `sanitize_agent_config_governance`, exactly as `_install_agent_templates` in `portability_templates.py` writes a bundled template, and the new record's `kiro_agent` names it. The bundle format does not change under the fallback, because `agent.json` is already the custom-agent schema.
 
 ## 6. Migration plan
 
@@ -292,12 +292,12 @@ Compatible. Every part is added: a new manifest permission, a new card kind and 
 ## 8. Security considerations
 
 - **The owner's press is the only gate.** The app, the file and any agent can only propose. The press applies through owner routes that `change_card_middleware` already guards. This keeps the trust boundary in core, where tenet 8 puts it.
-- **The bundle is untrusted, agent-writable data.** "Agent specs are agent-writable" (`docs/system-specs/modules/security.md`) holds for a received spec too. Core re-runs `sanitize_agent_config_governance` (`portability.py`) on the merged result, so a bundle cannot lift a crewmate above this host's ceiling.
+- **The bundle is untrusted, agent-writable data.** "Agent specs are agent-writable" (`docs/system-specs/modules/security.md`) holds for a received spec too. Core re-runs `sanitize_agent_config_governance` (`portability_templates.py`) on the merged result, so a bundle cannot lift a crewmate above this host's ceiling.
 - **No grant travels.** `approval_mode`, `allowedTools` and `autoApprove` are dropped on export and refused on import. The member starts pinned to `normal`, because an unset mode resolves to `trust`. More trust comes only from the owner's later `crewmate.update` or `crewmate.capabilities` card.
-- **No secret travels.** Export runs in core, applies `placeholder_mcp_values` (`portability.py`), and never reads an `EXPORT_EXCLUDE` file (`portability.py`). Import refuses a non-placeholder secret value, so a crafted file cannot plant a credential the receiver did not type.
+- **No secret travels.** Export runs in core, applies `placeholder_mcp_values` (`portability_templates.py`), and never reads an `EXPORT_EXCLUDE` file (`portability_archive.py`). Import refuses a non-placeholder secret value, so a crafted file cannot plant a credential the receiver did not type.
 - **MCP commands run code.** A local `command` server is shown in full and marks the card `code_exec`. It installs disabled while any placeholder is unfilled.
 - **Memory is never shared by default.** A fresh store per import keeps the `owner_member_id == member_id` rule in `memory_stores.py` intact.
-- **Crons run unattended.** They land paused after the `_sanitize_imported_crons` rules (`portability.py`) and run only after the owner switches each one on.
+- **Crons run unattended.** They land paused after the `_sanitize_imported_crons` rules (`portability_vetting.py`) and run only after the owner switches each one on.
 - **Pages from a sender never render.** Only `builtin:` and `user:` template ids travel (`RENDERABLE_SOURCES` in `dashboard_templates/instance.py`).
 - **Zip safety.** `zip_vet.vet_zip_inventory` (`zip_vet.py`) runs before any read. Flat entry names only, so no entry names a path. Caps in §5.2 bound memory use.
 - **The sender label is not proof.** The card prints "self-declared" beside it.

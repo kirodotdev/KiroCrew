@@ -220,6 +220,13 @@ LivingUI.readout(el, { target, live } = {}) -> { say(text), describe(text), phas
 // null takes both away. It never moves keyboard focus.
 LivingUI.focusOne(root, chosen) -> void
 
+// The exploded view (rule X): one spring per part, items in the order the
+// parts leave. open(true) starts each part `stagger` ms after the one
+// before; open(false) brings them home in reverse order. step moves each el
+// by its share of move and returns true while a part still moves or waits.
+LivingUI.explode(items: [{ el, move: [dx, dy] }], { stagger = 35, k = 64, c = 14.2 } = {})
+  -> { open(apart), toggle(), step(dt, calm) -> boolean }
+
 // The CSS rules the helpers rely on, as a string for a <style> element.
 LivingUI.css -> string
 ```
@@ -256,6 +263,19 @@ button outside the stage and have it call `pause()` and `play()`. It says
 Pause while the tour is on, even while the tour waits out an input, and Play
 once its own click pauses the tour or `at` gets `t === period`. Any other
 control outside the stage that moves the figure calls `takeOver()`.
+
+`explode` takes a figure apart (rule X), and the markup draws it assembled.
+Give each part an element of its own with no transform, such as a `<g>`, and
+a `move` in px (user units inside an SVG) that clears its neighbours. Order
+the parts so nothing passes through another: a part that sits in another's
+way out comes first. Call `step(dt, calm)` in every tick, not behind a `||`,
+and keep the loop running while it returns true. Hover, a tap or a key opens
+it. `pointerenter` and `pointerleave` on the stage call `open(true)` and
+`open(false)` only when `pointerType` is `mouse`, since every tap fires both;
+a `pointerup` that is not from a mouse, and Space or Enter, call `toggle()`,
+while a swipe that scrolls the page ends in `pointercancel` and toggles
+nothing. Each one then calls `kick()`. Light the part the reader picks with
+`focusOne` (rule F), and name it in the readout.
 
 A value that follows the pointer, with its readout:
 
@@ -563,6 +583,75 @@ LivingUI.focusOne = (root, chosen) => {
   }
   if (chosen) chosen.toggleAttribute('data-lui-on', true);
   root.toggleAttribute('data-lui-focus', !!chosen);
+};
+```
+
+#### `explode`
+
+```js
+// Adapted from anatomy by Ryan (MIT License): see living-ui/LICENSE-anatomy.md.
+var LivingUI = LivingUI || {};
+// The exploded view (rule X). items holds one { el, move: [dx, dy] } for
+// each part, in the order the parts leave. Each part rides its own spring
+// with stiffness k and damping c, from 0, where the markup draws the part,
+// to 1, where it sits moved by move. The defaults sit just under critical
+// damping: a part passes its target by under 1% and lands about 1.4 s after
+// it starts. open(true) starts the parts in order, each `stagger` ms after
+// the one before, and open(false) brings them home in reverse order. A
+// reversal part-way re-staggers only the parts whose target changes: a part
+// still waiting to leave stays home, and the last one out is the first one
+// back, at once. toggle() flips between open and closed. step(dt, calm)
+// moves the parts, with dt in seconds as loop passes it, and returns true
+// while a part still moves or waits; under calm every part lands on its
+// target at once. A part's el gets a CSS translate in px (user units inside
+// an SVG), written only when the part moves and taken away at 0, so the
+// assembled figure is the markup itself.
+LivingUI.explode = (items, { stagger = 35, k = 64, c = 14.2 } = {}) => {
+  // clock is the view's own time in ms. Each part keeps its spring (x, v),
+  // its target `to`, and `at`, when its target turns to goal.
+  let clock = 0, goal = 0;
+  const parts = items.map(({ el, move }) => ({ el, move, x: 0, v: 0, to: 0, at: Infinity }));
+  const open = (apart) => {
+    const next = apart ? 1 : 0;
+    if (next === goal) return;
+    goal = next;
+    let n = 0;
+    for (const part of apart ? parts : [...parts].reverse()) {
+      part.at = part.to === goal ? Infinity : clock + stagger * n++;
+    }
+  };
+  return {
+    open,
+    toggle() { open(!goal); },
+    step(dt, calm) {
+      clock += dt * 1000;
+      let moving = false;
+      for (const part of parts) {
+        const from = part.x;
+        if (calm || part.at <= clock) {
+          part.to = goal;
+          part.at = Infinity;
+        }
+        // Four substeps a frame keep a stiff spring stable.
+        for (let i = 0; i < 4 && !calm; i++) {
+          part.v += (k * (part.to - part.x) - c * part.v) * dt / 4;
+          part.x += part.v * dt / 4;
+        }
+        if (calm || (Math.abs(part.to - part.x) < 5e-4 && Math.abs(part.v) < 5e-4)) {
+          part.x = part.to;
+          part.v = 0;
+        } else {
+          moving = true;
+        }
+        if (part.at < Infinity) moving = true;
+        if (part.x !== from) {
+          const [dx, dy] = part.move;
+          part.el.style.transform = part.x ? `translate(${dx * part.x}px, ${dy * part.x}px)` : '';
+        }
+      }
+      return moving;
+    },
+  };
 };
 ```
 

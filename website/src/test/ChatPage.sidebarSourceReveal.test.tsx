@@ -29,6 +29,8 @@ import { __resetPanelTabs } from '../hooks/usePanelTabs'
 const SLOT = 'slot-1'
 /** Mentioned by the AGENT: the extractor emits it, so the panel knows it. */
 const AGENT_PR = 'https://github.com/acme/widgets/pull/10'
+/** The agent's pull request as a chip may spell it: GitHub ignores the case. */
+const AGENT_PR_OTHER_CASE = 'https://github.com/Acme/Widgets/pull/10'
 /** Pasted by the USER: a chip, but NOT a panel tab. */
 const USER_PR = 'https://github.com/acme/widgets/pull/99'
 const USER_ISSUE = 'https://github.com/acme/widgets/issues/55'
@@ -73,6 +75,7 @@ vi.mock('../pages/ChatSidebar', () => ({
     <>
       <button type="button" onClick={() => onOpenSource?.(SLOT, { url: USER_PR, kind: 'change' })}>reveal-pr</button>
       <button type="button" onClick={() => onOpenSource?.(SLOT, { url: USER_ISSUE, kind: 'issue' })}>reveal-issue</button>
+      <button type="button" onClick={() => onOpenSource?.(SLOT, { url: AGENT_PR_OTHER_CASE, kind: 'change' })}>reveal-pr-other-case</button>
     </>
   ),
   SIDEBAR_MIN: 200,
@@ -236,6 +239,16 @@ describe('ChatPage – sidebar chip reveals a source in the panel', () => {
 
     expect(latest().sources).not.toContain(USER_PR)
     expect(latest().selectedSourceUrl).toBe(AGENT_PR)
+  })
+
+  it('a chip spelling a listed pull request in another case adds no second tab', async () => {
+    renderChatPage()
+    fireEvent.click(screen.getByText('reveal-pr-other-case'))
+    fireEvent.click(screen.getByText('reveal-pr-other-case'))
+
+    await waitFor(() => expect(screen.getByTestId('side-panel')).toBeInTheDocument())
+    expect(latest().sources).toEqual([AGENT_PR])
+    expect(latest().activeTabId).toBe('changes')
   })
 
   it('the reveal survives a reload instead of silently swapping the panel', async () => {

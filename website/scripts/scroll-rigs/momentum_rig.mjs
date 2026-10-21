@@ -3,13 +3,21 @@
 // Why this exists: scrollTop-step probes CANNOT reproduce the mobile bounce —
 // they never coast, so programmatic scroll writes (prepend compensation,
 // height sync) never race an in-flight fling. This rig drives REAL touch
-// gestures through CDP Input.synthesizeScrollGesture with velocity, which
-// makes Chromium produce genuine momentum, then measures content-anchor
-// integrity at rAF resolution DURING the coast.
+// drags through CDP Input.dispatchTouchEvent, released while moving so
+// Chromium produces genuine momentum, then measures content-anchor integrity
+// and frame intervals at rAF resolution DURING the coast.
 //
-// Usage: node momentum_rig.mjs <url>
-// Prints a JSON report: per-fling anchor deviations, long tasks, and the
-// gesture phase (touch/coast/settled) each deviation landed in.
+// Input.synthesizeScrollGesture is NOT used: with gestureSourceType 'touch' it
+// moves .chat-container 0 px in current headless Chromium, so every metric
+// reads as a clean zero. The run therefore fails (exit 1) when the flings
+// scrolled less than MIN_SCROLLED_PX in total.
+//
+// Usage: node momentum_rig.mjs <url> [warmupMs]
+// Prints a JSON report: per-fling anchor deviations, long tasks, the gesture
+// phase (touch/coast/settled) each landed in, frame-interval percentiles and
+// the distance scrolled.
+
+const MIN_SCROLLED_PX = 2000
 
 import { chromium } from 'playwright'
 
@@ -33,7 +41,9 @@ await page.waitForTimeout(9000) // app boot + transcript load
 await page.evaluate(() => {
   const el = document.querySelector('.chat-container')
   if (!el) { window.__rig = { error: 'no scroller' }; return }
-  const rig = (window.__rig = { events: [], longTasks: [], phase: 'idle', frames: 0 })
+  const rig = (window.__rig = {
+    events: [], longTasks: [], phase: 'idle', frames: 0, intervals: [], lastTs: 0, scrolledPx: 0,
+  })
   new PerformanceObserver(l => {
     for (const e of l.getEntries()) rig.longTasks.push({ d: Math.round(e.duration), phase: rig.phase })
   }).observe({ entryTypes: ['longtask'] })
@@ -51,10 +61,16 @@ await page.evaluate(() => {
     }
     return a
   }
-  const tick = () => {
+  const tick = (ts) => {
     rig.frames++
+    // Frame intervals and distance only while a gesture is live: the rig's own
+    // jump to the bottom is not a fling and must not make a dead gesture valid.
+    const live = rig.phase === 'touch' || rig.phase === 'coast'
+    if (rig.lastTs && live) rig.intervals.push(ts - rig.lastTs)
+    rig.lastTs = ts
     const st = el.scrollTop
     const scrolled = st - lastScrollTop
+    if (live) rig.scrolledPx += Math.abs(scrolled)
     if (!anchor || !anchor.isConnected) {
       anchor = pick()
       anchorTop = anchor ? anchor.getBoundingClientRect().top : 0
@@ -80,16 +96,37 @@ await page.evaluate(() => {
 
 const cdp = await context.newCDPSession(page)
 
-/** One fling: touch-drag with velocity so Chromium coasts afterward. */
+// Drag origin: the scroller's horizontal centre, high enough that a 600 px
+// drag stays inside it.
+const origin = await page.evaluate(() => {
+  const el = document.querySelector('.chat-container')
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + Math.max(20, (r.height - 600) / 2)) }
+})
+if (!origin) {
+  console.error('momentum_rig: no .chat-container on the page')
+  await browser.close()
+  process.exit(1)
+}
+
+const DRAG_PX = 600
+const STEP_MS = 8
+
+/** One fling: a 600 px finger drag at `speed` px/s, released while moving so
+ *  Chromium coasts afterward. 'up' views older rows (the finger moves down). */
 async function fling(direction, speed) {
   await page.evaluate((ph) => { window.__rig.phase = ph }, 'touch')
-  await cdp.send('Input.synthesizeScrollGesture', {
-    x: 195, y: 500,
-    xDistance: 0,
-    yDistance: direction === 'up' ? 600 : -600, // up = view older (content down)
-    speed,               // px/s — high speed triggers fling/momentum
-    gestureSourceType: 'touch',
-  })
+  const sign = direction === 'up' ? 1 : -1
+  const y0 = direction === 'up' ? origin.y : origin.y + DRAG_PX
+  const steps = Math.max(4, Math.round(((DRAG_PX / speed) * 1000) / STEP_MS))
+  const pt = (y) => [{ x: origin.x, y: Math.round(y) }]
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pt(y0) })
+  for (let s = 1; s <= steps; s++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pt(y0 + (sign * DRAG_PX * s) / steps) })
+    await new Promise((r) => setTimeout(r, STEP_MS))
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   await page.evaluate((ph) => { window.__rig.phase = ph }, 'coast')
   await page.waitForTimeout(900) // momentum decay window
   await page.evaluate((ph) => { window.__rig.phase = ph }, 'settled')
@@ -121,14 +158,28 @@ const report = await page.evaluate(() => {
   for (const e of rig.events) byPhase[e.phase] = (byPhase[e.phase] ?? 0) + 1
   const worst = [...rig.events].sort((a, b) => Math.abs(b.dev) - Math.abs(a.dev)).slice(0, 6)
   const lt = rig.longTasks.filter(t => t.d > 50)
+  const s = [...(rig.intervals ?? [])].sort((a, b) => a - b)
+  const q = (p) => (s.length ? Math.round(s[Math.min(s.length - 1, Math.ceil(p * s.length) - 1)] * 10) / 10 : null)
   return {
     frames: rig.frames,
     totalJumps: rig.events.length,
     byPhase,
     worst,
     longTasks: { n: lt.length, worst: lt.sort((a, b) => b.d - a.d).slice(0, 5) },
+    frameIntervalMs: { n: s.length, p50: q(0.5), p95: q(0.95), p99: q(0.99), max: q(1) },
+    scrolledPx: Math.round(rig.scrolledPx ?? 0),
     error: rig.error,
   }
 })
+report.valid = !report.error && report.scrolledPx >= MIN_SCROLLED_PX
 console.log(JSON.stringify(report, null, 1))
 await browser.close()
+if (!report.valid) {
+  // A gesture that did not scroll measures nothing: zero long tasks and zero
+  // jumps would read as a pass.
+  console.error(
+    `momentum_rig: INVALID run, scrolled ${report.scrolledPx} px (< ${MIN_SCROLLED_PX})` +
+      (report.error ? `, ${report.error}` : ''),
+  )
+  process.exit(1)
+}

@@ -365,7 +365,16 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
-    EXPECTED: dict[str, int] = {"standard": 284, "cc": 291, "strict": 292}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``seed-provenance`` -- the settings-seed record, moved out of the root-level
+    #:   ``settings_seeds.json`` file into its own directory so the gateway's
+    #:   ``atomic_write`` of the record renames INSIDE the sealed name rather than
+    #:   over it. That is the move this module asks for: the directory's own inode
+    #:   stays the same on a republish. It sits at the data-home root beside
+    #:   writable siblings, so it is counted leaf-only like ``skill-projection``.
+    EXPECTED: dict[str, int] = {"standard": 287, "cc": 294, "strict": 295}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

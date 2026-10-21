@@ -3,21 +3,18 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:7f7baa40aba433a67d5e5a9c1499766dc1648957af748480fc2f8b5e777519c0"
+export const GUIDE_BUILD_DIGEST = "sha256:e0f6df8512b839ae1e9016979df75b829952c83367b1849acb155c7bb960bab9"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "agents.add",
-  "agents.chat",
   "agents.create-first",
   "agents.crew-list",
   "agents.delete",
   "agents.edit-avatar",
-  "agents.manage-memory",
   "agents.model",
   "agents.section-danger",
   "agents.section-model",
-  "agents.section-place",
   "apps.detail.disable",
   "apps.detail.install",
   "apps.detail.sync",
@@ -270,10 +267,6 @@ export const GUIDE_REVEAL_SCOPES = {
   "tab:agents.section-model": {
     "kind": "tab",
     "revealer": "agents.section-model"
-  },
-  "tab:agents.section-place": {
-    "kind": "tab",
-    "revealer": "agents.section-place"
   }
 } as const
 
@@ -320,31 +313,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
-  "agents.chat": {
-    "version": 2,
-    "label_key": "memoryV2.chat_member",
-    "placements": [
-      {
-        "id": "any",
-        "route": "/capabilities?tab=crews",
-        "steps": [
-          {
-            "id": "any:select:crewmate_editor_open",
-            "kind": "select",
-            "location": "agents.crew-list",
-            "label_key": "pages.kiroCrewAgentsPage.agents",
-            "selection": "crewmate_editor_open",
-            "entity": "crewmate"
-          },
-          {
-            "id": "any:agents.chat",
-            "location": "agents.chat",
-            "label_key": "memoryV2.chat_member"
-          }
-        ]
-      }
-    ]
-  },
   "agents.delete": {
     "version": 2,
     "label_key": "pages.kiroCrewAgentsPage.delete_crew",
@@ -364,7 +332,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
           {
             "id": "any:agents.section-danger",
             "location": "agents.section-danger",
-            "label_key": "pages.kiroCrewAgentsPage.danger_zone",
+            "label_key": "crewEditorNext.section_danger",
             "scope": "tab:agents.section-danger"
           },
           {
@@ -395,43 +363,15 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "entity": "crewmate"
           },
           {
+            "id": "any:agents.section-model",
+            "location": "agents.section-model",
+            "label_key": "crewEditorNext.section_general",
+            "scope": "tab:agents.section-model"
+          },
+          {
             "id": "any:agents.edit-avatar",
             "location": "agents.edit-avatar",
             "label_key": "components.avatarBuilder.edit_avatar"
-          }
-        ]
-      }
-    ]
-  },
-  "agents.manage-memory": {
-    "version": 2,
-    "label_key": "pages.kiroCrewAgentsPage.manage_private_memory",
-    "placements": [
-      {
-        "id": "any",
-        "route": "/capabilities?tab=crews",
-        "steps": [
-          {
-            "id": "any:select:crewmate_editor_open",
-            "kind": "select",
-            "location": "agents.crew-list",
-            "label_key": "pages.kiroCrewAgentsPage.agents",
-            "selection": "crewmate_editor_open",
-            "entity": "crewmate"
-          },
-          {
-            "id": "any:agents.section-place",
-            "location": "agents.section-place",
-            "label_key": "components.crewEditor.pane_workspace_memory",
-            "scope": "tab:agents.section-place"
-          },
-          {
-            "id": "any:agents.manage-memory",
-            "location": "agents.manage-memory",
-            "label_key": "pages.kiroCrewAgentsPage.manage_private_memory",
-            "requires": [
-              "crewmate_memory_manageable"
-            ]
           }
         ]
       }
@@ -456,7 +396,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
           {
             "id": "any:agents.section-model",
             "location": "agents.section-model",
-            "label_key": "pages.kiroCrewAgentsPage.model",
+            "label_key": "crewEditorNext.section_general",
             "scope": "tab:agents.section-model"
           },
           {

@@ -256,11 +256,16 @@ class TestTheAnswerGoesToTheConversationThatAsked:
         conversation that never asked the question. The token already names the
         asker; the pin must come from there.
         """
+        import importlib
         import inspect
 
         from kiro_crew.slack import interactions
 
-        src = inspect.getsource(interactions)
+        # The facade and every owner its handlers moved to.
+        src = "\n".join(
+            inspect.getsource(importlib.import_module(name))
+            for name in (interactions.__name__, *interactions._OWNERS)
+        )
         assert src.count("_asker = decode_options_token(") == 2, (
             "both click paths must read the asker from the control's own token"
         )
@@ -276,11 +281,16 @@ class TestTheAnswerGoesToTheConversationThatAsked:
 
         Refusing instead would strand every control posted before this shipped.
         """
+        import importlib
         import inspect
 
         from kiro_crew.slack import interactions
 
-        src = inspect.getsource(interactions)
+        # The facade and every owner its handlers moved to.
+        src = "\n".join(
+            inspect.getsource(importlib.import_module(name))
+            for name in (interactions.__name__, *interactions._OWNERS)
+        )
         assert src.count("_route_pinned = _asker_key is not None") == 2, (
             "the pin must be conditional on a token being present"
         )

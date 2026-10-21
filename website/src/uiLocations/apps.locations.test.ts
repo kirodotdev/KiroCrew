@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { readPageFamily } from '../test/pageFamily'
 
 interface Req { kind: string; value?: string; location?: string; when?: string; id?: string }
 interface Placement { surface_id: string; route: string; parent_ids: string[]; entry_kind: string; requires: Req[] }
@@ -17,7 +18,7 @@ const byId = new Map(index.locations.map(l => [l.id, l]))
 const src = (rel: string) => fs.readFileSync(path.resolve(__dirname, rel), 'utf-8')
 const DISCOVER_SRC = src('../pages/apps/DiscoverPage.tsx')
 const LIBRARY_SRC = src('../pages/apps/LibraryPage.tsx')
-const DETAIL_SRC = src('../pages/AppDetailPage.tsx')
+const DETAIL_SRC = readPageFamily('AppDetailPage')
 const TILE_SRC = src('../pages/apps/LaunchpadTile.tsx')
 const SOURCES_SRC = src('../components/appstore/SourcesPopover.tsx')
 const REGISTRY_SRC = src('../components/RegistryManager.tsx')

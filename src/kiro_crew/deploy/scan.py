@@ -197,7 +197,7 @@ def summarize(findings: list[Finding]) -> str:
     though _mask_credential is applied at Finding creation time for credential-kind
     findings, this catches any edge case where raw matched content leaks.
     """
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
     if not findings:
         return "No secrets or internal-data patterns detected."
@@ -208,8 +208,7 @@ def summarize(findings: list[Finding]) -> str:
     lines = [f"⚠️ {len(findings)} potential issue(s) before publishing publicly: {counts}.",
              "Review each — publishing makes this content world-readable:"]
     for f in findings[:20]:
-        snippet, _ = redact_credentials(f.snippet)
-        snippet, _ = redact_exfiltration_urls(snippet)
+        snippet = redact(f.snippet)
         lines.append(f"  • line {f.line} [{f.kind}]: {snippet}")
     if len(findings) > 20:
         lines.append(f"  • … and {len(findings) - 20} more")

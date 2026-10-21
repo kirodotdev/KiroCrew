@@ -487,7 +487,7 @@ def _guard(request: web.Request) -> web.Response | None:
     "local-app")``, i.e. an OWNER-subject credential, and ``local-app`` is itself
     in ``_LOCAL_DASHBOARD_OWNER_SUBJECTS``. Without this gate any allowed
     messaging user could trade their own scoped session for an owner one — a
-    privilege escalation, not merely an over-broad surface. ``core.py``'s
+    privilege escalation, not merely an over-broad surface. ``core_local_token.py``'s
     identical mint is gated by loopback + a local-secret HMAC; this endpoint is
     reachable over the tailnet, so it needs the owner claim instead.
     ``is_owner_dashboard_request`` is reused rather than re-derived: a second copy

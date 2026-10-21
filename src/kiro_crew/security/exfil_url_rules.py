@@ -41,8 +41,9 @@ def exfil_query_min_len() -> int:
 _URL_RE = re.compile(
     r"https?://"
     r"("
-    r"[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}"  # DNS name with a letter TLD
-    r"|\d{1,3}(?:\.\d{1,3}){3}"  # raw IPv4 literal
+    # A host or port never ends inside a run of letters/digits: that would split a token.
+    r"[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}(?![a-zA-Z0-9])"  # DNS name with a letter TLD
+    r"|\d{1,3}(?:\.\d{1,3}){3}(?![a-zA-Z0-9])"  # raw IPv4 literal
     r"|\[[0-9A-Fa-f:.]+\]"  # bracketed IPv6 literal (incl. IPv4-mapped ::ffff:d.d.d.d)
     # Group 3 = path AND/OR query. It must start with ``/`` (path) OR ``?``
     # (a query attached directly to the host, no path segment). The prior
@@ -50,7 +51,7 @@ _URL_RE = re.compile(
     # yielded group(3)=None and both scan/redact bailed on ``qmark == -1``,
     # never inspecting the query — a real exfil bypass. ``[/?]`` admits both;
     # the ``path_and_query.find("?")`` split at the call sites is unchanged.
-    r")(:\d+)?([/?][^\s)\"'>]*)?"
+    r")(:\d+(?![a-zA-Z0-9]))?([/?][^\s)\"'>]*)?"
 )
 
 # Query string length threshold — normal URLs rarely exceed this

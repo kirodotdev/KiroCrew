@@ -1018,6 +1018,115 @@ def spawned_creator(slot: str) -> str:
         return ""
 
 
+def _depth_readable_nodes() -> "dict[str, TreeNode] | None":
+    """The folded tree's nodes when it can answer a depth at all, else ``None``. No I/O.
+
+    ONE PLACE, because the censoring rule has to be one rule. A depth answer is only
+    meaningful against a tree that is seeded for the store being read and whose reading
+    is not ``incomplete``; a reading is ``incomplete`` when the population passed
+    :data:`~kiro_crew.crew_log.session_tree.TREE_UNIT_CAP` or a unit's bytes faulted,
+    which leaves a well-formed fold that is simply missing edges. Both
+    :func:`slot_depth` and :func:`root_depth` refuse on the same answer from here, so
+    the depth distribution cannot be censored on one side only: a tree that cannot
+    place a child cannot be trusted to say another session is a root either, and
+    dropping only the children would turn every over-cap install into a report that
+    almost nothing delegates.
+
+    Never raises: an opener must not fail because a number for a metric could not be
+    read.
+    """
+    try:
+        proj = projection()
+        if not proj.seeded_for_current_store:
+            return None
+        reading = proj.reading()
+        if reading.incomplete:
+            return None
+        return reading.nodes
+    except Exception:  # pragma: no cover -- defensive; a read must not fail an open
+        log_exception_text(logger, logging.DEBUG, "session tree depth could not be read")
+        return None
+
+
+def root_depth() -> "int | None":
+    """``0`` for a session nobody created, or ``None`` when the folded tree cannot
+    place sessions at all. No I/O.
+
+    The ROOT half of :func:`slot_depth`, and it exists so that half is censored by the
+    same condition. A root's depth needs no walk -- it is zero by definition -- but
+    writing that zero while a child of an unreadable tree is withheld biases the
+    distribution toward 0 by exactly the population the reader cares about most: a busy
+    install, the one with the most delegation, is the one that passes
+    :data:`~kiro_crew.crew_log.session_tree.TREE_UNIT_CAP` and starts withholding its
+    children. Asking the tree first costs one in-memory read and makes the two answers
+    absent together, so the depth counter either describes a tree it could read or says
+    nothing about it.
+    """
+    return None if _depth_readable_nodes() is None else 0
+
+
+def slot_depth(slot: str) -> "int | None":
+    """How many creators stand ABOVE *slot* in the folded tree, or ``None``. No I/O.
+
+    ``0`` is a root -- a slot the tree places under nobody -- and each hop up the
+    parent chain is one more. For the ``depth`` a child's ``session/opened`` records:
+    the caller asks for its CREATOR's depth and writes one more than the answer, so
+    the number in the entry is the one this would return for the child once its own
+    log is folded.
+
+    ``None`` is "not established", and every refusal below folds into it because the
+    one reader of this answer counts trees: a wrong 0 is an invented tree, while an
+    absent answer is one session left out of a distribution. The refusals are an
+    unseeded projection, a projection seeded for ANOTHER store, a reading reported
+    ``incomplete``, a slot with no node, a slot on a cycle, and an ancestor the tree
+    cannot place.
+
+    That last one is the subtle refusal and it is deliberate. :func:`fold_tree`
+    keeps a cited creator that has no log of its own as a CITATION rather than as a
+    place, so the child is a root of the folded tree while still carrying its
+    ``parent``. Counting it as depth 0 would report a tree that is really a branch
+    of one whose top the fold cannot see, so a chain that ends at a citation rather
+    than at a genuine root answers nothing at all.
+
+    ``incomplete`` is refused for the reason the adoption guard refuses it: a unit
+    whose bytes could not be read, or a population past
+    :data:`~kiro_crew.crew_log.session_tree.TREE_UNIT_CAP`, leaves a well-formed
+    fold that is simply missing edges -- and a missing edge is exactly what makes a
+    child look like a root.
+
+    Never raises: an opener must not fail because a number for a metric could not be
+    read.
+    """
+    if not slot:
+        return None
+    nodes = _depth_readable_nodes()
+    if nodes is None:
+        return None
+    cursor = nodes.get(slot)
+    if cursor is None or cursor.cycle:
+        return None
+    depth = 0
+    # Bounded by the POPULATION rather than by a constant, which is both the tightest
+    # true bound and the one that cannot drift: a simple chain of n nodes has depth at
+    # most n - 1, so a walk that takes n hops without reaching a root is walking a
+    # structure that is not a tree. ``cycle`` already marks the one way the records
+    # produce that, and this bound is what makes the walk terminate even if a future
+    # fold leaves a cycle unmarked -- a loop over a shared dict read per session open
+    # has to be unable to hang whatever it is handed.
+    for _ in range(len(nodes)):
+        parent_slot = cursor.parent_slot
+        if parent_slot is None:
+            return depth
+        parent = nodes.get(parent_slot)
+        if parent is None or parent.cycle:
+            # A citation the fold could not place, or an ancestor on a cycle. Either
+            # way the top of this chain is not readable, so no depth is.
+            return None
+        depth += 1
+        cursor = parent
+    return None
+
+
 def record_opened(
     sid: str,
     slot: str,

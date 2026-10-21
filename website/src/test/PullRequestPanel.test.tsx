@@ -774,6 +774,32 @@ describe('PullRequestPanel', () => {
     expect(screen.getByRole('tablist', { name: 'Pull request sections' })).toBeInTheDocument()
   })
 
+  it('lands a GitHub url spelled in another case on the listed tab, with one load', async () => {
+    // A sidebar chip can name the pull request the panel lists in a different
+    // letter case. GitHub treats them as one pull request, so the panel must
+    // select the listed tab and read it once, not fall back to another tab.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const onReconcile = vi.fn()
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service', kind: 'change' },
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets', kind: 'change' },
+          ]}
+          selectedUrl={github.url.replace('acme/widgets', 'Acme/Widgets')}
+          onSelect={vi.fn()}
+          onReconcile={onReconcile}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    expect(screen.getAllByRole('tab', { name: /PR #12/i })).toHaveLength(1)
+    expect(screen.getByRole('tab', { name: /PR #12/i })).toHaveAttribute('aria-selected', 'true')
+    expect(mockApi.pullRequestSource.mock.calls.map(call => call[0])).toEqual([github.url])
+    expect(onReconcile).toHaveBeenCalledWith(github.url)
+  })
+
   it('offers the comment composer on a pull request with no comments yet', async () => {
     // The thread list owns the "comment on this pull request" box, so gating it on
     // an existing comment would make the FIRST comment the one you cannot post.

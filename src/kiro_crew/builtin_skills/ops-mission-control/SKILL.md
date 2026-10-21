@@ -1,5 +1,6 @@
 ---
 name: ops-mission-control
+app: ops-mission-control
 description: "Investigate and triage operational signals — alarms, pages, monitors, and ops issues — using the Ops Mission Control incident board and knowledge ledger. Use when investigating an incident, triaging a firing alarm, checking what is broken, or recording a fix pattern."
 triggers: incident, alarm, alert, oncall, page, monitor, outage, triage, investigate, ops, cloudwatch, pagerduty, datadog, dlq, latency, error rate, handover, handoff, shift
 ---

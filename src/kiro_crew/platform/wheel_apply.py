@@ -259,6 +259,15 @@ def snapshot_memory_before_update() -> tuple[int, str]:
     return copied, (f"{failed} store(s) not copied" if failed > 0 else "")
 
 
+def snapshot_refusal(failure: str) -> str:
+    """What an operator is told when the pre-update copy did not land."""
+    return (
+        f"Pre-update memory snapshot failed: {failure}. Not updating: the store would be "
+        "rewritten with no fresh copy of it. Check the log for the reason, then repair "
+        "it: kirocrew memory backups"
+    )
+
+
 def memory_snapshot_hook(progress: Callable[[str], None]) -> Callable[[], None]:
     """The engine's ``before_promote`` step: copy memory, or refuse the promotion."""
 
@@ -267,11 +276,7 @@ def memory_snapshot_hook(progress: Callable[[str], None]) -> Callable[[], None]:
 
         copied, failure = snapshot_memory_before_update()
         if failure:
-            raise WheelUpdateSnapshotFailed(
-                f"Pre-update memory snapshot failed: {failure}. Not updating: the store "
-                "would be rewritten with no fresh copy of it. Check the log for the "
-                "reason, then repair it: kirocrew memory backups"
-            )
+            raise WheelUpdateSnapshotFailed(snapshot_refusal(failure))
         newest = memory_backup.newest_backup()
         where = f"; default store copies in {newest.parent}" if newest is not None else ""
         progress(f"Memory snapshot: {copied} store(s) copied{where}")
@@ -672,6 +677,7 @@ __all__ = [
     "run_wheel_apply",
     "shown_failure_text",
     "snapshot_memory_before_update",
+    "snapshot_refusal",
     "stop_wheel_applies",
     "userns_reattach_after_apply",
     "userns_reattach_needed",

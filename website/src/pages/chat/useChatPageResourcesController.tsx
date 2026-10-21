@@ -21,6 +21,7 @@ import {
   captureScreen,
   currentTabCaptureDeps,
   screenSnipSupported,
+  ScreenSnipRefusedError,
 } from '../../hooks/useScreenSnip'
 import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
@@ -658,6 +659,11 @@ export function useChatPageResourcesController({
     let canvas: HTMLCanvasElement | null = null
     try {
       canvas = await capture()
+    } catch (e) {
+      // A pane refusal (the packaged app's display-capture trust gate) is not
+      // a cancel: say so, or the snip button reads as broken.
+      if (!(e instanceof ScreenSnipRefusedError)) throw e
+      showActionError(i18nT('pages.chatPage.snip_refused_in_embedded_pane'))
     } finally {
       if (!canvas) endSnipHold(token)
     }
@@ -668,7 +674,7 @@ export function useChatPageResourcesController({
     }
     activeSnipTokenRef.current = token
     setSnipFrame(canvas)
-  }, [beginSnipHold, endSnipHold, activeSlotRef, setSnipFrame])
+  }, [beginSnipHold, endSnipHold, activeSlotRef, setSnipFrame, showActionError])
 
   /** Screen capture entry: cross-platform snip+crop when supported, else native macOS screenshot. */
   const handleCapture = useCallback(async () => {

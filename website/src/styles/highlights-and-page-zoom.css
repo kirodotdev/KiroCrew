@@ -35,6 +35,13 @@
 ::highlight(mc-find-current) {
   background-color: var(--search-highlight-current);
 }
+/* Pierre colours each syntax token inline, so the current match in a code or
+   diff block would keep token colours the orange fill swallows. That match
+   gets one dark text colour; prose matches keep the page's text colour. */
+.code-block::highlight(mc-find-current),
+.diff-block::highlight(mc-find-current) {
+  color: #000;
+}
 
 /* The passage a comment composer is open over (MarkdownPanel annotation). */
 ::highlight(mc-annotate) {

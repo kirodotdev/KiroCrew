@@ -9,7 +9,7 @@ Two layers, both here so the contract reads in one place:
   session was told about, and asking a replacement what IT publishes.
 
 The gateway-side decision built on these (refuse the respawn, audit it) lives
-with the rest of the respawn cases in ``test_mcp_gatewayd_coverage.py``.
+with the rest of the respawn cases in ``test_mcp_gatewayd_coverage_acquire_respawn.py``.
 
 In-memory pipes only: no subprocess, no network, no wall-clock waits.
 """

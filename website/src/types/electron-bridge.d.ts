@@ -62,7 +62,9 @@ declare global {
     onNavigate: (cb: (path: string) => void) => () => void
     /** View > Toggle Focus Mode. Optional: absent on a shell older than the menu item. */
     onToggleFocusMode?: (cb: () => void) => () => void
-    onFullScreenChanged: (cb: (isFullScreen: boolean) => void) => () => void
+    /** `menuBarOverlap` is false when macOS placed the fullscreen window below
+     *  the menu bar (a notched display), so no band needs keeping clear. */
+    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
     setBadgeCount: (count: number) => void
     reportMicDenied: () => void
     reportMemorySample: (sample: ElectronMemorySample) => void

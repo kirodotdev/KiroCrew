@@ -7,7 +7,11 @@ allocates state at import time or accesses the real crew home.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
+import shutil
+import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +21,7 @@ from urllib.parse import urlencode
 import pytest
 from aiohttp import streams, web
 from aiohttp.test_utils import make_mocked_request
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import memory_stores
 from kiro_crew.atomic_write import on_event_loop
@@ -41,15 +46,67 @@ def member_manifest(owner: str, *, memory_version: int = 2) -> dict[str, Any]:
     return {"memory_version": memory_version, "owner_member": owner, "owner_member_id": owner}
 
 
+# ── member-database template cache ──────────────────────────────────────────────
+#
+# create_member_database does a FULL-sync WAL commit (member-store durability,
+# vector_memory_lifecycle.py keeps synchronous=FULL on purpose). The shared env
+# fixture provisions three member DBs per test, and on a loaded Windows backend
+# shard that per-test fsync can exceed the job's pytest timeout during setup. The
+# written bytes are identical whenever a given (owner, store_id) is created, so
+# each one is built ONCE per process and file-copied per test.
+#
+# Per PROCESS is per XDIST WORKER: every worker is its own interpreter, so this
+# module global is private to the worker and never shared across them. It is built
+# lazily on first use, never at import, so the module keeps its "no state at
+# import time" contract. A created member DB is self-contained after close: its
+# WAL is checkpointed and the -wal/-shm sidecars are gone, so copying memory.db
+# alone reproduces the whole store (test_member_memory_helpers.py pins this). The
+# copy is a fresh file per test, so no two tests ever share a handle or a path.
+
+_TEMPLATE_ROOT: Path | None = None
+_TEMPLATE_LOCK = threading.Lock()
+_TEMPLATES: dict[tuple[str, str], Path] = {}
+
+
+def _template_db(owner: str, store_id: str) -> Path:
+    """A per-process cached member-DB template for *(owner, store_id)*; build-once.
+
+    The identity ``create_member_database`` writes is exactly ``(owner, store_id)``
+    (``read_member_database_identity`` reads it back), so that pair is the cache
+    key: two provisionings with the same identity are byte-equivalent and share
+    one template, while a different name or owner gets its own.
+    """
+    global _TEMPLATE_ROOT
+    key = (owner, store_id)
+    with _TEMPLATE_LOCK:
+        if _TEMPLATE_ROOT is None:
+            _TEMPLATE_ROOT = Path(
+                tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "member-db-", dir=short_tmp_base())
+            )
+            atexit.register(shutil.rmtree, _TEMPLATE_ROOT, ignore_errors=True)
+        template = _TEMPLATES.get(key)
+        if template is None:
+            template = _TEMPLATE_ROOT / f"{len(_TEMPLATES)}" / memory_stores.MEMORY_DB_FILE
+            template.parent.mkdir(parents=True)
+            create_member_database(template, member_id=owner, store_id=store_id)
+            _TEMPLATES[key] = template
+        return template
+
+
 def write_member_manifest(
     directory: Path, owner: str, *, memory_version: int = 2
 ) -> dict[str, Any]:
-    """Explicitly provision a synthetic member database and return its config."""
+    """Explicitly provision a synthetic member database and return its config.
+
+    A V2 store's ``memory.db`` is file-copied from a per-worker template rather
+    than created in place, so each test skips the FULL-sync create commit while
+    still getting its own isolated database file (see the template cache above).
+    """
     directory.mkdir(parents=True, exist_ok=True)
     record = member_manifest(owner, memory_version=memory_version)
     database = directory / memory_stores.MEMORY_DB_FILE
     if memory_version == 2 and not database.exists():
-        create_member_database(database, member_id=owner, store_id=directory.name)
+        shutil.copy2(_template_db(owner, directory.name), database)
     return record
 
 

@@ -114,9 +114,22 @@ def _sudo_capture(*argv: str) -> tuple[int, str]:
     unconfined user cannot aa_change_onexec into a named profile, and aa-exec
     does not fail loudly when it cannot transition) AND its exit code is the
     answer rather than an error, so it cannot use the raising helper.
+
+    The check runs a trusted ``python3`` as root on the ``sudo kirocrew service
+    install`` path, so it starts from the fixed root-owned directory
+    ``/`` rather than the operator's working directory, and with every
+    ``PYTHON*`` variable removed from the environment it inherits. The probe
+    also passes ``-I``; these two keep the same guarantee should any other
+    child in the chain read the working directory or those variables.
     """
-    res = _sudo_run(*argv)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    res = _sudo_run(*argv, cwd=_PROBE_CWD, env=env)
     return (res.returncode, (res.stderr or "") + (res.stdout or ""))
+
+
+# Where the privileged enforcement probe starts. Root-owned and not writable by
+# an ordinary user, unlike whatever directory the operator ran the install from.
+_PROBE_CWD = "/"
 
 
 def _sudo_run_checked(*argv: str) -> None:

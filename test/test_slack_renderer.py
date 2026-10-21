@@ -18,6 +18,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
     AcpEvent,
 )
 from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
@@ -72,7 +73,7 @@ class _RecSlack:
         return True
 
     async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
-        self.calls.append(("append_task", {"title": title, "status": status}))
+        self.calls.append(("append_task", {"title": title, "status": status, "details": details}))
         return True
 
     async def set_thread_status(self, channel, thread_ts, status):
@@ -98,7 +99,7 @@ class _RecSlack:
         return None
 
     async def post_message(self, channel, text, thread_ts=None, **kw):
-        self.calls.append(("post_message", {"text": text}))
+        self.calls.append(("post_message", {"text": text, "thread_ts": thread_ts}))
         return self._ts()
 
 
@@ -1768,3 +1769,138 @@ class TestTransportRedactionNotice:
         )
         stops = [kw for m, kw in rec.calls if m == "stop_stream"]
         assert len(stops) == 1 and "[REDACTED: credential]" in str(stops[0]["final_text"])
+
+
+class TestPerCallToolOutcomeCards:
+    """Each tool call's card is finalized against its own terminal outcome,
+    so a failed/cancelled/refused call reads as itself instead of every card
+    reading "complete"."""
+
+    def _run(self, rec, events):
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(events)
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+    def test_failed_tool_result_marks_card_error_not_complete(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="x",
+                    tool_status="failed",
+                    tool_final=False,
+                ),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="done anyway"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        # The call's card finalizes as "error" (Slack's non-✓ terminal status),
+        # naming the outcome — not a blanket "complete".
+        assert cards[0]["status"] == "in_progress"
+        assert cards[1]["status"] == "error"
+        assert cards[1]["details"] == "failed"
+
+    def test_succeeded_tool_result_keeps_complete(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="x",
+                    tool_status="completed",
+                    tool_final=True,
+                ),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        assert [c["status"] for c in cards] == ["in_progress", "complete"]
+
+    def test_refused_and_cancelled_are_not_relabelled_failed(self):
+        # A declined or cancelled call is not a failure; its card names the
+        # exact outcome rather than lumping it under "failed".
+        for status in ("refused", "cancelled", "canceled"):
+            rec = _RecSlack()
+            self._run(
+                rec,
+                [
+                    AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="rm", tool_final=False),
+                    AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="x", tool_status=status),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ],
+            )
+            closed = [kw for m, kw in rec.calls if m == "append_task"][1]
+            assert closed["status"] == "error"
+            assert closed["details"] == status, status
+
+    def test_no_result_event_keeps_complete(self):
+        # A call whose transport sent no tool_result keeps the ✓ card — the
+        # pre-change behaviour is preserved where no outcome was reported.
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        assert [c["status"] for c in cards] == ["in_progress", "complete"]
+
+    def test_mixed_outcomes_finalize_each_card_distinctly(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="a", title="ls", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="a", tool_status="completed"),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="b", title="read", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="b", tool_status="refused"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        # a opens; a closes complete when b opens; b closes error at done.
+        assert cards[0]["status"] == "in_progress"  # a opens
+        assert cards[1]["status"] == "complete"  # a succeeded
+        assert cards[2]["status"] == "in_progress"  # b opens
+        assert cards[3]["status"] == "error"  # b refused
+        assert cards[3]["details"] == "refused"
+
+    def test_out_of_order_result_updates_an_already_closed_card(self):
+        # Parallel tool use: A opens, B opens (closing A's card as the uniform
+        # model does), THEN A's failure lands — A's card is re-emitted as error
+        # rather than left on the ✓ it was closed with.
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="a", title="ls", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="b", title="read", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="a", tool_status="failed"),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="b", tool_status="completed"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        # a opens; a closed complete when b opened; a's late failure re-emits a
+        # as error; b closed complete at done.
+        assert cards[0]["status"] == "in_progress"  # a opens
+        assert cards[1]["status"] == "complete"  # a closed when b opened
+        assert cards[2]["status"] == "in_progress"  # b opens
+        # a's late failure re-emits its card as error (same tool_1 task_id).
+        error_cards = [c for c in cards if c["status"] == "error"]
+        assert error_cards and error_cards[0]["details"] == "failed"
+        # b still closes complete.
+        assert cards[-1]["status"] == "complete"

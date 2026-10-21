@@ -781,7 +781,7 @@ class TestEveryConfigWriterIsLocked:
     **What it does NOT cover.** Only calls to ``write_config_atomically``. A
     second family of writers reaches ``config.json`` through
     ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s channel savers,
-    ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable) and still bypasses the
+    ``core_stt_settings.py``'s STT PUT, ``mcp.py``'s gateway-enable) and still bypasses the
     lock; that family has its own ratchet,
     :class:`TestTheAtomicJsonWriteConfigFamilyIsRatcheted` below, which holds it
     to a baseline that may only shrink. :meth:`KiroCrewConfig.save`
@@ -1141,7 +1141,7 @@ class TestAutoUpdateToggleHoldsBothConfigLocks:
     ``config.json`` has two writer generations that do not exclude each other.
     ``update_config_locked`` takes the sidecar advisory flock, covering the CLI,
     the boot refresh and a second gateway process. The legacy dashboard handlers
-    -- ``core.py``'s theme/settings PUT, the agents endpoint, ``security.py``,
+    -- the core theme and settings PUTs, the agents endpoint, ``security.py``,
     ``messaging.py``, ``mcp.py``, ``computer_use.py`` -- do their own
     read-modify-write of the same file while holding ONLY the loop-side
     ``_get_config_lock`` asyncio lock, which the flock does not exclude.

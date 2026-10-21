@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError } from '../api/apiError'
 import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
-import { deleteSlot, switchSlot } from '../store/chatSlice'
+import { deleteSlot, listForkedSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
@@ -245,6 +245,10 @@ export function useSessionActions(mode?: string, opts?: {
         // contradicts the tab this success just opened.
         setForkError(null)
         queryClient.invalidateQueries({ queryKey: ['slots'] })
+        // List the fork before activating it. The chat page clears an active
+        // session its slot list lacks and then auto-opens the remembered chat,
+        // so switching first lands the user in an unrelated chat.
+        dispatch(listForkedSlot(data))
         dispatch(switchSlot(data.key))
         // switchSlot.pending has already made the fork the active slot.
         onOpenedRef.current?.(data.key)

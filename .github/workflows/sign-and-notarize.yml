@@ -471,15 +471,18 @@ jobs:
           # Gatekeeper check and stays fail-closed. Any other validate error
           # still fails the step.
           stapled=0
-          for attempt in 1 2 3; do
-            if xcrun stapler staple "$APP"; then
+          staple_out=""
+          for attempt in 1 2 3 4 5; do
+            if staple_out=$(xcrun stapler staple "$APP" 2>&1); then
+              echo "$staple_out"
               stapled=1
               break
             fi
-            echo "stapler staple attempt $attempt/3 failed"
-            if [ "$attempt" -lt 3 ]; then sleep $(( 5 * attempt )); fi
+            echo "$staple_out"
+            echo "stapler staple attempt $attempt/5 failed"
+            if [ "$attempt" -lt 5 ]; then sleep $(( 5 << (attempt - 1) )); fi
           done
-          [ "$stapled" -eq 1 ] || { echo "stapler staple failed after 3 attempts"; exit 1; }
+          [ "$stapled" -eq 1 ] || { echo "stapler staple failed after 5 attempts"; exit 1; }
           validated=0
           validate_out=""
           for attempt in 1 2 3 4 5; do
@@ -581,15 +584,18 @@ jobs:
           set -euo pipefail
           # Same CloudKit lookup and the same safe retry as the app above.
           stapled=0
-          for attempt in 1 2 3; do
-            if xcrun stapler staple "work/${ARTIFACT_BASENAME}.dmg"; then
+          staple_out=""
+          for attempt in 1 2 3 4 5; do
+            if staple_out=$(xcrun stapler staple "work/${ARTIFACT_BASENAME}.dmg" 2>&1); then
+              echo "$staple_out"
               stapled=1
               break
             fi
-            echo "stapler staple attempt $attempt/3 failed"
-            if [ "$attempt" -lt 3 ]; then sleep $(( 5 * attempt )); fi
+            echo "$staple_out"
+            echo "stapler staple attempt $attempt/5 failed"
+            if [ "$attempt" -lt 5 ]; then sleep $(( 5 << (attempt - 1) )); fi
           done
-          [ "$stapled" -eq 1 ] || { echo "stapler staple failed after 3 attempts"; exit 1; }
+          [ "$stapled" -eq 1 ] || { echo "stapler staple failed after 5 attempts"; exit 1; }
           validated=0
           validate_out=""
           for attempt in 1 2 3 4 5; do

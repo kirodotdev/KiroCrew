@@ -553,16 +553,16 @@ class TestForkLaneFinalizeRetries:
 
 # (lane file, check-run name, external_id prefix, finalize step name)
 FORK_SWEEP_LANES = (
-    ("fork-design-review.yml", "Design Review", "design", "Finalize check-run (advisory)"),
+    ("fork-design-review.yml", "Design Review", "design", "Finalize check-run"),
     (
         "fork-first-principles-review.yml",
         "First Principles Review",
         "first-principles",
-        "Finalize check-run (advisory)",
+        "Finalize check-run",
     ),
     ("fork-gpt-review.yml", "GPT 6.1 Review", "gpt", "Finalize check-run (fail closed)"),
     ("fork-opus-review.yml", "Opus 5.5 Review", "opus", "Finalize check-run (fail closed)"),
-    ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run (advisory)"),
+    ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run"),
 )
 
 

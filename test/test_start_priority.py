@@ -1065,7 +1065,9 @@ def test_slack_automation_paths_name_no_priority():
         )
     )
     assert "start_priority" not in source
-    events = (_SRC / "slack/events.py").read_text(encoding="utf-8")
+    events = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted((_SRC / "slack").glob("events*.py"))
+    )
     assert events.count("start_priority=person_priority(not ") == 4
 
 

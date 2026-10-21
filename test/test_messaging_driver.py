@@ -19,6 +19,7 @@ from kiro_crew.acp.types import (
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
     AcpEvent,
     TurnUsage,
 )
@@ -52,6 +53,9 @@ class _RecordingRenderer(Renderer):
 
     async def on_tool_call(self, tool_call_id, title, tool_kind="", tool_purpose=""):
         self.events.append(("tool_call", tool_call_id, title))
+
+    async def on_tool_result(self, tool_call_id, tool_status):
+        self.events.append(("tool_result", tool_call_id, tool_status))
 
     async def on_prompt_choice(
         self, options, request_id, tool_title="", tool_purpose="", tool_input=""
@@ -355,6 +359,32 @@ class TestTurnDriverTranslation:
         kinds = [e[0] for e in r.events]
         # Every EVENT_TOOL_CALL maps to one uniform tool_call (no start/result split).
         assert kinds == ["tool_call", "tool_call", "done"]
+
+    def test_terminal_tool_result_emits_tool_result_event(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", title="grep", tool_final=False),
+                # A non-terminal update is NOT an outcome and must not be forwarded.
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t1", tool_status="in_progress"),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="t1", tool_status="failed"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        _run(p, r)
+        assert ("tool_result", "t1", "failed") in r.events
+        assert not any(e[0] == "tool_result" and e[2] == "in_progress" for e in r.events)
+
+    def test_tool_result_without_call_id_is_not_forwarded(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="", tool_status="failed"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        _run(p, r)
+        assert not any(e[0] == "tool_result" for e in r.events)
 
     def test_compaction(self):
         r = _RecordingRenderer()

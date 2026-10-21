@@ -630,6 +630,16 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # Paired with the same leaf on ``security``'s write floors -- the deny rules
     # fence how a command SPELLS this path, and the kernel denial is what still
     # holds when a spelling is built at runtime (``$(printf ...)``).
+    #
+    # The record lives INSIDE the ``seed-provenance`` directory, and the directory is
+    # what is sealed, because the writer publishes every save through ``atomic_write``
+    # (a new inode) and does so on every claude-agent-acp seed and release. A sealed
+    # FILE whose inode changes after the pre-spawn pass recorded it is refused by the
+    # launcher's pin, so sealing the file made an unrelated spawn fail whenever a seed
+    # write landed in that window. The rename leaves the directory's inode alone.
+    # The old top-level name stays sealed too: a Crew process started before the
+    # upgrade still reads and writes it, so it must stay unforgeable for that process.
+    "seed-provenance",
     "settings_seeds.json",
     # The crew webview template directory. A ceiling in exactly the sense above:
     # the whole value of splitting a panel into human-authored TEMPLATE and
@@ -912,6 +922,7 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",
+    "seed-provenance",
     "settings_seeds.json",
     "agent_model_state.json",
     "agent_model_state.json.lock",

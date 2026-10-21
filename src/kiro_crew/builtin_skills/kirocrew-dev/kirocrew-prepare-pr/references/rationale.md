@@ -408,6 +408,13 @@ the CI workflows they mirror. A silent fallback to those charters reintroduces
 exactly the drift the script prevents, so exit 40 requires a visible WARNING and a
 fix to the extractor rather than a quiet degradation.
 
+The workflows come from the base commit, but the extractor is whichever copy ran,
+usually the installed skill. When the base changes a workflow and the extractor in
+one commit, an install from before it fails parity although the base's own copy
+parses fine. So on a parity failure the script compares itself with the base
+commit's copy: when they differ it still exits 40, but names the base copy and the
+command that runs it. Neither the charters nor an extractor fix is the remedy then.
+
 The charter budgets are hand-copied from CI and that copy is what drifted before —
 the skill claimed ≤2 BLOCKING long after CI moved to 5.
 `test_charter_budgets_match_the_ci_workflows` now pins the wording to
@@ -438,16 +445,13 @@ unread. `needs-a-decision` puts the question where it will be answered and files
 nothing. `test/test_deferred_disposition_ratchet.py` enforces that every surface
 offering the first also offers the second.
 
-## Why every concern must be answered, including advisory ones
+## Why a BLOCK is never left unanswered
 
-`Design Review 🟡 CONCERNS` and `UX Review 🟡 CONCERNS` post their concern *and* pass
-the check. The readiness rollup will therefore never force an answer, and nothing
-else in the loop nags. To a human maintainer a silently ignored concern reads as
-"the author never looked at it", regardless of how green the checks are.
-
-Design Review owns the long-term-reversibility lens. It is advisory and reds only on
-a genuine `BLOCK`, but an irreversible choice it flags needs a written justification
-a reviewer can read — which is why it is fix-or-justify rather than a raw Medium.
+A lane BLOCK reds the check and holds readiness, so the loop sees it. The risk is
+the answer: a BLOCK that is neither fixed nor answered with a disposition reads to a
+maintainer as "the author never looked at it". Design Review owns the
+long-term-reversibility lens; an irreversible choice it blocks needs a fix or a
+written justification a reviewer can read.
 
 ## Why the disposition comment is scoped twice
 
@@ -625,17 +629,6 @@ state check prescribed in `SKILL.md`. That check and its bounded fallback preven
 both silent abandonment and duplicate poll drivers. Monitor cycles are not server
 rounds, so a wall-clock bound must accompany the cycle budget. The execution
 procedure owns those budgets rather than a second copy here.
-
-## Why a whole-design CONCERNS still stops a pinned reviewer fleet
-
-The loop pins `--reviewers gpt,opus` so a lane that never posted cannot pass silently.
-The marker verdicts are collected only for the lanes a run names (`only is None or name
-in only`), so under that pin they hold no Design, First Principles or UX verdict. The
-unanswered-CONCERNS check therefore also reads those three lanes from their own
-comments with `design_lane_verdicts()`, which ignores the pin, and exits `20` on an
-unanswered CONCERNS from any of them. Until #21808 it read only the pinned verdicts, so
-a whole-design CONCERNS changed no exit code and the loop could arm auto-merge past it.
-The `Whole-design punchlines` block still changes no exit code; the exit code is the stop.
 
 ## Why a hold heard after arming goes into the live loop
 

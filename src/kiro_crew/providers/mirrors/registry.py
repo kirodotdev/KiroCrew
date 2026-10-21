@@ -108,21 +108,39 @@ class PerToolDeny(str, Enum):
     false while the behaviour changed underneath. A reader that renders all three
     (the per-provider ability card) is a consumer this serves, not the reason it has
     three members.
+
+    Each member also declares its COST: whether switching ONE tool off there can
+    withhold a whole server (:attr:`costs_whole_server`). The cost is the second
+    item of the member's definition, so a reach cannot be declared without one --
+    the class refuses to build -- and a reach added here carries its own ruling
+    rather than waiting on a table in ``agent_sdk`` to learn it.
     """
+
+    #: Whether a tool-off under this reach can cost a whole server rather than the
+    #: one tool it names. Set by ``__new__`` from the member's own definition.
+    costs_whole_server: bool
+
+    def __new__(cls, value: str, costs_whole_server: bool) -> "PerToolDeny":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.costs_whole_server = costs_whole_server
+        return member
 
     #: The restriction reaches the harness as a per-tool rule in config Crew writes --
     #: a settings file for claude, the inline OPENCODE_CONFIG_CONTENT block for
     #: opencode -- so the narrowed server stays MOUNTED and the harness itself
-    #: refuses the tool.
-    SETTINGS_FILE = "settings-file"
+    #: refuses the tool. The one reach that costs exactly the tool it names.
+    SETTINGS_FILE = ("settings-file", False)
     #: No per-tool slot on the wire, but the backend asks permission per MCP call
     #: with an identity Crew can match, so Crew refuses the call itself. The narrowed
-    #: server may stay mounted where that channel is complete.
-    PER_CALL = "per-call"
+    #: server may stay mounted where that channel is complete. Costly all the same:
+    #: it stays per tool on Crew's OWN servers and withholds any other server whole,
+    #: so a reader with a third-party server meets the whole-server accident.
+    PER_CALL = ("per-call", True)
     #: No channel at all -- neither a rule the harness reads nor a per-call identity
     #: Crew can match. The only faithful action is WITHHOLDING the whole server, so
     #: the restriction costs availability rather than being silently dropped.
-    WHOLE_SERVER = "whole-server"
+    WHOLE_SERVER = ("whole-server", True)
 
 
 @dataclass(frozen=True)

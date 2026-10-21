@@ -15,6 +15,7 @@ import {
 } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { splitOnPlaceholder } from '../../lib/splitOnPlaceholder'
+import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { i18nT } from '../../i18n/t'
 import {
   type LaunchRefusal,
@@ -297,7 +298,7 @@ export function AssessmentView({
             part === null ? (
               <Link
                 key="link"
-                to="/capabilities?tab=mcp"
+                to={MCP_SERVERS_HREF}
                 className="text-[var(--accent)] hover:underline"
               >
                 {i18nT('pages.mcpManagement.assessment.connections_link')}

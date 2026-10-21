@@ -20,8 +20,6 @@ if TYPE_CHECKING:
         logger,
         oauth_endpoints_path,
         oauth_url_contains_credential,
-        redact_credentials,
-        redact_exfiltration_urls,
         sanitized_oauth_endpoint,
         sanitized_oauth_endpoint_display,
     )
@@ -213,8 +211,9 @@ def _redact_acp_string(s: str) -> str:
     """
     if not s:
         return s
-    s, _ = redact_credentials(s)
-    s, _ = redact_exfiltration_urls(s)
+    from kiro_crew.security import redact
+
+    s = redact(s)
     return s
 
 

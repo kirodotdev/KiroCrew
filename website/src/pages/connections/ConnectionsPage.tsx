@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import { Link2, Server } from 'lucide-react'
+import { useConnectionsSubTab } from './useConnectionsSubTab'
 import { api, ApiError, type ConnectionMintState, type ConnectionStatus } from '../../api/client'
 import { useAppSelector } from '../../store'
 import type { McpApplyChange, McpServer } from '../../types'
@@ -66,7 +67,7 @@ const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
 export default function ConnectionsPage({ servicesEnabled = false }: { servicesEnabled?: boolean } = {}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<'services' | 'mcp-servers'>('services')
+  const [activeTab, setActiveTab] = useConnectionsSubTab()
   const [search, setSearch] = useState('')
   /** Pending connect attempts. `kind` decides Cancel semantics (only a
    *  cancelled *new* connect uninstalls the entry it just created); `sinceTs`
@@ -613,7 +614,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     event.preventDefault()
-    setActiveTab(current => current === 'services' ? 'mcp-servers' : 'services')
+    setActiveTab(activeTab === 'services' ? 'mcp-servers' : 'services')
   }
   const openProvider = (slug: string) => {
     setSearch('')

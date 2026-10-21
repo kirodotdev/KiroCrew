@@ -631,7 +631,12 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
         )
     )
     procs: list[asyncio.subprocess.Process] = []
-    backend_pids: list[int] = []
+    # pid -> the process's start-time identity token, read WHILE it is alive.
+    # The survivor check below is a PID-reuse guard, not a bare existence probe:
+    # a recycled pid compares unequal (or unreadable -> ``None``), so a new,
+    # unrelated process landing on a reaped backend's pid number cannot read as
+    # one of our backends surviving.
+    backend_ids: dict[int, str | None] = {}
     try:
         await async_wait_until(
             lambda: transport.endpoint_exists(sock),
@@ -666,9 +671,23 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
             f"{fallback.read_text()}"
         )
         # The fake server records under ``<log>.d/<pid>.txt``, so the file names
-        # are the backend pids the daemon is answerable for.
-        backend_pids = [int(p.stem) for p in Path(f"{launch_log}.d").iterdir()]
-        assert len(backend_pids) == 3
+        # are the backend pids the daemon is answerable for. Capture each pid's
+        # start-time identity HERE, while the backend is still alive and before
+        # the reap below, so the post-teardown survivor check can tell a genuine
+        # survivor from a reaped pid recycled onto an unrelated process.
+        backend_ids = {
+            int(p.stem): pc.process_start_time(int(p.stem))
+            for p in Path(f"{launch_log}.d").iterdir()
+        }
+        assert len(backend_ids) == 3
+        # Every token must be readable HERE: the backends are alive at this
+        # point, so a ``None`` means the identity probe itself failed, not that
+        # a pid was reused. Asserting it keeps the survivor check below from
+        # passing vacuously -- an all-``None`` capture would make every pid
+        # "not a survivor" regardless of what the pool actually did.
+        assert all(
+            token is not None for token in backend_ids.values()
+        ), f"could not read a start-time identity for a live backend: {backend_ids}"
     finally:
         await _reap(procs)
         stop.set()
@@ -684,7 +703,21 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
     # map, so the child was outside ``shutdown_all`` and outlived the daemon --
     # a zombie or a live process here, and its pipe transports still finalizing
     # after the test's loop closed.
-    survivors = [pid for pid in backend_pids if pc.pid_exists(pid)]
+    #
+    # The check is identity-pinned, not a bare ``pid_exists``: a reaped pid can
+    # be recycled onto an unrelated process between ``shutdown_all`` and here
+    # (common on a busy CI host, and Windows pids are small and recycle fast),
+    # and a bare existence probe would then read that stranger as a surviving
+    # backend and fail the test spuriously. A pid counts as a survivor only
+    # while it STILL names the same process object it did when captured above --
+    # ``process_start_time`` unchanged. A token that was unreadable at capture
+    # (``None``) cannot be confirmed as a survivor and is not counted; the
+    # pooling assertions above already prove all three backends ran.
+    survivors = [
+        pid
+        for pid, token in backend_ids.items()
+        if token is not None and pc.pid_exists(pid) and pc.process_start_time(pid) == token
+    ]
     assert not survivors, (
         f"private backends {survivors} outlived run_gatewayd: their reap was not "
         "joined by shutdown_all"
@@ -694,19 +727,17 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
 def _windows_collect_ignore() -> list[str]:
     """Read the Windows exclusion list from its DATA FILE, not conftest's runtime state.
 
-    Importing conftest and reading the attribute looks equivalent and is not:
-    the list is assigned inside ``if platform_compat.IS_WINDOWS:``, so on the
-    Linux matrix -- the only place this guard runs -- the attribute does not
-    exist at all and ``getattr(..., [])`` silently yields an empty set. Every
-    membership assertion against it then passes vacuously, which is precisely
-    the class of false pass this guard exists to prevent. Reading the file is
-    platform-independent.
+    Importing conftest and reading its state looks equivalent and is not: the set
+    is filled only when ``platform_compat.IS_WINDOWS``, so on the Linux matrix --
+    the only place this guard runs -- it is empty, and every membership assertion
+    against it passes vacuously, which is precisely the class of false pass this
+    guard exists to prevent. Reading the file is platform-independent.
 
     The names live in ``windows-collect-ignore.txt`` rather than as string
     literals inside conftest, because a
     second reader needs them: naming a file explicitly on the pytest command
-    line bypasses ``collect_ignore``, so the CI reduced-scope selector
-    (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.
+    line bypasses conftest's ``pytest_ignore_collect`` hook, so the CI reduced-scope
+    selector (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.
     Reading that file keeps this guard pointed at the real source of truth --
     an AST walk over conftest now finds no literals and would go blind.
     """
@@ -728,11 +759,11 @@ def _windows_collect_ignore() -> list[str]:
 def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
     """Guard the coverage, not the code.
 
-    Windows has two silent filters -- ``conftest.collect_ignore`` (whole files)
+    Windows has two silent filters -- ``windows-collect-ignore.txt`` (whole files)
     and ``windows-expected-failures.txt`` (node ids marked skip) -- and nothing
     audits either. During the port a set of enforcing tests was written,
     mutation-verified, and still never ran on Windows, because their whole file
-    sat in ``collect_ignore``; CI stayed green throughout.
+    sat in that list; CI stayed green throughout.
 
     A skipped test asserts nothing, so this guard has to live outside the suite
     it protects. It runs on Linux, where it always executes, and fails loudly if
@@ -742,7 +773,7 @@ def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
     this_file = Path(__file__).name
 
     assert this_file not in set(_windows_collect_ignore()), (
-        f"{this_file} was added to conftest.collect_ignore — the only positive "
+        f"{this_file} was added to windows-collect-ignore.txt — the only positive "
         "proof that pooling happens would stop running on Windows"
     )
 

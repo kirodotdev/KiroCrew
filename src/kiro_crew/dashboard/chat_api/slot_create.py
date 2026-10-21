@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         request_slot_origin,
         resolve_agent_bindings,
+        resolve_default_session_folder,
         resolve_folder_project_dir_off_loop,
         restore_agent_selection,
         save_slot_off_loop,
@@ -169,6 +170,38 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
     existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
     request_app = request.get("app", "")
+    # The person's default folder, for a dashboard New chat that named none.
+    # Asked for explicitly (`default_folder: true`) so apps, crons, channels and
+    # session_create keep the placement they have today, and applied only to a
+    # fresh unnamed create, since a named one can reopen a session that already
+    # has a place. A default that does not name one of the person's folders
+    # leaves the chat unfiled; see `resolve_default_session_folder`.
+    folder_from_default = False
+    requested_agent = agent
+    if (
+        body.get("default_folder") is True
+        and not folder_id
+        and not name
+        and not request_app
+        and not body.get("ephemeral")
+        and not body.get("artifact")
+        and is_owner_dashboard_request(request)
+    ):
+        try:
+            default_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            configured = getattr(default_cfg.dashboard, "default_session_folder", "")
+        except Exception:
+            logger.warning("Failed to load config for the default folder", exc_info=True)
+            configured = ""
+        if isinstance(configured, str) and configured:
+            folder_id, folder_agent = await state.read_folders(
+                lambda folders: resolve_default_session_folder(folders, configured)
+            )
+            folder_from_default = bool(folder_id)
+            # The folder's agent pin applies as it does for New chat in that
+            # folder; an agent the caller picked still wins.
+            if folder_from_default and folder_agent and not agent:
+                agent = folder_agent
     # Ownership of a NAMED slot for an app caller, before any refusal below can
     # answer about it (get_or_create_slot's memory-mode 409 among them) and
     # before anything is written. The post-create check stays authoritative.
@@ -210,7 +243,21 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         folder_project, folder_project_error = await resolve_folder_project_dir_off_loop(
             folder_snapshot, folder_id
         )
-        if folder_project_error:
+        if folder_project_error and folder_from_default:
+            # The person asked for no folder, so a default folder whose project
+            # directory has gone missing must not refuse the chat. Unfiled is the
+            # safe answer: filing it there with a different project would run the
+            # chat somewhere that folder says it should not.
+            logger.warning(
+                "Default folder %s has an unusable project (%s); new chat left unfiled",
+                folder_id,
+                folder_project_error,
+            )
+            folder_id = ""
+            folder_project = ""
+            folder_from_default = False
+            agent = requested_agent
+        elif folder_project_error:
             return web.json_response(
                 {
                     "error": f"invalid folder project: {folder_project_error}",

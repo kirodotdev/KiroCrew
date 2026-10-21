@@ -228,6 +228,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // from the `<LinkPatternsEditor>` use in ChatPanel.tsx; mapped so a static control added
   // to the editor lands on the Transcript page's deep link.
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
+  // The default-folder picker ChatPanel's Sessions page mounts.
+  'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
 }
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;

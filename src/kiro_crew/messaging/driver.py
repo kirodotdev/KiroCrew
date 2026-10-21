@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    TERMINAL_TOOL_STATUSES,
     classify_stop_reason,
 )
 from kiro_crew.constants import (
@@ -70,6 +71,7 @@ from kiro_crew.messaging.renderer import (
     TEXT_CHUNK,
     THINKING,
     TOOL_CALL,
+    TOOL_RESULT,
     OutputEvent,
     Renderer,
 )
@@ -898,6 +900,23 @@ class TurnDriver:
                         native_tool_call_ids,
                         consumed_directives,
                         seen_tool_identity,
+                    )
+                # Forward a TERMINAL outcome to the renderer so a per-call card
+                # is finalized honestly ("failed" / "cancelled" / "refused"
+                # instead of the blanket "complete" the next tool_call/on_done
+                # would otherwise stamp). Non-terminal updates (a streaming
+                # rawOutput chunk, ``status="in_progress"``) are skipped: only a
+                # status in ``TERMINAL_TOOL_STATUSES`` is an outcome. A renderer
+                # that does not override ``on_tool_result`` ignores it, so this
+                # is additive to every channel.
+                _tool_status = getattr(event, "tool_status", "") or ""
+                if event.tool_call_id and _tool_status in TERMINAL_TOOL_STATUSES:
+                    await self.renderer.dispatch(
+                        OutputEvent(
+                            kind=TOOL_RESULT,
+                            tool_call_id=event.tool_call_id,
+                            tool_status=_tool_status,
+                        )
                     )
             elif kind == EVENT_PERMISSION_REQUEST:
                 # Untrusted sender: no tool runs, full stop. This precedes even

@@ -3,17 +3,42 @@
 ``KEY`` is the session key the cases use; ``_seed_log`` seeds a real ``ConversationLog``
 under ``tmp_path``, and ``_make_consolidator`` builds a ``HistoryConsolidator`` over a log
 with a mocked memory store. ``_total`` reads the transcript's message total, ``_span``
-builds the ``AttemptedSpan`` a turn over the current transcript would attempt, and
-``_FakeRequest`` stands in for the manual consolidate handler's request.
+builds the ``AttemptedSpan`` a turn over the current transcript would attempt,
+``_FakeRequest`` stands in for the manual consolidate handler's request, and
+``_off_loop`` runs a transcript mutation the way an ``async def`` test must.
 """
 
-from typing import Any
+import asyncio
+from collections.abc import Callable
+from typing import Any, TypeVar
 from unittest.mock import MagicMock
 
 from kiro_crew import history as history_mod
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 
 KEY = "dashboard:chat-retry"
+
+_T = TypeVar("_T")
+
+
+async def _off_loop(write: Callable[[], _T]) -> _T:
+    """Run a synchronous transcript mutation off the event loop.
+
+    A metadata rewrite (``update_metadata``, ``mark_consolidated``,
+    ``rewrite_session``, ``record_consolidation_failure``) ends in
+    ``atomic_write.replace_with_retry``, whose Windows sharing-violation retry
+    is a single rename attempt on the loop thread BY DESIGN -- it must never
+    block the gateway's sole loop. Driving that write straight from an
+    ``async def`` test therefore loses to any handle a scanner holds on
+    ``sessions/<key>.jsonl`` for a few milliseconds (``[WinError 5]``). Running
+    it on a worker thread, which has no loop of its own, keeps the bounded
+    retry -- the offload ``history_offload`` documents for async callers.
+
+    Running off the loop also makes the on-loop-persist discipline guard a
+    no-op, so an offloaded write needs no ``allow_on_loop_persist()`` wrapper:
+    the sanctioned path and the guard agree.
+    """
+    return await asyncio.to_thread(write)
 
 
 def _seed_log(tmp_path, key: str = KEY, count: int = 3) -> ConversationLog:

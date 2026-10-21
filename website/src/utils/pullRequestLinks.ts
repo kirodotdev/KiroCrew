@@ -60,8 +60,15 @@ export function partitionSourceLinks(
  * on the object's own fields instead, the way the backend's `SourceRef.identity`
  * leaves the url out. The host stays in, because a number is only unique per
  * instance.
+ *
+ * A GitHub url keys case-folded. GitHub resolves owner and repository names
+ * case-insensitively, so `Acme/Widgets/pull/10` and `acme/widgets/pull/10`
+ * are one pull request, and a sidebar chip can carry a different spelling from
+ * the one the panel lists. Every other part of the canonical url (host, the
+ * `pull`/`issues` segment, the number) is already lowercase.
  */
 export function sourceLinkKey(link: PullRequestLink): string {
+  if (link.provider === 'github') return link.url.toLowerCase()
   if (!sourceProviderDescriptor(link.provider)) return link.url
   let host = ''
   try {
@@ -84,6 +91,11 @@ export function findSourceForUrl<T extends PullRequestLink>(
 ): T | undefined {
   const exact = sources.find(source => source.url === url)
   if (exact || !url) return exact
+  // Matched without re-parsing, because the parse below has no Enterprise host
+  // list and would reject a GitHub Enterprise url outright.
+  const folded = url.toLowerCase()
+  const spelling = sources.find(source => source.provider === 'github' && sourceLinkKey(source) === folded)
+  if (spelling) return spelling
   const remembered = parseSourceLinkUrl(url)
   if (!remembered) return undefined
   const key = sourceLinkKey(remembered)

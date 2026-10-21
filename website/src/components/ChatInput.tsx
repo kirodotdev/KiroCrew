@@ -69,9 +69,10 @@ import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } fro
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
-import { usePromptHistory, useUndoHistory } from './chat-input/draftHistory'
+import { usePromptHistory } from './chat-input/draftHistory'
+import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { usePromptOptimizer } from './chat-input/optimizer'
-import { usePasteTokens } from './chat-input/paste'
+import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 

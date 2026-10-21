@@ -204,7 +204,7 @@ def _gate_bot_comment(head: str = _GATE_HEAD) -> dict:
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
-            "FINDING -- src/x.py:10 -- tighten -> Fix: x\n"
+            "BLOCKING -- src/x.py:10 -- tighten -> Fix: x\n"
             "[GPT-REVIEWED] " + head
         ),
     }

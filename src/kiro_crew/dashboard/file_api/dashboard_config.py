@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _body_err_code,
         _sel,
         bytes_to_mb_figure,
+        default_session_folder_choosable,
         knowledge_ceiling_bytes,
         link_pattern_url_ok,
         logger,
@@ -95,6 +96,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "topic_tags_enabled",
             "session_card_source_links",
             "session_folder_root",
+            "default_session_folder",
             "model_picker_hidden_models_add",
             "model_picker_hidden_models_remove",
         }
@@ -486,6 +488,39 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                         status=400,
                     )
                 updates["session_folder_root"] = resolved
+        if "default_session_folder" in body:
+            val = body["default_session_folder"]
+            if not isinstance(val, str):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "default_session_folder must be a folder ID or empty",
+                        "code": "invalid_default_session_folder",
+                    },
+                    status=400,
+                )
+            val = val.strip()
+            # Same round-trip rule as session_folder_root: an unchanged value is
+            # not a choice, so a folder deleted since it was chosen cannot make an
+            # unrelated toggle save fail. Creation ignores a missing folder anyway.
+            if val != cfg.dashboard.default_session_folder:
+                if val and not await default_session_folder_choosable(request.app["state"], val):
+                    _sel().log_tool_invocation(
+                        session_key="dashboard",
+                        tool_name="dashboard_config_write",
+                        outcome="failure",
+                        error="invalid_default_session_folder",
+                    )
+                    return web.json_response(
+                        {
+                            "error": "default_session_folder must name one of your folders",
+                            "code": "invalid_default_session_folder",
+                        },
+                        status=400,
+                    )
+                updates["default_session_folder"] = val
         if "model_picker_hidden_models_add" in body:
             hidden_model_add, error_response = _validated_hidden_model_list(
                 "model_picker_hidden_models_add"
@@ -659,6 +694,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
+            "default_session_folder": cfg.dashboard.default_session_folder,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,

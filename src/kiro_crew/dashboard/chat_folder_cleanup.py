@@ -12,6 +12,8 @@ A folder is removable when nothing that still runs would notice it going:
 * no LIVE session is filed in it or anywhere below it, and no saved cron job
   files its tab into it or anywhere below it (the job keeps the folder's id,
   so recreating the folder by name would not bring the filing back),
+* it is not, and does not hold, the folder Settings files new chats into
+  (``dashboard.default_session_folder``), which is kept by id the same way,
 * none of its rows carries a setting the person chose (project directory,
   default agent, steering directories, tags, color, icon), and
 * it is not a channel folder: neither one stamped for a channel nor one whose
@@ -113,6 +115,25 @@ def channel_folder_names() -> set[str]:
     }
     names.discard("")
     return names
+
+
+def default_session_folder_ids() -> set[str]:
+    """The folder new chats are filed into (``dashboard.default_session_folder``).
+
+    An empty folder the person picked as their default is still in use: deleting
+    it would leave every later New chat unfiled. It is kept like a folder a live
+    session sits in, so its ancestors stay too.
+
+    Raises, like :func:`channel_folder_names`, when the dashboard section or the
+    whole document loaded degraded, since a default then reads as unset rather
+    than unknown. Blocking (config I/O).
+    """
+    cfg = KiroCrewConfig.load()
+    degraded = cfg.degraded_sections
+    if DEGRADED_WHOLE_CONFIG in degraded or "dashboard" in degraded:
+        raise _ConfigUnreadable(f"degraded config sections: {sorted(degraded)}")
+    configured = getattr(cfg.dashboard, "default_session_folder", "")
+    return {configured} if isinstance(configured, str) and configured else set()
 
 
 def _keeps_itself(
@@ -347,9 +368,11 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
             raise _CronUnreadable() from exc
         try:
             names = await asyncio.to_thread(channel_folder_names)
+            default_ids = await asyncio.to_thread(default_session_folder_ids)
         except Exception as exc:  # noqa: BLE001 - fail closed, delete nothing
             raise _ConfigUnreadable() from exc
-        return jobs, names
+        # The default folder is kept the way a job's folder is: as occupied.
+        return jobs | default_ids, names
 
     if dry_run:
         # A preview only: the delete below re-reads everything under the lock.

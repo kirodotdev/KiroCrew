@@ -131,6 +131,9 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
                 self.dashboard_state.clear_update_progress()
                 self.dashboard_state.push_refresh("update_available")
             return
+        # Narrowed once for the nested pre-check, where the None test above
+        # does not carry over.
+        git_bin: str = _git
 
         # Detect current branch
         branch_proc = await asyncio.create_subprocess_exec(
@@ -337,291 +340,331 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
                 )
             return
 
-        # LAST-MOMENT REVALIDATION, after the fetch and immediately before the
-        # only destructive step. Everything checked so far was checked
-        # earlier: the availability verdict came from a separate pass, and
-        # the config probe ran before the fetch. A checkout is a live tree —
-        # a developer can commit, or repo config can be rewritten, in the
-        # window between those checks and this reset. `reset --hard` is not
-        # recoverable from, so the two facts that decide whether it destroys
-        # anything are re-read here rather than trusted from before.
-        #
-        # 1. Local commits. `git status --porcelain` below reports
-        #    working-tree edits, NOT commits, and the `git diff` above is
-        #    satisfied by any difference in either direction — so a checkout
-        #    that is ahead of origin passes both and then loses those commits.
-        # Counted against `target` — the OID the reset will use — not against
-        # `origin/<branch>`. A ref is re-resolved per command, so a concurrent
-        # fetch could advance it, make this read zero against the new tip, and
-        # leave the reset discarding commits relative to the old one.
-        ahead = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: commits_ahead(proj, target)
-        )
-        if ahead != 0:
-            logger.warning(
-                "Auto-update: skipping — %s is ahead of origin/%s by %s commit(s); "
-                "a reset would discard them. Run `kirocrew update` to decide.",
-                branch,
-                branch,
-                "an unknown number of" if ahead is None else ahead,
-            )
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
-            return
+        async def _refused_before_reset() -> bool:
+            """Every refusal ahead of the reset; True when one refused and reported.
 
-        # 2. The work tree, and the repo-named exec drivers, re-read after the
-        #    fetch. The earlier probe is a check-then-use otherwise: config
-        #    rewritten in between would redirect this reset, or hand the
-        #    checkout's own driver to the command that performs it.
-        exec_config_now = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: repo_exec_config_reason(proj)
-        )
-        if exec_config_now:
-            logger.warning("Auto-update refused before reset: %s", exec_config_now)
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
-            return
-
-        # 3. Uncommitted tracked edits. REFUSE, like the two checks above —
-        #    logging a warning and resetting anyway would make an unattended
-        #    boot-time update the one code path that could silently destroy a
-        #    developer's uncommitted work. `reset --hard`
-        #    is not recoverable and nothing here has the standing to make
-        #    that trade on the developer's behalf: the count check one screen
-        #    up already refuses for COMMITTED work and defers to `kirocrew
-        #    update`, and uncommitted work is the strictly more fragile case
-        #    (a discarded commit is at least recoverable from the reflog; an
-        #    uncommitted edit is gone). The manual path keeps the destructive
-        #    semantics, because there a human chose them.
-        #
-        #    Untracked files are excluded: `reset --hard` preserves them, so
-        #    task specs and notes are not a reason to refuse.
-        status_proc = await asyncio.create_subprocess_exec(
-            _git,
-            "status",
-            "--porcelain",
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
-        )
-        try:
-            status_out, _ = await asyncio.wait_for(status_proc.communicate(), timeout=10)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(status_proc)
-            raise
-        if status_proc.returncode != 0:
-            # Cannot prove the tree is clean, and the next step is
-            # irreversible — treat an unreadable status as dirty.
-            logger.warning(
-                "Auto-update: skipping — could not read the work-tree status of %s; "
-                "a reset could discard uncommitted changes. Run `kirocrew update`.",
-                loggable_path(proj),
-            )
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
-            return
-        tracked = [
-            ln
-            for ln in (status_out or b"").decode(errors="replace").splitlines()
-            if ln.strip() and not ln.startswith("??")
-        ]
-        if tracked:
-            logger.warning(
-                "Auto-update: skipping — %s has %s uncommitted tracked change(s); "
-                "a reset would discard them. Run `kirocrew update` to decide.",
-                loggable_path(proj),
-                len(tracked),
-            )
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
-            return
-
-        # 3b. Tracked edits git was TOLD not to look at. `status --porcelain`
-        #     above honours `assume-unchanged` / `skip-worktree` and reports a
-        #     clean tree for an edited file, while `reset --hard` still
-        #     overwrites it -- so check 3 alone cannot see this loss.
-        hidden = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), lambda: hidden_worktree_edits(proj)
-        )
-        if hidden is None or hidden:
-            logger.warning(
-                "Auto-update: skipping — %s has %s tracked change(s) hidden by "
-                "assume-unchanged/skip-worktree (e.g. %s); a reset would discard "
-                "them. Run `kirocrew update` to decide.",
-                loggable_path(proj),
-                "an unknown number of" if hidden is None else len(hidden),
-                loggable_path(hidden[0]) if hidden else "unknown",
-            )
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
-            return
-
-        # 4. Untracked files that the TARGET would create. `reset --hard`
-        #    leaves untracked files alone ONLY while they do not collide with
-        #    a path the target adds -- where it does, the local file is
-        #    overwritten. `git status --porcelain` reports such a file as
-        #    `??`, which check 3 deliberately skips, so this is the one
-        #    data-loss case that survives a "clean" tracked tree. Verified:
-        #    upstream adds `newfile.txt`, a local untracked `newfile.txt` is
-        #    replaced by the upstream content.
-        #
-        #    Detected rather than prevented by switching to `merge --ff-only`:
-        #    the reset semantics are deliberate (documented as discarding
-        #    tracked edits) and this path keeps them. A collision is a refusal
-        #    for the same reason as the three above -- it is unrecoverable and
-        #    unattended.
-        added_proc = await asyncio.create_subprocess_exec(
-            _git,
-            "diff",
-            "--name-only",
-            "--diff-filter=A",
-            # Rename detection is ON by default for porcelain diffs, and it
-            # DEFEATS this guard: a pure `git mv` upstream is reported as a
-            # single `R` entry, which `--diff-filter=A` excludes, so the
-            # destination path never appears as added. Verified — upstream
-            # renaming `a.txt` to `b.txt` yields `R100` and an EMPTY added
-            # list, while an untracked local `b.txt` is still overwritten by
-            # the reset. `--no-renames` decomposes the rename into a delete
-            # plus an add, which is what this check needs to see.
-            "--no-renames",
-            "-z",
-            "HEAD",
-            target,
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
-        )
-        try:
-            added_out, _ = await asyncio.wait_for(added_proc.communicate(), timeout=10)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(added_proc)
-            raise
-        if added_proc.returncode != 0:
-            logger.warning(
-                "Auto-update: skipping — could not list the paths %s would add; "
-                "a reset could overwrite untracked files. Run `kirocrew update`.",
-                branch,
-            )
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
-            return
-        # `os.fsdecode`, NOT `.decode(errors="replace")`: a path byte that is
-        # not valid UTF-8 becomes U+FFFD under `replace`, and the resulting
-        # name does not exist on disk — so the check answers "no collision"
-        # for a file it is looking straight at. Verified: a `bad\xffname.txt`
-        # decodes to `bad\ufffdname.txt` (lexists False) under `replace` and
-        # to `bad\udcffname.txt` (lexists True) under `fsdecode`, and the
-        # reset overwrote it. `fsdecode` round-trips through surrogateescape,
-        # which is what the os functions below need.
-        added_names = [os.fsdecode(raw) for raw in (added_out or b"").split(b"\0") if raw]
-
-        def _obstructions(name: str) -> bool:
-            """Whether *name* collides with something already on disk.
-
-            Two shapes, both unrecoverable and both invisible to check 3:
-
-            * the path ITSELF exists untracked, and the reset overwrites it;
-            * an ANCESTOR exists as a non-directory. When the target adds
-              `pkg/mod.py` and `pkg` is locally an untracked FILE, git must
-              replace that file with a directory — `lexists("pkg/mod.py")` is
-              False, so checking only the full path misses it. Verified: the
-              untracked `pkg` was destroyed while the full-path check passed.
+            A checkout is a live tree, and `reset --hard` is not recoverable
+            from, so these are re-read rather than trusted from the earlier
+            availability pass and config probe. Called twice, around the
+            memory copy: see there.
             """
-            full = os.path.join(proj, name)
-            if os.path.lexists(full):
+            # 1. Local commits. `git status --porcelain` below reports
+            #    working-tree edits, NOT commits, and the `git diff` above is
+            #    satisfied by any difference in either direction — so a checkout
+            #    that is ahead of origin passes both and then loses those commits.
+            # Counted against `target` — the OID the reset will use — not against
+            # `origin/<branch>`. A ref is re-resolved per command, so a concurrent
+            # fetch could advance it, make this read zero against the new tip, and
+            # leave the reset discarding commits relative to the old one.
+            ahead = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: commits_ahead(proj, target)
+            )
+            if ahead != 0:
+                logger.warning(
+                    "Auto-update: skipping — %s is ahead of origin/%s by %s commit(s); "
+                    "a reset would discard them. Run `kirocrew update` to decide.",
+                    branch,
+                    branch,
+                    "an unknown number of" if ahead is None else ahead,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
                 return True
-            parent = os.path.dirname(name)
-            while parent:
-                candidate = os.path.join(proj, parent)
-                # Link check FIRST: `isdir` follows the link, so an untracked
-                # symlink-to-directory reported "directory, not an
-                # obstruction" -- and the reset then replaced the developer's
-                # symlink with a real directory. Verified against real git.
-                #
-                # `is_link_or_junction`, not `os.path.islink`: `islink` returns
-                # False for a Windows JUNCTION, so a junction ancestor would
-                # read as a plain directory and the reset would write through
-                # it, outside the checkout. AGENTS.md names this helper as the
-                # required form for exactly this reason, and its own docstring
-                # describes this failure -- using the bare `islink` here was a
-                # rule violation, not a judgement call.
-                if platform_compat.is_link_or_junction(candidate):
+
+            # 2. The work tree, and the repo-named exec drivers, re-read after the
+            #    fetch. The earlier probe is a check-then-use otherwise: config
+            #    rewritten in between would redirect this reset, or hand the
+            #    checkout's own driver to the command that performs it.
+            exec_config_now = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: repo_exec_config_reason(proj)
+            )
+            if exec_config_now:
+                logger.warning("Auto-update refused before reset: %s", exec_config_now)
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
+            # 3. Uncommitted tracked edits. REFUSE, like the two checks above —
+            #    logging a warning and resetting anyway would make an unattended
+            #    boot-time update the one code path that could silently destroy a
+            #    developer's uncommitted work. `reset --hard`
+            #    is not recoverable and nothing here has the standing to make
+            #    that trade on the developer's behalf: the count check one screen
+            #    up already refuses for COMMITTED work and defers to `kirocrew
+            #    update`, and uncommitted work is the strictly more fragile case
+            #    (a discarded commit is at least recoverable from the reflog; an
+            #    uncommitted edit is gone). The manual path keeps the destructive
+            #    semantics, because there a human chose them.
+            #
+            #    Untracked files are excluded: `reset --hard` preserves them, so
+            #    task specs and notes are not a reason to refuse.
+            status_proc = await asyncio.create_subprocess_exec(
+                git_bin,
+                "status",
+                "--porcelain",
+                cwd=proj,
+                env=_git_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+            )
+            try:
+                status_out, _ = await asyncio.wait_for(status_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(status_proc)
+                raise
+            if status_proc.returncode != 0:
+                # Cannot prove the tree is clean, and the next step is
+                # irreversible — treat an unreadable status as dirty.
+                logger.warning(
+                    "Auto-update: skipping — could not read the work-tree status of %s; "
+                    "a reset could discard uncommitted changes. Run `kirocrew update`.",
+                    loggable_path(proj),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+            tracked = [
+                ln
+                for ln in (status_out or b"").decode(errors="replace").splitlines()
+                if ln.strip() and not ln.startswith("??")
+            ]
+            if tracked:
+                logger.warning(
+                    "Auto-update: skipping — %s has %s uncommitted tracked change(s); "
+                    "a reset would discard them. Run `kirocrew update` to decide.",
+                    loggable_path(proj),
+                    len(tracked),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
+            # 3b. Tracked edits git was TOLD not to look at. `status --porcelain`
+            #     above honours `assume-unchanged` / `skip-worktree` and reports a
+            #     clean tree for an edited file, while `reset --hard` still
+            #     overwrites it -- so check 3 alone cannot see this loss.
+            hidden = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), lambda: hidden_worktree_edits(proj)
+            )
+            if hidden is None or hidden:
+                logger.warning(
+                    "Auto-update: skipping — %s has %s tracked change(s) hidden by "
+                    "assume-unchanged/skip-worktree (e.g. %s); a reset would discard "
+                    "them. Run `kirocrew update` to decide.",
+                    loggable_path(proj),
+                    "an unknown number of" if hidden is None else len(hidden),
+                    loggable_path(hidden[0]) if hidden else "unknown",
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
+            # 4. Untracked files that the TARGET would create. `reset --hard`
+            #    leaves untracked files alone ONLY while they do not collide with
+            #    a path the target adds -- where it does, the local file is
+            #    overwritten. `git status --porcelain` reports such a file as
+            #    `??`, which check 3 deliberately skips, so this is the one
+            #    data-loss case that survives a "clean" tracked tree. Verified:
+            #    upstream adds `newfile.txt`, a local untracked `newfile.txt` is
+            #    replaced by the upstream content.
+            #
+            #    Detected rather than prevented by switching to `merge --ff-only`:
+            #    the reset semantics are deliberate (documented as discarding
+            #    tracked edits) and this path keeps them. A collision is a refusal
+            #    for the same reason as the three above -- it is unrecoverable and
+            #    unattended.
+            added_proc = await asyncio.create_subprocess_exec(
+                git_bin,
+                "diff",
+                "--name-only",
+                "--diff-filter=A",
+                # Rename detection is ON by default for porcelain diffs, and it
+                # DEFEATS this guard: a pure `git mv` upstream is reported as a
+                # single `R` entry, which `--diff-filter=A` excludes, so the
+                # destination path never appears as added. Verified — upstream
+                # renaming `a.txt` to `b.txt` yields `R100` and an EMPTY added
+                # list, while an untracked local `b.txt` is still overwritten by
+                # the reset. `--no-renames` decomposes the rename into a delete
+                # plus an add, which is what this check needs to see.
+                "--no-renames",
+                "-z",
+                "HEAD",
+                target,
+                cwd=proj,
+                env=_git_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+            )
+            try:
+                added_out, _ = await asyncio.wait_for(added_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(added_proc)
+                raise
+            if added_proc.returncode != 0:
+                logger.warning(
+                    "Auto-update: skipping — could not list the paths %s would add; "
+                    "a reset could overwrite untracked files. Run `kirocrew update`.",
+                    branch,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+            # `os.fsdecode`, NOT `.decode(errors="replace")`: a path byte that is
+            # not valid UTF-8 becomes U+FFFD under `replace`, and the resulting
+            # name does not exist on disk — so the check answers "no collision"
+            # for a file it is looking straight at. Verified: a `bad\xffname.txt`
+            # decodes to `bad\ufffdname.txt` (lexists False) under `replace` and
+            # to `bad\udcffname.txt` (lexists True) under `fsdecode`, and the
+            # reset overwrote it. `fsdecode` round-trips through surrogateescape,
+            # which is what the os functions below need.
+            added_names = [os.fsdecode(raw) for raw in (added_out or b"").split(b"\0") if raw]
+
+            def _obstructions(name: str) -> bool:
+                """Whether *name* collides with something already on disk.
+
+                Two shapes, both unrecoverable and both invisible to check 3:
+
+                * the path ITSELF exists untracked, and the reset overwrites it;
+                * an ANCESTOR exists as a non-directory. When the target adds
+                  `pkg/mod.py` and `pkg` is locally an untracked FILE, git must
+                  replace that file with a directory — `lexists("pkg/mod.py")` is
+                  False, so checking only the full path misses it. Verified: the
+                  untracked `pkg` was destroyed while the full-path check passed.
+                """
+                full = os.path.join(proj, name)
+                if os.path.lexists(full):
                     return True
-                if os.path.lexists(candidate) and not os.path.isdir(candidate):
-                    return True
-                parent = os.path.dirname(parent)
+                parent = os.path.dirname(name)
+                while parent:
+                    candidate = os.path.join(proj, parent)
+                    # Link check FIRST: `isdir` follows the link, so an untracked
+                    # symlink-to-directory reported "directory, not an
+                    # obstruction" -- and the reset then replaced the developer's
+                    # symlink with a real directory. Verified against real git.
+                    #
+                    # `is_link_or_junction`, not `os.path.islink`: `islink` returns
+                    # False for a Windows JUNCTION, so a junction ancestor would
+                    # read as a plain directory and the reset would write through
+                    # it, outside the checkout. AGENTS.md names this helper as the
+                    # required form for exactly this reason, and its own docstring
+                    # describes this failure -- using the bare `islink` here was a
+                    # rule violation, not a judgement call.
+                    if platform_compat.is_link_or_junction(candidate):
+                        return True
+                    if os.path.lexists(candidate) and not os.path.isdir(candidate):
+                        return True
+                    parent = os.path.dirname(parent)
+                return False
+
+            # Offloaded: `_obstructions` walks each added path's ancestors with
+            # synchronous `os.path` probes, so a large update would run an
+            # unbounded stat walk ON THE EVENT LOOP and stall every chat and the
+            # heartbeat (`no-blocking-call-on-event-loop`).
+            collisions = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                lambda: [name for name in added_names if _obstructions(name)],
+            )
+            if collisions:
+                logger.warning(
+                    "Auto-update: skipping — %s would add %s path(s) that already "
+                    "exist untracked here (e.g. %s); a reset would overwrite them. "
+                    "Run `kirocrew update` to decide.",
+                    branch,
+                    len(collisions),
+                    # `loggable_path`, not the raw name: this is the one log line
+                    # that carries a filename straight from git output, and a
+                    # non-UTF-8 byte in it would make logging DROP the record --
+                    # silently losing the evidence that the update refused here.
+                    loggable_path(collisions[0]),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
+            # 5. Interpreter floor of the TARGET revision, read from the fetched
+            #    commit itself. pip would refuse the reinstall below on the same
+            #    floor, but only after the reset has moved the tree to code this
+            #    venv cannot import -- a state every boot then re-enters, because
+            #    the next check sees the commit already applied and never retries.
+            #    Refuse before the reset, with the remedy, and leave the tree.
+            try:
+                floor_breach = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    lambda: dep_sync.incoming_python_floor_breach(
+                        Path(proj), target, Path(sys.executable), git_bin=git_bin, env=_git_env
+                    ),
+                )
+            except dep_sync.IncomingFloorUnreadable as exc:
+                # A floor git could not read is not a floor that is absent:
+                # refusing here is what keeps a git hiccup from re-admitting
+                # the stranded state this whole gate exists to prevent.
+                floor_breach = (
+                    "could not read the incoming revision's interpreter "
+                    f"requirement ({exc}); leaving the checkout where it is"
+                )
+            if floor_breach:
+                # Redact first, cap last -- the same treatment every sibling push
+                # gives text it did not author. The refusal quotes the remote's
+                # `requires-python` verbatim and paths from the local install.
+                floor_breach, _ = redact_exfiltration_urls(floor_breach)
+                floor_breach, _ = redact_credentials(floor_breach)
+                floor_breach = floor_breach[:500]
+                logger.warning("Auto-update refused: %s", floor_breach)
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "failed", f"Update refused: {floor_breach}"
+                    )
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
             return False
 
-        # Offloaded: `_obstructions` walks each added path's ancestors with
-        # synchronous `os.path` probes, so a large update would run an
-        # unbounded stat walk ON THE EVENT LOOP and stall every chat and the
-        # heartbeat (`no-blocking-call-on-event-loop`).
-        collisions = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            lambda: [name for name in added_names if _obstructions(name)],
-        )
-        if collisions:
-            logger.warning(
-                "Auto-update: skipping — %s would add %s path(s) that already "
-                "exist untracked here (e.g. %s); a reset would overwrite them. "
-                "Run `kirocrew update` to decide.",
-                branch,
-                len(collisions),
-                # `loggable_path`, not the raw name: this is the one log line
-                # that carries a filename straight from git output, and a
-                # non-UTF-8 byte in it would make logging DROP the record --
-                # silently losing the evidence that the update refused here.
-                loggable_path(collisions[0]),
-            )
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-                self.dashboard_state.push_refresh("update_available")
+        # Every refusal runs before the copy, so a checkout they keep refusing
+        # spends no copy (each one rotates a backup out of `memory.backup_keep`),
+        # and again after it, so a change made while the copy ran is caught
+        # before the reset.
+        if await _refused_before_reset():
             return
 
-        # 5. Interpreter floor of the TARGET revision, read from the fetched
-        #    commit itself. pip would refuse the reinstall below on the same
-        #    floor, but only after the reset has moved the tree to code this
-        #    venv cannot import -- a state every boot then re-enters, because
-        #    the next check sees the commit already applied and never retries.
-        #    Refuse before the reset, with the remedy, and leave the tree.
-        try:
-            floor_breach = await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(),
-                lambda: dep_sync.incoming_python_floor_breach(
-                    Path(proj), target, Path(sys.executable), git_bin=_git, env=_git_env
-                ),
+        # A fresh copy of every memory store, the same copy-or-refuse step
+        # `kirocrew update` takes. Nobody is watching this path, so a copy that
+        # did not land skips the update and says so; it never resets blind and
+        # never exits the gateway. Retried on the next check.
+        from kiro_crew.platform.wheel_apply import (
+            snapshot_memory_before_update,
+            snapshot_refusal,
+        )
+
+        copied, snapshot_failure = await asyncio.to_thread(snapshot_memory_before_update)
+        if snapshot_failure:
+            snapshot_failure, _ = redact_exfiltration_urls(snapshot_failure)
+            snapshot_failure, _ = redact_credentials(snapshot_failure)
+            snapshot_failure = snapshot_failure[:500]
+            logger.warning(
+                "Auto-update skipped: pre-update memory snapshot failed: %s", snapshot_failure
             )
-        except dep_sync.IncomingFloorUnreadable as exc:
-            # A floor git could not read is not a floor that is absent:
-            # refusing here is what keeps a git hiccup from re-admitting
-            # the stranded state this whole gate exists to prevent.
-            floor_breach = (
-                "could not read the incoming revision's interpreter "
-                f"requirement ({exc}); leaving the checkout where it is"
+            message = snapshot_refusal(snapshot_failure)
+            self._notice_wheel_update_once(
+                f"snapshot_failed:{target}", "Kiro Crew update skipped", message
             )
-        if floor_breach:
-            # Redact first, cap last -- the same treatment every sibling push
-            # gives text it did not author. The refusal quotes the remote's
-            # `requires-python` verbatim and paths from the local install.
-            floor_breach, _ = redact_exfiltration_urls(floor_breach)
-            floor_breach, _ = redact_credentials(floor_breach)
-            floor_breach = floor_breach[:500]
-            logger.warning("Auto-update refused: %s", floor_breach)
             if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed", f"Update refused: {floor_breach}"
-                )
+                self.dashboard_state.push_update_progress("failed", message)
                 self.dashboard_state.push_refresh("update_available")
+            return
+        logger.info("Auto-update: pre-update memory snapshot, %d store(s) copied", copied)
+
+        # LAST-MOMENT REVALIDATION: the same refusals again, now the last thing
+        # ahead of the reset, which is the only destructive step.
+        if await _refused_before_reset():
             return
 
         # From the reset on, this step rewrites the install it serves from,

@@ -202,7 +202,7 @@ _LOADER_SIGNATURES = {
     "_max_triggered_now": "(self) -> 'int'",
     "_on_config_change": "(self, change: \"'live.ConfigChange'\") -> 'None'",
     "_owned_hint": "(self, skill_file: 'Path') -> 'bool'",
-    "_owning_app": "(self, name: 'str', skill_file: 'Path') -> 'str | None'",
+    "_owning_app": "(self, name: 'str', skill_file: 'Path', within: 'str | None' = None) -> 'str | None'",
     "_parse_frontmatter": "(path: 'Path') -> 'dict[str, str]'",
     "_parse_frontmatter_text": "(content: 'str') -> 'dict[str, str]'",
     "_pending_root": "(self) -> 'Path'",

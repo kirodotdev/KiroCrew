@@ -60,25 +60,35 @@ class TestTheRecordIsOnEveryWriteFloor:
     work-dir paths and digests, not a secret.
     """
 
+    DIR = "seed-provenance"
     LEAF = "settings_seeds.json"
 
     def test_the_sidecar_is_the_leaf_the_floors_name(self):
-        # The floors are spelled as a filename, so they only hold if that is the name
-        # the module actually publishes.
+        # The floors are spelled as names, so they only hold if those are the names
+        # the module actually publishes under and falls back to.
         assert sp._sidecar_path().name == self.LEAF
+        assert sp._sidecar_path().parent.name == self.DIR == sp.SIDECAR_DIR_NAME
 
-    def test_the_file_edit_gate_refuses_a_write_and_allows_a_read(self):
+    @pytest.mark.parametrize("inside", ("seed-provenance", "seed-provenance/settings_seeds.json"))
+    def test_the_file_edit_gate_refuses_a_write_and_allows_a_read(self, inside):
         for prefix in security.crew_home_prefixes():
-            path = f"~/{prefix}/{self.LEAF}"
-            assert security.is_sensitive_write_path(path) is True, path
-            assert security.is_sensitive_path(path) is False, path
+            for leaf in (inside, self.LEAF):
+                path = f"~/{prefix}/{leaf}"
+                assert security.is_sensitive_write_path(path) is True, path
+                assert security.is_sensitive_path(path) is False, path
 
     def test_the_sandbox_seals_it_readonly_even_when_absent(self):
         # The kernel floor under the deny rules, which a runtime-constructed spelling
         # (``$(printf ...)``) walks past. READONLY, not hidden -- the write is the
         # risk. Precreated because ``mount(2)`` cannot seal a path that is not there,
         # and this sidecar does not exist until a claude session has seeded a work
-        # dir: on every install that has not, the name is writable.
+        # dir: on every install that has not, the name is writable. The directory is
+        # what holds the record now; the old top-level file stays sealed because a
+        # process started before the upgrade still reads it.
+        assert self.DIR in sandbox._CREW_READONLY_LEAVES
+        assert self.DIR in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        assert self.DIR in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert self.DIR not in sandbox._CREW_SANDBOX_VISIBLE_LEAVES
         assert self.LEAF in sandbox._CREW_READONLY_LEAVES
         assert self.LEAF in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
         assert self.LEAF not in sandbox._CREW_SANDBOX_VISIBLE_LEAVES
@@ -99,6 +109,13 @@ class TestTheRecordIsOnEveryWriteFloor:
         sp._load()
         assert sp._RECORDS == {}
         assert sp.recorded(_settings(tmp_path), _OWNER) is None
+
+    def test_an_empty_materialized_directory_means_no_records(self, tmp_path, monkeypatch):
+        """The precreated empty directory reads as no records, as an absent one does."""
+        monkeypatch.setattr(sp, "peek_data_home", lambda: tmp_path)
+        (tmp_path / self.DIR).mkdir()
+
+        assert sp._read_disk_seeds() == {}
 
 
 class TestOwnershipTracksTheFilesystem:

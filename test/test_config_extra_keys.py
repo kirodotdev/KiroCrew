@@ -272,6 +272,42 @@ def test_retired_keys_are_purged_not_preserved(cfg_home):
     assert written["language_code"] == "fr-FR"
 
 
+def test_the_retired_knowledge_chunk_budget_is_purged_not_mistaken_for_a_typo(cfg_home, caplog):
+    """auto_ingest_chunk_budget, auto_register_project_docs and max_sources all
+    configured the automatic folder-registration paths, which are gone. None is a
+    rename of a surviving field, so each must be dropped on save rather than
+    preserved -- and auto_ingest_chunk_budget must not be offered the unrelated
+    folder_ingest_chunk_budget as a close-match correction."""
+    _write(
+        cfg_home,
+        {
+            "knowledge": {
+                "auto_ingest_chunk_budget": 150,
+                "auto_register_project_docs": True,
+                "max_sources": 50,
+                "folder_ingest_chunk_budget": 250,
+            }
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        cfg = KiroCrewConfig.load()
+
+    assert "knowledge" not in cfg._extra_keys
+    # No retired key resembles the live folder budget: no misspelling warning.
+    assert not any(
+        k in w
+        for w in _misspelling_warnings(caplog)
+        for k in ("auto_ingest_chunk_budget", "auto_register_project_docs", "max_sources")
+    )
+
+    written = cfg.to_dict()["knowledge"]
+    for dead in ("auto_ingest_chunk_budget", "auto_register_project_docs", "max_sources"):
+        assert dead not in written
+    # The live setting that shares the section round-trips untouched.
+    assert cfg.knowledge.folder_ingest_chunk_budget == 250
+    assert written["folder_ingest_chunk_budget"] == 250
+
+
 def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     """agent.conductor_skill (the dashboard's old "Orchestrator Mode" toggle)
     generated an always-on delegation skill; crew routing now goes through the

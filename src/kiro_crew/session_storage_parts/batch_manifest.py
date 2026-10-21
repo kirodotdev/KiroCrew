@@ -156,7 +156,7 @@ def _read_manifest(
     """Parse a batch manifest into its header and session entries.
 
     Streams the file line by line rather than materialising it as one string; the
-    entries list itself is still O(sessions), which the two callers that rewrite or
+    entries list itself is still O(sessions), which the callers that rewrite or
     enumerate the manifest genuinely need. Callers that need only aggregates should
     use :func:`_summarize_manifest` instead. A trailing partial line (a crash
     mid-append) is skipped rather than failing the whole batch — every complete

@@ -37,7 +37,6 @@ from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory import INDEX_DB_FILE
 from kiro_crew.memory_stores import MEMORY_DB_FILE, named_store_product_file
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Suffixes read as text. Everything else is either a database (handled through SQL) or
 # opaque bytes, and guessing at an unknown binary format is how a bundle gets corrupted.
@@ -320,8 +319,9 @@ def _scrub(text: str) -> tuple[str, int]:
     The shared pair runs first so its warnings stay the primary signal; the egress-only
     pass then closes the shapes it does not recognise.
     """
-    cleaned, cred_warnings = redact_credentials(text)
-    cleaned, url_warnings = redact_exfiltration_urls(cleaned)
+    from kiro_crew.security import redact_with_findings
+
+    cleaned, cred_warnings, url_warnings = redact_with_findings(text)
     cleaned, extra = _scrub_unrecognised(cleaned)
     return cleaned, len(cred_warnings) + len(url_warnings) + extra
 

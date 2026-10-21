@@ -26,9 +26,7 @@ from ai_review_workflows_helpers import (
     _bash,
     _child_env,
     _proc_log,
-    _shell_function,
     _snapshot_script,
-    _step_script,
     _stub_path,
     _workflow,
 )
@@ -621,75 +619,6 @@ class TestStampBlockIsByteIdenticalAcrossLanes:
         evidence_shape = next(iter({tuple(v) for v in by_class[True].values()}))
         assert evidence_shape[1] == STAMP_HEADING, evidence_shape
         assert evidence_shape[3] == STAMP_ECHO, evidence_shape
-
-
-class TestStampHeadingClosesTheConcernsCapture:
-    """Execute the real `concerns_digest` over a stamped body.
-
-    That awk captures to end-of-file once it is inside a `### Watch` section, so a
-    body whose last section is Watch would carry the stamp into the CONCERNS job
-    annotation. A `### ` heading that is not Watch closes the capture, which is
-    why the stamp has one. String-matching the heading proves nothing about the
-    awk, so run it.
-    """
-
-    def _digest_fn(self) -> str:
-        script = _step_script(_workflow("design-review.yml"), "Post design review summary")
-        return _shell_function(script, "concerns_digest")
-
-    def _run(self, tmp_path: Path, body: str) -> str:
-        bash = _bash()
-        if bash is None:
-            pytest.skip("concerns_digest is Bash; skip where Bash is absent")
-        target = tmp_path / "comment.md"
-        target.write_text(body, encoding="utf-8", newline="\n")
-        script = tmp_path / "run.sh"
-        script.write_text(
-            self._digest_fn() + '\nconcerns_digest "$1" "Design-Verdict:" "[DESIGN-REVIEWED]"\n',
-            encoding="utf-8",
-            newline="\n",
-        )
-        result = subprocess.run(
-            [bash, str(script), str(target)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
-            cwd=tmp_path,
-        )
-        assert result.returncode == 0, _proc_log(result)
-        return result.stdout
-
-    #: A body that ends in a Watch section, which is the case that leaks.
-    _WATCH_BODY = (
-        "<!-- design-review -->\n"
-        "## Design Review\n\n"
-        "Design-Verdict: CONCERNS\n\n"
-        "The premise holds but the surface is wider than the problem.\n\n"
-        "### Watch\n"
-        "- the retry budget on the second call\n"
-    )
-    _STAMP = (
-        "\n### Description read\n\n"
-        "[DESCRIPTION-READ] " + "a" * 64 + "\n\n"
-        "_That sha256 names the PR description this verdict read._\n"
-    )
-
-    def test_the_heading_keeps_the_stamp_out_of_the_annotation(self, tmp_path: Path) -> None:
-        digest = self._run(tmp_path, self._WATCH_BODY + self._STAMP)
-        assert "the retry budget on the second call" in digest
-        assert "DESCRIPTION-READ" not in digest, digest
-
-    def test_without_the_heading_the_stamp_leaks(self, tmp_path: Path) -> None:
-        """The control that makes the test above mean something.
-
-        Same body, same awk, stamp emitted with no heading: the digest swallows
-        it. That is what the heading prevents, so if this case ever stops leaking
-        the assertion above has stopped discriminating.
-        """
-        headless = self._STAMP.replace("### Description read\n\n", "")
-        digest = self._run(tmp_path, self._WATCH_BODY + headless)
-        assert "DESCRIPTION-READ" in digest, digest
 
 
 class TestCaptureDigestNamesTheModelsInput:

@@ -1034,7 +1034,7 @@ async def _dispatch_events(
             # streaming (the initial `tool_call` arrives with empty input and
             # generic title like "Terminal"/"grep").  Yield as a refinement
             # event so the dashboard pill + persisted message can be
-            # patched in place — see `EVENT_TOOL_CALL_UPDATE` in chat_runner.
+            # patched in place — see `_on_tool_call_update` in dashboard/chat_turn/tool_rows.py.
             tool_refine_event = self._extract_tool_call_refinement(msg)
             if tool_refine_event:
                 await self._skill_reads.note(tool_refine_event)

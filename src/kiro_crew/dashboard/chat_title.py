@@ -32,6 +32,7 @@ from kiro_crew.label_guard import (
     unspaced_script_chars,
 )
 from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -46,10 +47,13 @@ _TITLE_MAX_ATTEMPTS = 5
 # rename — final: the background refresh never touches it. Persisted as
 # ``title_origin`` next to the title and rehydrated in chat_persistence; a
 # legacy title with no stored origin rehydrates as "user" so a possibly-manual
-# name is never rewritten.
+# name is never rewritten. "member" marks the crewmate name stored on its own DM
+# thread (``name_member_thread``): final for every background path like "user",
+# but opening the thread may replace it, so a renamed crewmate's thread follows.
 _TITLE_ORIGIN_AUTO = "auto"
 _TITLE_ORIGIN_USER = "user"
-_TITLE_ORIGINS = frozenset({_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER})
+_TITLE_ORIGIN_MEMBER = "member"
+_TITLE_ORIGINS = frozenset({_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER, _TITLE_ORIGIN_MEMBER})
 
 # Leading marker a fork child's title carries (``chat_fork.fork_slot``). The
 # sidebar renders no separate fork glyph, so the marker is how a fork stays
@@ -1172,6 +1176,17 @@ def _with_ticket_prefix(summary: str, key: str) -> str:
 RESTORED_TURN_META_KEY = "turnProvenanceRestored"
 
 
+def _is_member_thread(slot: Any) -> bool:
+    """Whether *slot* is a crewmate's own DM thread (``mode == "member"``).
+
+    That thread is one long-lived conversation with one crewmate, and the
+    sidebar names it after the crewmate, so no background path may produce or
+    overwrite a title for it. A session a crewmate opens for its workers is an
+    ordinary slot (its mode is not ``member``) and is titled as usual.
+    """
+    return getattr(slot, "mode", "") == DM_SLOT_MODE
+
+
 def _counts_as_user_turn(slot: _ChatSlot, message: dict[str, Any]) -> bool:
     """Whether *message* is a turn of the session's own user, for titling.
 
@@ -1230,6 +1245,8 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     already writes ``meta_line["title"]`` for temporary slots regardless of
     this path — those sessions keep a transcript on disk for tab recovery.
     """
+    if _is_member_thread(slot):
+        return
     if slot._titled:
         return
     if slot._title_in_flight:
@@ -1412,7 +1429,12 @@ def _refresh_blocked(slot: _ChatSlot) -> bool:
     It needs an AUTO title (a manual rename locks it out) and no attempt already
     in flight.
     """
-    return not slot._titled or slot._title_origin != _TITLE_ORIGIN_AUTO or slot._title_in_flight
+    return (
+        _is_member_thread(slot)
+        or not slot._titled
+        or slot._title_origin != _TITLE_ORIGIN_AUTO
+        or slot._title_in_flight
+    )
 
 
 async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
@@ -1699,8 +1721,11 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
     Shared by the sidebar route and the ``session_generate_title`` verb. Makes
     one titling-model call and changes nothing on the slot. ``""`` means the
     model and the heuristic fallback both had nothing better than the
-    placeholder, so the caller keeps the current title.
+    placeholder, so the caller keeps the current title. A crewmate's own DM
+    thread always answers ``""``: its name is the crewmate's, not generated.
     """
+    if _is_member_thread(slot):
+        return ""
     try:
         # Window the RECENT conversational tail: the user reaches for
         # "Regenerate title" when the current name no longer fits, so the
@@ -1815,6 +1840,43 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "title": ""})
 
     return web.json_response({"ok": True, "title": title})
+
+
+def name_member_thread(state: DashboardState, slot: Any, name: str) -> bool:
+    """Give a crewmate's own DM thread its crewmate's name as a final title.
+
+    A member thread is never titled by the background paths (``_is_member_thread``),
+    so without this it would have no stored title at all and every surface that
+    reads the title (header, tab title, command palette, history) would fall back
+    to the slot key. The origin is ``member``: the refresh is locked out like for a
+    rename, but this function may replace the title again, so a thread follows its
+    crewmate's display name the next time it is opened.
+
+    A title a person set (origin ``user``, whatever its text) is kept. An
+    untitled thread, a generated (``auto``) one and an earlier stored name take
+    the name. It runs each time the thread is opened, and it does not persist: a
+    write here would create a history line for a thread that has no turn yet, so
+    the new title reaches disk with the slot's next save. Returns whether the
+    title changed.
+    """
+    # A display name is config text: redact it like every other title before it is
+    # stored or broadcast (the roster masks a credential-shaped name the same way).
+    name, _ = redact_exfiltration_urls((name or "").strip()[:200])
+    name, _ = redact_credentials(name)
+    if not name:
+        return False
+    if slot._titled and slot._title_origin == _TITLE_ORIGIN_USER:
+        return False
+    if slot._titled and slot._title_origin == _TITLE_ORIGIN_MEMBER and slot.title == name:
+        return False
+    slot.title = name
+    slot._titled = True
+    slot._title_origin = _TITLE_ORIGIN_MEMBER
+    slot._title_low_signal = False
+    slot._title_epoch += 1
+    state.push_slot_title(slot.key, slot.title, full=False)
+    state.push_slot_patch(slot.key, ("title",))
+    return True
 
 
 async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bool:

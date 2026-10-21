@@ -879,8 +879,9 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | Field | Reader |
 |---|---|
 | both on-disk forms, the parser | `src/kiro_crew/agent_spec_format.py` |
-| `name`, `description`, `model`, `welcomeMessage`, the roster | `src/kiro_crew/agent_discovery.py` |
-| `resources` `skill://` | `src/kiro_crew/agent_discovery.py` (`skill_resource_uris`, `expand_skill_uri`, `skill_uri_for_path`, `agent_skill_globs`); a generated spec's own mapping: `src/kiro_crew/agent_materialization/skill_resources.py` |
+| reading a spec file at all: the agents directory, the fenced read, project-scope discovery, the caches and the directory revision | `src/kiro_crew/agent_discovery.py`, the facade the discovery readers in the next two rows are reached through too, over the owners in `src/kiro_crew/agent_discovery_parts/`: `spec_reads.py`, `project_agents.py`, `spec_snapshot.py`, `dir_revision.py`; new discovery code goes to the owner whose responsibility it is, listed in `agent_discovery_parts/__init__.py` |
+| `name`, `description`, `model`, `welcomeMessage`, the roster | `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`AgentInfo`, `spec_str`, `spec_model`, `spec_welcome_message`), `src/kiro_crew/agent_discovery_parts/agent_roster.py` (`list_agents`, `agent_model_map`, `agent_welcome_message`) |
+| `resources` `skill://` | `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`skill_resource_uris`, `expand_skill_uri`, `skill_uri_for_path`), `src/kiro_crew/agent_discovery_parts/skill_scope.py` (`agent_skill_globs`); a generated spec's own mapping: `src/kiro_crew/agent_materialization/skill_resources.py` |
 | `resources` `file://`, the injection decision | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`), `src/kiro_crew/context.py` (`_skills_injection_plan`) |
 | `tools`, `allowedTools`, `excludedTools`, `mcpServers`, `hooks`, `toolsSettings` — the default spec's composition and the rebuild order | `src/kiro_crew/agent.py` (`build_agent_config`, `_refresh_dynamic_fields`, `rebuild_agent_config`), the facade every writer below is reached through |
 | `hooks` — normalization and the kiro-cli object form | `src/kiro_crew/agent_materialization/kiro_hooks.py` |

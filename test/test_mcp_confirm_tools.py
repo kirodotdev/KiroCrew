@@ -13,6 +13,7 @@ server it names stays mounted but gets no ``allowedTools`` grant or
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -166,6 +167,90 @@ def test_confirm_tool_patterns_failed_read_of_a_file_naming_the_key_is_unknown(
     _home(tmp_path, monkeypatch, base=_TORN_WITH_KEY)
     _failing_load(monkeypatch)
     assert governance._confirm_tool_patterns() is None
+
+
+def _counting_load(monkeypatch) -> list[int]:
+    """Spy on ``KiroCrewConfig.load``: delegate to the real one, count the calls."""
+    from kiro_crew.config import live, loader
+
+    real = loader.KiroCrewConfig.__dict__["load"].__func__
+    calls: list[int] = []
+
+    def load(cls):
+        calls.append(1)
+        return real(cls)
+
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(load))
+    monkeypatch.setattr(governance, "_CONFIRM_PATTERNS_MEMO", None, raising=False)
+    return calls
+
+
+def test_confirm_tool_patterns_loads_once_while_the_files_are_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    """Every grant writer asks this before a snapshot exists; one load answers them all."""
+    _home(tmp_path, monkeypatch, base='{"hooks": {"confirm_tools": ["@atlassian"]}}')
+    calls = _counting_load(monkeypatch)
+    # The first load may stamp config.json once (a write-back), which is itself a
+    # change to the file; after that the files hold still.
+    assert governance._confirm_tool_patterns() == ("@atlassian",)
+    assert governance._confirm_tool_patterns() == ("@atlassian",)
+    settled = len(calls)
+    assert settled <= 2
+    for _ in range(50):
+        assert governance._confirm_tool_patterns() == ("@atlassian",)
+    assert len(calls) == settled
+
+
+def test_confirm_tool_patterns_reloads_after_the_config_file_changes(tmp_path, monkeypatch) -> None:
+    home = _home(tmp_path, monkeypatch, base='{"hooks": {"confirm_tools": ["@atlassian"]}}')
+    calls = _counting_load(monkeypatch)
+    assert governance._confirm_tool_patterns() == ("@atlassian",)
+    path = home / "config.json"
+    before = path.stat()
+    path.write_text('{"hooks": {"confirm_tools": ["@atlassian", "@github"]}}', encoding="utf-8")
+    # Set the stamp rather than wait for the clock to move.
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    assert governance._confirm_tool_patterns() == ("@atlassian", "@github")
+    assert len(calls) == 2
+    # An overlay appearing is a change too.
+    (home / "config.local.json").write_text('{"hooks": {"confirm_tools": []}}', encoding="utf-8")
+    assert governance._confirm_tool_patterns() == ()
+    assert len(calls) == 3
+
+
+def test_confirm_tool_patterns_reloads_after_an_in_process_save_the_fingerprint_misses(
+    tmp_path, monkeypatch
+) -> None:
+    """A save() invalidates the loader cache; the memo follows it, not the file stamp alone."""
+    from kiro_crew.config import loader
+    from kiro_crew.config.loader_document import _invalidate_config_cache
+
+    home = _home(tmp_path, monkeypatch, base='{"hooks": {"confirm_tools": ["@atlassian"]}}')
+    calls = _counting_load(monkeypatch)
+    # A coarse-timestamp filesystem that keeps the inode and size reports the
+    # same fingerprint across a same-size replacement; freeze it to say so.
+    frozen = loader._config_fingerprint()
+    monkeypatch.setattr(loader, "_config_fingerprint", lambda: frozen)
+    assert governance._confirm_tool_patterns() == ("@atlassian",)
+    (home / "config.json").write_text(
+        '{"hooks": {"confirm_tools": ["@githubXYZ"]}}', encoding="utf-8"
+    )
+    # What save() runs after it writes: only this tells the memo the file moved.
+    _invalidate_config_cache()
+    assert governance._confirm_tool_patterns() == ("@githubXYZ",)
+    assert len(calls) == 2
+
+
+def test_confirm_tool_patterns_never_reuses_a_stood_in_load(tmp_path, monkeypatch) -> None:
+    """A torn file is judged afresh each time; only a clean load is remembered."""
+    _home(tmp_path, monkeypatch, base=_TORN_WITH_KEY)
+    calls = _counting_load(monkeypatch)
+    assert governance._confirm_tool_patterns() is None
+    assert governance._confirm_tool_patterns() is None
+    assert len(calls) == 2
+    assert getattr(governance, "_CONFIRM_PATTERNS_MEMO", None) is None
 
 
 def test_confirm_tool_patterns_failed_read_without_the_key_is_empty(tmp_path, monkeypatch) -> None:

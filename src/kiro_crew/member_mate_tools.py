@@ -15,6 +15,11 @@ Two questions about that one server, answered in one place:
   following its template. An existing crewmate is never touched.
 
 Blocking IO throughout; callers run it off the event loop.
+
+The same spec read answers one question about the crewmate's other tools:
+:func:`spec_has_file_write` / :func:`binding_has_file_write`, whether its sessions
+mount a built-in that writes files, so the briefing instruction does not tell a
+crewmate on a no-write template (the conductors) to keep a file it cannot write.
 """
 
 from __future__ import annotations
@@ -24,6 +29,13 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Callable
+
+from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.platform.tool_names import (
+    KIRO_TOOL_ALIASES,
+    expand_kiro_cli_tool_exclusions,
+    expand_kiro_cli_tool_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +138,78 @@ def member_has_mate_tools(member: str) -> bool:
         logger.debug("config unreadable; keeping the mate wording", exc_info=True)
         return True
     return True if binding is None else binding_has_mate_tools(binding)
+
+
+#: The built-ins that write a file, in kiro-cli's names: governance's write class
+#: (``platform.governance.BUILTIN_TOOL_SCOPES`` files ``code`` there beside
+#: ``fs_write``, since it edits files as well as shelling out). The shell is not
+#: one: a template that mounts it with no writer (``kirocrew-conductor``) mounts it
+#: for named scripts, and text that sent a crewmate there to keep a file would talk
+#: it past that template's no-write property.
+_FILE_WRITE_TOOLS = frozenset({"fs_write", "code"})
+#: kiro-cli's short names for those tools, onto the name above (``write``), taken
+#: from the shared alias table so a new spelling of a writer counts here too.
+#: ``test_member_briefing_file_tools`` joins ``_FILE_WRITE_TOOLS`` with governance,
+#: so a writer added there fails the test instead of reading as no writer here.
+_FILE_WRITE_ALIASES: dict[str, str] = {
+    alias: name for alias, name in KIRO_TOOL_ALIASES.items() if name in _FILE_WRITE_TOOLS
+}
+#: ``tools`` entries that mount every built-in, the file writers with them.
+_ALL_BUILTINS = frozenset({"*", "@builtin"})
+
+
+def _named_tools(value: Any) -> list[str]:
+    """The string entries of a ``tools``-shaped list, a writer's alias folded onto it."""
+    if not isinstance(value, list):
+        return []
+    return [_FILE_WRITE_ALIASES.get(t, t) for t in value if isinstance(t, str)]
+
+
+def spec_has_file_write(spec: Any) -> bool:
+    """Whether *spec* mounts a built-in that writes files.
+
+    Read the way :func:`kiro_crew.agent_sdk.tool_search.spec_grants_tool_search`
+    reads a spec: ``"*"`` (the whole ``tools`` value or an entry) and ``@builtin``
+    mount every built-in, otherwise a writer must be named, and ``excludedTools`` is
+    subtracted afterwards, where only a listed ``"*"`` removes everything. A name
+    mounts, and an exclusion withholds, what the shared KAS readings say it does
+    (``platform.tool_names``): ``fs_write`` brings ``str_replace`` and ``fs_append``,
+    so a spec written in KAS ids counts too. An absent or malformed ``tools`` mounts
+    nothing, which is what the KAS projection sends.
+    """
+    if not isinstance(spec, dict):
+        return False
+    excluded = _named_tools(spec.get("excludedTools"))
+    if "*" in excluded:
+        return False
+    writers = set(expand_kiro_cli_tool_names(sorted(_FILE_WRITE_TOOLS)))
+    tools = spec.get("tools")
+    entries = ["*"] if tools == "*" else _named_tools(tools)
+    mounted = (
+        writers if _ALL_BUILTINS.intersection(entries) else set(expand_kiro_cli_tool_names(entries))
+    )
+    return bool((mounted & writers) - set(expand_kiro_cli_tool_exclusions(excluded)))
+
+
+def binding_has_file_write(binding: Any) -> bool:
+    """Whether the crewmate *binding*'s sessions mount a built-in that writes files.
+
+    Read through the resolver :func:`binding_has_mate_tools` uses, from the spec
+    the sessions run: a row that binds no template runs the default one, as
+    :func:`kiro_crew.config.loader.member_template_id` says. A spec that cannot be
+    read answers True, keeping the briefing wording every crewmate had before this
+    check existed.
+    """
+    name = getattr(binding, "kiro_agent", "")
+    if not isinstance(name, str):
+        return True
+    name = name or Path(AGENT_FILENAME).stem
+    try:
+        spec = _read_template(name, getattr(binding, "workspace", "") or "")
+    except Exception:
+        logger.debug("spec for %r unreadable; keeping the file-tools wording", name, exc_info=True)
+        return True
+    return True if spec is None else spec_has_file_write(spec)
 
 
 def _row_ids(view: dict, section: str) -> dict[str, dict]:

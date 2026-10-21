@@ -30,7 +30,13 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool handler and its `HANDLERS` row |
 | `src/kiro_crew/mcp_tools/control_parts/schemas.py` | The `select_crew` tool declaration |
 | `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
-| `src/kiro_crew/members.py` | Per-crew member space: activity log, DM-thread binding, permanent rules, self-maintained briefing, the member turn chokepoint |
+| `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
+| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
+| `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
+| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `trust/` and the identity it answers for a session |
+| `src/kiro_crew/members_parts/self_edit.py` | What a crewmate may change on its own record: cleaning, the update, its undo, the rename |
+| `src/kiro_crew/members_parts/prompt_layers.py` | The permanent rules and the self-maintained briefing |
+| `src/kiro_crew/members_parts/member_activity.py` | The activity log |
 | `src/kiro_crew/subagent_parts/agent_policy.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` (both read and patched through `kiro_crew.subagent`) |
 | `src/kiro_crew/dashboard/handlers/agents.py` | The agents handlers' import and patch surface: `GET /api/agents`, the model picker reads and the crew model-pin checks, composed with the `agent_admin` owners below |
 | `src/kiro_crew/dashboard/agent_admin/` | Crew CRUD on `/api/agents` (`crew_records.py`, `crew_update.py`, `crew_removal.py`), the roster row serializer (`roster.py`), the Custom agents tab's detail, fork, publish and reset (`agent_detail.py`, `fork_publish.py`, `template_lineage.py`) and the default-agent write (`default_agent.py`) |
@@ -39,8 +45,8 @@ which restates what a member's DM session carries in its context.
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
 | `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Crewmate teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Crewmates page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
-| `website/src/pages/KiroCrewAgentsPage.tsx` | The crewmate roster and crew editor, mounted as the **Crewmates** tab of `CapabilitiesPage` (Customize). The page holds the roster and editor queries, the editor's draft, opening, saving and deleting a crew, the deep links, the template-switch writes and the Danger zone, and composes its owners beside it: the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`), the binding fields every crew editor shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each), the editor header and the Model, Workspace & memory and Routing pane bodies (`KiroCrewAgentsPagePanes.tsx`), and the unsaved-work guard with its discard dialog (`KiroCrewAgentsPageDiscard.tsx`). The Crewmates page's own crew editor (`components/crew/CrewEditorNextDialog.tsx` + `useCrewEditor.ts`) mounts the same fields from here and keeps its own `INHERIT_MODEL` twin |
-| `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
+| `website/src/pages/KiroCrewAgentsPage.tsx` | The crewmate roster, mounted as the **Crewmates** tab of `CapabilitiesPage` (Customize), and a host of the one crewmate editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and the binding fields every crew form shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each). Editing a crewmate opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Crewmates page opens in place; that hook keeps its own `INHERIT_MODEL` twin |
+| `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A crewmate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
 | `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return presence, 30-minute in-memory away episodes, durable task-fingerprint claims, two ordinary crewmate summary messages, one bounded background call, and stale-result suppression |
@@ -185,8 +191,9 @@ refusal in the user's language inside the dialog that sent the name
 
 ## Custom agents tab
 
-The **Built from** pane inside a crew editor edits that crew's PRIVATE copy of a
-template (blueprint semantics, below). The **Custom agents** tab under
+The **Built from** section of the crewmate editor is read-only: it shows the
+custom agent a crewmate is built from (details, tools, MCP servers, skills),
+and only the choice of agent is edited there. The **Custom agents** tab under
 Customize (page title and sidebar label; route `/capabilities`) is the other
 half: it manages the shared templates themselves — "custom agents" in every
 user-facing string, the thing a crewmate is **built from** — the files under
@@ -609,6 +616,17 @@ Duplicate affordance, so the three duplicate entry points read as one flow.
 
 ## Owner-reviewed capability inheritance
 
+**Dashboard surface.** The crewmate editor (`CrewEditorNextDialog`) shows a
+read-only **Built from** section, and its **Approvals** section
+(`CrewApprovalsEditor`) is the only dashboard writer of these routes. No
+dashboard surface edits enrollment, Stop following the parent, per-member MCP
+or skill rows, or a private copy's template: the classic `CrewCapabilitiesPane`
+and template pane that did are retired, and agent config is edited on the
+**Custom agents** tab. The routes and their refusal codes below are unchanged.
+Where a paragraph below says "the pane", it records the copy that pane showed,
+kept as the contract the refusal codes were designed against; it is not a
+rendered surface.
+
 `agent_capabilities.py` resolves one verified Parent and explicit per-item
 `set`, `remove` and `inherit` intent. The owner-only GET, POST preview and PUT
 routes at `/api/agents/{name}/capabilities` use schema version 1. Preview ends
@@ -905,16 +923,18 @@ A member agent file that changed since its last review (its digest no longer
 matches the stamped `materialized`) makes `prepare_member_capabilities` raise
 `materialization_changed`. The chat error row carries that code and the
 member, withholds Resume (a retry repeats the same check), and offers a fix
-that opens `/capabilities?tab=crews&crew=<member>&pane=capabilities`. There,
-Review and Save with an empty draft restamps the file when every changed key is
+that opens `/capabilities?tab=crews&crew=<member>&pane=capabilities`, which
+opens that crewmate's editor on its **Approvals** section
+(`CrewApprovalsEditor`). There, Review and Save with an empty draft restamps the file when every changed key is
 one the review can vouch for (`_unvouched`); a changed key the review cannot
 show refuses with `409 unreviewable_drift`, naming the file
 (`_stamp_reviewed`).
 
 Four sibling start refusals get the same row treatment, each with its own fix.
-`parent_identity_changed` offers the same Capabilities pane fix.
-`foreign_private_copy` opens the member editor at
-`/capabilities?tab=crews&crew=<member>`. `project_identity_changed` and
+`parent_identity_changed` and `foreign_private_copy` open the member editor at
+`/capabilities?tab=crews&crew=<member>`, where Built from picks a different
+agent; the `parent_identity_changed` copy also offers putting the parent back,
+since no dashboard surface stops following it. `project_identity_changed` and
 `private_template_shadowed` offer no button, and the copy names the fix. A
 `project_identity_changed` row carries `meta.project`, the saved project to go
 to; when the member was saved with no project, the copy says "another project".
@@ -1489,7 +1509,16 @@ itself a choice to use it -- and a team whose crewmates are all hidden keeps its
 (empty) roster header. Where nothing auto-opens (below md) and every row is
 hidden, the roster says so and names the search. A row from an older gateway
 that carries no `has_dm_message` is listed. The header count and the filter
-tallies count the listed rows plus any hidden row the search reaches.
+tallies count the listed rows plus any hidden row the search reaches. So that
+count is not read as the whole crew (#21852), the list ends with one muted line
+naming the crewmates the rule hides by the label their row shows, the ones the
+user made first (origin Mine, or created on the dashboard) and then in roster
+order: all of them when there are up to three (`hidden_named_hint`), else the
+first three and a count of the rest (`hidden_more_hint`), saying that the count
+above leaves them out (`member-hidden-hint`); the form that names every hidden
+crewmate also says the search finds them. The line is drawn only
+while no search is typed, no filter narrows the list, and at least one row is
+listed (the every-row-hidden case already has its own line).
 Before any of the landing rules, a bare visit with the Crewmates preview on
 opens Mate while no message has been exchanged with it (`resolveMateLanding`:
 Mate's row has neither `has_dm_message` nor a live `last_message`), ahead of a
@@ -3176,10 +3205,9 @@ and requires reloading and reviewing against the new version. Save success never
 stands in for runtime application: runtime status comes from the server and
 active sessions are not promised a hot reload.
 
-The legacy template pane keeps its instant-save behavior for independent and
-shared definitions. Enrolled definitions direct model and skill edits to
-Capabilities instead. Reset and publish remain in the template pane but lock
-while a capability draft exists. A mask is never a literal replacement value.
+The legacy template pane, which saved instantly and locked reset and publish
+while a capability draft existed, is retired with the classic crewmate sheet;
+see the Dashboard surface note under Owner-reviewed capability inheritance. A mask is never a literal replacement value.
 The form can keep unchanged secrets, select a configured connection, or replace the
 whole transport using a blank form. MCP set operations carry a complete transport
 plus RFC6901 `retain_paths` for unchanged `[REDACTED]` leaves. Each pointer keeps

@@ -33,6 +33,7 @@ from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _entry_git_url,
     _git_target_is_unsupported,
+    _git_url_host,
     _normalize_git_target,
     _public_registry_name,
     _same_git_target,
@@ -42,6 +43,7 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _apply_configured_branch,
     _fetch_and_cache_external_registry,
     _load_external_registries,
+    _registry_sign_in_refused,
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
 from kiro_crew.apps.registry_pipeline.sources import _effective_registries, _load_registry_file
@@ -426,7 +428,9 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     Returns ``{ok, refreshed, failed, results, apps, lastSyncedAt}`` where
     ``ok`` is True only if every matched registry refreshed successfully and
     ``results`` carries the per-registry outcome so the UI can distinguish
-    "synced" from "sync failed, serving stale". When *repo* is supplied but
+    "synced" from "sync failed, serving stale"; a failed row whose clone git
+    refused for credentials also carries ``reason: "auth"`` and the ``host`` from
+    its configured URL, so the UI can name the fix and where it applies. When *repo* is supplied but
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
     """
@@ -470,7 +474,13 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is None:
             failed.append(display_name)
-            results.append({"name": display_name, "ok": False})
+            row: dict[str, Any] = {"name": display_name, "ok": False}
+            if _registry_sign_in_refused(reg.repo, reg.branch):
+                row["reason"] = "auth"
+                host = _git_url_host(reg.repo)
+                if host:
+                    row["host"] = host
+            results.append(row)
             continue
         # Expire per-app manifest caches so fresh display info is refetched
         # lazily on the next read (mtime expiry preserves the stale fallback).

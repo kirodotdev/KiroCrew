@@ -549,7 +549,7 @@ async def _shutdown_and_exit(
     # actually needs. Bounded and off-loop so a wedged disk cannot delay
     # the exit (see drain_log_queue_before_hard_exit).
     #
-    # Flush SEL BEFORE the gateway.log tail (the order slack/events.py uses):
+    # Flush SEL BEFORE the gateway.log tail (the order slack/events_slash.py uses):
     # draining gateway.log first stops its listener, and a SEL write failure
     # then logs its "dropped N events" line into a dead queue, so the audit
     # loss would leave no trace.

@@ -27,11 +27,11 @@ import { AppIdentityProvider, useAppIdentity, type AppOrigin } from './identity'
 import { AppQueryClientProvider } from './appQueryClient'
 // The scoped-API layer, kept in its own module so it is NOT published on this
 // barrel -- see the header of ./scopedApi for why.
-import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo } from './scopedApi'
+import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo, type AppUpdate } from './scopedApi'
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
-export type { AppApi, AppApiError, AppInfo, AppPermissions } from './scopedApi'
+export type { AppApi, AppApiError, AppInfo, AppPermissions, AppUpdate } from './scopedApi'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -402,6 +402,7 @@ export function AppApiProvider({
   appName,
   appDisplayName,
   appVersion = '0.0.0',
+  appUpdate,
   allowedApiPaths,
   allowedEvents,
   active = true,
@@ -421,6 +422,9 @@ export function AppApiProvider({
    */
   appDisplayName?: string
   appVersion?: string
+  /** Cached update state for this app, forwarded to the scoped layer, which
+   *  publishes it as `info.update`. Omitted when the host has no answer. */
+  appUpdate?: AppUpdate
   allowedApiPaths: string[]
   navigateFn: (path: string) => void
   /** Optional since the scoped layer defaults them; see AppScopedApiProvider. */
@@ -449,6 +453,7 @@ export function AppApiProvider({
     appName,
     appDisplayName,
     appVersion,
+    appUpdate,
     allowedApiPaths,
     allowedEvents,
     active,
