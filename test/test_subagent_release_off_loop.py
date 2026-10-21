@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew import subagent as sa
 from kiro_crew.subagent import SubagentManager
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _manager(forget_sid: str = "sid-1") -> SubagentManager:
@@ -92,10 +93,10 @@ async def test_conversation_is_held_until_the_worker_lands_even_when_cancelled()
         # The caller is gone, the worker is not: the hold survives the cancel.
         assert mgr._conversation_busy("subagent:c1") is not None
         gate.set()
-        for _ in range(200):
-            if "c1" not in mgr._abandoned_state_writers:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: "c1" not in mgr._abandoned_state_writers,
+            describe=lambda: f"abandoned writers: {sorted(mgr._abandoned_state_writers)}",
+        )
     assert demoted == ["c1"]
     assert mgr._conversation_busy("subagent:c1") is None
 

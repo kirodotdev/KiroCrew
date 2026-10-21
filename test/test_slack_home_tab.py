@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew.slack import events as events_mod
 from kiro_crew.slack.events import _publish_home_tab
+from kiro_crew.testing.wait import finished
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -865,7 +866,7 @@ class TestHomeTabCollectorConcurrency:
             "_collect_recent_sessions_off_loop",
             self._tracking_collector(observed),
         )
-        await asyncio.wait_for(_publish_home_tab(_make_orch(), "U2"), timeout=5)
+        await finished(_publish_home_tab(_make_orch(), "U2"), "the second home-tab publish", timeout=5)
 
         assert observed == [1]
 

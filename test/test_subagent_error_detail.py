@@ -20,6 +20,7 @@ from kiro_crew.subagent import (
     SubagentManager,
     _describe_exception,
 )
+from kiro_crew.testing.wait import finished
 
 
 @pytest.fixture()
@@ -202,7 +203,6 @@ class TestTerminalArmUsesTheDescription:
 
     @pytest.mark.asyncio
     async def test_run_records_the_exception_type(self, agent_root):
-        import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent_persistence import create_agent_folder
@@ -227,7 +227,7 @@ class TestTerminalArmUsesTheDescription:
             patch.object(manager, "_fire_event", new_callable=AsyncMock),
             patch.object(manager, "_on_done", new_callable=AsyncMock),
         ):
-            await asyncio.wait_for(manager._run(info), timeout=10)
+            await finished(manager._run(info), "the run settling", timeout=10)
 
         assert info.error == "sqlite3.InterfaceError: bad parameter or other API misuse"
         tomb = json.loads(

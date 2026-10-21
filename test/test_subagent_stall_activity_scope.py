@@ -54,6 +54,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import finished
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -90,7 +91,9 @@ async def _deliver(rt: AcpRuntime, reader: asyncio.StreamReader, frame: dict, si
     await asyncio.sleep(0)
     try:
         reader.feed_data((json.dumps(frame) + "\n").encode())
-        return [await asyncio.wait_for(queues[sid].get(), timeout=1.0) for sid in sids]
+        return [
+            await finished(queues[sid].get(), f"a message for {sid}", timeout=1.0) for sid in sids
+        ]
     finally:
         task.cancel()
         try:

@@ -48,6 +48,7 @@ from kiro_crew.hooks import TOOL_ALLOW, ToolHookResult
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager._component import ManagerComponent
+from kiro_crew.testing.wait import await_until
 
 SESSION = "acp-child-tool-approval-1"
 ASKING_TURN = 4
@@ -244,15 +245,11 @@ class _ParkedApproval:
 async def _reach_the_prompt(approval: _ParkedApproval) -> None:
     """Let the run task get as far as its approval await.
 
-    A real sleep rather than ``sleep(0)``: the path from the stream to the
-    approval arm awaits provider calls of its own, and yielding without
-    advancing the clock does not always let them all resolve.
+    Waits on the callback's own ``entered`` event: the path from the stream to
+    the approval arm awaits provider calls of its own, so a fixed number of
+    yields would not reliably let them all resolve.
     """
-    for _ in range(600):
-        if approval.entered.is_set():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("the approval callback was never reached")
+    await await_until(approval.entered, what="the approval callback being reached")
 
 
 # --------------------------------------------------------------------------

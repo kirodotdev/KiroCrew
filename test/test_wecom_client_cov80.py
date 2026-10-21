@@ -21,6 +21,7 @@ from typing import Any
 import aiohttp
 import pytest
 
+from kiro_crew.testing.wait import await_until
 from kiro_crew.wecom import client as client_mod
 from kiro_crew.wecom.client import WeComClient, WeComInbound, _resolve_proxy, new_stream_id
 
@@ -81,7 +82,7 @@ class TestLifecycle:
 
         client._run_loop = _loop  # type: ignore[method-assign]
         await client.start()
-        await asyncio.wait_for(entered.wait(), timeout=1)
+        await await_until(entered, timeout=1, what="the run loop entering")
         assert client._closed is False
         assert client._kicked is False
 

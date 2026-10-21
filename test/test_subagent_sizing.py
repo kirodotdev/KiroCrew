@@ -28,6 +28,7 @@ from kiro_crew.subagent import (
     resolve_max_subagents,
 )
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -1171,7 +1172,7 @@ class TestSettledRuntimeReading:
         await asyncio.create_task(_arm())
         recovery = mgr._tasks.get(f"{info.id}:recovery")
         assert recovery is not None, "recovery task was not registered"
-        await asyncio.wait_for(recovery, timeout=5)
+        await await_until(recovery, timeout=5, what="the recovery task")
 
         assert info._rss_generation == gen_before + 1
         assert info._rss_samples == 0

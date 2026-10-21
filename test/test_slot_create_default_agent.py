@@ -27,6 +27,7 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_handlers
+from kiro_crew.testing.wait import await_until
 
 
 def _stub_config(default_agent: str, default_template: str = "") -> KiroCrewConfig:
@@ -101,7 +102,7 @@ async def test_owner_create_waits_for_memory_recovery_before_allocating(
                 else:
                     assert startup.complete()
                 preparation.set_result(None)
-                response = await asyncio.wait_for(request, 10)
+                response = await await_until(request, timeout=10, what="the create request")
                 data = await response.json()
                 if recovery_error:
                     assert response.status == 503

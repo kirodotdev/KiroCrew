@@ -23,6 +23,7 @@ from snapshot_helpers import unpinnable_argv
 from conftest import requires_o_nofollow, requires_symlinks
 from kiro_crew import snapshot as snapshot_mod
 from kiro_crew.jsonl_util import OversizedRecord, UndecodableRecord
+from kiro_crew.testing.wait import wait_until
 
 # Fixtures shared with the sibling modules, bound by assignment so pytest registers
 # them for the tests in this module.
@@ -644,7 +645,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
                 snap / "notifications.jsonl",
                 home / "notifications.jsonl",
             )
-            future.result(timeout=15)
+            wait_until(
+                future.done, timeout=15, describe=lambda: "the notification copy is still running"
+            )
+            future.result()
         finally:
             pool.shutdown(wait=False)
         assert (home / "notifications.jsonl").read_bytes() == self.GOOD

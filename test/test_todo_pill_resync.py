@@ -29,6 +29,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.dashboard.chat_todo import api_chat_slot_todo
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
+from kiro_crew.testing.wait import finished
 
 
 def _body(slot: _ChatSlot, task_id: str, completed: bool) -> dict[str, Any]:
@@ -363,15 +364,13 @@ def _runner_state(tmp_path, monkeypatch, *, is_new: bool, resumed: bool):
 
 
 async def _runner_turn(state, slot, message="carry on") -> None:
-    import asyncio
-
     from chat_test_helpers import drain_background_tasks
 
     from kiro_crew.dashboard import chat_runner
 
     slot.append("user", message)
-    await asyncio.wait_for(chat_runner._run_chat(state, slot, message), 30)
-    await asyncio.wait_for(drain_background_tasks(state), 10)
+    await finished(chat_runner._run_chat(state, slot, message), "the runner turn", timeout=30)
+    await finished(drain_background_tasks(state), "the background tasks draining", timeout=10)
 
 
 def _seed_pill(slot) -> None:

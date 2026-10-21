@@ -22,6 +22,7 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_ST
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
 from kiro_crew.telegram.transport_dispatch import _user_safe_failure_reason
+from kiro_crew.testing.wait import await_until
 
 
 class TestTelegramSessionPidPublish:
@@ -305,7 +306,7 @@ class TestTurnLifecycleCharacterization:
 
         async def _go() -> None:
             task = asyncio.create_task(d.handle_message(_dm("hi")))
-            await asyncio.wait_for(started.wait(), 5)
+            await await_until(started, timeout=5, what="the stream starting")
             assert isinstance(d._active_renderers.get(k), TelegramRenderer)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

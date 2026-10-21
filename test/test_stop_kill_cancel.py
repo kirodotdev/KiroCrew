@@ -25,6 +25,7 @@ from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.backend import Backend, _PendingRequest
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
+from kiro_crew.testing.wait import finished
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -564,12 +565,13 @@ class TestDetachOnCancelFailure:
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": {"name": "x"}}
 
-        await asyncio.wait_for(
+        await finished(
             gw._handle_connection(
                 _FakeReader([register, call]), _FakeWriter(), pool=_FakePool(),
                 resolver=object(), socket_path=Path("/tmp/leak.sock"),
                 hot_keys=None,
             ),
+            "the connection handler returning",
             timeout=5.0,
         )
 

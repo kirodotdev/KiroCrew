@@ -163,7 +163,7 @@ async def _read_until(fd: int, needle: bytes, seen: bytearray, deadline: float) 
         except OSError:
             break  # PTY closed, or the child is gone (EIO on Linux)
         if chunk is None:
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.02)  # flake-ok: non-blocking PTY read poll; the fd is the signal
             continue
         if not chunk:
             break  # EOF

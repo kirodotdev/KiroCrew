@@ -39,6 +39,7 @@ import kiro_crew.subagent as subagent_mod
 import kiro_crew.subagent_wait_reasons as wait_reasons
 from kiro_crew import platform_compat
 from kiro_crew.subagent import SubagentManager
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -292,11 +293,7 @@ async def _teardown(mgr: SubagentManager) -> None:
 
 
 async def _until(pred, what: str) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _WAIT_SECS
-    while not pred():
-        assert loop.time() < deadline, what
-        await asyncio.sleep(0.01)
+    await async_wait_until(pred, timeout=_WAIT_SECS, describe=lambda: what)
 
 
 async def _verdict(mgr: SubagentManager, started: list[str], task: str = "census", **kw):

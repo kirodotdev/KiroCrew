@@ -33,6 +33,7 @@ import kiro_crew.workflows.agent_exec as agent_exec
 import kiro_crew.workflows.agent_pool as agent_pool
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.taskq.dependency import classify_exception
+from kiro_crew.testing.wait import finished
 from kiro_crew.workflows.agent_exec import WorkflowSpawnRefused, build_agent_fn
 from kiro_crew.workflows.agent_pool import build_pooled_agent_fn
 
@@ -477,7 +478,9 @@ async def test_a_refusal_whose_text_looks_like_an_outage_still_fails_the_row(tmp
         # PARKED awaiting a dependency wake that never arrives here, so the call
         # would simply never return.
         with pytest.raises(WorkflowSpawnRefused):
-            await asyncio.wait_for(fn("do work", {"cwd": "/nowhere"}), timeout=10.0)
+            await finished(
+                fn("do work", {"cwd": "/nowhere"}), "the refusal surfacing", timeout=10.0
+            )
 
         await settle_store_writes(store)
         # The row id comes from the production helper, so a change to the id
