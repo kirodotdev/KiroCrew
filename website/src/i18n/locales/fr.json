@@ -8458,8 +8458,8 @@
       "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
     "lessonSaved": {
-      "saved": "Leçon enregistrée\u202f: {{rule}}",
-      "updated": "Leçon mise à jour\u202f: {{rule}}",
+      "saved": "Leçon enregistrée : {{rule}}",
+      "updated": "Leçon mise à jour : {{rule}}",
       "review": "Voir les leçons"
     },
     "selfChange": {
@@ -14883,10 +14883,10 @@
         "approve": "Approuver",
         "approve_failed_generic": "Approbation refusée ({{reason}}).",
         "approve_failed_live_exists": "Approbation refusée : une compétence active porte déjà ce nom.",
-        "approve_failed_not_found": "Ce candidat n’est plus en attente — il a été approuvé ou rejeté dans une autre fenêtre ou par votre agent {{productName}}, il n’y avait donc plus rien à approuver.",
+        "approve_failed_not_found": "Ce candidat n’est plus en attente — il a été approuvé ou supprimé dans une autre fenêtre ou par ton agent {{productName}}, il n’y avait donc plus rien à approuver.",
         "approve_failed_not_found_approved_named": "Le candidat «{{name}}» n’est plus en attente — il a déjà été approuvé dans une autre fenêtre ou par votre agent {{productName}} et apparaît maintenant dans la liste Skills ci-dessous, il n’y avait donc plus rien à approuver.",
-        "approve_failed_not_found_dismissed_named": "Le candidat «{{name}}» n’est plus en attente — il a été rejeté dans une autre fenêtre ou par votre agent {{productName}} et n’apparaît pas dans la liste Skills ci-dessous, il n’y avait donc plus rien à approuver. Un nouveau candidat pourra être proposé plus tard.",
-        "approve_failed_not_found_named": "Le candidat « {{name}} » n’est plus en attente — il a été approuvé ou rejeté dans une autre fenêtre ou par votre agent {{productName}}, il n’y avait donc plus rien à approuver.",
+        "approve_failed_not_found_dismissed_named": "Le candidat «{{name}}» n’est plus en attente — il a été supprimé dans une autre fenêtre ou par ton agent {{productName}} et n’apparaît pas dans la liste Skills ci-dessous, il n’y avait donc plus rien à approuver. Un nouveau candidat pourra être proposé plus tard.",
+        "approve_failed_not_found_named": "Le candidat « {{name}} » n’est plus en attente — il a été approuvé ou supprimé dans une autre fenêtre ou par ton agent {{productName}}, il n’y avait donc plus rien à approuver.",
         "approve_failed_script_validation": "Approbation refusée : les scripts inclus ont échoué à la validation — approuver à nouveau sans modification renvoie ce même refus. Corrigez les scripts, puis approuvez.",
         "approve_flagged_hint": "Corrigez les scripts, puis approuvez — jusque-là, l’approbation sera refusée.",
         "approve_review_first": "Examinez le candidat pour activer Approuver.",
@@ -14920,9 +14920,9 @@
         "budget_subtitle": "Coût de contexte estimé par déclencheur de compétence, trié par dépense décroissante.",
         "budget_title": "Budget de contexte",
         "cancel": "Annuler",
-        "candidate_no_longer_pending": "ce candidat n’est plus en attente — approuvé ou rejeté dans une autre fenêtre ou par votre agent {{productName}}",
+        "candidate_no_longer_pending": "ce candidat n’est plus en attente — approuvé ou supprimé dans une autre fenêtre ou par ton agent {{productName}}",
         "candidate_no_longer_pending_approved": "ce candidat n’est plus en attente — il a déjà été approuvé dans une autre fenêtre ou par votre agent {{productName}} et apparaît maintenant dans la liste Skills ci-dessous",
-        "candidate_no_longer_pending_dismissed": "ce candidat n’est plus en attente — il a déjà été rejeté dans une autre fenêtre ou par votre agent {{productName}} et n’apparaît pas dans la liste Skills ci-dessous ; un nouveau candidat pourra être proposé plus tard",
+        "candidate_no_longer_pending_dismissed": "ce candidat n’est plus en attente — il a déjà été supprimé dans une autre fenêtre ou par ton agent {{productName}} et n’apparaît pas dans la liste Skills ci-dessous ; un nouveau candidat pourra être proposé plus tard",
         "clear_search": "Effacer la recherche",
         "cost_line": "{{size}} · livré {{deliveries}}× · {{chars}} caractères dépensés · 30 derniers jours",
         "cost_line_frozen": "{{size}} · livré {{deliveries}}× avant désactivation · {{chars}} caractères · ne compte plus",
@@ -14997,7 +14997,10 @@
         "sort_label": "Trier les compétences",
         "sort_default": "Ordre par défaut",
         "sort_most_used": "Plus utilisé",
-        "sort_recently_used": "Utilisé récemment"
+        "sort_recently_used": "Utilisé récemment",
+        "siblings_removed_by_refetch_one": "{{count}} autre candidat a lui aussi quitté la file — approuvé ou supprimé dans une autre fenêtre ou par ton agent {{productName}} : {{names}}.",
+        "siblings_removed_by_refetch_many": "{{count}} autres candidats ont eux aussi quitté la file — approuvés ou supprimés dans une autre fenêtre ou par ton agent {{productName}} : {{names}}.",
+        "siblings_removed_by_refetch_other": "{{count}} autres candidats ont eux aussi quitté la file — approuvés ou supprimés dans une autre fenêtre ou par ton agent {{productName}} : {{names}}."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Conventions Markdown que l’agent lit. Le mode d’inclusion de chaque fichier décide quand : toujours, uniquement pour les fichiers correspondants, ou à la demande. Les fichiers globaux se trouvent dans ~/.kiro/steering et s’appliquent partout ; ceux de l’espace de travail sont dans <project>/.kiro/steering et ne s’appliquent qu’à ce projet.",
