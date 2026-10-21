@@ -123,7 +123,6 @@ test/test_prompts.py::TestExpandPromptMention::test_unreadable_file
 test/test_refresh_tokens.py::test_tr_u_17_persistence_file_mode_0600
 test/test_review_fixes.py::TestEnvPermissions::test_env_permissions_enforced
 test/test_review_fixes.py::TestLoaderChmodWarning::test_chmod_enforced_on_open_permissions
-test/test_sandbox_backend_cache.py::test_probe_child_killed_by_signal_is_transient
 test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_has_pid_in_name
 test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_in_run_dir
 test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_is_executable

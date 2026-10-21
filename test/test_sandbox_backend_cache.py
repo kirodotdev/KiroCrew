@@ -22,6 +22,7 @@ import asyncio
 import errno
 import os
 import shlex
+import sys
 import threading
 import types
 
@@ -258,6 +259,17 @@ def test_fail_closed_permanent_message_includes_optout_and_detail(monkeypatch):
 # ── Finding 2: signal-killed probe child classified transient ──
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX-only: drives the fork probe, which needs os.fork, os.getuid, "
+        "select.poll and a POSIX wait status (os.WIFSIGNALED), none of which "
+        "exist on Windows; production never reaches it off Linux. Skipped here "
+        "rather than listed in windows-expected-failures.txt, because that list "
+        "runs as a strict xfail and on Windows pytest-timeout has no SIGALRM, so "
+        "a slow entry kills the worker instead of failing the test."
+    ),
+)
 def test_probe_child_killed_by_signal_is_transient(monkeypatch):
     """A probe child killed by a signal (WIFEXITED=False) must be transient."""
     # Simulate fork -> child killed by SIGKILL (signal 9).
