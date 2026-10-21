@@ -1174,9 +1174,21 @@ def _fetch_counted(
 
 
 def _fetch_checks(transport: _Transport, repo: str, head: str) -> tuple[list[dict], int, bool, str]:
-    """``(rows, declared, complete, note)`` for one head's check runs."""
+    """``(rows, declared, complete, note)`` for one head's check runs.
+
+    ``filter=all`` is not optional here. The ``commits/{ref}/check-runs`` endpoint
+    defaults to ``filter=latest``, which returns only the most recent run per name
+    -- and :func:`_collapse` is built on the opposite guarantee: that a re-run
+    leaves BOTH the stale row and the fresh one on the board, so recency can
+    arbitrate between them in either direction (a re-run green superseding a stale
+    red, a re-run red superseding a stale green). Under the default the stale row
+    is gone before this reader sees it, the fold has nothing to arbitrate, and a
+    verdict that flipped on re-run is read as whatever the server happened to keep.
+    So the query asks for history explicitly; ``_fetch_counted`` appends its
+    ``per_page``/``page`` pair after the ``?`` already present here.
+    """
     return _fetch_counted(
-        transport, f"repos/{repo}/commits/{head}/check-runs", "check_runs", "check runs"
+        transport, f"repos/{repo}/commits/{head}/check-runs?filter=all", "check_runs", "check runs"
     )
 
 

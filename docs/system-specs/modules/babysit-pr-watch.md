@@ -359,7 +359,11 @@ The reading itself:
 * `_collapse` folds duplicate rows to one per identity, newest by start time, and
   reports how many raw rows it folded. Rows land in the buckets `failing`, `pending`,
   `passing`, `noise` and `unknown`: an unknown conclusion is `unknown`, and a cancelled
-  or stale row is `noise`.
+  or stale row is `noise`. The fold only arbitrates correctly if BOTH attempts of a
+  re-run are in the payload, so the check-runs read passes `filter=all`: the endpoint
+  defaults to `filter=latest` (one row per name), which would drop the stale attempt
+  server-side before `_collapse` ever sees it, and a verdict that flipped on re-run
+  would then be read as whichever row the server happened to keep.
 * The identity a row folds under is its WORKFLOW, not the app that posted it. Every
   GitHub Actions row carries one app slug, so the slug cannot separate two workflow
   files that each define a job of the same name, and folding those lets one
