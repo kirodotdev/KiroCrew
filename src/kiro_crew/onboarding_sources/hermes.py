@@ -138,10 +138,10 @@ def _hermes_windows_root(env: Mapping[str, str]) -> Path | None:
     ``~/.hermes`` default: it is where Hermes lives on Windows.
     """
     local_app_data = env.get("LOCALAPPDATA", "").strip()
-    windows_root = Path(local_app_data) / "hermes" if local_app_data else None
-    if windows_root is not None and windows_root.exists():
-        return windows_root
-    return None
+    if not local_app_data:
+        return None
+    windows_root = Path(local_app_data) / "hermes"
+    return windows_root if windows_root.exists() else None
 
 
 def _hermes_schedule_has_unsupported_semantics(record: dict[str, Any]) -> bool:
@@ -337,9 +337,7 @@ def _hermes_skill_lock_names(data: Any, skills_root: Path) -> set[str]:
     containers: list[dict[Any, Any] | list[Any]] = []
     for key in ("skills", "installed"):
         container_value = data.get(key)
-        if isinstance(container_value, dict):
-            containers.append(container_value)
-        elif isinstance(container_value, list):
+        if isinstance(container_value, (dict, list)):
             containers.append(container_value)
     names: set[str] = set()
     for container in containers:

@@ -259,13 +259,13 @@ def _gemini_project_workspaces(scan: _Scan, root: Path) -> set[str]:
                 scan.diagnostic("workspaces", "workspace_uri_invalid")
                 continue
             if decoded.startswith(("//", "\\\\")):
-                # ``file:////server/share`` decodes to a UNC path, which IS
-                # absolute on Windows, so it would sail past the
-                # not-absolute refusal in ``_bounded_workspaces`` and reach
-                # the workspace/config probes — and merely probing a UNC
-                # path makes Windows open an SMB connection (and
+                # ``file:////server/share`` decodes to a UNC path, and merely
+                # probing one makes Windows open an SMB connection (and
                 # authenticate) to a host named by a FOREIGN config file.
-                # Refuse network workspaces outright.
+                # ``_bounded_workspaces`` refuses network paths for every
+                # declared workspace before any probe, but it drops an entry
+                # carrying a NUL without a reason, so refusing here is what
+                # reports ``file:////server/share%00`` as a network workspace.
                 scan.diagnostic("workspaces", "network_workspace_excluded")
                 continue
             if decoded:

@@ -140,8 +140,8 @@ def _row_is_workspace_scoped(value: Any) -> bool:
     Kiro Crew's own memory tables have no workspace column, so a genuinely
     workspace-scoped row has no faithful destination and is reported unsupported.
     A SENTINEL value is not scoping, though: a single-workspace install stamps
-    every row with the same placeholder, so reading that as scoped discarded 100%
-    of the store.
+    every row with the same placeholder, so reading that as scoped would discard
+    100% of the store.
     """
     if value is None:
         return False
@@ -183,7 +183,7 @@ def _scan_lineage_memory_db(scan: _Scan) -> bool:
             supported = False
             if "semantic_memory" in tables:
                 columns = table_columns["semantic_memory"]
-                if {"key", "value_json", "confidence", "is_deleted"} <= columns:
+                if required_columns["semantic_memory"] <= columns:
                     supported = True
                     extra_columns = [name for name in ("workspace_id", "kind") if name in columns]
                     selected_columns = ["key", "value_json", "confidence", *extra_columns]
@@ -265,7 +265,7 @@ def _scan_lineage_memory_db(scan: _Scan) -> bool:
                     )
             if "episodic_memories" in tables:
                 columns = table_columns["episodic_memories"]
-                if {"id", "text", "importance", "is_deleted"} <= columns:
+                if required_columns["episodic_memories"] <= columns:
                     supported = True
                     extra_columns = [name for name in ("workspace_id", "kind") if name in columns]
                     selected_columns = ["id", "text", "importance", *extra_columns]

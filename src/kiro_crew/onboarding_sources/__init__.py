@@ -50,22 +50,20 @@ logger = logging.getLogger("kiro_crew.onboarding_import")
 
 _CORE_MANAGED_MCP_NAMES = frozenset(
     {
+        # Kiro Crew's managed servers, always-on and opt-in alike: an entry under
+        # any of these names must never be carried over from a runtime the user is
+        # migrating away from -- it would name a binary that cannot start.
         "kirocrew-core",
         "kirocrew-cron",
         "kirocrew-computer",
         "kirocrew-dashboard",
-        # The three opt-in sets. They are managed names like the four above, so an
-        # entry under any of them must never be carried over from a runtime the
-        # user is migrating away from -- it would name a binary that cannot start.
-        # The work-ledger name was missing here while this list already held every
-        # always-on server; adding the crew-log one without it would have left the
-        # same gap open next to a test that closes it.
         "kirocrew-work",
         "kirocrew-crew-log",
         "kirocrew-debug",
         "kirocrew-panel",
         "kirocrew-guide",
         "kirocrew-mate",
+        # OpenClaw's own servers.
         "openclaw-core",
         "openclaw-cron",
         "openclaw-computer",
