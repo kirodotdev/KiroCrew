@@ -25,6 +25,7 @@ reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import contextvars
 import importlib as _importlib
@@ -1311,6 +1312,33 @@ def oauth_rejection_is_endpoint_exemptible(url: str) -> bool:
 # canonicalize_ip converts ALL these to dotted-quad for uniform matching.
 
 
+def _octet_literal_value(part: str) -> "int | None":
+    """Value of ONE literal dotted-quad octet in the OS resolver's bases, or None.
+
+    ``inet_aton`` and ``curl`` read a leading-zero octet as C-style OCTAL (``0251``
+    is 169, not 251) and ``0x`` as hex; ``int(part, 0)`` does not accept the bare
+    ``0NNN`` octal spelling, so it is handled first. Returns None for an empty or
+    non-numeric octet. This is the ONE octet parser -- ``canonicalize_ip`` and the
+    IMDS shell-expansion gate both call it, so a leading-zero or hex octet reads the
+    same way on every path.
+
+    EVERY conversion runs inside the try: a very long digit string trips CPython's
+    integer-string length limit with ValueError, and that must read as "not a
+    numeric octet" (None), never crash the gate -- the same fail-soft the inline
+    parser in ``canonicalize_ip`` had before this was extracted.
+    """
+    try:
+        if len(part) > 1 and part[0] == "0" and part[1:].isdigit():
+            # Octal only when every trailing digit is octal; a stray 8/9 is
+            # decimal, exactly as inet_aton reads it.
+            if all(c in "01234567" for c in part[1:]):
+                return int(part, 8)
+            return int(part)
+        return int(part, 0)  # decimal, or 0x-prefixed hex
+    except (ValueError, OverflowError):
+        return None
+
+
 def canonicalize_ip(s: str) -> str:
     """Convert an IP address in any encoding to dotted-quad (a.b.c.d).
 
@@ -1347,23 +1375,13 @@ def canonicalize_ip(s: str) -> str:
         octets: list[int] = []
         valid = True
         for part in parts:
-            try:
-                # Handle C-style octal (0NNN without 'o' prefix) which Python 3
-                # int(x, 0) doesn't recognize. Must check before int(x, 0).
-                if len(part) > 1 and part[0] == "0" and part[1:].isdigit():
-                    # Could be octal (0251) or just "00" etc.
-                    if all(c in "01234567" for c in part[1:]):
-                        val = int(part, 8)
-                    else:
-                        # Has 8 or 9 -- not valid octal, treat as decimal
-                        val = int(part)
-                else:
-                    # int() with base=0 handles: decimal, 0x hex
-                    val = int(part, 0)
-                octets.append(val)
-            except (ValueError, OverflowError):
+            # The ONE octet parser (reads octal/hex in the resolver's bases); None
+            # is an unparseable octet, so this candidate is not a dotted IP.
+            val = _octet_literal_value(part)
+            if val is None:
                 valid = False
                 break
+            octets.append(val)
 
         if valid:
             if len(octets) == 1:
@@ -1462,6 +1480,217 @@ _IMDS_IP = "169.254.169.254"
 # SSRF gate which also blocks it (CWE-918 dual-stack parity).
 _IMDS_IPV6 = "fd00:ec2::254"
 
+# ── IMDS via shell EXPANSION (CWE-185 / CWE-693) ──
+# The deny view deliberately stops BEFORE shell expansion, so a dotted token that
+# splices an expansion into an octet -- ``169.254.169.25$((2+2))``,
+# ``169.254.169.$((100+154))`` -- reaches this gate with that octet UNEXPANDED, and
+# the literal ``169.254.169.254`` the canonicalizer looks for never appears, while
+# bash still produces the real bytes at run time.
+#
+# This gate refuses ONLY what it can resolve STATICALLY, without running anything: an
+# octet made of literal digits and pure-ARITHMETIC expansions (``$((..))`` / ``$[..]``,
+# evaluated by ``_safe_arith`` -- ``+ - * / %`` over PLAIN-DECIMAL and ``0x``-HEX int
+# constants only, via a Python ``ast``, size-bounded). If the four octets resolve to
+# exactly ``169.254.169.254`` the token is refused. Any octet whose value is UNKNOWN
+# without running the shell -- a ``$VAR``, ``${..}``, a ``$(..)`` command substitution,
+# a backtick -- does not resolve and is LEFT ALONE. Unknown value means allow: a benign
+# ``for o in 123 253; do ping 169.254.169.$o; done`` reachability check, a subnet
+# gateway (``${A}.${B}.${C}.254``), a version string (``${MAJOR}.${MINOR}.${PATCH}``)
+# and a regex end-anchor (``grep '^nameserver 169.254.169.253$'``) all pass.
+#
+# ``_safe_arith`` reads a Python ``ast``, NOT a bash arithmetic emulator, so three
+# arithmetic forms that bash DOES resolve statically to ``.254`` are deliberately NOT
+# emulated and are documented RESIDUALS alongside the ``$VAR`` / ``$(..)`` / backtick
+# spellings: a leading-zero OCTAL literal (``$((0376))``), a base-N literal
+# (``$((16#fe))``, ``$((2#11111110))``), and a value that only reaches 254 by 64-bit
+# wraparound (``$((18446744073709551870))``). Emulating bash arithmetic faithfully
+# (octal, base-N, two's-complement overflow, C division) would grow this evaluator
+# without bound and trade a new divergence either way; the agreed scope is the plain
+# decimal / ``0x``-hex arithmetic a Python ``ast`` computes identically to bash. The
+# literal deny tier still catches a fully-resolved literal octet (``169.254.169.0376``
+# is read as octal by ``_octet_literal_value`` and blocked); only the ARITHMETIC
+# spelling of these bases is the residual. An octet holding any unresolvable expansion
+# (``169.254.169.$x``) is allowed, not blocked, so the gate refuses no benign command.
+# The dotted-quad octets of _IMDS_IP, as ints, for positional comparison.
+_IMDS_OCTETS = tuple(int(o) for o in _IMDS_IP.split("."))
+#: Characters of a dotted IP token (decimal, hex digits, ``x``, the dot); never ``$``.
+_IP_TOKEN_CHARS = frozenset("0123456789abcdefABCDEFxX.")
+#: Cap on an arithmetic expression fed to the safe evaluator, so a crafted
+#: ``$((...))`` cannot drive parse/eval cost up; a real IMDS octet needs a few chars.
+_ARITH_MAX_LEN = 256
+
+
+def _arith_span(command: str, i: int) -> "tuple[int, str] | None":
+    """If a bash arithmetic expansion starts at *i*, return ``(end, expr)``, else None.
+
+    Handles ``$((expr))`` (balanced parens, so a nested ``$((100+(154)))`` is spanned
+    whole) and the older ``$[expr]`` form. *end* is the index just past the span;
+    *expr* is the inner text handed to the safe evaluator. A command substitution
+    ``$(..)`` (single paren) is NOT arithmetic and returns None.
+    """
+    n = len(command)
+    if i + 1 >= n or command[i] != "$":
+        return None
+    # Bound every lookahead to the arithmetic cap: an unbalanced ``$((`` must not
+    # scan to end-of-string, or a command of many ``$((`` would be quadratic.
+    limit = min(n, i + _ARITH_MAX_LEN + 4)
+    if command[i + 1 : i + 3] == "((":
+        depth = 0
+        j = i + 1
+        while j < limit:
+            if command[j] == "(":
+                depth += 1
+            elif command[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    return (j + 1, command[i + 3 : j - 1])  # strip ``$((`` and ``))``
+            j += 1
+        return None  # unbalanced within the cap -> not a resolvable span
+    if command[i + 1] == "[":
+        close = command.find("]", i + 2, limit)
+        if close == -1:
+            return None
+        return (close + 1, command[i + 2 : close])
+    return None
+
+
+def _eval_arith(node: ast.AST) -> "int | None":
+    """Evaluate a parsed arithmetic node to an int, or None if it is not pure integer
+    arithmetic over ``+ - * / %`` (shell ``$((..))`` is integer, truncating)."""
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
+        and not isinstance(node.value, bool)
+    ):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        v = _eval_arith(node.operand)
+        if v is None:
+            return None
+        return v if isinstance(node.op, ast.UAdd) else -v
+    if isinstance(node, ast.BinOp) and isinstance(
+        node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod)
+    ):
+        left = _eval_arith(node.left)
+        right = _eval_arith(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if right == 0:
+            return None  # shell errors on /0; treat as unresolvable
+        # Truncate toward zero in INTEGERS only. ``int(left / right)`` goes through a
+        # float and loses precision above 2**53, so a large plain-decimal expression
+        # bash resolves to .254 would not (over- or under-resolving the octet); this
+        # matches bash's C-style integer division and remainder exactly.
+        q = abs(left) // abs(right)
+        if (left < 0) != (right < 0):
+            q = -q
+        if isinstance(node.op, ast.Mod):
+            return left - right * q  # C-style remainder, matches shell
+        return q  # truncating integer division toward zero, like the shell
+    return None
+
+
+def _safe_arith(expr: str) -> "int | None":
+    """Value of a plain-decimal / ``0x``-hex integer expression over ``+ - * / %``, or
+    None otherwise. This is a Python ``ast``, NOT a bash arithmetic emulator: a leading-
+    zero octal literal, a base-N (``N#..``) literal and 64-bit wraparound are NOT read
+    (they are documented residuals -- see the module note). No names, calls, attributes
+    or other operators run."""
+    expr = expr.strip()
+    if not expr or len(expr) > _ARITH_MAX_LEN:
+        return None
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+    return _eval_arith(tree.body)
+
+
+def _resolve_octet(octet: str) -> "int | None":
+    """Resolve one dotted octet to its int value, substituting arithmetic spans; None
+    if any non-arithmetic expansion (``$VAR``/``${..}``/``$(..)``/backtick) leaves it
+    with an UNKNOWN run-time value, or the result is not a valid octet literal."""
+    out: list[str] = []
+    i, n = 0, len(octet)
+    while i < n:
+        span = _arith_span(octet, i)
+        if span is not None:
+            end, expr = span
+            value = _safe_arith(expr)
+            if value is None:
+                return None
+            out.append(str(value))
+            i = end
+        elif octet[i] == "$" or octet[i] == "`":
+            return None  # unknown run-time value -> do not block
+        else:
+            out.append(octet[i])
+            i += 1
+    return _octet_literal_value("".join(out))
+
+
+def _arith_ip_tokens(command: str) -> "list[str]":
+    """Maximal dotted tokens made of IP characters and whole arithmetic spans. A token
+    stops at the first character that is neither (so a ``$VAR``/``$(..)``/backtick ends
+    it); the scan is one linear pass, each arithmetic span one balanced lookahead."""
+    tokens: list[str] = []
+    n = len(command)
+    i = 0
+    while i < n:
+        if command[i] in _IP_TOKEN_CHARS or _arith_span(command, i) is not None:
+            start = i
+            while i < n:
+                span = _arith_span(command, i)
+                if span is not None:
+                    i = span[0]
+                elif command[i] in _IP_TOKEN_CHARS:
+                    i += 1
+                else:
+                    break
+            tokens.append(command[start:i])
+        else:
+            i += 1
+    return tokens
+
+
+def _imds_access_via_expansion(command: str) -> str | None:
+    """Refuse a dotted token that STATICALLY resolves to ``169.254.169.254``.
+
+    See the module note above. Only literals and pure-arithmetic ``$((..))`` / ``$[..]``
+    expansions resolve; a ``$VAR`` / ``${..}`` / ``$(..)`` / backtick octet has an
+    unknown value and is LEFT ALONE (unknown -> allow). The denial names the
+    UNEXPANDED token, never any expanded bytes. Returns the reason or None.
+
+    Scope: the four-part dotted form, per GHSA-x2m8-5ff9-f479. The 2-/3-part inet_aton
+    short forms are outside this check.
+    """
+    if "$((" not in command and "$[" not in command:
+        return None  # nothing statically resolvable here -> the canonicalizer owns it
+    for token in _arith_ip_tokens(command):
+        octets = token.split(".")  # arithmetic spans carry no dot, so this is safe
+        if len(octets) == 5 and octets[-1] == "":
+            octets = octets[:-1]  # a single trailing dot (FQDN root) the resolver drops
+        if len(octets) != 4:
+            continue
+        values: list[int] = []
+        for octet in octets:
+            value = _resolve_octet(octet)
+            if value is None:
+                break
+            values.append(value)
+        if values == list(_IMDS_OCTETS):
+            return (
+                f"Blocked: command accesses IMDS endpoint "
+                f"(169.254.169.254 via shell expansion '{token}')"
+            )
+    return None
+
 
 def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = None) -> str | None:
     """Detect attempts to access the IMDS endpoint via any encoding.
@@ -1476,10 +1705,12 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
     """
     if enabled_ids is not None and "credential-exfil-imds-any" not in enabled_ids:
         return None
-    # Quick reject: no IP-like candidate in command
+    # Quick reject: no literal IP candidate. A token whose octets are ALL shell
+    # expansions (``$A.$B.$C.254``) still has no literal candidate, so the
+    # expansion check runs even on this path rather than short-circuiting None.
     candidates = _IP_CANDIDATE_RE.findall(command)
     if not candidates:
-        return None
+        return _imds_access_via_expansion(command)
 
     try:
         imds_v6: ipaddress.IPv6Address | None = ipaddress.ip_address(_IMDS_IPV6)  # type: ignore[assignment]
@@ -1506,7 +1737,8 @@ def _check_imds_access(command: str, *, enabled_ids: "frozenset[str] | None" = N
                     )
             except ValueError:
                 pass
-    return None
+    # No literal encoding matched; a per-octet shell-expansion spelling still can.
+    return _imds_access_via_expansion(command)
 
 
 # This module is the import path of every name the egress layer offers. The URL classifier,

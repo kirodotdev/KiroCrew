@@ -470,7 +470,19 @@ def _url_payload_command(n: int) -> str:
 #: manifest line, its rule id and reason in ``denied_rules_tables``, its ``deny_gate``
 #: registration, its facade export, and its name in the ungated-floor comment. No pass
 #: widened and no threshold moved.
-_PACKAGE_LINE_BUDGET = 32_206
+#:
+#: Raised again, from 32,206, for the shell-expansion IMDS gate (GHSA-x2m8-5ff9-f479).
+#: A spliced last octet like ``169.254.169.25$((2+2))`` evaded the literal
+#: ``169.254.169.254`` deny, so ``exfil`` resolves a statically-knowable octet before
+#: comparing: a tiny ``ast``-based integer evaluator (``_safe_arith``) reads only
+#: ``$((..))``/``$[..]`` built from int constants and ``+ - * / %``, size-bounded and
+#: running nothing, and ``_resolve_octet`` folds a literal-or-arithmetic octet to its
+#: value. Only a token resolving to exactly ``169.254.169.254`` refuses; an octet
+#: holding ``$VAR``, ``${..}``, ``$(..)`` or a backtick stays unresolved and is allowed
+#: (``169.254.169.$o`` in a loop is benign), so the gate adds no new over-block. This
+#: replaces an earlier presence-based attempt that was larger and over-blocked, so the
+#: package shrank here (prior head pinned 32,485).
+_PACKAGE_LINE_BUDGET = 32_438
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

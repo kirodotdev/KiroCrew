@@ -565,6 +565,190 @@ class TestIsSensitiveBashCommand:
         assert _check_imds_access("curl http://93.184.216.34/") is None
         assert canonicalize_ip("8.8.8.8") == "8.8.8.8"
 
+    # ── IMDS via shell EXPANSION (GHSA-x2m8-5ff9-f479, CWE-185 / CWE-693) ──
+    # The deny view stops BEFORE shell expansion, so a dotted token that splices an
+    # expansion into an octet reaches the gate with the literal 169.254.169.254
+    # absent -- yet bash forms it at run time. ONE rule: a token is refused only when
+    # it STATICALLY resolves to 169.254.169.254 (literal octets plus pure-arithmetic
+    # $((..))/$[..], a tiny safe integer evaluator). An unknown-value expansion
+    # ($VAR/${..}/$(..)/backtick) is left alone -- unknown means allow.
+
+    def test_imds_arithmetic_resolving_to_254_blocked(self) -> None:
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "curl http://169.254.169.25$((2+2))/latest/meta-data/iam/security-credentials/",
+            "curl http://169.254.169.$((100+154))/x",
+            "curl http://169.254.169.$((100+(154)))/latest/meta-data/",  # nested parens
+            "curl http://169.254.169.$((127*2))/x",  # multiply
+            "curl http://169.254.169.$((256-2))/x",  # subtract
+            # integer / and % over operands past 2**53 -- a float int(a/b) would lose
+            # precision and miss these, but bash resolves both to 254 (C-style integer
+            # division and remainder), so the evaluator must too.
+            "curl http://169.254.169.$((36028797018964094%255))/latest/meta-data/",
+            "curl http://169.254.169.$((9187343239835811839/36028797018963968))/x",
+            # a single trailing dot (FQDN root) the resolver drops -- the 5-part token
+            # must resolve as the 4-octet address, matching the literal deny tier.
+            "curl http://169.254.169.$((254)).:80/x",
+            "curl http://169.254.169.25$[2+2]/latest/meta-data/",  # older $[..] form
+            # octal / hex spellings of the fixed PREFIX octets still resolve to IMDS
+            "curl http://0251.0376.0251.25$((2+2))/latest/meta-data/",
+            "curl http://0xA9.0xFE.0xA9.25$((2+2))/latest/meta-data/",
+            # a comment apostrophe is irrelevant: the arithmetic resolves to 254
+            "# it's fine\ncurl http://169.254.169.25$((2+2))/latest/meta-data/",
+        ):
+            assert _check_imds_access(cmd) is not None, cmd
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_imds_expansion_reason_names_unexpanded_token(self) -> None:
+        # The deny reason carries the UNEXPANDED token, never expanded bytes.
+        from kiro_crew.security import _check_imds_access
+
+        reason = _check_imds_access("curl http://169.254.169.25$((2+2))/x")
+        assert reason is not None
+        assert "169.254.169.25$((2+2))" in reason
+
+    def test_imds_unresolvable_expansion_allowed(self) -> None:
+        # An expansion whose value is unknown without running it -- $VAR, ${..},
+        # $(..), backtick, an octal/hex command-sub, or arithmetic over a name like
+        # $RANDOM -- is LEFT ALONE. So are three ARITHMETIC forms bash resolves to .254
+        # but the Python-ast evaluator does not emulate: a leading-zero OCTAL literal, a
+        # base-N literal, and a value that only reaches 254 by 64-bit WRAPAROUND. All
+        # are documented under-block residuals; the literal deny tier still catches the
+        # resolved form. This is what keeps the benign `ping 169.254.169.$o` loop and
+        # ordinary commands out of the gate.
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "for o in 123 253; do ping 169.254.169.$o; done",  # the ping loop
+            "curl http://169.254.169.2${X}54/latest/meta-data/",
+            "curl http://169.254.169.25$(printf 4)/latest/meta-data/",
+            "curl http://169.254.169.25$OCTET/latest/meta-data/",
+            "set -- 254; curl http://169.254.169.$1/latest/meta-data/",
+            "curl http://169.254.169.25`printf 4`/latest/meta-data/",
+            "curl http://169.254.169.037$(printf 6)/latest/meta-data/",
+            "curl http://169.254.169.0x$(printf fe)/latest/meta-data/",
+            "curl http://169.254.169.$((RANDOM%254+1))/x",  # a name in arithmetic
+            "echo don't; curl http://169.254.169.2${X}54/x",  # comment + unknown
+            "curl http://169.254.169.$((0376))/x",  # bash octal literal -> 254, residual
+            "curl http://169.254.169.$((16#fe))/x",  # bash base-N literal -> 254, residual
+            "curl http://169.254.169.$((18446744073709551870))/x",  # 64-bit wrap -> 254
+        ):
+            assert _check_imds_access(cmd) is None, cmd
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_imds_arithmetic_not_254_allowed(self) -> None:
+        # Arithmetic that resolves to something OTHER than .254, or in a non-IMDS
+        # prefix, is not IMDS. Also the scanner edge cases: an empty octet, an
+        # unterminated or non-arithmetic span, a non-IMDS leading-zero octet.
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "curl http://169.254.169.$((2+2))/x",  # -> .4
+            "curl http://169.254.169.12$((1+2))/x",  # -> .123
+            "curl http://169.254.169.$((255))/x",  # -> .255
+            "curl http://169.254.169.$((123)).:80/x",  # trailing dot -> .123, not .254
+            "curl http://10.0.0.$((1+1))/x",  # not the IMDS prefix
+            "echo $((1+2",  # unterminated
+            "echo 169..169.$(printf 254)",  # empty octet + command sub
+            "curl http://0259.254.169.$((1+1))/x",  # 0259 is decimal 259, not 169
+            "echo http://169.254.169.25$(printf 4",  # command sub, unknown
+        ):
+            assert _check_imds_access(cmd) is None, cmd
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_imds_expansion_non_imds_prefix_allowed(self) -> None:
+        # An expansion in any of the first three octets, a link-local assignment and
+        # a version string are not IMDS-shaped and are left alone.
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "ping -c1 ${NET_A}.${NET_B}.${NET_C}.254",
+            "curl -s http://${LAN_A}.${LAN_B}.${LAN_C}.254/status",
+            "sudo ip addr add 169.254.$((RANDOM%254+1)).$((RANDOM%254+1))/16 dev eth0",
+            "curl http://169.$(printf 254).169.254/x",
+            "curl http://192.168.$X.5/x",
+            'echo "${MAJOR}.${MINOR}.${PATCH}.${BUILD}"',
+            "dotnet build -p:Version=${MAJOR}.${MINOR}.${PATCH}.${BUILD}",
+            "echo 169.254.169 $(date)",
+        ):
+            assert _check_imds_access(cmd) is None, cmd
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_imds_literal_subnet_addresses_pass(self) -> None:
+        # A purely LITERAL address in the IMDS /24 that is NOT .254 is left alone (the
+        # canonicalizer path only refuses the literal metadata IP itself).
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "curl http://169.254.169.123/status",
+            "curl http://169.254.169.253/status",
+        ):
+            assert _check_imds_access(cmd) is None, cmd
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_imds_quote_and_backtick_literals_pass(self) -> None:
+        # buluoray's regex end-anchor rows, backtick code spans, and quoted-heredoc
+        # commit/PR/issue bodies carry no resolvable arithmetic, so they pass -- as do
+        # the double-quoted ssh/bash -c/container wrappers around them.
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "grep -q '^nameserver 169.254.169.253$' /etc/resolv.conf",
+            "grep -Ec '^server 169.254.169.123$' /etc/chrony.conf",
+            "sed -n '/169.254.169.123$/p' /etc/chrony.conf",
+            "(w32tm /query /source).Trim() -match '^169.254.169.123$'",
+            "echo 'see `169.254.169.123` for NTP'",
+            "git commit -m \"$(cat <<'EOF'\n"
+            "docs(net): pin chrony to the AWS Time Sync address `169.254.169.123`\n"
+            'EOF\n)"',
+            "gh issue comment 4512 --body-file - <<'EOF'\n"
+            "Time sync is served from `169.254.169.123`, not the metadata service.\n"
+            "EOF",
+            "ssh admin@10.0.1.15 \"grep -q '^nameserver 169.254.169.253$' /etc/resolv.conf\"",
+            "bash -c \"grep -q '^server 169.254.169.123$' /etc/chrony.conf\"",
+        ):
+            assert _check_imds_access(cmd) is None, cmd
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_imds_arith_evaluator_is_safe_and_bounded(self) -> None:
+        # The arithmetic evaluator runs no names, calls or exotic operators, and is
+        # size-bounded, so a crafted $((..)) cannot execute, over-resolve or stall.
+        from kiro_crew.security import _check_imds_access
+
+        for cmd in (
+            "curl http://169.254.169.$(($(whoami)))/x",  # command sub inside -> unresolved
+            "curl http://169.254.169.$((2**100))/x",  # ** not allowed -> unresolved
+            "curl http://169.254.169.$((" + "9" * 400 + "))/x",  # over the length cap
+            "echo " + "$((" * 5000,  # many unbalanced $(( -> stays linear, returns
+        ):
+            assert _check_imds_access(cmd) is None, cmd
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_imds_canonicalize_huge_numeric_token_does_not_crash(self) -> None:
+        # A leading-zero numeric token past CPython's integer-string conversion
+        # limit (4300 digits) with an 8/9 (read as decimal, not octal) must read as
+        # "not a numeric octet" and leave the command alone, not raise and crash the
+        # gate. Guards the shared octet parser keeping every int() in its try/except.
+        from kiro_crew.security import _check_imds_access, canonicalize_ip
+
+        huge = "0" + "9" * 4400
+        assert canonicalize_ip(huge) == huge
+        assert _check_imds_access(f"echo '{huge}'") is None
+        assert is_sensitive_bash_command(f"echo '{huge}'") is None
+
+    def test_imds_literal_and_quote_only_controls_unchanged(self) -> None:
+        # The literal IMDS IP stays refused by the always-on gate, and the
+        # quote-only splits stay blocked by the deny tier's quote-normalized view.
+        from kiro_crew.security import _check_imds_access
+
+        assert _check_imds_access("curl http://169.254.169.254/latest/meta-data/") is not None
+        for quoted in (
+            'curl http://169.254.169.25"4"/latest/meta-data/',
+            "curl http://169.254.169.2''54/latest/meta-data/",
+        ):
+            assert security.is_denied(quoted) is not None, quoted
+
     def test_non_path_variables_allowed(self) -> None:
         """Variables that aren't in path-like tokens don't trigger the gate."""
         safe_cases = [
