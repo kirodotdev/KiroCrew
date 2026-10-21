@@ -1,7 +1,7 @@
 # Test files NOT collected on macOS -- one bare filename per line, relative
 # to this directory. Blank lines and #-comments are ignored.
 #
-# Read by test/conftest.py, which builds `collect_ignore` from it. Same file-driven
+# Read by test/conftest.py's `pytest_ignore_collect` hook. Same file-driven
 # mechanism as windows-collect-ignore.txt, deliberately: one shape for both OS lines
 # rather than an inline literal here and a file there.
 #

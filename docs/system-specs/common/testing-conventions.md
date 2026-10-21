@@ -3442,7 +3442,15 @@ that survives neither is the probe's.
   `test_a_nested_collection_reads_only_the_named_files` pins that only the named files
   reach `pytest_collect_file`. A Windows runner is slower at the per-entry `stat` and
   `relative_to` work this removes, so the saving is likely larger there; this pass did not
-  measure it on Windows.
+  measure it on Windows. What kept the Windows children at 44-64 s against about 4 s on
+  Linux was `test/conftest.py`'s Windows `collect_ignore` list (91 names): pytest's own
+  `pytest_ignore_collect` rebuilds a conftest ignore list into absolute paths for every
+  entry it is offered, before it reads `--ignore-glob`, and it walks `test/` (~5,400
+  entries) once per file argument, so each three-file child built ~1.47 million paths, one
+  `GetFullPathNameW` call each. A Linux child given the same list goes from 4 s to 17 s.
+  The list is now a frozenset behind the conftest's own `pytest_ignore_collect`
+  (`platform_collect_ignore_helpers.py`), which builds none, and
+  `test_platform_collect_ignore.py` pins that on every platform. The 60 s cap stays.
 - **Reading a claim's task after the POST names whichever task won the race.**
   `test_cron_manual_run_claim_window.py::test_the_manual_wrappers_backstop_leaves_a_replacement_claim_alone`
   took `first = svc._claims[job.id].task` after the route answered; when the first run's

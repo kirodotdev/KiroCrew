@@ -727,19 +727,17 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
 def _windows_collect_ignore() -> list[str]:
     """Read the Windows exclusion list from its DATA FILE, not conftest's runtime state.
 
-    Importing conftest and reading the attribute looks equivalent and is not:
-    the list is assigned inside ``if platform_compat.IS_WINDOWS:``, so on the
-    Linux matrix -- the only place this guard runs -- the attribute does not
-    exist at all and ``getattr(..., [])`` silently yields an empty set. Every
-    membership assertion against it then passes vacuously, which is precisely
-    the class of false pass this guard exists to prevent. Reading the file is
-    platform-independent.
+    Importing conftest and reading its state looks equivalent and is not: the set
+    is filled only when ``platform_compat.IS_WINDOWS``, so on the Linux matrix --
+    the only place this guard runs -- it is empty, and every membership assertion
+    against it passes vacuously, which is precisely the class of false pass this
+    guard exists to prevent. Reading the file is platform-independent.
 
     The names live in ``windows-collect-ignore.txt`` rather than as string
     literals inside conftest, because a
     second reader needs them: naming a file explicitly on the pytest command
-    line bypasses ``collect_ignore``, so the CI reduced-scope selector
-    (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.
+    line bypasses conftest's ``pytest_ignore_collect`` hook, so the CI reduced-scope
+    selector (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.
     Reading that file keeps this guard pointed at the real source of truth --
     an AST walk over conftest now finds no literals and would go blind.
     """
@@ -761,11 +759,11 @@ def _windows_collect_ignore() -> list[str]:
 def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
     """Guard the coverage, not the code.
 
-    Windows has two silent filters -- ``conftest.collect_ignore`` (whole files)
+    Windows has two silent filters -- ``windows-collect-ignore.txt`` (whole files)
     and ``windows-expected-failures.txt`` (node ids marked skip) -- and nothing
     audits either. During the port a set of enforcing tests was written,
     mutation-verified, and still never ran on Windows, because their whole file
-    sat in ``collect_ignore``; CI stayed green throughout.
+    sat in that list; CI stayed green throughout.
 
     A skipped test asserts nothing, so this guard has to live outside the suite
     it protects. It runs on Linux, where it always executes, and fails loudly if
@@ -775,7 +773,7 @@ def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
     this_file = Path(__file__).name
 
     assert this_file not in set(_windows_collect_ignore()), (
-        f"{this_file} was added to conftest.collect_ignore — the only positive "
+        f"{this_file} was added to windows-collect-ignore.txt — the only positive "
         "proof that pooling happens would stop running on Windows"
     )
 
