@@ -278,6 +278,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/members/{slug}/self-changes/{change_id}/undo", "api_member_self_undo"),
     ):
         app.router.add_route(_method, _path, _deferred("member_self", _name))
+    # The crewmate's capability catalog (``find_capabilities``), MCP-only under
+    # the same strict prefix.
+    app.router.add_post(
+        "/api/member/self/capabilities",
+        _deferred("member_capability_catalog", "api_member_self_capabilities"),
+    )
     # A crewmate's goals (``member_goals``). The Goals tab's half is owner-only
     # cookie auth under the member's own "/api/members/{slug}"; the crewmate's
     # half (the kirocrew-mate goal tools) is MCP-only under the strict
@@ -307,6 +313,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/member/self/goals/read", "api_member_self_goals_read"),
         ("POST", "/api/member/self/goals/key-result", "api_member_self_key_result"),
         ("POST", "/api/member/self/goals/report", "api_member_self_goal_report"),
+        ("POST", "/api/member/self/notes", "api_member_self_notes"),
     ):
         app.router.add_route(_method, _path, _deferred("member_goals", _name))
     # Spelled with ``add_put``: the ``crewmate.goal``, ``crewmate.key_results``

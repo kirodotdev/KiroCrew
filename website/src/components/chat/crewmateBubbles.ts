@@ -11,12 +11,7 @@
  *    accumulates — `[auto-nudge cycle N]` turns, `[Cron notification …]` and
  *    `[Subagent completion event]` envelopes, tool-call rows, reasoning
  *    bursts, and the say-nothing rows a quiet patrol ends on — is filtered at
- *    RENDER time by `filterCrewmateChat`. ONE tool row is drawn: the
- *    `spawn_run` launch, as the same live `SubagentRunCard` the chat page
- *    draws (`isSpawnRunTool`). Delegated work outlives the crewmate's own turn
- *    — it says "on it", ends its turn, and the workers run for minutes with
- *    no caption under the last bubble — so without that card the chat is
- *    perfectly still and reads as frozen (#21138). Nothing is deleted: the rows stay in
+ *    RENDER time by `filterCrewmateChat`. Nothing is deleted: the rows stay in
  *    the slot's transcript and the Work log reads them from there — the turn
  *    in flight included. What the crewmate is doing RIGHT NOW is not a
  *    transcript row at all but ONE status line beside the working indicator
@@ -43,7 +38,6 @@ import { isSystemNoticeRow } from '../../pages/chat/CompactionCard'
 import { isWorkflowCompletionMessage } from '../../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../../pages/chat/subagentCompletion'
 import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
-import { isSpawnRunTool } from '../../pages/chat/SubagentRunCard'
 import type { ChatMessage } from '../../types'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
@@ -71,9 +65,7 @@ const MACHINERY_ROLES: ReadonlySet<string> = new Set([
 ])
 
 /** A turn's progress rows: tool calls (the 🔧 line and its hidden ✅ / 🚫
- *  siblings) and thinking. Never drawn in the chat; a run reads past them.
- *  The one exception is the `spawn_run` launch row (`isSpawnRunTool`), which
- *  IS drawn, as the live sub-agent card — see `isCrewmateChatRow`. */
+ *  siblings) and thinking. Never drawn in the chat; a run reads past them. */
 const PROGRESS_ROLES: ReadonlySet<string> = new Set(['tool', ...REASONING_ROLES])
 
 /** The stop card travels under `system`; every other `system` row is state
@@ -89,11 +81,8 @@ function isStopCard(m: ChatMessage): boolean {
  *  so it is a boundary like an error row, not state the run reads past. */
 function isRunTransparent(m: ChatMessage): boolean {
   // A turn's progress rows are its own machinery: the run, its corners and
-  // its footer read past them, running or settled alike. The spawn_run launch
-  // is drawn (the sub-agent card), so like any row the person sees it is a
-  // boundary: the reply after it opens a new run instead of grouping its
-  // corners with the one before the card.
-  if (PROGRESS_ROLES.has(m.role)) return !isSpawnRunTool(m)
+  // its footer read past them, running or settled alike.
+  if (PROGRESS_ROLES.has(m.role)) return true
   if (m.role === 'permission') return !!m.meta?.resolved
   if (isStopCard(m)) return false
   return m.role === 'system' || m.role === 'done' || m.role === 'queued'
@@ -118,12 +107,6 @@ export function isCrewmateSpeech(m: ChatMessage): boolean {
 
 /** Whether a row is drawn in a crewmate's chat at all. */
 export function isCrewmateChatRow(m: ChatMessage): boolean {
-  // The spawn_run launch is the one tool row this chat draws, as the same live
-  // `SubagentRunCard` the chat page draws through `transcriptRenderers`'
-  // `subagent_run_tool` entry (counts and per-worker state update in place as
-  // the workers run and return). It is the only sign that delegated work is
-  // alive once the crewmate's own turn has ended (#21138).
-  if (isSpawnRunTool(m)) return true
   if (MACHINERY_ROLES.has(m.role)) return false
   if (m.role === 'assistant') return isCrewmateSpeech(m)
   // A stop card records the person's own Stop press, so it stays drawn.

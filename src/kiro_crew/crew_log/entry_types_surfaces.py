@@ -1,9 +1,10 @@
 """Crew log declarations for a crewmate's panel and dashboard, and a conversation's cards.
 
-The ``panel/``, ``dashboard/``, ``card/`` and ``guide/`` types: a crew's published
-webview, an accepted change to a crewmate's dynamic dashboard, an agentic value it wrote
-and a refused write its mistake book reads back, and the change cards and guides the
-agent offers in a conversation, with how each one ended. The entry types, read ceilings
+The ``panel/``, ``dashboard/``, ``card/`` and ``guide/`` types: a crew's
+published webview, an accepted change to a crewmate's dynamic dashboard, an agentic value
+it wrote and a refused write its mistake book reads back, the change cards and guides the
+agent offers in a conversation, with how each one ended, and the crewmate's own goal
+record and "waiting on you" list as the gateway records them for its Dashboard page. The entry types, read ceilings
 and fold names the panel and dashboard folds share sit beside them, as do the statuses
 a card or a guide can finish with.
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from kiro_crew.crew_log.entry_types_fields import (
     JSON_ARRAY,
+    JSON_BOOL,
     JSON_INT,
     JSON_OBJECT,
     JSON_STRING,
@@ -145,6 +147,28 @@ MISTAKE_GROUP_LIMIT = 50
 MISTAKE_CORRECTION_LIMIT = 3
 
 MISTAKES_FOLD_NAME = "mistakes"
+
+# -- a crewmate's own record, as folds its Dashboard page reads ---------- #
+
+#: The entry a crewmate's goal record lands as each time it changes: the goals, and
+#: each milestone with its target, its latest reading and whether that reading meets
+#: the target. A SNAPSHOT, so the fold keeps the newest whole and a page bound to it
+#: moves the moment the record does, with no value typed by the crewmate.
+GOAL_ENTRY_TYPE = "dashboard/goal_recorded"
+GOAL_FOLD_NAME = "goal"
+#: The entry a crewmate's "waiting on you" list lands as each time it changes: its
+#: open ``[OPTIONS]`` questions, ``ask_question`` cards and pending change cards.
+#: A snapshot too, so a reply or a card press empties the fold by the next entry.
+WAITING_ENTRY_TYPE = "dashboard/waiting_changed"
+WAITING_FOLD_NAME = "waiting"
+#: Milestones or goals the goal fold keeps, items the waiting fold keeps, choices one
+#: waiting item keeps, and characters per text cell: re-applied on read, and sized so a
+#: snapshot at every clamp still fits one entry.
+CREWMATE_ROW_LIMIT = 12
+CREWMATE_WAITING_LIMIT = 6
+CREWMATE_OPTION_LIMIT = 6
+CREWMATE_TEXT_LIMIT = 240
+
 
 #: The ``code`` a CORRECTION entry carries.
 #:
@@ -577,6 +601,77 @@ TYPES: tuple[EntryType, ...] = (
                 enum_closed=True,
                 note="Why, when the status alone misleads: a cancelled guide whose save went through.",
             ),
+        ),
+    ),
+    # -- a crewmate's own record ------------------------------------------- #
+    EntryType(
+        GOAL_ENTRY_TYPE,
+        "A crewmate's goal record after a change: its goals and its milestones.",
+        (
+            Field(
+                "goals",
+                JSON_ARRAY,
+                required=True,
+                item_type=JSON_OBJECT,
+                fields=(Field("text", JSON_STRING, note="The goal's text."),),
+                note="Each goal as {text}, in the record's order.",
+            ),
+            Field(
+                "milestones",
+                JSON_ARRAY,
+                required=True,
+                item_type=JSON_OBJECT,
+                fields=(
+                    Field("text", JSON_STRING, note="What the milestone measures."),
+                    Field("target", JSON_STRING, note="The target, as the crewmate set it."),
+                    Field("current", JSON_STRING, note="The latest reading."),
+                    Field("met", JSON_BOOL, note="Whether the latest reading meets the target."),
+                    Field("at", JSON_STRING, note="When the latest reading was taken, ISO 8601."),
+                ),
+                note=(
+                    "Each milestone as {text, target, current, met, at}: current is the "
+                    "latest reading and at its time, met whether the gateway's reading "
+                    "of it (member_goals.key_result_met) meets the target."
+                ),
+            ),
+        ),
+        note=(
+            "Appended by the gateway to the crewmate's own DM session log whenever the "
+            "goal record changes (a goal set, milestones applied, a reading recorded), "
+            "and folded under its slot as the goal fold."
+        ),
+    ),
+    EntryType(
+        WAITING_ENTRY_TYPE,
+        "What a crewmate waits on the person for, after that list changed.",
+        (
+            Field(
+                "items",
+                JSON_ARRAY,
+                required=True,
+                item_type=JSON_OBJECT,
+                fields=(
+                    Field("kind", JSON_STRING, note="options, question or card."),
+                    Field("text", JSON_STRING, note="The question or the card's title, redacted."),
+                    Field(
+                        "options",
+                        JSON_ARRAY,
+                        item_type=JSON_STRING,
+                        note="The choices the person can answer with, when it names any.",
+                    ),
+                    Field("asked_at", JSON_STRING, note="When it was asked, ISO 8601."),
+                ),
+                note=(
+                    "Each item as {kind, text, options, asked_at}, newest first: kind is "
+                    "options, question or card (dashboard.member_waiting.waiting_items)."
+                ),
+            ),
+        ),
+        note=(
+            "Appended by the gateway to the crewmate's own DM session log when the "
+            "list it reads off the thread changes: a question asked, answered by a "
+            "reply or an [OPTIONS] chip, or a card raised or pressed. Folded under its "
+            "slot as the waiting fold."
         ),
     ),
 )

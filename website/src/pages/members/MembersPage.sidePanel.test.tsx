@@ -69,7 +69,7 @@ vi.mock('../../api/client', () => ({
       get: vi.fn(() => Promise.resolve({
         slug: '', member: '', goals: [],
         key_results: [], reports: [], removed_key_result: null, removed_goal: null,
-        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1 },
+        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 30 },
         limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
       })),
     },
@@ -397,14 +397,15 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-roster')).toHaveClass('hidden')
     expect(screen.getByTestId('crewmate-switcher')).toBeInTheDocument()
     // No count on the chip (issue #19045): the open list says how many. The
-    // unread column hangs from the header's bottom edge, absolutely, so it adds
-    // nothing to the header's measured height: the thread is never pushed down.
+    // unread column is the header's second row, in flow, so the header's
+    // measured height (the thread's top inset) and its fade include it: no
+    // message or card rests under an unread pill.
     expect(screen.queryByTestId('crewmate-switcher-count')).toBeNull()
     const header = screen.getByTestId('member-thread-header')
     const slot = screen.getByTestId('crewmate-unread-column-slot')
     expect(header.contains(slot)).toBe(true)
-    expect(slot.className).toContain('absolute')
-    expect(slot.className).toContain('top-full')
+    expect(slot.className).not.toContain('absolute')
+    expect(slot.className).toContain('row-start-2')
   })
 
   it('the Assistant lands with its docked panel hidden, remembered apart from every other crewmate', async () => {

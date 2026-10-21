@@ -148,11 +148,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "dashboard_types",
             "description": (
                 "READ THIS BEFORE YOU COMPOSE A DASHBOARD. Lists every DATA TYPE "
-                "you can bind a dashboard block to -- one per fold of your crew "
+                "you can bind a dashboard field to -- one per fold of your crew "
                 "log -- and for each one: its name, the field shape inside it (so "
                 "you can name a path instead of guessing one), which fold the "
                 "value is folded from, and how far that fold has been folded for "
-                "you right now. A block bound to a path this does not list draws "
+                "you right now. A field bound to a path this does not list draws "
                 "nothing, so read the shape and copy the path out of it. Three "
                 "things to read carefully: an `array` is where the shape STOPS, "
                 "because a path cannot reach inside a list; an `opaque` object is "
@@ -225,7 +225,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Dashboard. A page is three declarations and this call saves all "
                 "three at once: a "
                 "`model` naming the fields the page holds and where each value "
-                "comes from, a `view` laying out the blocks that draw them, and a "
+                "comes from, a `view` holding the page itself as inline HTML, and a "
                 "`theme` of tokens. Read dashboard_fields first -- it tells you "
                 "the page in force -- and tell the person what you are changing, "
                 "because the page is theirs. A field reads either from a crew-log fold "
@@ -233,10 +233,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 'gateway) or from you (`{"agentic": true}`) -- never a number you '
                 "type into the layout, which would be true only at the moment you "
                 "typed it. The "
-                "block types and data types come from a CLOSED catalog, so a "
+                "data types come from a CLOSED catalog, so a "
                 "package naming one that does not exist is refused and the refusal "
                 "lists the ones that do: recompose from that list. NAME YOUR FIELDS "
-                "AND BLOCKS FOR A READER -- `open_prs`, not a token. A name a "
+                "FOR A READER -- `open_prs`, not a token. A name a "
                 "redactor would mask is refused, because a name is a key the page "
                 "joins its cells by and cannot be rewritten on the way out; the "
                 "refusal tells you which position to rename. Values never version "
@@ -282,11 +282,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "view": {
                         "type": "object",
                         "description": (
-                            'The layout, as `{"blocks": [...]}`, in the order a '
-                            "reader meets them -- that order IS the layout. Each "
-                            "block carries an `id`, a `type` from the block "
-                            "catalog, the `fields` it draws (every one declared by "
-                            "the model) and an optional `title`."
+                            'The page, as `{"html": "..."}`: inline HTML (your '
+                            "markup, CSS and script) with one element carrying "
+                            '`data-dashboard-field="<name>"` for each field the '
+                            "model declares, which the host fills as text. Colour it "
+                            "with the dashboard's theme variables so light and dark "
+                            "both read."
                         ),
                     },
                     "theme": {
@@ -773,7 +774,7 @@ def _render_saved(saved: dict[str, Any], verification: Any = None) -> str:
     """
     lines = [
         f"SAVED as your dashboard package ({saved.get('fields')} field(s) in "
-        f"{saved.get('blocks')} block(s)). It is not live yet."
+        f"its page). It is not live yet."
     ]
     checked = _render_verification(verification)
     if checked:
@@ -890,12 +891,12 @@ def _render_types(payload: dict[str, Any]) -> str:
     rows = payload.get("types")
     if not isinstance(rows, list) or not rows:
         return (
-            "No data type came back, so there is nothing to bind a dashboard block to "
+            "No data type came back, so there is nothing to bind a dashboard field to "
             "yet. Tell the human: this gateway's fold registry answered empty."
         )
     lines = [
-        f"{len(rows)} data types you can bind a dashboard block to. Each one is a fold "
-        "of your crew log; bind a block by naming the type and a path from its list.",
+        f"{len(rows)} data types you can bind a dashboard field to. Each one is a fold "
+        "of your crew log; bind a field by naming the type and a path from its list.",
     ]
     unread = False
     for row in rows:

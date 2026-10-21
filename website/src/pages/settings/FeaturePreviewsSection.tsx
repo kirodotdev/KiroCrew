@@ -10,6 +10,7 @@ import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
+import { CrewmateV2Toggle } from './CrewmateV2Toggle'
 import { i18nT } from '../../i18n/t'
 
 
@@ -56,7 +57,8 @@ import { i18nT } from '../../i18n/t'
  * page it holds. The PAGE stays un-advertised: `getAdvertisedSurfaces()` and
  * the Search Everywhere Pages provider still filter it until the flag is on.
  *
- * No `configKey` on the four `previewFlags.ts` toggles, deliberately: that prop
+ * No `configKey` on the four `previewFlags.ts` toggles, deliberately (the nested
+ * Crewmate 2.0 switch carries one: it is the server config `dashboard.crewmate_v2`): that prop
  * is what makes a `<SettingRef>` chip deep-link here and what feeds
  * `settingsRegistry.gen.ts`, and a per-device localStorage flag has no config
  * path to name at all. Search deep-links still reach every toggle through its
@@ -250,6 +252,10 @@ export function FeaturePreviewsSection() {
             onChange={v => setPreviewFlag(PREVIEW_CREW, v)}
           />
         </div>
+        {/* Crewmate 2.0 changes how the crewmates on that page work, so it is a
+            second-level switch inside this card, shown only once the page is on.
+            It is server config, not a per-device flag (`CrewmateV2Toggle.tsx`). */}
+        {crew && <CrewmateV2Toggle />}
       </SettingsCard>
       {/* A SEPARATE card from Crew Members above, because the word names two
           unrelated things: that flag holds the Crew Members page, this one holds

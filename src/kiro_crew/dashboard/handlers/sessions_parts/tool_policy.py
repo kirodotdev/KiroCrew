@@ -583,11 +583,12 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    withheld = await asyncio.to_thread(_crewmate_withheld_tools, state, session_key)
     if policy is None:
         # This agent has no policy: no spec file, or a spec declaring none.
         # A genuinely absent policy is an empty one, so the answer is unchanged
         # -- and still not logged as a success, since nothing was parsed.
-        return web.json_response({})
+        return web.json_response({"exclude": sorted(withheld)} if withheld else {})
 
     _sel().log_api_access(
         caller=session_key,
@@ -596,7 +597,40 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"agent={agent_name}",
     )
-    return web.json_response(policy)
+    return web.json_response(_with_exclusions(policy, withheld))
+
+
+def _crewmate_withheld_tools(state: DashboardState, session_key: str) -> frozenset[str]:
+    """The tools a crewmate's own thread does not mount, by that crewmate's record.
+
+    Dynamic capabilities is a per-crewmate preview
+    (:mod:`kiro_crew.crewmate_dynamic_capabilities`): with Crewmate 2.0 on and
+    the crewmate's flag off, its conductor lists neither ``find_capabilities``
+    nor ``request_capabilities``. The managed server is shared by every
+    crewmate, so the per-crewmate cut is made here, on the session's policy,
+    which ``tools/list`` filters on and ``tools/call`` enforces. Every other
+    session (no crewmate in scope) is answered nothing extra: those tools
+    resolve their caller as a crewmate's own chat and refuse anything else.
+    Blocking (reads the config).
+    """
+    from kiro_crew import crewmate_dynamic_capabilities as dyn
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    if not session_key.startswith("dashboard:"):
+        return frozenset()
+    slot = state.get_slot(session_key[len("dashboard:") :])
+    if slot is None or not is_crewmate_thread(slot):
+        return frozenset()
+    return dyn.CAPABILITY_TOOLS if dyn.restricted_for(slot.agent) else frozenset()
+
+
+def _with_exclusions(policy: dict[str, Any], withheld: frozenset[str]) -> dict[str, Any]:
+    """*policy* with *withheld* added to its ``exclude`` list (a list it may not have)."""
+    if not withheld:
+        return policy
+    current = policy.get("exclude")
+    names = [n for n in current if isinstance(n, str)] if isinstance(current, list) else []
+    return {**policy, "exclude": sorted(set(names) | withheld)}
 
 
 # Every ``api_session*`` handler is an owner surface, so a private member's

@@ -593,8 +593,8 @@ def test_store_survives_a_restart(tmp_path):
 def test_reload_admits_at_most_the_card_cap_and_refuses_an_oversized_file(tmp_path, monkeypatch):
     path = tmp_path / "change_cards.json"
     store = CardStore(path, clock=Clock())
-    for _ in range(3):
-        _propose(store)
+    for value in ("brief", "ultra-brief", "detailed"):
+        _propose(store, params={"path": "chat.verbosity", "value": value})
     asyncio.run(store.flush())
     monkeypatch.setattr(cards, "MAX_STORED_CARDS", 2)
     again = CardStore(path, clock=Clock())
@@ -706,7 +706,7 @@ def test_capacity_pruning_keeps_cards_that_still_have_a_step_to_run(monkeypatch)
         store.get(settled["id"])
     # Full with nothing settled: a new card is refused instead of evicting one.
     with pytest.raises(CardError) as exc:
-        _propose(store)
+        _propose(store, params={"path": "chat.verbosity", "value": "detailed"})
     assert exc.value.code == "too_many_cards"
     assert store.get(running["id"])["status"] == "applying"
 
@@ -882,3 +882,23 @@ def test_guide_text_carrying_a_credential_is_refused():
     with pytest.raises(guide_catalog.GuideCatalogError) as exc:
         guide_catalog.clean_guide_text(f"paste {_FAKE_TOKEN} here", "intro", 300)
     assert exc.value.code == "invalid_text"
+
+
+def test_a_card_identical_to_one_still_waiting_is_refused():
+    """Atlas raised two identical milestone cards 7 s apart: the second only doubled
+    what the person had to press. A card the same slot already has waiting, with the
+    same kind and params, is refused; a different proposal, or the same one after the
+    first was answered, is a new question."""
+    store = CardStore(None, clock=Clock())
+    first = _propose(store)
+    with pytest.raises(CardError) as exc:
+        _propose(store)
+    assert exc.value.code == "duplicate_card"
+    assert exc.value.status == 409
+    assert first["id"] in str(exc.value)
+    assert len(store.pending(None)) == 1
+    other = _propose(store, params={"path": "chat.verbosity", "value": "detailed"})
+    assert other["id"] != first["id"]
+    store.cancel(first, revision=1)
+    again = _propose(store)
+    assert again["id"] != first["id"]

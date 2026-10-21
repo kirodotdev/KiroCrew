@@ -113,7 +113,7 @@ GOAL_A = {"id": "g00000001", "text": "Keep the release notes current"}
 GOAL_B = {"id": "g00000002", "text": "Cut the build time in half"}
 
 
-def test_the_kickoff_researches_in_the_background_then_proposes() -> None:
+def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     rec = {
         "goals": [GOAL_A],
         "key_results": [],
@@ -122,7 +122,12 @@ def test_the_kickoff_researches_in_the_background_then_proposes() -> None:
     text = goal_setup.kickoff_prompt(rec, GOAL_A["id"])
     assert text is not None
     assert "Keep the release notes current" in text
-    assert "spawn_run" in text and "end your turn" in text
+    # A crewmate's chat starts no sub-agents: the research goes to a worker session.
+    assert "session_create" in text and "session_send" in text
+    # It dispatches and ends the turn; the worker's report wakes it, so nothing polls.
+    assert "end this turn" in text and "[Worker report]" in text
+    assert "session_read_message" not in text and "call wait" not in text
+    assert "spawn_run" not in text and "sub-agent" not in text
     assert "set_key_results" in text and "goal_ids" in text
     # Guidance toward a small set, not a cap.
     assert "easier to track" in text and "merging" in text
@@ -155,6 +160,23 @@ def test_the_milestones_nudge_offers_check_ins_only_when_none_is_on() -> None:
     on = goal_setup.milestones_prompt({**rec, "schedules": {"weekly": True}})
     assert on is not None and "[Milestones confirmed]" in on and "set_check_ins" not in on
     assert goal_setup.milestones_prompt({**rec, "key_results": []}) is None
+
+
+@pytest.mark.parametrize("has_mate_tools", [True, False])
+def test_the_milestones_nudge_offers_the_heartbeat_too(has_mate_tools: bool) -> None:
+    """The Heartbeat is off by default and only a check-ins card turns it on, so the
+    offer after the milestones are confirmed names it beside the three reminders."""
+    rec = {
+        "goals": [GOAL_A],
+        "key_results": [{"id": "k1", "text": "notes out", "target": "yes"}],
+        "schedules": {},
+    }
+    text = goal_setup.milestones_prompt(rec, has_mate_tools=has_mate_tools)
+    assert text is not None
+    for name in ("Daily Goal Reminder", "Weekly report", "Monthly review", "Heartbeat"):
+        assert name in text
+    assert "keeps the work moving while they are away" in text
+    assert "Dashboard tab" in text
 
 
 def test_the_removed_nudge_names_the_goal_and_its_orphaned_milestones() -> None:
@@ -278,3 +300,36 @@ def test_the_nudge_waits_for_a_busy_thread_then_sends_once(monkeypatch) -> None:
     assert args[1] is slot and "[Goal set]" in args[2]
     assert "set goal 2" in args[2]
     assert kwargs == {"human_seen": True}
+
+
+def test_an_applied_capabilities_card_wakes_its_crewmate_to_use_it(monkeypatch) -> None:
+    """A card press starts no turn; the grant used to wait until the user typed."""
+    from kiro_crew import member_goals
+    from kiro_crew import members as members_mod
+    from kiro_crew.dashboard import mate_welcome
+
+    slot = _Slot()
+    slot.running = False
+    state = _State(slot)
+    sent: list[tuple] = []
+    monkeypatch.setattr(goal_setup, "POLL_SECS", 0)
+    monkeypatch.setattr(members_mod, "member_slug", lambda _n, _c=None: "scout")
+    monkeypatch.setattr(
+        members_mod, "read_dm_binding", lambda _slug: {"member": "scout", "slot_key": slot.key}
+    )
+    monkeypatch.setattr(
+        member_goals, "read_goals", lambda _s, _m: {"goals": [], "key_results": [], "schedules": {}}
+    )
+    monkeypatch.setattr(mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k)))
+
+    async def go() -> None:
+        goal_setup.schedule_capabilities_nudge(state, slot.key, "Add teamchat to Scout's worker")
+        goal_setup.schedule_capabilities_nudge(state, "member-dm:other", "Add x")
+        await async_wait_until(lambda: bool(sent))
+
+    asyncio.run(go())
+    ((args, _kwargs),) = sent
+    assert args[1] is slot
+    assert args[2].startswith("[Capabilities added]")
+    assert "Add teamchat to Scout's worker" in args[2]
+    assert "session_create" in args[2]

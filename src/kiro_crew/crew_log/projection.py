@@ -101,6 +101,7 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_internal",
     "kiro_crew.crew_log.projection_radar",
     "kiro_crew.crew_log.projection_dashboard",
+    "kiro_crew.crew_log.projection_crewmate",
     "kiro_crew.crew_log.projection_work",
     "kiro_crew.crew_log.projection_workstreams",
     "kiro_crew.crew_log.projection_worktree",
@@ -148,6 +149,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         Projection,
         _Fold,
         logger,
+    )
+    from kiro_crew.crew_log.projection_crewmate import (  # noqa: F401
+        _MILESTONE_TEXT_KEYS,
+        _WAITING_TEXT_KEYS,
+        _goal_render,
+        _goal_rows,
+        _goal_start,
+        _goal_step,
+        _rows,
+        _text,
+        _waiting_render,
+        _waiting_rows,
+        _waiting_start,
+        _waiting_step,
     )
     from kiro_crew.crew_log.projection_dashboard import (  # noqa: F401
         PANEL_SCHEMA_VERSION,
@@ -502,6 +517,10 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         PHASE_SESSION_START,
     )
     from kiro_crew.crew_log.entry_types import (  # noqa: F401
+        CREWMATE_OPTION_LIMIT,
+        CREWMATE_ROW_LIMIT,
+        CREWMATE_TEXT_LIMIT,
+        CREWMATE_WAITING_LIMIT,
         DASHBOARD_AGENTIC_ENTRY_TYPE,
         DASHBOARD_CODE_LIMIT,
         DASHBOARD_FIELD_LIMIT,
@@ -511,6 +530,8 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         DASHBOARD_TYPE_LIMIT,
         DASHBOARD_VALUE_BYTES,
         DASHBOARD_VALUE_LIMIT,
+        GOAL_ENTRY_TYPE,
+        GOAL_FOLD_NAME,
         MISTAKE_CORRECTED_CODE,
         MISTAKE_CORRECTION_LIMIT,
         MISTAKE_GROUP_LIMIT,
@@ -536,6 +557,8 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         RADAR_SKIP_SCOPES,
         RADAR_TERMINAL_PHASES,
         SESSION_ENTRY_TYPES,
+        WAITING_ENTRY_TYPE,
+        WAITING_FOLD_NAME,
         WORK_ENTRY_TYPE,
     )
     from kiro_crew.crew_log.errors import (  # noqa: F401

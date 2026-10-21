@@ -513,7 +513,9 @@ describe('Settings > Developer > Feature Previews', () => {
     await act(async () => {
       screen.getByRole('switch', { name: /^crewmates$/i }).click()
     })
-    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
+    // The crew card now also draws its nested Crewmate 2.0 row, whose `hint`
+    // brings one more help toggle; it is a switch, not an ingress.
+    expect(partition()).toEqual({ tips: INFO_TIP_COUNT + 1, ingress: [] })
     // The Decisions subtree, exactly. A new button here -- or a duplicate of one of
     // these -- fails, which a name allowance could not do.
     // The Decisions subtree, exactly, once its reads have settled. Awaited rather than
@@ -531,7 +533,7 @@ describe('Settings > Developer > Feature Previews', () => {
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
-    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: ['Open Webhooks'] })
+    expect(partition()).toEqual({ tips: INFO_TIP_COUNT + 1, ingress: ['Open Webhooks'] })
     // And the card beside it still draws only its own two.
     expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
   })

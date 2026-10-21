@@ -7,7 +7,7 @@ is a FOLD: `status`, `usage`, `timeline`, `tools`, `approvals`, `subagents` and
 `class` -- the session side panel of the RFC's section 5 table, plus the one fold a
 READER of another unit's log consults rather than a panel. This module is those six
 advertised folds, the internal `class` fold, the slot-keyed `ledger`, `radar`,
-`work`, `panel`, `agentic`, `mistakes` and `workstreams` folds, the two read routes that serve them, and the frame that pushes a fold
+`work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal` and `waiting` folds, the two read routes that serve them, and the frame that pushes a fold
 when the file grows.
 
 The split it implements is RFC NFR-2: the backend folds and cuts pages, the
@@ -19,7 +19,7 @@ sends, so `PROJECTION_NAMES` holds those six. A fold in `SLOT_PROJECTION_NAMES` 
 keyed by a SLOT rather than by one unit: a slot owns one ACP session id at a time,
 so the state it accrues over its life is spread across a unit per id it ran under,
 and answering for it means joining them. `SLOT_PROJECTION_NAMES` holds `ledger`,
-`radar`, `work`, `panel`, `agentic`, `mistakes` and `workstreams`, and those names are kept OUT of
+`radar`, `work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal` and `waiting`, and those names are kept OUT of
 `PROJECTION_NAMES` for that reason -- the growth push and the side panel address a
 session, and pushing a slot-wide value under one session's id would report a partial
 answer as the whole one. `FOLD_NAMES` is the union of the two, and the import-time
@@ -52,6 +52,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_internal.py` | the internal `class` and `outline` folds |
 | `crew_log/projection_radar.py` | the `radar` slot fold |
 | `crew_log/projection_dashboard.py` | the `panel`, `agentic` and `mistakes` slot folds |
+| `crew_log/projection_crewmate.py` | the `goal` and `waiting` slot folds, a crewmate's own record |
 | `crew_log/projection_work.py` | the `work` slot fold, and which units a work board spans (`_work_units`, `work_slots_naming_board`) |
 | `crew_log/projection_workstreams.py` | the `workstreams` slot fold and its board closure |
 | `crew_log/projection_worktree.py` | the `worktree` tree fold |
@@ -98,8 +99,8 @@ step for an entry a fold does not name, and `None` would leave a reader unable t
 "all of them" from "not decided".
 
 **Every fold is eager today, and `LAZY_FOLD_REASONS` is empty.** The two families each
-have their own warm path (section 5.1): the seven SLOT folds -- `ledger`, `radar`, `work`,
-`panel`, `agentic`, `mistakes` and `workstreams` -- are continued in the slot memo, and the seven SESSION folds -- the six the
+have their own warm path (section 5.1): the nine SLOT folds -- `ledger`, `radar`, `work`,
+`panel`, `agentic`, `mistakes`, `workstreams`, `goal` and `waiting` -- are continued in the slot memo, and the seven SESSION folds -- the six the
 crew-log panel draws plus the internal `class` -- in the session memo.
 `EAGER_SLOT_FOLD_NAMES` and `EAGER_SESSION_FOLD_NAMES` name the two halves, and an eager
 fold in neither is refused at import, because it would be woken for and then have
@@ -395,6 +396,8 @@ reopened.
 | `panel` | The crew's published webview, folded from `panel/published` entries in the member's own DM session log. |
 | `agentic` | The crewmate's own dynamic-dashboard values, the latest per field, folded from `dashboard/agentic_value` entries in the member's own DM session log. It keeps up to `DASHBOARD_VALUE_LIMIT` fields, re-checks each value's declared type and byte size against the template manifest, and evicts the least recently written field past the cap. |
 | `mistakes` | The crewmate's mistake book: refused dashboard writes grouped by `(code, field)` from `dashboard/agentic_refused` entries, worst group first, carrying the correction a later accepted write recorded. It keeps up to `MISTAKE_GROUP_LIMIT` groups. |
+| `goal` | A crewmate's goal record, from the newest `dashboard/goal_recorded` snapshot: `goal` (the first goal's text), `goals`, `milestones` (each with its target, latest reading, `met` and time), `milestones_total`, `milestones_met`, `milestones_open`, `all_met` (true only with at least one milestone, all met) and `changes`. It keeps up to `CREWMATE_ROW_LIMIT` rows per list and `CREWMATE_TEXT_LIMIT` characters per cell. |
+| `waiting` | What a crewmate waits on the person for, from the newest `dashboard/waiting_changed` snapshot: `items` (newest first), `count`, `newest` (the newest item's text, `""` when nothing waits) and `changes`. It keeps up to `CREWMATE_WAITING_LIMIT` items and `CREWMATE_OPTION_LIMIT` choices each. |
 | `workstreams` | The project report: every board this slot reaches, keyed by `(slot, generation)`, each task costed by the credits of the worker session bound to it. It reads `work/recorded`, `session/opened` and the three turn closers, and counts board, task and spender overflow rather than dropping it silently. |
 
 No fold interprets `card/*` or `guide/*`. They are declared in the type registry, so

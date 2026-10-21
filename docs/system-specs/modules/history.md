@@ -402,7 +402,10 @@ permanent-delete lifecycle.
 A change card (`propose_change`) or a guide offer (`guide_start`) is part of the
 conversation, so it is a transcript row: `dashboard/chat_cards.py` appends ONE
 `card` row to the proposing slot when the agent-half propose/start route accepts
-it. The proposal is an MCP tool call of the running turn, so the row lands after
+it. A proposal identical to a card the same slot still has waiting (same kind, same
+params, pending or applying and not expired) is refused with `409 duplicate_card`
+naming the waiting card (`CardStore._open_duplicate`), so no row is written for it.
+The proposal is an MCP tool call of the running turn, so the row lands after
 that call's `tool` row and before the turn's later text, and the turn-end refresh
 keeps it there. The live frame is placed the same way client-side (ahead of the
 open streaming row, like a tool row), and the "tools finished" scan that runs when

@@ -106,8 +106,8 @@ _STABLE_TEXT_SHA256 = {
     "critical_rules": "06ea61438802e0538dbf1f107e2e6b07cf2416348734f330e0cf0ec3ef52e899",
     "critical_rules_channel": "7e0dc53a1e4db382d51bb8ead062cd94ed5752dbb30b40149b6d9728ba734742",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
-    "member_how_you_work": "aecaa26113f1d8909cc3188cece6f3455c02354fefe72b4ed5f6fa9d2db68f14",
-    "member_how_you_work_unavailable": "d7e0fda68e64a84f1bc17dc3a8b2fa0fbbeec42a352dc0ea06d0808eadb04f3d",
+    "member_how_you_work": "ff364bcf39a9a019725388698714f4ba26fb150710430bccd6eb2540320534d1",
+    "member_how_you_work_unavailable": "03a1100f27c0aac7159e7263c09756367b844aa2ce9d10c64cd5b573925940b1",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",
@@ -727,11 +727,11 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_member_mode": (
-        "5a3c37279e5405f2d2ad02dc35608a1015f961df3a777e1197c03dc159facd90",
+        "579d5febc12d1f03115e3ad48130bdd4144052ecc94a78c1bbd394990d56efde",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
-            ("surface", 1189),
+            ("surface", 1334),
             ("workspace_identity", 371),
             ("docs_pointer", 235),
             ("memory_tools", 425),
@@ -1159,3 +1159,10 @@ async def test_session_routing_is_read_off_the_event_loop(monkeypatch) -> None:
     store = await asyncio.wait_for(ctx.session_store_for_turn(object(), "dashboard:k"), 10)
     assert store == ""
     assert seen and all(thread != loop_thread for thread in seen)
+
+
+@pytest.mark.parametrize("scenario", ["fresh_dashboard", "session_context_member_mode", "resumed"])
+def test_a_plain_session_carries_no_crewmate_crew_log_section(rig: _Rig, scenario: str) -> None:
+    """The crew-log / dashboard / tools block rides only a crewmate's own member section."""
+    rendered = _SCENARIOS[scenario](rig)
+    assert "[YOUR CREW LOG, DASHBOARD AND TOOLS]" not in rendered

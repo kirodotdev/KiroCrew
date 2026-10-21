@@ -463,14 +463,31 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     to the gate as is, so an unusable explicit pick still degrades with its
     warning (harness-parity H3). ``validate_config_data`` replaces a present
     non-string with the stored floor before this runs.
+
+    For ``agent.member_acp_backend`` a stored ``"kiro"`` reads as KAS: crewmates
+    run on KAS, the Kiro backend that carries the per-session dispatch tools a
+    member thread needs. Mapping here, before the gate, gives every reader of the
+    field the backend the member thread actually gets, and the mapped value still
+    crosses the gate like any other pick.
     """
-    from kiro_crew.acp_backends import backend_from_stored, selectable_backends
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
+        backend_from_stored,
+        selectable_backends,
+    )
 
     value = backend_from_stored(agent_data.get(key))
     if value is None:
         default = section.default(key)
         value = default if default in selectable_backends() else None
+    elif key == _MEMBER_HARNESS_KEY and value == ACP_BACKEND_KIRO:
+        value = ACP_BACKEND_KAS
     return _normalize_acp_backend(value)
+
+
+#: The harness field crewmate DM sessions run on (see :func:`_read_backend_choice`).
+_MEMBER_HARNESS_KEY = "member_acp_backend"
 
 
 #: The ``agent`` fields that hold a harness id, spelled in the config-file
@@ -922,6 +939,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         restore_sessions=section.get("restore_sessions"),
         crewmate_threads=section.read("crewmate_threads", _safe_bool),
+        crewmate_v2=section.read("crewmate_v2", _safe_bool),
         crewmates_in_agent_picker=section.read("crewmates_in_agent_picker", _safe_bool),
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),

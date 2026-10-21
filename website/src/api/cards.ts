@@ -51,7 +51,26 @@ export interface CardChange {
   remove?: unknown[]
   /** A `goal` row: which goal, by the number the Goals tab shows. */
   number?: number
+  /** A capabilities card's plain line for one addition, worded by the dashboard. */
+  addition?: CardAddition
+  /** A raw row a card with plain lines keeps behind its Details. */
+  detail?: boolean
 }
+
+/** One thing a capabilities card gives a crewmate's worker. */
+export type CardAddition =
+  | {
+    kind: 'server'
+    name: string
+    /** `gateway`: already running here; `registry`: installed from the MCP registry; `card`: set up by the card. */
+    origin: 'gateway' | 'registry' | 'card'
+    registry_id?: string
+    /** Tools that run without asking, after the governance ceiling. */
+    auto_approve: string[]
+    /** The draft grants the whole server: every tool runs without asking. */
+    auto_approve_all?: boolean
+  }
+  | { kind: 'skill'; name: string }
 
 /** A value the gateway cannot know at proposal time. `user` is typed by the
  *  person (a secret's value); `step` is a field an earlier step's real response

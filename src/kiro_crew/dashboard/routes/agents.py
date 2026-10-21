@@ -48,6 +48,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/agents/{name}/capabilities/preview", api_member_capabilities)
     app.router.add_post("/api/agents/{name}/capabilities/detach", api_member_capabilities_detach)
     app.router.add_put("/api/agents/{name}/capabilities", api_member_capabilities)
+    from kiro_crew.dashboard.handlers.member_worker_kit import api_member_worker_kit
+
+    app.router.add_get("/api/agents/{name}/worker-kit", api_member_worker_kit)
+    app.router.add_post("/api/agents/{name}/worker-kit/preview", api_member_worker_kit)
+    app.router.add_put("/api/agents/{name}/worker-kit", api_member_worker_kit)
     # Kiro Crew Agent CRUD
     app.router.add_get("/api/agents", handlers.api_kirocrew_agents)
     app.router.add_get("/api/agents/resolved-model", handlers.api_kirocrew_agent_resolved_model)

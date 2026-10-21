@@ -158,6 +158,7 @@ _PRE_SPAWN_CAPABILITY_CODES = frozenset(
         "capability_harness_unsupported",
         "capability_tool_limits_unsupported",
         "capability_runtime_not_fresh",
+        "worker_kit_harness_unsupported",
     }
 )
 

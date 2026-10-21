@@ -128,6 +128,7 @@ class _ChatSlot:
         "_created_by",
         "_created_by_sid",
         "_lineage_minted",
+        "_reports_to_creator",
         "_revived_by",
         "_artifact",
         "_channel_folder_filed",
@@ -390,6 +391,7 @@ class _ChatSlot:
     _created_by: str
     _created_by_sid: str
     _lineage_minted: bool
+    _reports_to_creator: bool
     _revived_by: str
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str

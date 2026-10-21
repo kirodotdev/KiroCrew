@@ -240,8 +240,14 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
         "It is empty and waiting in the user's sidebar; watch it with "
-        "session_read_message." + reply_line(resp)
+        "session_read_message." + reply_line(resp) + _worker_capabilities_line(resp)
     )
+
+
+def _worker_capabilities_line(resp: dict[str, Any]) -> str:
+    """The gateway's line on what a crewmate's own worker can use, when it sent one."""
+    note = resp.get("worker_capabilities")
+    return f"\n{note}" if isinstance(note, str) and note else ""
 
 
 def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> str:
@@ -589,16 +595,17 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not send to that session: {refused.error}"
     target = resp.get("target", args["target"])
+    caps = redact(_worker_capabilities_line(resp))
     if resp.get("steered"):
         return (
             f"\U0001f4e8 Steered `{target}` — your message went into the turn it "
             "is running, so it reads it mid-work. Watch what it does with it "
-            "with session_read_message."
+            "with session_read_message." + caps
         )
     if resp.get("started"):
         return (
             f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "
-            "Watch the result with session_read_message."
+            "Watch the result with session_read_message." + caps
         )
     # A steer that could not be injected lands here, on the queue: say so, or
     # the caller reads "queued" as "the target was busy" and never learns its
@@ -608,7 +615,7 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
     )
     return (
         f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
-        f"when the current turn ends.{queued_note} Poll with session_read_message."
+        f"when the current turn ends.{queued_note} Poll with session_read_message." + caps
     )
 
 

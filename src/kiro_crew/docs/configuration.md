@@ -188,7 +188,9 @@ per-harness capability matrix.
 
 Set a registered value with, for example,
 `kirocrew config set agent.acp_backend kiro`. `agent.member_acp_backend`, the
-harness for crew-member DM sessions, reads the same values.
+harness for crew-member DM sessions, reads the same values, except that `kiro`
+there selects KAS: crewmates run on KAS as their Kiro backend, because their
+work-dispatch tools need a backend that takes them per session.
 
 ## Key Settings
 

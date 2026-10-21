@@ -612,9 +612,21 @@ def _with_restrictions(
 
 
 def _user_agent_spec(agent: str) -> dict[str, Any] | None:
-    """The user-level spec for *agent*, or ``None`` when absent, ambiguous or unreadable."""
+    """The user-level spec for *agent*, or ``None`` when absent, ambiguous or unreadable.
+
+    The mate conductor and worker are read from ``~/.kiro/mates/agents/``, where
+    Crew generates them (``agent_files.MATE_SERVICE_AGENT_FILENAMES``), so a
+    crewmate's chat on an array-backed host keeps its servers.
+    """
+    from kiro_crew.agent_files import is_mate_service_agent
+    from kiro_crew.config.paths import mate_agents_dir
+
     try:
-        path = agent_spec_path(agent)
+        path = (
+            agent_spec_path(agent, agents_dir=mate_agents_dir())
+            if is_mate_service_agent(agent)
+            else agent_spec_path(agent)
+        )
     except ValueError:
         # Two specs declare this name, so which one is live is undefined. No
         # answer is the honest one; the control plane still loads below.

@@ -1570,10 +1570,10 @@ def _package(**over) -> dict:
             }
         },
         "view": {
-            "blocks": [
-                {"id": "lead", "type": "stat", "fields": ["open_prs"], "title": "Open"},
-                {"id": "note", "type": "list", "fields": ["headline"]},
-            ]
+            "html": (
+                '<h2>Open</h2><p data-dashboard-field="open_prs"></p>'
+                '<p data-dashboard-field="headline"></p>'
+            )
         },
         "theme": {"tokens": {"--accent": "oklch(0.7 0.15 150)"}},
     }

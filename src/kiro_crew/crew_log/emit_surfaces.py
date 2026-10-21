@@ -474,6 +474,24 @@ def on_card_finished(session_id: str, *, card_id: str, status: str, revision: in
     _write(session_id, "card/finished", data, src=_SRC_GATEWAY)
 
 
+def on_goal_recorded(session_id: str, data: dict[str, Any]) -> None:
+    """A crewmate's goal record changed: append its snapshot to the crewmate's DM log.
+
+    *data* is ``{goals, milestones}`` as ``dashboard.crewmate_feed`` builds it. The
+    ``goal`` fold keeps the newest one whole, which is what a Dashboard page binds.
+    """
+    _write(session_id, "dashboard/goal_recorded", data, src=_SRC_GATEWAY)
+
+
+def on_waiting_changed(session_id: str, data: dict[str, Any]) -> None:
+    """What a crewmate waits on the person for changed: append the new list.
+
+    *data* is ``{items}`` from ``dashboard.member_waiting.waiting_items``. The
+    ``waiting`` fold keeps the newest one whole.
+    """
+    _write(session_id, "dashboard/waiting_changed", data, src=_SRC_GATEWAY)
+
+
 def on_guide_offered(
     session_id: str,
     *,

@@ -11,7 +11,7 @@ import json
 import threading
 
 import pytest
-from test_dashboard_save_tool import SLUG, _client, _instance, _package_body, _save
+from test_dashboard_save_tool import SLUG, _client, _flip, _instance, _package_body, _save
 
 from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND
 from kiro_crew.dashboard.handlers import agent_panel as routes
@@ -33,10 +33,10 @@ def test_the_write_check_refuses_a_package_replaced_between_its_two_reads(monkey
     monkeypatch.setattr(artifacts, "get_default_store", lambda: real)
     pkg = {**_package_body(), "kind": DASHBOARD_KIND, "bound_to": f"crewmate:{SLUG}"}
     art = real.create(name="page", content=json.dumps(pkg), kind=DASHBOARD_KIND)
-    pkg["view"]["blocks"].reverse()
+    _flip(pkg)
     read = real.get(art.slug, assign_token=True)
     real.update(art.slug, content=json.dumps(pkg), actor="user", snapshot_token=read.content_token)
-    pkg["view"]["blocks"].reverse()
+    _flip(pkg)
     read = real.get(art.slug, assign_token=True)
     real.update(art.slug, content=json.dumps(pkg), actor="agent", snapshot_token=read.content_token)
     # The control: the person's version is not the current one, so a second read happens.

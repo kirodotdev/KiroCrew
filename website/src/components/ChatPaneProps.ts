@@ -112,12 +112,6 @@ export interface ChatPaneProps {
    *  is a link that opens it, so the words that read as a destination are one;
    *  without it the line is plain text. Only meaningful with `crewmate`. */
   onOpenCrewWorkLog?: () => void
-  /** Open this host's Subagents view. The `spawn_run` launch card a crewmate's
-   *  chat draws offers "Open Subagents panel"; on the chat page the card opens
-   *  the chat store's panel itself, but a host with its own side-panel tab
-   *  model (the Members page) must pass this or the click opens nothing on the
-   *  page the reader is looking at. Only meaningful with `crewmate`. */
-  onOpenSubagents?: () => void
   /** Reply threads on this pane's messages. Only a host presenting a
    *  crewmate's chat (the Members page) passes it; absent, the rows draw no
    *  thread footer and no "Reply in thread" action. */

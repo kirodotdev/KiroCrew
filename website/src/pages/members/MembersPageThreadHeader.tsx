@@ -72,7 +72,7 @@ export function MembersPageThreadHeader({
       // there, with no fade and nothing to pad the transcript for.
       className={headerInBar
         ? 'grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-1.5 w-full min-w-0 h-full'
-        : 'absolute top-0 inset-x-0 z-20 grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-3 py-2 pointer-events-none'}
+        : 'absolute top-0 inset-x-0 z-20 grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-x-2 px-3 py-2 pointer-events-none'}
       data-testid="member-thread-header"
       data-in-topbar={headerInBar ? '' : undefined}
     >
@@ -283,18 +283,17 @@ export function MembersPageThreadHeader({
           </Glass>
         )}
       </div>
-      {/* The unread column (issue #19045), hanging under the switcher
-          chip. Absolutely placed at the header's bottom edge (pulled
-          back by the header's own py-2, so the first pill sits a gap
-          under the chip), so it adds NOTHING to the header's measured
-          height: the thread's top inset stays the chip row's, and the
-          conversation keeps scrolling up under the band -- and under
-          these Glass pills -- the way it scrolls under the pill. Pills
-          float over the text; they never push it. Same slot rule as the
-          chip: desktop only, and gone (with the chip) while the roster
-          column is pinned, which carries the same dots. */}
+      {/* The unread column (issue #19045), under the switcher chip in
+          the header's second row, in flow: the header's measured height
+          (the thread's top inset) and its fade grow with it, so at rest
+          no message, reply or card sits under a pill, and text scrolling
+          up dissolves into the band before it reaches one. With nothing
+          unread the row is empty and the header keeps its chip-row
+          height. Same slot rule as the chip: desktop only, and gone
+          (with the chip) while the roster column is pinned, which
+          carries the same dots. */}
       <div
-        className={`absolute left-3 top-full -mt-2 hidden md:flex [&>*]:pointer-events-auto duration-200 motion-reduce:transition-none ${rosterPinned ? 'opacity-0 invisible transition-[opacity,visibility]' : 'opacity-100 visible transition-opacity'}`}
+        className={`col-start-1 row-start-2 justify-self-start [&>*]:pointer-events-auto ${rosterPinned ? 'hidden' : 'hidden md:flex'}`}
         data-testid="crewmate-unread-column-slot"
       >
         <CrewmateUnreadColumn

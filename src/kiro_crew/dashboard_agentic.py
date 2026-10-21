@@ -984,9 +984,11 @@ def shows_suggestions(slug: str, record: Any, *, package_slug: str) -> bool:
 #: The block for a crewmate whose tab shows the suggestions page. No fields and no
 #: upkeep pointer: with no page in force there is nothing to write.
 SUGGESTIONS_LINE: str = (
-    "Your Dashboard tab shows the suggestions page: no page is adopted yet, so there "
-    "are no fields to keep up. To give it a page, dashboard_apply a template_id from "
-    "dashboard_templates, or dashboard_save your own page and then dashboard_apply it."
+    "Your Dashboard tab shows the suggestions page: you have no page of your own yet, "
+    "so there are no fields to keep up, and a dashboard_write lands on a page nobody "
+    "sees. Write your own HTML page (view.html) with the dashboard skill, styled from "
+    "your project and goal unless the user asked for a style: dashboard_save it, then "
+    "dashboard_apply it."
 )
 
 

@@ -294,6 +294,28 @@ CANONICAL: dict[str, dict] = {
         "mid": "m-7f3b",
     },
     "guide/started": {"guide_id": "g_0a1b2c3d4e5f"},
+    "dashboard/goal_recorded": {
+        "goals": [{"text": "Keep the docs current"}],
+        "milestones": [
+            {
+                "text": "Fixes proposed",
+                "target": "3",
+                "current": "4 fixes proposed",
+                "met": True,
+                "at": "2026-10-18T21:36:00+00:00",
+            }
+        ],
+    },
+    "dashboard/waiting_changed": {
+        "items": [
+            {
+                "kind": "options",
+                "text": "Open a PR for the docs fix?",
+                "options": ["Open the PR", "Not yet"],
+                "asked_at": "2026-10-18T18:40:00+00:00",
+            }
+        ]
+    },
     "guide/finished": {"guide_id": "g_0a1b2c3d4e5f", "status": "completed"},
     # A whole working set lost at once: of sixteen listed tabs none comes back, and
     # all sixteen stay in the reopen seed. ``kept`` counts the SET rather than this
@@ -379,7 +401,11 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # show has nothing to show anywhere else. No ``session/closed``, because the
     # gateway did not stop serving the session; no delete, because nothing was
     # deleted; and the restore's own warning goes to a gateway log that rotates away.
-    assert len(SESSION_ENTRY_TYPES) == 45
+    #
+    # The two past that are a crewmate's own record for its Dashboard page:
+    # ``dashboard/goal_recorded`` and ``dashboard/waiting_changed``, snapshots the gateway
+    # appends when the goal record or the "waiting on you" list changes.
+    assert len(SESSION_ENTRY_TYPES) == 47
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

@@ -1268,11 +1268,13 @@ def _skills_injection_plan(
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
     inherit = provider_type == PROVIDER_ACP
     globs = (
         agent_skill_globs(agent, project_dir=project_dir, inherit_defaults=inherit) if agent else []
     )
-    is_custom = bool(agent) and agent != "kirocrew"
+    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     return (bool(globs) or not is_custom), globs
 
 

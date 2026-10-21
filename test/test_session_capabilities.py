@@ -404,9 +404,11 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
             row = next(m for m in slot.messages if m.get("role") == "error")
             assert "agent.member_acp_backend" in row["content"]
             assert "saved capabilities" in row["content"]
-            # The remedy names every backend that can load the spec, not a fixed pair.
-            for backend in ACP_BACKENDS_MEMBER_CAPABILITIES:
-                assert (backend or "kiro") in row["content"]
+            # The remedy names every backend that can load the spec, not a fixed
+            # pair; kiro-cli is left out, since a member set to kiro runs on KAS.
+            for backend in ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO}:
+                assert backend in row["content"]
+            assert " kiro" not in row["content"]
     finally:
         await _close_capability_dashboards(world)
 

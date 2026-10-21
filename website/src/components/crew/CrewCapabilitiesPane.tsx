@@ -211,7 +211,12 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
                 : t('crewCapabilities.refused', { code: errorCode })
               : t('crewCapabilities.refused', { code: errorCode })
           : t(conflict ? 'crewCapabilities.stale' : error instanceof ApiError && [404, 405, 501].includes(error.status) ? 'crewCapabilities.unsupported' : 'crewCapabilities.failed')
-  const enabled = !!view && view.schema_version === 1 && view.template.available && !query.isError && (view.mode === 'inherited' || draft?.enroll === true)
+  // A MATE owns its config file (mates/agents/<id>.json), a severed copy with
+  // no parent: the backend returns mode 'mate', edits write the file IN PLACE
+  // (no fork, no enroll, no parent/review lifecycle). So a mate is editable with
+  // no enrollment step, and the parent/Follow/Review affordances do not apply.
+  const isMate = !!view && view.mode === 'mate'
+  const enabled = !!view && view.schema_version === 1 && view.template.available && !query.isError && (view.mode === 'inherited' || isMate || draft?.enroll === true)
   // The member's agent file changed outside this page, so new chats refuse to
   // start. An empty draft rebuilds the file from the saved setup; Review shows
   // what that changes before anything is written.
@@ -258,7 +263,7 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
       .flatMap(ref => preview.rows.filter(row => capabilityKey(row) === capabilityKey(ref)
         && ((row.state === 'local' && row.present) || (row.state === 'removed' && !row.present))))
     : []
-  const enrollmentBlocksEditing = !!view && view.schema_version === 1 && view.template.available && view.mode !== 'inherited' && draft?.enroll !== true
+  const enrollmentBlocksEditing = !isMate && !!view && view.schema_version === 1 && view.template.available && view.mode !== 'inherited' && draft?.enroll !== true
 
   return (
     <div hidden={hidden} className={hidden ? 'hidden' : 'flex min-h-0 min-w-0 flex-1 flex-col'} data-testid="crew-capabilities-pane">
@@ -272,9 +277,16 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
         {view && view.schema_version !== 1 && <p className="text-muted">{t('crewCapabilities.unsupported')}</p>}
         {view?.schema_version === 1 && <>
           <div className="rounded-md border border-border bg-bg-accent p-3 text-[13px]">
-            <p className="break-words">{t('crewCapabilities.parent', { name: view.template.name })}</p>
-            <p>{t(capabilityLabels.source[view.template.source])} · {t(capabilityLabels.scope[view.template.scope])}</p>
-            <Badge variant="muted">{t(capabilityLabels.mode[view.mode])}</Badge>
+            {/* A mate owns its config file outright: no parent, so no "Built
+                from X" line, no source/scope descriptor. Show that it is an
+                owned config instead. */}
+            {isMate
+              ? <p className="break-words">{t('crewCapabilities.mateOwned', { name: member })}</p>
+              : <>
+                  <p className="break-words">{t('crewCapabilities.parent', { name: view.template.name })}</p>
+                  <p>{t(capabilityLabels.source[view.template.source])} · {t(capabilityLabels.scope[view.template.scope])}</p>
+                  <Badge variant="muted">{t(capabilityLabels.mode[view.mode])}</Badge>
+                </>}
             <Badge variant="muted">{t(dirty ? 'crewCapabilities.unsavedDraft' : 'crewCapabilityEditing.saved')}</Badge>
             <details className="mt-2 text-[12px] text-muted">
               <summary>{t('crewCapabilityEditing.versions')}</summary>
@@ -305,7 +317,7 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
               </Dialog>
               {!detachRefusal && <p id="crew-capabilities-detach-help" className="mt-1 text-[12px] text-muted">{t(dirty ? 'crewCapabilities.detachDirty' : view.detach_blocked ? DETACH_BLOCKED_COPY[view.detach_blocked] : 'crewCapabilities.detachHelp', { name: member })}</p>}
             </div>}
-            {view.mode !== 'inherited' && <div className="mt-3">
+            {view.mode !== 'inherited' && !isMate && <div className="mt-3">
               <label htmlFor="crew-capabilities-enroll" className="flex items-start gap-2"><Checkbox id="crew-capabilities-enroll" aria-labelledby="crew-capabilities-enroll-label" aria-describedby="crew-capabilities-enroll-guarantee crew-capabilities-enroll-help" checked={draft?.enroll ?? false} disabled={busy || !view.template.available} onChange={e => edit(current => ({ ...current, enroll: e.target.checked }))} /><span className="min-w-0 break-words"><span id="crew-capabilities-enroll-label">{t('crewCapabilities.enroll')}</span><span id="crew-capabilities-enroll-guarantee" className="mt-1 block text-text">{t('crewCapabilities.enrollGuarantee')}</span></span></label>
               <p id="crew-capabilities-enroll-help" className="mt-1 text-[12px] text-muted" data-testid={enrollmentBlocksEditing ? 'capability-enroll-to-edit' : undefined}>{t('crewCapabilities.enrollHelp')}</p>
             </div>}
@@ -427,7 +439,7 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
           {/* No hand-off: the reviewed draft and signed preview are not saved. */}
           {refused && <div className="w-full"><ErrorNotice message={errorMessage} variant="inline" /></div>}
           <DialogTrigger asChild><Btn disabled={!dirty || busy}>{t('crewCapabilities.discard')}</Btn></DialogTrigger>
-          <SendBtn disabled={!enabled || !request || busy || refused || invalidTransport || !!connectionName.trim() || !!reference.trim() || request.revision !== view.revision || (request.enroll === false && view.mode !== 'inherited')} onClick={() => {
+          <SendBtn disabled={!enabled || !request || busy || refused || invalidTransport || !!connectionName.trim() || !!reference.trim() || request.revision !== view.revision || (request.enroll === false && view.mode !== 'inherited' && !isMate)} onClick={() => {
             if (preview && reviewedRequest) save.mutate({ ...reviewedRequest, preview_token: preview.preview_token })
             else if (request) prepare.mutate(request)
           }}>{busy ? t('crewCapabilities.working') : preview ? t('crewCapabilities.save') : t('crewCapabilities.review')}</SendBtn>

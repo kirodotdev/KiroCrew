@@ -1685,7 +1685,7 @@ class TestTheRealGateAndStore:
             "kind": "dashboard",
             "bound_to": bound_to,
             "model": {"types": {"for_you": {"type": "text", "source": {"agentic": True}}}},
-            "view": {"blocks": [{"id": "fy", "type": "stat", "fields": ["for_you"]}]},
+            "view": {"html": '<p data-dashboard-field="for_you"></p>'},
             "theme": {"tokens": {"--panel-bg": "oklch(21% 0 0)"}},
         }
 
@@ -1700,7 +1700,7 @@ class TestTheRealGateAndStore:
         )
         # A version a PERSON cut, which is the page the older rule draws.
         cut = self._package("crewmate:atlas")
-        cut["view"]["blocks"][0]["title"] = "For you"
+        cut["view"]["html"] = '<h2>For you</h2><p data-dashboard-field="for_you"></p>'
         read = store.get(art.slug, assign_token=True)
         store.update(
             art.slug, content=json.dumps(cut), actor="user", snapshot_token=read.content_token

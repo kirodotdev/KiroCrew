@@ -653,7 +653,7 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
     assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
     ((args, kwargs),) = sent
     assert args[1] is slot
-    assert kwargs == {"human_seen": False}
+    assert kwargs == {"human_seen": False, "heartbeat": False}
 
 
 @pytest.mark.parametrize(
@@ -960,6 +960,8 @@ def test_each_switch_creates_and_removes_exactly_its_own_schedule(
         "daily": "15 7 * * *",
         "weekly": "15 7 * * 3",
         "monthly": "15 7 12 * *",
+        # The heartbeat ignores the time of day and runs on its interval.
+        "heartbeat": "*/30 * * * *",
     }[cadence]
     assert job.schedule.cron_expr == expected
     status, body = _owner(state, "PUT", path, {"member": ORDINARY, cadence: False})
@@ -980,7 +982,8 @@ def test_turning_one_switch_off_leaves_the_others(tmp_path: Path) -> None:
         {"member": ORDINARY, "daily": True, "weekly": True, "monthly": True},
     )
     first = {c: [j.id for j in v] for c, v in _jobs_by_cadence(state, slug).items()}
-    assert all(len(v) == 1 for v in first.values())
+    assert all(len(first[c]) == 1 for c in ("daily", "weekly", "monthly"))
+    assert first["heartbeat"] == []
     _owner(state, "PUT", base + "/schedules", {"member": ORDINARY, "weekly": False})
     after = _jobs_by_cadence(state, slug)
     assert after["weekly"] == []
@@ -1284,7 +1287,7 @@ def test_the_reminder_fires_one_hidden_turn_in_the_crewmates_own_thread(_floor_m
     member_goals.set_schedules(slug, ORDINARY, {"daily": True})
     assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
     ((args, kwargs),) = sent
-    assert args[1] is slot and kwargs == {"human_seen": False}
+    assert args[1] is slot and kwargs == {"human_seen": False, "heartbeat": False}
     prompt = args[2]
     assert "Keep docs current" in prompt
     assert "pages reviewed" in prompt and "key_result_progress" in prompt
@@ -1411,3 +1414,40 @@ def test_the_goal_section_carries_no_reading_so_progress_does_not_resend_it() ->
     assert "17 pages" not in after and "pages reviewed" in after and "40" in after
     prompt = goal_reminder.reminder_prompt(member_goals.read_goals(slug, ORDINARY), "daily")
     assert "17 pages" in prompt
+
+
+def test_a_hidden_turn_may_raise_a_card_only_for_servers_the_gateway_runs(
+    _floor_monkeypatch,
+) -> None:
+    """A worker report naming a missing capability arrives on a turn the user did not
+    send; the card for a server this gateway already runs is the next step in that
+    chain, and still changes nothing until the user presses it. Outside code
+    (a registry install), a skill, or a raw draft stays user-turn only."""
+    _capture_proposals(_floor_monkeypatch)
+    _seed()
+    state = FakeState()
+    slot = _thread(state, ORDINARY, user_sent=False)
+
+    def ask(draft):
+        return {"request": "capabilities", "params": {"draft": draft}}
+
+    gateway = {"additions": [{"server": "teamchat", "source": "gateway"}]}
+    status, body = _call(state, PROPOSE, ask(gateway), slot.key)
+    assert body.get("code") != "not_user_turn", (status, body)
+    # An auto-approval is admitted too: the card then carries its own
+    # "runs without asking" acknowledgement for the user to tick.
+    approving = {
+        "additions": [{"server": "teamchat", "source": "gateway", "auto_approve": ["post"]}]
+    }
+    status, body = _call(state, PROPOSE, ask(approving), slot.key)
+    assert body.get("code") != "not_user_turn", (status, body)
+    for draft in (
+        {"additions": [{"server": "x", "source": "registry", "registry_id": "io.x/x"}]},
+        {"additions": [{"server": "x", "source": "registry"}]},
+        {"additions": [{"skill": "pdf"}]},
+        {"additions": [{"server": "teamchat", "source": "gateway"}, {"skill": "pdf"}]},
+        {"mcpServers": {"x": {"command": "x"}}},
+        {"additions": []},
+    ):
+        status, body = _call(state, PROPOSE, ask(draft), slot.key)
+        assert (status, body["code"]) == (403, "not_user_turn"), draft

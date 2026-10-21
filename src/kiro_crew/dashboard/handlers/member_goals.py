@@ -22,9 +22,11 @@ Two halves, split the way :mod:`handlers.member_self` is:
   - ``DELETE /api/members/{slug}/goals/key-results/{kr_id}`` and
     ``POST .../{kr_id}/restore`` -- remove one key result, and its one Undo.
   - ``PUT /api/members/{slug}/goals/schedules`` -- ``{member, daily?, weekly?,
-    monthly?, time?, timezone?, weekday?, month_day?}``: the three check-in
-    switches, each keeping exactly one schedule of its own in step
-    (:mod:`kiro_crew.dashboard.goal_reminder`).
+    monthly?, heartbeat?, time?, timezone?, weekday?, month_day?, interval?}``:
+    the four check-in switches, each keeping exactly one schedule of its own in
+    step (:mod:`kiro_crew.dashboard.goal_reminder`). This route and the
+    ``crewmate.check_ins`` card it applies are the only writers of a switch, so
+    the heartbeat turns on only by the user's hand.
 
 * The **agent half** is MCP-only under the strict ``/api/member/self`` prefix,
   behind the ``kirocrew-mate`` goal tools. The crewmate acted on is the one whose
@@ -458,8 +460,8 @@ async def _sync_reminder(request: web.Request, slug: str, member: str, cfg: Kiro
 async def api_member_goals_schedules(request: web.Request) -> web.Response:
     """PUT /api/members/{slug}/goals/schedules — the check-in switches and their timing.
 
-    Body: ``{member, daily?, weekly?, monthly?, time?, timezone?, weekday?,
-    month_day?}``. Turning a switch on needs a goal (409 ``no_goal``).
+    Body: ``{member, daily?, weekly?, monthly?, heartbeat?, time?, timezone?,
+    weekday?, month_day?, interval?}``. Turning a switch on needs a goal (409 ``no_goal``).
     The record is written first, then the schedules are made to match it; when
     they cannot be written the switches turned on by this request are turned back
     off and the answer is 503, so no switch shows a check-in nothing will send.
@@ -667,3 +669,30 @@ async def api_member_self_goal_report(request: web.Request) -> web.Response:
     await _notify_report(request, member, label, saved)
     _audit(sk, OP_GOAL_WRITE, "ok", f"report:{kind}")
     return web.json_response({"ok": True, **saved})
+
+
+async def api_member_self_notes(request: web.Request) -> web.Response:
+    """POST /api/member/self/notes — ``{text}``: replace the crewmate's own notes.
+
+    The notes are its briefing (``members/<slug>/briefing.md``), injected as its
+    ``[CURRENT ASSIGNMENT]`` section. The conductor has no file tool, so this is
+    how it keeps them; the same caller check as the goal tools applies.
+    """
+    from kiro_crew import member_notes
+    from kiro_crew.dashboard.handlers.guide import _audit
+
+    who = await _agent_member(request, OP_GOAL_WRITE)
+    if isinstance(who, web.Response):
+        return who
+    sk, slug, _member = who
+    body = await _agent_body(request)
+    try:
+        written = await asyncio.to_thread(
+            member_notes.write_member_notes, slug, body.get("text", "")
+        )
+    except member_notes.NotesError as exc:
+        _audit(sk, OP_GOAL_WRITE, "denied", exc.code)
+        status = 400 if exc.code in ("invalid_notes", "notes_too_long") else 500
+        return _deny(status, exc.code, str(exc))
+    _audit(sk, OP_GOAL_WRITE, "ok", "notes")
+    return web.json_response({"ok": True, "chars": written})

@@ -267,6 +267,11 @@ async def test_a_skills_patch_keeps_a_uri_a_concurrent_writer_added(tmp_path):
 
     with (
         patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path),
+        # Isolate the mate scope (``_agent_detail_candidates``'s second walked
+        # root) from whatever this machine's real ``~/.kiro/mates/agents/``
+        # holds; without this an unrelated file there would add extra
+        # ``_read_agent_spec`` calls and desync the ``calls["n"] == 2`` race.
+        patch("kiro_crew.config.paths.mate_agents_dir", lambda: tmp_path / "mates-empty"),
         patch("kiro_crew.dashboard.handlers.agents._read_agent_spec", side_effect=racing_read),
         patch(
             "kiro_crew.dashboard.handlers.agents.apply_skill_mapping",

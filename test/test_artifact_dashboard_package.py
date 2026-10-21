@@ -52,6 +52,8 @@ def _owner_write(store: Any, slug: str, **kwargs: Any) -> Any:
 
 
 BOUND = "crewmate:mate"
+#: A root session's page, the binding a block layout is still valid for.
+SESSION_BOUND = "session:mate-root"
 
 
 def package(
@@ -63,6 +65,8 @@ def package(
     css: str | None = None,
 ) -> dict[str, Any]:
     """A valid package, with each part overridable so a test changes one thing."""
+    if blocks is not None and bound_to == BOUND:
+        bound_to = SESSION_BOUND
     out: dict[str, Any] = {
         "kind": "dashboard",
         "bound_to": bound_to,
@@ -90,21 +94,38 @@ def package(
                 }
             )
         },
-        "view": {
-            "blocks": (
-                blocks
-                if blocks is not None
-                else [
-                    {"id": "prs", "type": "stat", "fields": ["open_prs"], "title": "Open PRs"},
-                    {"id": "runs", "type": "table", "fields": ["last_run", "lane"]},
-                ]
-            )
-        },
+        # A crewmate's page is view.html only; a block layout is still a valid package
+        # for a ROOT SESSION's page, so a test that passes *blocks* binds one.
+        "view": (
+            {"blocks": blocks}
+            if blocks is not None
+            else {
+                "html": (
+                    '<h2 data-dashboard-field="open_prs"></h2>'
+                    '<p data-dashboard-field="last_run"></p>'
+                    '<p data-dashboard-field="lane"></p>'
+                )
+            }
+        ),
         "theme": {"tokens": tokens if tokens is not None else {"--panel-bg": "oklch(21% 0 0)"}},
     }
     if css is not None:
         out["theme"]["css"] = css
     return out
+
+
+#: The block layout a root session's page may still use.
+DEFAULT_BLOCKS: list[dict[str, Any]] = [
+    {"id": "prs", "type": "stat", "fields": ["open_prs"], "title": "Open PRs"},
+    {"id": "runs", "type": "table", "fields": ["last_run", "lane"]},
+]
+
+
+def _as_blocks(p: dict[str, Any]) -> list[dict[str, Any]]:
+    """Turn package *p* into the block layout of a root session's page; its blocks."""
+    p["bound_to"] = SESSION_BOUND
+    p["view"] = {"blocks": json.loads(json.dumps(DEFAULT_BLOCKS))}
+    return p["view"]["blocks"]
 
 
 def content(**kwargs: Any) -> str:
@@ -182,7 +203,7 @@ class TestSaveAndRead:
         parsed = dp.parse_package(read.content or "")
         assert parsed["bound_to"] == BOUND
         assert sorted(parsed["model"]["types"]) == ["lane", "last_run", "open_prs"]
-        assert [b["id"] for b in parsed["view"]["blocks"]] == ["prs", "runs"]
+        assert 'data-dashboard-field="open_prs"' in parsed["view"]["html"]
 
     def test_the_stored_bytes_are_canonical_not_the_authors(self, store) -> None:
         # Same package, keys shuffled and whitespace different: the stored form
@@ -291,7 +312,7 @@ class TestTheAgentToolMaySaveOne:
         # The refusal an agent is most likely to earn: valid JSON, right shape,
         # and values pasted into it. The rule it names is the one it broke.
         p = package()
-        p["view"]["blocks"][1]["data"] = [{"last_run": "now"}]
+        _as_blocks(p)[1]["data"] = [{"last_run": "now"}]
         out, _ = _save_through_the_tool(
             store, {"name": "With values", "content": json.dumps(p), "kind": "dashboard"}
         )
@@ -485,13 +506,27 @@ class TestVersionOnlyOnLayoutChange:
         art = _owner_write(store, saved.slug, content=content(types=types))
         assert art.version == 2
 
-    def test_reordering_blocks_is_a_layout_change(self, store, saved) -> None:
-        flipped = [
-            {"id": "runs", "type": "table", "fields": ["last_run", "lane"]},
-            {"id": "prs", "type": "stat", "fields": ["open_prs"], "title": "Open PRs"},
-        ]
-        art = _owner_write(store, saved.slug, content=content(blocks=flipped))
+    def test_reordering_the_page_is_a_layout_change(self, store, saved) -> None:
+        flipped = package()
+        flipped["view"]["html"] = (
+            '<p data-dashboard-field="lane"></p><p data-dashboard-field="last_run"></p>'
+            '<h2 data-dashboard-field="open_prs"></h2>'
+        )
+        art = _owner_write(store, saved.slug, content=json.dumps(flipped))
         assert art.version == 2
+
+    def test_a_crewmate_page_written_as_blocks_is_refused(self, store) -> None:
+        """A crewmate's tab draws view.html only; the block layout stays a root
+        session's, and the refusal names the field-binding rule to follow."""
+        bad = package()
+        _as_blocks(bad)
+        bad["bound_to"] = BOUND
+        with pytest.raises(ArtifactValidationError, match="view.html only") as refused:
+            store.create(name="Blocks", kind="dashboard", content=json.dumps(bad))
+        assert "data-dashboard-field" in str(refused.value)
+        session = package(blocks=DEFAULT_BLOCKS)
+        assert session["bound_to"] == SESSION_BOUND
+        assert store.create(name="Session", kind="dashboard", content=json.dumps(session))
 
     def test_a_rebind_alone_creates_no_version_but_is_stored(self, store, saved) -> None:
         # bound_to says WHERE the page hangs, not what it looks like, and a
@@ -736,22 +771,22 @@ class TestRejectInvalid:
                 id="agentic-false-is-not-a-source",
             ),
             pytest.param(
-                lambda p: p["view"]["blocks"][0].update({"type": "heatmap"}),
+                lambda p: _as_blocks(p)[0].update({"type": "heatmap"}),
                 "unknown block type 'heatmap'",
                 id="unknown-block-type",
             ),
             pytest.param(
-                lambda p: p["view"]["blocks"][0].update({"fields": ["not_declared"]}),
+                lambda p: _as_blocks(p)[0].update({"fields": ["not_declared"]}),
                 "which model.types does not declare",
                 id="block-names-an-undeclared-field",
             ),
             pytest.param(
-                lambda p: p["view"]["blocks"][0].update({"fields": ["open_prs", "lane"]}),
+                lambda p: _as_blocks(p)[0].update({"fields": ["open_prs", "lane"]}),
                 "reads between 1 and 1 fields",
                 id="block-reads-too-many-fields",
             ),
             pytest.param(
-                lambda p: p["view"]["blocks"].append(
+                lambda p: _as_blocks(p).append(
                     {"id": "prs", "type": "stat", "fields": ["open_prs"]}
                 ),
                 "is used by an earlier block",
@@ -768,7 +803,7 @@ class TestRejectInvalid:
                 id="a-value-on-a-field",
             ),
             pytest.param(
-                lambda p: p["view"]["blocks"][0].update({"rows": [1, 2]}),
+                lambda p: _as_blocks(p)[0].update({"rows": [1, 2]}),
                 "values stay in the crew log",
                 id="rows-on-a-block",
             ),
@@ -813,7 +848,7 @@ class TestRejectInvalid:
                 id="empty-model",
             ),
             pytest.param(
-                lambda p: p["view"].update({"blocks": []}),
+                lambda p: p.update({"bound_to": SESSION_BOUND, "view": {"blocks": []}}),
                 "must place at least one block",
                 id="empty-view",
             ),

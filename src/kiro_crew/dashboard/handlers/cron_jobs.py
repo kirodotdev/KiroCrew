@@ -264,6 +264,10 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    from kiro_crew.dashboard.handlers import cron_conductor_gate as gate
+
+    if (refused := await gate.refuse_conductor_scripted_job(request, name, arguments)) is not None:
+        return refused
 
     def dispatch() -> str:
         # ContextVars are isolated by to_thread. Restore the prior value even

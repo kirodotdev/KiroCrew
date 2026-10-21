@@ -3058,7 +3058,7 @@ def _package(bound_to: str) -> str:
                     }
                 }
             },
-            "view": {"blocks": [{"id": "board", "type": "stat", "fields": ["open_prs"]}]},
+            "view": {"html": '<p data-dashboard-field="open_prs"></p>'},
             "theme": {"tokens": {}},
         }
     )

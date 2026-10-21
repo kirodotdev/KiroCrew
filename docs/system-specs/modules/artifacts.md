@@ -1312,7 +1312,17 @@ the page's shape in the canonicaliser:
   at the HTTP layer and described below.
 - **`view.html` is an agent-written page, and its shape is checked while its
   author is still there.** Exactly one of `view.html` or `view.blocks`, never
-  both and never neither. The HTML is an inline BODY: the host supplies
+  both and never neither. A package bound to a crewmate (`bound_to` of
+  `crewmate:<slug>`) is `view.html` only: the gate refuses its `view.blocks` and
+  names the `view.html` shape to send instead
+  (`dashboard_package._require_html_for_a_crewmate`), because the crewmate
+  Dashboard tab draws a page and has no block renderer. A package bound to a
+  session may still be written as blocks. The page is drawn wearing its
+  `theme`: `member_dashboard_fields.render_package_page` puts one `<style>`
+  ahead of the page, after the host's own stylesheet, holding the tokens on
+  `:root` and then `theme.css` (`dashboard_package.theme_stylesheet`, which runs
+  the gate's own theme check, so a stored theme the gate would now refuse draws
+  nothing and the page keeps the host's look). The HTML is an inline BODY: the host supplies
   `<!doctype>`, `<html>`, `<head>` and `<body>` and owns the page's security
   policy, so a document tag in the field is refused — by
   `dashboard_frame.validate_page`, called here so the author meets the frame's
@@ -1449,6 +1459,20 @@ request filter that answers only the page, no name resolution, a proxy at a clos
 and no WebRTC. A library the page loads from the CDN allowlist is therefore not fetched,
 and a page whose script stops at that library's undefined name is `skipped` and not
 `failed` (any other error is still `failed`).
+
+A `skipped` result carries a `note` saying in words that nothing was run or
+checked (`crewmate_prompts.json` `dashboard.verification_skipped`). Two checks
+the gateway makes itself, on the package text, ride the same reply whatever the
+run did (`dashboard/handlers/dashboard_page_checks.py`); neither refuses the save.
+`shape_warnings` names each `array`, `object` or `timestamp` field the page binds
+with `data-dashboard-field`, because the host fills that cell as text and shows
+`[]` or a raw ISO string; each field row in `fields` carries its `type`, and
+`dashboard_types` and `dashboard_fields` carry the same `rendering` advice per
+type. `theme_warnings` fires when the fixed (literal) colours in the theme
+tokens, `theme.css` and the page's own `<style>` set a foreground without an
+opaque background, or the reverse, and nothing names both schemes
+(`prefers-color-scheme`, `light-dark(`, `data-mode`, `data-theme`): such a page
+reads in one scheme and not the other.
 
 It costs the gateway little by construction. It runs only for a save of `view.html`,
 never for a write, a preview, an apply or a page load. One check runs at a time across

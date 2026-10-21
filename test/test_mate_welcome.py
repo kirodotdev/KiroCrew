@@ -296,7 +296,7 @@ class TestHiddenKickoff:
         assert seen == [
             (
                 kickoff,
-                {"_synthetic_payload": True, "_turn_actor": "gateway"},
+                {"_synthetic_payload": True, "_turn_actor": "gateway", "_hidden_turn": True},
             )
         ]
         # The kickoff is never written to the transcript: the only row is the
@@ -323,7 +323,7 @@ class TestHiddenKickoff:
         assert seen == [
             (
                 kickoff,
-                {"_synthetic_payload": True, "_turn_actor": "gateway"},
+                {"_synthetic_payload": True, "_turn_actor": "gateway", "_hidden_turn": True},
             )
         ]
         assert "Review my PRs" in kickoff

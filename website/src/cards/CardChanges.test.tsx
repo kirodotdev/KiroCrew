@@ -149,3 +149,61 @@ describe('list setting wording', () => {
     expect(cardTitle({ kind: 'setting.change', title: 'Shorter replies', params: { value: 'brief' }, changes: [] })).toBe('Shorter replies')
   })
 })
+
+describe('CardChanges: a capabilities card in plain words', () => {
+  const ADDITION = {
+    label: 'weather',
+    addition: { kind: 'server' as const, name: 'weather', origin: 'gateway' as const, auto_approve: ['weather_lookup'] },
+  }
+  const RAW = [
+    { label: 'mcpServers', add: ['weather'], detail: true },
+    { label: 'weather', after: 'python3 /home/someone/stub.py weather', detail: true },
+  ]
+
+  it('reads one plain line per addition, named for the crewmate, and keeps raw rows behind Details', async () => {
+    const { CardAuthorContext } = await import('./cardAuthor')
+    const { container } = render(
+      <CardAuthorContext.Provider value="Ada">
+        <CardChanges changes={[ADDITION, ...RAW]} />
+      </CardAuthorContext.Provider>,
+    )
+    // Each raw row is drawn once, inside the Details, never in the main view.
+    expect(container.textContent?.split('stub.py').length).toBe(2)
+    expect(screen.getAllByTestId('change-card-items')).toHaveLength(1)
+    const line = screen.getByTestId('change-card-addition')
+    expect(line.textContent).toContain(L('addition_server', { name: 'Ada', server: 'weather' }))
+    expect(line.textContent).toContain(L('addition_from_gateway'))
+    expect(line.textContent).toContain(L('addition_runs_unasked', { tools: 'weather_lookup' }))
+    expect(line.querySelector('strong')?.textContent).toBe('weather')
+    expect(line.querySelector('code')?.textContent).toBe('weather_lookup')
+    // The launch line and the raw sections are on the card, collapsed.
+    const details = screen.getByTestId('change-card-details') as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    expect(details.textContent).toContain('mcpServers')
+    expect(details.textContent).toContain('stub.py')
+    expect(line.textContent).not.toContain('stub.py')
+  })
+
+  it('says so when nothing runs without asking, and names a registry install', () => {
+    render(
+      <CardChanges
+        changes={[{ label: 'gh', addition: { kind: 'server', name: 'gh', origin: 'registry', registry_id: 'io/gh', auto_approve: [] } }]}
+      />,
+    )
+    const line = screen.getByTestId('change-card-addition')
+    expect(line.textContent).toContain(L('addition_asks_every_time'))
+    expect(line.textContent).toContain('io/gh')
+    expect(screen.queryByTestId('change-card-details')).toBeNull()
+  })
+
+  it('says every tool runs without asking when the card grants the whole server', () => {
+    render(
+      <CardChanges
+        changes={[{ label: 'weather', addition: { kind: 'server', name: 'weather', origin: 'gateway', auto_approve: [], auto_approve_all: true } }]}
+      />,
+    )
+    const line = screen.getByTestId('change-card-addition')
+    expect(line.textContent).toContain(L('addition_runs_all_unasked'))
+    expect(line.textContent).not.toContain(L('addition_asks_every_time'))
+  })
+})

@@ -13,17 +13,23 @@ export interface CapabilityRow extends CapabilityRef {
 export interface CapabilityView {
   schema_version: 1
   member: string
-  mode: 'shared' | 'legacy_snapshot' | 'inherited'
+  // 'mate': the member owns its config file outright (mates/agents/<id>.json), a
+  // severed copy with NO parent. Edits write that file in place — no fork, no
+  // enroll, no inheritance/review lifecycle. The pane suppresses the parent /
+  // Follow / Review affordances for this mode.
+  mode: 'shared' | 'legacy_snapshot' | 'inherited' | 'mate'
   revision: string
-  template: { name: string; source: 'builtin' | 'package' | 'custom' | 'project' | 'unknown'; scope: 'global' | 'project'; available: boolean; error_code?: string }
+  template: { name: string; source: 'builtin' | 'package' | 'custom' | 'project' | 'unknown'; scope: 'global' | 'project' | 'mate'; available: boolean; error_code?: string }
   rows: CapabilityRow[]
   connections: { id: string; label: string; managed: boolean }[]
   skills: { id: string; label: string; shared_reference: boolean }[]
   parent_changes: (CapabilityRef & { kind: 'added' | 'changed' | 'removed'; conflict: boolean; requires_approval: boolean; before: unknown; after: unknown })[]
-  runtime: { status: 'pending' | 'applied' | 'failed' | 'unverified'; saved_revision: string; sessions: unknown[]; error_code?: string }
+  runtime: { status: 'pending' | 'applied' | 'failed' | 'unverified' | 'owned'; saved_revision: string; sessions: unknown[]; error_code?: string }
   /** Set when a member chat on the backend `setting` resolves to would refuse
    * this spec. A warning only: the save still lands. */
   backend_warning?: CapabilityBackendWarning | null
+  /** A crewmate that owns its file: what its WORKER carries (base merged with the file). */
+  worker?: { tools: number; mcpServers: number; skills: number } | null
   /** Set when Stop following would be refused for this saved setup, so the pane can say so up front. */
   detach_blocked?: 'detach_tool_limits_unkept' | 'detach_removal_unkept' | null
   /** Stopping would turn the global mcp.json merge off for the kept copy; the owner confirms it. */
@@ -68,4 +74,44 @@ export const crewCapabilitiesApi = {
     post(`${endpoint(member)}/detach`, acceptMcpJson ? { revision, accept_mcp_json: true } : { revision }).then(j) as Promise<CapabilityView>,
 }
 export const crewCapabilitiesKey = (member: string) => ['crew-capabilities', member] as const
+
+/** A crewmate's worker kit: the one template last copied into its own file. */
+export interface WorkerKitView {
+  member: string
+  /** The template the kit was last copied from; '' when none was. */
+  template: string
+  /** The template to name for it: `template`, or for a private copy the
+   *  template it was forked from; '' when a private copy's origin is unknown. */
+  origin?: string
+  /** `template` is a crewmate's private copy, whose id is never shown. */
+  private_copy?: boolean
+  revision: string
+  /** The file holds kit items the last copy did not write. */
+  has_additions_since: boolean
+}
+export interface WorkerKitChange {
+  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools'
+  id: string
+  change: 'added' | 'removed' | 'changed'
+}
+export interface WorkerKitPreview {
+  member: string
+  template: string
+  revision: string
+  changes: WorkerKitChange[]
+}
+export interface WorkerKitRequest {
+  template: string
+  keep_additions: boolean
+  revision?: string
+}
+const workerKitEndpoint = (member: string) => `/api/agents/${encodeURIComponent(member)}/worker-kit`
+export const crewWorkerKitApi = {
+  get: (member: string): Promise<WorkerKitView> => get(workerKitEndpoint(member)).then(j) as Promise<WorkerKitView>,
+  preview: (member: string, body: WorkerKitRequest): Promise<WorkerKitPreview> =>
+    post(`${workerKitEndpoint(member)}/preview`, body).then(j) as Promise<WorkerKitPreview>,
+  apply: (member: string, body: WorkerKitRequest & { revision: string }): Promise<WorkerKitView> =>
+    put(workerKitEndpoint(member), body).then(j) as Promise<WorkerKitView>,
+}
+export const crewWorkerKitKey = (member: string) => ['crew-worker-kit', member] as const
 export const capabilityKey = (row: CapabilityRef) => JSON.stringify([row.section, row.id])

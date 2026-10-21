@@ -45,6 +45,7 @@ from datetime import datetime
 from typing import Any
 
 from kiro_crew import guide_catalog
+from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.config.sections import (
     DEFAULT_MODEL,
@@ -109,6 +110,14 @@ OP_UNDO = "undo"
 #: The crewmate template a proposed crewmate is built from: the one the
 #: Crewmates page's New crewmate card builds from (``NewCrewmateDialog.tsx``
 #: ``DEFAULT_CREWMATE_TEMPLATE``).
+#:
+#: Deliberately still "kirocrew", not the mate conductor
+#: (``kirocrew-mate-conductor``, rfc-mate-owned-agent-config.md migration step
+#: 1): this constant is user-visible (the dialog's "Built from" dropdown label
+#: and the API payload it sends), and a label/UI change is its own design
+#: decision, out of scope for step 1's pure sourcing move. The mate conductor
+#: is wired in only where nothing displays its name --
+#: ``first_crewmate._ORDINARY_TEMPLATE``.
 DEFAULT_CREWMATE_TEMPLATE = "kirocrew"
 
 REASON_MAX_CHARS = 500
@@ -153,6 +162,9 @@ _CRON_EXPR_RE = re.compile(r"^[0-9*/,\- A-Za-z?#LW]{1,100}$")
 #: entry orders the values from tightest to widest, so a move toward the end is
 #: ``widen`` and a move toward the start is ``tighten``.
 _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
+    # Crewmate 2.0 hands each crewmate's work to a worker carrying its own kit, so
+    # turning it on is the wider direction and asks for the acknowledgement.
+    "dashboard.crewmate_v2": (False, True),
     "agent.approval_mode": ("interactive", "auto"),
     "agent.sandbox": ("strict", "auto", "off"),
     "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
@@ -473,20 +485,34 @@ KINDS: dict[str, KindDef] = {
             "Turn one crewmate's check-ins on or off and set when they run: daily "
             "(the Daily Goal Reminder), weekly (the Weekly report, on `weekday`, "
             "0 = Sunday) and monthly (the Monthly review, on `month_day`, 1-28), "
-            "all at `time` (HH:MM, 24-hour). Give only the fields that change.",
+            "all at `time` (HH:MM, 24-hour), and heartbeat (a wake every `interval` "
+            "minutes, one of 15, 30, 60, 120, 240, in which the crewmate moves its "
+            "work forward on its own; each wake uses credits). Give only the fields "
+            "that change.",
             _obj(
                 {
                     "member": _STR,
                     "daily": _BOOL,
                     "weekly": _BOOL,
                     "monthly": _BOOL,
+                    "heartbeat": _BOOL,
                     "weekday": {"type": "integer", "minimum": 0, "maximum": 6},
                     "month_day": {"type": "integer", "minimum": 1, "maximum": _goals.MAX_MONTH_DAY},
                     "time": {"type": "string", "maxLength": 5},
+                    "interval": {"type": "integer", "enum": list(_goals.HEARTBEAT_INTERVALS)},
                 },
                 ["member"],
             ),
-            ("daily", "weekly", "monthly", "weekday", "month_day", "time"),
+            (
+                "daily",
+                "weekly",
+                "monthly",
+                "heartbeat",
+                "weekday",
+                "month_day",
+                "time",
+                "interval",
+            ),
         ),
         KindDef(
             KIND_TEMPLATE_UPDATE,
@@ -907,7 +933,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             )
         return {"name": name, "fields": f}
     if kind == KIND_CREWMATE_CAPABILITIES:
-        _only(p, {"member", "draft"})
+        _only(p, {"member", "draft", "origins"})
         member = _member_name(p, "member")
         draft = p.get("draft")
         if not isinstance(draft, dict):
@@ -931,7 +957,13 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         clean_draft: dict[str, Any] = {"operations": clean_ops}
         if "enroll" in draft:
             clean_draft["enroll"] = _clean_bool(draft, "enroll")
-        return {"member": member, "draft": clean_draft}
+        out_caps: dict[str, Any] = {"member": member, "draft": clean_draft}
+        if "origins" in p:
+            try:
+                out_caps["origins"] = _mate_catalog.clean_origins(p["origins"])
+            except ValueError as exc:
+                raise _fail("invalid_param", str(exc)) from None
+        return out_caps
     if kind == KIND_CREWMATE_GOAL:
         _only(p, {"member", "long_term", "goal_id"})
         out_goal: dict[str, Any] = {
@@ -969,7 +1001,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
     if kind == KIND_CREWMATE_CHECK_INS:
         _only(p, {"member", *CHECK_IN_FIELDS})
         out_ci: dict[str, Any] = {"member": _member_name(p, "member")}
-        for key in ("daily", "weekly", "monthly"):
+        for key in ("daily", "weekly", "monthly", "heartbeat"):
             if key in p:
                 out_ci[key] = _clean_bool(p, key)
         for key, low, high in (("weekday", 0, 6), ("month_day", 1, _goals.MAX_MONTH_DAY)):
@@ -983,6 +1015,14 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             if not isinstance(t, str) or not _goals.is_check_in_time(t):
                 raise _fail("invalid_param", "'time' must be HH:MM (24-hour)")
             out_ci["time"] = t
+        if "interval" in p:
+            if not _goals.is_heartbeat_interval(p["interval"]):
+                raise _fail(
+                    "invalid_param",
+                    "'interval' must be one of "
+                    + ", ".join(str(m) for m in _goals.HEARTBEAT_INTERVALS),
+                )
+            out_ci["interval"] = p["interval"]
         if len(out_ci) == 1:
             raise _fail("invalid_param", "give at least one check-in or its timing")
         return out_ci
@@ -1815,6 +1855,19 @@ def build_preview(
             # A server this card defines runs its launch line in the member's
             # next session: shown in full, and marked as running code.
             out["changes"] += _server_spec_rows(server, spec)
+        origins = p.get("origins") or {}
+        gateway = set(context.get("gateway") or ())
+        out["changes"] += _mate_catalog.origin_rows(p["draft"], origins, gateway, impact, _display)
+        # Named additions read as one plain line each; the raw rows (sections,
+        # launch lines, origins) stay on the card behind its Details.
+        summary = _mate_catalog.addition_summary(p["draft"], origins, gateway, impact, _display)
+        if summary:
+            # An approval row that widens stays in the main view: a grant (a
+            # whole server's included) is never hidden behind Details.
+            out["changes"] = summary + [
+                row if _widening_row(row, impact) else {**row, "detail": True}
+                for row in out["changes"]
+            ]
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         # An auto-approval this draft grants widens what the member runs without
         # asking, and a launch line runs third-party code. Both can be true at
@@ -1826,6 +1879,12 @@ def build_preview(
         # both would surface as ``code_exec`` and silently drop the "runs
         # without asking" acknowledgement the plain-widen draft requires.
         approval_expanded = any(i.get("approval_expanded") for i in impact)
+        # Named additions that are all servers this gateway already runs bring
+        # no new outside code, so only the third-party warning goes. An approval
+        # the draft widens keeps its acknowledgement, whatever the server.
+        known_code = bool(summary) and _mate_catalog.only_gateway_servers(p["draft"], gateway)
+        if known_code:
+            launched = []
         out["widen"] = approval_expanded
         if launched:
             out["risk"] = RISK_CODE_EXEC
@@ -2130,14 +2189,25 @@ def _check_ins_path(slug: str) -> str:
 
 
 #: The fields a ``crewmate.check_ins`` card may set.
-CHECK_IN_FIELDS = ("daily", "weekly", "monthly", "weekday", "month_day", "time")
+CHECK_IN_FIELDS = (
+    "daily",
+    "weekly",
+    "monthly",
+    "heartbeat",
+    "weekday",
+    "month_day",
+    "time",
+    "interval",
+)
 CHECK_IN_LABELS = {
     "daily": "Daily Goal Reminder",
     "weekly": "Weekly report",
     "monthly": "Monthly review",
+    "heartbeat": "Heartbeat (each wake uses credits)",
     "weekday": "Day of the week",
     "month_day": "Day of the month",
     "time": "Check-in time",
+    "interval": "Heartbeat interval",
 }
 _WEEKDAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
@@ -2152,6 +2222,8 @@ def _check_in_value(key: str, value: Any) -> str | None:
         return _WEEKDAY_NAMES[value]
     if key == "month_day":
         return f"Day {value}"
+    if key == "interval" and isinstance(value, int):
+        return f"Every {value} min" if value < 60 else f"Every {value // 60} h"
     return str(value)
 
 
@@ -2199,6 +2271,18 @@ def _capability_plan(member: str, revision: str, draft: dict[str, Any]) -> list[
         step("POST", path + "/preview", base),
         step("PUT", path, _with_fills(base, fills), fill=fills),
     ]
+
+
+def _widening_row(row: dict[str, Any], impact: list[dict[str, Any]]) -> bool:
+    """Whether *row* (an :func:`_impact_rows` row) adds an approval the preview counts as wider."""
+    section = row.get("label")
+    if section not in ("allowedTools", "autoApprove"):
+        return False
+    added = set(row.get("add") or [])
+    return any(
+        i.get("approval_expanded") and i.get("section") == section and i.get("id") in added
+        for i in impact
+    )
 
 
 def _impact_rows(impact: list[dict[str, Any]]) -> list[dict[str, Any]]:

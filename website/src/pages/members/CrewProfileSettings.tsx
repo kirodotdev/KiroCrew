@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Lock } from 'lucide-react'
+import { Lock, Sparkles } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -69,7 +69,8 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   const mode = value('approval_mode')
   // What each mode lets the crewmate do, under the picker: the bare word
   // "Trust" alone does not say it.
-  // Scoped to the crewmate, not one chat: the profile pick covers every thread.
+  // Scoped to the crewmate, not one chat: the profile pick covers every thread
+  // and every worker session it opens (`dashboard/crewmate_approval.py`).
   const name = crewDisplayName(member)
   const modeHint = mode === 'normal'
     ? t('pages.membersPage.profile_mode_normal_hint', { name })
@@ -131,6 +132,32 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     : lockFlip.isError
       ? t(lockFlip.variables ? 'pages.membersPage.profile_dashboard_lock_failed' : 'pages.membersPage.profile_dashboard_unlock_failed')
       : null
+
+  // Dynamic capabilities: a per-crewmate preview, off by default, stored on the
+  // crewmate's own record (`kiro_crew/crewmate_dynamic_capabilities.py`). On, the
+  // crewmate may find skills or tools for its worker and ask for them on a card.
+  // It only does anything under Crewmate 2.0, so the row shows only while that is
+  // on (server config `dashboard.crewmate_v2`, read through the shared query).
+  const cfgQ = useQuery<{ dashboard?: { crewmate_v2?: boolean } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  const v2On = cfgQ.isSuccess && cfgQ.data?.dashboard?.crewmate_v2 !== false
+  // The last value this card saved, so the switch holds it until the roster
+  // refetch hands the same value back through `member`.
+  const [dynSaved, setDynSaved] = useState<boolean | undefined>(undefined)
+  const dynFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { dynamic_capabilities: want }),
+    onSuccess: (_r, want) => {
+      setDynSaved(want)
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, dynamic_capabilities: want } : r)))
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }),
+  })
+  const dynOn = dynFlip.isPending
+    ? (dynFlip.variables ?? false)
+    : (dynSaved ?? member.dynamic_capabilities === true)
 
   const save = async (key: Setting, next: string) => {
     if (inFlight.current || waiting) return
@@ -297,6 +324,31 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           )}
         </div>
       </Field>
+      {v2On && (
+        <Field
+          label={t('pages.membersPage.profile_dynamic_capabilities')}
+          hint={t('pages.membersPage.profile_dynamic_capabilities_hint', { name })}
+        >
+          <div className="flex items-center justify-between gap-3 min-w-0" data-testid="crew-profile-dynamic-capabilities">
+            <span className="flex items-center gap-2 min-w-0 text-[13px] text-text">
+              <Sparkles size={14} className="text-muted shrink-0" aria-hidden="true" />
+              <span className="truncate">{t('pages.membersPage.profile_dynamic_capabilities_switch', { name })}</span>
+              <span
+                className="shrink-0 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent"
+                data-testid="crew-profile-dynamic-capabilities-preview"
+              >
+                {t('pages.membersPage.profile_preview_tag')}
+              </span>
+            </span>
+            <Toggle
+              checked={dynOn}
+              onChange={(v) => dynFlip.mutate(v)}
+              disabled={dynFlip.isPending}
+              label={t('pages.membersPage.profile_dynamic_capabilities_switch', { name })}
+            />
+          </div>
+        </Field>
+      )}
       {/* No hand-off on any notice here: the Crewmates page's composer may hold an
           unsent draft to this crewmate, and "Ask the agent" navigates away. */}
       <ErrorNotice
@@ -309,6 +361,10 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       />
       <ErrorNotice message={error || null} testId="crew-profile-settings-error" />
       <ErrorNotice message={lockError} testId="crew-profile-dashboard-lock-error" />
+      <ErrorNotice
+        message={dynFlip.isError ? t('pages.membersPage.profile_dynamic_capabilities_failed') : null}
+        testId="crew-profile-dynamic-capabilities-error"
+      />
       <ErrorNotice message={notice || null} testId="crew-profile-settings-notice" />
       </fieldset>
     </section>

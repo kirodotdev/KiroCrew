@@ -3222,6 +3222,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # thread frame); off by default, and the Settings toggle under Crewmates is
     # the only dashboard door to it.
     "dashboard.crewmate_threads": {"type": "bool"},
+    # Crewmate 2.0 (``kiro_crew.crewmate_v2``): read once at startup, so the
+    # schema marks it restart=True. The toggle sits under the Crew Members
+    # preview card in Settings > Developer > Feature Previews.
+    "dashboard.crewmate_v2": {"type": "bool"},
     "dashboard.dynamic_dashboard_cards": {"type": "bool"},
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready

@@ -279,12 +279,16 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _GUEST_AGENT_FILENAME,
         _KNOWLEDGE_AGENT_FILENAME,
         _LITE_AGENT_FILENAME,
+        _MATE_CONDUCTOR_AGENT_FILENAME,
+        _MATE_WORKER_AGENT_FILENAME,
         _RESEARCH_AGENT_FILENAME,
         _TEAM_LEAD_AGENT_FILENAME,
         _install_dashboard_manager_agent,
         _install_guest_agent,
         _install_knowledge_agent,
         _install_lite_agent_fallback,
+        _install_mate_conductor_agent,
+        _install_mate_worker_agent,
         _install_research_agent,
         _install_team_lead_agent,
     )
@@ -2232,12 +2236,16 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_guest_agent",
         "_install_lite_agent_fallback",
         "_install_knowledge_agent",
+        "_install_mate_conductor_agent",
+        "_install_mate_worker_agent",
         "_install_research_agent",
         "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",
+        "_MATE_CONDUCTOR_AGENT_FILENAME",
+        "_MATE_WORKER_AGENT_FILENAME",
         "_LITE_AGENT_FILENAME",
         "_RESEARCH_AGENT_FILENAME",
         "_TEAM_LEAD_AGENT_FILENAME",
@@ -4568,6 +4576,27 @@ def rebuild_agent_config(
                 exc_info=True,
             )
 
+        # Tracks a failed mate-conductor rewrite the way ``research_held`` and
+        # ``team_lead_held`` do: ``_install_mate_conductor_agent`` also derives
+        # from ``build_agent_config()``, so a failed rewrite under a tightening
+        # ceiling must hold the memo rather than let it advance over a stale
+        # grant list on disk. Folded into ``conductor_held`` below.
+        mate_conductor_held = False
+
+        # Install kirocrew-mate-conductor agent (the agent a crewmate's own chat
+        # runs on) and kirocrew-mate-worker (what its worker sessions run on).
+        try:
+            service_agents._install_mate_conductor_agent()
+            service_agents._install_mate_worker_agent()
+        except Exception:
+            mate_conductor_held = True
+            logger.warning(
+                "kirocrew-mate-conductor agent install failed; marking the ceiling held so "
+                "a tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
         # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
         # work to). Degrades to a debug line like the two above: with the spec absent a
         # crewmate still has `dashboard_fields` and `dashboard_write`, so the page it has
@@ -4639,9 +4668,10 @@ def rebuild_agent_config(
         # down must still leave the installers' verdict behind, not the previous one.
         # ``team_lead_held`` folds in here (not only into ``_conductor_spec_held``)
         # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
-        # ``research_held`` folds in for the same reason: both derive from
-        # ``build_agent_config`` and must not be recorded synced over a stale grant list.
-        conductor_held = conductor_held or team_lead_held or research_held
+        # ``research_held`` and ``mate_conductor_held`` fold in for the same reason:
+        # all three derive from ``build_agent_config`` and must not be recorded
+        # synced over a stale grant list.
+        conductor_held = conductor_held or team_lead_held or research_held or mate_conductor_held
         _conductor_spec_held = conductor_held
         _conductor_installers_held = conductor_held
 
@@ -5193,19 +5223,24 @@ _MATE_SERVER = "kirocrew-mate"
 #: the gateway admits only a turn the user sent in the crewmate's own chat, and
 #: the change lands in that chat as one row the user can undo. The three ``set_*``
 #: / ``request_*`` tools only OFFER a change card, inert until the user presses
-#: it. A tool added to the server is not in this tuple, so it asks first until it
-#: is reviewed here.
+#: it. ``find_capabilities`` only reads the worker's tools and the catalog.
+#: ``save_notes`` writes only the calling crewmate's own briefing, the file it
+#: has always kept for itself, admitted only in its own thread. A tool
+#: added to the server is not in this tuple, so it asks first until it is
+#: reviewed here.
 _MATE_AUTO_GRANTS = (
     f"@{_MATE_SERVER}/update_self",
     f"@{_MATE_SERVER}/set_model",
     f"@{_MATE_SERVER}/set_approval_mode",
     f"@{_MATE_SERVER}/request_capabilities",
+    f"@{_MATE_SERVER}/find_capabilities",
     f"@{_MATE_SERVER}/goal_read",
     f"@{_MATE_SERVER}/set_goal",
     f"@{_MATE_SERVER}/set_key_results",
     f"@{_MATE_SERVER}/set_check_ins",
     f"@{_MATE_SERVER}/key_result_progress",
     f"@{_MATE_SERVER}/save_goal_report",
+    f"@{_MATE_SERVER}/save_notes",
 )
 
 

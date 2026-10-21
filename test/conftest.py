@@ -1089,6 +1089,41 @@ def drain_breadcrumb_writes(timeout: float = 5.0) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _crewmate_v2_on():
+    """Run every test with Crewmate 2.0 latched ON unless it says otherwise.
+
+    ``dashboard.crewmate_v2`` ships on; the suite pins the conductor/worker
+    behaviour the switch holds, and a latch read from whatever config a test
+    happens to load would make that order-dependent. A test of the off shape sets
+    ``crewmate_v2._latched = False`` itself (``test/test_crewmate_v2_switch.py``).
+    """
+    from kiro_crew import crewmate_v2
+
+    prior = crewmate_v2._latched
+    crewmate_v2._latched = True
+    yield
+    crewmate_v2._latched = prior
+
+
+@pytest.fixture(autouse=True)
+def _crewmate_dynamic_capabilities_on():
+    """Run every test with every crewmate's Dynamic capabilities ON unless it says otherwise.
+
+    The per-crewmate preview (``KiroCrewAgentConfig.dynamic_capabilities``) ships
+    off, but the suite pins the crewmate-driven capability path it holds
+    (find_capabilities, the card, the hand-off summary, the nudge). A test of the
+    per-crewmate read sets ``crewmate_dynamic_capabilities._override = None``
+    itself (``test/test_crewmate_dynamic_capabilities.py``).
+    """
+    from kiro_crew import crewmate_dynamic_capabilities
+
+    prior = crewmate_dynamic_capabilities._override
+    crewmate_dynamic_capabilities._override = True
+    yield
+    crewmate_dynamic_capabilities._override = prior
+
+
+@pytest.fixture(autouse=True)
 def _reset_safety_override_between_tests():
     """Reset the SafetyOverride singleton between tests to prevent state leaking.
 

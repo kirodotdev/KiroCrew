@@ -412,10 +412,11 @@ async def api_members(request: web.Request) -> web.Response:
     # ``agent_panel`` is below: ``handlers.agents`` reaches back into this
     # package at import time, so a module-level import would close the cycle.
     from kiro_crew.dashboard.handlers.agents import _roster_avatar, _roster_mask
+    from kiro_crew.mate_worker import is_legacy_binding
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
-        if not _member_name_is_addressable(name):
+        if not _member_name_is_addressable(name) or is_legacy_binding(name, agent_cfg):
             continue
         try:
             slug = members_mod.member_slug(name, cfg)
@@ -461,6 +462,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # crewmate's own model; the effort is load-time coerced.
                 "worker_model": _roster_mask(agent_cfg.worker_model),
                 "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
+                # The per-crewmate Dynamic capabilities preview, the profile
+                # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
+                "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than

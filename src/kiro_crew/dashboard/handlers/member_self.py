@@ -75,8 +75,35 @@ SELF_PROPOSALS: dict[str, str] = {
 
 #: The requests a crewmate may make in its own thread from a turn the user did
 #: not send (``handlers.guide.REQ_OWN_GOAL_TURN``): its own goal, milestones
-#: and check-ins, each still a card the user decides.
+#: and check-ins, each still a card the user decides. A capabilities card that
+#: only adds servers this gateway already runs is admitted too
+#: (:func:`_gateway_servers_only`).
 OWN_GOAL_PROPOSALS = frozenset({"goal", "key_results", "check_ins"})
+
+
+def _gateway_servers_only(draft: Any) -> bool:
+    """Whether a capabilities *draft* only adds servers this gateway already runs.
+
+    The one capabilities card a crewmate may raise from a turn the user did not
+    send (a worker report naming a missing capability, a check-in): it brings in
+    no outside code, since each addition copies an entry the gateway already
+    runs, and it still changes nothing until the user presses it. A registry
+    install, a skill, or a raw operations draft stays user-turn only.
+    """
+    if not isinstance(draft, dict) or set(draft) != {"additions"}:
+        return False
+    additions = draft.get("additions")
+    return (
+        isinstance(additions, list)
+        and bool(additions)
+        and all(
+            isinstance(a, dict)
+            and a.get("source") == "gateway"
+            and isinstance(a.get("server"), str)
+            and set(a) <= {"server", "source", "auto_approve"}
+            for a in additions
+        )
+    )
 
 
 def _caller_member(request: web.Request, slot_key: str) -> tuple[str, str] | None:
@@ -209,7 +236,22 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
     if not isinstance(raw, dict):
         _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
         return _deny(400, "invalid_params", "'params' must be an object")
-    if request.get(REQ_OWN_GOAL_TURN) is True and name not in OWN_GOAL_PROPOSALS:
+    from kiro_crew import crewmate_dynamic_capabilities, crewmate_v2
+
+    if name == "capabilities" and await asyncio.to_thread(
+        crewmate_dynamic_capabilities.restricted_for, member
+    ):
+        # ``request_capabilities`` is not mounted while this crewmate's Dynamic
+        # capabilities preview is off under Crewmate 2.0: the user adds worker
+        # capabilities by hand.
+        _audit(sk, OP_PROPOSE_SELF, "denied", "dynamic_capabilities_off")
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    v2 = crewmate_v2.enabled()
+    if (
+        request.get(REQ_OWN_GOAL_TURN) is True
+        and name not in OWN_GOAL_PROPOSALS
+        and not (v2 and name == "capabilities" and _gateway_servers_only(raw.get("draft")))
+    ):
         _audit(sk, OP_PROPOSE_SELF, "denied", "not a user turn")
         return _deny(
             403, "not_user_turn", "only a message the user sent in the dashboard can start this"
@@ -217,7 +259,27 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
     kind = SELF_PROPOSALS[name]
     params: dict[str, Any]
     if name == "capabilities":
-        params = {"member": member, "draft": raw.get("draft")}
+        draft = raw.get("draft")
+        params = {"member": member, "draft": draft}
+        if isinstance(draft, dict) and "additions" in draft and not v2:
+            # Named additions are the Crewmate 2.0 catalog (``crewmate_v2``).
+            _audit(sk, OP_PROPOSE_SELF, "denied", "crewmate_v2_off")
+            return _deny(400, "invalid_params", "a draft takes operations")
+        if isinstance(draft, dict) and "additions" in draft:
+            # Named additions (find_capabilities' catalog): the gateway resolves
+            # each into operations and records where it comes from; the caller
+            # never supplies a transport or an origin for one.
+            from kiro_crew.dashboard.handlers.member_capability_catalog import (
+                additions_to_draft,
+            )
+            from kiro_crew.mate_capability_catalog import AdditionError
+
+            try:
+                resolved, origins = await additions_to_draft(request.app, member, draft)
+            except AdditionError as exc:
+                _audit(sk, OP_PROPOSE_SELF, "denied", exc.code)
+                return _deny(409 if exc.code == "no_crewmate_file" else 400, exc.code, exc.message)
+            params = {"member": member, "draft": resolved, "origins": origins}
     elif name == "goal":
         if "long_term" not in raw or set(raw) - {"long_term", "goal_id"}:
             _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
@@ -229,7 +291,16 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
             return _deny(400, "invalid_params", "'key_results' takes only items")
         params = {"member": member, "items": raw.get("items")}
     elif name == "check_ins":
-        allowed_ci = {"daily", "weekly", "monthly", "weekday", "month_day", "time"}
+        allowed_ci = {
+            "daily",
+            "weekly",
+            "monthly",
+            "heartbeat",
+            "weekday",
+            "month_day",
+            "time",
+            "interval",
+        }
         if not raw or set(raw) - allowed_ci:
             _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
             return _deny(

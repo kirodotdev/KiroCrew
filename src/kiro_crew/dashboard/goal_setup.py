@@ -4,8 +4,10 @@ Saving a goal on the Goals tab, new or edited (or applying a ``crewmate.goal`` c
 writes through the same route) should not leave the user to work out what
 milestones are or where the check-ins live. So the gateway sends the crewmate
 one hidden turn in its own thread (:func:`mate_welcome.dispatch_hidden_turn`):
-acknowledge the goal in a sentence, research it in a background sub-agent so
-the chat stays free, and propose milestones when the research comes back.
+acknowledge the goal in a sentence, hand the research to a worker session
+(``session_create`` / ``session_send``; a crewmate's chat starts no
+sub-agents) and end the turn, then propose milestones when the worker's
+report wakes it (:mod:`kiro_crew.dashboard.mate_thread_wakes`).
 Applying that milestones card always sends a second hidden turn
 (:func:`schedule_milestones_nudge`), which offers the check-ins when none is on. Each of those is a card the user
 decides; the crewmate's own goal cards are admitted outside a turn the user sent
@@ -34,7 +36,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from kiro_crew import member_goals
+from kiro_crew import crewmate_prompts, member_goals
 from kiro_crew import members as members_mod
 
 logger = logging.getLogger(__name__)
@@ -58,14 +60,16 @@ def changed_enough(before: str, after: str) -> bool:
 
 
 def kickoff_prompt(
-    rec: dict[str, Any], goal_id: str = "", *, has_mate_tools: bool = True
+    rec: dict[str, Any], goal_id: str = "", *, has_mate_tools: bool = True, dashboard_line: str = ""
 ) -> str | None:
     """The hidden turn's text, built from the goal record as stored.
 
     Names the goal *goal_id* that was just added or changed (``None`` when it is
     gone by the time the turn would run) and shows the whole list. Without the
     ``kirocrew-mate`` tools (*has_mate_tools*) the milestones are written in
-    the chat for the user to add on the Goals tab.
+    the chat for the user to add on the Goals tab. *dashboard_line* is the
+    gateway's build-your-dashboard line (``goal_reminder.dashboard_line``), added
+    last while the crewmate has no page of its own.
     """
     numbers = member_goals.goal_numbers(rec)
     if goal_id not in numbers:
@@ -76,54 +80,32 @@ def kickoff_prompt(
     listing = [
         f"{i}. {member_goals.scrub_text(g['text'])}" for i, g in enumerate(rec["goals"], start=1)
     ]
-    lines = [
-        f"[Goal set] The user just set goal {n} ({goal_id}):",
-        "",
-        member_goals.scrub_text(goal["text"]),
-        "",
-        "All your goals now:",
-        *listing,
-        "",
-        "Do this, in order:",
-        "1. Reply in one or two short sentences, in the user's language: say back what "
-        f"you understand goal {n} to mean, and that you will look into the work before "
-        "you propose milestones. Ask nothing else yet.",
-        "2. Start ONE background sub-agent with spawn_run to research the goal: what "
-        "the work looks like today (the repo, the queue, past releases or whatever you "
-        "can read), what could be measured, what is already in place. Ask it for a few "
-        "candidate milestones, each something you can check and report as a "
-        "number or a plain yes/no, with its target and why. Then end your turn so the "
-        "chat stays free for the user; do not wait for the result.",
-        (
-            "3. When the result comes back, propose the milestones with set_key_results "
-            "(a card, the whole set, each milestone linked with goal_ids to the goals it "
-            "serves) and a one-sentence reason."
-            if has_mate_tools
-            else "3. When the result comes back, write the milestones in this chat (each "
-            "with its target and the goals it serves) with a one-sentence reason, and "
-            "ask the user to add the ones they want on your Goals tab."
-        )
-        + (
-            " You already have milestones: keep the ones that still fit, and add or "
-            "change only what this goal needs."
-            if has_krs
-            else ""
-        )
-        + " When the goal cannot be measured, say so and propose none for it.",
-        (
-            "4. Do not bring up check-ins yet: once the user confirms the milestones you "
-            "will be told, and that is the moment for them."
-            if has_mate_tools
-            else "4. Do not bring up check-ins yet: once the user saves the milestones "
-            "you will be told, and that is the moment for them."
-        ),
-    ]
-    lines.append(
-        "A few goals and a few milestones are easier to track than many: keep the "
-        "set small, and when goals or milestones overlap, suggest merging them; the "
-        "user decides."
+    T = crewmate_prompts.text  # noqa: N806 - a short local alias for the reads below
+    step3 = T(
+        "goal_setup.kickoff_step3_tools" if has_mate_tools else "goal_setup.kickoff_step3_no_tools"
     )
-    lines.append("Ask the user about one thing at a time.")
+    if has_krs:
+        step3 += T("goal_setup.kickoff_has_milestones")
+    lines = [
+        crewmate_prompts.fill(
+            "goal_setup.kickoff_head",
+            n=n,
+            goal_id=goal_id,
+            goal=member_goals.scrub_text(goal["text"]),
+            listing="\n".join(listing),
+        ),
+        crewmate_prompts.fill("goal_setup.kickoff_step2", n=n),
+        step3 + T("goal_setup.kickoff_unmeasured"),
+        T(
+            "goal_setup.kickoff_step4_tools"
+            if has_mate_tools
+            else "goal_setup.kickoff_step4_no_tools"
+        ),
+        T("goal_setup.kickoff_small_set"),
+        T("goal_setup.one_thing"),
+    ]
+    if dashboard_line:
+        lines.extend(["", dashboard_line])
     return "\n".join(lines)
 
 
@@ -157,7 +139,8 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
             from kiro_crew.member_mate_tools import member_has_mate_tools
 
             has_tools = await asyncio.to_thread(member_has_mate_tools, member)
-            prompt = build(rec, has_tools)
+            # Off the loop: the goal-setup build reads the dashboard binding.
+            prompt = await asyncio.to_thread(build, rec, has_tools)
             if prompt is None:
                 return "skipped: nothing left to talk about"
             # The read ran off the loop: a turn may have started meanwhile.
@@ -170,8 +153,15 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
         await asyncio.sleep(POLL_SECS)
 
 
-def _goal_prompt(goal_id: str) -> Build:
-    return lambda rec, tools: kickoff_prompt(rec, goal_id, has_mate_tools=tools)
+def _goal_prompt(goal_id: str, slug: str = "") -> Build:
+    def build(rec: dict[str, Any], tools: bool) -> str | None:
+        from kiro_crew.dashboard.goal_reminder import dashboard_line
+
+        return kickoff_prompt(
+            rec, goal_id, has_mate_tools=tools, dashboard_line=dashboard_line(slug)
+        )
+
+    return build
 
 
 def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> str | None:
@@ -185,7 +175,7 @@ def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> st
         return None
     sched = rec.get("schedules") or {}
     any_on = any(sched.get(c) for c in member_goals.CADENCES)
-    lines = ["[Milestones confirmed] The user just confirmed your milestones:", ""]
+    lines = [crewmate_prompts.text("goal_setup.milestones_head"), ""]
     for kr in krs:
         text = member_goals.scrub_text(str(kr.get("text") or ""))
         target = member_goals.scrub_text(str(kr.get("target") or ""))
@@ -196,25 +186,11 @@ def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> st
         lines.extend(["", *member_goals.goal_lines({"goals": goals})])
     lines.append("")
     if any_on:
-        lines.append(
-            "Reply in one or two short sentences, in the user's language: acknowledge "
-            "them and say what you will work on first toward the goal. The check-ins "
-            "already running will record readings against these milestones."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_running"))
     elif has_mate_tools:
-        lines.append(
-            "Reply in the user's language: acknowledge them in a sentence, then offer "
-            "check-ins with set_check_ins. Say in one plain sentence each what the Daily "
-            "Goal Reminder, the Weekly report and the Monthly review would do for them, "
-            "propose the ones that fit this goal, and let the card decide."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_offer_tools"))
     else:
-        lines.append(
-            "Reply in the user's language: acknowledge them in a sentence, then offer "
-            "check-ins. Say in one plain sentence each what the Daily Goal Reminder, the "
-            "Weekly report and the Monthly review would do for them, suggest the ones "
-            "that fit this goal, and tell the user they turn them on on your Goals tab."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_offer_no_tools"))
     return "\n".join(lines)
 
 
@@ -255,7 +231,7 @@ def schedule_nudge(state: Any, slug: str, member: str, goal_id: str) -> None:
     One waiting nudge per crewmate: a newer save, of this goal or another,
     replaces it.
     """
-    _schedule(state, slug, slug, member, _goal_prompt(goal_id), "goal setup")
+    _schedule(state, slug, slug, member, _goal_prompt(goal_id, slug), "goal setup")
 
 
 def schedule_milestones_nudge(state: Any, slug: str, member: str) -> None:
@@ -268,6 +244,48 @@ def schedule_milestones_nudge(state: Any, slug: str, member: str) -> None:
         lambda rec, tools: milestones_prompt(rec, has_mate_tools=tools),
         "milestones confirmed",
     )
+
+
+def capabilities_prompt(added: str) -> str:
+    """The hidden turn after the user applies the crewmate's capabilities card.
+
+    Without it the grant sat unused: a card press starts no turn, and a worker
+    that was already running cannot see what was added, so nothing moved until
+    the user typed. *added* is the card's title, which names what was added.
+    """
+    return crewmate_prompts.fill(
+        "goal_setup.capabilities_added", added=member_goals.scrub_text(added)
+    )
+
+
+def schedule_capabilities_nudge(state: Any, slot_key: str, added: str) -> None:
+    """Tell the crewmate of thread *slot_key* that its capabilities card was applied.
+
+    Once its thread is idle, through the same wait as the other goal nudges.
+    Only a crewmate's own pinned thread is told; any other slot is left alone.
+    """
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key) if state is not None else None
+    if slot is None or not is_crewmate_thread(slot):
+        return
+    member = slot.agent
+
+    async def start() -> None:
+        # The slug read loads the config, so it runs off the loop.
+        slug = await asyncio.to_thread(members_mod.member_slug, member)
+        _schedule(
+            state,
+            f"{slug}:capabilities",
+            slug,
+            member,
+            lambda _rec, _tools: capabilities_prompt(added),
+            "capabilities added",
+        )
+
+    task = asyncio.get_running_loop().create_task(start())
+    _tasks(state)[f"{slot_key}:capabilities-start"] = task
+    task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:capabilities-start", None))
 
 
 def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = True) -> str | None:
@@ -283,35 +301,29 @@ def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = 
         return None
     text = member_goals.scrub_text(str(removed["goal"].get("text") or ""))
     served = set(removed.get("key_result_ids") or [])
-    lines = ["[Goal removed] The user just removed this goal:", "", text, ""]
+    lines = [crewmate_prompts.text("goal_setup.removed_head"), "", text, ""]
     goals = [{**g, "text": member_goals.scrub_text(g["text"])} for g in rec.get("goals") or []]
     if goals:
         lines.extend(["Goals left:", *member_goals.goal_lines({"goals": goals})[1:], ""])
     else:
-        lines.extend(["No goal is left, so every check-in was switched off.", ""])
+        lines.extend([crewmate_prompts.text("goal_setup.removed_none_left"), ""])
     orphans = [
         member_goals.scrub_text(str(kr.get("text") or ""))
         for kr in rec.get("key_results") or []
         if kr.get("id") in served and not kr.get("goal_ids")
     ]
     if orphans:
-        lines.extend(["These milestones served only that goal:", *(f"- {o}" for o in orphans), ""])
-        if has_mate_tools:
-            follow_up = (
-                "Then propose, with set_key_results (a card, the whole set), dropping or "
-                "relinking the milestones above; the user decides."
-            )
-        else:
-            follow_up = (
-                "Then suggest, in this chat, dropping or relinking the milestones "
-                "above on your Goals tab; the user decides."
-            )
+        lines.extend(
+            [crewmate_prompts.text("goal_setup.removed_orphans"), *(f"- {o}" for o in orphans), ""]
+        )
+        follow_up = crewmate_prompts.text(
+            "goal_setup.removed_relink_tools"
+            if has_mate_tools
+            else "goal_setup.removed_relink_no_tools"
+        )
     else:
-        follow_up = "Ask nothing else."
-    lines.append(
-        "Reply in one or two short sentences, in the user's language: acknowledge the "
-        "removal and stop work that only served it. " + follow_up
-    )
+        follow_up = crewmate_prompts.text("goal_setup.removed_nothing_else")
+    lines.append(crewmate_prompts.text("goal_setup.removed_reply") + follow_up)
     return "\n".join(lines)
 
 

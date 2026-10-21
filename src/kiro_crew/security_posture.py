@@ -307,8 +307,9 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "
         "safe_view applies redact_via_context before serialization and masks credential "
-        "map values while preserving their structure. Retained secret values and "
-        "source-content digests remain server-side.",
+        "map values while preserving their structure. A crewmate's in-place editor "
+        "(`mate_capabilities`) returns through the same safe_view. Retained secret "
+        "values and source-content digests remain server-side.",
     ),
     (
         "Crew log entries",
@@ -1882,6 +1883,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # path carries no home directory into the log ring / /api/logs stream.
         # It is an operational log line, not an output boundary of its own.
         "dashboard/stall_enrichment.py",
+        # Builds a crewmate's "waiting on you" list from its own thread, redacted the
+        # way the sidebar preview is. It returns data and serves nothing: the list
+        # leaves through `dashboard/crewmate_feed.py` into the crewmate's crew log,
+        # and is shown only through the Dashboard page's data island.
+        "dashboard/member_waiting.py",
         # Gate-side log hygiene, same shape: the declared-name spec scan redacts
         # an agent name and the spec filenames it read from the user-writable
         # agents directory before naming them in the twin-specs WARNING in the

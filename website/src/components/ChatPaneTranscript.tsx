@@ -19,14 +19,13 @@ import type { ChatPaneProps } from './ChatPaneProps'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, onOpenSubagents, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
   crewmate?: CrewmateIdentity
   crewmateTranscript: TranscriptRendererOptions['crewmateTranscript']
   onSessionOpen?: (key: string) => void
-  onOpenSubagents?: () => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
   messages: Messages
@@ -74,10 +73,6 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       // page uses; there is no second resolver. Absent from the host = the
       // renderer's own gate leaves them plain.
       onSessionOpen,
-      // The spawn_run card's "Open Subagents panel" lands on the HOST's panel
-      // when the host has one of its own (the Members page); the chat page
-      // leaves it unset and the card drives the chat store.
-      onOpenSubagents,
       sessions,
       activeSession,
       // The newest error row's Resume, with the row set's own per-row remedies
@@ -87,7 +82,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       continuing,
       onContinue,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, onOpenSubagents, sessions, activeSession, continuable, interrupted, continuing, onContinue],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue],
   )
   const renderers = useMemo(
     () => (foldBefore

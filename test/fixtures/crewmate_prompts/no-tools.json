@@ -1,0 +1,14 @@
+{
+  "_note": "A crewmate without the kirocrew-mate or session tools, created with a description: Goals-tab wording and small steps.",
+  "member": "Briar",
+  "description": "keeps the docs in step with the code",
+  "goal": "Keep the docs in step with the code",
+  "milestones": [
+    {"text": "Docs pages reviewed", "target": "5", "readings": ["2"]}
+  ],
+  "has_mate_tools": false,
+  "has_session_tools": false,
+  "heartbeat_minutes": 60,
+  "worker_servers": [],
+  "gateway_has_beyond_worker": []
+}

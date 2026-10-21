@@ -308,6 +308,27 @@ def rail_parts(
             "this directory. Prefer files and patterns from this project "
             "when answering questions.\n\n"
         )
+        from kiro_crew import crewmate_v2
+        from kiro_crew.crewmate_worktree import describe as _crewmate_worktree
+        from kiro_crew.crewmate_worktree import take_base_note as _crewmate_worktree_base_note
+
+        # The per-crewmate worktree is a Crewmate 2.0 piece: no line while off.
+        _worktree = _crewmate_worktree(project) if crewmate_v2.enabled() else None
+        if _worktree is not None:
+            _wt_path, _wt_repo, _wt_branch = _worktree
+            _wt_prefix = _wt_branch.rsplit("/", 1)[0] + "/"
+            parts[-1] = parts[-1][:-1] + (
+                f"It is your crewmate's own git worktree of {_wt_repo}, on branch "
+                f"{_wt_branch}. Other crewmates work in that repository too, each in a "
+                f"worktree of its own, so edit and commit here, on {_wt_branch}, and "
+                f"leave {_wt_repo} itself and other branches as they are. Work that "
+                f"truly needs a branch of its own gets one named under {_wt_prefix} "
+                f"(such as {_wt_prefix}<topic>), cut in this worktree, so every branch "
+                f"here reads as your crewmate's.\n\n"
+            )
+            _base_note = _crewmate_worktree_base_note(_wt_path)
+            if _base_note:
+                parts[-1] = parts[-1][:-1] + _base_note + "\n\n"
 
     # Board state — the session's dashboard board tags, so the agent knows
     # its own workflow lane and which tags it is allowed to change with

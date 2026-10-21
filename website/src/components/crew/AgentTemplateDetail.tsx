@@ -276,7 +276,17 @@ export default function AgentTemplateDetail({
   })
 
   const listed = (Array.isArray(installed) ? installed : []).find(a => a.name === template)
-  const isOwnCopy = !!crew && listed?.private_to === crew
+  // A MATE owns its config file outright (mates/agents/<id>.json), bound by
+  // kiro_agent === its own id. It is a SEVERED copy with no parent, so it is
+  // edited IN PLACE and must never be forked: forking would mint a crew-<hex>
+  // draft, re-expose it in the /set_mode picker and orphan the owned file. The
+  // backend routes a mate's capability edits to the in-place path and refuses
+  // api_agent_fork for it (cannot_fork_mate); the frontend must likewise skip
+  // the fork-before-first-edit so a mate edit writes its own file.
+  const crewRow = (crewsData?.agents || []).find(a => a.name === crew)
+  const isMate = !!crew && !!crewRow && crewRow.kiro_agent === crew && template === crew
+  const isOwnCopy = !isMate && !!crew && listed?.private_to === crew
+  // A mate has no parent, so there is no origin to diff against.
   const origin = isOwnCopy ? listed?.forked_from || '' : ''
 
   // The origin's spec, for the live diff behind the change-count pill. Origin
@@ -314,7 +324,10 @@ export default function AgentTemplateDetail({
     forkInFlight.current = null
   }, [template, crew])
   const forkIfNeeded = (): Promise<string> => {
-    if (!crew || isOwnCopy) return Promise.resolve(template)
+    // A mate owns its file: patch it directly, never fork. isOwnCopy already
+    // short-circuits a crew's forked copy; isMate does the same for a severed
+    // mate, which has no fork lineage to key isOwnCopy off.
+    if (!crew || isMate || isOwnCopy) return Promise.resolve(template)
     if (forkInFlight.current?.tpl === template) return forkInFlight.current.p
     const p = (async () => {
       const r = (await api.agentFork(template, crew)) as { template?: string }

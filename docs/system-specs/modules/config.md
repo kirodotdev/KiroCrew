@@ -107,7 +107,7 @@ the ACP layer. The rest lives in one owner per responsibility, lowest layer firs
 | `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
 | `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
 
-**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1). The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"`, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend crewmate threads run on and the mapped value is gated like any other pick. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"`, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
 import of the higher owner, the idiom this package already uses for the ACP
@@ -160,6 +160,24 @@ task when enabled, or on the first live enable; later toggles reuse that instanc
 and its charged budgets. Fixed call, byte, cache and iframe limits and the disable/cancellation
 contract are documented in
 [learn-cron-dashboard](learn-cron-dashboard.md#automatic-session-status-cards).
+
+`dashboard.crewmate_v2` (**Crewmate 2.0**) is default true and `restart=True`
+(a fresh install and an upgrade with no key set both run it):
+`kiro_crew/crewmate_v2.py` latches it once at gateway start, so the conductor and
+worker split, the startup crewmate migration and their prompt pieces follow the
+value the gateway started with, and a change waits for the next start (the
+Settings toggle shows the schema's restart pill). Off at a start after a run
+with it on, the migration is reversed from `migrated.json`. A config that cannot
+be read answers the default (on) and is not latched, so a failed read never
+reverses the migration. Card-editable and classified
+`(False, True)` in `change_card_catalog._SETTING_ORDER`, so a card turning it on
+asks for the widen acknowledgement. Owned by [crew-mode](crew-mode.md#conductor-and-worker).
+
+Dynamic capabilities is not a `dashboard.*` key: it is a per-crewmate field,
+`agents.<name>.dynamic_capabilities` (default false), set on the crewmate's
+Profile card and read per request. A config that still holds an old
+`dashboard.crewmate_dynamic_capabilities` key loads unchanged; the key is not
+read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
 ## Orchestration prompt contract
 

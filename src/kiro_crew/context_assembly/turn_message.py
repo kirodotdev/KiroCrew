@@ -166,7 +166,9 @@ def build_message(
                 native_launch_sources = tuple(provider_native_documents)
                 if is_new_session and not resumed and not needs_reinjection:
                     native_documents = provider_native_documents
-    is_custom = agent and agent != "kirocrew"
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
+    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     hook_result = self.hooks.on_message(text)
 
     parts: list[str] = []

@@ -808,6 +808,28 @@ def parent_template_allowlists(
     )
 
 
+def conductor_spawn_refusal(parent_template: str) -> str | None:
+    """The refusal for a spawn whose parent runs on a crewmate's conductor, else ``None``.
+
+    A crewmate's own chat runs on ``kirocrew-mate-conductor`` and hands its work
+    to a worker session; it starts no sub-agents. Named positively by the
+    parent's template, the one the spawn gate already resolves from the parent's
+    execution record, so every entry point (``spawn_run``, ``spawn_sub_agents``,
+    the durable pump's re-check) refuses it the same way. The conductor's spec
+    also leaves the sub-agent tools out of its tool list
+    (``mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS``); this is the gate behind it.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if parent_template != MATE_CONDUCTOR_AGENT:
+        return None
+    return (
+        "a crewmate's own chat starts no sub-agents: hand the work to a worker session "
+        "with session_create, give it the brief with session_send, and read its answer "
+        "with session_read_message"
+    )
+
+
 def _vet_parent_available_agents(
     policy: ParentSpawnPolicy, agent: str, *, app: str = ""
 ) -> str | None:
@@ -831,6 +853,9 @@ def _vet_parent_available_agents(
     (``capabilities.spawn.scopes.agents``): both must admit. It narrows what the
     agent spec grants and never widens what governance denies.
     """
+    refused = conductor_spawn_refusal(policy[0])
+    if refused:
+        return refused
     if not agent:
         return None
     parent_template, allowlists = policy

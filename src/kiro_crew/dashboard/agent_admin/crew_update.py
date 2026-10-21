@@ -69,13 +69,17 @@ def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str] | None:
 
 
 async def _apply_member_approval_to_live_thread(request: web.Request, name: str, mode: str) -> None:
-    """Put crewmate ``name``'s live DM slot on ``mode`` through ``/api/chat/mode``'s path."""
+    """Put crewmate ``name``'s live DM slot and live workers on ``mode`` (``/api/chat/mode``'s path)."""
     from kiro_crew import members as members_mod
     from kiro_crew.dashboard.chat_handlers import apply_approval_mode
+    from kiro_crew.dashboard.crewmate_approval import apply_to_live_sessions
 
     state = request.app.get("state")
     if state is None:
         return
+    # Its workers follow the Profile too; a worker not live now takes the record
+    # at its next turn.
+    await apply_to_live_sessions(state, name, mode)
     slot = next(
         (
             s
@@ -281,6 +285,14 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
+        return web.json_response(
+            {
+                "error": "dynamic_capabilities must be a boolean",
+                "code": "invalid_dynamic_capabilities",
+            },
+            status=400,
+        )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -323,15 +335,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
         if "worker_model" in body:
-            # Judged against the WORKER's harness, not the crewmate's: a session
-            # the crewmate dispatches is never a member DM, so it runs on
-            # `agent.acp_backend`, and `create_session` trusts this pin for
-            # exactly that harness (`_inherited_pin_foreign_to_child`).
+            # Judged against the WORKER's harness: a crewmate's worker runs on
+            # its crewmate's backend (`mate_worker.crewmate_worker_backend`), and
+            # `create_session` trusts this pin for exactly that harness
+            # (`_inherited_pin_foreign_to_child`).
+            from kiro_crew.mate_worker import crewmate_worker_backend
+
             model_reason = _model_pin_rejected(
                 pending_worker_model,
                 request,
                 cfg.agent.provider,
-                backend=cfg.agent.acp_backend,
+                backend=crewmate_worker_backend(cfg.agent),
             )
             if model_reason:
                 return web.json_response(
@@ -443,6 +457,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if "dynamic_capabilities" in body:
+            # The per-crewmate preview (``kiro_crew.crewmate_dynamic_capabilities``);
+            # validated above as a strict bool.
+            agent.dynamic_capabilities = body["dynamic_capabilities"]
+            changed.append("dynamic_capabilities")
         if "approval_mode" in body:
             # Compare-and-set: the profile sends the value it last read, and a
             # write made from a stale read is refused with the current value,

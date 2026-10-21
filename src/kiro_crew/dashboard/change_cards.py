@@ -784,6 +784,14 @@ class CardStore:
         )
         if live >= MAX_LIVE_CARDS_PER_SLOT:
             raise CardError(429, "too_many_cards", "this conversation has too many open cards")
+        same = self._open_duplicate(slot_key, kind, params)
+        if same is not None:
+            raise CardError(
+                409,
+                "duplicate_card",
+                f"the same change is already on card {same['id']}, waiting for the person: "
+                "this one would only repeat it",
+            )
         if len(self._cards) >= MAX_STORED_CARDS and not any(
             self._evictable(r) for r in self._cards.values()
         ):
@@ -817,6 +825,26 @@ class CardStore:
         self._dirty()
         self.sweep()
         return rec
+
+    def _open_duplicate(
+        self, slot_key: str, kind: str, params: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """A card in *slot_key* still waiting on the person that proposes exactly this.
+
+        A second identical card only doubles what the person has to press, and the
+        two then race each other's apply. An edited, finished or expired card is not
+        one: the same proposal after any of those is a new question.
+        """
+        for rec in self._cards.values():
+            if (
+                rec["slot_key"] == slot_key
+                and rec["kind"] == kind
+                and rec["status"] in (STATUS_PENDING, STATUS_APPLYING)
+                and rec["expires_at"] > self._clock()
+                and rec["params"] == params
+            ):
+                return rec
+        return None
 
     def _apply_preview(
         self,
@@ -2764,7 +2792,13 @@ async def read_context(
                 + ", ".join(withheld)
                 + "; the tool keeps asking each time, and no card can change that",
             )
-        return {"impact": impact, "label": await asyncio.to_thread(_crewmate_label, p["member"])}
+        from kiro_crew.dashboard.handlers.member_capability_catalog import gateway_matches
+
+        return {
+            "impact": impact,
+            "label": await asyncio.to_thread(_crewmate_label, p["member"]),
+            "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+        }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
 

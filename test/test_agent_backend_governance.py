@@ -490,6 +490,14 @@ class TestNoSecondGate:
         ):
             return KiroCrewConfig.load()
 
+    def test_a_kiro_member_backend_still_crosses_the_gate(self, monkeypatch, tmp_path, caplog):
+        # The member "kiro" reads as KAS before the gate, not instead of it: the
+        # gate judges 'kas' and takes the floor.
+        caplog.set_level("WARNING")
+        cfg = self._load_with_kas_denied(monkeypatch, tmp_path, {"member_acp_backend": "kiro"})
+        assert cfg.agent.member_acp_backend == FLOOR
+        assert "Ignoring agent.acp_backend 'kas'" in caplog.text
+
     def test_an_absent_key_loads_the_floor_without_a_warning(self, monkeypatch, tmp_path, caplog):
         # The load must hand the gate "no choice", not the field default: reading the
         # default as an explicit 'kas' warns on every load about a value nobody wrote.

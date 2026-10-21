@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         DashboardState,
         StartPriority,
         _ChatSlot,
+        _note_mate_wakes,
         _run_chat,
         chat_done_payload,
         effective_session_key,
@@ -613,6 +614,9 @@ async def _end_turn_tail(
     # (Re)arm the AutoNudge idle timer on EVERY exit: a turn that ends via
     # timeout, AcpProcessDied, AcpError or a cancel would otherwise orphan it.
     _notify_autonudge_turn_end(slot, **(outcome.nudge_facts if outcome is not None else {}))
+    if turn_exit.depth == 0:
+        # A crewmate's worker reports back to the crewmate's thread on its own.
+        _note_mate_wakes(state, slot, outcome.nudge_facts["reply_text"] if outcome else None)
     if turn_exit.reached_provider:
         slot._cycle_reached_provider = True
     memory_admitted = (

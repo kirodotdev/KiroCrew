@@ -181,6 +181,8 @@ def resolve_agent_bindings(
     """
     import dataclasses as _dc
 
+    from kiro_crew.mate_worker import member_chat_agent
+
     agent_cfg, resolved_alias, template, requested_resolved = _resolve_agent_selection(
         config, agent_name, project_dir, selection_kind=selection_kind
     )
@@ -200,7 +202,7 @@ def resolve_agent_bindings(
             store_name = execution_context.store.store_id
             kiro_agent = execution_context.template_id
             if execution_context.selection_kind == "member":
-                kiro_agent = dispatch_kiro_agent(kiro_agent)
+                kiro_agent = member_chat_agent(kiro_agent)
         else:
             store_name = DEFAULT_MEMORY_STORE
             kiro_agent = template
@@ -238,12 +240,12 @@ def resolve_agent_bindings(
         store_name = execution_context.store.store_id
         kiro_agent = execution_context.template_id
         if execution_context.selection_kind == "member":
-            kiro_agent = dispatch_kiro_agent(kiro_agent)
+            kiro_agent = member_chat_agent(kiro_agent)
     else:
         store_name = require_member_memory_store(
             config, resolved_alias, require_directory=validate_memory_files
         )
-        kiro_agent = dispatch_kiro_agent(agent_cfg.kiro_agent)
+        kiro_agent = member_chat_agent(agent_cfg.kiro_agent)
 
     return ResolvedBindings(
         execution_context=execution_context,

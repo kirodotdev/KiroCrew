@@ -373,6 +373,7 @@ from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401
 from kiro_crew.instances.registry import InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+from kiro_crew.mate_config_migration import migrate_existing_crewmates
 from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600  # noqa: F401
 from kiro_crew.metrics.http_metrics import (  # noqa: F401
     make_route_latency_middleware,
@@ -1763,6 +1764,11 @@ async def start_dashboard(
     # resolves the same loop instead of each latching its own copy from
     # whichever thread happens to arrive first.
     state.bind_serving_loop(asyncio.get_running_loop())
+    # A crewmate's goal record and its "waiting on you" list, recorded into its crew
+    # log for its Dashboard page. No-op with the crew log off.
+    from kiro_crew.dashboard import crewmate_feed
+
+    crewmate_feed.start(state)
     # Voice settings live in slack/handler's module state and are otherwise
     # loaded only on the Slack startup path (set_orch_cfg) — without this a
     # dashboard-only gateway (no Slack tokens) resets TTS to defaults on
@@ -2394,7 +2400,33 @@ async def start_dashboard(
     # Converge leftover channel transcript copies BEFORE the restores read them.
     await _converge_channel_transcripts(state)
 
+    # Move every existing crewmate still bound to an agent onto its worker and
+    # its own file, carrying that agent's kit, so the product never carries two
+    # kinds of crewmate at once. Additive and idempotent (see
+    # mate_config_migration.py), so a failure here is logged and left for the
+    # next boot rather than blocking startup.
+    # Only while Crewmate 2.0 is on (``dashboard.crewmate_v2``, read once here
+    # for the whole run). Off, a run that migrated before is undone instead:
+    # bindings and thread records go back to the agent they had.
+    from kiro_crew import crewmate_v2
+    from kiro_crew.mate_config_reversal import migrate_or_reverse
+
+    crewmate_v2_on = crewmate_v2.latch()
+    try:
+        await asyncio.to_thread(migrate_or_reverse, cfg, crewmate_v2_on, migrate_existing_crewmates)
+    except Exception:
+        logger.warning("mate-owned-config migration failed", exc_info=True)
+
     await _restore_dashboard_sessions(state, cfg)
+
+    # A crewmate the migration above moved tells its user once, in its own
+    # thread; a thread not open yet is offered it at its next turn end.
+    if crewmate_v2_on:
+        from kiro_crew.dashboard.mate_thread_wakes import offer_upgrade_notices
+
+        _notice_task = asyncio.create_task(offer_upgrade_notices(state))
+        state._background_tasks.add(_notice_task)
+        _notice_task.add_done_callback(state._background_tasks.discard)
 
     # Relaunch agents in non-archived channels. A gateway defers this batch
     # until its restore/open task completes; a standalone dashboard preserves
@@ -2547,6 +2579,11 @@ async def start_api_server(
     # resolves the same loop instead of each latching its own copy from
     # whichever thread happens to arrive first.
     state.bind_serving_loop(asyncio.get_running_loop())
+    # A crewmate's goal record and its "waiting on you" list, recorded into its crew
+    # log for its Dashboard page. No-op with the crew log off.
+    from kiro_crew.dashboard import crewmate_feed
+
+    crewmate_feed.start(state)
     # Voice settings live in slack/handler's module state and are otherwise
     # loaded only on the Slack startup path (set_orch_cfg) — without this a
     # dashboard-only gateway (no Slack tokens) resets TTS to defaults on

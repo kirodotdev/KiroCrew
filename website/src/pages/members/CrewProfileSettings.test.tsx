@@ -23,6 +23,7 @@ const mockApi = vi.hoisted(() => ({
   agentResolvedModel: vi.fn(),
   memberDashboard: vi.fn(),
   memberDashboardLock: vi.fn(),
+  kirocrewConfig: vi.fn(),
 }))
 vi.mock('../../api/client', () => ({ api: mockApi }))
 const modelsState = vi.hoisted(() => ({ isDegraded: false }))
@@ -82,6 +83,7 @@ beforeEach(() => {
   mockApi.chatSlotModel.mockResolvedValue({ ok: true })
   mockApi.chatSlotReasoningEffort.mockResolvedValue({ ok: true })
   mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
+  mockApi.kirocrewConfig.mockResolvedValue({ dashboard: {} })
 })
 
 describe('CrewProfileSettings permission', () => {
@@ -104,7 +106,7 @@ describe('CrewProfileSettings permission', () => {
 
   it('says under the picker what the chosen mode lets the crewmate do', () => {
     setup(member())
-    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent('oncall runs tools without asking you first, in every chat with it. Pick Normal to approve each step.')
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent('oncall runs tools without asking you first, in every chat with it and in the work it hands to its worker. Pick Normal to approve each step.')
   })
 
   it('sends one compare-and-set write; the server moves the live thread', async () => {
@@ -376,5 +378,47 @@ describe('CrewProfileSettings dashboard lock', () => {
     // but the hint text is still shown so the section is not context-free.
     expect(screen.queryByRole('switch', { name: SWITCH })).toBeNull()
     expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("can't replace")
+  })
+})
+
+describe('CrewProfileSettings Dynamic capabilities preview', () => {
+  const sw = () => within(screen.getByTestId('crew-profile-dynamic-capabilities')).getByRole('switch')
+
+  it('is off for a new crewmate and carries a Preview tag', async () => {
+    setup(member())
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(sw().getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByTestId('crew-profile-dynamic-capabilities-preview')).toHaveTextContent('Preview')
+  })
+
+  it('writes only this crewmate\'s record', async () => {
+    setup(member())
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    fireEvent.click(sw())
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dynamic_capabilities: true }))
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('true'))
+  })
+
+  it('turns an on crewmate back off', async () => {
+    setup(member({ dynamic_capabilities: true }))
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    fireEvent.click(sw())
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dynamic_capabilities: false }))
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('false'))
+  })
+
+  it('shows a crewmate\'s stored flag', async () => {
+    setup(member({ dynamic_capabilities: true }))
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(sw().getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('is hidden while Crewmate 2.0 is off', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ dashboard: { crewmate_v2: false } })
+    setup(member({ dynamic_capabilities: true }))
+    await waitFor(() => expect(mockApi.kirocrewConfig).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(screen.queryByTestId('crew-profile-dynamic-capabilities')).toBeNull()
   })
 })

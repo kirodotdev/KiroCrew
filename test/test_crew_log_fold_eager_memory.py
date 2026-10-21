@@ -362,6 +362,39 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             },
             src=GATEWAY,
         )
+    elif name == "goal":
+        # A SNAPSHOT fold: each entry replaces the whole record, so the Nth entry carries
+        # N milestones (the record grew) for each to add a counted row, every text cell
+        # at the fold's own clamp. ASCII, for the panel's reason: the state is one
+        # entry kept whole, so the entry's own byte cap binds before a wide character
+        # clamp could.
+        cell = _WIDE_ASCII[: crew_log.CREWMATE_TEXT_LIMIT]
+        row = {"text": cell, "target": cell, "current": cell, "met": True, "at": cell}
+        handle.append(
+            "dashboard/goal_recorded",
+            {
+                "goals": [],
+                "milestones": [
+                    dict(row) for _ in range(min(index + 1, crew_log.CREWMATE_ROW_LIMIT))
+                ],
+            },
+            src=GATEWAY,
+        )
+    elif name == "waiting":
+        # The same posture: the Nth snapshot lists N items, each with its options at
+        # the fold's limit and every text cell at its clamp, in ASCII as above.
+        cell = _WIDE_ASCII[: crew_log.CREWMATE_TEXT_LIMIT]
+        item = {
+            "kind": cell,
+            "text": cell,
+            "options": [cell] * crew_log.CREWMATE_OPTION_LIMIT,
+            "asked_at": cell,
+        }
+        handle.append(
+            "dashboard/waiting_changed",
+            {"items": [dict(item) for _ in range(min(index + 1, crew_log.CREWMATE_WAITING_LIMIT))]},
+            src=GATEWAY,
+        )
     elif name == "mistakes":
         # The WIDEST mistake row: a distinct field per entry so each mints its own
         # group, with the code, field and reason each at their clamp.

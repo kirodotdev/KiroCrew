@@ -1758,6 +1758,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.crewmate-2-0",
+    "label": "Crewmate 2.0",
+    "labelKey": "pages.developer.featurePreviewsTab.crewmate_v2",
+    "hint": "Each crewmate gets its own file, chats on its conductor and hands every task to its own worker. On by default. Turning it off moves every crewmate back to the template it had; worker tools added to them are kept but unused while off.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.crewmates",
     "label": "Crewmates",
     "labelKey": "pages.developer.featurePreviewsTab.crew_members",

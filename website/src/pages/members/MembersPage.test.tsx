@@ -69,7 +69,7 @@ vi.mock('../../api/client', () => ({
       get: vi.fn(() => Promise.resolve({
         slug: '', member: '', goals: [],
         key_results: [], reports: [], removed_key_result: null, removed_goal: null,
-        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1 },
+        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 30 },
         limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
       })),
     },

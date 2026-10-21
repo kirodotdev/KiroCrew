@@ -28,6 +28,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.cron_caller_session",
     "kiro_crew.dashboard.handlers.cron_lesson_supersede",
     "kiro_crew.dashboard.handlers.cron_lessons",
+    "kiro_crew.dashboard.handlers.cron_conductor_gate",
     "kiro_crew.dashboard.handlers.cron_jobs",
     "kiro_crew.dashboard.handlers.cron_script_source",
     "kiro_crew.dashboard.handlers.cron_secret_grants",
@@ -57,6 +58,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _headless_mode_refusal,
         _is_temporary_transcript,
         _recognize_session,
+    )
+    from kiro_crew.dashboard.handlers.cron_conductor_gate import (  # noqa: F401
+        _SCRIPTED_JOB_FIELDS,
+        CONDUCTOR_SCRIPTED_JOB_REFUSAL,
+        refuse_conductor_scripted_job,
     )
     from kiro_crew.dashboard.handlers.cron_jobs import (  # noqa: F401
         _MAX_BATCH_DELETE,

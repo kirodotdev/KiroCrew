@@ -436,6 +436,12 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         # picture under the same digest stem.
         await _drained_to_thread(_remove_avatar_files, name)
         await _remove_goal_check_ins(request, name, cfg)
+        # The git worktrees the crewmate's workers ran in go with it; one with
+        # uncommitted changes is kept, and its branches and the repositories'
+        # own checkouts are never touched.
+        from kiro_crew.crewmate_worktree import remove_for_member
+
+        await _drained_to_thread(remove_for_member, name, cfg)
         # Likewise the crew's private template copy: a copy the sidecar marks
         # private to THIS crew, and that the crew was bound to, has no reader
         # left once the record is gone — kept, it lists in the Agent Templates

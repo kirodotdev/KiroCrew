@@ -1020,6 +1020,13 @@
       "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
+      "id": "developer.crewmate-2-0",
+      "label": "Crewmate 2.0",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.crewmate-2-0",
+      "hint": "Each crewmate gets its own file, chats on its conductor and hands every task to its own worker. On by default. Turning it off moves every crewmate back to the template it had; worker tools added to them are kept but unused while off."
+    },
+    {
       "id": "developer.crewmates",
       "label": "Crewmates",
       "tab": "developer",

@@ -23,7 +23,9 @@ from typing import Any, Callable
 
 import pytest
 
+import kiro_crew.config.paths as paths_mod
 from kiro_crew import agent, agent_state
+from kiro_crew.agent_files import MATE_SERVICE_AGENT_FILENAMES
 from kiro_crew.agent_materialization import (
     auto_approve,
     conductor_agents,
@@ -138,6 +140,8 @@ _INSTALLERS: dict[str, Callable[[], object]] = {
     "kirocrew-security-conductor.json": conductor_agents._install_security_conductor_agent,
     "kirocrew-worker.json": worker_agent._install_worker_agent,
     "kirocrew-research.json": service_agents._install_research_agent,
+    "kirocrew-mate-conductor.json": service_agents._install_mate_conductor_agent,
+    "kirocrew-mate-worker.json": service_agents._install_mate_worker_agent,
     "kirocrew-dashboard-manager.json": service_agents._install_dashboard_manager_agent,
     "kirocrew-lite.json": service_agents._install_lite_agent_fallback,
     "kirocrew-guest.json": service_agents._install_guest_agent,
@@ -155,7 +159,16 @@ def agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(agent, "build_agent_config", lambda *a, **k: _overridden_template())
     monkeypatch.setattr(agent, "_kirocrew_mcp_invocation", lambda sub: ("/resolved/kc", [sub]))
     monkeypatch.setattr(worker_agent, "_installed_default_spec", lambda: None)
+    monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: tmp_path / "mates" / "agents")
     return tmp_path
+
+
+def _written(agents_dir: Path, filename: str) -> dict[str, Any]:
+    """The spec *filename*'s installer wrote; the two mate specs go to the crewmate folder."""
+    folder = (
+        agents_dir / "mates" / "agents" if filename in MATE_SERVICE_AGENT_FILENAMES else agents_dir
+    )
+    return json.loads((folder / filename).read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("filename", sorted(_INSTALLERS))
@@ -163,7 +176,7 @@ def test_every_installer_pins_the_global_mcp_json_merge_off(
     agents_dir: Path, filename: str
 ) -> None:
     _INSTALLERS[filename]()
-    spec = json.loads((agents_dir / filename).read_text(encoding="utf-8"))
+    spec = _written(agents_dir, filename)
     assert spec["includeMcpJson"] is False
     assert "useLegacyMcpJson" not in spec
 
@@ -185,7 +198,7 @@ def test_every_installer_strips_an_ungoverned_auto_approve(
         lambda servers: strict(servers, honour_owner_written=False),
     )
     _INSTALLERS[filename]()
-    spec = json.loads((agents_dir / filename).read_text(encoding="utf-8"))
+    spec = _written(agents_dir, filename)
     for name, entry in (spec.get("mcpServers") or {}).items():
         assert "session_stop" not in (entry.get("autoApprove") or []), name
 
@@ -197,7 +210,7 @@ def test_every_installer_strips_an_ungoverned_auto_approve(
 def test_every_granting_installer_derives_its_kas_block(agents_dir: Path, filename: str) -> None:
     """An inherited ``allow`` never survives: the allow rules are the derivation's alone."""
     _INSTALLERS[filename]()
-    spec = json.loads((agents_dir / filename).read_text(encoding="utf-8"))
+    spec = _written(agents_dir, filename)
     assert spec["permissions"] != _STALE_PERMISSIONS
     assert spec["permissions"] == _derive(spec, filename)
 

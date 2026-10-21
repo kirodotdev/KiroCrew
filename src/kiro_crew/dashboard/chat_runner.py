@@ -520,6 +520,8 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
+from kiro_crew.dashboard.heartbeat_quiet_end import HeldRows
+from kiro_crew.dashboard.mate_thread_wakes import note_turn_end as _note_mate_wakes
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -992,10 +994,10 @@ def _member_capable_backend_names() -> str:
     """The ``agent.member_acp_backend`` values that can load a member's saved spec.
 
     Read from :data:`ACP_BACKENDS_MEMBER_CAPABILITIES` so the remedy a refused member
-    chat shows names the set the refusal was judged against. kiro-cli's id is the
-    empty string, so it is spelled ``kiro``, the name the other remedies use.
+    chat shows names the set the refusal was judged against. kiro-cli is left out:
+    a member backend set to ``kiro`` runs on KAS, which the list already names.
     """
-    names = sorted(backend or "kiro" for backend in ACP_BACKENDS_MEMBER_CAPABILITIES)
+    names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
     return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
 
 
@@ -1456,6 +1458,14 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
+    # This turn is a crewmate heartbeat wake (set only by
+    # ``mate_welcome.dispatch_hidden_turn(heartbeat=True)``): a quiet end then
+    # folds the turn's pre-tool text into its steps (``heartbeat_quiet_end``).
+    _heartbeat_turn: bool = False,
+    # Any hidden gateway turn (``mate_welcome.dispatch_hidden_turn``): its
+    # pre-tool text is held the same way, so narration the user never asked
+    # for folds into the steps and only the turn's final reply is shown.
+    _hidden_turn: bool = False,
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -2653,6 +2663,11 @@ async def _run_chat(
     # not. The runner's own in-band notices never register in
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
+    # A hidden turn's pre-tool text, cut without delivery until the turn shows
+    # whether it ended quietly or with a final reply. None on every other turn.
+    _heartbeat_held = (
+        HeldRows() if (_heartbeat_turn or _hidden_turn) and _prompt_depth == 0 else None
+    )
 
     def _record_terminal_directive(kind: str, outcome: DirectiveOutcome, tcid: str) -> None:
         if not outcome.ends_turn:
@@ -3672,6 +3687,22 @@ async def _run_chat(
             ):
                 execution_context = tightened_execution
                 bindings.execution_context = tightened_execution
+            # A crewmate's conductor chat and each of its workers take the
+            # crewmate's Profile Permissions before the provider is claimed, so a
+            # session restored after a restart (slot trust is in memory only) does
+            # not fall back to asking for every tool.
+            from kiro_crew.dashboard.crewmate_approval import seed_for_turn
+
+            seed_for_turn(state, slot, loaded_cfg, execution_context)
+            # A crewmate's worker runs in the crewmate's own git worktree of the
+            # repository this turn is about, never in the shared checkout.
+            from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
+
+            if await scope_worker_turn(state, slot, loaded_cfg, execution_context, message):
+                # The project is part of the captured binding; this turn now
+                # runs on the worktree, under the dispatch lock it still holds.
+                selected_binding = _current_binding()
+                turn.selected_binding = selected_binding
 
         # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
         # self-heal must NOT run the default agent — that generic-substitution is
@@ -5941,6 +5972,17 @@ async def _run_chat(
                             slot.key,
                             _open_construct,
                         )
+                    elif _heartbeat_held is not None:
+                        _flush_segment(
+                            state,
+                            slot,
+                            turn.assistant_text,
+                            broadcast=False,
+                            quiet_persist=True,
+                            held=_heartbeat_held,
+                        )
+                        turn.assistant_text = ""
+                        _turn_flushed_visible_text = True
                     else:
                         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
                         turn.assistant_text = ""
@@ -10164,6 +10206,15 @@ async def _run_chat(
                 turn._terminal_directive_kind,
             )
 
+        if _heartbeat_held is not None:
+            _heartbeat_held.settle(
+                state,
+                slot,
+                quiet_end_applied=turn._terminal_directive_applied and not _person_steered_turn,
+                quiet_end_tcids=_terminal_directive_tcids,
+                final_reply=bool(_answer_text) and not _person_steered_turn,
+            )
+
         if _answer_text:
             _flush_text_stream()
             _flush_segment(state, slot, turn.assistant_text, broadcast=False)
@@ -13241,6 +13292,16 @@ async def _run_chat(
             )
             _err_meta = _terminal_error_meta(exc)
         elif (
+            isinstance(exc, CapabilityStartupError) and str(exc) == "worker_kit_harness_unsupported"
+        ):
+            from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+
+            _err_text = "worker_kit_harness_unsupported: " + (
+                worker_kit_backend_refusal(crewmate_worker_backend(KiroCrewConfig.load().agent))
+                or "this worker's backend cannot carry its kit; start a new hand-off"
+            )
+            _err_meta = _terminal_error_meta(exc)
+        elif (
             isinstance(exc, CapabilityStartupError)
             and str(exc) == "capability_tool_limits_unsupported"
         ):
@@ -13249,8 +13310,8 @@ async def _run_chat(
                 "capabilities turn off single tools on an MCP server. The backend "
                 "its chats run on (agent.member_acp_backend) cannot turn off single "
                 "tools, so they would be on. On the member's Capabilities page, turn "
-                "the whole server off or turn those tools back on, or set "
-                "agent.member_acp_backend to kiro, then start a new chat."
+                "the whole server off or turn those tools back on, then start a new "
+                "chat."
             )
             _err_meta = _terminal_error_meta(exc)
         else:

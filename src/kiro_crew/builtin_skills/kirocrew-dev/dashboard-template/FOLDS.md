@@ -50,6 +50,8 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `agentic` | slot | Which dashboard fields this crewmate filled itself, with what value, of what declared type and when |
 | `mistakes` | slot | Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead |
 | `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
+| `goal` | slot | This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
+| `waiting` | slot | What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
 | `worktree` *(package only)* | tree | The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots |
 
 ## `status`
@@ -318,6 +320,38 @@ Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subag
 | `spenders_omitted` | `number` | no |
 | `unattributed` | `object` | no |
 | `units_omitted` | `number` | no |
+
+## `goal`
+
+This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts.
+
+Moved by: `dashboard/goal_recorded`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `all_met` | `boolean` | no |
+| `changes` | `number` | no |
+| `goal` | `string` | no |
+| `goals` | `array` | no |
+| `milestones` | `array` | no |
+| `milestones_met` | `number` | no |
+| `milestones_open` | `number` | no |
+| `milestones_total` | `number` | no |
+| `updated_at` | `string` | no |
+
+## `waiting`
+
+What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count.
+
+Moved by: `dashboard/waiting_changed`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `changes` | `number` | no |
+| `count` | `number` | no |
+| `items` | `array` | no |
+| `newest` | `string` | no |
+| `updated_at` | `string` | no |
 
 ## `worktree`
 

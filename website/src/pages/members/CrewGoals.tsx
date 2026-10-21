@@ -4,14 +4,14 @@ import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { AlarmClock, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, FileText, Flag, Goal, MessageSquare, Pencil, Plus, Sun, Trash2, Undo2, type LucideIcon } from 'lucide-react'
+import { AlarmClock, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, FileText, Flag, Goal, HeartPulse, MessageSquare, Pencil, Plus, Sun, Trash2, Undo2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api, type GoalKeyResult, type GoalSchedules, type MemberGoal, type MemberGoals } from '../../api/client'
 import { Btn, Input, Toggle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MEMBER_GOALS_QUERY_PREFIX } from '../../api/membersQuery'
-import { fmtRelative, fmtWeekday } from '../../i18n/format'
+import { fmtRelative, fmtUnit, fmtWeekday } from '../../i18n/format'
 import { cn } from '../../lib/utils'
 import { ProfilePagePushContext } from './CrewProfilePanel'
 
@@ -234,6 +234,29 @@ function Reports({ goals, limit }: { goals: MemberGoals; limit: number }) {
 
 const WEEKDAYS = [1, 2, 3, 4, 5, 6, 0] as const
 const MONTH_DAYS = Array.from({ length: 28 }, (_, i) => i + 1)
+/** The heartbeat's intervals in minutes (`member_goals.HEARTBEAT_INTERVALS`). */
+export const HEARTBEAT_INTERVALS = [15, 30, 60, 120, 240] as const
+
+/** "30 min" / "1 hr", in the active locale. */
+export const fmtInterval = (minutes: number) =>
+  minutes < 60 ? fmtUnit(minutes, 'minute', { unitDisplay: 'short' }) : fmtUnit(minutes / 60, 'hour', { unitDisplay: 'short' })
+
+/** The heartbeat on the first page: a full-width row under the three tiles,
+ *  because it does the work where they report on it. One line says what it
+ *  does, so the user needs no word learnt first. */
+function HeartbeatRow({ on, interval }: { on: boolean; interval: number }) {
+  const { t } = useTranslation()
+  return (
+    <span className="mt-2 flex items-center gap-3 rounded-xl border border-border p-2.5 min-w-0" data-testid="crew-goals-checkin-heartbeat" data-on={on ? 'true' : 'false'}>
+      <RowTile tone={on ? 'ok' : 'quiet'} size="sm"><HeartPulse size={15} /></RowTile>
+      <span className="flex-1 min-w-0 leading-tight">
+        <span className={cn('block text-[12.5px] font-semibold', on ? 'text-text' : 'text-muted')}>{t('pages.membersPage.goals_heartbeat')}</span>
+        <span className="block text-[11.5px] text-muted truncate">{t('pages.membersPage.goals_heartbeat_hint', { interval: fmtInterval(interval) })}</span>
+      </span>
+      <span className="text-[11.5px] text-muted shrink-0">{on ? t('pages.membersPage.goals_heartbeat_running') : t('pages.membersPage.goals_checkin_off')}</span>
+    </span>
+  )
+}
 
 /** The page pushed over the first page: one goal (`id: null` is a new one),
  *  one milestone, or the check-in settings. */
@@ -399,12 +422,13 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
   // navigation would lose. Check-in, Undo and draft-free removal failures can hand off.
   const saveError = save.isError && <ErrorNotice message={t('pages.membersPage.goals_save_failed')} askAgent={!editing && !krEdit} testId="crew-goals-save-error" />
 
-  const checkRow = (opts: { label: string; checked: boolean; onChange: (v: boolean) => void; extra?: ReactNode }) => (
+  const checkRow = (opts: { label: string; checked: boolean; onChange: (v: boolean) => void; extra?: ReactNode; hint?: ReactNode }) => (
     <div className="border-t border-border first:border-t-0 px-3.5 py-2.5">
       <div className="flex items-center gap-3">
         <span className={cn('flex-1 min-w-0 text-[13px]', hasGoal ? 'text-text' : 'text-muted')}>{opts.label}</span>
         <Toggle checked={opts.checked} disabled={!hasGoal} onChange={opts.onChange} label={opts.label} />
       </div>
+      {opts.hint && <p className="mt-1 text-[12px] text-muted">{opts.hint}</p>}
       {opts.checked && opts.extra && <div className="mt-2">{opts.extra}</div>}
     </div>
   )
@@ -567,6 +591,30 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
             />
           </label>
         )}
+      </section>
+      <section className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-goals-heartbeat-settings">
+        {checkRow({
+          label: t('pages.membersPage.goals_heartbeat'),
+          checked: sched.heartbeat, onChange: v => setSchedule({ heartbeat: v }),
+          hint: (
+            <>
+              {t('pages.membersPage.goals_heartbeat_hint', { interval: fmtInterval(sched.interval) })}
+              {' · '}
+              {t('pages.membersPage.goals_heartbeat_credits')}
+            </>
+          ),
+          extra: (
+            <SimpleSelect
+              options={HEARTBEAT_INTERVALS.map(String)}
+              optionLabels={HEARTBEAT_INTERVALS.map(m => t('pages.membersPage.goals_heartbeat_every', { interval: fmtInterval(m) }))}
+              value={String(sched.interval)}
+              onChange={v => setSchedule({ interval: Number(v) })}
+              disabled={!hasGoal || !sched.heartbeat}
+              aria-label={t('pages.membersPage.goals_heartbeat_interval')}
+              style={PICKER_STYLE}
+            />
+          ),
+        })}
       </section>
     </div>
   )
@@ -739,6 +787,7 @@ export default function CrewGoalsPane({ slug, member, name, onTrackInChat, onTra
           <CheckInTile icon={CalendarDays} tone="info" label={t('pages.membersPage.goals_weekly')} on={sched.weekly} status={sched.weekly ? `${fmtWeekday(sched.weekday === 0 ? 7 : sched.weekday, 'short')} · ${sched.time}` : off} testId="crew-goals-checkin-weekly" />
           <CheckInTile icon={CalendarRange} tone="accent" label={t('pages.membersPage.goals_monthly')} on={sched.monthly} status={sched.monthly ? `${t('pages.membersPage.goals_month_day_option', { day: sched.month_day })} · ${sched.time}` : off} testId="crew-goals-checkin-monthly" />
         </span>
+        <HeartbeatRow on={sched.heartbeat} interval={sched.interval} />
       </Section>
 
       {onTrackInChat && (

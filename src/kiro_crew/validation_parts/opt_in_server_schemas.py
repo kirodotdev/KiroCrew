@@ -640,6 +640,10 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("reason", str, max_len=500),
         ],
     ),
+    "find_capabilities": ToolSchema(
+        tool_name="find_capabilities",
+        fields=[FieldSpec("query", str, max_len=200)],
+    ),
     "request_capabilities": ToolSchema(
         tool_name="request_capabilities",
         fields=[
@@ -669,9 +673,11 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("daily", bool),
             FieldSpec("weekly", bool),
             FieldSpec("monthly", bool),
+            FieldSpec("heartbeat", bool),
             FieldSpec("weekday", int),
             FieldSpec("month_day", int),
             FieldSpec("time", str, max_len=5),
+            FieldSpec("interval", int),
             FieldSpec("reason", str, max_len=500),
         ],
     ),
@@ -691,5 +697,9 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("title", str, required=True, max_len=_goals.REPORT_TITLE_MAX_CHARS),
             FieldSpec("markdown", str, required=True, max_len=_goals.REPORT_MAX_CHARS),
         ],
+    ),
+    "save_notes": ToolSchema(
+        tool_name="save_notes",
+        fields=[FieldSpec("text", str, required=True, max_len=_goals.NOTES_MAX_CHARS)],
     ),
 }

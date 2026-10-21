@@ -928,6 +928,106 @@
       ]
     },
     {
+      "name": "goal",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/goal_recorded"
+      ],
+      "answers": "This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts",
+      "fields": [
+        {
+          "name": "all_met",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "changes",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "goal",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "goals",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "milestones",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "milestones_met",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "milestones_open",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "milestones_total",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "updated_at",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "waiting",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/waiting_changed"
+      ],
+      "answers": "What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count",
+      "fields": [
+        {
+          "name": "changes",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "count",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "newest",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "updated_at",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
       "name": "worktree",
       "mode": "tree",
       "advertised": false,

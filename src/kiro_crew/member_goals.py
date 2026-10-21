@@ -20,10 +20,10 @@ now is not part of it: that is the crewmate's work ledger.
   (``set_key_results``); once confirmed it records readings directly
   (``key_result_progress``). The user edits or removes them on the Goals tab.
   A reading is free text: a number ("27", "80%") or a short qualitative note.
-* ``schedules`` -- the three check-in switches (Daily Goal Reminder, Weekly
-  report, Monthly review), the one shared time of day, the weekday and the day of
-  the month; the gateway schedules they drive are owned by
-  :mod:`kiro_crew.dashboard.goal_reminder`.
+* ``schedules`` -- the four check-in switches (Daily Goal Reminder, Weekly
+  report, Monthly review, Heartbeat), the one shared time of day, the weekday,
+  the day of the month and the heartbeat's interval in minutes; the gateway
+  schedules they drive are owned by :mod:`kiro_crew.dashboard.goal_reminder`.
 * ``reports`` -- pointers to the newest weekly reports and monthly reviews, each
   saved as an artifact under ``Crewmates/<name>/Reports``.
 
@@ -95,6 +95,10 @@ KR_READING_MAX_CHARS = 120
 #: One saved weekly or monthly report: its title and its Markdown body.
 REPORT_TITLE_MAX_CHARS = 200
 REPORT_MAX_CHARS = 40_000
+#: The crewmate's notes (``save_notes``): what its briefing injects, which is
+#: ``members.MEMBER_BRIEFING_MAX_CHARS`` (spelled here because this module
+#: imports no ``members``; a test pins the two equal).
+NOTES_MAX_CHARS = 4000
 #: The record file itself, as read back: a hand-edited file past this is
 #: unreadable rather than loaded whole.
 _RECORD_MAX_BYTES = 64 * 1024
@@ -110,11 +114,17 @@ BY_CREWMATE = "crewmate"
 _AUTHORS = (BY_USER, BY_CREWMATE)
 
 DEFAULT_REMINDER_TIME = "09:00"
-#: The three check-ins, each its own switch and its own schedule.
+#: The four check-ins, each its own switch and its own schedule. The heartbeat
+#: wakes the crewmate every :data:`HEARTBEAT_INTERVALS` minutes to move its work
+#: forward on its own (RFC "Crewmate heartbeat").
 CADENCE_DAILY = "daily"
 CADENCE_WEEKLY = "weekly"
 CADENCE_MONTHLY = "monthly"
-CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY)
+CADENCE_HEARTBEAT = "heartbeat"
+CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY, CADENCE_HEARTBEAT)
+#: The heartbeat's intervals, in minutes, and the one a record without one reads as.
+HEARTBEAT_INTERVALS = (15, 30, 60, 120, 240)
+DEFAULT_HEARTBEAT_INTERVAL = 30
 #: Report kinds: what a weekly and a monthly check-in each produce.
 REPORT_KINDS = (CADENCE_WEEKLY, CADENCE_MONTHLY)
 #: Cron day of week (0 = Sunday); Monday by default.
@@ -272,6 +282,8 @@ def default_schedules() -> dict[str, Any]:
         "weekday": DEFAULT_WEEKDAY,
         CADENCE_MONTHLY: False,
         "month_day": DEFAULT_MONTH_DAY,
+        CADENCE_HEARTBEAT: False,
+        "interval": DEFAULT_HEARTBEAT_INTERVAL,
     }
 
 
@@ -458,6 +470,8 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
         day = sched.get("month_day")
         if isinstance(day, int) and 1 <= day <= MAX_MONTH_DAY:
             out["month_day"] = day
+        if is_heartbeat_interval(sched.get("interval")):
+            out["interval"] = sched["interval"]
     reports = data.get("reports")
     if isinstance(reports, list):
         rec["reports"] = [
@@ -612,7 +626,34 @@ def _write_pinned(path: Path, data: bytes) -> None:
         os.close(d)
 
 
+#: Called as ``listener(slug, member, record)`` after each write of a goal record.
+_change_listeners: list[Any] = []
+
+
+def add_change_listener(listener: Any) -> None:
+    """Call *listener* after every write of a goal record, with the record written.
+
+    The gateway registers one (``dashboard.crewmate_feed``) to record the goal into
+    the crewmate's crew log for its Dashboard page. A listener runs on the writing
+    thread and must hand real work elsewhere; one that raises is logged and skipped.
+    """
+    _change_listeners.append(listener)
+
+
+def _notify_change(slug: str, member: str, rec: dict[str, Any]) -> None:
+    for listener in list(_change_listeners):
+        try:
+            listener(slug, member, rec)
+        except Exception:
+            logger.debug("goal change listener failed for %s", slug, exc_info=True)
+
+
 def _write(slug: str, member: str, rec: dict[str, Any]) -> None:
+    _write_record(slug, member, rec)
+    _notify_change(slug, member, rec)
+
+
+def _write_record(slug: str, member: str, rec: dict[str, Any]) -> None:
     path = member_goals_path(slug)
     data = _payload(slug, member, rec)
     try:
@@ -1205,8 +1246,13 @@ def is_check_in_time(value: str) -> bool:
     return bool(_TIME_RE.match(value))
 
 
+def is_heartbeat_interval(value: Any) -> bool:
+    """Whether *value* is one of :data:`HEARTBEAT_INTERVALS` (an int, never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value in HEARTBEAT_INTERVALS
+
+
 def _validate_schedules(changes: Any) -> None:
-    allowed = {*CADENCES, "time", "timezone", "weekday", "month_day"}
+    allowed = {*CADENCES, "time", "timezone", "weekday", "month_day", "interval"}
     if not isinstance(changes, dict) or not changes or set(changes) - allowed:
         raise GoalError("invalid_schedule", "give switches or timing to change")
     for cadence in CADENCES:
@@ -1226,6 +1272,11 @@ def _validate_schedules(changes: Any) -> None:
     day = changes.get("month_day", 1)
     if not isinstance(day, int) or isinstance(day, bool) or not 1 <= day <= MAX_MONTH_DAY:
         raise GoalError("invalid_month_day", f"month_day must be 1 to {MAX_MONTH_DAY}")
+    if "interval" in changes and not is_heartbeat_interval(changes["interval"]):
+        raise GoalError(
+            "invalid_interval",
+            "interval must be one of " + ", ".join(str(m) for m in HEARTBEAT_INTERVALS),
+        )
 
 
 def set_schedules(
@@ -1237,9 +1288,12 @@ def set_schedules(
 ) -> dict[str, Any]:
     """Change the check-in switches and their timing. Returns the record.
 
-    *changes* holds any of ``daily``/``weekly``/``monthly`` (bool), ``time``
-    (``HH:MM``), ``timezone`` (IANA name), ``weekday`` (0-6, 0 = Sunday) and
-    ``month_day`` (1-28). Turning any switch on needs a goal (``no_goal``).
+    *changes* holds any of ``daily``/``weekly``/``monthly``/``heartbeat``
+    (bool), ``time`` (``HH:MM``), ``timezone`` (IANA name), ``weekday`` (0-6,
+    0 = Sunday), ``month_day`` (1-28) and ``interval`` (the heartbeat's minutes,
+    one of :data:`HEARTBEAT_INTERVALS`). Turning any switch on needs a goal
+    (``no_goal``). Only the owner's route and an applied card call this, so the
+    crewmate never turns a switch on by itself.
     When supplied, *expected* covers every written field and is compared under
     the write lock; omitted fields stay untouched. No expectation keeps the
     ordinary owner's partial-update behavior.
@@ -1307,6 +1361,100 @@ def key_result_movement(rec: dict[str, Any], *, since: float) -> list[dict[str, 
             }
         )
     return out
+
+
+#: A number in a target or reading, the comparison a target may lead with, and
+#: the unit word right after it ("4 fixes", "0 failing", "85%").
+_NUMBER_RE = re.compile(
+    r"(?P<cmp><=|>=|≤|≥|<|>)?\s*(?P<num>-?\d+(?:[.,]\d+)?)\s*%?(?:\s*(?P<unit>[^\W\d_]+))?"
+)
+#: Words after a number that are not its unit ("3 of 5", "1 or more").
+_NOT_UNITS = frozenset({"of", "or", "out", "and", "to", "in", "on", "per"})
+#: A reading that says the target is reached, whatever the target's form.
+_DONE_WORDS = frozenset({"met", "done", "yes", "reached", "achieved", "complete", "completed"})
+#: Phrases in a target that ask for at least its number, before or after it.
+_AT_LEAST = re.compile(
+    r"\b(?:at least|no fewer than|over|above|more than)\s*-?\d|\d\S*\s*(?:or more|\+)"
+)
+#: Words in a milestone's text or target that make a smaller reading the better one.
+_REDUCE_WORDS = re.compile(
+    r"\b(?:reduce[ds]?|reducing|cut|lower|fewer|less|below|under|at most|no more than|"
+    r"up to|max|down to|shrink|drop|remaining|left|open|failing|errors?|mismatch(?:es)?)\b"
+)
+
+
+def _number(text: str) -> tuple[str, float, str] | None:
+    m = _NUMBER_RE.search(text)
+    if m is None:
+        return None
+    unit = (m.group("unit") or "").casefold()
+    if unit in _NOT_UNITS:
+        unit = ""
+    return m.group("cmp") or "", float(m.group("num").replace(",", ".")), unit
+
+
+def _same_unit(a: str, b: str) -> bool:
+    """Whether two unit words name one thing: either is absent, or they match up to a plural."""
+    if not a or not b:
+        return True
+    return a.rstrip("s").removesuffix("e") == b.rstrip("s").removesuffix("e")
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.casefold())
+
+
+def key_result_met(kr: dict[str, Any]) -> bool:
+    """Whether *kr*'s latest reading reaches its target, judged from the record alone.
+
+    A reading is free text, so this answers only what the text settles:
+
+    * a reading that leads with a word saying so (``done``, ``met``, ``yes``...)
+      and carries no number;
+    * a word target the reading repeats from its start ("all docs in sync");
+    * numbers, when both the reading and the target carry one and their unit
+      words agree (a missing unit agrees with any): the target's own comparison
+      when it names one ("<= 2", "> 80%", "1 or more", "at most 3"); otherwise
+      fewer is better when the milestone's text or target speaks of reducing
+      (reduce, below, at most, left, open, failing...) or the target is 0, and
+      more is better in every other case ("4 fixes proposed" meets "3").
+
+    Anything else is not met: a reading this cannot place reads as still open.
+    """
+    current = str(kr.get("current") or "").strip()
+    target = str(kr.get("target") or "").strip()
+    if not current or not target:
+        return False
+    words = _words(current)
+    target_words = _words(target)
+    cur_num = _number(current)
+    if words and words[0] in _DONE_WORDS and cur_num is None:
+        return True
+    tgt_num = _number(target)
+    if tgt_num is None or cur_num is None:
+        return bool(target_words) and words[: len(target_words)] == target_words
+    cmp, goal, goal_unit = tgt_num
+    _cmp, now, now_unit = cur_num
+    if not _same_unit(now_unit, goal_unit):
+        return False
+    if cmp in ("<=", "≤"):
+        return now <= goal
+    if cmp in (">=", "≥"):
+        return now >= goal
+    if cmp == "<":
+        return now < goal
+    if cmp == ">":
+        return now > goal
+    low_target = target.casefold()
+    if _AT_LEAST.search(low_target):
+        return now >= goal
+    reduce = goal == 0 or _REDUCE_WORDS.search(f"{kr.get('text') or ''} {target}".casefold())
+    return now <= goal if reduce else now >= goal
+
+
+def milestones_all_met(rec: dict[str, Any]) -> bool:
+    """Whether a crewmate with a goal has no open milestone: none set, or every one met."""
+    return has_goal(rec) and all(key_result_met(kr) for kr in rec["key_results"])
 
 
 def _removed_view(removed: Any) -> dict[str, Any] | None:

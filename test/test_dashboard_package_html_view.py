@@ -526,3 +526,45 @@ class TestAScriptsOffPageStillShowsItsValues:
 
         page = '<b data-dashboard-field="goal" title="a>b"><i>nested</i></b>'
         assert frame.fill_bindings_as_text(page, self._read(goal="land it")) == page
+
+
+class TestThePageWearsItsTheme:
+    """A package's ``theme`` is drawn on its page: tokens on ``:root``, then its css.
+
+    The gate accepts both halves and the save tool tells the author to set the look
+    there, so a renderer that dropped them served a page in the host's plain look while
+    its author had been told the style was live.
+    """
+
+    @staticmethod
+    def _body(theme: dict[str, Any]) -> str:
+        from kiro_crew import dashboard_frame
+        from kiro_crew.dashboard.handlers import member_dashboard_fields as fields
+
+        read = dashboard_frame.read_payload({"boards": 2})
+        return fields.render_package_page(dp.validate_package(package(theme=theme)), read)
+
+    def test_the_tokens_and_the_css_reach_the_page(self) -> None:
+        body = self._body(
+            {"tokens": {"--panel-bg": "#20262a"}, "css": ".board{font-family:cursive}"}
+        )
+        assert ":root{--panel-bg:#20262a;}" in body
+        assert ".board{font-family:cursive}" in body
+        # After the host's stylesheet, so a token the package sets wins over the default.
+        assert body.index("--panel-bg:#20262a") > body.index("<style>")
+        assert body.index(".board{font-family:cursive}") < body.index(
+            '<p data-dashboard-field="boards">'
+        )
+
+    def test_an_empty_theme_adds_no_style(self) -> None:
+        assert self._body({"tokens": {}}).count("<style>") == 1
+
+    def test_a_theme_the_gate_would_refuse_draws_nothing(self) -> None:
+        from kiro_crew import dashboard_frame
+        from kiro_crew.dashboard.handlers import member_dashboard_fields as fields
+
+        stored = dp.validate_package(package())
+        # Written under an older validator: a css that closes the element.
+        stored["theme"] = {"tokens": {}, "css": "</style><script>alert(1)</script>"}
+        body = fields.render_package_page(stored, dashboard_frame.read_payload({"boards": 2}))
+        assert "alert(1)" not in body

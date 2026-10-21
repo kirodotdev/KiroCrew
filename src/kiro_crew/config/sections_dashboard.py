@@ -194,6 +194,19 @@ class DashboardConfig:
             "the next request; no restart.",
         ),
     )
+    crewmate_v2: bool = field(
+        default=True,
+        metadata=_meta(
+            "Crewmate 2.0",
+            "Each crewmate gets its own file, chats on its conductor and hands every "
+            "task to its own worker session; existing crewmates are moved onto that "
+            "shape at startup. On by default. Turning it off moves every crewmate "
+            "back to the template it had, so crewmates chat on their template as "
+            "before; worker tools added to them are kept but unused while off. "
+            "Takes effect after a restart.",
+            restart=True,
+        ),
+    )
     crewmates_in_agent_picker: bool = field(
         default=False,
         metadata=_meta(

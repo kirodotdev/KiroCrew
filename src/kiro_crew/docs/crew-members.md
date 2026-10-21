@@ -188,6 +188,28 @@ tools, MCP servers and skills (`request_capabilities`); each ask is a change
 card with a button, and nothing changes until you press it. Its workspace,
 memory store and template are not the crewmate's to ask for.
 
+When its worker needs a tool or a skill it does not have, the crewmate looks up
+what this gateway or the MCP registry offers and asks you for the addition on a
+card. The card says where each server comes from and exactly which of its tools
+would run without asking. Pressing it adds the server or skill to this
+crewmate's own settings only, not to your MCP config, and its worker has it the
+next time one starts.
+
+### Its worker
+
+A crewmate hands longer work to a **worker**: a session it opens with
+`session_create`, which runs on the crewmate's own memory and workspace with
+the worker's built-in tools plus whatever that crewmate's settings add. To give
+the worker a ready-made set of instructions, connections and skills, open the
+crew editor, choose **Advanced**, pick an agent template under **Worker's extra
+kit**, press **Copy into the worker**, review the list of changes and press
+**Apply**. The kit is copied once; later edits to the template do not reach the
+crewmate. **Re-copy from template** brings a newer version in the same way,
+showing what would change first, and asks whether to keep anything added since
+the last copy. Nothing the kit carries can lift the worker past your security
+policy and profile. **Advanced** appears for a crewmate that owns its own
+config.
+
 ### Goals
 
 A crewmate's **Goals** tab (Profile card) holds what it works toward:
@@ -213,6 +235,15 @@ A crewmate's **Goals** tab (Profile card) holds what it works toward:
   The weekly report and the monthly review cover the readings and the tasks the
   crewmate finished in the period, and are saved as reports under
   `Crewmates/<name>/Reports` in Artifacts, with a notification linking each.
+- **Heartbeat.** A fourth switch, off by default and only available once a goal
+  is set, shown as a full-width row under the three check-ins. While it is on,
+  the crewmate wakes in its own chat every 15 minutes, 30 minutes (the default),
+  hour, 2 hours or 4 hours, looks for what it can move forward toward its goals,
+  and does it. It works quietly: what it did shows on its **Dashboard** tab and
+  its task list, and it writes in the chat only when it needs your decision,
+  when something you asked for is done, or when something needs your attention
+  now. A wake is skipped while the chat is busy. Each wake uses credits. The
+  crewmate can suggest turning it on with a card; only you can press it.
 - **Track something in chat.** Sends "I'd like you to track something for me."
   to the crewmate's chat as your own message. Tell it what to track there; it
   keeps that item up to date on its task list, which the Crew board shows. Tracked

@@ -358,7 +358,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Crew member ACP backend",
-      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose); 'kiro' selects kiro-cli. Members dispatch work into worker sessions through session-control tools mounted per session over the wire, which the kiro-cli v2 backend cannot carry — a value resolving to kiro leaves member threads as plain chat (no dispatch tools), logged at session start.",
+      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Crewmates run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"
@@ -7477,6 +7477,7 @@
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "crewmate_threads": false,
+        "crewmate_v2": true,
         "crewmates_in_agent_picker": false,
         "qr_session_until_restart": true,
         "qr_session_persist_across_restart": false,
@@ -7730,6 +7731,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.crewmate_v2",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crewmate 2.0",
+      "help": "Each crewmate gets its own file, chats on its conductor and hands every task to its own worker session; existing crewmates are moved onto that shape at startup. On by default. Turning it off moves every crewmate back to the template it had, so crewmates chat on their template as before; worker tools added to them are kept but unused while off. Takes effect after a restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.crewmates_in_agent_picker",
@@ -9361,6 +9377,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agents.*.dynamic_capabilities",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dynamic capabilities",
+      "help": "Preview, per crewmate, with Crewmate 2.0 on: this crewmate can find new skills or tools for its worker and ask for them on a card in its chat. Off (the default): only you add them, in this crewmate's advanced settings, and it tells you when its worker lacks one. Read per request, so a change reaches the crewmate's next session.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agents.*.approval_mode",

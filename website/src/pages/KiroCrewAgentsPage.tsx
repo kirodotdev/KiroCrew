@@ -25,6 +25,7 @@ import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
+import { useBuiltFromName } from '../components/crew/builtFromName'
 import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
 import CrewCapabilitiesPane from '../components/crew/CrewCapabilitiesPane'
 import { crewCapabilitiesApi, crewCapabilitiesKey } from '../api/crewCapabilities'
@@ -288,6 +289,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   })
   useEffect(() => { setCapabilityDirty(false); setCapabilityBusy(false) }, [sheet])
   const capabilityManaged = capabilityQuery.data?.mode === 'inherited'
+  // "Built from" names a template, never the crewmate's own file id.
+  const builtFromName = useBuiltFromName({ member: editing, kiroAgent, ownsFile: capabilityQuery.data?.mode === 'mate', enabled: !!editing })
   const capabilityReadFailed = capabilityQuery.isError && !(capabilityQuery.error instanceof ApiError && [404, 405, 501].includes(capabilityQuery.error.status))
   useEffect(() => {
     if (editing) void queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(editing) })
@@ -979,7 +982,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
         {/* The crewmate list, in either view: what a guide's "choose the
             crewmate" step points at (picking one opens its editor). */}
-        <CrewRosterList agents={agents} filtered={filtered} view={view} defaultAgent={defaultAgent} sharedKind={sharedKind} openEdit={openEdit} openCreate={openCreate} />
+        <CrewRosterList agents={agents} filtered={filtered} view={view} defaultAgent={defaultAgent} sharedKind={sharedKind} memoryStores={kirocrewCfg?.memory_stores} openEdit={openEdit} openCreate={openCreate} />
       </div>
 
       <Dialog open={!!sheet} onOpenChange={next => { if (!next) requestClose() }}>
@@ -1060,7 +1063,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         </CrewAvatarButton>
                       }
                       templateLabel={i18nT('pages.kiroCrewAgentsPage.built_from')}
-                      template={kiroAgent}
+                      template={builtFromName}
                       workspace={workspace}
                       memoryStore={memoryStore}
                       modelLabel={editModel === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : editModel}
