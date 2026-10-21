@@ -56,7 +56,7 @@ The configuration shape is:
 }
 ```
 
-Create the API-key secret through the existing [secrets vault](secrets-vault.md) under the name `TYPESAFE_API_KEY`; that is the only vault entry this feature reads. The key is sent only to the endpoint your consent was recorded for (and never to a loopback address). The reference above is a placeholder, not a working key.
+Create the API-key secret through the existing [secrets vault](secrets-vault.md) under the name `TYPESAFE_API_KEY`; that is the only vault entry this feature reads. The key is sent only to the endpoint your consent was recorded for (and never to a literal loopback IP such as `127.0.0.1` or `[::1]`; the name `localhost` counts as remote and does receive the key). The reference above is a placeholder, not a working key.
 
 `bucket` chooses a percentage of sessions. It is a fixed sample, not a random draw per message. A session stays selected or unselected while its key and bucket remain unchanged. `0` samples none and `100` samples all otherwise eligible sessions. Its default is `100`, so with the switch on and no `bucket` set, every otherwise-eligible session is sampled. A value that is not a whole number reads as `0`, so a typo never widens the sample.
 
