@@ -317,6 +317,7 @@ class AcpSessionHandle:
         # The release ``destroy()`` started, kept so a second ``destroy()`` waits for
         # it instead of releasing again (``_release_ending``).
         self._release_task: asyncio.Future[None] | None = None
+        self._cloud_replayed_permissions: set[str | int | None] = set()
         # Token carried by THIS session's injected broker-stub entries
         # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
         # that created the session. It is what a later claim-push names so

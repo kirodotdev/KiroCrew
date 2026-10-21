@@ -354,7 +354,10 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
         assert extras.custom_agents[0]["mcpServers"][server]["env"]["KIROCREW_SESSION_KEY"] == key
     wire = kas_readiness_wire
     monkeypatch.setattr(wire.runtime, "_kas_custom_agents", AsyncMock(return_value=extras))
-    terminate = AsyncMock()
+    # As the real one does in its ``finally``: drop the id from the unclaimed set.
+    terminate = AsyncMock(
+        side_effect=lambda sid, **_k: wire.runtime._unclaimed_new_sessions.discard(sid)
+    )
     monkeypatch.setattr(wire.runtime, "terminate_session", terminate)
     if revoked:
         # The host will receive the old payload. Ready MCP reports must not
