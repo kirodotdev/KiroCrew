@@ -45,7 +45,9 @@ _PYTHON_INLINE_PROGRAM_FLAGS = ("-c",)
 
 # Programs whose ``-c`` argument is a shell script: its text is a COMMAND, so a
 # self-protection check has to look inside it rather than treat it as an operand.
-_NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"})
+_NESTED_SHELL_PROGRAMS = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "fish", "busybox"}
+)
 
 
 _NESTED_SHELL_VERBS = frozenset({"eval", "source", "."})

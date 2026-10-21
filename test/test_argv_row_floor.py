@@ -284,6 +284,116 @@ RESPELLED = [
         "local-destructive-git-reset-hard",
         "tee x <<'EOF'>/dev/null;sh x\ngit -C . reset --hard\nEOF",
     ),
+    # Stdin is an interpreter's program only in the bare forms; anything else
+    # leaves the heredoc read as commands.
+    (
+        "local-destructive-git-reset-hard",
+        "python3 -c 'import os,sys;os.system(sys.stdin.read())' <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "python3 <<'EOF' -c 'import sys'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "python3 <<'EOF' 2>/dev/null -c 'import os,sys;os.system(sys.stdin.read())'\n"
+        "git -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "node <<'EOF' >/dev/null -e 'x'\ngit -C . reset --hard\nEOF",
+    ),
+    ("local-destructive-git-reset-hard", "python3 script.py <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "python3 -u - <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "python3 - <<'EOF' | sh\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "sudo python3 - <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "X=1 python3 - <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "bash -s <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "python3 - <<EOF\n$(git -C . reset --hard)\nEOF"),
+    # An unquoted delimiter: the shell expands the body, whatever its own quotes say.
+    (
+        "local-destructive-git-reset-hard",
+        "python3 - <<EOF\n'''\n$(\ngit -C . reset --hard\n)\n'''\nEOF",
+    ),
+    ("local-destructive-git-reset-hard", "python3 - <<EOF\ngit -C . reset --hard\nEOF"),
+    # Only the top-level text can be the whole text: a parent can rebind the name.
+    (
+        "local-destructive-git-reset-hard",
+        'python3() { sh; }; export -f python3; bash -c \'python3 - <<"EOF"\n'
+        "git -C . reset --hard\nEOF'",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "hash -p /bin/sh python3; eval 'python3 - <<\"EOF\"\ngit -C . reset --hard\nEOF'",
+    ),
+    # A line the shell runs that Python's strip() would hide, and a later stdin.
+    ("local-destructive-git-reset-hard", "\x1f\npython3 - <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "python3 - <<'EOF' <x\ngit -C . reset --hard\nEOF"),
+    # The reader folds a backslash-newline the shell keeps in a quoted body, so the
+    # two would close the body on different lines.
+    (
+        "local-destructive-git-reset-hard",
+        "python3 - <<'EOF'\nprint(1) \\\nEOF\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "iac-teardown-terraform-destroy",
+        "python3 - <<-'EOF'\nprint(1) \\\n\tEOF\nterraform -chdir=x destroy\n\tEOF",
+    ),
+    # A delimiter whose quote removal the floor and the shell may read differently.
+    (
+        "iac-teardown-terraform-destroy",
+        "python3 - <<'E\\OF'\nprint(1)\nE\\OF\nterraform -chdir=infra destroy\nEOF\n",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "python3 - <<'E'OF\nprint(1)\nEOF\ngit -C . reset --hard\nEOF",
+    ),
+    ("local-destructive-git-reset-hard", "python3 - <<\\EOF\ngit -C . reset --hard\nEOF"),
+    # Bash drops a NUL from the closing line; the floor compares the line whole.
+    (
+        "iac-teardown-terraform-destroy",
+        "python3 - <<'EOF'\nprint(1)\nEOF\x00\nterraform -chdir=infra destroy\nEOF\n",
+    ),
+    (
+        "iac-teardown-terraform-destroy",
+        "python3 - <<'EOF'\nprint(1)\nE\x00OF\nterraform -chdir=infra destroy\nEOF\n",
+    ),
+    (
+        "iac-teardown-terraform-destroy",
+        "python3 - <<'EOF'\nprint(1)\n\x00EOF\nterraform -chdir=infra destroy\nEOF\n",
+    ),
+    # A separator Python splits on but the shell keeps inside a word.
+    ("local-destructive-git-reset-hard", "\x1fpython3 - <<'EOF'\ngit -C . reset --hard\nEOF"),
+    ("local-destructive-git-reset-hard", "python3\xa0- <<'EOF'\ngit -C . reset --hard\nEOF"),
+    # A path, or anything else in the text, may make the name run a shell.
+    ("local-destructive-git-reset-hard", "./python3 - <<'EOF'\ngit -C . reset --hard\nEOF"),
+    (
+        "local-destructive-git-reset-hard",
+        "ln -s /bin/sh python3\n./python3 - <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "python3() { sh; }\npython3 - <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "export PATH=/tmp/b:$PATH\npython3 - <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "hash -p /bin/$'bash' python3; python3 <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "p=pyth; hash -p /bin/sh $p'on3'\npython3 - <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "python3 - <<'EOF'\nprint(1)\nEOF\nsh -c 'git -C . reset --hard'",
+    ),
+    # Perl and ruby backticks run a shell, so their bodies stay commands.
+    ("iac-teardown-terraform-destroy", "perl - <<'EOF'\n`terraform -chdir=infra destroy`;\nEOF"),
+    ("local-destructive-git-reset-hard", "ruby - <<'EOF'\n`git -C . reset --hard`\nEOF"),
     # The narrowings for the five ordinary commands keep code that runs refused.
     ("local-destructive-git-reset-hard", "mkdir -p x && bash <<'EOF'\ngit -C . reset --hard\nEOF"),
     ("local-destructive-git-reset-hard", "bash -c 'git -C . reset --hard'"),
@@ -296,6 +406,77 @@ RESPELLED = [
     ("local-destructive-git-reset-hard", 'echo "`git -C . reset --hard`"'),
     ("local-destructive-dd-if", "dd bs=1M if=/dev/zero of=/dev/sdc"),
     ("local-destructive-dd-if", "dd bs=1M if=/dev/zero >/dev/sda"),
+    # An unprefixed git alias runs its heredoc through a shell, so it is no data.
+    (
+        "local-destructive-git-reset-hard",
+        "true; git -c alias.r='!sh' r <<'EOF'\ngit -C . reset --hard\nEOF",
+    ),
+    # A quoted backslash stays in the delimiter, so ``EOF`` does not close the body
+    # and the reset after the real closing line runs.
+    (
+        "local-destructive-git-reset-hard",
+        "true; cat <<'E\\OF'\nhello\nE\\OF\ngit -C . reset --hard\nEOF",
+    ),
+    ("local-destructive-git-reset-hard", "cat <<'EOF' ; . /dev/stdin\ngit -C . reset --hard\nEOF"),
+    # An apostrophe in a heredoc body does not turn a later quoted `` #`` into a
+    # comment that hides the next command.
+    (
+        "local-destructive-git-reset-hard",
+        "git commit -F - <<'EOF'\nit's done\nEOF\ngrep -n ' # TODO' f\ngit -C . reset --hard\n",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "git commit -F - <<'EOF'\nit's done\nEOF\nsed -i 's/ #.*//' f; git -C . reset --hard",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "cat <<EOF\nit's\nEOF\necho ' # x'\ngit -C . reset --hard",
+    ),
+    # A quote inside a comment is text: it does not stay open into the next line.
+    ("local-destructive-git-reset-hard", "# don't touch\n# it's fine\ngit -C . reset --hard"),
+    ("local-destructive-git-reset-hard", '# "\n# "\ngit -C . reset --hard'),
+    # Every shell in the shared nested-shell list runs a heredoc it is handed.
+    ("local-destructive-git-reset-hard", "cat <<'EOF' | ash\ngit -C . reset --hard\nEOF"),
+    # A double-quoted ``$( )`` with text after its closing quote.
+    ("local-destructive-git-reset-hard", 'x="$(git -C . reset --hard)" && ls'),
+    ("local-destructive-git-reset-hard", 'echo "$(git -C . reset --hard)"; ls'),
+    # Printed words that also run in a substitution are not printed only.
+    (
+        "local-destructive-git-reset-hard",
+        "bash -c \"echo 'git -C . reset --hard'\"; cat <(git -C . reset --hard)",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "echo bash -c 'git -C . reset --hard'; x=$(git -C . reset --hard)",
+    ),
+    ("iac-teardown-terraform-destroy", "echo a # don't\necho b # it's\nterraform -chdir=x destroy"),
+    # A ``<<`` inside a comment opens no body, so the comments after it are still cut.
+    (
+        "local-destructive-git-reset-hard",
+        ": # <<X\n: # it's\ngit -C . reset --hard\n: # '",
+    ),
+    # A source ``.`` behind an assignment, in quotes or escaped is still the builtin.
+    (
+        "local-destructive-git-reset-hard",
+        "cat > /tmp/p <<'EOF'; X=1 . /tmp/p\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "cat > /tmp/p <<'EOF'; '.' /tmp/p\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "cat > /tmp/p <<'EOF'; \\. /tmp/p\ngit -C . reset --hard\nEOF",
+    ),
+    # A ``-C`` in another command does not excuse a later source ``.``.
+    (
+        "local-destructive-git-reset-hard",
+        "cat > /tmp/p <<'EOF'; : -C; . /tmp/p\ngit -C . reset --hard\nEOF",
+    ),
+    (
+        "local-destructive-git-reset-hard",
+        "git -C . commit -F - <<'EOF'; : -C; . .git/COMMIT_EDITMSG\ngit -C . reset --hard\nEOF",
+    ),
 ]
 
 #: Commands near those rows that are not the action any row names.
@@ -408,9 +589,21 @@ NOT_THE_ROW = [
     "GIT_AUTHOR_NAME=bot git commit -F - <<'EOF'\ndocs: runbook\n\nterraform -chdir=x destroy\nEOF",
     "env -i --unset=HOME LANG=C cat > /tmp/n.md <<'EOF'\nterraform -chdir=infra destroy\nEOF",
     "LC_ALL=C TZ=UTC env -uPORT gh pr comment 1 --body-file - <<'EOF'\ngit -C . reset --hard\nEOF",
+    # A text that is one bare stdin-interpreter heredoc is code in that language.
+    "python3 - <<'EOF'\nfrom pathlib import Path\nPath('notes.md').write_text('''\n"
+    "terraform -chdir=infra destroy -target=module.old\n''')\nEOF",
+    "python3 <<'EOF'\nx = '''\ngit -C . reset --hard\n'''\nEOF",
+    "python3 - a b <<'EOF'\nprint('''\ngit -C . reset --hard\n''')\nEOF",
+    "node - <<'EOF'\nconst s = `\nterraform -chdir=infra destroy\n`;\nEOF",
+    "python3 - <<'EOF' 2>/dev/null >\"out.txt\"\nprint('''\npulumi -s dev destroy\n''')\nEOF",
     # A negated cdk boolean takes no value, so ``deploy`` stays the subcommand.
     "cdk --no-notices deploy DestroyerStack",
     "cdk --no-color deploy DestroyerStack",
+    # ``.`` as git's directory argument is not the source builtin.
+    "git -C . commit -F - <<'EOF'\ngit -C . reset --hard\nEOF",
+    "git -C repo commit -F - <<'EOF'\ngit -C . reset --hard\nEOF",
+    # The shell keeps a double-quoted backslash before a plain letter.
+    'cat <<"E\\OF"\ngit -C . reset --hard\nE\\OF',
 ]
 
 
@@ -430,6 +623,48 @@ def test_a_respelled_command_is_refused_under_its_own_row(rule_id: str, command:
 @pytest.mark.parametrize("command", NOT_THE_ROW)
 def test_a_command_the_rows_are_not_about_stays_allowed(command: str) -> None:
     assert is_denied(command) is None
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "command"),
+    [
+        # Folding ``\U`` to ``\u`` before decoding would turn ``-`` into a NUL.
+        ("local-destructive-git-reset-hard", "git -C . reset $'\\U0000002d\\U0000002dhard'"),
+        ("iac-teardown-terraform-destroy", "terraform -chdir=x $'\\U00000064estroy'"),
+        ("local-destructive-git-reset-hard", "$'\\U00000067it' -C . reset --hard"),
+        # ``-S`` is a flag, so ``e`` is the exec flag; folded, ``-s`` took it as a value.
+        ("reverse-shell-ncat", "ncat -Se /bin/sh 127.0.0.1 4444"),
+        ("reverse-shell-nc", "nc -Se /bin/sh 127.0.0.1 4444"),
+        # A ``$'…'`` program name inside a nested payload is read, not pre-filtered.
+        ("local-destructive-git-reset-hard", "bash -c '$'\"'\"'\\x67it'\"'\"' -C . reset --hard'"),
+        (
+            "local-destructive-git-reset-hard",
+            "bash -c '$'\"'\"'\\U00000067it'\"'\"' -C . reset --hard'",
+        ),
+        # bash ends the body at the first ``EOF``; the continuation does not join it.
+        ("local-destructive-git-reset-hard", "cat <<'EOF'\nx\\\nEOF\ngit -C . reset --hard\nEOF"),
+        # ``<<`` inside arithmetic is a shift, not a heredoc opener.
+        ("local-destructive-git-reset-hard", "git log -n $((1<<3))\ngit -C . reset --hard\n3"),
+        # A quoted empty word is ``-C``'s value, so ``reset`` is the subcommand.
+        ("local-destructive-git-reset-hard", 'git -C "" reset --hard'),
+        # Any descriptor opened onto a device is the write, and ``1>&2`` follows it.
+        ("local-destructive-dd-if", "dd bs=1M if=image.bin 2>/dev/sda 1>&2"),
+        ("local-destructive-dd-if", "dd bs=1 if=a 2>/dev/sda"),
+        # bash closes ``<<$'EOF'`` on ``EOF``, so a ``$`` delimiter body is read.
+        ("local-destructive-git-reset-hard", "cat <<$'EOF'\nb\nEOF\ngit -C . reset --hard\n$EOF"),
+        ("local-destructive-git-reset-hard", 'cat <<$"EOF"\nb\nEOF\ngit -C . reset --hard\n$EOF'),
+        # Folded, ``eof`` would close the first body early; bash compares ``EOF``.
+        (
+            "local-destructive-git-reset-hard",
+            "cat <<'EOF'\neof\ncat <<':'\nEOF\ngit -C . reset --hard\n:",
+        ),
+    ],
+)
+def test_case_is_read_before_it_is_folded(rule_id: str, command: str) -> None:
+    pattern = _RULES_BY_ID[rule_id].pattern
+    reason = is_denied(command)
+    assert _first_line(reason) == f"Blocked by security policy: {pattern}"
+    assert f"rule={rule_id}" in reason
 
 
 def test_a_literal_spelling_keeps_its_regex_refusal() -> None:

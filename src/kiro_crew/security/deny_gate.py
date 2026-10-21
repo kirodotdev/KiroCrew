@@ -793,7 +793,7 @@ def is_denied(
     # for rows still in the effective set, so an opt-out disables both. A command
     # the reader cannot read is refused when it names a row's program.
     row_floor = _submodule("argv_row_floor")
-    row_denial = row_floor.argv_row_denial(lower, regex_patterns)
+    row_denial = row_floor.argv_row_denial(tool_name, regex_patterns)
     if row_denial is not None:
         row_pattern, row_note = row_denial
         # The raw input, not ``lower``: see the audit note below.

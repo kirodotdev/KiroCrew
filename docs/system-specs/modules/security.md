@@ -636,6 +636,22 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   pass, linear on the 20 KB scan ceiling.
   It fails closed: a command that names a row's program but whose shell syntax the
   reader cannot turn into an argv is refused under that row, not left to the regex.
+  A heredoc is judged by what reads it. A body fed to `git`, `gh`, `cat` or `tee` is
+  data while nothing on the opener line could hand it to a shell. A body fed to a
+  bare stdin interpreter (`python3 -`, `python3`, `node`: a plain name, no options or
+  script, a delimiter that is one plain word in one pair of quotes, only output
+  redirections after it) is code in that
+  language, not shell, but only when that heredoc is the whole top-level text: anything
+  else in it (a function, `hash -p`, a `PATH` change, any other command, or a parent
+  around a nested `bash -c` / `eval` payload) could make the name run a shell, so the
+  body is read as commands. An unquoted delimiter stays commands, since the shell
+  expands the body's `$( )` whatever its own quotes say; so does a text with any
+  character outside printable ASCII, space, tab and newline (bash drops a NUL the
+  floor would compare), and any text holding a
+  backslash-newline, which the reader folds before it finds the closing line while
+  the shell keeps it inside a quoted body. Perl, ruby and shells (`bash -s`) stay commands. An
+  interpreter body is not read as shell here at all, so what its code runs is the
+  inline-payload tier's.
   Aliases that are a different subcommand rather than an option spelling
   (`kubectl delete ns`, `pulumi down`, `terraform apply -destroy`) are out of it.
 - `credential_sources.py` — where a redacted credential came from, recorded without
