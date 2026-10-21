@@ -80,6 +80,26 @@ enable and at gateway start until you re-sign it and the operator re-installs it
 | `mcpServers` | object | MCP server definitions (same format as `mcp.json`) |
 | `config_keys` | string[] | Top-level `config.json` object keys owned by this app. At most 200 keys may be declared, and each key may contain at most 200 characters. Declarations apply only while the app is installed |
 
+### `${APP_DIR}`: a file the app ships
+
+An installed app lives wherever the runtime puts it, so its manifest cannot name a script
+it ships by absolute path, and a relative path would resolve against the session's working
+directory when the agent starts the server. In a stdio entry, a `command` or `args` value of
+the form `${APP_DIR}/<path>` is replaced with the app's install directory when the entry is
+registered and when the agent config is rebuilt:
+
+```json
+"mcpServers": {
+  "files": { "command": "node", "args": ["${APP_DIR}/server/mcp.mjs"] }
+}
+```
+
+`${APP_DIR}` must start the value, once, and `<path>` must be a regular file inside the app
+directory after links are followed. Any other use (mid-value, repeated, bare, a missing file,
+a path or link that leaves the app directory) refuses the whole entry, and a previously
+registered entry of that name is removed. Each value stays one argument, so an install
+directory with spaces needs no quoting. Entries without the placeholder are written as before.
+
 ### How a stdio `command` is resolved at registration
 
 A stdio entry's `command` (no `url`) is not always written verbatim — registration
@@ -2154,7 +2174,9 @@ before it runs your command, which is the same silent failure:
   `mcpServers` entries use `command`/`args`/`url`/`env`. They are not path-checked at
   manifest load; at registration, when `command` is a bare `python`, `python3` or
   `py`, a relative `.py` launch target is resolved against the app root when it is
-  a file inside it (see "An app's own `.py` launcher" above).
+  a file inside it (see "An app's own `.py` launcher" above), and a value of the
+  form `${APP_DIR}/<path>` names a file the app ships (see "`${APP_DIR}`: a file the
+  app ships" above).
 - All required fields must be non-empty strings
 - `config_keys` must be an array of at most 200 non-empty strings, each at most
   200 characters long
