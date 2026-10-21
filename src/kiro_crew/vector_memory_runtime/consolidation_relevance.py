@@ -50,6 +50,13 @@ _ROTATION_CURSOR_META_KEY = "consolidation.semantic_rotation_after"
 #: ``project``) give every long row the whole keyword term and tell none of them apart.
 _COMMON_WORD_SHARE = 0.1
 
+#: Held while a consolidation pass's call of :func:`score_consolidation_rows` runs, taken
+#: and given back on the pool thread that runs it. The pass stops waiting for its scores
+#: at a bound but cannot stop that thread, which keeps one of the background memory
+#: pool's two admissions until the call returns; a pass that finds this held takes no
+#: scores, so scorers that passes gave up on hold at most one admission between them.
+_SCORER_IN_FLIGHT = threading.Lock()
+
 
 def score_consolidation_rows(
     self: VectorMemoryStore,
@@ -94,7 +101,9 @@ def score_consolidation_rows(
     this embed and nothing else: the consolidation pass runs the scorer on the
     background memory pool (``run_in_memory_background_pool``), which runs a call in a
     copy of the caller's context, where an ``embedding_work`` the pass set would bound
-    its later store calls as well until it was reset.
+    its later store calls as well until it was reset. The pass runs one call at a time
+    in the process (``_SCORER_IN_FLIGHT``), since a call it stopped waiting for keeps
+    its admission to that pool until it returns.
 
     Never raises: a consolidation pass that raises before it is billed re-arms on the
     next idle tick with no backoff, and a relevance signal is not worth that. Any

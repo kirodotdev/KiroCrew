@@ -14,6 +14,8 @@ sibling owners, and the class binds each of their methods under its own name:
   attempt ends;
 * ``history_consolidation_lease`` -- the cross-process lease that excludes a second
   pass over one session, and the fence every durable write of a pass takes on it;
+* ``history_consolidation_selection`` -- which rows of an over-cap semantic table a pass
+  shows the model (``memory.consolidation_selection``);
 * ``history_consolidation_memory`` -- the memory a pass reads into its prompt and writes
   back;
 * ``history_consolidation_skills`` -- auto-skill detection, dedupe, staging and
@@ -59,6 +61,14 @@ from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
+from kiro_crew.history_consolidation_selection import (
+    _SEMANTIC_OMISSION_NOTICE_NEWEST,
+    _SEMANTIC_OMISSION_NOTICE_UNSCORED,
+    _consolidation_selection,
+    _newest_semantic_table,
+    _relevance_scores,
+    _select_semantic_block,
+)
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_EMPTY,
@@ -97,7 +107,12 @@ from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
+    _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION,
     _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+    _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION,
 )
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
@@ -1190,8 +1205,10 @@ class HistoryConsolidator:
 
 
 own_methods(HistoryConsolidator, _MEMBER_OWNERS)
-#: BASE imports this module binds for its importers and for the patches the mirror
-#: routes through it, though its own code does not read them.
+#: Imports this module binds for its importers and for the patches the mirror routes
+#: through it, though its own code does not read them: the BASE imports, and the names
+#: an owner binds that the one-module file lacked, which the facade must bind itself
+#: because it serves no name BASE never had.
 _BOUND_FOR_IMPORTERS = (
     AUTO_SKILL_MAX_PROCEDURE_CHARS,
     AutoSkillProvenance,
@@ -1210,7 +1227,18 @@ _BOUND_FOR_IMPORTERS = (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
+    _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_OMISSION_NOTICE_NEWEST,
+    _SEMANTIC_OMISSION_NOTICE_UNSCORED,
     _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+    _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION,
+    _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION,
+    _consolidation_selection,
+    _newest_semantic_table,
+    _relevance_scores,
+    _select_semantic_block,
     authored_lesson_applies,
     background_turn,
     copy,
@@ -1237,6 +1265,7 @@ _BOUND_FOR_IMPORTERS = (
 _OWNERS = (
     "kiro_crew.history_consolidation_span",
     "kiro_crew.history_consolidation_lease",
+    "kiro_crew.history_consolidation_selection",
     "kiro_crew.history_consolidation_memory",
     "kiro_crew.history_consolidation_skills",
     "kiro_crew.history_consolidation_pass",
@@ -1277,17 +1306,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PLACEHOLDER_BODIES,
         _REFUSED_SEMANTIC_NOTE_DAYS,
         _REFUSED_SEMANTIC_NOTE_PREFIX,
-        _SEMANTIC_OMISSION_NOTICE,
         _SEMANTIC_SNAPSHOT_PAGE,
         _audit_oversized_semantic,
-        _bounded_semantic_table,
-        _BoundedTable,
         _EmbedBudget,
         _InheritGlobal,
         _is_plausible_memory_file,
         _LessonDeleteDecision,
         _OversizedItem,
-        _recency,
         _refuse_oversized_semantic,
         _refused_semantic_note,
         _refused_semantic_notice,
@@ -1301,6 +1326,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.history_consolidation_pass import (  # noqa: F401
         _facade_stream_and_collect_json,
+    )
+    from kiro_crew.history_consolidation_selection import (  # noqa: F401
+        _SEMANTIC_OMISSION_NOTICE,
+        _bounded_semantic_table,
+        _BoundedTable,
+        _recency,
     )
     from kiro_crew.history_consolidation_skills import (  # noqa: F401
         _SENSITIVE_TOOL_PATTERNS,
