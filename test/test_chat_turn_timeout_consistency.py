@@ -49,6 +49,7 @@ _DISPATCH_FILES = (
     ),
     "src/kiro_crew/dashboard/chat_runner.py",
     "src/kiro_crew/dashboard/handlers/messaging.py",
+    "src/kiro_crew/dashboard/session_deliver.py",
     "src/kiro_crew/slack/gateway.py",
     *(
         f"src/kiro_crew/slack/gateway_runtime/{path.name}"

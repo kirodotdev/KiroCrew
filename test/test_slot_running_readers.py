@@ -170,11 +170,13 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
-                ("handlers/mcp_apps.py", "api_mcp_apps_message"),
                 ("handlers/members_thread_turns.py", "api_member_fresh_start"),
                 ("handlers/members_thread.py", "api_member_thread"),
                 ("handlers/members_roster.py", "api_members"),
                 ("handlers/messaging.py", "api_send_message"),
+                # The session-side delivery entry point: idle gets a row and a
+                # turn, a reserved slot gets the queue or a steer.
+                ("session_deliver.py", "deliver"),
                 ("session_control_parts/session_create.py", "create_session"),
                 # The roster verb. Reservation state, like `read_messages` beside
                 # it and for the same reason: it reports whether a session is
@@ -248,9 +250,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_rewind.py", "api_chat_slot_rewind"),
         ("chat_turn/queue_cycle.py", "_launch_synthesis"),
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
-        ("handlers/mcp_apps.py", "api_mcp_apps_message"),
         ("handlers/messaging.py", "api_send_message"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),
+        ("session_deliver.py", "deliver"),
         ("state_parts/chat_slot.py", "_ChatSlot.enqueue_or_run_prompt"),
     }

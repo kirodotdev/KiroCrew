@@ -306,8 +306,8 @@ async def test_message_starts_turn_on_idle_slot(message_env, spool_tmp, monkeypa
 
         return asyncio.ensure_future(coro)
 
-    monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp_apps._run_chat", _fake_run_chat)
-    monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp_apps.spawn_guarded_turn", _fake_spawn)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+    monkeypatch.setattr("kiro_crew.dashboard.turn_dispatch.spawn_guarded_turn", _fake_spawn)
     try:
         async with make_client() as client:
             resp = await client.post(
@@ -787,3 +787,32 @@ def test_exhausted_refusals_are_floor_throttled():
     assert lim.reserve("s", 110.0) == "budget_exhausted"  # audited refusal, arms floor
     assert lim.reserve("s", 111.0) == "rate_limited"  # inside interval: silent path
     assert lim.reserve("s", 114.0) == "budget_exhausted"  # floor expired: audited again
+
+
+async def test_message_is_delivered_through_the_session_entry_point(
+    message_env, spool_tmp, monkeypatch
+):
+    """The handler names its origin (`app`) and leaves idle vs running to the session."""
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.dashboard import session_deliver
+
+    make_client, state = message_env
+    spool_id = _spool_record()
+    secret = _cbs(spool_id)
+    slot = _FakeSlot(running=True)
+    state._slots["sess-msg"] = slot
+    deliver = AsyncMock(return_value=session_deliver.DELIVERED_QUEUED)
+    monkeypatch.setattr(session_deliver, "deliver", deliver)
+    try:
+        async with make_client() as client:
+            resp = await client.post(
+                "/api/mcp-apps/message", headers=_OWNER_HDR, json=_msg_body(spool_id, secret)
+            )
+            assert resp.status == 200
+        origin = deliver.await_args.args[3]
+        assert origin.kind == session_deliver.ORIGIN_APP
+        assert origin.label == "user-message/message_user"
+        assert "admission" in deliver.await_args.kwargs
+    finally:
+        state._slots.clear()
