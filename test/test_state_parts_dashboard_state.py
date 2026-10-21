@@ -312,7 +312,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "end_slot_construction": ("function", False, False, "(self, key: 'str') -> 'None'"),
     "ensure_context_snapshots_loaded": ("function", False, False, "(self) -> 'bool'"),
     "ensure_dynamic_card_store": ("function", False, False, "(self) -> 'Any'"),
-    "flush_slot_now": ("function", False, False, "(self, slot: '_ChatSlot') -> 'None'"),
+    "flush_slot_now": (
+        "function",
+        False,
+        False,
+        "(self, slot: '_ChatSlot', takeover_basis: 'TakeoverBasis | None' = None) -> 'None'",
+    ),
     "folder_breadcrumb": (
         "function",
         False,

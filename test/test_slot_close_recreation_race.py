@@ -189,10 +189,14 @@ async def test_delete_recreate_during_save_preserves_replacement(tmp_path, monke
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def _persist(*_a, **_kw) -> None:
-        # Park so the recreate can interleave INSIDE the teardown window.
+    async def _persist(*_a, **_kw) -> bool:
+        # Park so the recreate can interleave INSIDE the teardown window. Answer
+        # True: this double models the durable write itself, and the guards
+        # under test are the post-save identity re-checks, not the save's own
+        # refusal arbitration.
         entered.set()
         await release.wait()
+        return True
 
     removed_keys: list[str] = []
 
@@ -347,8 +351,9 @@ async def test_delete_recreate_between_save_and_remove_skips_remove(tmp_path, mo
     # The second identity re-check, immediately before the remove on the same
     # frame, is what must catch it. Recreating as the save's final act reproduces
     # exactly that interleaving deterministically.
-    async def _persist_then_recreate(*_a, **_kw) -> None:
+    async def _persist_then_recreate(*_a, **_kw) -> bool:
         state.get_or_create_slot(NAME)
+        return True
 
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist_then_recreate)
     state.sessions.remove = _remove  # type: ignore[assignment]
@@ -522,8 +527,9 @@ async def test_delete_ordinary_close_still_saves_and_removes(tmp_path, monkeypat
     saved_closed: list[bool] = []
     removed_keys: list[str] = []
 
-    async def _persist(_state, _slot, *_a, **kw) -> None:
+    async def _persist(_state, _slot, *_a, **kw) -> bool:
         saved_closed.append(bool(kw.get("closed")))
+        return True
 
     async def _remove(key) -> None:
         removed_keys.append(key)
@@ -683,8 +689,9 @@ async def test_cleanup_ordinary_archive_still_saves_and_removes(tmp_path, monkey
     saved_closed: list[bool] = []
     removed_keys: list[str] = []
 
-    async def _persist(_state, _slot, *_a, **kw) -> None:
+    async def _persist(_state, _slot, *_a, **kw) -> bool:
         saved_closed.append(bool(kw.get("closed")))
+        return True
 
     async def _remove(key) -> None:
         removed_keys.append(key)

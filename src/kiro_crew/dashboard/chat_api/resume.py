@@ -22,10 +22,13 @@ if TYPE_CHECKING:
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
+        SlotRegistry,
+        TakeoverNote,
         _app_claim_refused,
         _app_resume_refusal,
         _app_slot_acquisition_recheck,
         _attach_variants,
+        _await_takeover_ordering_settled,
         _ChatSlot,
         _collapse_wire_rows,
         _has_validated_effort_marker,
@@ -37,12 +40,14 @@ if TYPE_CHECKING:
         _redact_meta_for_role,
         _restore_model_fields,
         _restored_agent_name,
+        _slot_closed_before,
         _sync_dashboard_slots,
         _unhide_folder,
         app_owns_transcript_meta,
         audit_app_slot_denial,
         carry_provenance,
         channel_slot_name,
+        close_metadata_under_lock,
         deny_app_slot_session_access,
         durable_row_count,
         effective_session_key,
@@ -53,9 +58,11 @@ if TYPE_CHECKING:
         note_crew_log_class,
         queue_entry_view,
         read_bounded_json,
+        record_deferred_dismissal,
         redact_credentials,
         redact_exfiltration_urls,
         remember_unknown_row_fields,
+        retry_owed_unstamp,
         sel,
         slot_history_key,
         slot_transcript_key,
@@ -764,6 +771,92 @@ async def resume_slot_from_history(
     containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
     final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
 ) -> ResumeOutcome:
+    """:func:`_resume_slot_from_history_noted`, retracting its note when it is refused.
+
+    The body notes its takeover before its own refusal checks (a session
+    already resuming elsewhere, a deletion, the app rechecks), so a resume
+    refused after noting has moved the key's teardown watch and stands behind
+    nothing. Retracting here on a refused outcome is what lets a teardown
+    holding a basis on the key restore its original instead of yielding the
+    key to a taker that gave up. Same contract as the body.
+    """
+    noted_key = _normalize_slot_key(name)
+    noted: dict[str, TakeoverNote | None] = {"note": None}
+
+    def _noted(note: TakeoverNote) -> None:
+        noted["note"] = note
+
+    # Registered BEFORE the body's close-metadata snapshot: a dismissal a
+    # hand-over close left owed on this key must not have its marker committed
+    # between that snapshot and this resume's publish -- the resume waits on
+    # nothing (the deferred holder holds no reader) and would publish against
+    # the open header it read, leaving the marker on the live tab's line. While
+    # this read is in flight the marker write yields; this exit then settles the
+    # dismissal (publish) or writes it (refusal).
+    reading = SlotRegistry.begin_resume_read(state, noted_key)
+    outcome: ResumeOutcome | None = None
+    try:
+        outcome = await _resume_slot_from_history_noted(
+            state,
+            name=name,
+            history_key=history_key,
+            request_app=request_app,
+            caller_label=caller_label,
+            request_title=request_title,
+            containment=containment,
+            final_check=final_check,
+            on_noted=_noted,
+        )
+        return outcome
+    finally:
+        # Published means THIS key now holds the slot this resume answered
+        # with. A resume can be satisfied by a slot living under another key
+        # (``_live_slot_for_resume`` dedups by session identity across slots),
+        # and that answer publishes nothing on the key this wrapper noted and
+        # registered: its owed dismissal must stay owed, to be written by the
+        # retraction path below, not settled by a publication that never
+        # happened here.
+        published = (
+            outcome is not None
+            and outcome.refusal is None
+            and outcome.slot is not None
+            and state._slots.get(noted_key) is outcome.slot
+        )
+        if published:
+            # The publication is final here, after the last refusal point: a
+            # dismissal the key's close left owed is settled by it -- whether
+            # this resume noted a takeover or began after the close.
+            SlotRegistry.settle_dismissal_on_publish(state, noted_key)
+        owed = None
+        if noted["note"] is not None and not published:
+            owed = SlotRegistry.retract_same_key_takeover(state, noted_key, noted["note"])
+        if reading:
+            SlotRegistry.end_resume_read(state, noted_key)
+        if not published and owed is None:
+            # A dismissal whose marker yielded to this read, or whose earlier
+            # write failed, is owed and nobody else stands to write it.
+            owed = SlotRegistry.owed_dismissal(state, noted_key)
+        if owed is not None:
+            # This was the last taker standing on a key a close handed over
+            # with its marker unwritten; record the dismissal it owes.
+            await asyncio.shield(asyncio.to_thread(record_deferred_dismissal, state, owed))
+        # A stamp an earlier publication won against and could not clear yet
+        # is retried by every exit on the key.
+        await asyncio.shield(asyncio.to_thread(retry_owed_unstamp, state, noted_key))
+
+
+async def _resume_slot_from_history_noted(
+    state: "DashboardState",
+    *,
+    name: str,
+    history_key: str | None = None,
+    request_app: str = "",
+    caller_label: str = "",
+    request_title: str = "",
+    containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
+    final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
+    on_noted: "Callable[[TakeoverNote], None] | None" = None,
+) -> ResumeOutcome:
     """Load an archived (history) session back into a live slot.
 
     The request-free core behind ``POST /api/chat/slots/{slot}/resume``; the
@@ -965,6 +1058,104 @@ async def resume_slot_from_history(
             )
         )
 
+    # Same-key takeover note, BEFORE the transcript read is dispatched. A
+    # truncating rewrite for this key can be mid-flight on a worker thread, and
+    # the read below serializes behind the per-session lock it holds — an
+    # unannounced resume would block through the file replace and then adopt
+    # the truncated window as the tab's live transcript. Marking the claim
+    # first makes the save's commit gate refuse instead (nothing written, the
+    # read finds the transcript the truncation never changed), while a claim
+    # that already committed stays committed and this resume knowingly reads
+    # the post-rewrite transcript. Fire-and-forget: no branch on the outcome.
+    # The transcript this resume is about to read rides along, for teardown
+    # writers whose linked file the map cannot connect to this key.
+    # A resume that begins AFTER the user closed this tab is reopening a closed
+    # tab, not taking it over: the close's tombstone already stands, so the
+    # close must commit its archive first and this read then finds the closed
+    # transcript, which this handler knowingly resumes (the compare-and-clear
+    # below). Marking the close's claim here would make its archive lose to a
+    # reopen issued after the close, and the close would yield the key to a
+    # resume that is not a replacement of anything. The note is skipped; the
+    # ordering wait below is not.
+    if _slot_closed_before(state, name, time.time()):
+        logger.debug(
+            "Resume of %s begins after the tab was closed; reading the closed "
+            "transcript rather than taking the key over",
+            name,
+        )
+    elif (
+        note := SlotRegistry.open_same_key_takeover_note(state, name, transcript=history_key)
+    ) is None:
+        # Refused at admission: the key's teardown watch already retains as many
+        # declared transcripts as one teardown admits (a bound on a
+        # request-controlled name), so nothing about this takeover was recorded
+        # and the read must not run. Retryable, like the unsettled ordering
+        # below: the watch retires when the saves holding it settle.
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a save for this conversation is still settling; retry shortly",
+                "takeover_note_refused",
+                503,
+            )
+        )
+    elif on_noted is not None:
+        on_noted(note)
+    # The note decides the ordering; this wait makes the read honor it. An
+    # overtaken save is refused at its commit gate but still lands a popped
+    # slot's unsaved rows append-safely under its lock before releasing — the
+    # projection's cached/best-effort-locked reads can otherwise return
+    # pre-append bytes while that save is still inside its region. The claim
+    # retires only after the lock exits, appends included; bounded — and
+    # fail-CLOSED on expiry, because a resume that reads anyway hydrates the
+    # unsettled window whose missing tail a later rewrite silently deletes
+    # (see chat_persistence._await_takeover_ordering_settled). Retryable 503:
+    # the writer holding the ordering settles within its own lock deadline.
+    # The close state this resume acts on is read AFTER the wait: ``meta`` above
+    # is the pre-wait snapshot, and the save the wait is for can be the user's
+    # own close committing ``closed=True`` -- a reopen that begins after the
+    # tombstone notes nothing, so that archive commits, and this resume is parked
+    # behind it. The reopen decisions (``defer_clear``, the reserved publish, the
+    # ``closed_at`` the restore puts back) derived from the pre-wait snapshot
+    # would read the tab as open, skip the reopen write, and publish a slot whose
+    # durable line still carries the marker: a tab that vanishes at the next
+    # restart. ``meta`` itself keeps the pre-wait identity witness (``created_at``,
+    # the app owner, the member binding) the checks below compare against; only
+    # the close fields are taken from the fresh read. An unreadable re-read
+    # refuses: a reopen that cannot see whether the tab is closed must not guess.
+    close_meta = meta
+    if SlotRegistry.takeover_ordering_pending(state, name):
+        if not await _await_takeover_ordering_settled(state, name):
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "a save for this conversation is still settling; retry shortly",
+                    "takeover_ordering_unsettled",
+                    503,
+                )
+            )
+    if SlotRegistry.key_has_takeover_watch(state, name):
+        # The close state this resume acts on is read UNDER THE TRANSCRIPT LOCK
+        # once the key carries a watch -- a save settling, or a dismissal a
+        # hand-over close left owed. The wrapper registered this read before
+        # ``meta`` was snapshotted, but that registration is a registry
+        # transition and the snapshot a plain file read; the owed marker's
+        # write-time guard runs under the transcript lock and so can decide
+        # "no read in flight" and rename the file between the two. Reading
+        # here under the same lock orders the two: a marker that landed before
+        # it is seen (and ``defer_clear`` reopens the tab against it), one that
+        # has not landed cannot land afterwards, because the guard now sees the
+        # read. Off the loop: the lock is a cross-process flock.
+        close_meta, close_meta_readable = await asyncio.to_thread(
+            close_metadata_under_lock, state, history_key
+        )
+        if not close_meta_readable:
+            if request_app:
+                return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "this session changed while resuming; open it again", "resume_conflict", 409
+                )
+            )
+
     # Read the transcript BEFORE publishing the slot: this await would otherwise
     # expose an empty slot by name, and a concurrent append would land ahead of it.
     all_messages = await asyncio.to_thread(
@@ -987,13 +1178,13 @@ async def resume_slot_from_history(
         folder_checked_id = meta["folder_id"]
         folder_unhidden = await _unhide_folder(state, folder_checked_id)
     cleared_closed: bool = False
-    cleared_closed_at: Any = meta.get("closed_at")
+    cleared_closed_at: Any = close_meta.get("closed_at")
     # The reopen write (clearing ``closed``) is DEFERRED to the reserved window
     # after construction, with or without a hook: every refusal before it has no
     # durable change to undo, the write is awaited and verified BEFORE the
     # publish, and a clear that cannot land refuses the resume instead of
     # publishing a tab that would not restore.
-    defer_clear = bool(meta.get("closed"))
+    defer_clear = bool(close_meta.get("closed"))
     # The slot is built retracted under its construction mark, and published only
     # after the awaited tail (the hook, the reopen write) has passed.
     reserved = containment is not None or defer_clear

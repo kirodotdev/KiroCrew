@@ -78,12 +78,14 @@ _COMPOSED: dict[str, str] = {
     "wait_for_unwinding_turns": "save_transaction",
     "_apply_recent_session": "slot_builders",
     "_apply_restored_open_slot": "slot_builders",
+    "_await_takeover_ordering_settled": "slot_builders",
     "_IDENTITY_UNRESOLVED": "slot_builders",
     "_load_rehydrated_window": "slot_builders",
     "_PendingWindow": "slot_builders",
     "_prefetch_recent_session": "slot_builders",
     "_prefetch_rehydrate_inputs": "slot_builders",
     "_rehydrate_slot_from_history": "slot_builders",
+    "_rehydrate_slot_from_history_noted": "slot_builders",
     "rehydrate_slot_from_history_async": "slot_builders",
 }
 
@@ -569,7 +571,9 @@ class TestPatchReach:
     def test_the_shutdown_save_dispatches_through_the_facade(self, monkeypatch) -> None:
         saved: list[object] = []
         monkeypatch.setattr(
-            cp, "_save_slot_to_history", lambda state, slot, force: saved.append(slot)
+            cp,
+            "_save_slot_to_history",
+            lambda state, slot, force, takeover_basis=None: saved.append(slot),
         )
         slot = SimpleNamespace(key="k")
         state = SimpleNamespace(

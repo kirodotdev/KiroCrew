@@ -1479,6 +1479,201 @@ no longer destroy older turns.
   set by rewind/regenerate after they truncate the window and cleared only on a
   successful rewrite save, so a failed inline rewrite still gets retried as an
   archive-safe rewrite by the next flush (never silently overwritten).
+- **Rewrite-vs-takeover ordering** (`TruncationClaim`, `slot_registry.py`): a
+  same-name close-and-recreate that resumes the SAME transcript is not
+  serialized against the per-session lock — the cleanup pops
+  `state._slots[name]` and the facade republishes through
+  `SlotRegistry.put_slot` on the event loop while the rewrite commits on a
+  worker thread. Two guards order them. The **recreate-won map recheck**
+  (`expected_slot_name`, supplied by every live-slot truncating caller and
+  by the periodic flush): the save
+  re-reads the live occupant of the slot's map key inside the lock at the
+  commit boundary and refuses (`False`, nothing written) when the map holds a
+  different object — this catches every replacement already PUBLISHED. The
+  **publication-ordering claim** closes the window the recheck cannot see —
+  a takeover that begins after the recheck and reads the file after the
+  replace: every truncating save registers a claim on its map key for the
+  whole write (opened before the lock, so the lock wait is covered), every
+  same-key takeover marks it (`note_same_key_takeover`, called by `put_slot`
+  and at the start of a resume's transcript read, fire-and-forget) — when the
+  takeover's declared read target names the file the claim writes: claims
+  record their transcript's stems at registration, notes declare theirs (a
+  publication its slot's `slot_history_key`, a resume the key it reads;
+  unknown on either side matches), so a same-name publication that resumes a
+  DIFFERENT transcript leaves a linked tab's closing archive undecided and
+  that close commits `closed` — and one
+  mutex-guarded transition decides the winner before the rewrite's first
+  mutation — ahead of the dropped-line archive, so a refusal leaves no
+  sidecar recording still-live rows as dropped, and ahead of the file
+  replace, both performed under the per-session lock the save holds
+  throughout.
+  Each takeover note also bumps the count of the key's open takeover watch
+  (`TakeoverBasis`): a dispatcher opens the watch at its last synchronous
+  instant — while it can still vouch the slot is the live occupant
+  (`save_slot_off_loop`, the flush pass, the shutdown pass, the rewind
+  handler's dispatch) — and the claim registration compares the count against
+  the snapshot, so a takeover firing before the claim exists (nothing to
+  mark) leaves the claim born overtaken instead of unobserved.
+  `save_slot_off_loop` opens one for EVERY save its caller did not open one
+  for, not only saves already truncating at dispatch: the worker reads
+  `_pending_rewrite` itself, so an append-shaped dispatch can become a
+  truncating rewrite in the gap (a regenerate whose inline save failed), and
+  only a basis opened before that gap lets the claim observe a takeover that
+  landed in it. A key with no
+  open watch records nothing (no save is in flight to observe it), and the
+  last holder out retires the entry, so the watch table is bounded by
+  in-flight saves rather than by every key the process ever published. The
+  vouch itself is a dispatch-time occupancy verify: guarded callers
+  (`expected_slot_name`) and the flush/shutdown passes re-read the live
+  occupant after opening the watch and refuse or skip when the key already
+  changed hands — the pop is the only observable a takeover leaves once its
+  own takeover note has already fired. The close/cleanup teardowns write
+  POPPED slots by design, so they open one watch before their pop and carry
+  it through every await and every save of the teardown (the archive, the
+  hand-over drains): a resume that began BEFORE the close and is still
+  reading inside the teardown moves that watch, the archive's rewrite-shaped
+  write is born overtaken, and the close hands the key over instead of
+  truncating underneath the resume — the caller holds the basis, and
+  `basis_moved` is what tells a takeover refusal (compensate, hand over,
+  report) from a delete-won one (the delete already disposed of the
+  archive's subject). The takeover note is **tombstone-gated**: a noter
+  (`rehydrate_slot_from_history_async`, `resume_slot_from_history`) whose
+  start postdates the key's close tombstone (`_slot_closed_before`, read
+  from `channel_slots._RECENT_CLOSES`) is a reopen of a closed tab and notes
+  nothing, so the close commits the user's edit and the reopen is refused by
+  the `closed` flag the way any reopen of a closed tab is — a delivery
+  rehydrate therefore never wins a close (one begun before the close is
+  refused by its own `slot_closed_since` check), only an explicit user resume
+  can. After the wait the resume endpoint re-reads the close metadata and
+  derives its reopen decisions (`defer_clear`, the reserved publish, the
+  `closed_at` a restore puts back) from that read, refusing when it is
+  unreadable: the save it waited for may be the user's own close committing
+  `closed`, and a reopen judged on the pre-wait snapshot would publish a tab
+  whose durable line still carries the marker. A noter that noted and then published nothing — refused after its
+  note, or handed the key to nobody — **retracts** the note it opened
+  (`open_same_key_takeover_note` returns a `TakeoverNote` handle — the
+  admitting watch's process-unique `id` and the note's sequence on it;
+  `retract_same_key_takeover` withdraws exactly that note from
+  `TakeoverWatch.standing`, and only while the key's watch is still the one
+  that issued the handle: a watch retires with its last holder and a fresh one
+  restarts its sequence, so a noter refused after that withdraws nothing). Accounting is per note and basis-relative, never
+  a net counter: `basis_moved` and the claim registration both ask "does a
+  note newer than this basis still stand?", so one noter's refusal — before
+  or after the basis opened — can neither hide nor fabricate another taker's
+  note, and a close never yields the key to a taker that gave up: it takes
+  the retry arm, restoring the original with its tail owed. A close that
+  handed its key over while the taker was still unpublished keeps its
+  dismissal **owed** (`DeferredDismissal`, `hand_basis_to_dismissal`): the
+  teardown watch outlives the close, non-truncating so the taker's read is not
+  held. It settles only where that is final: a non-noting publication at its
+  insert, a noter's publication at the noter's success exit
+  (`settle_dismissal_on_publish`; the insert precedes the noter's last refusal
+  point), and the last standing taker's retraction returns it to be written
+  (`takeover_ordering.record_deferred_dismissal`, under the transcript lock,
+  guarded at write time on the key still being unpublished, only onto an
+  unclosed line of a session that still exists) — cleared from the watch only
+  once that write is confirmed (`settle_written`), a failed write staying owed
+  for the next exit on the key to retry (`owed_dismissal`). With nobody
+  standing the arm writes the marker itself, against the same registered
+  record, and a write that does not land makes the close report
+  `history_save_failed` rather than a success no later exit is guaranteed to
+  make true — while a publication that took the key and settled the dismissal
+  before the write ran (`superseded`) is a committed close with nothing owed.
+  The marker also yields to an explicit resume in flight on the key
+  (`begin_resume_read` before the resume's header snapshot, `end_resume_read`
+  at its exit; `dismissal_still_owed` answers False meanwhile): the deferred
+  holder is non-truncating so readers are never held behind a dismissal, and a
+  marker that committed between a reopen's snapshot and its publish would stay
+  on the live tab's line; the reopen's close-metadata snapshot is taken under
+  the transcript lock once the key carries a watch
+  (`takeover_ordering.close_metadata_under_lock`), so a marker that landed
+  first is seen and cleared before publish and one that has not cannot land
+  afterwards. The reopen's exit settles the dismissal (publish) or writes it
+  (refusal). A plain same-name create takes no lock, so after the marker's
+  rename commits the writer re-reads the ownership under the same transcript
+  lock (`after_commit_under_lock`, which only records the verdict) and, right
+  after, un-stamps a marker a publication has won against as a compare-and-clear
+  keyed on our own `closed_at` (`unstamp_superseded_marker`), the outcome
+  `superseded`; a clear that fails is parked on the key's watch (`OwedUnstamp`)
+  and retried by every exit on the key, never reported as a failed close. A skipped marker write
+  settles only on evidence — `closed` on the line or the session gone — never
+  on the line merely reading back. The
+  marker carries the closed transcript's `created_at` (`DeferredDismissal.created_at`,
+  from `_disk_meta_created_at`) and is written only onto a line whose
+  `created_at` matches: a session deleted and recreated under the same key
+  while the dismissal was owed is another conversation, and the dismissal
+  settles without writing; a closed slot that recorded no identity owes a
+  marker nobody can place, which also settles unwritten. The bulk cleanup's takeover arm owes its marker the same way. So a taker that gives up after the
+  close answered, before or after registering its slot, leaves the tab
+  dismissed rather than resurrected by the recent-session restore, and no
+  dismissal is lost to one failed write. A hand-over whose drain does not
+  land restores
+  the popped original while the key is free, with the same compensation a
+  raised archive save gets, so the tail's only holder is never dropped. A
+  watch retains at most `_MAX_NOTED_TRANSCRIPTS_PER_WATCH` declared read
+  targets — the name is request-controlled — and a takeover note past that
+  bound is refused at admission, recording nothing, with the resume behind
+  it answered by the retryable lock-contention error. A hand-over drain carrying a `_pending_rewrite` retry
+  whose key was taken over does not rebuild at all: only the TRUNCATION lost
+  the arbitration, so the drain persists the window through the history
+  layer's id-deduped appends (`append_if_absent` under `atomic_appends`) —
+  rows already on disk are skipped — judged against the whole durable
+  history, size-rotation archives included (`include_rotated`), so a window
+  reaching past the live file's rotation cut re-lands none of its archived
+  rows — the unsaved tail lands, and the lost truncation drops out instead
+  of dragging the tail down with it. The rows are prepared the way the full
+  save prepares them: the window snapshot is filtered through
+  `drop_notes_authorized_elsewhere` (a note stamped for a session the slot
+  was rebound away from is dropped and audited as `note_save_drop`, as every
+  full save does) and each row is built by `_build_message_entry`. Transcript
+  identity is compared by stem throughout (`transcript_stems`), never by the
+  raw key string: a resume declares the transcript it reads in whatever
+  spelling it was asked for, and a teardown writing the same file under
+  another spelling still sees it. The header
+  is settled under that same lock before the first row
+  (`tighten_line_for_appends`): created with the slot's retained
+  `memory_mode` when absent, tightened to it when present (store cleared,
+  carried execution record folded, every other field kept), and CONFIRMED
+  by a re-read — a header that cannot be read, or still reads looser than the
+  retained mode, refuses the append outright (the drain reports the rows and
+  the close fails; the commit-gate fallback keeps the window owed), because a
+  row under an unverified privacy contract is the breach the mode exists to
+  prevent. Watch
+  ownership survives cancellation: an executor
+  save closes its own basis when it settles, and `save_slot_off_loop`
+  shields the executor future so a cancelled caller can neither retire the
+  watch under a running worker nor silently drop an authorized durable
+  write from the queue.
+  The read side honours the ordering it declares: a resume whose takeover note
+  overtook a save in flight waits, ON THE LOOP and bounded by the save's own
+  lock deadline, for that save's claim (and the key's truncating watch
+  holders) to retire — holding no executor thread, since the saves it waits
+  for run on the default executor and a waiter parked there would take the
+  thread one of them needs (`SlotRegistry.await_takeover_ordering_settled`:
+  the waiter's future is registered under the claim mutex and resolved
+  through its loop by whichever worker retires the last pending basis or
+  claim). Only a TRUNCATING holder makes the key pending: a dispatcher states
+  its write's shape when it opens its basis (`truncating=`), a worker that
+  finds an append-shaped dispatch turned truncating raises it before its
+  claim (`mark_basis_truncating`), and a plain append — a superset of the
+  file, never refused — holds the watch without holding readers,
+  because a refused hand-over save lands the popped slot's unsaved tail
+  append-safely under its lock before releasing and the transcript projection
+  serves cached, best-effort-locked reads the lock alone cannot order. The
+  wait fails CLOSED: on expiry the resume refuses with the retryable
+  lock-contention error (`HistoryLockTimeout` on the facade, 503
+  `takeover_ordering_unsettled` at `POST /api/chat/slots/{slot}/resume`)
+  rather than hydrating a window whose missing tail a later rewrite deletes.
+  A claim marked first means the save refuses and the takeover's read —
+  serialized behind the per-session lock — finds the transcript the
+  truncation never touched; a claim that commits first means a later takeover
+  knowingly resumes the post-rewrite transcript. Every interleaving therefore
+  resolves to one of the two sequential histories ("reopen, then the rewrite
+  is refused" / "rewrite, then reopen"), and no schedule lets a replacement
+  adopt a truncated window it did not knowingly resume. The mutex guards
+  in-memory transitions only — it is never held across the file replace, so
+  the event loop never waits on the commit (which on Windows is a bounded
+  retry loop, not a single rename).
 - **Foreign-append merge & id-first dedup** (`_frozen_prefix_and_foreign_appends`):
   a default save captures its `window` snapshot BEFORE taking `_locked`, so a
   cross-process writer (subagent / cron / CLI) can fully append + release the

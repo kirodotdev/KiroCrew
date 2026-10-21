@@ -20,7 +20,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
-from kiro_crew.dashboard.slot_registry import SlotRegistry
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverWatch, TruncationClaim
 from kiro_crew.dashboard.state_parts import dashboard_services as _dashboard_services
 from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import session_events as _session_events
@@ -542,6 +542,33 @@ class DashboardState:
         self._warm_task_brief_slot_generation: dict[str, int] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
         self._warm_task_brief_model_active: set[str] = set()
+        # Truncating-save claims, keyed by slot map key (see
+        # ``TruncationClaim``). Written from the save's worker thread and from
+        # the event loop's publication/resume paths, so transitions go through
+        # ``_truncation_claim_mutex`` — the GIL does not make the
+        # check-then-set arbitration atomic. The mutex guards in-memory
+        # transitions only and is never held across I/O, so neither side ever
+        # waits on it for more than a dict operation.
+        self._truncation_claims: dict[str, list[TruncationClaim]] = {}
+        # Refcounted takeover watches, keyed by slot map key (see
+        # ``TakeoverBasis``). An entry exists only while a truncating save is
+        # in dispatch or in flight for its key — the dispatcher opens it at
+        # its last synchronous instant and closes it once the save's outcome
+        # is in hand — so the table is bounded by in-flight saves, not by the
+        # keys the process has published. Written from save worker threads and
+        # from the event loop's publication/resume paths, so every transition
+        # goes through ``_truncation_claim_mutex`` — the GIL does not make the
+        # check-then-set arbitration atomic. The mutex guards in-memory
+        # transitions only and is never held across I/O, so neither side ever
+        # waits on it for more than a dict operation.
+        self._takeover_watches: dict[str, TakeoverWatch] = {}
+        # Loop-side waiters for a key's takeover ordering to settle
+        # (``SlotRegistry.await_takeover_ordering_settled``), keyed by slot map
+        # key: ``(loop, future)`` pairs resolved through their loop by whichever
+        # save worker retires the last pending basis or claim. Guarded by the
+        # same mutex; an entry lives only while a resume is waiting.
+        self._takeover_settle_waiters: dict[str, list[tuple[Any, Any]]] = {}
+        self._truncation_claim_mutex = threading.Lock()
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #

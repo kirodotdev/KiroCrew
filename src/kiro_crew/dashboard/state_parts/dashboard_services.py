@@ -31,7 +31,7 @@ from kiro_crew.config.loader import _raw_config, config_dir
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
 from kiro_crew.dashboard.notification_coordinator import NotificationCoordinator
-from kiro_crew.dashboard.slot_registry import SlotRegistry
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis
 from kiro_crew.dashboard.state_parts.notification_log import (
     _MAX_PERSISTED_NOTIFICATIONS,
     _notification_io_executor,
@@ -579,8 +579,10 @@ async def _flush_loop(self: DashboardState) -> None:
     await _persistence_for(self)._flush_loop(self)
 
 
-def flush_slot_now(self: DashboardState, slot: _ChatSlot) -> None:
-    _persistence_for(self).flush_slot_now(self, slot)
+def flush_slot_now(
+    self: DashboardState, slot: _ChatSlot, takeover_basis: TakeoverBasis | None = None
+) -> None:
+    _persistence_for(self).flush_slot_now(self, slot, takeover_basis=takeover_basis)
 
 
 def _flush_dirty_slots(self: DashboardState) -> None:

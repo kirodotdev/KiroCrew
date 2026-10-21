@@ -1073,6 +1073,7 @@ class ConversationLog:
     _persist_inline_attachments = _history_append._persist_inline_attachments
     append = _history_append.append
     append_if_absent = _history_append.append_if_absent
+    _holds_identical_row = _history_append._holds_identical_row
 
     # -- Consolidation marker and retry ledger (``history_marker``).
     rotation_generation = _history_marker.rotation_generation

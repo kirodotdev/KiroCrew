@@ -461,7 +461,7 @@ async def test_the_handover_exit_reports_the_close_on_a_committed_drain_only(
     """
     events: list[str] = []
 
-    async def _drain(_state, name, _slot):
+    async def _drain(_state, name, _slot, takeover_basis=None):
         events.append(f"drain:{name}")
         return ch._HandoverDrainResult(rows_committed=committed, prompts_lost=0)
 
@@ -863,7 +863,8 @@ slot_create | api_chat_slot_create | async function | (request: 'web.Request') -
 handover_drain | _HandoverDrainResult | class
 handover_drain | _owed_prompts_lost_on_line | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', history_key: 'str') -> 'int'
 handover_drain | _report_lost_queued_prompts | function | (state: 'DashboardState', name: 'str', count: 'int', history_key: 'str') -> 'None'
-handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot') -> '_HandoverDrainResult'
+handover_drain | _teardown_drain_basis | function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', basis: 'TakeoverBasis | None') -> 'TakeoverBasis | None'
+handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', takeover_basis: 'TakeoverBasis | None' = None) -> '_HandoverDrainResult'
 slot_summary | api_chat_slot_summary | async function | (request: 'web.Request') -> 'web.Response'
 slot_summary | _generate_state | function | (cfg: 'KiroCrewConfig', slot: 'Any') -> 'str'
 slot_summary | api_chat_slot_summary_generate | async function | (request: 'web.Request') -> 'web.Response'

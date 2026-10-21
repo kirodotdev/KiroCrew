@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_persistence import (
         DashboardState,
+        SlotRegistry,
+        TakeoverBasis,
         _ChatSlot,
         _display_verdicts,
         _keep_owed_after_refusal,
@@ -27,7 +29,10 @@ if TYPE_CHECKING:
         _metadata_line,
         _queue_snapshot_is_stale,
         _record_pending_memory_mode,
+        _takeover_ordering,
         _transcript_merge,
+        _transfer_basis_to_worker,
+        _truncation_claim_scope,
         _write_guards,
         apply_pending_slot_memory_mode,
         atomic_write,
@@ -41,11 +46,50 @@ if TYPE_CHECKING:
 
 def save_all_slots_to_history(state: DashboardState) -> None:
     """Save all active slots to history. Called on gateway shutdown."""
-    for slot in list(state._slots.values()):
-        try:
-            _save_slot_to_history(state, slot, force=True)
-        except Exception:
-            logger.error("Shutdown: failed to save slot %s", slot.key, exc_info=True)
+    for key in list(state._slots.keys()):
+        # Re-fetch the occupant at each turn: this sequential pass takes real
+        # disk time per slot while the loop can still recreate keys, and the
+        # replacement's state — not a stale snapshot entry's — is what the
+        # next startup must restore. The watch opens before the occupancy
+        # re-read for the same reason the flush pass orders them that way: a
+        # takeover before the open changes the occupant, one after it moves
+        # the watch count past the basis, so neither goes unobserved by a
+        # truncating (``_pending_rewrite``) save.
+        # A refusal is not a commit, and shutdown has no later pass to lean
+        # on: the process exits after this loop, so a save that lost its
+        # ordering claim to a takeover must be answered HERE by saving the
+        # occupant that won — its unsaved rows are what the next startup
+        # restores. Two attempts bound the revisit: a takeover of the
+        # takeover inside one shutdown pass is logged and yielded rather
+        # than chased.
+        for _attempt in range(2):
+            slot = state._slots.get(key)
+            if slot is None:
+                break
+            basis = SlotRegistry.open_takeover_basis(state, key)
+            try:
+                if state._slots.get(key) is not slot:
+                    continue
+                try:
+                    committed = _save_slot_to_history(state, slot, force=True, takeover_basis=basis)
+                except Exception:
+                    logger.error("Shutdown: failed to save slot %s", slot.key, exc_info=True)
+                    break
+            finally:
+                SlotRegistry.close_takeover_basis(state, basis)
+            if committed or state._slots.get(key) is slot:
+                break
+            logger.warning(
+                "Shutdown: save for slot %s lost its key to a takeover; saving the "
+                "current occupant instead",
+                key,
+            )
+        else:
+            logger.warning(
+                "Shutdown: slot %s changed hands twice during the pass; the newest "
+                "occupant's window is restored from disk state at next startup",
+                key,
+            )
     # Snapshot the open-tab set so the next startup restores them. This is
     # belt-and-braces vs the periodic flush snapshot — it ensures graceful
     # shutdown captures the very latest state, including tabs whose
@@ -117,6 +161,7 @@ def _save_slot_to_history(
     after_commit_under_lock: Callable[[], None] | None = None,
     refuse_stale_empty_merge: bool = False,
     turn_timeout_override: tuple[int | None] | None = None,
+    takeover_basis: TakeoverBasis | None = None,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
@@ -195,12 +240,25 @@ def _save_slot_to_history(
     counter itself cannot detect the drift at all. Ignored without *messages*,
     where the bounded retry below already takes both halves together.
 
+    ``takeover_basis`` anchors a truncating write's publication-ordering claim
+    to the caller's dispatch instant: a takeover watch opened while the caller
+    could still vouch that this slot was the live occupant of its key. A
+    takeover firing between that instant and the claim's registration has no
+    claim to mark, so the registration compares the watch's count against the
+    basis snapshot and a moved value makes the claim be born overtaken — the
+    commit gate then refuses exactly as it does for a takeover that marks the
+    claim mid-write. The dispatcher that opened the basis closes it once this
+    save's outcome is in hand. ``None`` means the claim observes takeovers
+    only from its registration on. Ignored for non-truncating saves.
+
     Returns ``False`` when the delete-won guard aborted the save because the
     session was permanently deleted while this save awaited the lock, when
-    ``expected_history_key`` does not match the slot's routing, or when
-    ``expected_disk_older_count`` drifted — the in-memory window was NOT
-    persisted and must not be treated as durable. Every other completion
-    (including the benign no-op skips) returns ``True``.
+    the slot's routing moved off ``expected_history_key``, when
+    ``expected_disk_older_count`` drifted, or when a truncating write lost its
+    publication-ordering claim because a same-name takeover began before the
+    commit gate — the in-memory window was NOT persisted and must not be
+    treated as durable. Every other completion (including the benign no-op
+    skips) returns ``True``.
     """
     if not state.conversation_log:
         return True
@@ -211,6 +269,13 @@ def _save_slot_to_history(
     # the archive-safe rewrite path until it succeeds.
     if messages is not None or slot._pending_rewrite:
         rewrite = True
+    if rewrite:
+        # An append-shaped dispatch that turned truncating in the gap (a
+        # regenerate whose inline save failed set ``_pending_rewrite`` after
+        # the dispatch) raises its basis here, before the claim below, so a
+        # reader asking whether this key's ordering is pending counts this
+        # save from now on.
+        SlotRegistry.mark_basis_truncating(state, takeover_basis)
     # The committed-queue witness as it stands BEFORE this save reads the queue,
     # so the guard inside the lock can tell "another writer committed since" from
     # "the queue moved since". Taken first, which is the conservative order: a
@@ -338,7 +403,25 @@ def _save_slot_to_history(
         # ``HistoryLockTimeout`` under contention (never blocking the loop); the
         # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
         # so they take the patient acquire path instead of dropping the save.
-        with state.conversation_log._locked(history_key):
+        #
+        # The claim scope opens BEFORE the lock and closes after it: the lock
+        # serializes writers on the transcript, while the claim orders this
+        # truncating write against same-key slot publication, which never takes
+        # the lock (the cleanup pops ``state._slots[name]`` and the facade
+        # republishes through ``SlotRegistry.put_slot`` on the event loop). The
+        # decision the claim carries is consumed at the commit gate directly
+        # above the payload composition, whose dropped-line archive is the
+        # rewrite's first mutation.
+        with (
+            _truncation_claim_scope(
+                state,
+                slot,
+                rewrite=rewrite,
+                expected_slot_name=expected_slot_name,
+                takeover_basis=takeover_basis,
+            ) as _claim,
+            state.conversation_log._locked(history_key),
+        ):
             existing_meta, _meta_readable, _line_corrupt = _write_guards.read_line_for_save(
                 state.conversation_log, slot, history_key
             )
@@ -379,7 +462,11 @@ def _save_slot_to_history(
             # replacement the original slot is being torn down and its
             # truncation has no future, so refuse the whole save (``False``,
             # nothing written) rather than land the stale snapshot on the
-            # replacement's transcript.
+            # replacement's transcript. This check covers takeovers that are
+            # already PUBLISHED; a takeover still between its pop and its
+            # publication — or between publication and its transcript read —
+            # is what the truncation claim's commit gate below decides, since
+            # no map re-read can observe a replacement that does not exist yet.
             refusal = _replaced_refusal()
             if refusal is not None:
                 logger.warning("Slot %s save refused: %s", history_key, refusal)
@@ -409,6 +496,49 @@ def _save_slot_to_history(
                 )
             )
             meta_str = json.dumps(meta_line) + "\n"
+
+            # ── Commit gate ─────────────────────────────────────────────────
+            # The single atomic decision that orders this truncating write
+            # against same-key slot publication. The recreate-won guard above
+            # re-reads the map at the commit boundary, but a same-name
+            # close-and-recreate is not serialized against the per-session
+            # lock, so the event loop can still take the key over between that
+            # check and the replace below — and shrinking the gap cannot help,
+            # because the replacement's harm is READING the file after the
+            # replace, not being published before the check. The claim makes
+            # the ordering total instead: every takeover (publication, resume
+            # read start) marks the claim, and this one mutex-guarded
+            # transition decides the winner. Losing here means a replacement
+            # began first — its read, serialized behind the lock this save
+            # holds, must find the transcript the truncation never touched, so
+            # refuse the whole save with nothing written. Winning means any
+            # later takeover observes ``committed`` and knowingly resumes the
+            # post-rewrite transcript.
+            #
+            # The gate sits above EVERY mutation the rewrite performs — the
+            # payload composition below archives the dropped tail, which is
+            # the first one — so a refusal leaves no trace: an archive written
+            # before a refusal would record still-live rows as dropped. Between
+            # the decision and the file replace only this save runs (the
+            # per-session lock is held throughout), so nothing can observe the
+            # file inside that stretch, and a takeover arriving there reads
+            # the post-rewrite transcript its ``committed`` answer promised.
+            if _claim is not None and not SlotRegistry.commit_truncation_claim(state, _claim):
+                # Refused at the commit gate: a same-key takeover won. The
+                # owner lands the hand-over shape's unsaved rows append-safely
+                # under this lock, ahead of the takeover's queued read, and
+                # leaves the refused state owed.
+                _takeover_ordering.refuse_overtaken_rewrite(
+                    state,
+                    slot,
+                    history_key,
+                    window,
+                    note_auth_key=note_auth_key,
+                    messages=messages,
+                    expected_slot_name=expected_slot_name,
+                )
+                return False
+
             payload, frozen_prefix, foreign_lines = _transcript_merge.compose_payload(
                 state, slot, path, history_key, window, disk_older, meta_str, rewrite=rewrite
             )
@@ -580,6 +710,7 @@ async def save_slot_off_loop(
     muted_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
+    takeover_basis: TakeoverBasis | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -620,7 +751,12 @@ async def save_slot_off_loop(
     commit boundary -- a same-name close-and-recreate that resumes the
     same transcript keeps ``expected_history_key`` identical and slips past the
     routing pin, so this object-identity recheck under the lock stops the
-    truncating snapshot from landing on the replacement's transcript.
+    truncating snapshot from landing on the replacement's transcript. The map
+    recheck only sees replacements already published; the window it cannot
+    cover -- a takeover that begins after the recheck and reads the file after
+    the replace -- is closed by the truncating write's publication-ordering
+    claim, whose commit gate refuses the write when any same-key takeover
+    (publication or resume read start) marked the claim first.
 
     ``rows_only``: write the window but leave the metadata line's slot-owned
     fields as they stand on disk when the line was published by ANOTHER slot --
@@ -628,43 +764,104 @@ async def save_slot_off_loop(
     holds. See :func:`_save_slot_to_history` for the full contract, including the
     ``tab_id`` test that keeps the flag from deferring to the caller's own line.
 
+    ``takeover_basis``: a caller-opened takeover watch, for dispatchers whose
+    authorization instant precedes this call (the close/cleanup paths open one
+    before they pop the slot, so a resume beginning during their teardown
+    awaits is observed). The caller that opened it closes it; when it is
+    absent, this helper opens its own for rewrite-shaped saves and its worker
+    closes it once the save settles.
+
     Returns ``False`` only when the save was skipped WITHOUT writing: the
     session was permanently deleted while the save awaited the lock (the
-    delete-won guard in :func:`_save_slot_to_history`), or the routing moved
-    off ``expected_history_key``. A guarded write is also skipped when the slot
-    is already fenced for close, because the retraction of its name has passed
-    the point where it can wait for this write -- unless the retraction itself
-    issued it (``issued_by_the_retraction``), which the handover drain does and
-    nothing else does. Neither skip raises, for either
-    ``best_effort`` mode, so a clean return does NOT prove a committed write.
-    Callers that go on to republish the slot's content elsewhere (fork, the
-    transfer export) must check the return; archival callers (close/cleanup)
-    may ignore it — the delete already disposed of what they were archiving.
+    delete-won guard in :func:`_save_slot_to_history`), the routing moved
+    off ``expected_history_key``, or a same-key takeover won the ordering
+    (at the dispatch verify or at the commit gate). A guarded write is also
+    skipped when the slot is already fenced for close, because the retraction
+    of its name has passed the point where it can wait for this write --
+    unless the retraction itself issued it (``issued_by_the_retraction``),
+    which the handover drain does and nothing else does. Neither skip raises,
+    for either ``best_effort`` mode, so a clean return does NOT prove a
+    committed write. Callers that go on to republish the slot's content
+    elsewhere (fork, the transfer export) must check the return. Archival
+    callers (close/cleanup) may ignore a delete-won ``False`` -- the delete
+    already disposed of what they were archiving -- but must not read a
+    takeover refusal as success: they hold the basis they opened, and
+    ``SlotRegistry.basis_moved`` is the discriminator.
     """
+
+    # ── Dispatch verify ─────────────────────────────────────────────────
+    # For callers that pin the map key, re-read the live occupant HERE, in the
+    # caller's own synchronous tick. A takeover whose resume read is already in
+    # flight fired its takeover note before this save could open a watch, so
+    # neither the claim nor the basis below can observe it — but its pop is
+    # observable, and a guarded caller's slot not being the live occupant at
+    # dispatch means the key already changed hands. Refusing now is the same
+    # recreate-won outcome the commit-boundary recheck delivers, one hop
+    # earlier. Unguarded callers (the close/cleanup paths write popped slots
+    # by design) are deliberately not checked.
+    if expected_slot_name is not None and state._slots.get(expected_slot_name) is not slot:
+        logger.warning(
+            "Slot %s save refused at dispatch: slot %s is not the live occupant of its key",
+            slot.key,
+            expected_slot_name,
+        )
+        # The same refusal the in-lock recreate-won guard delivers, so it keeps
+        # the state owed the same way: nothing was written, and the caller's
+        # window must not read as persisted to the next flush pass.
+        _keep_owed_after_refusal(slot)
+        return False
 
     pending_mode_slot = slot
     current = state._slots.get(slot.key)
     if current is not None and slot_history_key(current) == slot_history_key(slot):
         pending_mode_slot = current
 
+    # Opened at the last synchronous instant before the save leaves this tick,
+    # for EVERY save the caller did not already open one for. The shape the
+    # worker writes is decided there, not here: ``_save_slot_to_history`` reads
+    # ``slot._pending_rewrite`` on the worker, so a save dispatched
+    # append-shaped can become a truncating rewrite in the gap between this
+    # tick and that read (a regenerate truncates the window and its inline
+    # save fails, leaving the flag set), and a takeover landing in the same
+    # gap would then be unobservable to a claim registered with no basis. A
+    # basis is one dict read under the claim mutex; the claim scope consults
+    # it only for a rewrite, so an append-shaped save pays the open and the
+    # close and nothing else. An owned basis is closed by ``_do`` itself once
+    # the save settles — closing it from this side on a cancelled await would
+    # retire the watch while the executor thread is still working under it —
+    # with the loop-side ``finally`` closing only when the worker provably
+    # never ran (close is idempotent per basis, so the two sides cannot
+    # double-release a holder).
+    _basis, _owned_basis = _takeover_ordering.open_dispatch_basis(
+        state,
+        slot,
+        takeover_basis,
+        expected_slot_name=expected_slot_name,
+        truncating=bool(rewrite or messages is not None or slot._pending_rewrite),
+    )
+
     def _do() -> bool:
-        return _save_slot_to_history(
-            state,
-            slot,
-            messages,
-            closed=closed,
-            closed_at=closed_at,
-            force=force,
-            rewrite=rewrite,
-            expected_history_key=expected_history_key,
-            expected_slot_name=expected_slot_name,
-            rows_only=rows_only,
-            pending_mode_slot=pending_mode_slot,
-            mutes_opened_override=mutes_opened_override,
-            muted_override=muted_override,
-            after_commit_under_lock=after_commit_under_lock,
-            turn_timeout_override=turn_timeout_override,
-        )
+        try:
+            return _save_slot_to_history(
+                state,
+                slot,
+                messages,
+                closed=closed,
+                closed_at=closed_at,
+                force=force,
+                rewrite=rewrite,
+                expected_history_key=expected_history_key,
+                expected_slot_name=expected_slot_name,
+                rows_only=rows_only,
+                pending_mode_slot=pending_mode_slot,
+                mutes_opened_override=mutes_opened_override,
+                muted_override=muted_override,
+                after_commit_under_lock=after_commit_under_lock,
+                turn_timeout_override=turn_timeout_override,
+                takeover_basis=_basis,
+            )
+        finally:
+            SlotRegistry.close_takeover_basis(state, _owned_basis)
 
     def _begin_guarded_metadata_write() -> None:
         inflight = getattr(slot, "_metadata_persist_inflight", 0)
@@ -693,6 +890,12 @@ async def save_slot_off_loop(
         completion, which is a guarantee the count cannot give.
         """
         register_guarded_history_write(slot, save)
+
+    # The executor future once one is submitted: ``_do`` owns the owned basis
+    # close from that point on, and the outer ``finally`` reads this to tell a
+    # dispatch that never submitted (nothing ran, so this side closes) from
+    # one that did.
+    _submitted_future: "asyncio.Future[bool] | None" = None
 
     async def _dispatch_to_worker(active_loop: asyncio.AbstractEventLoop) -> bool:
         if guarded_metadata and not issued_by_the_retraction and getattr(slot, "is_closing", False):
@@ -736,7 +939,9 @@ async def save_slot_off_loop(
             except Exception:  # noqa: BLE001 - a slot double may not accept it
                 pass
             return False
+        nonlocal _submitted_future
         save = active_loop.run_in_executor(None, _do)
+        _submitted_future = save
         # ``run_in_executor`` returns an asyncio Future bound to ``active_loop``;
         # its callbacks therefore already run on that loop. Register before any
         # await so adoption follows the worker's completion even when the
@@ -744,9 +949,8 @@ async def save_slot_off_loop(
         save.add_done_callback(
             lambda _completed: apply_pending_slot_memory_mode(state, pending_mode_slot)
         )
-        if not guarded_metadata:
-            return await save
-        _register_guarded_write(save)
+        if guarded_metadata:
+            _register_guarded_write(save)
         # Shield the FUTURE from this caller's cancellation. Cancelling an
         # asyncio future returned by ``run_in_executor`` succeeds whatever the
         # worker thread is doing -- the chained cancel of the underlying
@@ -754,53 +958,77 @@ async def save_slot_off_loop(
         # unshielded await would resolve the registration above while the write
         # is still on its way to the rename, which is the exact blindness the
         # registration exists to remove. The thread runs on either way; shielding
-        # only keeps it observable.
-        return await asyncio.shield(save)
+        # only keeps it observable. Every executor save is shielded, not only
+        # the registered ones: the worker owns the takeover-watch close, and an
+        # authorized durable write completes rather than being silently dropped
+        # from the queue. The cancellation still reaches the caller from the
+        # shield itself.
+        try:
+            return await asyncio.shield(save)
+        except asyncio.CancelledError:
+            # The caller's unwind closes ITS basis now, while the shielded
+            # worker may still be pre-registration under it — transfer the
+            # close to the worker's settlement so the watch outlives every
+            # takeover the running write must still observe.
+            _transfer_basis_to_worker(state, takeover_basis, save)
+            raise
 
     guarded_metadata = expected_history_key is not None
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is None:
+        loop: asyncio.AbstractEventLoop | None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            if best_effort:
+                try:
+                    return _do()
+                except Exception:  # noqa: BLE001 - best-effort durable copy
+                    # A swallowed failure must NOT be silently final: mark the slot
+                    # dirty so the periodic flush retries the write. Metadata-only
+                    # mutations (pin / folder / tag / mode) call this with
+                    # ``force=True`` but do not otherwise set ``_dirty``; without this
+                    # a lock timeout / I/O error would drop the change and the flush
+                    # would never retry it, losing an acknowledged edit after restart.
+                    slot._dirty = True
+                    logger.warning(
+                        "save_slot_off_loop: inline save failed slot=%s", slot.key, exc_info=True
+                    )
+                    return True
+            return _do()
         if best_effort:
+            if guarded_metadata:
+                _begin_guarded_metadata_write()
             try:
-                return _do()
+                return await _dispatch_to_worker(loop)
             except Exception:  # noqa: BLE001 - best-effort durable copy
-                # A swallowed failure must NOT be silently final: mark the slot
-                # dirty so the periodic flush retries the write. Metadata-only
-                # mutations (pin / folder / tag / mode) call this with
-                # ``force=True`` but do not otherwise set ``_dirty``; without this
-                # a lock timeout / I/O error would drop the change and the flush
-                # would never retry it, losing an acknowledged edit after restart.
+                # See the inline branch above: re-arm the periodic flush so a
+                # swallowed metadata/message save is retried rather than lost.
                 slot._dirty = True
                 logger.warning(
-                    "save_slot_off_loop: inline save failed slot=%s", slot.key, exc_info=True
+                    "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
                 )
                 return True
-        return _do()
-    if best_effort:
+            finally:
+                if guarded_metadata:
+                    _finish_guarded_metadata_write()
+        # Non-best-effort: propagate so the caller can roll back (do NOT remove the
+        # session until the durable write is confirmed).
         if guarded_metadata:
             _begin_guarded_metadata_write()
         try:
             return await _dispatch_to_worker(loop)
-        except Exception:  # noqa: BLE001 - best-effort durable copy
-            # See the inline branch above: re-arm the periodic flush so a
-            # swallowed metadata/message save is retried rather than lost.
-            slot._dirty = True
-            logger.warning(
-                "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
-            )
-            return True
         finally:
             if guarded_metadata:
                 _finish_guarded_metadata_write()
-    # Non-best-effort: propagate so the caller can roll back (do NOT remove the
-    # session until the durable write is confirmed).
-    if guarded_metadata:
-        _begin_guarded_metadata_write()
-    try:
-        return await _dispatch_to_worker(loop)
     finally:
-        if guarded_metadata:
-            _finish_guarded_metadata_write()
+        # ``_do`` owns the close once it is submitted (the shield above keeps
+        # the worker running through a caller's cancellation, so submission
+        # means ``_do`` runs and its ``finally`` closes). This side releases
+        # the holder only when the dispatch never submitted anything -- the
+        # fence refusal, or a dispatch that raised before ``run_in_executor``;
+        # the inline no-loop paths run ``_do`` synchronously, so their close
+        # already happened and the idempotent close makes this a no-op there.
+        if _submitted_future is None:
+            SlotRegistry.close_takeover_basis(state, _owned_basis)

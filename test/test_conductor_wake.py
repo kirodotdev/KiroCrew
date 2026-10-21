@@ -1055,11 +1055,14 @@ def _record_close(monkeypatch, *, save_fails: bool) -> list[str]:
     events: list[str] = []
     monkeypatch.setattr(autonudge, "_INSTANCE", None)
 
-    async def _save(_state, _slot, *_a, **kw) -> None:
+    async def _save(_state, _slot, *_a, **kw) -> bool:
         if kw.get("closed"):
             events.append("save")
             if save_fails:
                 raise OSError("disk full")
+        # True: this double models the durable write itself; a bare None reads
+        # as the save's own refusal, which the close answers rather than ignores.
+        return True
 
     async def _wake(_svc, board: str, item_id: str = "") -> str:
         events.append(f"wake:{board}:{item_id}")

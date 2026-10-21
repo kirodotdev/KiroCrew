@@ -301,6 +301,91 @@ async def test_switch_variant_rejected_while_a_turn_is_in_flight(state) -> None:
 
 
 @pytest.mark.asyncio
+async def test_switch_variant_restores_the_row_when_the_save_is_refused(state) -> None:
+    """A refused switch puts the pre-switch row back before answering 409.
+
+    The switch mutates the live row before its durable write, and a refusal
+    leaves that window unpersisted but not inert: a popped slot's teardown
+    drain re-serializes it onto the transcript a takeover holds, and a live
+    slot's periodic flush persists it unguarded — either would land a variant
+    the 409 reported withdrawn.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot.append("assistant", "the original answer")
+    row = slot.messages[-1]
+    row["ts"] = "2026-09-21T10:00:00Z"
+    row["variants"] = [
+        {"content": "the original answer", "ts": "2026-09-21T10:00:00Z"},
+        {"content": "a different take", "ts": "2026-09-21T10:00:05Z"},
+    ]
+
+    with patch(
+        "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+        AsyncMock(return_value=False),
+    ):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 1})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "switch_variant_save_refused"
+    assert row["content"] == "the original answer"
+    assert row["ts"] == "2026-09-21T10:00:00Z"
+    assert "variant_idx" not in row, "an absent pre-switch index is restored as absence"
+    assert row["variants"][1]["content"] == "a different take", "variants stay selectable"
+
+
+@pytest.mark.asyncio
+async def test_switch_variant_restores_the_row_before_an_app_is_answered_not_found(state) -> None:
+    """An app told its switch failed must not have the switched variant persisted anyway.
+
+    The takeover that pops the slot during the switch's save is the case the
+    restore exists for, and it is also the case in which an app caller is
+    answered the anti-enumeration 404. The pre-switch row must be back BEFORE
+    that answer: the popped slot's teardown drain re-serializes its window onto
+    the transcript the takeover holds, so a row left switched lands the variant
+    the app was told was withdrawn.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot._app = "some-app"
+    slot.append("assistant", "the original answer")
+    row = slot.messages[-1]
+    row["ts"] = "2026-09-21T10:00:00Z"
+    row["variants"] = [
+        {"content": "the original answer", "ts": "2026-09-21T10:00:00Z"},
+        {"content": "a different take", "ts": "2026-09-21T10:00:05Z"},
+    ]
+
+    async def _refused_after_a_pop(*args, **kwargs):
+        # The takeover lands while the write awaits its lock: the key is popped
+        # and the save's guards refuse.
+        state._slots.pop("s1", None)
+        return False
+
+    request = make_mocked_request(
+        "POST",
+        "/api/chat/slots/s1/switch-variant",
+        match_info={"slot": "s1"},
+        app=_make_regen_app(state),
+    )
+    request["app"] = "some-app"
+
+    async def _json():
+        return {"index": 1}
+
+    request.json = _json  # type: ignore[method-assign]
+    with patch(
+        "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+        AsyncMock(side_effect=_refused_after_a_pop),
+    ):
+        resp = await chat_regenerate.api_chat_slot_switch_variant(request)
+    assert resp.status == 404
+    assert resp.text is not None and "slot_not_found" in resp.text
+    assert row["content"] == "the original answer", "the popped slot still carries the switch"
+    assert row["ts"] == "2026-09-21T10:00:00Z"
+    assert "variant_idx" not in row
+    assert row["variants"][1]["content"] == "a different take"
+
+
+@pytest.mark.asyncio
 async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     """The broadcast leaves the process, so the chosen variant is redacted."""
     slot = state.get_or_create_slot("s1")

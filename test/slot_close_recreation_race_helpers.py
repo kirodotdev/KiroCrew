@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 import pytest
 
 from kiro_crew import autonudge
 from kiro_crew.dashboard import chat_handlers as handlers
+from kiro_crew.testing.wait import async_wait_until
 
 NAME = "chat-1-1785"
 
@@ -247,3 +249,84 @@ async def _publish_metadata(
     slot._title_origin = origin
     slot._title_refresh_mark = refresh_mark
     assert await handlers.save_slot_off_loop(state, slot, force=True, best_effort=False)
+
+
+async def _event_fired(event: threading.Event, bound: float) -> bool:
+    """Whether *event* fires within *bound*, polled from the loop.
+
+    Parking ``event.wait`` on the default executor would hold a pool thread the
+    code under test may itself need to make the event fire, so the wait would
+    starve on a one-thread pool; polling ``is_set`` holds none.
+    """
+    try:
+        await async_wait_until(event.is_set, timeout=bound, describe=lambda: "")
+    except AssertionError:
+        return event.is_set()
+    return True
+
+
+async def _close_handed_over_to_a_parked_taker(state, monkeypatch, *, close):
+    """Stage: a close whose archive loses to an ``adopt_closed`` rehydrate parked at its read.
+
+    Returns ``(key, rehydrate_task, read_release, unpark)``: the close has answered,
+    the key is empty, ``closed`` is unwritten, and the taker holds its note with
+    its read parked behind *read_release*; ``unpark()`` restores the real read for
+    any later rehydrate the test runs.
+    """
+    import threading
+
+    from kiro_crew.dashboard import chat_persistence
+    from kiro_crew.dashboard.chat_utils import slot_transcript_key
+
+    slot = state.get_or_create_slot(NAME)
+    for row in ("first question", "first answer", "second question", "second answer"):
+        slot.append("user" if "question" in row else "assistant", row)
+    slot.drain()
+    assert await handlers.save_slot_off_loop(state, slot, force=True)
+    key = slot_transcript_key(NAME)
+    slot.messages = list(slot.messages)[:2]
+    slot._pending_rewrite = True
+    slot._dirty = True
+    read_parked = threading.Event()
+    read_release = threading.Event()
+    real_prefetch = chat_persistence._prefetch_rehydrate_inputs
+
+    def _parked_prefetch(*args, **kwargs):
+        read_parked.set()
+        if not read_release.wait(10.0):
+            raise AssertionError("the parked rehydrate read was never released by the test")
+        return real_prefetch(*args, **kwargs)
+
+    monkeypatch.setattr(chat_persistence, "_prefetch_rehydrate_inputs", _parked_prefetch)
+    waiting = threading.Event()
+    real_wait = chat_persistence._await_takeover_ordering_settled
+
+    async def _observed_wait(owner, name):
+        waiting.set()
+        return await real_wait(owner, name)
+
+    monkeypatch.setattr(chat_persistence, "_await_takeover_ordering_settled", _observed_wait)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    _arm_running_turn(slot, entered, release)
+    if close == "cleanup":
+        _make_stale(state)
+        closing = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
+    else:
+        closing = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    await _reached(entered, closing, seam="the shielded task-cancel wait")
+    rehydrate = asyncio.create_task(
+        chat_persistence.rehydrate_slot_from_history_async(state, NAME, adopt_closed=True)
+    )
+    assert await _event_fired(waiting, 10.0), "the rehydrate never reached its wait"
+    release.set()
+    resp = await closing
+    assert resp.status == 200, resp.text
+    assert NAME not in state._slots
+    assert "closed" not in state.conversation_log.get_metadata(key)
+    assert await _event_fired(read_parked, 10.0), "the rehydrate never reached its read"
+
+    def unpark() -> None:
+        monkeypatch.setattr(chat_persistence, "_prefetch_rehydrate_inputs", real_prefetch)
+
+    return key, rehydrate, read_release, unpark
