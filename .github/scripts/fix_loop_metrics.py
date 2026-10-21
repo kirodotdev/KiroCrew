@@ -3,7 +3,7 @@
 
 Computes every NUMBER the weekly report carries, so the model half only
 classifies and narrates (same contract as ship-report.yml: counts are
-deterministic, prose is the model's). Four metric groups over a trailing
+deterministic, prose is the model's). Five metric groups over a trailing
 window of the current branch's history:
 
   volume    -- commits, fix commits, fix share
@@ -12,6 +12,11 @@ window of the current branch's history:
                traced_to_pr / no_pr / add_only; bug age buckets + median
   deferrals -- open `deferred-finding` issues: tracked share (assignee +
                'Due: YYYY-MM-DD' body line or milestone due), overdue count
+  overrides -- `/ai-review override` records the handler posted in the window:
+               total, count per class, how many the PR author recorded about
+               their own PR, `deferred` records with no issue, and every
+               `owner-decision` (listed). A record from before classes existed
+               counts as `unclassified`, the old command as `legacy`.
   harvest   -- merged fix-titled PRs in the window carrying a
                '## Pattern harvest' section. Scoped to PRs merged into the
                DEFAULT branch whose own hygiene check RAN under the gate: a
@@ -183,6 +188,112 @@ def deferral_metrics(repo: str) -> dict:
         "tracked": tracked,
         "tracked_pct": round(100 * tracked / total, 1) if total else None,
         "overdue": overdue,
+    }
+
+
+# The override record, as `ai-review-human-override.yml` writes it: line 1 is the
+# marker every lane clears on, line 2 the class record. Transcribed from
+# `_review_contract.OVERRIDE_MARKER_RE` / `OVERRIDE_CLASS_RE` because this script
+# is stdlib-only and cannot import the skill; a test pins the two together.
+OVERRIDE_BOT = "github-actions[bot]"
+OVERRIDE_MARKER_RE = re.compile(
+    r"\A<!-- ai-review-human-override target=([a-z0-9-]+) head=([0-9a-fA-F]{7,40})"
+    r" actor=(\S+) source=([0-9]+) -->"
+)
+OVERRIDE_CLASS_RE = re.compile(
+    r"\A[^\n]*\n<!-- ai-review-override-record class=([a-z-]+) issue=([0-9]+|none)"
+    r" author_is_actor=(true|false)(?: anchors=([a-z0-9/,-]+))? -->"
+)
+OWNER_DECISION_LISTED = 25
+
+
+def json_values(text: str) -> list:
+    """Every top-level JSON value in ``text``, flattened one level when it is a list.
+
+    `gh api --paginate` prints one JSON array per page; depending on the gh
+    version they arrive as one merged array or back to back. Both parse.
+    """
+    decoder = json.JSONDecoder()
+    values: list = []
+    pos = 0
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        value, pos = decoder.raw_decode(text, pos)
+        values.extend(value if isinstance(value, list) else [value])
+    return values
+
+
+def override_record(comment: dict) -> dict | None:
+    """The class record of a bot-authored override comment, else None.
+
+    Authority is the bot authorship, as in `parse_override_record`: the same
+    bytes from a person's account are not a record and are not counted.
+    """
+    if (comment.get("user") or {}).get("login") != OVERRIDE_BOT:
+        return None
+    body = comment.get("body") or ""
+    marker = OVERRIDE_MARKER_RE.match(body)
+    if not marker:
+        return None
+    cls = OVERRIDE_CLASS_RE.match(body)
+    if not cls:
+        return {
+            "class": "unclassified",
+            "issue": "",
+            "author_is_actor": None,
+            "actor": marker.group(3),
+        }
+    return {
+        "class": cls.group(1),
+        "issue": "" if cls.group(2) == "none" else cls.group(2),
+        "author_is_actor": cls.group(3) == "true",
+        "actor": marker.group(3),
+    }
+
+
+def override_metrics(repo: str, since_iso: str) -> dict:
+    """Count the override records the handler posted since ``since_iso``.
+
+    One repository-wide read of issue comments (every PR comment is an issue
+    comment), filtered on bot authorship and the marker. A failed read raises,
+    like every other group: a false zero here would read as "nobody overrode".
+    """
+    path = f"repos/{repo}/issues/comments?since={since_iso}&per_page=100"
+    out = run(["gh", "api", path, "--paginate"])
+    comments = json_values(out) if out.strip() else []
+    by_class: dict[str, int] = {}
+    total = self_authored = deferred_without_issue = 0
+    owner_decisions: list[dict] = []
+    for comment in comments:
+        # `since` selects on the last UPDATE; the window is on creation.
+        if (comment.get("created_at") or "") < since_iso:
+            continue
+        record = override_record(comment)
+        if record is None:
+            continue
+        total += 1
+        by_class[record["class"]] = by_class.get(record["class"], 0) + 1
+        if record["author_is_actor"]:
+            self_authored += 1
+        if record["class"] == "deferred" and not record["issue"]:
+            deferred_without_issue += 1
+        if record["class"] == "owner-decision":
+            owner_decisions.append(
+                {
+                    "pr": "#" + (comment.get("issue_url") or "").rsplit("/", 1)[-1],
+                    "actor": record["actor"],
+                    "url": comment.get("html_url") or "",
+                }
+            )
+    return {
+        "overrides_total": total,
+        "overrides_by_class": dict(sorted(by_class.items())),
+        "overrides_self_authored": self_authored,
+        "overrides_deferred_without_issue": deferred_without_issue,
+        "owner_decisions": owner_decisions,
     }
 
 
@@ -469,6 +580,7 @@ def main() -> int:
         },
         "top_culprit_prs": [{"pr": f"#{n}", "fixes": c} for n, c in top_culprits],
         "deferrals": deferral_metrics(args.repo),
+        "overrides": override_metrics(args.repo, args.since_iso),
         "harvest": harvest_metrics(args.repo, args.since_iso),
     }
 
@@ -476,6 +588,19 @@ def main() -> int:
         json.dump(result, f, indent=2)
 
     vol, szz, dfr, hrv = result["volume"], result["szz"], result["deferrals"], result["harvest"]
+    ovr = result["overrides"]
+    by_class = ", ".join(f"{k} {v}" for k, v in ovr["overrides_by_class"].items()) or "none"
+    owner = ovr["owner_decisions"]
+    owner_cell = (
+        "; ".join(f"{d['pr']} by @{d['actor']}" for d in owner[:OWNER_DECISION_LISTED])
+        + (
+            f"; and {len(owner) - OWNER_DECISION_LISTED} more"
+            if len(owner) > OWNER_DECISION_LISTED
+            else ""
+        )
+        if owner
+        else "none"
+    )
 
     def pct(value: object) -> str:
         """Render a percentage, or `n/a` when the denominator was zero.
@@ -498,6 +623,11 @@ def main() -> int:
         f"| Median bug age (days) | {szz['median_age_days']} |",
         f"| Deferred findings open / tracked / overdue | "
         f"{dfr['open']} / {dfr['tracked']} ({pct(dfr['tracked_pct'])}) / {dfr['overdue']} |",
+        f"| Overrides recorded / by the PR author on their own PR | "
+        f"{ovr['overrides_total']} / {ovr['overrides_self_authored']} |",
+        f"| Overrides by class | {by_class} |",
+        f"| Deferred overrides with no issue | {ovr['overrides_deferred_without_issue']} |",
+        f"| Owner decisions | {len(owner)}: {owner_cell} |",
         f"| Harvest-section adoption on fix PRs | "
         f"{hrv['with_harvest_section']}/{hrv['merged_fix_prs']} ({pct(hrv['adoption_pct'])}) |",
         # Escapes are the actionable half: on the default branch the gate is

@@ -267,7 +267,11 @@ jobs:
                (7-char hash + subject, nothing else); a short section judging
                the countermeasures from metrics.json (deferral tracking rate,
                harvest adoption) — if both are still near zero, say plainly the
-               discipline mechanisms are not yet landed or not yet adopted; one
+               discipline mechanisms are not yet landed or not yet adopted; also
+               the override record (`overrides` in metrics.json: how many by
+               class, how many the PR author recorded on their own PR, any
+               `deferred` with no issue, and each `owner-decision`), reporting
+               the counts as given and judging none of them; one
                concrete recommendation. No emojis. Percentages to one decimal.
 
       # The numbers the issue publishes as "deterministic" are fetched AGAIN

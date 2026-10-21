@@ -347,6 +347,14 @@ Out-of-band lanes that never gate a PR:
   `deferred-finding` issue; it is advisory because a comment event cannot gate a
   PR. `deferred-findings-audit.yml` runs weekly and bumps every open
   `deferred-finding` issue past its due date.
+- **Override audit:** the weekly `fix-loop-analysis.yml` metrics job
+  (`.github/scripts/fix_loop_metrics.py`) counts the `/ai-review override` records the
+  handler posted in the window, from bot-authored comments only: `overrides_total`,
+  `overrides_by_class`, `overrides_self_authored` (the PR author recorded it on their own
+  PR), `overrides_deferred_without_issue` and `owner_decisions` (each one listed with its
+  PR and actor). A record from before classes existed counts as `unclassified` and the old
+  command as `legacy`. The numbers are in the report's table and in `metrics.json`; the
+  model narrates them and judges none of them.
 
 ### Scheduled workflows: failure surfacing
 
