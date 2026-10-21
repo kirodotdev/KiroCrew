@@ -1,6 +1,6 @@
 # Pi frame corpus
 
-Four files, all live. Read `../README.md` first for what a fixture is and what
+Every file here is live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -10,6 +10,7 @@ the corpus does and does not prove.
 | `session-load-live.jsonl` | live | a `session/load` from a second process: the replayed `user_message_chunk` / `agent_message_chunk` / `tool_call` updates and the load result, which carries `configOptions`, `models` and `modes` |
 | `compact-live.jsonl` | live | the initialize and `session/new` responses, four ordinary turns (`agent_message_chunk`, `usage_update`, `session/prompt` result), the `/compact` turn (pi's `Compaction completed` chunk and an `end_turn` result with no `usage_update` and no status frame), and one ordinary turn after it |
 | `mcp-stdio-mount-live.jsonl` | live | the initialize and `session/new` responses, a `tool_call` for `mcp__probe_server__echo`, the `session/request_permission` the adapter forwarded from Kiro Crew's gate extension, the updates through `completed` carrying the server's own result, and the result |
+| `member-panel-mount-live.jsonl` | live | the initialize and `session/new` responses for a crew member session, a `tool_call` for `mcp__kirocrew_panel__panel_publish`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the panel server's own answer, and the result |
 
 Captured off `pi-acp` 0.0.33 spawning `pi` 0.85.1 and driving a locally
 served model configured in pi's own `models.json`, with agent-to-client lines
@@ -43,6 +44,29 @@ raised `session/request_permission` through the gate first; and the server's res
 (`ECHO:ping`) reached the turn. The same drive with a same-named server in pi's own
 `mcp.json` ended the call `failed` with the gate's refusal, and the file-configured
 server was never asked `tools/call`. An array-only drive spawns no server at all.
+
+## What the member panel capture establishes
+
+`member-panel-mount-live.jsonl` is the evidence `ACP_BACKENDS_MEMBER_PANEL` holds pi
+to. Taken off `pi-acp` 0.0.34 spawning `pi` 1.2.0 through the gate launcher, for a
+crew member session key. The array was not written by hand: `AcpClient`'s own resolver
+composed it for that key on pi (`kirocrew-dashboard`, then `kirocrew-panel`, each with
+the signed per-session token, `KIROCREW_SESSION_KEY` and the bound port of a
+disposable local gateway), `acp.harness.pi.pi_mcp_handoff_payload` sealed it into the
+handoff file, and the gate extension registered both. The scripted model on the
+loopback interface was offered all ten `mcp__kirocrew_panel__*` tools and called
+`panel_publish`; the call raised `session/request_permission` through the gate
+first; and the panel server's own answer reached the turn.
+
+That answer is `identity_unattested`, and it is the expected one for this capture:
+the server dialled the gateway with the session's token, and the gateway refused to
+vouch for a session it had not created. A gateway-created pi session cannot run on
+the recording host, which has no sandbox backend (no user namespaces), and Crew
+refuses to spawn pi unsandboxed, so the capture was driven by a scratch stdio driver
+outside the product path. What it pins is the half this membership adds: the panel
+element reaches pi, is reachable, and is gated. The publish itself is the same route
+every panel member uses (`api_agent_panel_publish`), and nothing in it reads the
+backend.
 
 ## What the permission capture establishes
 
