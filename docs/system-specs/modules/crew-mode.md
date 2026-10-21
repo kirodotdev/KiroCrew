@@ -997,6 +997,23 @@ A template has no workspace of its own, so a worker template a crew opens with
 `session_create` (`agent="kirocrew-worker"`) inherits the crew's workspace along
 with its store; naming another crew bound elsewhere stays refused
 (`agent_workspace_mismatch`, see session-control.md's refusal table).
+
+A KAS member whose session-control mount is admitted also receives a separate,
+session-specific `kirocrew-core` process for managed workers. That process serves
+only `spawn_run`, `spawn_status`, `spawn_list` and `spawn_steer`; it retains
+`skill_search` only when the existing projection already supplied that loader.
+The mount carries the session's signed stub token and its finite scope in the
+process environment, so the existing pooled-backend environment hash isolates it
+from an ordinary full core process. `session/new` and `session/load` compose the
+mount before managed-server hoisting. The exact source spec used for the KAS
+projection travels with the payload, so authored core selections, an empty tool
+allowlist, exclusions, disabled tools, permissions and the derived-spec freshness
+snapshot are preserved without a second file read. An unsigned or non-member
+session, a session whose dashboard member mount was withheld, a malformed policy,
+or a native core restriction gains nothing. Completion and failure delivery stay
+on the existing `SubagentManager` callback path; this mount adds no poller or
+second delivery mechanism.
+
 The first crewmate (config key `mate`, `agent_files.ASSISTANT_MEMBER_NAME`,
 shown as Mate while its `display_name` is empty) is an ordinary crewmate. Every
 install, fresh or upgraded, creates it once (`agent_materialization/first_crewmate.create_first_crewmate_once`,

@@ -449,7 +449,7 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras()
 
-        def _build() -> tuple[list[dict[str, Any]], Any]:
+        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, Any]]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -545,11 +545,16 @@ class KasHarness(MembershipHarness):
                     session_key=session_key,
                 ),
                 snapshot,
+                spec,
             )
 
         try:
-            built, built_from = await asyncio.to_thread(_build)
-            return SessionExtras(custom_agents=built, derived_spec_snapshot=built_from)
+            built, built_from, source_spec = await asyncio.to_thread(_build)
+            return SessionExtras(
+                custom_agents=built,
+                derived_spec_snapshot=built_from,
+                source_spec=source_spec,
+            )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
         except KasAgentTranslationError as exc:

@@ -225,6 +225,17 @@ from the gateway rather than the editable agent environment. Native tools keep
 their own session identity and reach the serving instance on a non-default port;
 third-party servers receive neither value.
 
+A KAS member with the admitted dashboard session-control mount receives one
+additional managed `kirocrew-core` element scoped to the four worker-management
+verbs (`spawn_run`, `spawn_status`, `spawn_list`, `spawn_steer`). The element's
+environment carries both the signed session token and a validated finite-tool
+list. `mcp_core` applies that list identically to `tools/list`, names-only
+inspection and dispatch; a missing list preserves the ordinary full core server,
+while malformed or unknown names expose nothing. The scope variable is an
+ordinary non-secret environment input, so `hash_effective_env` includes it in
+the existing `PoolKey`: finite and full core processes cannot share a pooled
+backend. No module global stores a caller's scope.
+
 An entry may also carry a **`spec_gate`** — a predicate consulted at spec
 EMISSION time. `kirocrew-computer` is the one row that has one, and the
 distinction it draws is the difference between a capability that advertises no

@@ -11,6 +11,8 @@ member context reads.
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -21,6 +23,12 @@ from kiro_crew.members_parts.member_space import (
     MEMORY_STORE_SLOT_SUFFIX,
     validate_slug,
 )
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from typing import Any
 
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.members")
@@ -99,6 +107,170 @@ def select_provider_backend(
 #: them). Session-level, so the on-disk agent template is untouched and every
 #: other session on the same template keeps its ordinary tool set.
 MEMBER_DISPATCH_SERVER = "kirocrew-dashboard"
+
+#: The complete public-core delegation surface a KAS member may receive through
+#: its session-specific managed core process. The process also retains
+#: ``skill_search`` when the existing projection already supplied that loader.
+MEMBER_MANAGED_SPAWN_TOOLS = ("spawn_run", "spawn_status", "spawn_list", "spawn_steer")
+
+#: Per-process scope consumed by :mod:`kiro_crew.mcp_core`. It is carried only
+#: on the managed element below, so the ordinary core process remains unchanged.
+MEMBER_MANAGED_SPAWN_ENV = "KIROCREW_MEMBER_FINITE_SPAWN_TOOLS"
+
+
+def member_managed_spawn_mount(
+    custom_agents: list[dict[str, Any]] | None,
+    agent_id: str,
+    session_key: str,
+    session_token: str,
+    session_servers: list[dict[str, Any]],
+    source_spec: Any,
+    *,
+    work_dir: str | Path | None = None,
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    """Add finite managed delegation to one admitted KAS member session.
+
+    ``source_spec`` is the exact object used to build ``custom_agents``. It is
+    carried by the harness projection so this function never re-reads an agent
+    file after its freshness check. An authored core declaration or selector is
+    authoritative and is left alone. The generated element carries the actual
+    session token and a process-local tool scope; permissions, exclusions, the
+    captured descriptor and every unrelated server are copied unchanged.
+
+    Fail closed on malformed policy, native settings restrictions, an unsigned
+    or ordinary session, an empty tool surface, or a core selection this helper
+    did not create. No module global stores caller state; differing scope values
+    remain part of the existing process environment and pooled backend key.
+    """
+    unchanged = (custom_agents, session_servers)
+    if (
+        not is_member_session_key(session_key)
+        or not session_token
+        or not isinstance(custom_agents, list)
+        or not isinstance(source_spec, dict)
+    ):
+        return unchanged
+    try:
+        from kiro_crew.dashboard.session_control import member_dispatch_enabled
+
+        if not member_dispatch_enabled():
+            return unchanged
+    except Exception:
+        logger.warning(
+            "member session %s: finite spawn mount withheld because the member "
+            "dispatch setting could not be verified",
+            session_key,
+            exc_info=True,
+        )
+        return unchanged
+    descriptor = next(
+        (item for item in custom_agents if isinstance(item, dict) and item.get("id") == agent_id),
+        None,
+    )
+    if descriptor is None:
+        return unchanged
+    visible = descriptor.get("tools")
+    if visible != "*" and (not isinstance(visible, list) or not visible):
+        return unchanged
+
+    authored_servers = source_spec.get("mcpServers", {})
+    authored_tools = source_spec.get("tools")
+    if not isinstance(authored_servers, dict):
+        return unchanged
+    if "kirocrew-core" in authored_servers:
+        return unchanged
+    if authored_tools != "*" and not isinstance(authored_tools, list):
+        return unchanged
+    if isinstance(authored_tools, list) and not authored_tools:
+        return unchanged
+    if isinstance(authored_tools, list) and any(
+        isinstance(ref, str) and (ref == "@kirocrew-core" or ref.startswith("@kirocrew-core/"))
+        for ref in authored_tools
+    ):
+        return unchanged
+
+    policy = source_spec.get("managedToolPolicy", {})
+    excluded = source_spec.get("excludedTools", [])
+    if not isinstance(policy, dict) or not isinstance(excluded, list):
+        return unchanged
+    policy_excluded = policy.get("exclude", [])
+    if not isinstance(policy_excluded, list) or any(
+        not isinstance(value, str) for value in [*policy_excluded, *excluded]
+    ):
+        return unchanged
+    restrictions = [*policy_excluded, *excluded]
+    selected = tuple(
+        name
+        for name in MEMBER_MANAGED_SPAWN_TOOLS
+        if not any(
+            restriction in ("kirocrew-core", "@kirocrew-core")
+            or fnmatch.fnmatchcase(spelling, restriction)
+            for restriction in restrictions
+            for spelling in (name, f"@kirocrew-core/{name}", f"kirocrew-core/{name}")
+        )
+    )
+    if "spawn_run" not in selected:
+        return unchanged
+
+    core_refs = (
+        [ref for ref in visible if isinstance(ref, str) and ref.startswith("@kirocrew-core")]
+        if isinstance(visible, list)
+        else []
+    )
+    if any(ref != "@kirocrew-core/skill_search" for ref in core_refs):
+        return unchanged
+
+    entry = _member_session_element("kirocrew-core", "mcp-core", session_key, session_token)
+    if entry is None:
+        return unchanged
+    try:
+        from kiro_crew.acp.session_mcp import native_mount_withholding, native_settings_sources
+
+        declaration = {"command": entry["command"], "args": entry["args"]}
+        if (
+            native_mount_withholding(
+                "kirocrew-core", declaration, native_settings_sources(work_dir)
+            )
+            is not None
+        ):
+            return unchanged
+    except Exception:
+        logger.warning(
+            "member session %s: finite spawn mount withheld because its native "
+            "settings could not be verified",
+            session_key,
+            exc_info=True,
+        )
+        return unchanged
+
+    scoped = [*selected]
+    if "@kirocrew-core/skill_search" in core_refs:
+        scoped.append("skill_search")
+    env = entry.get("env")
+    if not isinstance(env, list):
+        return unchanged
+    entry = dict(entry)
+    entry["env"] = [
+        *env,
+        {
+            "name": MEMBER_MANAGED_SPAWN_ENV,
+            "value": json.dumps(scoped, separators=(",", ":")),
+        },
+    ]
+
+    widened = dict(descriptor)
+    if isinstance(visible, list):
+        widened["tools"] = [
+            *visible,
+            *(f"@kirocrew-core/{name}" for name in selected),
+        ]
+    agents = [widened if item is descriptor else item for item in custom_agents]
+    servers = [
+        item
+        for item in session_servers
+        if not (isinstance(item, dict) and item.get("name") == "kirocrew-core")
+    ]
+    return agents, [*servers, entry]
 
 
 def member_dispatch_session_server(

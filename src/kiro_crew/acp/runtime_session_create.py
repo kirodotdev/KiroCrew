@@ -13,8 +13,8 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
-Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_crew_agent``,
+``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_process``, ``_start_collect_timeout``, ``_work_dir``.
 """
@@ -48,7 +48,7 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
-from kiro_crew.acp.types import METHOD_SESSION_NEW, JsonRpcMessage
+from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_NEW, JsonRpcMessage
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -311,6 +311,25 @@ async def create_session(
         session_key=session_key,
     )
     kas_agents = kas_extras.custom_agents
+    if (
+        self._acp_backend == ACP_BACKEND_KAS
+        and member_session_key
+        and member_mounted
+        and kas_agents is not None
+    ):
+        from kiro_crew.members import member_managed_spawn_mount
+
+        kas_agents, mcp_servers = await asyncio.to_thread(
+            member_managed_spawn_mount,
+            kas_agents,
+            active_agent,
+            member_session_key,
+            stub_token,
+            mcp_servers,
+            kas_extras.source_spec,
+            work_dir=session_work_dir,
+        )
+        assert mcp_servers is not None
     # The generation the wire payload was built from, or None when this host takes its
     # agent at spawn time. Consumed by the activation bracket below.
     payload_snapshot = kas_extras.derived_spec_snapshot

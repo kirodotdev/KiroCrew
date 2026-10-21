@@ -20,6 +20,7 @@ import contextlib
 import copy
 import importlib as _importlib
 import json
+import os
 import re as _re
 import socket
 import sys as _sys
@@ -164,13 +165,41 @@ WAIT_STALENESS_PING_SECS = 60.0
 _SKILL_FETCH_MAX_CHARS = 32 * 1024
 
 
+def _member_finite_spawn_scope() -> frozenset[str] | None:
+    """Return this process's optional KAS-member tool scope.
+
+    The scope is an environment input on a dedicated managed core process, not
+    caller state held in this module. Missing means the ordinary full server.
+    Malformed or widened values fail closed to an empty surface.
+    """
+    from kiro_crew.members import MEMBER_MANAGED_SPAWN_ENV, MEMBER_MANAGED_SPAWN_TOOLS
+
+    raw = os.environ.get(MEMBER_MANAGED_SPAWN_ENV)
+    if raw is None:
+        return None
+    try:
+        names = json.loads(raw)
+    except (TypeError, ValueError):
+        return frozenset()
+    permitted = {*MEMBER_MANAGED_SPAWN_TOOLS, "skill_search"}
+    if not isinstance(names, list) or any(
+        not isinstance(name, str) or name not in permitted for name in names
+    ):
+        return frozenset()
+    return frozenset(names)
+
+
 def _list_tools() -> list[dict[str, Any]]:
     """Tool descriptors served for ``tools/list``.
 
     Declared per domain under :mod:`kiro_crew.mcp_tools`; this stays the
     entry point kiro-cli and in-process discovery both read.
     """
-    return with_titles(CORE_MCP_SERVER, build_tool_list())
+    scope = _member_finite_spawn_scope()
+    tools = build_tool_list()
+    if scope is not None:
+        tools = [tool for tool in tools if tool.get("name") in scope]
+    return with_titles(CORE_MCP_SERVER, tools)
 
 
 def _list_tool_names() -> list[str]:
@@ -185,7 +214,9 @@ def _list_tool_names() -> list[str]:
     not applied: it only decorates descriptions, which a names-only caller
     discards.
     """
-    return build_tool_names()
+    scope = _member_finite_spawn_scope()
+    names = build_tool_names()
+    return names if scope is None else [name for name in names if name in scope]
 
 
 # ── Knowledge-search store/embedder cache ──
@@ -948,6 +979,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     under global YOLO or channel trust the request is approved with no human in
     the loop -- so the boundary has to hold at MCP dispatch too.
     """
+    scope = _member_finite_spawn_scope()
+    if scope is not None and name not in scope:
+        return "Error: tool is outside this member's finite spawn mount"
     chan_err = _deny_channel_agent_dispatch(name, args)
     if chan_err:
         return chan_err

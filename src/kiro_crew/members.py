@@ -19,7 +19,9 @@ frequency counts taken from it stay stable.
 
 from __future__ import annotations
 
+import fnmatch
 import importlib as _importlib
+import json
 import logging
 import sys as _sys
 from typing import TYPE_CHECKING

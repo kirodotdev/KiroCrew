@@ -458,6 +458,8 @@ class TestDoctorStt:
         """When provider=transcribe and amazon_transcribe is not importable,
         doctor reports it as an OPTIONAL gap (public pip extra) and does NOT
         treat it as a hard failure."""
+        # This arm prints install advice; uv environments may have no pip.
+        monkeypatch.setattr("kiro_crew.cli_doctor.pip_install_channel_available", lambda: True)
         self._stt(monkeypatch, provider="transcribe", transcribe_region="us-west-2")
         # setitem(sys.modules, ..., None) is the documented way to make an import
         # raise for a package that is already loaded at test time.
@@ -474,6 +476,8 @@ class TestDoctorStt:
     def test_doctor_stt_transcribe_boto3_missing(self, tmp_path, capsys, monkeypatch):
         """When provider=transcribe and boto3 is not importable, doctor
         reports it as an OPTIONAL gap (public pip extra), not a hard failure."""
+        # This arm prints install advice; uv environments may have no pip.
+        monkeypatch.setattr("kiro_crew.cli_doctor.pip_install_channel_available", lambda: True)
         self._stt(monkeypatch, provider="transcribe", transcribe_region="us-west-2")
         out, code = self._report(
             tmp_path,

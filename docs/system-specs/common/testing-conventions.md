@@ -570,7 +570,11 @@ three shapes for every facade that serves a mirror:
 
 A module first imported while a patch is active binds the patched object by name
 (`from x import f` copies the object), so the patch outlives itself in that
-module. For `kiro_agents_dir` and `kiro_sessions_dir`, redirect through
+module. Import the consumer before patching its dependencies; when patching both,
+enter the consumer patches first. For example, patch `cli_config.config_path`
+before `config.loader.config_path`, so the CLI never captures a temporary loader
+mock and sends a later test's config write to an earlier test's directory.
+For `kiro_agents_dir` and `kiro_sessions_dir`, redirect through
 `config.paths._agents_dir_override` / `_sessions_dir_override`, which every
 binding reads inside the function body.
 
@@ -2477,7 +2481,9 @@ The ten failures were the venv, not the code:
   venv, so every build-planning test captured an empty command list. Already a documented
   class (§ Coverage that only looks like coverage); it now has a fixture: pin the probe
   truthy with a `ModuleSpec("pip", loader=None)` for the planning branch and falsy for
-  the skip branch, never leave it to the host.
+  the skip branch, never leave it to the host. Doctor tests that assert an optional
+  package's install hint likewise pin `cli_doctor.pip_install_channel_available`,
+  so a uv interpreter without pip does not silently select the no-advice branch.
 - **A fake `subprocess.run` that routes by SUBSTRING of the joined argv is
   host-dependent.** The Linux service test's responder matched `"restart" in " ".join(argv)`;
   the unit-file write's argv carries a `mkstemp` path under `TMPDIR`, and in
