@@ -19,6 +19,9 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
 ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
 
+``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
+``_mcp_secret_server``.
+
 Instance fields read: ``_acp_backend``, ``_extra_env``, ``_member_context``, ``_model``,
 ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``, ``_work_dir``.
 """
@@ -35,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import agent_scratch, member_essential_context, platform_compat
+from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -1120,8 +1124,10 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     call the projection makes: a spec judged here that differed from the one
     projected would turn deferral on for a session with no loader.
     An unreadable spec grants nothing (fail closed: ``enabled: false``).
+    ``secretStorage`` is added first, when :func:`_with_mcp_sign_in_storage` says so.
     """
     base = self._harness.client_capabilities
+    base = await _with_mcp_sign_in_storage(self, base)
     if self._tool_search is None:
         return base
     spec = await asyncio.to_thread(self._projected_spawn_spec)
@@ -1137,6 +1143,26 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
         loader_granted,
     )
     return with_client_meta_settings(base, settings)
+
+
+async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -> dict[str, Any]:
+    """*base*, plus ``_meta.kiro.secretStorage`` when this spawn keeps MCP sign-ins.
+
+    Only a host that runs MCP sign-ins through Crew (``opens_external_urls``, KAS
+    today) can be asked, and only with ``agent.kas_persist_mcp_sign_in`` on. The
+    decision is made once per spawn and held on the runtime as the server that
+    answers this process's ``_kiro/secret/*`` requests, so the reader loop serves
+    them exactly when this handshake declared the capability, whatever config
+    says later.
+    """
+    runtime._mcp_secret_server = None
+    if not runtime._harness.opens_external_urls:
+        return base
+    if not await asyncio.to_thread(kas_secret_storage.persistence_enabled):
+        return base
+    runtime._mcp_secret_server = kas_secret_storage.SecretStorageServer()
+    logger.info("AcpRuntime handshake: remote MCP sign-ins are kept in Crew's grant vault")
+    return kas_secret_storage.with_secret_storage(base)
 
 
 def _projected_spawn_spec(self: AcpRuntime) -> dict[str, Any] | None:

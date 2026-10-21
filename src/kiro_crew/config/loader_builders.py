@@ -540,6 +540,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         acp_backend=_read_backend_choice(section, agent_data, "acp_backend"),
         member_acp_backend=_read_backend_choice(section, agent_data, "member_acp_backend"),
         kas_bundle=section.read("kas_bundle", _safe_bool),
+        kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         default_agent=section.get("default_agent"),
         # Through the module alias rather than a new top-level import: the loader's

@@ -95,6 +95,19 @@ class SecretVault:
         plaintext = self._decrypt_entry(name, entries[name], key)
         return SecretValue(plaintext.decode("utf-8"))
 
+    def get_with_revision(self, name: str) -> Optional[tuple[SecretValue, str]]:
+        """The secret and its :func:`entry_revision`, read from one snapshot, or None.
+
+        Pairs with :meth:`delete_if_revision`: a reader that later deletes what it
+        read deletes only that entry, never one another writer stored since.
+        """
+        entries = self._load_entries()
+        if name not in entries:
+            return None
+        entry = entries[name]
+        plaintext = self._decrypt_entry(name, entry, self._get_or_create_key())
+        return SecretValue(plaintext.decode("utf-8")), entry_revision(entry)
+
     def get_many(self, names: list[str]) -> dict[str, Optional[SecretValue]]:
         """Batch-retrieve secrets, loading the store and key exactly once.
 
