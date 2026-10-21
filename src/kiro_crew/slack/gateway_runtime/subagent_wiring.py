@@ -471,7 +471,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         nonlocal _slots_push_pending
         _slots_push_pending = False
         if self.dashboard_state:
-            self.dashboard_state.push_slots_update()
+            self.dashboard_state.push_subagent_patch()
 
     def _schedule_slots_push() -> None:
         nonlocal _slots_push_pending
