@@ -486,7 +486,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // A crewmate's own thread is named by the title below, so the chip does not
     // print the same name a second time; the line keeps its height and the
     // Members-page chip.
-    const agentDisplay = agentName && memberTitle === null ? withMemorySource(agentOrDefaultLabel(s.agent, defaultAgent), memoryTag) : ''
+    const agentDisplay = agentName && memberTitle === null ? withMemorySource(agentOrDefaultLabel(s.agent, defaultAgent, s.agent_kind), memoryTag) : ''
     // A DIVERGENCE, not a status: the row is advertising `agentName` while a
     // different agent answers the session — usually an app agent that was
     // removed, or one whose registration has not landed yet. Shown because the

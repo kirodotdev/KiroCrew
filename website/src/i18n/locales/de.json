@@ -5569,6 +5569,9 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "Conductor"
+    },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",
       "consent_required": "„{{speak}}“ braucht deine Bestätigung für Amazon Polly mit diesem AWS-Profil und dieser Region. Bestätige sie in den Text-zu-Sprache-Einstellungen und versuche es dann erneut.",

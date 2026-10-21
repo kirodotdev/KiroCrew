@@ -523,7 +523,7 @@ export default function ComposerDockView({
               // Uses the SLOT's stored agent (not `activeAgentName`, which has
               // already collapsed empty->default) so an agent-less slot reads
               // `<default> · default` and a pinned one reads the bare alias (#8770).
-              agentLabel={agentOrDefaultLabel(currentSlot?.agent, defaultAgent)}
+              agentLabel={agentOrDefaultLabel(currentSlot?.agent, defaultAgent, currentSlot?.agent_kind)}
               agentIsInheritedDefault={!currentSlot?.agent && !!defaultAgent}
               // Read from the same rows the picker lists, so the chip marks a
               // session exactly when the picker shows a same-name pair.

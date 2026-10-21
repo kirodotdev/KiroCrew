@@ -5670,6 +5670,9 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "Conducteur"
+    },
     "voicePlaybackNotice": {
       "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",
       "consent_required": "« {{speak}} » a besoin que tu confirmes Amazon Polly pour ce profil AWS et cette région. Confirme-le dans les paramètres de synthèse vocale, puis réessaie.",

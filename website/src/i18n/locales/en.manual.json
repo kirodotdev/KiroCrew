@@ -1540,6 +1540,9 @@
     }
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "Conductor"
+    },
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",
       "show_folder_in_side_panel": "Show folder in side panel"

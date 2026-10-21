@@ -33,11 +33,32 @@ export function withMemorySource(label: string, source: MemorySource | null): st
  * The one shared spelling for every surface that renders this state; do not
  * inline copies.
  */
-export function agentOrDefaultLabel(agent: string | undefined, defaultAgent: string): string {
-  if (agent) return agent
+export function agentOrDefaultLabel(
+  agent: string | undefined,
+  defaultAgent: string,
+  kind?: string,
+): string {
+  // `kind` is the namespace the session recorded for `agent` (`ChatSlot.agent_kind`).
+  // Only a recorded `template` pick gets a built-in display name: a crewmate that
+  // shares the name keeps it, and a kind-less pin is not guessed from its name.
+  if (agent) return kind === 'template' ? builtinAgentDisplayName(agent) : agent
   if (!defaultAgent) return 'default'
   const defaultLabel = i18nT('components.agentSelector.default')
-  return defaultAgent === 'default' && defaultLabel === 'default'
+  // An agent-less session runs the default TEMPLATE (#18342).
+  const shown = builtinAgentDisplayName(defaultAgent)
+  return shown === 'default' && defaultLabel === 'default'
     ? defaultLabel
-    : `${defaultAgent} · ${defaultLabel}`
+    : `${shown} · ${defaultLabel}`
+}
+
+/**
+ * Plain names for built-in provider templates whose spec name is a code name
+ * (#21531). Display only: the raw id stays the key for identity, routing and
+ * search everywhere else. Returns the raw name for every other agent.
+ */
+export function builtinAgentDisplayName(name: string): string {
+  switch (name) {
+    case 'kirocrew-conductor': return i18nT('components.agentLabel.builtin_conductor')
+    default: return name
+  }
 }

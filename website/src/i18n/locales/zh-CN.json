@@ -5468,6 +5468,9 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "调度者"
+    },
     "voicePlaybackNotice": {
       "failed": "{{speak}}失败。请检查文字转语音设置后重试。",
       "consent_required": "{{speak}}需要先为此 AWS 配置文件和区域确认使用 Amazon Polly。请在文字转语音设置中确认，然后重试。",
