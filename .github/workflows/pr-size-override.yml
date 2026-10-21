@@ -1,0 +1,192 @@
+name: PR Size Override
+
+# An owner approves a pull request that is over the PR Size limit with a comment
+# whose first line is:
+#
+#   /pr-size approve: <reason, 12 to 500 characters>
+#
+# issue_comment workflows execute from the trusted default branch, never from the
+# PR head. This handler validates the commenter, posts a bot-authored comment whose
+# first line is a hidden marker, and re-runs the `PR Size` check, which reads the
+# marker back. The check trusts a marker only in a comment written by
+# `github-actions[bot]`, so a marker typed by hand is ignored.
+#
+# Who counts as an owner: a collaborator with `admin`, `maintain` or `write`, read
+# from GET collaborators/<actor>/permission with the same retry and fail-closed
+# rule as ai-review-human-override.yml. The pull request's author may not approve
+# their own unless they are an `admin`. The rules live in
+# `.github/scripts/pr_size.py`; this file only does the API reads and writes.
+#
+# The comment body is UNTRUSTED input. It reaches the script only through the
+# environment (COMMENT_BODY), never through a `${{ }}` expression inside a script,
+# and nothing here evaluates it.
+
+on:
+  issue_comment:
+    types: [created]
+
+# Post the bot comment (pull-requests), re-run the check (actions). Deliberately no
+# contents:write and no id-token.
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-size-override-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record PR size approval
+    if: >-
+      github.event.issue.pull_request != null
+      && startsWith(github.event.comment.body, '/pr-size approve')
+    # Hosted, like ai-review-human-override.yml: any commenter can trigger this
+    # event, in-job permission validation is what gates the approval, and a
+    # non-collaborator's dispatch to the fleet would queue forever.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          persist-credentials: false
+
+      - name: Validate and record the approval
+        id: record
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          script=base/.github/scripts/pr_size.py
+
+          post_notice() {
+            jq -n --arg body "$1" '{body: $body}' \
+              | gh api --method POST "repos/$REPO/issues/$PR/comments" \
+                  --input - >/dev/null
+          }
+
+          if ! reason="$(python3 "$script" parse-approve)"; then
+            post_notice "PR Size approval not recorded. $reason"
+            exit 1
+          fi
+
+          if ! pr_json="$(gh api "repos/$REPO/pulls/$PR")"; then
+            post_notice "PR Size approval not recorded: the pull request could not be READ. Re-issue the command once the API is healthy."
+            exit 1
+          fi
+          state="$(printf '%s' "$pr_json" | jq -r '.state')"
+          author="$(printf '%s' "$pr_json" | jq -r '.user.login')"
+          head="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
+          files="$(printf '%s' "$pr_json" | jq -r '.changed_files')"
+          if [ "$state" != "open" ]; then
+            post_notice "PR Size approval not recorded: this pull request is not open."
+            exit 1
+          fi
+
+          # A permission read that FAILED is not one that said "no". HTTP 404 is
+          # the API answering "not a collaborator" (a legitimate negative). Any
+          # other failure is unknown: retry three times with a short backoff,
+          # then refuse naming the read, so the actor retries instead of chasing
+          # permissions. Both deny; an unreadable permission is not authorization.
+          permission=""
+          perm_read_ok=""
+          perm_err="$(mktemp)"
+          for attempt in 1 2 3; do
+            if permission="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+              --jq '.permission' 2>"$perm_err")"; then
+              perm_read_ok=1
+              break
+            fi
+            if grep -qiE 'HTTP 404|Not Found' "$perm_err"; then
+              permission=""
+              perm_read_ok=1
+              break
+            fi
+            echo "Reading $ACTOR's collaborator permission failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          rm -f "$perm_err"
+          if [ -z "$perm_read_ok" ]; then
+            echo "::error::Could not read $ACTOR's collaborator permission after 3 attempts. Refusing the approval without recording it."
+            post_notice "PR Size approval not recorded: your repository permission could not be READ (the collaborator-permission API did not answer after 3 attempts). This is not a permission denial. Re-issue the command once the API is healthy."
+            exit 1
+          fi
+
+          if ! refusal="$(python3 "$script" authorize \
+            --permission "$permission" --actor "$ACTOR" --author "$author" --files "$files")"; then
+            post_notice "PR Size approval not recorded: $refusal"
+            exit 1
+          fi
+
+          body="$(REASON="$reason" python3 "$script" render-comment \
+            --actor "$ACTOR" --files "$files" --head "$head" --source "$COMMENT_ID")"
+          post_notice "$body"
+          echo "::warning::PR size approved by @$ACTOR at $files files."
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      # The approval is already recorded above, so nothing below may fail the run:
+      # a red X here would read as a rejected approval. A run that cannot be
+      # re-run automatically is reported as a warning plus a PR notice.
+      - name: Re-run PR Size
+        if: steps.record.outputs.head != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          HEAD: ${{ steps.record.outputs.head }}
+        run: |
+          set -uo pipefail
+
+          post_notice() {
+            jq -n --arg body "$1" '{body: $body}' \
+              | gh api --method POST "repos/$REPO/issues/$PR/comments" \
+                  --input - >/dev/null || true
+          }
+
+          err="$(mktemp)"
+          if ! latest="$(gh api \
+            "repos/$REPO/actions/workflows/pr-size.yml/runs?head_sha=$HEAD&event=pull_request&per_page=20" \
+            --jq '.workflow_runs | sort_by(.id) | last | select(. != null) | "\(.id) \(.status)"' 2>"$err")"; then
+            echo "::warning::Reading the PR Size runs failed ($(tr '\n' ' ' < "$err" | cut -c1-200))."
+            post_notice "The approval is recorded, but the PR Size runs could not be read. Re-run the PR Size check by hand."
+            exit 0
+          fi
+          if [ -z "$latest" ]; then
+            echo "PR Size has not run for $HEAD yet; it reads the approval when it does."
+            exit 0
+          fi
+          run_id="${latest%% *}"
+          status="${latest##* }"
+
+          if [ "$status" != "completed" ]; then
+            gh api --method POST "repos/$REPO/actions/runs/$run_id/cancel" >/dev/null 2>"$err" || true
+            for _ in $(seq 1 30); do
+              if now="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status' 2>"$err")"; then
+                status="$now"
+              fi
+              [ "$status" = "completed" ] && break
+              sleep 2
+            done
+          fi
+          if [ "$status" != "completed" ]; then
+            echo "::warning::PR Size run $run_id did not stop in time."
+            post_notice "The approval is recorded, but PR Size run $run_id did not stop in time. Re-run the PR Size check by hand."
+            exit 0
+          fi
+          if ! gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>"$err"; then
+            echo "::warning::Could not re-run PR Size run $run_id ($(tr '\n' ' ' < "$err" | cut -c1-200))."
+            post_notice "The approval is recorded, but PR Size could not be re-run automatically. Re-run the PR Size check by hand."
+            exit 0
+          fi
+          echo "Re-running PR Size run $run_id for $HEAD"

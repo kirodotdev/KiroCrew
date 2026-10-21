@@ -68,6 +68,7 @@ pull_request
   |-- issue-gate.yml    "Issue Gate"   PR names a sized issue, blocking once enabled (paused)
   |-- dependency-review.yml            license allowlist
   |-- pr-scope.yml      "PR Scope"     PR breadth across areas, advisory
+  |-- pr-size.yml       "PR Size"      file count and hours open; owner approval at 80 files (shadow)
   |-- cross-platform.yml
   |                     "Cross-Platform Portability"  added-line POSIX-only scan, blocking
   |-- docker-smoke.yml                 container contract (paths-filtered)
@@ -1961,6 +1962,58 @@ workflow in
 revert; an issue-side revalidation lane (a reverse index from issue to the open
 PRs declaring it, plus a write path to re-dispatch their gate runs) would exist for
 this path alone and is not built.
+
+## `pr-size.yml`: very wide or long-open pull requests (SHADOW)
+
+A pull request that touches very many files, or stays open a week, is the one that
+loops on rebases. Over 1,980 studied pull requests, `files >= 80 or open >= 168 h`
+flags 3.3% of them and holds 26.9% of the rebase loops. Lines are not used: of the
+106 pull requests with 5,000 or more lines that merged fast, 94 are splits. The
+numbers and the decision are in
+[the RFC](../request-for-change/rfc-review-loop-and-escaped-bug-reduction.md), D6.
+
+| Level | Rule | Effect |
+|---|---|---|
+| Hint | 50 or more files | a notice; locally `diff_signals.py` prints `! SIZE` |
+| Stop | 80 or more files | red once enforced, until an owner approves |
+| Age | 168 h open | a notice; never red, because a wait for review is not the author's fault |
+
+The numbers are named constants in `.github/scripts/pr_size.py`
+(`FILES_HINT`, `FILES_STOP`, `HOURS_AGING`), repeated in `diff_signals.py` and kept
+equal by `test/test_prepare_pr_diff_signals_size.py`.
+
+**Shadow.** `PR_SIZE_ENFORCED` in `pr_size.py` is `False`. The `PR Size` job never
+fails: at the stop level it prints a warning that says "this would be red" and
+names the approval command. The rollout is shadow first, then red after about 14
+days of reading that list. To enforce, set the constant to `True`, delete the
+bootstrap guard in `pr-size.yml` (a test requires that), and add `PR Size` to the
+lane list in `pr-readiness.yml` so a red reds the one required status. An
+unreadable pull request is a warning in shadow and a red check when enforced.
+
+**The owner override.** A comment whose first line is
+`/pr-size approve: <reason, 12 to 500 characters>` on the pull request.
+`pr-size-override.yml` runs from the default branch on `issue_comment`, reads the
+commenter's collaborator permission with the same three tries and fail-closed rule as
+`ai-review-human-override.yml`, and accepts `admin`, `maintain` or `write`. The
+author of the pull request may approve only as an `admin`. A pull request under 80
+files has nothing to approve. The handler posts a bot comment whose first line is a
+hidden marker, `<!-- pr-size-override actor=<login> files=<n> head=<sha> source=<id>
+at=<time> -->`, with the quoted reason, then re-runs the `PR Size` run for that head.
+The check reads a marker only from a comment by `github-actions[bot]`, so a marker
+typed by hand does nothing. The comment body reaches the script through the
+environment only, never inside a `run:` expression.
+
+An approval holds while the file count stays at or below the recorded count plus 25%
+plus 10 (approved at 90 covers 122). More than that needs a new decision. Every
+approved run prints a warning naming who approved and at how many files, and the
+bot comment is the permanent record. A run of approvals means the limit needs
+retuning.
+
+**What it does not do.** It does not touch `PR Scope` (`pr-scope.yml`), which stays
+advisory and judges whether changes are related; this one counts files. It adds no
+labels or comments of its own. The measure is one `GET pulls/<n>` per run, and one
+comment listing only at the stop level. The job checks out the default branch, never
+the pull request's code.
 
 ## `code-review.yml`: the deterministic pre-gate
 

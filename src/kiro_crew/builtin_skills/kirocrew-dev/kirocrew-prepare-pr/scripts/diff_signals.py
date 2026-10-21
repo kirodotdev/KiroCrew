@@ -37,7 +37,14 @@ With ``--check-body`` it also reads the PR body the skill writes --
 
 All checks run and print before any exit; when several breach, the lowest code wins.
 
-Usage:  python3 diff_signals.py [base-branch] [--check-body]
+Size and age signals are printed, never an exit code. ``! SIZE`` appears at
+``SIZE_HINT_FILES`` changed files and says more at ``SIZE_STOP_FILES``, where CI's
+``PR Size`` check (``.github/scripts/pr_size.py``) wants an owner's approval once it
+is enforced. ``--age`` adds ``! AGE`` from ``gh pr view`` when the pull request has
+been open ``AGE_HOURS`` hours; it is opt-in because it is the one call that leaves
+the machine.
+
+Usage:  python3 diff_signals.py [base-branch] [--check-body] [--age]
 Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too long |
         22 template sections missing | 2 environment error
 """
@@ -49,6 +56,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 SIGNALS = [
     (
@@ -73,6 +81,13 @@ WORD_LIMIT = 500
 # summed over every table there. references/body-picture.md's "eight rows is the
 # ceiling" for a picture; a test keeps the two equal.
 TABLE_ROW_LIMIT = 8
+
+# Size and age signals. Printed, never an exit code. A test keeps these equal to the
+# thresholds in .github/scripts/pr_size.py, which is what CI's PR Size check judges
+# (files, not lines: a 5,000-line split is usually fine, an 80-file change is not).
+SIZE_HINT_FILES = 50
+SIZE_STOP_FILES = 80
+AGE_HOURS = 168
 
 # git prints every path with forward slashes, on every OS. These helpers split
 # and join git's own output, never filesystem paths, so the separator is git's.
@@ -130,6 +145,50 @@ def area_of(path):
     if len(parts) >= 3 and (parts[:2] == ["src", "kiro_crew"] or parts[:2] == ["website", "src"]):
         return GIT_SEP.join(parts[:3])
     return parts[0]
+
+
+def size_signal(file_count):
+    """The ``! SIZE`` line for a diff of ``file_count`` files, or None under the hint."""
+    if file_count >= SIZE_STOP_FILES:
+        return (
+            "! SIZE: {} files (CI's PR Size limit is {}) - an owner approves with "
+            "`/pr-size approve: <reason>`; or split along a seam, or land it today".format(
+                file_count, SIZE_STOP_FILES
+            )
+        )
+    if file_count >= SIZE_HINT_FILES:
+        return (
+            "! SIZE: {} files (hint at {}, PR Size limit {}) - split along a seam "
+            "or land it today".format(file_count, SIZE_HINT_FILES, SIZE_STOP_FILES)
+        )
+    return None
+
+
+def hours_open(created_at, now):
+    """Whole hours from an ISO-8601 ``created_at`` (``Z`` suffix allowed) to ``now``."""
+    text = created_at.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    created = datetime.fromisoformat(text)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return max(0, int((now - created).total_seconds() // 3600))
+
+
+def age_signal(hours):
+    """The ``! AGE`` line for a pull request open ``hours`` hours, or None."""
+    if hours >= AGE_HOURS:
+        return (
+            "! AGE: open {} h ({}+ days) - merge, split or close; waiting for review "
+            "is not your fault, so ask an owner which".format(hours, AGE_HOURS // 24)
+        )
+    return None
+
+
+def pr_created_at():
+    """``createdAt`` of this branch's pull request, or None (no gh, no PR, no network)."""
+    rc, out, _ = run(["gh", "pr", "view", "--json", "createdAt", "--jq", ".createdAt"])
+    return out.strip() if rc == 0 and out.strip() else None
 
 
 def changed_paths(name_status):
@@ -340,6 +399,7 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("base", nargs="?", default="")
     ap.add_argument("--check-body", action="store_true")
+    ap.add_argument("--age", action="store_true")
     return ap.parse_args(argv[1:])
 
 
@@ -394,6 +454,23 @@ def main(argv):
     for pat, msg in SIGNALS:
         if re.search(pat, ns, re.IGNORECASE | re.MULTILINE):
             print("! " + msg)
+            any_flag = True
+    # One name-status row per changed file (a rename is one row), the count GitHub
+    # reports as changed_files and PR Size judges.
+    size_line = size_signal(len([row for row in ns.splitlines() if row.strip()]))
+    if size_line:
+        print(size_line)
+        any_flag = True
+    if args.age:
+        created = pr_created_at()
+        try:
+            age_line = (
+                age_signal(hours_open(created, datetime.now(timezone.utc))) if created else None
+            )
+        except ValueError:  # a createdAt that is not a timestamp is no signal
+            age_line = None
+        if age_line:
+            print(age_line)
             any_flag = True
     if not any_flag:
         print("(no notable structural signals - still describe the behavior changes)")
