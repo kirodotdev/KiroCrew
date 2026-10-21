@@ -1,10 +1,13 @@
 """Lexical scoring shared by every vector-memory retrieval path.
 
-Word stemming and the per-row token memo, the keyword and hybrid scores, the
-Jaccard-based MMR rerank, the dense-script keyword floor used by the episodic
-LIKE fallback, and the literal Unicode predicate the list endpoints filter
-with. Everything here is a pure function of its arguments: no store, no lock and
-no database handle. ``kiro_crew.vector_memory`` re-exports every name.
+Word stemming and the per-row token memo, the keyword and hybrid scores and the
+semantic-row score built from them, the Jaccard-based MMR rerank, the
+dense-script keyword floor used by the episodic LIKE fallback, and the literal
+Unicode predicate the list endpoints filter with. Everything here is a pure
+function of its arguments: no store, no lock and no database handle.
+``kiro_crew.vector_memory`` re-exports every name but the two semantic-row
+helpers (``_semantic_key_words``, ``_semantic_row_score``), which only the
+runtime scorers read.
 """
 
 from __future__ import annotations
@@ -114,6 +117,43 @@ def _hybrid_score(keyword: float, vector: float, *, query_has_vector: bool = Fal
     if vector > 0 or query_has_vector:
         return _SEMANTIC_VECTOR_WEIGHT * vector + _SEMANTIC_KEYWORD_WEIGHT * keyword
     return keyword
+
+
+def _semantic_key_words(label: str, row_tokens: Callable[[str], frozenset[str]]) -> frozenset[str]:
+    """Key-side tokens of a semantic row, from its *label*.
+
+    *label* is the row's key, or the key with its recorded identity as
+    ``fact_label`` renders it. ``_`` and ``.`` read as word breaks, so
+    ``project.zz_boat`` holds ``boat``. *row_tokens* is the caller's row tokenizer
+    (``_row_stem_tokens_for_scan``'s, or a resident set's memo), keyed on the
+    label with its breaks applied.
+    """
+    return row_tokens(label.replace("_", " ").replace(".", " "))
+
+
+def _semantic_row_score(
+    query_words: set[str],
+    key_words: frozenset[str],
+    val_words: frozenset[str],
+    cosine: float,
+    *,
+    query_has_vector: bool,
+) -> float:
+    """Hybrid score of one semantic row against a query's stemmed *query_words*.
+
+    Each query word the key side holds (``_semantic_key_words``) counts 3 and each
+    the value holds counts 1, so a word both hold counts 4; ``_keyword_score``
+    normalizes the sum and ``_hybrid_score`` blends it with *cosine*. The chat
+    path's V1 candidates and the consolidation scorer both score rows here, so
+    the two cannot weigh one row apart.
+
+    *cosine* is used as given. A caller clamps a stored-vector cosine at zero
+    first (``_stored_similarity_scorer`` returns it raw), since with
+    *query_has_vector* a negative cosine would pull a merely dissimilar row below
+    its keyword-only floor.
+    """
+    keyword = _keyword_score(3 * len(query_words & key_words) + len(query_words & val_words))
+    return _hybrid_score(keyword, cosine, query_has_vector=query_has_vector)
 
 
 # snowballstemmer's pure-Python stemmers keep the word being stemmed as
