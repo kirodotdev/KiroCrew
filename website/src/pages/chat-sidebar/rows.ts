@@ -116,6 +116,11 @@ export interface SidebarRowInputs {
   /** While a drag is in flight the lanes keep the order they had when it started:
    *  `filteredSlots` stays the previous result's list until the drag ends. */
   frozen: boolean
+  /** The LOCAL slot key held at the very top of every lane (the Mastermind session
+   *  while it is enabled), or null. It sorts ahead of every other row, files in no
+   *  folder, and the tree and board lanes draw it above their folders and columns
+   *  (`lanes.head`). It still passes through every filter like any other row. */
+  headKey?: string | null
 }
 
 /** The conductor lane's additions to a row, and nothing more. Every field is a fact
@@ -229,6 +234,9 @@ export interface RowScene {
     revealFlash: { kind: string; key: string; fading: boolean } | null
     /** The board card whose native HTML5 drag is in flight. */
     nativeDragKey: string | null
+    /** The Mastermind session while it is enabled: its LOCAL key and how many
+     *  messages its memory holds (null until the status read lands), else null. */
+    mastermind?: { key: string; remembered: number | null } | null
   }
   /** The dnd-kit drag in flight, if any. */
   drag: { type: string; id: string } | null
@@ -286,6 +294,11 @@ export interface SessionRowView {
    *  thread, admitted to the conductor lane as a creator anchor) opens here instead
    *  of switching to it; null for every other row. */
   opensElsewhere: string | null
+  /** This row is the enabled Mastermind session: decorated, and locked (no close,
+   *  rename, folder move or drag; it is turned off or removed from Settings). */
+  mastermind: boolean
+  /** Messages its memory holds, for the subtitle; null when unknown or not Mastermind. */
+  mastermindRemembered: number | null
   shell: RowShell
 }
 
@@ -359,6 +372,11 @@ export interface SidebarRows {
     board: Slot[]
     /** `Local` peer rows the board leaves out, for its notice. */
     boardPeerCount: number
+    /** The `headKey` row when it passed the filters, else null. The tree and board
+     *  lanes draw it above their folders / columns, so it is left out of `ungrouped`
+     *  and `board`; the flat and conductor lanes already draw it first through
+     *  `laneOrder`. */
+    head: Slot | null
   }
   folderTree: {
     /** The `Local` rows filed directly in this folder, in lane order. */
@@ -423,6 +441,7 @@ interface BuildMemos {
   ungrouped: Memo<Slot[]>
   board: Memo<Slot[]>
   boardPeerCount: Memo<number>
+  head: Memo<Slot | null>
   folderTree: Memo<SidebarRows['folderTree']>
 }
 
@@ -434,10 +453,11 @@ const NO_ROWS: Slot[] = []
 // share that call's whole scope -- its rows, and the previous result it was given -- so
 // an output reused across builds would hold every earlier build alive behind it.
 
-function makeFolderOf(slotFolders: Readonly<Record<string, string>>): SidebarRows['folderOf'] {
+function makeFolderOf(slotFolders: Readonly<Record<string, string>>, headKey: string | null): SidebarRows['folderOf'] {
   return slot => {
     const key = localKeyOf(slot)
-    return key === null ? undefined : slotFolders[key]
+    // The head row is always top-level, whatever folder it was once filed in.
+    return key === null || key === headKey ? undefined : slotFolders[key]
   }
 }
 
@@ -462,6 +482,7 @@ function makeLaneOrder(
   pinnedRank: ReadonlyMap<string, number>,
   isPinned: SidebarRows['isPinned'],
   manualRank: ReadonlyMap<string, number>,
+  headKey: string | null,
 ): SidebarRows['laneOrder'] {
   // Search relevance, not the sort: pinning is a reachability promise for browsing,
   // not a ranking hint inside explicit search results. A peer row is never ranked,
@@ -470,7 +491,12 @@ function makeLaneOrder(
     const key = localKeyOf(slot)
     return (key !== null && searchRanks ? searchRanks.get(key) : undefined) ?? Infinity
   }
+  const isHead = (slot: Slot) => headKey !== null && localKeyOf(slot) === headKey
   return (a, b) => {
+    // The head row leads every order, search relevance included: it is the one
+    // session this list promises to keep first.
+    const aHead = isHead(a)
+    if (aHead !== isHead(b)) return aHead ? -1 : 1
     if (searchRanks) return rank(a) - rank(b)
     // The pinned SECTION is decided here, per origin; the pinned ORDER inside it
     // still has exactly one implementation, delegated to below.
@@ -790,21 +816,22 @@ function makeViews(model: ViewModel): SidebarRows['views'] {
 export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRows | null): SidebarRows {
   const prev = previous ? memosOf.get(previous) : undefined
   const { rows, local, filters, clears, crewGroups, sortKey, clock, frozen } = inputs
+  const headKey = inputs.headKey ?? null
   const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex } = local
   const { tags, search, status, folders: folderFilter } = filters
   // Read here, outside every compute: the drag freeze is the one place a build reads
   // the previous one's output.
   const frozenList = frozen ? (prev?.filteredSlots.value ?? NO_ROWS) : null
 
-  const folderOfMemo = reuse(prev?.folderOf, [slotFolders], () => makeFolderOf(slotFolders))
+  const folderOfMemo = reuse(prev?.folderOf, [slotFolders, headKey], () => makeFolderOf(slotFolders, headKey))
   const isPinnedMemo = reuse(prev?.isPinned, [pinned], () => makeIsPinned(pinned))
   const isRunningMemo = reuse(prev?.isRunning, [running], () => makeIsRunning(running))
   const folderOf = folderOfMemo.value
   const isPinned = isPinnedMemo.value
   const isRunning = isRunningMemo.value
 
-  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank], () =>
-    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank))
+  const laneOrder = reuse(prev?.laneOrder, [searchRanks, sortKey, pinned, pinnedRank, manualRank, headKey], () =>
+    makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned, manualRank, headKey))
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
   const isRowStatusHidden = reuse(prev?.isRowStatusHidden, [status.hidden, statusMatches.value], () =>
@@ -841,10 +868,13 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const lane = main.value
   const flat = reuse(prev?.flat, [lane, folderFilter.active, hidden], () =>
     (folderFilter.active ? lane.filter(slot => !hidden(slot)) : lane))
-  const ungrouped = reuse(prev?.ungrouped, [lane, slotFolders], () =>
-    lane.filter(slot => !folderOf(slot)))
-  const board = reuse(prev?.board, [lane, hidden], () =>
-    lane.filter(slot => !isPeerRow(slot) && !hidden(slot)))
+  const head = reuse(prev?.head, [lane, headKey], () =>
+    (headKey === null ? null : lane.find(slot => localKeyOf(slot) === headKey) ?? null))
+  const headRow = head.value
+  const ungrouped = reuse(prev?.ungrouped, [lane, slotFolders, headRow], () =>
+    lane.filter(slot => !folderOf(slot) && slot !== headRow))
+  const board = reuse(prev?.board, [lane, hidden, headRow], () =>
+    lane.filter(slot => !isPeerRow(slot) && !hidden(slot) && slot !== headRow))
   const boardPeerCount = reuse(prev?.boardPeerCount, [lane], () =>
     lane.filter(isPeerRow).length)
   const folderTree = reuse(prev?.folderTree, [lane, rows, slotFolders], () =>
@@ -866,6 +896,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
       ungrouped: ungrouped.value,
       board: board.value,
       boardPeerCount: boardPeerCount.value,
+      head: headRow,
     },
     folderTree: folderTree.value,
     folderOf,
@@ -877,7 +908,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   memosOf.set(result, {
     folderOf: folderOfMemo, isPinned: isPinnedMemo, isRunning: isRunningMemo,
     laneOrder, statusMatches, isRowStatusHidden, dimensions, statusCounts, filteredSlots, revealBlockingFilters,
-    isRowFolderHidden, crewRows, main, crew, crewRowCount, flat, ungrouped, board, boardPeerCount, folderTree,
+    isRowFolderHidden, crewRows, main, crew, crewRowCount, flat, ungrouped, board, boardPeerCount, head, folderTree,
   })
   return result
 }
@@ -891,6 +922,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
   const isRenaming = local !== null && renaming.key === local
   const renamingHere = isRenaming && renaming.scope === placement.scope
   const revealing = local !== null && revealFlash?.kind === 'session' && revealFlash.key === local
+  const mastermind = local !== null && scene.local.mastermind?.key === local
   return {
     slot,
     identity,
@@ -929,6 +961,8 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     drawnOrderIndex: local === null || !scene.drag ? -1 : (model.drawnIndex.get(local) ?? -1),
     pinnedReorderEnabled: !model.searchRanks && local !== null,
     opensElsewhere: opensElsewhereOf(slot),
+    mastermind,
+    mastermindRemembered: mastermind ? (scene.local.mastermind?.remembered ?? null) : null,
     shell: scene.shell,
   }
 }
@@ -951,7 +985,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
-  opensElsewhere: true, shell: true,
+  opensElsewhere: true, mastermind: true, mastermindRemembered: true, shell: true,
 }
 const VIEW_KEYS = Object.keys(VIEW_FIELDS) as (keyof SessionRowView)[]
 

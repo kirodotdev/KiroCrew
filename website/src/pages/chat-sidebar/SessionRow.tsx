@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, memo, useMemo, useContext } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical } from 'lucide-react'
+import { X, Pin, Brain, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -46,6 +46,7 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { MastermindMeta, MastermindRowGlow } from './mastermind'
 
 /**
  * Session-row type scale, quantized to a 4px baseline grid.
@@ -234,6 +235,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
+  // The enabled Mastermind session: decorated, and LOCKED -- no close, rename,
+  // folder move or drag. It is turned off or removed from Settings > Mastermind,
+  // and the backend refuses a close of it with 409 `mastermind_protected`.
+  const mastermindRow = view.mastermind
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
@@ -446,7 +451,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // with a local one — to the WRONG session. Excluded by construction rather
     // than handled per drop target. A remote-EXECUTED local slot is not excluded:
     // its slot is right here, and reordering it is as meaningful as any other.
-    const dndRow = (scope === 'list' || scope === 'flat') && !foreignRow
+    const dndRow = (scope === 'list' || scope === 'flat') && !foreignRow && !mastermindRow
     // Whether THIS row's native drag is in flight, so the unmount cleanup below
     // reports the drag's end only for the row that started it: every other row
     // unmounts freely under the windowing, and must not end a drag it never began.
@@ -1013,8 +1018,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const rowMenuProps = useMemo(() => ({
       slotKey: rowKey,
       mode,
-      onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
-      onAutoTitle: () => onAutoTitle(rowKey),
+      // Mastermind's title is fixed (the server names it), so it offers neither.
+      onRename: mastermindRow ? undefined : () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
+      onAutoTitle: mastermindRow ? undefined : () => onAutoTitle(rowKey),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
       // A row menu opens from inside this panel, where the folder-order banner
       // (when there is one) sits over the tree -- the menu need not repeat it.
@@ -1027,7 +1033,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // Removing an adopted remote-crew copy is reversible (the session stays on
       // its peer), so its menu item renders neutral, not destructive-red.
       closeNeutral: releaseLocally,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
+    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel, mastermindRow])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       // In flow, not absolute: the phone ⋮ is always drawn, so the content
       // column must end before it. Absolutely placed, the column ran to the
@@ -1064,13 +1070,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             is only through the labelled row-menu item "Remove from this machine",
             where the plain label and the hint are always visible. Ordinary local
             rows keep their red ✕ close. */}
-        {!releaseLocally && (
+        {!releaseLocally && !mastermindRow && (
           <IconButton variant="danger" title={closeReachLabel ?? i18nT('pages.chatSidebar.close')} aria-label={closeReachLabel !== undefined ? i18nT('pages.chatSidebar.close_this_session_only') : i18nT('pages.chatSidebar.close_session')} {...uiLocation('sessions.row-close')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
         )}
       </IconButtonGroup>
     )) : null
     // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
-    ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, rowKey, langGen])
+    ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, mastermindRow, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
         <SessionActionsMenu variant="context" {...rowMenuProps} />
@@ -1128,7 +1134,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             // opens elsewhere. Note the polarity: native HTML5 drag is enabled
             // precisely when dnd-kit is NOT, so gating `dndRow` alone would have
             // SWITCHED THIS ON rather than off.
-            (!dndRow && !isRenaming && !foreignRow) && (connected || isActive)
+            (!dndRow && !isRenaming && !foreignRow && !mastermindRow) && (connected || isActive)
           }
           title={
             // A peer-owned row OPENS THE SESSION, here, in the local pane: the
@@ -1152,6 +1158,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           role="button"
           tabIndex={0}
           data-session-row={rowIdentity}
+          data-mastermind={mastermindRow ? '' : undefined}
           data-session-scope={navScope}
           data-session-container={holdContainer}
           aria-current={isActive ? 'true' : undefined}
@@ -1272,13 +1279,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
-            if (foreignRow) return
+            if (foreignRow || mastermindRow) return
             if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
             if (renamingHere) return
             e.preventDefault()
             e.stopPropagation()
             onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', false)
           }}>
+          {mastermindRow && <MastermindRowGlow />}
           {isPinnedDropOver && activeDraggedKey !== null && activeDraggedKey !== s.key && (
             <span
               data-testid={isPinned ? 'pinned-session-insertion' : 'manual-session-insertion'}
@@ -1390,6 +1398,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  `test/listShellParity.test.ts` exists to stop -- that pin
                 *  reddened on exactly this span, and it reads the whole FILE as
                 *  text, so the literal must not appear in a comment either. */}
+              {mastermindRow && <MastermindMeta remembered={view.mastermindRemembered} />}
               {view.folderConductor && (
                 <span
                   className="shrink-0 inline-flex items-center px-1 rounded bg-accent-subtle text-accent"
@@ -1602,6 +1611,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   )}
                   {/* A menu-started Regenerate title closes its menu at once, so
                       the row itself says the model call is running. */}
+                  {mastermindRow && (
+                    <Brain size={ROW_ICON_PX} className="lucide-inline mr-1 shrink-0 text-accent" aria-hidden="true" data-testid="mastermind-row-icon" />
+                  )}
                   {titleGenerating && (
                     <Loader size={ROW_ICON_PX} className="lucide-inline mr-1 shrink-0 text-accent animate-spin" role="img" aria-label={i18nT('pages.chatPage.regenerating_title')} data-testid="row-title-generating" />
                   )}

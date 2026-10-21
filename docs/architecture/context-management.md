@@ -232,6 +232,7 @@ it adds:
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
+| `[MASTERMIND MEMORY]` + `<chat>` view | `mastermind.service.turn_prefix`, through `request_prefix_context` | every turn of the Mastermind session, which also replays no transcript and starts on a fresh conversation ([mastermind](../system-specs/modules/mastermind.md)) |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
 | `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |

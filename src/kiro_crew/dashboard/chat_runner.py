@@ -731,6 +731,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     transient_retry_delay,
     usage_has_billing,
 )
+from kiro_crew.mastermind.slot import is_mastermind_turn
 from kiro_crew.mcp_discovery import kirocrew_managed_names  # noqa: F401
 from kiro_crew.members import (
     DM_SLOT_MODE,
@@ -1760,6 +1761,8 @@ async def _run_chat(
                     _interrupted_turn_preamble = preamble
                     turn._interrupted_turn_preamble = _interrupted_turn_preamble
             logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
+            # The turn's own message, before the notices below are prepended to it.
+            _mastermind_text = message
             # Drain any pending subagent delivery failures so the LLM knows
             # about timed-out results and can read them from disk.
             if slot._pending_subagent_failures:
@@ -1772,6 +1775,26 @@ async def _run_chat(
             # mirror — avoids leaking injected context to the linked thread.
             _user_msg_for_mirror = message
             turn._user_msg_for_mirror = _user_msg_for_mirror
+            if is_mastermind_turn(state, slot):
+                from kiro_crew.mastermind import service as mastermind  # only Mastermind loads it
+
+                if is_slash:
+                    mastermind.service_for(state).pending.pop(slot.key, None)
+                else:
+                    # The memory view stands in for the conversation's history.
+                    from kiro_crew.context import window_for_provider_client
+
+                    _request_prefix_context = (
+                        await mastermind.turn_prefix(
+                            state,
+                            slot,
+                            _mastermind_text,
+                            synthetic=_is_synthetic,
+                            window_tokens=window_for_provider_client(client),
+                        )
+                        + _request_prefix_context
+                    )
+                    turn._request_prefix_context = _request_prefix_context
             # Drain pending context injections (silent background context
             # from apps/subagents).  Expired entries are discarded.
             _ctx_prefix = drain_pending_context(slot)
@@ -4728,6 +4751,10 @@ async def _run_chat(
                 _recovering_promise or _recovering_compaction or _noticed_leak or _recovering_infra
             ):
                 post_turn_reply(state, slot, _note_reply_mids)
+                if is_mastermind_turn(state, slot):
+                    from kiro_crew.mastermind.service import turn_landed  # only Mastermind loads it
+
+                    turn_landed(state, slot, _note_reply_mids)
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
         # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:

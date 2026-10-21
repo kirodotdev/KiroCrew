@@ -10800,3 +10800,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Adapted Source
+
+The following project's design and algorithms are adapted (re-implemented in
+Python, not copied) into Kiro Crew source files, and are not packages.
+
+### UniiChat
+
+- License: Apache-2.0 (the Apache License 2.0 text is reproduced above)
+- Copyright: Copyright 2026 Higher Order Company
+- Homepage: https://github.com/VictorTaelin/UniiChat
+- Used in: `src/kiro_crew/mastermind/` (the Mastermind memory tree: its
+  binary summary tree, the merging view, and zoom), adapted from UniiChat's
+  `Memory.ts`

@@ -6299,7 +6299,9 @@
       "attachment_removed": "{{file}} を添付から削除しました",
       "attachment_restored": "{{file}} を添付しました",
       "trusted_command_until": "「{{cmd}}」を {{time}} まで信頼します。その後は再度確認します",
-      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します"
+      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します",
+      "mastermind_summaries": "要約：{{model}}",
+      "mastermind_summaries_title": "Mastermind の要約に使うモデル：{{model}}"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -12548,7 +12550,10 @@
       "broadcast_col_result": "結果",
       "broadcast_open_unknown": "未確認・開く",
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
-      "broadcast_retry": "失敗した {{n}} 件を再試行"
+      "broadcast_retry": "失敗した {{n}} 件を再試行",
+      "mastermind": "Mastermind",
+      "mastermind_remembered_other": "{{formattedCount}} 件のメッセージを記憶済み",
+      "close_refused_mastermind": "Mastermind はここでは閉じられません。「設定 → Mastermind」でオフにするか削除してください。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -13160,7 +13165,9 @@
         "decisions_runtime_error": "モデルを起動できませんでした。",
         "decisions_runtime_retry": "再試行",
         "folder_conductor": "フォルダーのコンドクター",
-        "folder_conductor_desc": "フォルダーの他のチャットを開始したチャットを、そのフォルダーの先頭に引き上げます。左端にアクセントのバーが入り、エージェント名の横に小さな conductor タグが付きます。セッション一覧の並び順が変わるため、有効にするまで一覧はそのままです。フォルダーメニューのチャット項目は常に表示されます。"
+        "folder_conductor_desc": "フォルダーの他のチャットを開始したチャットを、そのフォルダーの先頭に引き上げます。左端にアクセントのバーが入り、エージェント名の横に小さな conductor タグが付きます。セッション一覧の並び順が変わるため、有効にするまで一覧はそのままです。フォルダーメニューのチャット項目は常に表示されます。",
+        "mastermind": "Mastermind",
+        "mastermind_desc": "セッション一覧の一番上に置かれるひとつのチャットで、記憶がいっぱいになることはありません — すべてのメッセージが記憶ツリーに要約され、エージェントはいつでもそこへズームして戻れるため、圧縮なしで何週間も覚えていられます。オンにすると「設定 → Mastermind」が追加されます。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
@@ -17775,6 +17782,45 @@
         "none_enabled": "有効なアプリはありません。",
         "load_failed": "アプリを読み込めませんでした。",
         "failed_to_save": "{{app}} のモデルを保存できませんでした。"
+      },
+      "mastermindPanel": {
+        "intro": "Mastermind はセッション一覧の一番上に置かれるひとつのチャットで、記憶がいっぱいになることはありません。すべてのメッセージが記憶ツリーに要約され、エージェントはいつでもそこへズームして戻れるため、圧縮なしで何週間も覚えていられます。",
+        "enabled": "有効",
+        "enabled_desc": "オンにすると Mastermind のチャットが作成され、セッション一覧の一番上に固定されます。オフにしてもチャットと記憶は残り、もう一度オンにするまでは通常のチャットとして動作します。",
+        "toggle_failed": "Mastermind を変更できませんでした",
+        "action_failed": "リクエストに失敗しました。",
+        "stats_title": "記憶",
+        "stat_messages": "記憶済みのメッセージ",
+        "stat_view_size": "記憶ビューのサイズ",
+        "stat_lines": "ビューの行数",
+        "stat_pending": "保留中の要約",
+        "stats_failed": "Mastermind の記憶を読み込めませんでした",
+        "browser_title": "記憶ブラウザー",
+        "browser_hint": "エージェントが各ターンの最初に読む内容で、古い順に並んでいます。行を開くと、その行が要約しているメッセージにズームできます。",
+        "browser_empty": "まだ何も記憶していません。",
+        "not_summarized": "まだ要約されていません",
+        "expand_line": "{{ref}} にズーム",
+        "collapse_line": "{{ref}} を閉じる",
+        "loading": "読み込み中…",
+        "load_more": "さらに読み込む",
+        "browse_failed": "記憶を開けませんでした",
+        "export": "記憶をエクスポート",
+        "export_failed": "記憶をエクスポートできませんでした",
+        "danger_title": "危険な操作",
+        "clear": "記憶を消去",
+        "clear_desc": "Mastermind は記憶したすべてを忘れます。チャットの記録は残ります。",
+        "clear_confirm_title": "Mastermind の記憶を消去しますか？",
+        "clear_confirm_body": "チャットの記録は表示されたままですが、Mastermind は記憶したすべてを忘れ、次のメッセージから記憶し直します。",
+        "clear_failed": "記憶を消去できませんでした",
+        "remove": "Mastermind を削除",
+        "remove_desc": "Mastermind をオフにして、そのチャットを削除します。",
+        "remove_confirm_title": "Mastermind を削除しますか？",
+        "remove_confirm_body": "Mastermind がオフになり、そのチャットが削除されます。記憶も消去しない限り、記憶は残ります。",
+        "remove_forget": "記憶も消去する",
+        "remove_failed": "Mastermind を削除できませんでした",
+        "summary_model": "要約モデル",
+        "summary_model_desc": "要約はバックグラウンドでこのモデルを使って実行されます。チャットの応答に使うモデルは変わりません。",
+        "summary_model_failed": "要約モデルを保存できませんでした"
       }
     },
     "settingsPage": {
@@ -18707,6 +18753,10 @@
       "connections": {
         "label": "OAuth アプリ",
         "description": "登録済みクライアントが必要なプロバイダー向けの OAuth アプリ"
+      },
+      "mastermind": {
+        "label": "Mastermind",
+        "description": "記憶がいっぱいにならないチャット"
       }
     },
     "secrets": {

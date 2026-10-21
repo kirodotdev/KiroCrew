@@ -1071,6 +1071,13 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.mastermind",
+      "label": "Mastermind",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.mastermind",
+      "description": "One chat at the top of Sessions with a memory that never fills up — every message is summarized into a memory tree the agent can zoom back into, so it remembers across weeks without compaction. Turning this on adds Settings → Mastermind."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

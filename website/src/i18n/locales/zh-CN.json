@@ -6299,7 +6299,9 @@
       "attachment_removed": "已从附件中移除 {{file}}",
       "attachment_restored": "已附加 {{file}}",
       "trusted_command_until": "已信任“{{cmd}}”至 {{time}}，之后会再次询问",
-      "trusted_base_until": "已信任任意“{{base}}”命令至 {{time}}，之后会再次询问"
+      "trusted_base_until": "已信任任意“{{base}}”命令至 {{time}}，之后会再次询问",
+      "mastermind_summaries": "总结：{{model}}",
+      "mastermind_summaries_title": "Mastermind 生成总结所用的模型：{{model}}"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -12548,7 +12550,10 @@
       "broadcast_col_result": "结果",
       "broadcast_open_unknown": "未确认 · 打开",
       "broadcast_delivery_hint": "不会打断正在进行的工作：运行中的会话在当前工具调用结束后读到；空闲的会话开始新一轮。",
-      "broadcast_retry": "重试 {{n}} 个失败的"
+      "broadcast_retry": "重试 {{n}} 个失败的",
+      "mastermind": "Mastermind",
+      "mastermind_remembered_other": "已记住 {{formattedCount}} 条消息",
+      "close_refused_mastermind": "Mastermind 无法在这里关闭。请在“设置 → Mastermind”中关闭或移除它。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -13160,7 +13165,9 @@
         "decisions_runtime_error": "无法启动模型。",
         "decisions_runtime_retry": "重试",
         "folder_conductor": "文件夹调度者",
-        "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。"
+        "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。",
+        "mastermind": "Mastermind",
+        "mastermind_desc": "会话列表顶部的一个聊天，记忆永远不会被填满 — 每条消息都会被总结进一棵记忆树，代理可以随时放大回看，所以它能跨越数周记住内容，无需压缩。开启后会新增“设置 → Mastermind”。"
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",
@@ -17775,6 +17782,45 @@
         "none_enabled": "没有已启用的应用。",
         "load_failed": "无法加载你的应用。",
         "failed_to_save": "无法保存 {{app}} 的模型。"
+      },
+      "mastermindPanel": {
+        "intro": "Mastermind 是一个固定在会话列表顶部的聊天，它的记忆永远不会被填满。每条消息都会被总结进一棵记忆树，代理可以随时放大回看，所以它能跨越数周记住内容，无需压缩。",
+        "enabled": "已启用",
+        "enabled_desc": "开启后会创建 Mastermind 聊天，并把它置顶在会话列表顶部。关闭后聊天和记忆都会保留；在你重新开启之前，它就是一个普通聊天。",
+        "toggle_failed": "无法更改 Mastermind",
+        "action_failed": "请求失败。",
+        "stats_title": "记忆",
+        "stat_messages": "已记住的消息",
+        "stat_view_size": "记忆视图大小",
+        "stat_lines": "视图中的行数",
+        "stat_pending": "待生成的总结",
+        "stats_failed": "无法读取 Mastermind 的记忆",
+        "browser_title": "记忆浏览器",
+        "browser_hint": "代理在每一轮开始时读取的内容，按从旧到新排列。打开一行即可放大查看它所总结的消息。",
+        "browser_empty": "还没有记住任何内容。",
+        "not_summarized": "尚未总结",
+        "expand_line": "放大查看 {{ref}}",
+        "collapse_line": "收起 {{ref}}",
+        "loading": "加载中…",
+        "load_more": "加载更多",
+        "browse_failed": "无法打开记忆",
+        "export": "导出记忆",
+        "export_failed": "无法导出记忆",
+        "danger_title": "危险区域",
+        "clear": "清除记忆",
+        "clear_desc": "Mastermind 会忘掉它记住的一切。聊天记录会保留。",
+        "clear_confirm_title": "要清除 Mastermind 的记忆吗？",
+        "clear_confirm_body": "聊天记录仍然可见，但 Mastermind 会忘掉它记住的一切，并从下一条消息开始重新记忆。",
+        "clear_failed": "无法清除记忆",
+        "remove": "移除 Mastermind",
+        "remove_desc": "关闭 Mastermind 并删除它的聊天。",
+        "remove_confirm_title": "要移除 Mastermind 吗？",
+        "remove_confirm_body": "这会关闭 Mastermind 并删除它的聊天。除非你同时清除，否则它的记忆会保留。",
+        "remove_forget": "同时清除它的记忆",
+        "remove_failed": "无法移除 Mastermind",
+        "summary_model": "总结模型",
+        "summary_model_desc": "总结会在后台使用这个模型运行。它不会改变聊天回复所用的模型。",
+        "summary_model_failed": "无法保存总结模型"
       }
     },
     "settingsPage": {
@@ -18707,6 +18753,10 @@
       "connections": {
         "label": "OAuth 应用",
         "description": "为需要预先注册客户端的提供方配置 OAuth 应用"
+      },
+      "mastermind": {
+        "label": "Mastermind",
+        "description": "记忆永远不会被填满的聊天"
       }
     },
     "secrets": {

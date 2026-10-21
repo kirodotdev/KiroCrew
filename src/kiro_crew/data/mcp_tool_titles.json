@@ -14,6 +14,8 @@
     "learn_remove": "Remove lesson",
     "session_ledger_read": "Read progress log",
     "session_ledger_record": "Log progress step",
+    "mastermind_zoom": "Open Mastermind memory",
+    "mastermind_date": "Date Mastermind message",
     "skill_search": "Search skills",
     "skill_discover": "Discover skills",
     "skill_fetch": "Fetch skill",

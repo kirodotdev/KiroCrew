@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_MASTERMIND, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -147,9 +147,11 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_ARTIFACT_DEPLOY]: 'developer.artifact-deploy',
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
   [PREVIEW_CREW]: 'developer.crewmates',
+  [PREVIEW_MASTERMIND]: 'developer.mastermind',
 }
 
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter). */
 export const SETTINGS_TAB_PREVIEW: Record<string, string> = {
   webhooks: PREVIEW_WEBHOOKS,
+  mastermind: PREVIEW_MASTERMIND,
 }

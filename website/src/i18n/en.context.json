@@ -755,6 +755,8 @@
     "pages.chatSidebar.conductor_tag": "Small tag beside the agent name on the one card a sidebar folder is drawn around: the chat that started the folder's other chats. It is a role that chat plays in that folder, not a status or a job title, and it must stay one short word because it shares a narrow line with the agent name.",
     "pages.developer.featurePreviewsTab.folder_conductor": "Label of the Feature Previews switch for the folder-conductor layout in the Sessions sidebar. Default off.",
     "pages.developer.featurePreviewsTab.folder_conductor_desc": "Description under that switch. It must say what turning it on CHANGES (the chat that started a folder's other chats is lifted to the top of that folder, with a coloured bar and a small tag), that this re-orders the Sessions list so the list is unchanged while the switch is off, and that the folder menu's chat item is there either way. The bare word conductor is the literal word the tag shows, so leave it in English and put no quotes or backticks around it -- this description renders as plain text, so any such mark would show on screen.",
+    "pages.developer.featurePreviewsTab.mastermind": "Label of the Feature Previews switch for Mastermind. Mastermind is the feature's product name: keep it in English exactly as written. Default off.",
+    "pages.developer.featurePreviewsTab.mastermind_desc": "Description under that switch. Mastermind is a product name (keep it verbatim). Sessions is the name of the chat list in the sidebar. Compaction means the usual trimming of an old conversation to fit the model's context window, which Mastermind does not need.",
     "pages.telemetryPanel.range_hours": "Segment label on the Telemetry panel's window control meaning a rolling window of the last N HOURS ending now. Keep it as short as a unit abbreviation; it sits in a row of six segments.",
     "pages.telemetryPanel.range_days": "Segment label on the Telemetry panel's window control meaning a rolling window of the last N DAYS ending now. Keep it as short as a unit abbreviation; it sits in a row of six segments.",
     "pages.telemetryPanel.range_default": "First segment of the Telemetry panel's time-window control, selected until the reader picks a window: each card then keeps its own built-in reporting period (spend a week, the other cards two weeks). Short, like the other segments.",
@@ -824,6 +826,19 @@
     "app.focus_mode_on_announce": "Spoken by a screen reader when focus mode turns on and the chrome becomes unreachable. {{chord}} is the user's live key chord in ARIA spelling (e.g. Alt+Shift+M); keep it verbatim.",
     "pages.schedulePage.type_crewmate": "Line 1 of the Type cell in the Schedule list for a job that is a crewmate's own schedule (runs in that crewmate's chat). Singular noun, same word as the Crewmates page.",
     "pages.schedulePage.filter_by_crewmate": "Accessible name of the dropdown next to the Schedule list's search box that narrows the list to one crewmate's schedules.",
-    "pages.schedulePage.all_crewmates": "First row of that dropdown, which shows every job (no crewmate filter)."
+    "pages.schedulePage.all_crewmates": "First row of that dropdown, which shows every job (no crewmate filter).",
+    "pages.chatSidebar.mastermind": "The Mastermind entry at the top of the Sessions list, and the title given to that chat when it is created. A product name: keep it in English exactly as written.",
+    "pages.chatSidebar.mastermind_remembered_one": "Small muted line under the Mastermind entry: how many messages its memory tree has taken in. formattedCount is the locale-formatted number. Singular form.",
+    "pages.chatSidebar.mastermind_remembered_other": "Small muted line under the Mastermind entry: how many messages its memory tree has taken in. formattedCount is the locale-formatted number. Plural form.",
+    "pages.chatSidebar.close_refused_mastermind": "Notice shown when the backend refused to close the Mastermind chat (it is protected while enabled). Mastermind is a product name: keep it verbatim. The arrow path names the Settings page where it is turned off or removed.",
+    "settings.tabs.mastermind.label": "Name of the Mastermind tab in the Settings rail. A product name: keep it in English exactly as written.",
+    "settings.tabs.mastermind.description": "One-line description of the Mastermind Settings tab.",
+    "pages.settings.mastermindPanel.expand_line": "Accessible name of the button that opens one line of Mastermind's memory view. ref is the line's id like 12+8 (the summary of 8 messages starting at message 12); keep it unchanged.",
+    "pages.settings.mastermindPanel.collapse_line": "Accessible name of the same button when the line is open. ref is the line's id like 12+8; keep it unchanged.",
+    "pages.settings.mastermindPanel.not_summarized": "Muted placeholder on a memory line whose summary has not been written yet. Lowercase fragment.",
+    "pages.settings.mastermindPanel.stat_view_size": "Label of a statistic: the size (in kilobytes) of the memory view the agent reads each turn.",
+    "components.chatInput.mastermind_summaries": "Compact chip beside the composer's model chip in the Mastermind chat. model is the model id (or the Auto label) its memory summaries run on; this is NOT the model the chat answers with.",
+    "components.chatInput.mastermind_summaries_title": "Tooltip and accessible name of that chip. Mastermind is a product name: keep it verbatim. model is a model id or the Auto label.",
+    "pages.settings.mastermindPanel.summary_model": "Label of the select choosing the model Mastermind's background summaries run on, separate from the chat's own model."
   }
 }

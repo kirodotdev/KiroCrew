@@ -18,6 +18,7 @@ import { api } from '../api/client'
 import { ApiError, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey } from './dashboardSlice'
 import { isChatPageSurface } from '../utils/channelOrigin'
+import { isMastermindLockedIn, isMastermindProtected } from '../lib/mastermind'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
@@ -606,6 +607,14 @@ export const deleteSlot = createAsyncThunk<
   async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
+    // The enabled Mastermind session is never closed from the client: every close
+    // path (the row, Cmd+W, a menu, a bulk close) lands here, so refuse it BEFORE
+    // the optimistic removal -- the row never flashes out and back -- and say
+    // where it is turned off instead. The backend refuses it too (409).
+    if (isMastermindLockedIn(root, key)) {
+      dispatch({ type: 'chat/setCloseRefused', payload: { key, title: deletedSlot?.title || key, reason: 'mastermind' } })
+      throw new Error('mastermind_protected')
+    }
     // A new close press retires the last refusal's notice.
     if (root.chat.closeRefused) dispatch({ type: 'chat/setCloseRefused', payload: null })
     // Use the surface key (forward-compat alias for `mode`) so a future
@@ -692,7 +701,7 @@ export const deleteSlot = createAsyncThunk<
       // The title is read from before the optimistic removal took the row away.
       dispatch({
         type: 'chat/setCloseRefused',
-        payload: { key, title: deletedSlot?.title || key, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
+        payload: { key, title: deletedSlot?.title || key, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : isMastermindProtected(err) ? 'mastermind' : 'failed' },
       })
       throw new Error('save failed')
     } finally {

@@ -173,6 +173,10 @@ interface DashboardState {
    *  `selectSlotListPending` stops waiting and the pane falls back to its empty
    *  state instead of a placeholder that never resolves. */
   slotsFetchFailed: boolean
+  /** The backend last reported Mastermind enabled (GET /api/mastermind, mirrored by
+   *  `useMastermindInfo`). While true, `deleteSlot` refuses the `mastermind` slot on
+   *  the client, before any optimistic removal. Optional: absent reads as false. */
+  mastermindEnabled?: boolean
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
   // downloaded). Drives the Settings nav dot + the About tab dot. Mirrored
@@ -1145,6 +1149,7 @@ const dashboardSlice = createSlice({
     // DashboardState.sidebarOrder). The dispatch site diff-guards, so every
     // action here is a real order change.
     setSidebarOrder(state, action: PayloadAction<string[]>) { state.sidebarOrder = action.payload },
+    setMastermindEnabledState(state, action: PayloadAction<boolean>) { state.mastermindEnabled = action.payload },
     // Live TODO-list delta. Patched into the SAME slots array that sseSlots
     // populates rather than a parallel map, so the mid-turn push and the
     // reconnect snapshot can never disagree about a slot's list. A delta for an
@@ -1884,7 +1889,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, setMastermindEnabledState, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 /**

@@ -402,6 +402,15 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               </span>
             </button>
           )}
+          {/* The head row (the enabled Mastermind session) above the column strip,
+            *  full width, rather than inside whichever column its tags match: it is
+            *  one session the list promises to keep first, and a board can draw it in
+            *  several columns or none. Left out of `lanes.board` for that reason. */}
+          {sidebarRows.lanes.head && (
+            <div className="mx-2 mt-2 shrink-0" data-testid="board-head-row">
+              {renderSessionRow(sidebarRows.lanes.head, 0, false, 'board-head', 'board-head', 'board-head')}
+            </div>
+          )}
           <div className="relative flex-1 min-h-0 flex flex-col">
           <div ref={attachStripEdges} className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {

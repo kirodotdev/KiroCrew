@@ -12,6 +12,36 @@ import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup 
 import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
 
+/** `GET /api/mastermind`: whether Mastermind is on, whether its `mastermind`
+ *  slot exists, and the size of its memory tree. */
+export interface MastermindInfo {
+  enabled: boolean
+  slot_exists: boolean
+  messages: number
+  pending_summaries: number
+  view_bytes: number
+  view_lines: number
+  /** The model the summaries resolve to (`agent.role_models.mastermind`); "auto"
+   *  when unpinned. Absent on a gateway that predates the setting. */
+  summary_model?: string
+}
+
+/** One line of the current memory view (`GET /api/mastermind/view`), oldest first.
+ *  `ref` is `id+n`: the summary covering `n` messages from message `id`. */
+export interface MastermindViewLine {
+  id: number
+  n: number
+  ref: string
+  text: string
+  /** False while the summary is still queued: `text` is then a placeholder. */
+  built: boolean
+}
+
+export interface MastermindView {
+  count: number
+  lines: MastermindViewLine[]
+}
+
 /**
  * The optional `store=` parameter on memory content routes.
  * Embedding configuration is installation-wide; legacy Markdown migration
@@ -212,6 +242,28 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
   const knowledge = {
     // Knowledge
     knowledgeSearch: (q: string) => get(`/api/knowledge/search-for-context?q=${encodeURIComponent(q)}`).then(j),
+    /** The Mastermind session (the `mastermind` chat slot): on or off, and how
+     *  many messages its memory tree has folded in. */
+    mastermind: () => get('/api/mastermind').then(j) as Promise<MastermindInfo>,
+    setMastermindEnabled: (enabled: boolean) =>
+      post('/api/mastermind/enabled', { enabled }).then(j) as Promise<{ enabled: boolean }>,
+    mastermindView: () => get('/api/mastermind/view').then(j) as Promise<MastermindView>,
+    /** Zoom into one memory line: n=1 is the whole message (paged from `at`),
+     *  otherwise the two lines under `id+n`, as `id+n|text` lines. */
+    mastermindBrowse: (id: number, n: number, at?: number) =>
+      get(`/api/mastermind/browse?id=${id}&n=${n}${at ? `&at=${at}` : ''}`).then(j) as Promise<{ text: string }>,
+    /** The memory tree as a JSON file: the body and the server's filename. */
+    mastermindExport: async (): Promise<{ blob: Blob; filename: string | null }> => {
+      const r = await get('/api/mastermind/export')
+      if (!r.ok) await j(r)
+      const cd = r.headers.get('Content-Disposition') || ''
+      const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/.exec(cd)
+      return { blob: await r.blob(), filename: m ? decodeURIComponent(m[1]) : null }
+    },
+    clearMastermind: () => post('/api/mastermind/clear').then(j) as Promise<{ ok: boolean }>,
+    /** Turn Mastermind off and delete its session; `forget` also erases the memory. */
+    removeMastermind: (forget: boolean) =>
+      post('/api/mastermind/remove', { forget }).then(j) as Promise<{ ok: boolean }>,
   }
 
   return { memoryAndVectors, lessons, knowledge }

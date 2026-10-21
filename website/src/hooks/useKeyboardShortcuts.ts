@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
+import { isMastermindLockedIn } from '../lib/mastermind'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
@@ -1018,6 +1019,9 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // behaviour: only the user's confirm setting gates it.
         'close-chat': () => {
           if (!activeSlot) return
+          // The enabled Mastermind session: refused by the thunk with its notice,
+          // so no confirm in front of a close that will not happen.
+          if (isMastermindLockedIn(appStore.getState(), activeSlot)) { dispatch(deleteSlot(activeSlot)); return }
           const modChord = e.metaKey || e.ctrlKey
           const prompt = closeConfirmPrompt(appStore.getState(), activeSlot, {
             settingOn: loadChatConfig().confirmCloseSession,

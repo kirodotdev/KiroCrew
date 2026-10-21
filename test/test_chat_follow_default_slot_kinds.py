@@ -84,6 +84,10 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ("dashboard/handlers/cron_runs.py", "api_cron_to_chat"): (
         "excluded: origin=SlotOrigin.CRON on both calls"
     ),
+    ("dashboard/handlers/mastermind.py", "_ensure_slot"): (
+        "person: Settings > Mastermind's switch, owner-only (require_owner_dashboard_request); "
+        "the person's own pinned chat"
+    ),
     ("dashboard/handlers/members_thread.py", "api_member_thread"): (
         "excluded: mode=members_mod.DM_SLOT_MODE ('member') at birth"
     ),

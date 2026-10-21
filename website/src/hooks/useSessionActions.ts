@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { isMastermindLockedIn } from '../lib/mastermind'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError } from '../api/apiError'
@@ -462,6 +463,9 @@ export function useSessionActions(mode?: string, opts?: {
   // keeps the user's `confirmCloseSession` setting. The prompt names which of
   // the two made it ask (`closeConfirmPrompt`).
   const close = useCallback((slotKey: string) => {
+    // No prompt for the enabled Mastermind session: the close is refused (with a
+    // notice pointing to Settings), so asking first would confirm nothing.
+    if (isMastermindLockedIn(store.getState(), slotKey)) { dispatch(deleteSlot(slotKey)); return }
     const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
     if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
   }, [dispatch])

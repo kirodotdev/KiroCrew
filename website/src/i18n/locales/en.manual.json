@@ -2138,7 +2138,9 @@
       "attachment_removed": "{{file}} removed from attachments",
       "attachment_restored": "{{file}} attached",
       "trusted_command_until": "Trusted “{{cmd}}” until {{time}}, then it asks again",
-      "trusted_base_until": "Trusted any “{{base}}” command until {{time}}, then it asks again"
+      "trusted_base_until": "Trusted any “{{base}}” command until {{time}}, then it asks again",
+      "mastermind_summaries": "Summaries: {{model}}",
+      "mastermind_summaries_title": "Model Mastermind's summaries run on: {{model}}"
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
@@ -5920,7 +5922,11 @@
       "muted": "Muted: no chime, toast or badge",
       "chat_with_folder": "Chat with {{folder}} folder",
       "chat_with_folder_desc": "The chat that started this folder's other chats",
-      "conductor_tag": "conductor"
+      "conductor_tag": "conductor",
+      "mastermind": "Mastermind",
+      "mastermind_remembered_one": "{{formattedCount}} message remembered",
+      "mastermind_remembered_other": "{{formattedCount}} messages remembered",
+      "close_refused_mastermind": "Mastermind stays open. Turn it off or remove it in Settings → Mastermind."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
@@ -8714,6 +8720,45 @@
         "none_enabled": "No apps are enabled.",
         "load_failed": "Couldn't load your apps.",
         "failed_to_save": "Couldn't save the model for {{app}}."
+      },
+      "mastermindPanel": {
+        "intro": "Mastermind is one chat, kept at the top of Sessions, whose memory never fills up. Every message is summarized into a memory tree the agent can zoom back into, so it remembers across weeks without compaction.",
+        "enabled": "Enabled",
+        "enabled_desc": "On creates the Mastermind chat and pins it to the top of Sessions. Off keeps the chat and its memory; it works as an ordinary chat until you turn this back on.",
+        "toggle_failed": "Could not change Mastermind",
+        "action_failed": "The request failed.",
+        "stats_title": "Memory",
+        "stat_messages": "Messages remembered",
+        "stat_view_size": "Memory view size",
+        "stat_lines": "Lines in the view",
+        "stat_pending": "Summaries pending",
+        "stats_failed": "Could not read Mastermind's memory",
+        "browser_title": "Memory browser",
+        "browser_hint": "What the agent reads at the start of each turn, oldest first. Open a line to zoom into the messages it summarizes.",
+        "browser_empty": "Nothing remembered yet.",
+        "not_summarized": "not summarized yet",
+        "expand_line": "Zoom into {{ref}}",
+        "collapse_line": "Close {{ref}}",
+        "loading": "Loading…",
+        "load_more": "Load more",
+        "browse_failed": "Could not open the memory",
+        "export": "Export memory",
+        "export_failed": "Could not export the memory",
+        "danger_title": "Danger zone",
+        "clear": "Clear memory",
+        "clear_desc": "Mastermind forgets everything it remembers. The chat transcript stays.",
+        "clear_confirm_title": "Clear Mastermind's memory?",
+        "clear_confirm_body": "The chat transcript stays visible, but Mastermind forgets everything it has remembered and starts over from the next message.",
+        "clear_failed": "Could not clear the memory",
+        "remove": "Remove Mastermind",
+        "remove_desc": "Turns Mastermind off and deletes its chat.",
+        "remove_confirm_title": "Remove Mastermind?",
+        "remove_confirm_body": "This turns Mastermind off and deletes its chat. Its memory is kept unless you also erase it.",
+        "remove_forget": "Also erase its memory",
+        "remove_failed": "Could not remove Mastermind",
+        "summary_model": "Summary model",
+        "summary_model_desc": "Summaries run on this model in the background. It doesn't change the model the chat answers with.",
+        "summary_model_failed": "Could not save the summary model"
       }
     },
     "worldsPage": {
@@ -8846,7 +8891,9 @@
         "decisions_runtime_error": "The model could not be started.",
         "decisions_runtime_retry": "Try again",
         "folder_conductor": "Folder conductor",
-        "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
+        "folder_conductor_desc": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there.",
+        "mastermind": "Mastermind",
+        "mastermind_desc": "One chat at the top of Sessions with a memory that never fills up — every message is summarized into a memory tree the agent can zoom back into, so it remembers across weeks without compaction. Turning this on adds Settings → Mastermind."
       },
       "kasBundleCard": {
         "toggle_label": "Run KAS on {{productName}}'s own engine",
@@ -9065,6 +9112,10 @@
       "connections": {
         "label": "OAuth Apps",
         "description": "OAuth apps for providers that need a registered client"
+      },
+      "mastermind": {
+        "label": "Mastermind",
+        "description": "One chat whose memory never fills up"
       }
     }
   },

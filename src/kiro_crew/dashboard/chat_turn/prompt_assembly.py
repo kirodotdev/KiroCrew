@@ -12,6 +12,8 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.mastermind.slot import is_mastermind_turn
+
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.dashboard.chat_runner import (
@@ -56,6 +58,12 @@ async def _session_replay_history(
     asked for a cold start without history.
     """
     compressed: str | None = ""
+    if _context_is_new and not _provider_has_history and is_mastermind_turn(state, slot):
+        # Mastermind's memory is its tree's view (mastermind.service), never the
+        # replayed transcript; paid like the suppression arm below.
+        state.sessions.consume_replay_suppression(session_key)
+        state.sessions.consume_first_turn_history_owed(session_key)
+        return ""
     # Provider-agnostic session replay: Kiro Crew's conversation_log
     # is the canonical history source. Skip only when the provider
     # successfully resumed its own native session (same provider,

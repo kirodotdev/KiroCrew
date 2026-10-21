@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.mastermind.slot import turn_ended as mastermind_turn_ended
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         SUBAGENT_SYNTHESIS_PROMPT,
@@ -567,6 +569,9 @@ async def _end_turn_tail(
         # skip_if_busy for that case. Guarded because a raise here would skip the queue
         # hand-off below, silently stranding queued work at the end of an
         # otherwise successful turn.
+        # A landed Mastermind turn drops its backend conversation here: the next
+        # turn starts fresh, with the memory tree's view as its memory.
+        mastermind_turn_ended(state, slot, effective_session_key(slot))
         try:
             # The consume tore down the session for a mid-turn project change or
             # conversation discard; without a respawn the NEXT message pays the

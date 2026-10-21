@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MASTERMIND, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -138,6 +138,7 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  const mastermind = usePreviewFlag(PREVIEW_MASTERMIND)
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -318,6 +319,23 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
           checked={folderConductor}
           onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
+        />
+      </SettingsCard>
+      {/* Mastermind: one chat at the head of the Sessions list whose memory is a
+          summary tree that never fills up. The flag reveals its page, Settings >
+          Mastermind, where it is switched on, browsed, cleared or removed; the
+          session itself is the backend's, so this card is an ingress only.
+
+          NO ingress button: turning it on lists the Mastermind tab in the
+          Settings rail in the same tick, one glance away. NO "See what it looks
+          like" either -- the capture is optional and the surface is still
+          settling, the same rule the folder-conductor card above follows. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.mastermind')}
+          description={i18nT('pages.developer.featurePreviewsTab.mastermind_desc')}
+          checked={mastermind}
+          onChange={v => setPreviewFlag(PREVIEW_MASTERMIND, v)}
         />
       </SettingsCard>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch

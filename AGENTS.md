@@ -51,6 +51,7 @@ in the **same commit** when you change what it documents.
 | killing a runtime, leases and tenancies, sweeps and reapers, `runtime_ownership.py`, `runtime_reconcile.py`, the kill paths of `session_pid.py` and its `session_pid_*.py` owners | [runtime-ownership](docs/system-specs/modules/runtime-ownership.md) |
 | session summaries, the chat summary panel, intent extraction | [session-summary](docs/system-specs/modules/session-summary.md) |
 | memory, embeddings, vectors, lessons, skills, hooks | [memory-skills-hooks](docs/system-specs/modules/memory-skills-hooks.md) |
+| `mastermind/`, the Mastermind session's turn hooks or its memory routes | [mastermind](docs/system-specs/modules/mastermind.md) |
 | `context.py`, `context_blocks.py`, `context_assembly/`, what reaches the model's context | [context-management](docs/architecture/context-management.md) + [memory-skills-hooks: Context Builder](docs/system-specs/modules/memory-skills-hooks.md#context-builder-contextpy) (module ownership) |
 | MCP servers or tools (adding, changing, statelessness) | [mcp](docs/architecture/mcp.md) |
 | `mcp_gateway/` — `gatewayd.py`, `daemon/`, the daemon's lifecycle and facade | [mcp-gateway-daemon-lifecycle](docs/system-specs/modules/mcp-gateway-daemon-lifecycle.md) + [mcp](docs/architecture/mcp.md) |

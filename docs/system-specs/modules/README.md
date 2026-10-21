@@ -72,6 +72,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [memory-skills-hooks.md](memory-skills-hooks.md) | The memory layers, embeddings, lessons, skills, and hooks. |
+| [mastermind.md](mastermind.md) | The Mastermind session: its summary tree and view, the turn hooks that run it on a fresh conversation, and its memory tools. |
 | [knowledge.md](knowledge.md) | The knowledge graph and local knowledge search. |
 | [onboarding-import.md](onboarding-import.md) | Importing existing content at onboarding, and its embedding cost. |
 | [learn-cron-dashboard.md](learn-cron-dashboard.md) | Lessons, cron scheduling, and the dashboard handlers that expose them. |
