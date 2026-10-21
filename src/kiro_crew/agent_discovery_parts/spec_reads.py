@@ -15,7 +15,7 @@ import errno
 import logging
 import os
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from kiro_crew import hooks
 from kiro_crew.agent_spec_format import (
@@ -74,7 +74,7 @@ class _SpecReadRefused(OSError):
 _SpecReadRefused.__module__ = "kiro_crew.agent_discovery"
 
 
-def _read_spec_bytes(real: Path) -> bytes:
+def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None) -> bytes:
     """Read a resolved, fence-judged spec path pinned to the descriptor it opens.
 
     :func:`pinned_fs.open_fenced_for_read` refuses a link at the final
@@ -86,12 +86,19 @@ def _read_spec_bytes(real: Path) -> bytes:
     past it, so a multi-gigabyte "agent config" is still refused at the cap
     instead of being slurped into memory. Nothing here submits to the resolver
     pool off the event loop.
+
+    A consumer *fence* judges *real* before the open and the opened inode's
+    kernel path alongside :func:`_fence_refuses`; a refusal raises
+    :class:`_SpecReadRefused`.
     """
-    fd = open_fenced_for_read(
-        real,
-        fence=lambda fd_real: _fence_refuses(Path(fd_real)),
-        refusal=_SpecReadRefused,
-    )
+    if fence is not None and fence(real):
+        raise _SpecReadRefused(f"consumer fence refused {str(real)!r}")
+
+    def refused(fd_real: str) -> bool:
+        opened = Path(fd_real)
+        return _fence_refuses(opened) or (fence is not None and fence(opened))
+
+    fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
     cap = hooks.MAX_FILE_BYTES
     with os.fdopen(fd, "rb") as fh:
         data = fh.read(cap + 1)
@@ -167,6 +174,7 @@ def _read_agent_spec(
     *,
     operation: str = "list_agents",
     source: str = "list_agents",
+    fence: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Parse an agent config file, or ``None`` when it is not usable.
 
@@ -199,6 +207,10 @@ def _read_agent_spec(
     to exactly today's trail); they are not for new call sites.
     ``caller`` stays fixed at ``"agent_discovery"``: the reader genuinely is the
     caller into SEL, and a fixed value keeps the trail greppable by module.
+
+    *fence* is an optional consumer policy judged on the resolved target and on
+    the opened inode's kernel path. A refusal is audited as ``consumer fence
+    rejected`` and the spec reads as unusable.
     """
     if path.name.startswith("._"):
         return None
@@ -240,8 +252,22 @@ def _read_agent_spec(
             error="sensitive path rejected",
         )
         return None
+
+    def audited_fence(candidate: Path) -> bool:
+        refused = fence is not None and fence(candidate)
+        if refused:
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(candidate),
+                error="consumer fence rejected",
+            )
+        return refused
+
     try:
-        raw = _read_spec_bytes(real)
+        raw = (
+            _read_spec_bytes(real) if fence is None else _read_spec_bytes(real, fence=audited_fence)
+        )
     except FileTooLargeError:
         logger.debug("Skipping oversized agent config: %r", path)
         return None
@@ -578,11 +604,29 @@ def spec_by_declared_name(
     The cache also hands out its own rows to be treated as read-only, where
     this returns a parse the caller owns.
     """
+    entry = declared_spec_entry(agents_dir, agent_id, operation=operation, source=source)
+    return None if entry is None else entry[1]
+
+
+def declared_spec_entry(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    operation: str,
+    source: str,
+    fence: Callable[[Path], bool] | None = None,
+) -> tuple[Path, dict[str, Any]] | None:
+    """:func:`spec_by_declared_name` with the listed path of the first claimant.
+
+    *fence* is handed to :func:`_read_agent_spec` for every scanned entry, so a
+    caller can hold followed links to its own policy. The path names the entry
+    as listed and is never reopened by this scan.
+    """
     match: dict[str, Any] | None = None
     match_paths: list[Path] = []
     divergent = False
     for path in iter_agent_spec_files(agents_dir):
-        spec = _read_agent_spec(path, operation=operation, source=source)
+        spec = _read_agent_spec(path, operation=operation, source=source, fence=fence)
         if isinstance(spec, dict) and spec.get("name") == agent_id:
             if match is None:
                 match = spec
@@ -611,7 +655,7 @@ def spec_by_declared_name(
             redact_log_via_context(repr(agent_id)),
             redact_log_via_context(names),
         )
-    return match
+    return None if match is None else (match_paths[0], match)
 
 
 def agent_spec_stems(agents_dir: Path, *, operation: str, source: str) -> list[str]:

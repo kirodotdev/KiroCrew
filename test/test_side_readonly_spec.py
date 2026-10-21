@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import agent as agent_mod
 from kiro_crew.dashboard import side_readonly_spec as srs
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
@@ -335,6 +336,37 @@ def test_publish_fails_closed_when_the_base_spec_is_missing_or_broken(agents_dir
         srs.publish_readonly_spec("broken")
     assert exc.value.code in {"base_spec_missing", "base_spec_unreadable"}
     assert not (agents_dir / "broken--readonly.json").exists()
+
+
+@requires_symlinks
+def test_publish_derives_from_a_linked_user_base_outside_managed_state(
+    agents_dir, tmp_path, monkeypatch
+):
+    from kiro_crew.config import config_dir
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    linked = dotfiles / "helper.json"
+    linked.write_text(json.dumps(dict(_BASE, name="helper", prompt="linked")), encoding="utf-8")
+    (agents_dir / "helper.json").symlink_to(linked)
+    managed = config_dir() / "members" / "peer" / "peer-agent.json"
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_text(json.dumps(dict(_BASE, name="peer-agent")), encoding="utf-8")
+    (agents_dir / "peer-agent.json").symlink_to(managed)
+
+    published = srs.publish_readonly_spec("helper")
+
+    derived = json.loads((agents_dir / f"{published.name}.json").read_text(encoding="utf-8"))
+    assert published.name == "helper--readonly"
+    assert derived["prompt"] == "linked"
+    assert derived["allowedTools"] == []
+    with pytest.raises(srs.ReadOnlySpecError) as exc:
+        srs.publish_readonly_spec("peer-agent")
+    assert exc.value.code == "base_spec_missing"
+    assert not (agents_dir / "peer-agent--readonly.json").exists()
 
 
 def test_publish_refuses_a_project_spec_that_shadows_the_derived_name(agents_dir, tmp_path):

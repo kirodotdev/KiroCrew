@@ -1584,6 +1584,15 @@ Auto relevance and file paths first discovered through tools remain agent-driven
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
 A project override of a template takes precedence over its global copy. A
+global template that no regular spec claims is looked up by declared name in the
+global agents directory, following links the way kiro-cli does
+(`member_essential_context.linked_global_template_spec`). Each entry is read once
+through `agent_discovery._read_agent_spec`, and a target outside the agents
+directory that sits inside managed memory or member private state is refused, as
+is every such target when a managed root cannot be resolved. Entries with
+differing content that declare the same name are ambiguous. The member persona,
+the execution prompt, the session MCP spec and the side-turn read-only spec read
+templates this way; spec writers refuse links. A
 relative `file://` prompt uses the project root when its template comes from the
 project's agents directory, and the user home when it comes from the global
 agents directory, even with a project bound. Both readers share the same path

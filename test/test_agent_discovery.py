@@ -1373,7 +1373,7 @@ class TestSpecByDeclaredName:
         handed_out: list[weakref.ref] = []
         retained_mid_scan: list[str] = []
 
-        def _reader(path: Path, *, operation: str, source: str) -> dict:
+        def _reader(path: Path, *, operation: str, source: str, fence=None) -> dict:
             # Reads 0..n-2 are done; read n-2's parse is still the loop's own
             # ``spec`` local until this call returns, so it is exempt. Read 0 is
             # the match the scan may return, so it is exempt. Everything else

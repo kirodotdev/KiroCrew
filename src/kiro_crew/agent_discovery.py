@@ -138,6 +138,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_on_systematic_scan_failure,
         agent_spec_stems,
         apple_double_sidecar,
+        declared_spec_entry,
         plain_markdown_document,
         read_agent_spec_strict,
         spec_by_declared_name,

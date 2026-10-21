@@ -860,6 +860,301 @@ def test_global_template_cannot_import_managed_memory_or_peer_briefing(env, monk
         documents_for_member("writer-template", None)
 
 
+def _global_agents() -> Path:
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    return agents
+
+
+def _dotfile(tmp_path: Path, name: str, body: dict | str) -> Path:
+    target = tmp_path / "dotfiles" / name
+    target.parent.mkdir(exist_ok=True)
+    text = body if isinstance(body, str) else json.dumps(body)
+    target.write_text(text, encoding="utf-8")
+    return target
+
+
+@requires_symlinks
+def test_a_symlinked_global_template_supplies_the_members_persona(env, tmp_path):
+    agents = _global_agents()
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    link = agents / "writer-template.json"
+    link.symlink_to(os.path.relpath(target, agents))
+
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member
+    )
+
+    assert "DOTFILES_PERSONA" in message
+    assert link.is_symlink()
+    assert sorted(p.name for p in agents.iterdir()) == ["writer-template.json"]
+
+
+@requires_symlinks
+def test_a_linked_template_is_parsed_by_the_name_the_agents_directory_lists(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    target = _dotfile(tmp_path, "writer-template", "---\nname: writer-template\n---\nMD_PERSONA\n")
+    (_global_agents() / "writer-template.md").symlink_to(target)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("MD_PERSONA" in body for _, body in documents)
+
+
+@requires_symlinks
+def test_the_execution_prompt_of_a_symlinked_global_template_is_read(env, tmp_path):
+    target = _dotfile(
+        tmp_path, "task-runtime.json", {"name": "task-runtime", "prompt": "LINKED_INSTRUCTIONS"}
+    )
+    (_global_agents() / "task-runtime.json").symlink_to(target)
+
+    assert context_module.ContextBuilder._load_agent_prompt("task-runtime") == "LINKED_INSTRUCTIONS"
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "spec_name, leaf, body",
+    [
+        (
+            "writer-template.json",
+            "members/peer/state.json",
+            json.dumps({"name": "writer-template", "prompt": "PEER_SECRET"}),
+        ),
+        (
+            "writer-template.md",
+            "members/peer/briefing.md",
+            "---\nname: writer-template\n---\nPEER_SECRET\n",
+        ),
+        (
+            "writer-template.md",
+            "workspace/memory/preferences.md",
+            "---\nname: writer-template\n---\nPEER_SECRET\n",
+        ),
+    ],
+    ids=["json-peer-state", "md-peer-briefing", "md-global-preferences"],
+)
+def test_a_global_template_linked_into_managed_state_is_refused_and_audited(
+    env, monkeypatch, spec_name, leaf, body
+):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    target = config_dir() / leaf
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    (_global_agents() / spec_name).symlink_to(target)
+    audited = []
+    monkeypatch.setattr(agent_discovery, "_audit_denied", lambda **row: audited.append(row))
+
+    with pytest.raises(MemberEssentialContextError, match="not found"):
+        documents_for_member("writer-template", None)
+    assert context_module.ContextBuilder._load_agent_prompt("writer-template") == ""
+    assert {row["error"] for row in audited} == {"consumer fence rejected"}
+    assert {row["resources"] for row in audited} == {str(target.resolve())}
+
+
+@requires_symlinks
+def test_a_linked_template_swapped_into_managed_state_before_open_is_refused(
+    env, monkeypatch, tmp_path
+):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    managed = config_dir() / "workspace" / "memory"
+    managed.mkdir(parents=True, exist_ok=True)
+    (managed / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "MANAGED_PERSONA"}), encoding="utf-8"
+    )
+    folder = tmp_path / "dotfiles" / "agents"
+    folder.mkdir(parents=True)
+    (folder / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "DOTFILES_PERSONA"}), encoding="utf-8"
+    )
+    (_global_agents() / "writer-template.json").symlink_to(folder / "writer-template.json")
+    real_read = agent_discovery._read_spec_bytes
+    swapped = False
+
+    def swap_folder_before_open(real, *, fence=None):
+        nonlocal swapped
+        if fence is not None and not swapped:
+            folder.rename(folder.with_name("agents-before"))
+            folder.symlink_to(managed, target_is_directory=True)
+            swapped = True
+        return real_read(real) if fence is None else real_read(real, fence=fence)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", swap_folder_before_open)
+
+    with pytest.raises(MemberEssentialContextError, match="not found"):
+        documents_for_member("writer-template", None)
+    assert swapped
+
+
+@requires_symlinks
+def test_an_unverifiable_managed_root_refuses_every_linked_template(env, monkeypatch, tmp_path):
+    from kiro_crew import agent_discovery, member_essential_context
+
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    agents = _global_agents()
+    (agents / "writer-template.json").symlink_to(target)
+    (agents / "unrelated.json").write_text(json.dumps({"name": "unrelated"}), encoding="utf-8")
+    found = member_essential_context.linked_global_template_spec(
+        "writer-template", operation="member_essentials", source="context"
+    )
+    assert found is not None
+    monkeypatch.setattr(member_essential_context, "_admitted_root", lambda _root: None)
+    audited = []
+    monkeypatch.setattr(agent_discovery, "_audit_denied", lambda **row: audited.append(row))
+
+    assert (
+        member_essential_context.linked_global_template_spec(
+            "writer-template", operation="member_essentials", source="context"
+        )
+        is None
+    )
+    assert {row["resources"] for row in audited} == {str(target.resolve())}
+
+
+@requires_symlinks
+def test_an_agents_directory_under_the_data_home_reads_its_entries_unrefused(
+    env, monkeypatch, tmp_path
+):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = config_dir() / "kiro" / "agents"
+    agents.mkdir(parents=True)
+    monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
+    monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", agents)
+    for index in range(3):
+        (agents / f"unrelated-{index}.json").write_text(
+            json.dumps({"name": f"unrelated-{index}"}), encoding="utf-8"
+        )
+    (agents / "persona.json").write_text(
+        json.dumps({"name": "persona", "prompt": "SIBLING_PERSONA"}), encoding="utf-8"
+    )
+    (agents / "writer-alias.json").symlink_to("persona.json")
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    (agents / "writer-template.json").symlink_to(target)
+    audited = []
+    monkeypatch.setattr(agent_discovery, "_audit_denied", lambda **row: audited.append(row))
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("DOTFILES_PERSONA" in body for _, body in documents)
+    assert audited == []
+
+
+def test_a_regular_global_template_read_does_not_consult_managed_roots(env, monkeypatch):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    (_global_agents() / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "REGULAR_PERSONA"}), encoding="utf-8"
+    )
+
+    def unexpected():
+        raise AssertionError("a regular template read consulted the managed roots")
+
+    monkeypatch.setattr(member_essential_context, "_managed_template_target_refused", unexpected)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("REGULAR_PERSONA" in body for _, body in documents)
+
+
+@requires_symlinks
+def test_a_regular_global_template_wins_over_a_link_declaring_the_same_name(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = _global_agents()
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "REGULAR_PERSONA"}), encoding="utf-8"
+    )
+    target = _dotfile(
+        tmp_path, "other.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    (agents / "linked-writer.json").symlink_to(target)
+
+    bodies = [body for _, body in documents_for_member("writer-template", None)]
+
+    assert any("REGULAR_PERSONA" in body for body in bodies)
+    assert not any("DOTFILES_PERSONA" in body for body in bodies)
+
+
+@requires_symlinks
+def test_two_linked_templates_with_differing_content_are_ambiguous(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = _global_agents()
+    first = _dotfile(tmp_path, "a.json", {"name": "writer-template", "prompt": "FIRST"})
+    second = _dotfile(tmp_path, "b.json", {"name": "writer-template", "prompt": "SECOND"})
+    (agents / "writer-template.json").symlink_to(first)
+    (agents / "writer-copy.json").symlink_to(second)
+
+    with pytest.raises(MemberEssentialContextError, match="differing content"):
+        documents_for_member("writer-template", None)
+
+
+@requires_symlinks
+def test_managed_roots_are_resolved_once_per_template_read(env, monkeypatch, tmp_path):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = _global_agents()
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    (agents / "writer-template.json").symlink_to(target)
+    for index in range(5):
+        (agents / f"unrelated-{index}.json").write_text(
+            json.dumps({"name": f"unrelated-{index}"}), encoding="utf-8"
+        )
+    real_check = member_essential_context._managed_source_check
+    built = []
+
+    def counted(**kwargs):
+        built.append(kwargs)
+        return real_check(**kwargs)
+
+    monkeypatch.setattr(member_essential_context, "_managed_source_check", counted)
+    monkeypatch.setattr(member_essential_context, "_refuse_managed_source", lambda _path: None)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("DOTFILES_PERSONA" in body for _, body in documents)
+    assert built == [{"refuse_unverifiable_roots": True}]
+
+
+@requires_symlinks
+def test_session_mcp_reads_the_servers_of_a_linked_global_spec(env, tmp_path):
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.config import config_dir
+
+    servers = {"linked-srv": {"command": "/nonexistent/linked-server"}}
+    target = _dotfile(
+        tmp_path, "linked-agent.json", {"name": "linked-agent", "mcpServers": servers}
+    )
+    agents = _global_agents()
+    (agents / "linked-agent.json").symlink_to(target)
+    managed = config_dir() / "members" / "peer" / "managed-agent.json"
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_text(json.dumps({"name": "managed-agent", "mcpServers": servers}))
+    (agents / "managed-agent.json").symlink_to(managed)
+
+    assert session_mcp._user_agent_spec("linked-agent")["mcpServers"] == servers
+    assert session_mcp._user_agent_spec("managed-agent") is None
+
+
 def test_runtime_override_keeps_the_memory_owners_soul(env):
     message, _ = env.builder.build_message(
         "Critique this draft",

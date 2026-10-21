@@ -101,6 +101,7 @@ from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
 )
+from kiro_crew.member_essential_context import linked_global_template_spec
 from kiro_crew.user_json import loads_user_jsonc
 
 logger = logging.getLogger(__name__)
@@ -621,6 +622,15 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
         logger.warning("session MCP: ambiguous agent spec for %r", agent, exc_info=True)
         return None
     if path is None:
+        try:
+            linked = linked_global_template_spec(
+                agent, operation="session_mcp_servers", source="unknown"
+            )
+        except ValueError:
+            logger.warning("session MCP: ambiguous agent spec for %r", agent, exc_info=True)
+            return None
+        if linked is not None:
+            return linked[1]
         logger.info(
             "session MCP: no spec on disk for agent %r; loading Crew's control plane only", agent
         )
