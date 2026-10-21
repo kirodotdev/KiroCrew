@@ -27,7 +27,6 @@
 2641 test/conftest.py
 3125 test/test_cron_script.py
 3102 test/test_handlers_memory_coverage.py
-2096 test/test_monitor_directive_apply.py
 12647 test/test_security.py
 3082 test/test_skills.py
 3093 test/test_subagent.py
