@@ -533,10 +533,7 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
                 )
         except _AmbiguousTemplateName as exc:
             return web.json_response(
-                {
-                    "error": f"'{exc}' matches more than one template file; rename one first.",
-                    "code": "ambiguous_template_name",
-                },
+                {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
         # A member of this name would make the new template unreachable by bare
@@ -586,14 +583,12 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
                             # copy would carry the wrong definition. Exactly one
                             # file may reach the source name, and it must be the
                             # one the probe chose.
-                            claimants = {
-                                (agents_dir / info.filename).resolve()
-                                for info in _find_infos(source_key)
-                            }
+                            infos = _find_infos(source_key)
+                            claimants = {(agents_dir / info.filename).resolve() for info in infos}
                             if not claimants:
                                 raise FileNotFoundError(source_path)
                             if claimants != {source_path.resolve()}:
-                                raise _AmbiguousOnDisk(source_name)
+                                raise _AmbiguousOnDisk(source_key, _claimant_paths(infos))
                             fresh = _read_agent_spec(
                                 source_path,
                                 operation="api_agent_template_create",
@@ -637,13 +632,10 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
                 {"error": f"Template '{source_name}' not found", "code": "template_not_found"},
                 status=404,
             )
-        except _AmbiguousOnDisk:
+        except _AmbiguousOnDisk as exc:
             # A second file reached the source name after the probe.
             return web.json_response(
-                {
-                    "error": f"'{source_name}' matches more than one template file; rename one first.",
-                    "code": "ambiguous_template_name",
-                },
+                {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
         except Exception:
@@ -676,7 +668,31 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
 class _AmbiguousOnDisk(Exception):
     """Under the spec lock, the name resolves to something other than exactly the
     file the pre-lock probe chose -- a second claimant is present, or the file
-    is not the one the probe saw."""
+    is not the one the probe saw.
+
+    ``paths`` lists the claimants only when there are two or more: a lone
+    replacement file is not "more than one", so it keeps the bare sentence.
+    """
+
+    def __init__(self, name: str, paths: tuple[Path, ...] = ()) -> None:
+        super().__init__(name)
+        self.name = name
+        self.paths = paths
+
+    def refusal_text(self) -> str:
+        """The ``409 ambiguous_template_name`` sentence, worded and bounded by
+        ``_AmbiguousTemplateName.refusal_text`` (file names only, masked)."""
+        # circular import: see api_agent_template_create.
+        from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
+
+        return _AmbiguousTemplateName(self.name, self.paths).refusal_text()
+
+
+def _claimant_paths(infos: list[AgentInfo]) -> tuple[Path, ...]:
+    """The spec files *infos* name, for a refusal -- empty unless two or more."""
+    if len(infos) < 2:
+        return ()
+    return tuple(Path(info.filename) for info in infos)
 
 
 class _ReadOnlyOnDisk(Exception):
@@ -754,7 +770,7 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
             # as create and the definition PATCH already insist.
             return web.json_response(
                 {
-                    "error": f"'{name}' matches more than one template file; rename one first.",
+                    "error": _AmbiguousOnDisk(name, _claimant_paths(matches)).refusal_text(),
                     "code": "ambiguous_template_name",
                 },
                 status=409,
@@ -830,11 +846,10 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                         # the stale single match unlink the user's own file.
                         # Exactly one file may reach the name, and it must be
                         # the one about to go.
-                        claimants = {
-                            (agents_dir / info.filename).resolve() for info in _find_infos(name)
-                        }
+                        infos = _find_infos(name)
+                        claimants = {(agents_dir / info.filename).resolve() for info in infos}
                         if claimants != {spec_path.resolve()}:
-                            raise _AmbiguousOnDisk(name)
+                            raise _AmbiguousOnDisk(name, _claimant_paths(infos))
                         forks = agent_state.all_fork_info()
                         fork = forks.get(on_disk.name)
                         if fork:
@@ -928,12 +943,9 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except _AmbiguousOnDisk:
+        except _AmbiguousOnDisk as exc:
             return web.json_response(
-                {
-                    "error": f"'{name}' matches more than one template file; rename one first.",
-                    "code": "ambiguous_template_name",
-                },
+                {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
         except CronStoreUnreadable:

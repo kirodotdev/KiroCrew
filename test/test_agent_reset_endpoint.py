@@ -203,3 +203,26 @@ async def test_reset_keeps_copy_bound_by_file_stem(tmp_path):
     assert KiroCrewConfig.load().agents["design-crew"].kiro_agent == "kirocrew"
     assert (agents_dir / "design-crew-file.json").exists()
     assert agent_state.get_fork_info("design-crew") is not None
+
+
+@pytest.mark.asyncio
+async def test_reset_ambiguous_origin_refusal_names_the_claimant_files(tmp_path):
+    """Two files claiming the origin's name: the 409 names both by file name
+    inside ~/.kiro/agents/, never the absolute path, and the copy is kept."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed(agents_dir)
+    _write_template(agents_dir, "SomePkg-kirocrew", name="kirocrew")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_reset(_reset_request("design-crew", {"crew": "design-crew"}))
+
+    assert resp.status == 409, resp.text
+    assert json.loads(resp.text) == {
+        "error": "'kirocrew' matches more than one template file in ~/.kiro/agents/ "
+        "(SomePkg-kirocrew.json, kirocrew.json); rename one first.",
+        "code": "ambiguous_template_name",
+    }
+    assert str(agents_dir) not in resp.text
+    assert (agents_dir / "design-crew.json").exists()
+    assert KiroCrewConfig.load().agents["design-crew"].kiro_agent == "design-crew"

@@ -845,3 +845,25 @@ async def test_publish_rollback_retained_destination_is_never_shared(tmp_path):
     }
     # The crew's binding never moved.
     assert KiroCrewConfig.load().agents["design-crew"].kiro_agent == "design-crew"
+
+
+@pytest.mark.asyncio
+async def test_publish_ambiguous_refusal_names_the_claimant_files(tmp_path):
+    """Two files claiming the copy's name: the 409 names both by file name
+    inside ~/.kiro/agents/, never the absolute path, and keeps its code."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed_private_copy(agents_dir, "c", "c", "kirocrew")
+    _write_template(agents_dir, "SomePkg-c", name="c")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": "published"}))
+
+    assert resp.status == 409, resp.text
+    assert json.loads(resp.text) == {
+        "error": "'c' matches more than one template file in ~/.kiro/agents/ "
+        "(SomePkg-c.json, c.json); rename one first.",
+        "code": "ambiguous_template_name",
+    }
+    assert str(agents_dir) not in resp.text
+    assert not (agents_dir / "published.json").exists()

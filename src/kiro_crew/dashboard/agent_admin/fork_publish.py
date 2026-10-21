@@ -374,12 +374,9 @@ async def api_agent_publish(request: web.Request) -> web.Response:
             source, source_name, taken, source_path = await asyncio.to_thread(
                 _load_template_specs, agents_dir, name, "api_agent_publish"
             )
-        except _AmbiguousTemplateName:
+        except _AmbiguousTemplateName as exc:
             return web.json_response(
-                {
-                    "error": f"'{name}' matches more than one template file; rename one first.",
-                    "code": "ambiguous_template_name",
-                },
+                {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
         if source is None:
@@ -705,12 +702,9 @@ async def api_agent_reset(request: web.Request) -> web.Response:
             origin_spec, origin_name, _taken, _path = await asyncio.to_thread(
                 _load_template_specs, agents_dir, origin, "api_agent_reset"
             )
-        except _AmbiguousTemplateName:
+        except _AmbiguousTemplateName as exc:
             return web.json_response(
-                {
-                    "error": f"'{origin}' matches more than one template file; rename one first.",
-                    "code": "ambiguous_template_name",
-                },
+                {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
         if origin_spec is None:
