@@ -482,18 +482,22 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # system declining on purpose (the slot was mid-turn) while an exception is
     # a defect, and folded together a wedged fire callback is indistinguishable
     # from a busy session.
-    monitor_loop_metrics.record_tick(
-        loop,
-        (
-            monitor_loop_metrics.OUTCOME_FAILED
-            if callback_raised
-            else (
-                monitor_loop_metrics.OUTCOME_DELIVERED
-                if delivered
-                else monitor_loop_metrics.OUTCOME_REFUSED
-            )
-        ),
-    )
+    #
+    # A refusal is counted only while the loop is still live. Some callbacks
+    # remove the loop and then return False (the session is gone, the channel
+    # is unsupported); the store's commit point already counts that removal on
+    # ``loops.stopped``, so counting it here too would report one event twice.
+    # The same guard the quiet branch in ``_timer`` uses.
+    if callback_raised:
+        tick_outcome: str | None = monitor_loop_metrics.OUTCOME_FAILED
+    elif delivered:
+        tick_outcome = monitor_loop_metrics.OUTCOME_DELIVERED
+    elif loop.active and loop.id in self._loops:
+        tick_outcome = monitor_loop_metrics.OUTCOME_REFUSED
+    else:
+        tick_outcome = None
+    if tick_outcome is not None:
+        monitor_loop_metrics.record_tick(loop, tick_outcome)
     claimed_wake = loop.id in self._pending_monitor_wake
     # Taken, not merely tested: the claim carries the wake's own text, and the
     # re-owe below has to put the same text back rather than an empty one.

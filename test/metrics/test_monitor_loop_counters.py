@@ -21,7 +21,10 @@ carry them, and the tests that pass one in assert it never appears.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
+import logging
+import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -38,9 +41,11 @@ from kiro_crew.monitoring.models import (
     MonitorObservation,
     MonitorObservationStatus,
     MonitorOutcome,
+    MonitorProbeResult,
     MonitorState,
     ProviderErrorKind,
 )
+from kiro_crew.monitoring.pull_request import PullRequestFacts, classify_pull_request_facts
 
 _HOUR = 3600
 _DAY = 86400
@@ -174,7 +179,7 @@ class TestLoopsStarted:
 
     @pytest.mark.asyncio
     async def test_a_structured_monitor_arm_counts_too(self, rec, tmp_path):
-        """Its own mutation, not the prompt one, so it needs its own emit.
+        """Its own mutation, not the prompt one, and its own snapshot writer.
 
         Its stop IS counted, so an uncounted arm would let
         ``loops.stopped{kind=monitor}`` outnumber
@@ -217,6 +222,223 @@ class TestLoopsStarted:
         assert started[0]["attrs"]["kind"] == stopped[0]["attrs"]["kind"] == ml.KIND_MONITOR
         assert stopped[0]["attrs"]["reason"] == "user_stop"
         assert "done with it" not in "".join(stopped[0]["attrs"].values())
+
+    @pytest.mark.asyncio
+    async def test_a_pause_resume_and_cap_stop_balance(self, rec, tmp_path):
+        """A resume is an inactive-to-active transition and counts as a start.
+
+        Without it, the pause and the later cycle-cap stop record two stops
+        against one start, and the reconcilers that revive inactive loops on
+        every pass widen that gap for as long as a campaign runs.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600, max_cycles=1)
+        await svc.update(loop.id, active=False)
+        await svc.update(loop.id, active=True)
+        assert loop.active, "the resume must have revived the loop"
+        loop.cycle_count = 1
+        svc._on_fire = _unreachable_fire
+        await svc._timer(loop, delay=0)
+        assert not loop.active
+
+        started = _named(rec, ml.LOOPS_STARTED)
+        stopped = _named(rec, ml.LOOPS_STOPPED)
+        assert len(started) == 2
+        assert len(stopped) == 2
+        assert [c["attrs"]["reason"] for c in stopped] == ["manual", "cycle_cap"]
+        assert {c["attrs"]["kind"] for c in started + stopped} == {ml.KIND_LOOP}
+
+    @pytest.mark.asyncio
+    async def test_an_update_on_an_active_loop_is_not_a_start(self, rec, tmp_path):
+        """A settings save sends ``active=True`` on a live loop; nothing revived."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+
+        await svc.update(loop.id, active=True, message="go on")
+
+        assert len(_named(rec, ml.LOOPS_STARTED)) == 1
+        assert _named(rec, ml.LOOPS_STOPPED) == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_close_restore_and_its_later_stop_balance(self, rec, tmp_path):
+        """The close retirement commits a stop, so its undo is a start."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+        await svc.retire_monitor_for_session_close(loop.id, now=110.0)
+        assert not loop.active
+        restored = await svc.restore_monitor_after_failed_session_close(loop.id, now=120.0)
+        assert restored is loop and loop.active
+        await svc.stop_monitor(loop.id, now=130.0)
+
+        started = _named(rec, ml.LOOPS_STARTED)
+        stopped = _named(rec, ml.LOOPS_STOPPED)
+        assert len(started) == 2
+        assert len(stopped) == 2
+        assert [c["attrs"]["reason"] for c in stopped] == ["session_close", "user_stop"]
+        assert {c["attrs"]["kind"] for c in started + stopped} == {ml.KIND_MONITOR}
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_rollback_of_an_active_row_balances(self, rec, tmp_path):
+        """The replacement commit removes the prior id, which counts a stop."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        prior = await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+        assert prior.monitor is not None
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            expected_existing_monitor_id=prior.id,
+            expected_existing_config_generation=prior.monitor.config_generation,
+            loop_id="replaced",
+            defer_replaced_trust_revocation=True,
+        )
+        assert await svc.rollback_monitor_replacement("replaced") is True
+        assert svc._loops[prior.id].active
+        await svc.stop_monitor(prior.id, now=130.0)
+
+        assert len(_named(rec, ml.LOOPS_STARTED)) == 3
+        assert len(_named(rec, ml.LOOPS_STOPPED)) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_declined_revival_of_a_finished_row_is_not_a_start(self, rec, tmp_path):
+        """A finished row refuses ``active=True`` and stays inactive: no start.
+
+        The reconcilers send that call on every pass, so a start counted here
+        would grow without a matching stop for as long as a campaign runs.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+        await svc.update(loop.id, active=False, stopped_reason=loop_model.MONITOR_TERMINAL_REASON)
+        rec.counters.clear()
+
+        await svc.update(loop.id, active=True)
+
+        assert not loop.active, "the finished row must have declined the revival"
+        assert _named(rec, ml.LOOPS_STARTED) == []
+        assert _named(rec, ml.LOOPS_STOPPED) == []
+
+    @pytest.mark.asyncio
+    async def test_a_boot_resume_of_a_torn_row_and_its_stop_balance(self, rec, tmp_path):
+        """The load repair resumes the row after the stop baseline was taken.
+
+        The row is inactive on disk, so the baseline does not hold it, and the
+        commit that writes it active counts its start. Without that, its later
+        stop is counted against no start. A second restart loads the row active
+        and adds nothing.
+        """
+        _write_store(tmp_path, _torn_row())
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        try:
+            loop = svc._loops[_TORN_ID]
+            assert loop.active, "the load must have resumed the torn row"
+            assert len(_named(rec, ml.LOOPS_STARTED)) == 1
+
+            await svc.update(loop.id, active=False)
+        finally:
+            svc.stop()
+
+        started = _named(rec, ml.LOOPS_STARTED)
+        stopped = _named(rec, ml.LOOPS_STOPPED)
+        assert len(started) == 1
+        assert len(stopped) == 1
+        assert started[0]["attrs"] == {"kind": ml.KIND_LOOP}
+        assert stopped[0]["attrs"]["reason"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_a_second_restart_does_not_re_count_a_boot_resume(self, rec, tmp_path):
+        _write_store(tmp_path, _torn_row())
+        first = AutoNudgeService(base_dir=tmp_path)
+        await first.start()
+        first.stop()
+        assert len(_named(rec, ml.LOOPS_STARTED)) == 1
+
+        rec.counters.clear()
+        second = AutoNudgeService(base_dir=tmp_path)
+        await second.start()
+        second.stop()
+
+        assert second._loops[_TORN_ID].active
+        assert _named(rec, ml.LOOPS_STARTED) == []
+
+    @pytest.mark.asyncio
+    async def test_an_activation_path_that_never_names_the_counter_is_counted(self, rec, tmp_path):
+        """A future mutation that activates a loop must not need to know this counter.
+
+        The activation here is a bare field write and a plain store save -- no
+        mutation, no emit -- standing in for a path nobody has written yet. Starts
+        are counted at the commit point from the same diff as stops, so it is
+        still counted, and the pause, the bare resume and the final stop balance.
+        A start emitted per mutation would miss it and leave two stops against
+        one start.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        try:
+            loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+            await svc.update(loop.id, active=False)
+
+            loop.active = True
+            loop.stopped_reason = ""
+            svc._save()
+            assert len(_named(rec, ml.LOOPS_STARTED)) == 2
+
+            svc._save()
+            assert len(_named(rec, ml.LOOPS_STARTED)) == 2, "a re-save is not a start"
+
+            await svc.update(loop.id, active=False)
+        finally:
+            svc.stop()
+
+        started = _named(rec, ml.LOOPS_STARTED)
+        stopped = _named(rec, ml.LOOPS_STOPPED)
+        assert len(started) == len(stopped) == 2
+        assert {c["attrs"]["kind"] for c in started + stopped} == {ml.KIND_LOOP}
+
+    @pytest.mark.asyncio
+    async def test_an_unparsed_active_row_is_not_a_start(self, rec, tmp_path):
+        """A row the load could not parse is rewritten on every commit, never served.
+
+        It is outside the loaded baseline, so a commit-point diff that did not
+        skip it would count one start per boot that no stop can ever match.
+        """
+        unparsed = _row(id="unparsed1", idle_secs="not-a-number", created_ts="later")
+        _write_store(tmp_path, unparsed)
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        try:
+            assert "unparsed1" not in svc._loops
+            assert svc._store.unparsed_rows, "the row must have been held as unparsed"
+            await svc.add(slot_key="chat-2-456", message="go", idle_secs=3600)
+        finally:
+            svc.stop()
+
+        on_disk = json.loads((tmp_path / "autonudge.json").read_text())["loops"]
+        assert any(r.get("id") == "unparsed1" and r.get("active") for r in on_disk)
+        assert len(_named(rec, ml.LOOPS_STARTED)) == 1
+        assert _named(rec, ml.LOOPS_STOPPED) == []
 
     @pytest.mark.asyncio
     async def test_no_loop_id_or_slot_key_reaches_the_attributes(self, rec, tmp_path):
@@ -281,6 +503,32 @@ class TestTicks:
         calls = _named(rec, ml.TICKS)
         assert len(calls) == 1
         assert calls[0]["attrs"]["outcome"] == ml.OUTCOME_REFUSED
+
+    @pytest.mark.asyncio
+    async def test_a_callback_that_removes_the_loop_is_a_stop_and_not_a_refusal(
+        self, rec, tmp_path
+    ):
+        """The dashboard fire removes a loop whose session is gone, then returns False.
+
+        The store counts that removal on `loops.stopped`; counting it as a
+        `refused` tick too would report one event twice.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+
+        async def _remove_then_refuse(fired):
+            await svc.remove(fired.id, stop_reason="session_unreachable")
+            return False
+
+        svc._on_fire = _remove_then_refuse
+        rec.counters.clear()
+
+        await svc._timer(loop, delay=0)
+
+        assert _named(rec, ml.TICKS) == []
+        assert len(_named(rec, ml.LOOPS_STOPPED)) == 1
+        assert loop.id not in svc._loops
 
     @pytest.mark.asyncio
     async def test_a_raising_fire_callback_is_counted_failed(self, rec, tmp_path):
@@ -441,7 +689,7 @@ class TestLoopsStopped:
         ("stored", "expected"),
         [
             ("cycle_cap", "cycle_cap"),
-            ("runtime_budget", "runtime_cap"),
+            ("runtime_budget", "runtime_budget"),
             ("approval_stalled", "approval_stall"),
             ("approval_stall", "approval_stall"),
             ("stop_sentinel", "stop_sentinel"),
@@ -559,7 +807,99 @@ class TestLoopsStopped:
 
         attrs = _named(rec, ml.LOOPS_STOPPED)[-1]["attrs"]
         assert attrs["kind"] == ml.KIND_MONITOR
-        assert attrs["reason"] == "runtime_cap"
+        assert attrs["reason"] == "runtime_budget"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("state", "status", "expected"),
+        [
+            ("merged", MonitorObservationStatus.SUCCESS, "success"),
+            ("closed", MonitorObservationStatus.BLOCKED, "blocked"),
+        ],
+    )
+    async def test_a_pull_request_monitor_stop_reports_its_outcome(
+        self, rec, tmp_path, state, status, expected
+    ):
+        """A merged or closed PR stores the provider's reason code as its stop reason.
+
+        `pull_request_merged` / `pull_request_closed` are not in STOP_REASONS, so
+        without the outcome fallback the most common monitor stop reads `other`.
+        Driven through `apply_monitor_probe` and the store's commit point, with
+        the reason code produced by the real PR classifier.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+        await svc.start()
+        loop = await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+        assert loop.monitor is not None
+        facts = PullRequestFacts(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            state=state,
+            draft=False,
+            head_revision="a" * 40,
+            mergeability="mergeable",
+            review_decision="none",
+            checks=(),
+            unresolved_review_threads=0,
+            review_threads_complete=True,
+        )
+        classified, reason_code = classify_pull_request_facts(facts)
+        assert classified is status
+        rec.counters.clear()
+
+        verdict = await svc.apply_monitor_probe(
+            loop.id,
+            MonitorProbeResult(
+                canonical={},
+                observation=MonitorObservation(f"{state}-1", classified, reason_code=reason_code),
+            ),
+            now=loop.monitor.created_ts + 10.0,
+            config_generation=loop.monitor.config_generation,
+        )
+
+        assert not loop.active
+        assert loop.monitor.stopped_reason == reason_code
+        assert ml.stop_reason(reason_code) == ml.OTHER
+        assert verdict.decision in (MonitorDecision.STOP_SUCCESS, MonitorDecision.STOP_BLOCKED)
+        calls = _named(rec, ml.LOOPS_STOPPED)
+        assert len(calls) == 1
+        assert calls[0]["attrs"]["kind"] == ml.KIND_MONITOR
+        assert calls[0]["attrs"]["reason"] == expected
+        svc.stop()
+
+    def test_a_known_stored_reason_wins_over_the_outcome(self, rec):
+        record = _stop_record(monitor={"stopped_reason": "runtime_budget"})
+
+        ml.record_loop_stopped(record, MonitorOutcome.BUDGET.value)
+
+        assert _named(rec, ml.LOOPS_STOPPED)[-1]["attrs"]["reason"] == "runtime_budget"
+
+    @pytest.mark.parametrize("outcome", [None, "", "not-an-outcome", 7])
+    def test_an_unknown_reason_with_no_valid_outcome_stays_other(self, rec, outcome):
+        record = _stop_record(monitor={"stopped_reason": "pull_request_merged"})
+
+        ml.record_loop_stopped(record, outcome)
+
+        assert _named(rec, ml.LOOPS_STOPPED)[-1]["attrs"]["reason"] == ml.OTHER
+
+    def test_monitor_outcomes_keeps_only_enum_values(self):
+        rows = [
+            {"id": "a", "monitor": {"outcome": "success"}},
+            {"id": "b", "monitor": {"outcome": "made-up"}},
+            {"id": "c", "monitor": {"outcome": None}},
+            {"id": "d"},
+            {"monitor": {"outcome": "blocked"}},
+            "not-a-row",
+        ]
+
+        assert ml.monitor_outcomes(rows) == {"a": "success"}
 
     def test_an_unknown_kind_becomes_other(self, rec):
         ml.record_loop_stopped({"kind": "something-new", "reason": "manual", "ran_secs": 1})
@@ -724,6 +1064,51 @@ class TestTelemetryDisabled:
 
         assert loop.id in svc._loops
 
+    @pytest.mark.asyncio
+    async def test_a_raising_recorder_never_breaks_a_tick(self, tmp_path):
+        delivered: list[str] = []
+
+        async def _fire(watched, *args, **kwargs):
+            delivered.append(watched.id)
+            return True
+
+        with patch("kiro_crew.metrics.events.emit_counter", side_effect=RuntimeError("boom")):
+            svc = AutoNudgeService(base_dir=tmp_path)
+            await svc.start()
+            loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+            svc._on_fire = _fire
+            await svc._timer(loop, delay=0)
+
+        assert delivered == [loop.id], "the turn must still have been delivered"
+        assert loop.cycle_count == 1
+        assert loop.active
+
+    @pytest.mark.asyncio
+    async def test_a_raising_recorder_never_breaks_a_stop(self, tmp_path, caplog):
+        """The stop is counted after the commit; a failed count must not undo it.
+
+        Only the stop recorder raises, and only around the stop, so the arm
+        commits normally and the failure reaches the store's own guard around
+        ``record_loop_stopped`` -- the guard this test pins. ``_emit`` swallows
+        its own failures, so raising below it would never reach that guard.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+
+        with (
+            patch.object(ml, "record_loop_stopped", side_effect=RuntimeError("boom")) as raising,
+            caplog.at_level(logging.WARNING, logger="kiro_crew.autonudge"),
+        ):
+            await svc.update(loop.id, active=False, stopped_reason="cycle_cap")
+
+        assert raising.call_count == 1, "the stop must have reached the recorder"
+        assert any("could not record a loop stop" in r.getMessage() for r in caplog.records)
+        assert not loop.active
+        reloaded = AutoNudgeService(base_dir=tmp_path)
+        await reloaded.start()
+        assert not reloaded._loops[loop.id].active, "the stop must have committed"
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -742,6 +1127,40 @@ def _coroutine_raising():
         raise RuntimeError("fire callback is wedged")
 
     return _call
+
+
+_TORN_ID = "2f8efda1"
+
+
+def _torn_row() -> dict:
+    """A persisted row in the torn-deactivation shape ``_load`` resumes.
+
+    Inactive, no stop reason, a live deadline and a stop-file path: the shape no
+    stop path of the service writes (see ``store_loader._is_torn_deactivation``).
+    """
+    now = time.time()
+    return {
+        "id": _TORN_ID,
+        "slot_key": "chat-746-1788942058",
+        "message": "patrol",
+        "idle_secs": 1200,
+        "max_cycles": 0,
+        "cycle_count": 3,
+        "active": False,
+        "last_fire_ts": now - 1500,
+        "created_ts": now - 600,
+        "stop_sentinel_path": "/nonexistent/workspace/.stop-chat-746-1788942058",
+        "max_runtime_secs": 0,
+        "gate": False,
+        "stopped_reason": "",
+        "approval_stalled": False,
+        "next_due_ts": now - 300,
+        "banner": "",
+    }
+
+
+def _write_store(tmp_path, *rows: dict) -> None:
+    (tmp_path / "autonudge.json").write_text(json.dumps({"version": 1, "loops": list(rows)}))
 
 
 async def _unreachable_fire(*args, **kwargs):  # pragma: no cover - must not run

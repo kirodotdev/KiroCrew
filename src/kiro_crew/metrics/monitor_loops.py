@@ -8,7 +8,7 @@ interval read identically. These four counters close that gap.
 =========================================  ===================================
 counter                                    one increment per
 =========================================  ===================================
-``kirocrew.autonudge.loops.started``       loop CREATED by a mutation
+``kirocrew.autonudge.loops.started``       loop that went from inactive to active
 ``kirocrew.autonudge.ticks``               tick that reached a decision
 ``kirocrew.autonudge.loops.stopped``       loop that went inactive or vanished
 ``kirocrew.monitor.decisions``             ``decide_monitor`` policy evaluation
@@ -18,24 +18,33 @@ The first number to read is the ratio of ``quiet`` to ``delivered`` ticks: it
 says whether the probe gate is earning its keep or whether loops are spending a
 model turn on every interval.
 
-**A restart does not re-count a start.** ``loops.started`` is emitted by the two
-creation mutations and nowhere else -- the prompt arm
-(``autonudge_service/mutations.py``) and the structured monitor arm
-(``autonudge_service/monitor_records.py``) -- each after its own store write has
-committed. The restore path rebuilds loops from the store file without going
-near either, so a gateway that boots with nine persisted loops adds nothing to
-this counter, which is what makes it a count of ARMS rather than a count of arms
-plus restarts. Both paths matter: a structured monitor's stop IS counted, so
-leaving its arm out would let stops outnumber starts for ``kind=monitor``.
+**Starts and stops come from one diff, so they stay paired by construction.**
+A loop can be paused and resumed many times, and each active period ends in a
+stop, so ``loops.started`` counts every inactive-to-active transition, not only
+the first arm. Both counters are taken at the store's one commit point
+(``autonudge_service/store.py``), which compares the loops active in the last
+committed store with the rows just written: an id active before and not now is
+a stop, an id active now and not before is a start. No mutation names either
+counter, so the arm, a resume, a reconciler's revival, a restore after a failed
+session close, a replacement rollback and any activation path added later are
+all counted the same way, after their write has committed.
 
-**A stop is counted once however it was reached.** The source is the store's one
-commit point, which diffs the loops that were active in the last committed store
-against the rows just written (``autonudge_stop_log.stop_records``). A loop can
-only cross from active to not-active once, so a second ``autonudge_stop`` on an
+**A restart does not re-count a start.** ``_load`` seeds that baseline from the
+rows active on disk, so a gateway that boots with nine persisted loops adds
+nothing. A row the load resumes from the torn-deactivation shape was inactive
+on disk, so it counts once, at the first commit that writes it active, and its
+later stop is paired. A row the load could not parse is rewritten verbatim but
+never served, and is not counted.
+
+**A stop is counted exactly once per active-to-inactive transition, however it
+was reached.** The source is the store's one commit point, which diffs the loops
+that were active in the last committed store against the rows just written
+(``autonudge_stop_log.stop_records``). A second ``autonudge_stop`` on an
 already-stopped loop produces no record and no increment, and the dozen stop
 paths -- the cycle cap, a spent runtime budget, an unanswered approval, a user
 delete, a closed session, an agent's own call -- cannot double-count between
-them.
+them. A loop that is resumed and stopped again is stopped twice, and was
+started twice.
 
 **What ``ticks`` observes, and what it does not.** It observes the PROMPT
 delivery tick: a plain loop, and a prompt loop whose probe gate watches a
@@ -77,7 +86,7 @@ call, no log line.
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from kiro_crew import autonudge_stop_log
 from kiro_crew.autonudge_service import model as loop_model
@@ -87,7 +96,8 @@ from kiro_crew.monitoring.registry import monitor_kind
 
 logger = logging.getLogger(__name__)
 
-#: One increment per loop armed by the creation mutation. ``kind`` only.
+#: One increment per inactive-to-active transition the store's commit point
+#: observed. ``kind`` only.
 LOOPS_STARTED = "kirocrew.autonudge.loops.started"
 
 #: One increment per tick that reached a decision about spending a turn.
@@ -172,13 +182,6 @@ RAN_BUCKETS = frozenset({RAN_LT_1H, RAN_1H_24H, RAN_GT_24H, OTHER})
 #: to get one answer.
 _APPROVAL_STALL = "approval_stall"
 
-#: The reported value for a spent runtime budget. The metric table in the
-#: usage-metrics RFC fixes this name for this counter, so it reads as the sibling
-#: of ``cycle_cap`` rather than as one of the four monitor budgets. The stored
-#: string, the WARNING line and the stop file keep ``runtime_budget``; this
-#: mapping is the one place that holds the correspondence.
-_RUNTIME_CAP = "runtime_cap"
-
 #: Every stored stop reason whose reported value IS its stored spelling, taken
 #: from the constants that write it. Imported rather than retyped: the module's
 #: own argument against a hand-written copy of an enum applies here too, and a
@@ -186,6 +189,9 @@ _RUNTIME_CAP = "runtime_cap"
 _PASSED_THROUGH_REASONS = (
     # The legacy loop reasons (``autonudge_service/model.py``).
     loop_model.CYCLE_CAP_REASON,
+    # A spent runtime budget is reported under its stored spelling, the string
+    # the WARNING line and the stop file carry, so one name finds it in all three.
+    loop_model.RUNTIME_BUDGET_REASON,
     loop_model.STOP_SENTINEL_REASON,
     loop_model.MONITOR_TERMINAL_REASON,
     loop_model.AUTONUDGE_STOP_REASON,
@@ -197,6 +203,7 @@ _PASSED_THROUGH_REASONS = (
     loop_model.MANUAL_STOP_REASON,
     # The structured monitor stop reasons (``monitoring/models.py``). Each budget
     # stays its own value: they name resources an operator raises separately.
+    monitor_models.MONITOR_STOP_RUNTIME_BUDGET,
     monitor_models.MONITOR_STOP_AGENT_TURN_BUDGET,
     monitor_models.MONITOR_STOP_TOKEN_BUDGET,
     monitor_models.MONITOR_STOP_PROVIDER_ERROR_BUDGET,
@@ -223,7 +230,7 @@ _PASSED_THROUGH_REASONS = (
 #: reported under its own name without an edit here; a retyped table silently
 #: reported the one it had missed as :data:`OTHER`.
 #:
-#: The renames are the exception and are spelled out, because a reported value
+#: The one rename is the exception and is spelled out, because a reported value
 #: that differs from the stored string is exactly the thing a reader must be able
 #: to find in one place.
 STOP_REASONS: dict[str, str] = {
@@ -231,8 +238,6 @@ STOP_REASONS: dict[str, str] = {
     # A monitor row with no stop reason falls back to its terminal outcome, so
     # every member of that enum is a reason this counter can meet.
     **{outcome.value: outcome.value for outcome in MonitorOutcome},
-    loop_model.RUNTIME_BUDGET_REASON: _RUNTIME_CAP,
-    monitor_models.MONITOR_STOP_RUNTIME_BUDGET: _RUNTIME_CAP,
     loop_model.APPROVAL_STALL_REASON: _APPROVAL_STALL,
     monitor_models.MONITOR_STOP_APPROVAL_STALL: _APPROVAL_STALL,
 }
@@ -291,6 +296,31 @@ def stop_reason(stored: object) -> str:
     return STOP_REASONS.get(stored.strip(), OTHER)
 
 
+#: The terminal outcomes a structured monitor row records next to its stop
+#: reason. Built from the enum, so the fallback below stays a closed set.
+_MONITOR_OUTCOME_VALUES = frozenset(outcome.value for outcome in MonitorOutcome)
+
+
+def monitor_outcomes(rows: Iterable[Any]) -> dict[str, str]:
+    """Loop id -> terminal :class:`MonitorOutcome` value, for monitor rows that carry one.
+
+    A structured monitor that stops on a provider verdict stores the
+    observation's own reason code (``pull_request_merged``,
+    ``pull_request_closed``, ``monitor_blocked``) as its stop reason. Those codes
+    are per-provider and not in :data:`STOP_REASONS`, so the counter falls back to
+    the outcome the same commit wrote. A value outside the enum is dropped here.
+    """
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or not row.get("id"):
+            continue
+        monitor = row.get("monitor")
+        outcome = monitor.get("outcome") if isinstance(monitor, Mapping) else None
+        if isinstance(outcome, str) and outcome in _MONITOR_OUTCOME_VALUES:
+            out[str(row["id"])] = outcome
+    return out
+
+
 def monitor_kind_label(kind: object) -> str:
     """*kind* when it is a REGISTERED monitored kind, else :data:`OTHER`.
 
@@ -317,18 +347,23 @@ def _emit(name: str, attrs: dict[str, str | int | bool | float]) -> None:
         logger.debug("monitor-loop counter emit failed for %s", name, exc_info=True)
 
 
-def record_loop_started(loop: Any) -> None:
-    """One loop was ARMED. Call after a creation mutation's write commits.
+def record_loop_started(summary: Mapping[str, Any]) -> None:
+    """One loop went from inactive to active, from its commit-point summary.
 
-    Both arm paths call it -- the prompt arm and the structured monitor arm --
-    because both are matched by a stop that IS counted, and a start missing from
-    one of them would let stops outnumber starts.
+    Called only by the store's commit point
+    (``autonudge_service/store.py::LoopStore._record_starts_committed``), for an
+    id active in the rows just written and absent from the last committed
+    baseline -- the same diff, read the other way, that yields a stop record. No
+    mutation calls this, so an activation path added later is counted without
+    knowing the counter exists.
 
-    Not called by the restore path, and not by a rollback that puts a displaced
-    row back: both describe a loop that was armed once and is already counted,
-    and counting either again would turn restart frequency into apparent demand.
+    Takes the ``autonudge_stop_log`` summary rather than a loop for the reason
+    :func:`record_loop_stopped` takes a record: it is what the commit point has,
+    and its ``kind`` is the one the stop record carries, so a start and its stop
+    share one label by construction.
     """
-    _emit(LOOPS_STARTED, {"kind": loop_kind(loop)})
+    kind = summary.get("kind")
+    _emit(LOOPS_STARTED, {"kind": kind if kind in LOOP_KINDS else OTHER})
 
 
 def record_tick(loop: Any, outcome: str) -> None:
@@ -355,7 +390,7 @@ def record_tick(loop: Any, outcome: str) -> None:
     )
 
 
-def record_loop_stopped(record: Mapping[str, Any]) -> None:
+def record_loop_stopped(record: Mapping[str, Any], outcome: str | None = None) -> None:
     """One loop stopped, from one ``autonudge_stop_log`` stop record.
 
     Takes the record rather than a loop because the record is what the commit
@@ -364,13 +399,22 @@ def record_loop_stopped(record: Mapping[str, Any]) -> None:
     description of it left. It already carries the three things this needs --
     ``kind``, the stored ``reason``, and ``ran_secs`` -- and nothing else from it
     is read.
+
+    *outcome* is the row's terminal :class:`MonitorOutcome` value, when the row
+    is still present and carries one (see :func:`monitor_outcomes`). It is used
+    only when the stored reason is not in :data:`STOP_REASONS`, so a PR monitor
+    that stopped on ``pull_request_merged`` is reported as ``success`` rather
+    than :data:`OTHER`.
     """
     kind = record.get("kind")
+    reason = stop_reason(record.get("reason"))
+    if reason == OTHER and outcome in _MONITOR_OUTCOME_VALUES:
+        reason = stop_reason(outcome)
     _emit(
         LOOPS_STOPPED,
         {
             "kind": kind if kind in LOOP_KINDS else OTHER,
-            "reason": stop_reason(record.get("reason")),
+            "reason": reason,
             "ran": ran_bucket(record.get("ran_secs")),
         },
     )
