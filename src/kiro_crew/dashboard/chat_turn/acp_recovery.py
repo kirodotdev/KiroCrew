@@ -365,12 +365,19 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
             )
+            turn.died_notice = (
+                "The connection to the agent kept dropping. Open the chat to start a new one."
+            )
         else:
             slot.append(
                 "error",
                 gn.GATEWAY_SHARED_RUNTIME_RESTARTING_TEXT,
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING),
+            )
+            turn.died_notice = (
+                "The agent process kept restarting and the turn did not finish. "
+                "Open the chat to retry."
             )
     else:
         slot.append(
@@ -464,12 +471,21 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
             )
+            turn.died_notice = (
+                "The connection to the agent kept dropping. Open the chat to start a new one."
+                if _is_pipe_death
+                else "The chat stopped and could not recover. Open the chat to start a new one."
+            )
         else:
             slot.append(
                 "error",
                 gn.GATEWAY_SHARED_RUNTIME_RESTARTING_TEXT,
                 "msg msg-err",
                 meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING),
+            )
+            turn.died_notice = (
+                "The agent process kept restarting and the turn did not finish. "
+                "Open the chat to retry."
             )
     elif _prompt_depth == 0:
         # Single emit (see the _on_process_died note): slot.append persists +

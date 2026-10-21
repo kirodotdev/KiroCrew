@@ -804,6 +804,7 @@ async def _requeue_after_prompt_busy(
     _is_synthetic: bool,
     _queue_recovery: Callable[..., str],
     _stop_pressed: Callable[[], bool],
+    turn: Any = None,
 ) -> None:
     """Re-queue a turn whose provider was reset after prompt-busy retries ran out.
 
@@ -851,6 +852,13 @@ async def _requeue_after_prompt_busy(
             "msg msg-err",
             meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_STUCK),
         )
+        # Terminal give-up the operator must act on: ring the dead-turn bell via
+        # the finally choke point. Past the Stop guard above, so
+        # a user cancel never reaches here.
+        if turn is not None:
+            turn.died_notice = (
+                "The chat stayed busy and could not recover. " "Open the chat to start a new one."
+            )
     else:
         # depth>0 with budget remaining: no re-queue (mirrors AcpProcessDied),
         # but still surface feedback so the nested turn doesn't fail silently.

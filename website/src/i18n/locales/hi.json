@@ -17842,6 +17842,7 @@
         "custom_sound_error_file_gone": "इस ध्वनि की फ़ाइल अब इस ब्राउज़र में सहेजी नहीं है, इसलिए इसे वापस नहीं लाया जा सकता।",
         "channel_member": "साथियों के संदेश",
         "channel_apps": "ऐप अपडेट",
+        "channel_turn": "चैट त्रुटियाँ",
         "push_section": "पुश सूचनाएं",
         "push_toggle_label": "{{productName}} बंद होने पर भी मुझे सूचित करो",
         "push_toggle_description": "{{productName}} बंद करने के बाद भी इस डिवाइस पर अलर्ट भेजता है। इसे बंद करते ही सिस्टम सूचनाएँ रुक जाती हैं।",
