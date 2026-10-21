@@ -95,6 +95,18 @@ class SessionConfig:
             "Context usage percentage at which auto-compaction triggers (5-90).",
         ),
     )
+    context_cap: bool = field(
+        default=True,
+        metadata=_meta(
+            "Conductor Context Cap",
+            "Trim a goal conductor's chat on the KAS backend at the start of a "
+            "dashboard turn: a chat over 400K tokens, or over 200K tokens after 5 "
+            "minutes idle, starts that turn on a new session seeded with its "
+            "session-ledger snapshot and the newest messages as text. Older messages "
+            "and tool output stay in the chat's transcript. Read at each turn start, "
+            "so a change needs no restart.",
+        ),
+    )
     compact_wait_secs: float = field(
         default=0.0,
         metadata=_meta(

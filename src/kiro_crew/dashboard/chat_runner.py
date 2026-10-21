@@ -187,6 +187,7 @@ from kiro_crew.dashboard.chat_turn.app_agent_binding import (
     _retire_app_agent_session,
     app_agent_binding_applies,
 )
+from kiro_crew.dashboard.chat_turn.context_cap import _spend_context_cap_seed
 from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
     PENDING_CHANNEL_ATTR,
     _crew_log_class,
@@ -7243,6 +7244,8 @@ async def _run_chat(
                 state.sessions.consume_first_turn_history_owed(session_key)
             except Exception:
                 logger.debug("settling first-turn history debt failed", exc_info=True)
+            # A conductor context-cap trim's seed rode in that history.
+            _spend_context_cap_seed(session_key)
         # Clean up mirror stream on any exit path.
         #
         # The release below MUST happen however this block exits. Each await in

@@ -1634,6 +1634,7 @@
         "empty_response_auto_continue": true,
         "empty_response_max_continues": 1,
         "autocompact_pct": 70.0,
+        "context_cap": true,
         "compact_wait_secs": 0.0,
         "pool_size": 0,
         "pool_agent": "",
@@ -1728,6 +1729,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 70.0
+    },
+    {
+      "path": "session.context_cap",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Conductor Context Cap",
+      "help": "Trim a goal conductor's chat on the KAS backend at the start of a dashboard turn: a chat over 400K tokens, or over 200K tokens after 5 minutes idle, starts that turn on a new session seeded with its session-ledger snapshot and the newest messages as text. Older messages and tool output stay in the chat's transcript. Read at each turn start, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "session.compact_wait_secs",

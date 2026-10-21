@@ -59,6 +59,7 @@ _OWNER_MODULES = frozenset(
         "account_identity",
         "acp_recovery",
         "app_agent_binding",
+        "context_cap",
         "crew_log_attribution",
         "decisions_hooks",
         "deny_chokepoints",

@@ -836,6 +836,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         autocompact_pct=section.read(
             "autocompact_pct", _safe_float, lo=AUTOCOMPACT_PCT_MIN, hi=AUTOCOMPACT_PCT_MAX
         ),
+        context_cap=bool(section.get("context_cap")),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value

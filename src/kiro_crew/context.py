@@ -1166,6 +1166,7 @@ def _replay_rows(
     elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
     messages = _without_warm_task_brief_messages(messages)
+    messages = [row for row in messages if not _replay.is_context_cap_notice(row)]
     return _replay._quota_tail(
         messages, conv_max=_REPLAY_CONVERSATION_MAX_ROWS, inject_max=_REPLAY_INJECT_MAX_ROWS
     )
@@ -1213,12 +1214,14 @@ def build_session_replay(
     model_window: int | None = None,
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
+    budget_chars: int = _REPLAY_BUDGET_CHARS,
 ) -> str | None:
     """Build session replay from KiroCrew's conversation_log.
 
-    Keeps as many recent messages as fit within _REPLAY_BUDGET_CHARS,
-    prioritizing the most recent exchanges (tail-heavy). Used when a
-    session is picked up by a different provider or after process death.
+    Keeps as many recent messages as fit within *budget_chars*
+    (``_REPLAY_BUDGET_CHARS`` unless the conductor context cap's trim asks for
+    its larger tail), prioritizing the most recent exchanges (tail-heavy). Used
+    when a session is picked up by a different provider or after process death.
 
     Same-provider resume uses native ACP session/load instead (full fidelity
     without needing this injection).
@@ -1243,7 +1246,7 @@ def build_session_replay(
     if not messages:
         return None
 
-    replay = _replay.replay_text(messages, model_window)
+    replay = _replay.replay_text(messages, model_window, budget_chars=budget_chars)
     replay, _ = redact_exfiltration_urls(replay)
     replay, _ = redact_credentials(replay)
     return replay.translate(_MULTIBYTE_TABLE)

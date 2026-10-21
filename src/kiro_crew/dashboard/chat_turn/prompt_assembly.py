@@ -30,6 +30,12 @@ if TYPE_CHECKING:
         session_skill_globs,
         validate_file_path,
     )
+    from kiro_crew.dashboard.chat_turn.context_cap import (
+        CONTEXT_CAP_TAIL_CHARS,
+        _context_cap_seed_head,
+        _drop_context_cap_seed,
+        _take_context_cap_seed,
+    )
 
 
 async def _session_replay_history(
@@ -68,6 +74,8 @@ async def _session_replay_history(
             # durably-kept turn, because its replay only reaches the provider when
             # the stream starts.)
             state.sessions.consume_first_turn_history_owed(session_key)
+            # The reset dropped what a context-cap trim before it would have kept.
+            _drop_context_cap_seed(session_key)
             logger.info(
                 "Session replay suppressed by an explicit conversation reset: %s",
                 session_key,
@@ -79,6 +87,10 @@ async def _session_replay_history(
                 window_for_provider_client,
             )
 
+            # The cold start a conductor context-cap trim began (context_cap)
+            # replays a longer tail, behind the trim note and the ledger snapshot.
+            _trim_seed = _take_context_cap_seed(session_key)
+            _budget = {"budget_chars": CONTEXT_CAP_TAIL_CHARS} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
             # before one budget pass. Exclude this request by identity,
             # whether or not the periodic flush has persisted it yet.
@@ -90,9 +102,12 @@ async def _session_replay_history(
                     pending_messages=list(slot.messages),
                     current_message=_current_replay_message,
                     model_window=window_for_provider_client(client),
+                    **_budget,
                 )
                 or ""
             )
+            if _trim_seed and compressed:
+                compressed = await _context_cap_seed_head(session_key) + compressed
             logger.info(
                 "Session replay: key=%s result=%s",
                 session_key,
