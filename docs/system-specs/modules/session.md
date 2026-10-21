@@ -549,7 +549,11 @@ background work. It is:
   `mc-discovery`, never raises) so the factory's synchronous, on-loop model lookup
   finds a warm snapshot and `_bg` is created on its agent's own pin rather than on
   `agent.model`; the lookup itself touches no file on the loop (see
-  `_resolve_named_agent_model` in `config.md`)
+  `_resolve_named_agent_model` in `config.md`). A start that fails is logged and
+  leaves no `_bg` session. When the refusal carries the `kiro_cli_missing` tag
+  (no Kiro CLI installed, the normal state right after a fresh install, which the
+  dashboard's Set up Kiro page handles) it is one warning line with the
+  refusal's message; any other failure is logged with its traceback
 - **Never expired** by idle cleanup (`_expire_idle` skips it)
 - **Serialized** by the per-session semaphore (one background task at a time)
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
