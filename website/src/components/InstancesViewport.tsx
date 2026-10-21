@@ -46,7 +46,7 @@ import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
-import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
+import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm, type WarmConn } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, chainRows, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { isEmbeddableLoopbackOrigin, parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import {
@@ -65,7 +65,8 @@ import { copyImageToClipboard } from '../utils/clipboard'
 import { copyImageWithText } from '../pages/chat/share/shareSupport'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
-import { connectInstanceInto } from '../lib/connectInstance'
+import { connectInstanceInto, type ConnectVia } from '../lib/connectInstance'
+import { recallActivePane, rememberActivePane } from '../lib/activePaneMemory'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
@@ -841,12 +842,33 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     // (via=retry). Retry can "succeed" as a request while warming nothing, and
     // the pane then reloads into the same stuck state — that case is the
     // `warm-declined` line the step emits.
-    mutationFn: ({ id, rebuild }: { id: string; rebuild: boolean }) =>
-      connectInstanceInto(dispatch, id, 'retry', { rebuild }),
+    mutationFn: ({ id, rebuild, via = 'retry' }: { id: string; rebuild: boolean; via?: ConnectVia }) =>
+      connectInstanceInto(dispatch, id, via, { rebuild }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
     },
   })
+  // Leaving the crew this connect targeted drops its result, so an old refusal
+  // is not shown again over a fresh state when the user comes back to it.
+  const connectTargetRef = useRef<string | undefined>(undefined)
+  connectTargetRef.current = connectMutation.variables?.id
+  const resetConnect = connectMutation.reset
+  useEffect(() => {
+    if (connectTargetRef.current !== undefined && connectTargetRef.current !== activeId) resetConnect()
+  }, [activeId, resetConnect])
+  // Likewise once something else (a tab click, auto-connect) warms the crew a
+  // failed connect named: the refusal is then older than what is on screen, and
+  // must not hide a later load-timeout or status error. Error only: a pending
+  // Retry writes its own warm entry before it settles.
+  const failedId = connectMutation.isError ? connectMutation.variables?.id : undefined
+  const failedWarm = failedId ? warm[failedId] : undefined
+  const failedWarmAtErrorRef = useRef<{ id: string; conn: WarmConn | undefined } | null>(null)
+  useEffect(() => {
+    if (!failedId) { failedWarmAtErrorRef.current = null; return }
+    const seen = failedWarmAtErrorRef.current
+    if (!seen || seen.id !== failedId) { failedWarmAtErrorRef.current = { id: failedId, conn: failedWarm }; return }
+    if (seen.conn !== failedWarm) resetConnect()
+  }, [failedId, failedWarm, resetConnect])
 
   // Load watchdog + forced reload. `timedOut[id]` flips true when the active
   // pane's iframe has been loading for PANE_LOAD_TIMEOUT_MS without the
@@ -1062,12 +1084,56 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     })
   }, [warm])
 
+  // Restore the pane this WINDOW showed before a reload (#22680). activeId is
+  // store-only, so without this every reload landed on Local. The id lives in
+  // sessionStorage (see activePaneMemory): a reload keeps it, a new window
+  // starts empty and opens on Local. Decided once, on the first poll, because
+  // only then can the id be checked against the switcher: a crew that is gone
+  // (deleted, disconnected, no longer a tab) falls back to Local. A pick the
+  // user made before that poll answered wins over the stored one. The connect
+  // goes through the viewport's own connectMutation (the one Retry and the
+  // panel use), with the same condition as a tab click: no warm iframe yet, or
+  // the listed status is not connected. Its error and pending state reach the
+  // panel, and its success refetches the list like a Retry does.
+  // Embedded panes never poll (`enabled: !embedded`), so they never restore.
+  const connectMutate = connectMutation.mutate
+  const restoredIdRef = useRef<string | null>(null)
+  const [paneRestored, setPaneRestored] = useState(false)
+  useEffect(() => {
+    const data = instancesQuery.data
+    if (!data || paneRestored) return
+    setPaneRestored(true)
+    const id = recallActivePane()
+    if (!id || activeIdRef.current !== null) return
+    if (!visibleInstanceTabs(data.instances, warmRef.current).some(i => i.id === id)) {
+      paneLog('restore-skipped', { id, reason: 'not-in-switcher' })
+      return
+    }
+    restoredIdRef.current = id
+    paneLog('restore-active', { id })
+    dispatch(setActiveId(id))
+    const listed = data.instances.find(i => i.id === id)
+    if (!warmRef.current[id] || listed?.status?.state !== 'connected') {
+      connectMutate({ id, rebuild: false, via: 'select' })
+    }
+  }, [instancesQuery.data, paneRestored, dispatch, connectMutate])
+  // Write only after the restore decision: the first render's activeId is the
+  // store default (Local), and writing it would erase the id before it is read.
+  // A crew that failed the check above writes Local here, so a stale id is
+  // dropped rather than retried on every reload.
+  useEffect(() => {
+    if (embedded || !paneRestored) return
+    rememberActivePane(activeId)
+  }, [embedded, paneRestored, activeId])
+
   // Auto-warm on load: after the first instances poll, pre-mount every
   // currently-connected instance's iframe (up to the warm cap) so panes are
   // instantly usable after a gateway restart + page reload — the user never has
   // to click to re-establish a connection. We deliberately do NOT change
-  // activeId: the dashboard always lands on the Local tab and the warmed iframes
-  // sit hidden and ready. Down instances are skipped (they stay sticky error
+  // activeId: the warmed iframes sit hidden and ready. The one pane a reload
+  // brings back to the front is chosen by the restore effect above, not here,
+  // and it is skipped below because the restore's own connect warms it. Down
+  // instances are skipped (they stay sticky error
   // tabs); this runs once per mount. warmRef avoids re-firing on warm changes.
   //
   // Staggered, not simultaneous. Each warm mounts an iframe that immediately
@@ -1090,7 +1156,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     const room = Math.max(0, warmCap - Object.keys(warmRef.current).length)
     if (room <= 0) return
     const candidates = data.instances
-      .filter(i => i.status?.state === 'connected' && !warmRef.current[i.id])
+      .filter(i => i.status?.state === 'connected' && !warmRef.current[i.id] && i.id !== restoredIdRef.current)
       .slice(0, room)
     // Timers live in a ref and are cleared only on unmount: this effect re-runs
     // on every instances poll (its deps include the query data), and a cleanup

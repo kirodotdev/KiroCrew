@@ -824,6 +824,13 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   for its first automatic pick, and only if that chat is still in its own slot
   list. It is not a `?sid=` deep link: a gone chat falls back to the stored chat,
   then the first chat, with no error banner.
+- **Active pane on reload.** `mc-active-pane` in sessionStorage
+  (`lib/activePaneMemory.ts`) stores only the crew id, never a port or token.
+  Reload keeps it. A new window starts empty and opens on Local. The first
+  instances poll restores it once through the viewport's own connect, the one
+  Retry uses, with the same connect condition as a tab click. An id that
+  is not a switcher tab falls back to Local and is dropped. A crew picked
+  before that poll wins. Embedded panes never save or restore it.
 - **CSP.** `frame-ancestors` is `'self'` plus the exact parent origin carried in
   the minted token's signed `embed_parent_port` claim, never a wildcard and never
   a hardcoded port, so a local page with no validly-signed token can never frame
