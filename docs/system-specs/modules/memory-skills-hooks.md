@@ -882,6 +882,18 @@ What each `init()` leaves on disk:
 | triggers | none | none |
 | `memory_meta` stamp rows | none | `schema_lineage`, `store_name` |
 
+**Schema setup is one transaction, and a migration step must not commit.**
+`_init_database` first reads what the file still needs (`_schema_steps`: missing
+`schema_version` rows, the revision-metadata objects, the crew stamps) with no transaction
+open, so an up-to-date file's schema step takes no write lock. If anything is pending it
+takes `BEGIN IMMEDIATE`, plans again under the lock, runs only what is still missing, and
+commits once; any error rolls the whole step back. A fresh file therefore pays one durable
+commit instead of one per DDL statement (#13732). The contract for every entry in
+`_MIGRATIONS` and `MIGRATIONS_CREW`: no `db.commit()` and no `executescript`, which
+commits first. SQL migrations go through `memory_schema.execute_script`, which runs each
+statement inside the caller's transaction. A step that commits anyway fails the open at
+the closing `COMMIT`.
+
 **Which lineage a file gets is decided once, structurally, inside `init()` — and the
 ordering there is the load-bearing part.** `memory_schema.detect_lineage(db)` reads
 SQLite's own schema table FIRST: a file holding `memory_items` as a table is crew, a file holding

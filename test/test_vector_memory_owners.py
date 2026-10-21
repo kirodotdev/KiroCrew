@@ -58,8 +58,9 @@ BOUND_MEMBERS = {
         get_rejection_stats rotate_events with_record_metadata""",
     "kiro_crew.vector_memory_inventory": """_require_facets count_by_facet get_episodic_list
         list_by_facets memory_stats""",
-    "kiro_crew.vector_memory_lifecycle": """_init_database _release_store_use_lock
-        _restrict_memory_files _secret_bearing_files close init""",
+    "kiro_crew.vector_memory_lifecycle": """_apply_migration _crew_stamps_missing
+        _init_database _release_store_use_lock _restrict_memory_files _schema_steps
+        _secret_bearing_files _stamp_crew_lineage close init""",
     "kiro_crew.vector_memory_member": """_append_history _read_editable_history_for_day
         _write_history append_history apply_consolidation consolidation_receipt
         read_editable_history read_history_entries rebuild_memory_index replace_today_history
