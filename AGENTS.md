@@ -253,6 +253,16 @@ goal. A defect in code this PR adds or changes is always in scope and gets fixed
 PR does not need. Edit them only when a human explicitly asks, and say why in a PR
 comment.
 
+### A review finding is a class, not a line
+
+Before you edit for a review finding, name the class it belongs to and list every
+site of it. Fix or test all of them in the same push. When the same finding comes
+back a second time, change the approach instead of patching a third spelling:
+remove the second writer, narrow the scope, or defer it with an issue and a
+pinning test. On the fifth fix only narrowing or deferral remain. Keep going; no
+one needs to approve that. Details:
+[kirocrew-prepare-pr](src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md).
+
 ## CHANGELOG.md
 
 - **Your feature PR does not touch `CHANGELOG.md`.** The release PR writes the

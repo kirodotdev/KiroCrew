@@ -473,7 +473,7 @@ comes after a record, never instead of one:
 - **A test with two or more ledger reports in 14 days is fixed before more feature work
   lands on top of it**, not rerun again.
 
-1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash guard (`single_commit` only): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** do NOT push (read each diff; name yours after `--`), **41** follow the remedy, **2** env.
+1. **Push only the reviewed commit.** Require a clean index/worktree and fail closed unless `[ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]`; any intervening mutation returns to Phase 2. Run the post-squash guard (`single_commit` only): `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --require-single-on-base` — **0** safe, **40** do NOT push (read each diff; name yours after `--`; it also checks `prepare-pr-sweep.md`, read stderr), **41** follow the remedy, **2** env.
 
    **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push -u origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
 
