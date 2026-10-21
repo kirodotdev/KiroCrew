@@ -135,7 +135,7 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
           fresh thread, so it must not read as one: say who has not
           spoken and where the work went, instead of "type a message
           to start" beside a summary that counts its wakes. Said only
-          once the read is the WHOLE history (`crewmateQuietUnproven`
+          once no older history is left to page (`crewmateQuietUnproven`
           in ChatPane.tsx): a bounded window with no speech in it is not proof.
           Nor while the crewmate is at work (`crewmateLive`, the same
           liveness the status line and footer read): its current step

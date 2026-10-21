@@ -77,6 +77,10 @@ export type { PaneLeading } from './ChatPaneProps'
  * s.dashboard.slots. Server reads/writes go through React Query + the api client.
  */
 
+/** Older pages a crewmate pane fetches on its own while looking for the
+ *  crewmate's last words (about a thousand rows at the older-page size). */
+const CREWMATE_AUTO_WALK_MAX_PAGES = 10
+
 export default function ChatPane({
   slotKey,
   focused,
@@ -435,20 +439,30 @@ export default function ChatPane({
   // fetch. Lifting the bound for a running slot pulled its WHOLE transcript on
   // every open: on a long, busy session that froze the renderer, and the crash
   // recovery reopened the same chat into the same freeze (#12907).
-  const limitRef = useRef<number | undefined>(PANE_HYDRATE_LIMIT)
-  const limitLatched = useRef(false)
+  const hydrateLimit = PANE_HYDRATE_LIMIT
   // A crewmate's chat that filters a BOUNDED window down to no speech has
   // proved nothing: the last thing it said may sit just behind the window,
   // under fifty newer patrol rows. The never-spoken hint is a claim about the
-  // whole history, so that read is upgraded to the whole transcript first
-  // (same latch as the streaming upgrade) and the hint waits for it. An
-  // unbounded read that is still empty is the real never-spoken case.
-  const crewmateQuietUnproven = !!crewmate && warmHasMore === true && paneMessages.length > 0 && messages.length === 0
-  if (!limitLatched.current && crewmateQuietUnproven) {
-    limitRef.current = undefined
-    limitLatched.current = true
-  }
-  const hydrateLimit = limitRef.current
+  // whole history, so the hint waits while the pane walks back one older page
+  // at a time (the same loaders the "earlier" bar uses) until a bubble shows or
+  // the history runs out. Never one unbounded read: a long patroller's whole
+  // transcript is slow to fetch and parse.
+  const olderHasMore = pagesActiveSlot ? activeHasMore : warmHasMore === true
+  const crewmateQuietUnproven = !!crewmate && olderHasMore && paneMessages.length > 0 && messages.length === 0
+  const walkFailed = pagesActiveSlot ? olderFailed : paneOlderFailed
+  const walkLoading = pagesActiveSlot ? loadingOlder : paneLoadingOlder
+  const canWalk = pagesActiveSlot || pagesPane
+  // Bounds the automatic walk for a crewmate that never spoke; past it the
+  // "earlier" bar stays for the reader to page by hand.
+  const autoPages = useRef({ slot: slotKey, n: 0 })
+  if (autoPages.current.slot !== slotKey) autoPages.current = { slot: slotKey, n: 0 }
+  useEffect(() => {
+    if (!crewmateQuietUnproven || !canWalk || walkLoading || walkFailed) return
+    if (autoPages.current.n >= CREWMATE_AUTO_WALK_MAX_PAGES) return
+    autoPages.current.n += 1
+    if (pagesActiveSlot) loadOlder()
+    else loadOlderPane()
+  }, [crewmateQuietUnproven, canWalk, walkLoading, walkFailed, pagesActiveSlot, loadOlder, loadOlderPane])
   const { data: slotDetail, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
     queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
