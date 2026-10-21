@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Lock } from 'lucide-react'
+import { Lock, SendHorizontal } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -131,6 +131,21 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     : lockFlip.isError
       ? t(lockFlip.variables ? 'pages.membersPage.profile_dashboard_lock_failed' : 'pages.membersPage.profile_dashboard_unlock_failed')
       : null
+
+  // Whether a button on the crewmate's Dashboard tab may send its reply in one click.
+  // Stored on the crewmate's record and enforced by the gateway; off, a button only
+  // fills the chat box. Absent (an older gateway) reads as on, the default.
+  const cardSendFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { dashboard_card_send: want }),
+    onSuccess: (_data, want) => {
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, dashboard_card_send: want } : r)))
+    },
+  })
+  const cardSendOn = member.dashboard_card_send !== false
+  // Show the state being requested while the write is in flight, so the switch does
+  // not snap back before the roster row is updated.
+  const displayCardSend = cardSendFlip.isPending ? (cardSendFlip.variables ?? cardSendOn) : cardSendOn
 
   const save = async (key: Setting, next: string) => {
     if (inFlight.current || waiting) return
@@ -278,7 +293,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           />
         </Field>
       )}
-      <Field label={t('pages.membersPage.profile_dashboard')} hint={t('pages.membersPage.profile_dashboard_lock_hint', { name })}>
+      <Field label={t('pages.membersPage.profile_dashboard')}>
         <div className="flex items-center justify-between gap-3 min-w-0" data-testid="crew-profile-dashboard-lock">
           <span className="flex items-center gap-2 min-w-0 text-[13px] text-text">
             <Lock size={14} className="text-muted shrink-0" aria-hidden="true" />
@@ -296,6 +311,20 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           />
           )}
         </div>
+        <span className="text-[11.5px] leading-relaxed text-muted">{t('pages.membersPage.profile_dashboard_lock_hint', { name })}</span>
+        <div className="flex items-center justify-between gap-3 min-w-0 mt-1.5" data-testid="crew-profile-dashboard-card-send">
+          <span className="flex items-center gap-2 min-w-0 text-[13px] text-text">
+            <SendHorizontal size={14} className="text-muted shrink-0" aria-hidden="true" />
+            <span className="truncate">{t('pages.membersPage.profile_dashboard_card_send_switch')}</span>
+          </span>
+          <Toggle
+            checked={displayCardSend}
+            onChange={(v) => cardSendFlip.mutate(v)}
+            disabled={cardSendFlip.isPending}
+            label={t('pages.membersPage.profile_dashboard_card_send_switch')}
+          />
+        </div>
+        <span className="text-[11.5px] leading-relaxed text-muted">{t('pages.membersPage.profile_dashboard_card_send_hint', { name })}</span>
       </Field>
       {/* No hand-off on any notice here: the Crewmates page's composer may hold an
           unsent draft to this crewmate, and "Ask the agent" navigates away. */}
@@ -309,6 +338,10 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       />
       <ErrorNotice message={error || null} testId="crew-profile-settings-error" />
       <ErrorNotice message={lockError} testId="crew-profile-dashboard-lock-error" />
+      <ErrorNotice
+        message={cardSendFlip.isError ? t('pages.membersPage.profile_dashboard_card_send_failed') : null}
+        testId="crew-profile-dashboard-card-send-error"
+      />
       <ErrorNotice message={notice || null} testId="crew-profile-settings-notice" />
       </fieldset>
     </section>

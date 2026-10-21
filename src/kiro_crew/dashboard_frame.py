@@ -871,6 +871,26 @@ PAGE_EVENT: Final[str] = "kirocrew-dashboard"
 #: than re-deriving which patches to resend.
 REFETCH_MESSAGE_TYPE: Final[str] = "kirocrew-dashboard:refetch"
 
+#: What a page posts to put a reply in the reader's chat box: ``{type, text}``.
+#:
+#: The host only FILLS the composer; the person presses send. The text is trimmed, at
+#: most 600 characters, with no control character but a newline (``actText`` in the
+#: Dashboard tab). Part of the page contract since the Dashboard tab shipped; named
+#: here so the three page-to-host types sit in one place.
+ACT_MESSAGE_TYPE: Final[str] = "kirocrew-dashboard:act"
+
+#: What a page posts to SEND a reply into the crewmate's own thread with one click:
+#: ``{type, text}``, the same text rules as :data:`ACT_MESSAGE_TYPE`.
+#:
+#: A page is agent-written, so this is a request and not a command. The host sends
+#: only into the thread of the tab the page is shown in (the page names no target),
+#: only on a recent real interaction while the page's frame holds focus, tags the turn ``[Dashboard card]``, and the
+#: gateway refuses it, and the host falls back to filling the composer, when the
+#: crewmate's Profile switch is off, the thread is busy or has an open approval or
+#: question, or a send went through in the last few seconds. A card-sent turn is
+#: never an approval. See ``dashboard/card_send.py``.
+SEND_MESSAGE_TYPE: Final[str] = "kirocrew-dashboard:send"
+
 #: The readiness beacon, which runs AFTER the page.
 #:
 #: Posted only when nothing in the document raised while it initialized, which is

@@ -246,17 +246,27 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
+        # The row being regenerated is a Dashboard card's: the words are the page's, so the
+        # re-run is a card turn too, with the same limits as the first run (no
+        # auto-approval, no person's authority over session directives).
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+        _card_row = (msgs[u_idx].get("meta") or {}).get(CARD_ORIGIN_META_KEY) is True
+        _regen_kwargs: dict = {}
+        if _card_row:
+            _regen_kwargs["_card_origin"] = True
         task = asyncio.create_task(
             _run_chat(
                 state,
                 slot,
                 user_msg,
                 regenerate_hint=hint,
-                _directive_user_origin=not bool(request.get("app", "")),
+                _directive_user_origin=not bool(request.get("app", "")) and not _card_row,
                 # See ``api_chat``: an observed app must be NAMED, because the
                 # actor resolver's fallback is ``user``. ``""`` is the parameter's
                 # own default and reads as "not named".
                 _turn_actor="app" if request.get("app", "") else "",
+                **_regen_kwargs,
             )
         )
         slot.task = task

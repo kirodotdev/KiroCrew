@@ -988,3 +988,55 @@ class TestMappingAPageByKind:
         dashboard_frame.map_page_text(html, markup, code)
         assert code_seen == ["a", "b"]
         assert all(markup_seen), markup_seen
+
+
+class TestThePageToHostMessageTypes:
+    """The types a page posts up, exported once and pinned to the tab that reads them."""
+
+    def test_the_three_page_to_host_types_are_distinct_and_namespaced(self) -> None:
+        types = {
+            dashboard_frame.ACT_MESSAGE_TYPE,
+            dashboard_frame.SEND_MESSAGE_TYPE,
+            dashboard_frame.REFETCH_MESSAGE_TYPE,
+            dashboard_frame.READY_MESSAGE_TYPE,
+        }
+        assert len(types) == 4
+        assert all(t.startswith("kirocrew-dashboard:") for t in types)
+        assert dashboard_frame.ACT_MESSAGE_TYPE == "kirocrew-dashboard:act"
+        assert dashboard_frame.SEND_MESSAGE_TYPE == "kirocrew-dashboard:send"
+
+    def test_the_tab_reads_the_literals_the_frame_exports(self) -> None:
+        """A rename on one side would leave a button that posts to nobody."""
+        from pathlib import Path
+
+        tab = (
+            Path(dashboard_frame.__file__).resolve().parents[2]
+            / "website"
+            / "src"
+            / "pages"
+            / "members"
+            / "CrewDynamicDashboard.tsx"
+        )
+        # FAILS rather than skips: a pin that cannot find a side has not been satisfied.
+        assert tab.exists(), f"the tab this pin compares against is not at {tab}"
+        text = tab.read_text(encoding="utf-8")
+        for name, value in (
+            ("ACT_MESSAGE_TYPE", dashboard_frame.ACT_MESSAGE_TYPE),
+            ("SEND_MESSAGE_TYPE", dashboard_frame.SEND_MESSAGE_TYPE),
+        ):
+            assert f"const {name} = '{value}'" in text, name
+
+    def test_the_server_and_the_tab_agree_on_the_text_bound(self) -> None:
+        from pathlib import Path
+
+        from kiro_crew.dashboard import card_send
+
+        tab = (
+            Path(dashboard_frame.__file__).resolve().parents[2]
+            / "website"
+            / "src"
+            / "pages"
+            / "members"
+        )
+        text = (tab / "CrewDynamicDashboard.tsx").read_text(encoding="utf-8")
+        assert f"const ACT_MAX_CHARS = {card_send.CARD_MAX_CHARS}" in text

@@ -9523,6 +9523,20 @@
       "defaultValue": false
     },
     {
+      "path": "agents.*.dashboard_card_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dashboard card send",
+      "help": "Whether a button on this crewmate's Dashboard tab may send its reply straight into the crewmate's own thread with one click. On by default. Off, such a button only puts the reply in the chat box and the person presses send, which is what every card did before. A card-sent turn is tagged '[Dashboard card]', is never an approval, and is refused while the thread has an open approval or question.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",

@@ -257,6 +257,7 @@ async def continue_slot_turn(
             # still changes nothing.
             before_dispatch()
         # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard import card_send
         from kiro_crew.dashboard.session_control import containment_meta
 
         # Admission stamp + provenance: recovery-kind entries are subject
@@ -264,12 +265,19 @@ async def continue_slot_turn(
         # provenance follows the CALLER — the same request-identity split as
         # api_chat. An app hitting Continue on its own slot must not gain the
         # authenticated-human flag that gates session-mutating effects.
+        # The request being continued is a Dashboard card's: so is the continuation, with
+        # the same limits (the drain reads the mark off the entry).
+        _card_meta = (
+            {card_send.CARD_ORIGIN_META_KEY: True}
+            if card_send.latest_user_row_is_card(slot.messages)
+            else {}
+        )
         slot.queue_insert(
             0,
             resume,
             kind=SYNTHETIC_RECOVERY_KIND,
-            meta={**containment_meta(state, slot), **(extra_meta or {})},
-            directive_user_origin=directive_user_origin,
+            meta={**containment_meta(state, slot), **(extra_meta or {}), **_card_meta},
+            directive_user_origin=directive_user_origin and not _card_meta,
         )
 
     # The queue entry is already committed; audit failure must not strand it.

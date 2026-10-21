@@ -281,6 +281,14 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    if "dashboard_card_send" in body and not isinstance(body["dashboard_card_send"], bool):
+        return web.json_response(
+            {
+                "error": "dashboard_card_send must be a boolean",
+                "code": "invalid_dashboard_card_send",
+            },
+            status=400,
+        )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -600,6 +608,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
+        if "dashboard_card_send" in body:
+            # Already validated above, before any mutation.
+            agent.dashboard_card_send = body["dashboard_card_send"]
+            changed.append("dashboard_card_send")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store

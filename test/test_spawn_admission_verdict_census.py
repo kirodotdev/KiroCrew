@@ -60,6 +60,8 @@ _POLICY_REFUSALS = frozenset(
         "denied",  # governance, and the parent spec's availableAgents
         "rejected",  # the spawn-approval prompt said no, or had no surface
         "rejected_spawn",
+        # The parent's turn was started by a Dashboard card (CARD_TURN_POLICY).
+        "rejected_card_origin_turn",
     }
 )
 _STORE_REFUSALS = frozenset({"refused_task_store"})
@@ -152,6 +154,7 @@ _REFUSAL_TEXTS = frozenset(
         "<owner_err>",  # an app spawn of another app's agent
         "<err>",  # an agent name that does not resolve
         "spawn rejected: no approval mechanism configured",
+        "spawn refused: a turn started by a Dashboard card cannot start a sub-agent",
         # The pressure hold's terminal: ended, never started, past its bound. The
         # caller was already told the start was queued (test below).
         "<MEMORY_PRESSURE_NEVER_STARTED>",

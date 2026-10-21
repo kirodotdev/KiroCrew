@@ -76,6 +76,10 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "autocompact_pct",
         "telegram_account",
         "starred",
+        # The Profile tab's one-click-card-send switch: shipped on GET /api/members
+        # (the profile card's own read), not here, so the crew editor does not
+        # round-trip it.
+        "dashboard_card_send",
         # Shipped on GET /api/members (the profile card's own read), not here:
         # the crew editor echoes this row back, and must not round-trip it.
         "approval_mode",

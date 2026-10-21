@@ -213,6 +213,10 @@ async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict 
 
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
+    # Imported here because this module's bodies run in the chat_handlers
+    # namespace, which carries only the names it re-exports.
+    from kiro_crew.dashboard import card_send
+
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
@@ -307,6 +311,25 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if _requested_key and (_pending := state._slots.get(_requested_key)) is not None:
         await load_window_off_loop(_pending)
     existing = state._slots.get(_requested_key) if _requested_key else None
+    # A dashboard card's reply (see card_send): decided BEFORE the slot is created,
+    # so a refused one leaves no trace, and then reduced to the text and the
+    # thread. Whatever else the body carries (agent, theme, steer, meta, files) is
+    # dropped: a card is words from a page, nothing more.
+    card_origin = card_send.claims_card_origin(body)
+    if card_origin:
+        card_refusal = await card_send.card_send_refusal(request, state, existing, message)
+        if card_refusal is not None:
+            return card_refusal
+        body = {"message": message, "slot": slot_name, "origin": card_send.CARD_ORIGIN}
+        agent = ""
+        color_theme = ""
+        theme_consent = False
+        theme_consent_sha = None
+        # Only the client's correlation id survives. With it the user row is echoed
+        # to the tab over the socket, which is the one place a card's row appears,
+        # because a card has no optimistic bubble of its own.
+        _card_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
+        user_meta = {"sendId": _card_sid} if _card_sid else None
     # An app's auto-created slot must not land on a transcript it does not own:
     # its first save would stamp the app onto that transcript's metadata line.
     if (
@@ -551,7 +574,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     },
                     status=409,
                 )
-    if not request_app:
+    if not request_app and not card_origin:
         # A dashboard user (no app token) typed into this slot, so a human
         # demonstrably has it open. That restores the full 2h approval
         # window even on an app-owned tab — the deny-fast window is for slots
@@ -700,6 +723,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
+    if card_origin:
+        message = card_send.card_turn_text(message)
+
     from kiro_crew.dashboard import responsive_chat
 
     _responsive_eligible = False
@@ -718,6 +744,16 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if _responsive_eligible and (not steer or not slot.turn_running):
             return await responsive_chat.accept(request, slot, message, user_meta)
 
+    if card_origin and (slot.turn_running or slot._turn_admission_reserved):
+        # Idle when the gate looked; a turn started since. A card never queues or
+        # steers, so it is refused rather than parked behind the new turn.
+        return card_send.busy_refusal(request, slot)
+    if card_origin:
+        # The awaits since the gate can span a typed turn that ended in a question.
+        # The row appended below would retire it as if the card answered it.
+        _late_refusal = card_send.pending_decision_refusal(request, state, slot)
+        if _late_refusal is not None:
+            return _late_refusal
     if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -873,6 +909,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
+    if card_origin and (_held or _behind_parked):
+        return card_send.busy_refusal(request, slot)
     if not steer and (_held or _behind_parked):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
@@ -1036,7 +1074,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # it must byte-match (`_redact_meta_for_role` keeps the same rule on
         # every later persist and emit); an app's was redacted at the bound.
         _user_row_meta["quote"] = user_meta["quote"]
-    if not request_app:
+    if not request_app and not card_origin:
         # A PERSON typed this. Marked explicitly rather than inferred, because the
         # row's role and presentation class cannot tell it apart from a turn the
         # gateway drives on its own (see history.HUMAN_TURN_META_KEY). An app
@@ -1044,10 +1082,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # app-origin signal as `user_origin` and `turn_actor` above: an app's
         # send is not a human turn and must not advance the ranking stamp.
         _user_row_meta[HUMAN_TURN_META_KEY] = True
-    else:
+    elif request_app:
         # The queued path stamps the same actor on its entry, which the drain
         # unions onto the row; the title counter reads it off either row.
         _user_row_meta[TURN_ACTOR_META_KEY] = "app"
+    if card_origin:
+        # NOT a human turn: the words are a page's, and a page can arm its own send
+        # (RFC section 4.1), so the row must not advance the stamp for when the
+        # person last spoke or name the session. This says which kind it is instead.
+        _user_row_meta[card_send.CARD_ORIGIN_META_KEY] = True
     _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
     _user_mid = _user_row.get("meta", {}).get("mid")
     if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
@@ -1066,7 +1109,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # LLM titling is kicked off below, before _run_chat.
 
     # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
-    responsive_chat.notify_user_input(request, slot)
+    responsive_chat.notify_user_input(request, slot, card_origin=card_origin)
 
     # Drain stale pending messages from previous turns that completed
     # after their SSE reader disconnected. Must happen BEFORE _run_chat
@@ -1155,6 +1198,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # resolver's fallback is ``user``, so a site that observes an app and stays
         # silent records a person who never typed anything.
         _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
+        if card_origin:
+            # A card's words come from a page, not from the person's keyboard, so they
+            # do not carry the authority a typed turn has over session directives.
+            _turn_kwargs["_directive_user_origin"] = False
+            # Nor do they inherit an auto-approval: the turn's tool calls prompt
+            # as untrusted even in a thread that trusts (RFC section 3.6).
+            _turn_kwargs["_card_origin"] = True
         if request_app:
             _turn_kwargs["_turn_actor"] = "app"
         if _accepted_attachments:

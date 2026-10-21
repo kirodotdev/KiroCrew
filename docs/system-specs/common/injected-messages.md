@@ -758,6 +758,58 @@ an iframe cannot reach.
 So there is no `[Widget action event]` envelope. What reaches the session is an
 ordinary user message beginning `[UI] `, sent by a human, carrying an origin tag.
 
+## Dashboard card reply
+
+A button on a crewmate's Dashboard tab can send its reply in one click. The page
+posts `{type: 'kirocrew-dashboard:send', text}`; the host sends `POST /api/chat`
+with `origin: "dashboard_card"` into the tab's own crewmate thread. The row's text
+is the page's words behind a fixed tag:
+
+```
+[Dashboard card] <text>
+```
+
+- Defined in `src/kiro_crew/dashboard/card_send.py` (`CARD_TURN_PREFIX`). The row
+  also carries `meta.cardOrigin: true` (a reserved key a caller cannot write) and
+  no `meta.human`: that key means a person authored the row, and a page can arm its
+  own send (RFC section 4.1), so a card row does not advance the stamp for when the
+  person last spoke and does not name a session.
+- It is not typed text and not an approval. The turn has no authority over session
+  directives (`_directive_user_origin` is false), the tag makes the first word
+  `[Dashboard`, so `/clear` and `/new` are not commands, and the gateway refuses it
+  while the thread has an open tool approval, permission prompt or question card, a
+  running or queued turn, or a sub-agent hold. It never queues or steers.
+- Its tool calls do not inherit an auto-approval. The runner is told the turn is a
+  card's (`_run_chat(_card_origin=True)`), and then every rung that approves without
+  asking is skipped: the hook auto-approve list, trusted patterns, trust-reads,
+  session trust, a scoped grant, native crew and YOLO. Each call reaches the approval
+  card even in a thread set to `trust`. A hook DENY still denies, and the session's
+  session is marked while the turn runs (`card_send.card_turn`, set by the `_run_chat`
+  exit guard). The spawn gate refuses a first-admission spawn whose parent is marked
+  (SEL outcome `rejected_card_origin_turn`): a card turn starts no sub-agent. Every other way to hand
+  work on is refused by a route middleware (`card_send.card_turn_delegation_middleware`,
+  403 `card_turn_delegation_refused`): session-control create, fork, send, broadcast,
+  continue, retry and revive; workflow run, run_intent, saved-definition run, promote and rerun; every mutating
+  task runner route except the stops and pause; cron create, update, run, enable and
+  secret grants; sub-agent steer, retry and continue; nudge loop and monitor create, update and
+  fire or restart. A
+  recovery retry of the turn keeps the mark (`meta.cardOrigin` on the requeued entry), and
+  so do Resume, Continue and `session_retry` / `session_continue` of a thread whose newest
+  user row is a card's, and Regenerate.
+  Each withheld auto-approve is a SEL `auto_approve_declined` record with
+  `metadata.reason: card_origin_turn`.
+- It is also refused when the crewmate's Profile switch `dashboard_card_send` is
+  off, when the caller is not the owner's own dashboard, and when another card
+  send went through on the thread in the last 3 seconds. The host then falls back
+  to filling the composer.
+
+**How to treat it:** it is the person's click on a button YOUR page drew, so the
+words are one of the replies you offered. Do not read it as an approval of a tool
+call, a permission, or an open question: those only resolve on their own cards.
+Any tool Kiro Crew gates asks the person first during this turn, even if the thread
+trusts. A tool the agent's own spec pre-allows (`allowedTools`) never reaches that gate
+and runs as usual.
+
 ## Other injected envelopes
 
 These carry no `injected_turns.py` prefix constant, so they are classified by their own

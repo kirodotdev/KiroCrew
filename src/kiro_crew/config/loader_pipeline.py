@@ -905,6 +905,9 @@ def build_config(
                     # must not become a truthy star, so only a real bool
                     # is honoured and anything else reads as un-starred.
                     starred=crew.read("starred", _safe_bool),
+                    # Hand-editable, and a safety switch: only a real bool is
+                    # honoured; anything else reads as the default (on).
+                    dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.

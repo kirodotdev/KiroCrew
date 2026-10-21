@@ -58,6 +58,9 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
+  /** Whether a Dashboard-tab button may send its reply in one click. Absent on an
+   *  older gateway, which has no such switch: read it as on. */
+  dashboard_card_send?: boolean
   /** Created on the dashboard: `source` is `kirocrew` AND the record carries
    *  a member id. Listed on the roster unasked. Absent on an older gateway. */
   dashboard_created?: boolean

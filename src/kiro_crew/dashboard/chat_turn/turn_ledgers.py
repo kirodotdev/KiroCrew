@@ -123,6 +123,12 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    if turn._card_origin:
+        # A recovery is a second turn of the SAME card reply: it stays untrusted,
+        # or a retry would run the page's words with the thread's auto-approval.
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+        _recovery_meta[CARD_ORIGIN_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but

@@ -625,3 +625,24 @@ async def test_a_failing_audit_write_does_not_strand_the_queued_continue():
             assert resp.status == 200, await resp.text()
     mock_sel.log_tool_invocation.assert_called_once()
     started.assert_awaited_once()
+
+
+class TestContinueOfACardTurn:
+    """Resume and Continue re-run "the user's most recent request". When that request is a
+    Dashboard card's, the continuation is a card turn: the queued entry carries the mark
+    the drain reads, and it has no person's authority over session directives."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("card_row", [True, False])
+    async def test_the_queued_continuation_carries_the_cards_mark(self, _patched, card_row):
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+        slot = _ChatSlot("s")
+        meta = {CARD_ORIGIN_META_KEY: True} if card_row else None
+        slot.append("user", "[Dashboard card] go", "msg msg-u", meta=meta)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200
+        (entry,) = list(slot._queue)
+        assert (entry.get("meta") or {}).get(CARD_ORIGIN_META_KEY) is (True if card_row else None)

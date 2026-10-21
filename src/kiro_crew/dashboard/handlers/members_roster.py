@@ -331,6 +331,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # bool (the user's own favourite mark, PUT /api/agents/{name}).
                 "source": normalize_member_source(agent_cfg.source),
                 "starred": bool(agent_cfg.starred),
+                # Whether a Dashboard-tab button may send its reply in one click
+                # (card_send); the Profile tab's switch reads and writes it.
+                "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
                 # Whether this record was CREATED ON THE DASHBOARD: the crew
                 # manager's own origin (`source == "kirocrew"`) AND a member id,
                 # which is assigned when its member memory is allocated. With

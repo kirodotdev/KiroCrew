@@ -190,6 +190,24 @@ something landed and leaves you to diff a whole read to find out what;
 `subscribe` is the better entry point. Bindings update whether or not you
 subscribe, so subscribe only for what you draw.
 
+**Reply buttons.** A button you draw can offer the reader a reply. Post
+`parent.postMessage({type: 'kirocrew-dashboard:act', text}, '*')` to put `text`
+in the reader's chat box; they press send. Post `type: 'kirocrew-dashboard:send'`
+to send it into this crewmate's own chat in one click. `send` is only a request:
+the host sends it only after a recent real interaction with the window while your page
+holds focus, never to a target you name, at most once every few seconds, and it falls back to `act` when the reader
+switched one-click sends off on the Profile tab or when the chat is busy or
+waiting on an approval or a question. The text is trimmed, at most 600 characters,
+with no control characters but a newline. When a reply arrives it begins
+`[Dashboard card]`: the reader clicked one of the replies you offered. It is not
+an approval of a tool call or permission and does not answer an open question,
+and the tools Kiro Crew gates ask the reader first while you answer it, even in a chat
+that otherwise trusts your tools (a tool your own agent file pre-allows is not gated
+here and runs as usual). You cannot hand work on from that turn (no
+sub-agent, other session, workflow, task, cron job or loop); ask the reader to request it
+in the chat.
+Keep `act` for replies that need the reader's edit before they go.
+
 What the frame refuses:
 
 - **No egress.** `connect-src 'none'`. No fetch, no XHR, no websocket, no remote

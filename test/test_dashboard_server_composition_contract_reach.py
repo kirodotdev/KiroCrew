@@ -635,6 +635,7 @@ _DASHBOARD_CHAIN = (
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
     ("sel_audit_middleware", "_install_dashboard_middlewares.<locals>."),
+    ("card_turn_delegation_middleware", "card_turn_delegation_middleware"),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
     ("spa_fallback", "_install_dashboard_middlewares.<locals>."),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),

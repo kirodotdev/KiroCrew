@@ -378,3 +378,43 @@ describe('CrewProfileSettings dashboard lock', () => {
     expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("can't replace")
   })
 })
+
+/* The per-crewmate switch for one-click Dashboard card replies. On by default (an
+ * older gateway sends no field, which reads as on); the gateway enforces it, this
+ * only writes the crewmate's record. */
+describe('CrewProfileSettings dashboard card send', () => {
+  const SWITCH = 'Send replies in one click'
+
+  it('is on when the roster row says nothing, and on when it says true', async () => {
+    setup(member())
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('shows off when the record says off, with the hint naming the crewmate', async () => {
+    setup(member({ dashboard_card_send: false }))
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("sends its suggested reply as you. Off, it fills the chat box")
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("a button on oncall's dashboard")
+  })
+
+  it('writes the crewmate record and updates the roster row', async () => {
+    mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dashboard_card_send: false }))
+    await waitFor(() => {
+      const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+      expect(rows?.[0].dashboard_card_send).toBe(false)
+    })
+  })
+
+  it('says the setting did not change when the write fails, and leaves the row alone', async () => {
+    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('500'))
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    expect(await screen.findByTestId('crew-profile-dashboard-card-send-error')).toHaveTextContent(
+      "Couldn't change the setting. It stays as it was.",
+    )
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].dashboard_card_send).toBeUndefined()
+  })
+})

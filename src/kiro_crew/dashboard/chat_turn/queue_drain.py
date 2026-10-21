@@ -1016,6 +1016,14 @@ async def _start_next_queued_turn(
         )
     if _commands_off:
         _run_kwargs["_commands_off"] = True
+    # A recovery of a Dashboard card's reply is still that card's words. ANY consumed
+    # entry carrying the mark makes the whole drained turn untrusted (it can only
+    # add prompts, never remove one), and it survives a restart because a stamp
+    # added by an edited file can only tighten the turn.
+    from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+    if any((item.get("meta") or {}).get(CARD_ORIGIN_META_KEY) is True for item in consumed):
+        _run_kwargs["_card_origin"] = True
     # Provenance for the session's log, from the enqueue-time ``kind`` tag — the
     # same unforgeable source ``is_system_injection_item`` classifies on, and for
     # the same reason: the banner these injections wrap their text in is something

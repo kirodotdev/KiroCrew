@@ -1220,6 +1220,18 @@ def _hands_off_queue_on_exit(
         turn_exit = _TurnExit()
         closing = False
         setup_failed = False
+        # A Dashboard card's turn is registered for its whole length, so the spawn gate
+        # can tell that the parent is one (see card_send.card_turn). Not read off the
+        # session's approval policy: other writers rewrite that.
+        from kiro_crew.dashboard import card_send
+
+        card_mark = (
+            card_send.card_turn(effective_session_key(slot))
+            if kwargs.get("_card_origin") is True
+            else None
+        )
+        if card_mark is not None:
+            card_mark.__enter__()
         try:
             await fn(state, slot, turn_exit, *args, **kwargs)
         except GeneratorExit:
@@ -1234,6 +1246,10 @@ def _hands_off_queue_on_exit(
                 setup_failed = not turn_exit.local_command
             raise
         finally:
+            # Released FIRST, before anything that can await: the turn's own work is
+            # over, and a cancel the tail below defers and re-raises must not skip it.
+            if card_mark is not None:
+                card_mark.__exit__(None, None, None)
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the
@@ -1507,6 +1523,13 @@ async def _run_chat(
     # entry this way; without the switch, a channel's queued "/clear" would be the
     # one queued "/clear" in the system that ran instead of being said.
     _commands_off: bool = False,
+    # The turn runs a Dashboard card's reply (``card_send``): words a page chose, not
+    # words the person typed. It never inherits an auto-approval, so every tool call
+    # it makes reaches the approval card, whatever the thread's trust, trust-reads,
+    # trusted patterns, hook auto-approve list or YOLO say (``_on_permission_request``).
+    # Stamped by ``api_chat``, carried through a recovery requeue by the entry's
+    # ``cardOrigin`` meta, and read by nothing else.
+    _card_origin: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1548,6 +1571,7 @@ async def _run_chat(
         _directive_loop_gen=_directive_loop_gen,
         _directive_channel_origin=_directive_channel_origin,
         _commands_off=_commands_off,
+        _card_origin=_card_origin,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,

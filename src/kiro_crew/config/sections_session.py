@@ -307,6 +307,18 @@ class KiroCrewAgentConfig:
             "Never read by routing, spawning, or the orchestrator.",
         ),
     )
+    dashboard_card_send: bool = field(
+        default=True,
+        metadata=_meta(
+            "Dashboard card send",
+            "Whether a button on this crewmate's Dashboard tab may send its reply "
+            "straight into the crewmate's own thread with one click. On by "
+            "default. Off, such a button only puts the reply in the chat box and "
+            "the person presses send, which is what every card did before. A "
+            "card-sent turn is tagged '[Dashboard card]', is never an approval, "
+            "and is refused while the thread has an open approval or question.",
+        ),
+    )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
     # defaults are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows

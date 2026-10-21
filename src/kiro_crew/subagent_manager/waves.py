@@ -214,6 +214,15 @@ class WaveDigestCoordinator(ManagerComponent):
         """
         if not batch_id:
             return
+        # A Dashboard card's turn starts no sub-agent (the spawn gate refuses every one of
+        # its spawns before any batch accounting), so no sibling of this member was counted
+        # and there is no wave to strand. Announcing a synthetic member would start a
+        # continuation turn on the parent that nobody marked as a card's.
+        from kiro_crew.dashboard import card_send
+
+        if parent_session_key and card_send.card_turn_running(parent_session_key):
+            logger.debug("lost submission %s ignored: its parent runs a card turn", batch_id)
+            return
         _bs = self._manager._batch_submitted.setdefault(batch_id, [0, max(0, int(batch_total))])
         _bs[0] += 1
         self._manager._batch_progress_ts[batch_id] = time.monotonic()

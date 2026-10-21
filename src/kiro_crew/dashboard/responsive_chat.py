@@ -427,8 +427,13 @@ def prompt_context(recovery: list[dict[str, str]]) -> str:
     )
 
 
-def notify_user_input(request: web.Request, slot: Any) -> None:
-    """Apply the direct-send nudge semantics using authenticated request claims."""
+def notify_user_input(request: web.Request, slot: Any, *, card_origin: bool = False) -> None:
+    """Apply the direct-send nudge semantics using authenticated request claims.
+
+    *card_origin*: the words are a Dashboard card's, a page's and not a person's. The
+    pending nudge timer is still deferred (the thread is active), but the send does not
+    count as the person being back, so it does not release an approval-timeout hold.
+    """
     try:
         from kiro_crew.autonudge import get_instance
 
@@ -437,7 +442,8 @@ def notify_user_input(request: web.Request, slot: Any) -> None:
             autonudge.notify_user_input(
                 slot.key,
                 human=request.get("is_dashboard_user") is True
-                and request.get("internal_auth") is not True,
+                and request.get("internal_auth") is not True
+                and not card_origin,
             )
     except Exception:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)

@@ -328,6 +328,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.apps.execution": "builtin_app_agents builtin_app_mcp_servers builtin_app_names",
     "kiro_crew.apps.spawn_sdk": "build_spawn_impl",
     "kiro_crew.config": "live",
+    "kiro_crew.dashboard.card_send": "card_turn_delegation_middleware",
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
@@ -392,7 +393,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 85
+    assert len(expected) == 86
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
