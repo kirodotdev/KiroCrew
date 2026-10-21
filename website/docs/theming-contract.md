@@ -30,7 +30,7 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
 
-The 56 CSS variables are the single source of truth for color. They are the
+The 60 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
 
 **Fills are flat.** The brand system is flat: a new decorative gradient fill
@@ -198,7 +198,7 @@ about MCP apps. Do not copy the three-dep spelling into a new site.
 
 **Where each wash comes from is not symmetric, and follows the dashboard.**
 `--ok-subtle`, `--warn-subtle` and `--danger-subtle` are stored per theme and are
-read directly. `--info` has no stored companion in the 56 — `bg-info-subtle` is
+read directly. `--info` has no stored companion in the 60 — `bg-info-subtle` is
 derived in `src/tailwind-theme.css` as
 `color-mix(in srgb, var(--info) 12%, transparent)` — so `COLOR_TOKEN_MAP` derives
 `--color-background-info` the same way, from `INFO_WASH` of the resolved
@@ -215,7 +215,7 @@ cannot shrink.
 
 | Tier | Surface |
 |---|---|
-| **L0 Color** | the 56 CSS vars (dark + light) |
+| **L0 Color** | the 60 CSS vars (dark + light) |
 | **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
