@@ -8,7 +8,8 @@ import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
 import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { useIsMobile } from '../hooks/useIsMobile'
-import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2 } from 'lucide-react'
+import { isTerminalFullscreenAllowed, findKeycap, fullscreenKeycap } from '../utils/terminalFullscreen'
+import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2, Maximize2, Minimize2, Search } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
@@ -17,7 +18,7 @@ import { Input } from './ui'
 import { useTranslation } from 'react-i18next'
 import { TabCloseMenuItems, batchCloseConfirm, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
 import { useConfirm } from './ConfirmDialog'
-import CliPanel, { disposeTerminalSession, useDeleteTerminalSession, prewarmTerminal } from './CliPanel'
+import CliPanel, { disposeTerminalSession, useDeleteTerminalSession, prewarmTerminal, openTerminalSearch } from './CliPanel'
 import ErrorNotice from './ErrorNotice'
 import { getTerminalTitle, useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
 import { useAppSelector } from '../store'
@@ -27,7 +28,7 @@ import {
   useBottomTerminal, useTerminalHydratePending, addTab, removeTab, hasTab, setActiveTab, setTabsOrder,
   renameTab, capTerminalName,
   openBottomTerminal, closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
-  toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
+  toggleTerminalPosition, toggleTerminalFullscreen, setTerminalFullscreen, useTerminalFullscreen, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
   type TermTab,
 } from '../hooks/useBottomTerminal'
@@ -35,6 +36,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
+import { isMac } from '../utils/platform'
 
 /** Longest a phone waits for an idle moment to build a restored terminal. */
 const PREWARM_IDLE_TIMEOUT_MS = 4000
@@ -353,6 +355,20 @@ function TerminalCloseErrorNotice() {
 
 export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'dock' | 'popout'; deferOpen?: boolean }) {
   const { tabs, activeId, position } = useBottomTerminal()
+  const fullscreen = useTerminalFullscreen()
+  // Set by the menu's Find item; read once the menu has released focus.
+  const menuFindRef = useRef(false)
+  // Fullscreen is a desktop-only affordance (isTerminalFullscreenAllowed): it
+  // fills the dashboard content area, which only has its own stacking context on
+  // desktop. On a mobile viewport the shell's nav drawer and scrims must paint
+  // over the content, so a maximized terminal there would cover them. Hide the
+  // control, gate the dock chord, and drop fullscreen if the viewport narrows
+  // into mobile while it is on.
+  const isMobile = useIsMobile()
+  const fullscreenAllowed = isTerminalFullscreenAllowed(isMobile)
+  useEffect(() => {
+    if (!fullscreenAllowed && fullscreen) setTerminalFullscreen(false)
+  }, [fullscreenAllowed, fullscreen])
   // Tabs restored from storage are unverified until the backend has said which
   // shells still exist. Nothing is drawn for them before that ruling — a
   // mounted CliPanel would reconnect and spawn a shell for a tab the probe is
@@ -481,6 +497,10 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
   const popOut = useCallback(() => {
     openTerminalPopout()
     if (!isTerminalPopoutOpen()) return // window.open vetoed — keep the dock live
+    // The popout is its own window and cannot be fullscreen; drop the flag so the
+    // dock is not left maximized (Return re-docks at the dragged size) and <main>
+    // stops isolating while no dock panel is on screen.
+    setTerminalFullscreen(false)
     for (const t of tabs) disposeTerminalConnection(t.id)
   }, [tabs])
 
@@ -566,17 +586,71 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
                   <MoreHorizontal size={14} />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[180px]">
+              <DropdownMenuContent
+                align="end"
+                className="min-w-[180px]"
+                onCloseAutoFocus={(e) => {
+                  // Find hands focus to the find bar's input: keep the menu from
+                  // restoring it to the trigger once its focus trap releases.
+                  if (!menuFindRef.current) return
+                  menuFindRef.current = false
+                  if (activeId && openTerminalSearch(activeId)) e.preventDefault()
+                }}
+              >
+                {/* Find in the active terminal's scrollback. On Linux/Windows the
+                    shell keeps Ctrl+F (readline forward-char, less/vim paging),
+                    so this item and Ctrl+Shift+F are the ways in; macOS also has
+                    Cmd+F. The keycap is keycap data, not copy (i18n-opaque). */}
+                {activeId && (
+                <DropdownMenuItem onSelect={() => { menuFindRef.current = true }} data-testid="terminal-menu-find">
+                  <Search size={13} className="shrink-0" />
+                  {i18nT('components.bottomTerminalPanel.find')}
+                  <span aria-hidden="true" data-i18n-opaque="" data-testid="terminal-find-shortcut" className="ml-auto pl-4 text-[11px] leading-none text-muted">
+                    {findKeycap(isMac)}
+                  </span>
+                </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onSelect={toggleTerminalPosition} {...uiLocation('shell.terminal-more.position')}>
                   {position === 'bottom' ? <PanelRight size={13} className="shrink-0" /> : <PanelBottom size={13} className="shrink-0" />}
                   {position === 'bottom' ? i18nT('components.bottomTerminalPanel.move_panel_to_right') : i18nT('components.bottomTerminalPanel.move_panel_to_bottom')}
                 </DropdownMenuItem>
+                {fullscreenAllowed && (
+                <DropdownMenuItem onSelect={toggleTerminalFullscreen} data-testid="terminal-menu-fullscreen">
+                  {fullscreen ? <Minimize2 size={13} className="shrink-0" /> : <Maximize2 size={13} className="shrink-0" />}
+                  {fullscreen ? i18nT('components.bottomTerminalPanel.exit_fullscreen') : i18nT('components.bottomTerminalPanel.fullscreen')}
+                  {/* The chord a sighted user can otherwise never discover, same
+                      muted-trailing-span shape as the F2 rename hint. macOS only
+                      (fullscreenKeycap): Linux/Windows have no fullscreen chord,
+                      since Ctrl+Shift+F is find there, so no keycap shows. The
+                      glyph is keycap data, not copy, so it is i18n-opaque. */}
+                  {fullscreenKeycap(isMac) && (
+                  <span aria-hidden="true" data-i18n-opaque="" data-testid="terminal-fullscreen-shortcut" className="ml-auto pl-4 text-[11px] leading-none text-muted">
+                    {fullscreenKeycap(isMac)}
+                  </span>
+                  )}
+                </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onSelect={popOut}>
                   <PictureInPicture2 size={13} className="shrink-0" />
                   {i18nT('components.bottomTerminalPanel.pop_out_to_window')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* While fullscreen covers the content area (and the resize grip is
+                gone), a visible way back sits beside the menu: on Linux/Windows
+                there is no fullscreen chord, so without it the only exit would
+                be hidden inside the overflow menu. */}
+            {fullscreen && fullscreenAllowed && (
+            <button
+              className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+              onClick={() => setTerminalFullscreen(false)}
+              title={i18nT('components.bottomTerminalPanel.exit_fullscreen')}
+              aria-label={i18nT('components.bottomTerminalPanel.exit_fullscreen')}
+              data-testid="terminal-exit-fullscreen"
+            >
+              <Minimize2 size={14} />
+            </button>
+            )}
             <button
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
               onClick={() => closeBottomTerminal()}
@@ -617,7 +691,18 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
         )}
         {tabs.map(t => (
           <div key={t.id} className="absolute inset-0" style={{ display: t.id === activeId ? 'block' : 'none' }}>
-            <CliPanel sessionId={t.id} cwd={t.cwd} chatSlot={t.chatSlot} visible={t.id === activeId} deferOpen={deferOpen} />
+            <CliPanel
+              sessionId={t.id}
+              cwd={t.cwd}
+              chatSlot={t.chatSlot}
+              visible={t.id === activeId}
+              deferOpen={deferOpen}
+              // Only the docked panel can go fullscreen; the popout is already
+              // its own window, and a chat side-panel terminal (which renders
+              // CliPanel without this prop) must not maximize the unrelated dock.
+              // Gated off on mobile, where fullscreen is unavailable.
+              onToggleFullscreen={variant === 'dock' && fullscreenAllowed ? toggleTerminalFullscreen : undefined}
+            />
           </div>
         ))}
       </div>
@@ -679,7 +764,7 @@ export function TerminalDetachedBar() {
  * shell warm. Only closing an individual tab kills its PTY.
  */
 export default function BottomTerminalPanel() {
-  const { open, height, width, position, tabs, activeId } = useBottomTerminal()
+  const { open, fullscreen, height, width, position, tabs, activeId } = useBottomTerminal()
   // On a phone, a tab restored from an earlier visit has no xterm yet, and
   // building it is the largest block of work in the tap that opens the dock.
   // Build it off screen while the app is idle, only when such a tab exists:
@@ -756,6 +841,13 @@ export default function BottomTerminalPanel() {
 
   // Orientation-parameterized layout: one tree, axis-driven props.
   const grip = isRight ? gripResizeRight : gripResizeBottom
+  // Fullscreen fills the dashboard CONTENT area, not the window: the panel's
+  // flex wrapper (App.tsx, shared with <main>) is made `relative`, and the
+  // fullscreen panel is `absolute inset-0` over it. That wrapper is the content
+  // row — viewport minus the 42px top bar, minus the nav rail when docked right
+  // — so this cannot clip the bottom/right off-screen the way a window pixel
+  // extent did, and it tracks the wrapper on resize with no listener. The grip
+  // size is untouched, so exiting restores it.
   const dimension = isRight ? width : height
   const motionProp = isRight ? { width: dimension } : { height: dimension }
   const motionKey = isRight ? 'right-terminal' : 'bottom-terminal'
@@ -802,20 +894,30 @@ export default function BottomTerminalPanel() {
           key={motionKey}
           ref={panelRef}
           data-testid="bottom-terminal-panel"
-          className={`overflow-hidden bg-bg ${isRight ? 'shrink-0 border-l border-border' : 'min-h-0 border-t border-border'}`}
-          /* The bottom dock takes its full height at once and slides in with a
-             transform: animating `height` re-laid out the whole shell and
-             refit xterm on every frame. */
-          initial={isRight ? { width: 0 } : { y: dimension }}
-          animate={isRight ? motionProp : { y: 0 }}
+          className={`overflow-hidden bg-bg ${fullscreen ? 'absolute inset-0 z-[51]' : isRight ? 'shrink-0' : 'min-h-0'} ${isRight ? 'border-l border-border' : 'border-t border-border'}`}
+          /* Docked, the bottom dock takes its full height at once and slides in
+             with a transform: animating `height` re-laid out the whole shell and
+             refit xterm on every frame; the right dock slides its width. In
+             fullscreen the element starts AND stays at the full axis extent
+             (100%, no slide): framer-motion animates a key that is dropped from
+             `animate` back to `initial`, and a 0 or grip-sized inline
+             width/height would override the `absolute inset-0` sizing (also on a
+             position change, which remounts a fresh element via motionKey). */
+          initial={isRight
+            ? (fullscreen ? { width: '100%' } : { width: 0 })
+            : (fullscreen ? { y: 0 } : { y: dimension })}
+          animate={isRight
+            ? (fullscreen ? { width: '100%' } : motionProp)
+            : { y: 0 }}
           exit={isRight ? { width: 0 } : { y: dimension }}
           transition={{ duration: dragging ? 0 : 0.22, ease: 'easeOut' }}
           onAnimationComplete={onSlideComplete}
           style={isRight
             ? { willChange: 'width' }
-            : { height: dimension, willChange: 'transform' }}
+            : { height: fullscreen ? '100%' : dimension, willChange: 'transform' }}
         >
-          <div className={isRight ? 'flex flex-row h-full' : 'flex flex-col h-full'} style={isRight ? motionProp : undefined}>
+          <div className={isRight ? 'flex flex-row h-full' : 'flex flex-col h-full'} style={fullscreen ? { height: '100%', width: '100%' } : isRight ? motionProp : undefined}>
+            {!fullscreen && (
             <div
               {...grip}
               className={`relative shrink-0 group/drag ${isRight ? 'w-[6px] cursor-col-resize' : 'h-[6px] cursor-row-resize'}`}
@@ -830,6 +932,7 @@ export default function BottomTerminalPanel() {
                   : `inset-x-0 top-0 h-[2px] ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`
               }`} />
             </div>
+            )}
             <div className={isRight ? 'flex-1 min-w-0 min-h-0' : 'flex-1 min-h-0'}>
               <TerminalTabsView variant="dock" deferOpen={!settled} />
             </div>
