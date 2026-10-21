@@ -250,6 +250,97 @@ async def test_list_apps_enriches_running_backend(
 
 
 @pytest.mark.asyncio
+async def test_list_apps_surfaces_restart_exhausted_on_a_tracked_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tracked-but-down backend whose attempt count is PAST the fast-ramp ceiling
+    # is repeatedly failing to restart; the exhausted state rides alongside the
+    # usual flags so the banner can name it.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    monkeypatch.setattr(
+        routes_mod,
+        "list_app_processes",
+        lambda: [
+            {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242, "running": False},
+        ],
+    )
+    monkeypatch.setattr(
+        routes_mod, "_restart_attempts", {APP: routes_mod._RESTART_ON_EXIT_FAST_ATTEMPTS + 1}
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps")
+        assert resp.status == 200
+        rows = await resp.json()
+    entry = next(a for a in rows if a["name"] == APP)
+    assert entry["backend_status"]["running"] is False
+    assert entry["backend_status"]["restart_exhausted"] == {
+        "attempts": routes_mod._RESTART_ON_EXIT_FAST_ATTEMPTS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_apps_reports_exhausted_at_the_ceiling_only_once_the_backend_exited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # AT the ceiling the meaning depends on the tracked process: an EXITED record
+    # means the ceiling-th attempt already failed and the loop is in its first
+    # slow wait (exhausted — the 300s window the banner must cover); a LIVE record
+    # means the ceiling-th replacement is still in flight (only ceiling-1 failed,
+    # NOT exhausted). Below the ceiling is never exhausted.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    ceiling = routes_mod._RESTART_ON_EXIT_FAST_ATTEMPTS
+
+    async def _status(running: bool, attempts: int) -> dict:
+        monkeypatch.setattr(
+            routes_mod,
+            "list_app_processes",
+            lambda: [
+                {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242, "running": running},
+            ],
+        )
+        monkeypatch.setattr(routes_mod, "_restart_attempts", {APP: attempts})
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/apps")
+            assert resp.status == 200
+            rows = await resp.json()
+        return next(a for a in rows if a["name"] == APP)["backend_status"]
+
+    # At the ceiling, exited backend -> exhausted (slow-wait window).
+    assert (await _status(running=False, attempts=ceiling)).get("restart_exhausted") == {
+        "attempts": ceiling,
+    }
+    # At the ceiling, still-running backend -> NOT exhausted (in-flight attempt).
+    assert "restart_exhausted" not in await _status(running=True, attempts=ceiling)
+    # Below the ceiling -> never exhausted, even when exited.
+    assert "restart_exhausted" not in await _status(running=False, attempts=ceiling - 1)
+
+
+@pytest.mark.asyncio
+async def test_list_apps_surfaces_restart_exhausted_with_no_tracked_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # In the brief spawn window the dead record is popped while the supervisor is
+    # still retrying past the ceiling — the exhausted state must still reach the
+    # banner, carried on its own backend_status block.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    monkeypatch.setattr(routes_mod, "list_app_processes", lambda: [])
+    monkeypatch.setattr(
+        routes_mod, "_restart_attempts", {APP: routes_mod._RESTART_ON_EXIT_FAST_ATTEMPTS + 1}
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps")
+        assert resp.status == 200
+        rows = await resp.json()
+    entry = next(a for a in rows if a["name"] == APP)
+    assert entry["backend_status"] == {
+        "restart_exhausted": {"attempts": routes_mod._RESTART_ON_EXIT_FAST_ATTEMPTS},
+    }
+
+
+@pytest.mark.asyncio
 async def test_list_apps_overwrites_the_trust_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

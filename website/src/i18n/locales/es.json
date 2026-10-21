@@ -330,6 +330,12 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} no consigue reiniciarse",
+      "restart_exhausted_message_one": "{{app}} no ha conseguido reiniciarse {{count}} vez seguida y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla.",
+      "restart_exhausted_message_many": "{{app}} no ha conseguido reiniciarse {{count}} veces seguidas y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla.",
+      "restart_exhausted_message_other": "{{app}} no ha conseguido reiniciarse {{count}} veces seguidas y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Detalles para quien haya montado esta copia",
       "refused_page_handoff_note": "Al preguntar al agente se abre un chat con estos detalles ya adjuntos.",

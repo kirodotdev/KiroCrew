@@ -316,6 +316,11 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} kann nicht neu gestartet werden",
+      "restart_exhausted_message_one": "{{app}} konnte {{count}}-mal in Folge nicht neu starten und versucht es weiterhin alle paar Minuten. Um es sofort erneut zu versuchen, deaktiviere {{app}} und aktiviere es wieder.",
+      "restart_exhausted_message_other": "{{app}} konnte {{count}}-mal in Folge nicht neu starten und versucht es weiterhin alle paar Minuten. Um es sofort erneut zu versuchen, deaktiviere {{app}} und aktiviere es wieder."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Details für diejenigen, die diese Kopie zusammengestellt haben",
       "refused_page_handoff_note": "Den Agenten zu fragen öffnet einen Chat, an den diese Details bereits angehängt sind.",

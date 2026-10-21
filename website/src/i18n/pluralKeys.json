@@ -12,6 +12,7 @@
   "apps.autoTriagePipeline.global.step_heading",
   "apps.autoTriagePipeline.global.turns_n",
   "apps.autoTriagePipeline.global.unparseable",
+  "apps.backend.restart_exhausted_message",
   "apps.awsControl.console.folder_deleted",
   "apps.awsControl.console.keys_count",
   "apps.awsControl.console.root_section_objects",

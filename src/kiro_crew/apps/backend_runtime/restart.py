@@ -333,6 +333,13 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
                 )
             except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
                 logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
+            # Supervision ends here for good: a tightened policy is a durable
+            # operator decision, not a transient fault. Drop the attempt count so
+            # the dashboard's derived "repeatedly failing to restart" state (read
+            # from this counter in `routes.handle_list_apps`) does not keep telling
+            # the operator to toggle the app to retry — the retry is refused.
+            with _lock:
+                _restart_attempts.pop(app_name, None)
             return False
 
         backend_still_declared = True
