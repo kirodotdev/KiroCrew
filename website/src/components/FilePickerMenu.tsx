@@ -291,8 +291,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
       role="listbox"
       // While a search is in flight the rows on screen are the PREVIOUS payload
       // (`placeholderData`), relativized against that payload's root; busy says
-      // so, and clearing it is the one signal that the rows now answer the
-      // current query and project.
+      // so. Clearing it means the rows answer the DEBOUNCED query and project,
+      // not yet the live one: busy is also false during the <=200ms debounce
+      // window before the next fetch starts. A caller that needs the rows for
+      // the text just typed waits for a fetch issued after that text, as
+      // `releaseKeysWhenEmpty` and `searchFailed` do with `debounced === query`.
       aria-busy={isFetching}
       style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 420), maxHeight }}
     >
