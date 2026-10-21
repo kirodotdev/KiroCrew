@@ -30,6 +30,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
 )
 from kiro_crew.knowledge.llm_pool import (
     AcpWorker,
@@ -529,6 +530,11 @@ class TestReadConfig:
             # permission request on this backend's mirror) and
             # acp_client_spawnable -- passes through.
             (ACP_BACKEND_OPENCODE, ACP_BACKEND_OPENCODE),
+            # pi has no mirror; its zero_tools is read beside its member mounts
+            # from the same spec parse, and every pi tool call reaches
+            # session/request_permission through the gate extension, so
+            # _deny_zero_tools refuses it -- passes through.
+            (ACP_BACKEND_PI, ACP_BACKEND_PI),
         ],
     )
     def test_acp_backend_goes_through_the_selection_gate(self, persisted, expected):

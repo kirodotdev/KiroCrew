@@ -192,10 +192,10 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     resolved backend is safe to hand it, asked rather than enumerated so a
     backend that later earns both answers needs no change here:
     ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, plus
-    opencode/goose via ``AcpClient._deny_zero_tools``; not claude, whose routing
-    is unenforced so an inherited pre-approval can skip the permission request;
-    not codex, whose sessions run on ``AcpRuntime`` with no such refusal; not
-    pi/deepseek, which have no mirror at all) and ``.acp_client_spawnable`` (not
+    opencode/goose/deepseek/pi via ``AcpClient._deny_zero_tools``; not claude,
+    whose routing is unenforced so an inherited pre-approval can skip the
+    permission request; not codex, whose sessions run on ``AcpRuntime`` with no
+    such refusal) and ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
 
     The pool reads raw ``config.json``, which never passed the loader's
@@ -445,8 +445,8 @@ class AcpWorker(Worker):
         )
         self._client, authored_before_spawn = await self._spawn_client(acp_backend, sandbox_mode)
         # A zero-tool spec must be CONFIRMED, not assumed. A backend that is not
-        # routed through Routing.AGENT_SPEC relies on the mirror's consumed
-        # projection (spec_zero_tools). If the spec was missing, malformed, or
+        # routed through Routing.AGENT_SPEC relies on the session's consumed
+        # projection (spec_zero_tools: the mirror's, or pi's mirror-less parse). If the spec was missing, malformed, or
         # shadowed by a project-level spec, that signal is false and every native
         # tool request would auto-approve, so this worker restarts on Kiro before
         # any prompt is sent.

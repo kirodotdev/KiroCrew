@@ -269,16 +269,31 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # * ``Routing.AGENT_SPEC`` (kiro, kas) -- the harness itself reads the spec and
 #   refuses every tool NATIVELY, so nothing else is needed.
 # * a routing in ``tool_gate.ENFORCED_ROUTINGS`` whose non-ROUTED verdict actually
-#   refuses a session, AND a mirror in ``providers/mirrors/registry.py``'s
-#   ``MIRRORS`` that reports ``SessionProjection.zero_tools`` from the spec parse
-#   (``acp/session_mcp.py``), AND the session is served by ``AcpClient`` rather than
-#   ``AcpRuntime`` -- because the refusal that closes the gap,
-#   ``AcpClient._deny_zero_tools``, lives ONLY on ``AcpClient``.
+#   refuses a session, AND something that computes ``zero_tools`` from the spec
+#   parse (``acp/session_mcp.py``'s ``SessionMcpProjection.zero_tools``) -- a mirror
+#   in ``providers/mirrors/registry.py``'s ``MIRRORS``, or, for a mirror-less host
+#   whose array Crew composes (``ACP_BACKENDS_SESSION_MCP_ARRAY``),
+#   ``AcpClient._mirrorless_member_mounts`` reading the same parse -- AND the
+#   session is served by ``AcpClient`` rather than ``AcpRuntime``, because the
+#   refusal that closes the gap, ``AcpClient._deny_zero_tools``, lives ONLY on
+#   ``AcpClient``.
 #
 # Today that is opencode and goose (``Routing.VERIFIED_SEEDED_SETTINGS``) and
 # deepseek (``Routing.VERIFIED_GATE_EXTENSION``): mirrored, not in
 # ``ACP_BACKENDS_ACP_RUNTIME``. deepseek's mirror reads ``zero_tools`` from
 # the shared session MCP projection.
+#
+# pi (``Routing.VERIFIED_GATE_EXTENSION``) is the mirror-less member. pi runs every
+# tool call without asking, and Crew's gate extension
+# (``agent_sdk/gate_extensions/pi/``) turns each one -- built-in, MCP or any other --
+# into a confirm dialog pi-acp forwards as ``session/request_permission``; the call
+# runs only on an approving answer. So the refusal needs nothing pi-shaped: the
+# spec's ``tools`` is read beside the member mounts and ``_deny_zero_tools`` answers
+# every request with the reject option. Measured end to end on a zero-tool spec:
+# ``test/fixtures/acp_frames/pi/zero-tools-refused-live.jsonl`` (pi-acp 0.0.34 over
+# pi 1.2.0, driven through ``AcpClient``) holds a ``write``, a ``bash``, an MCP call
+# and a tool pi does not have, each ended ``failed`` with nothing on disk, and a
+# session with no gate extension is refused before its first prompt by the routing.
 #
 # claude is NOT a member: its routing, ``Routing.SEEDED_SETTINGS``, is declared but
 # not enforced by this core (see ``Routing``'s docstring and
@@ -291,10 +306,6 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # ``spec_denied_tools`` but no ``zero_tools`` and no ``_deny_zero_tools`` equivalent
 # -- the refusal exists only on ``AcpClient``, so nothing refuses on a codex session
 # even though its ``Routing.SESSION_CONFIG`` is itself enforced.
-#
-# pi is NOT a member: it has no mirror (``providers/mirrors/registry.py``'s
-# ``MIRRORS``), so nothing computes ``zero_tools`` for it and ``AcpClient`` never
-# refuses on its sessions.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -302,6 +313,7 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_PI,
     }
 )
 

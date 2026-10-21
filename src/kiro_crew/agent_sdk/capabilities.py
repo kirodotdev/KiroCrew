@@ -165,14 +165,14 @@ class SessionCapabilities:
     #: Whether an agent spec's ``"tools": []`` is honoured as a total ban -- no
     #: MCP server AND no harness-native tool -- on this backend.
     #:
-    #: True for kiro-cli/KAS (native) and for opencode/goose, whose mirror-only
-    #: allowlist gap is closed by ``AcpClient._deny_zero_tools`` at the permission
-    #: layer. False for claude, whose routing is declared but not enforced by this
-    #: core -- an inherited ``~/.claude`` pre-approval can skip
-    #: ``session/request_permission`` entirely, so the refusal never runs. False
-    #: for codex, whose sessions are served by ``AcpRuntime``, which carries no
-    #: zero-tool refusal at all. False for pi and deepseek, which have no mirror
-    #: and so no channel that computes ``zero_tools`` for them. A consumer that
+    #: True for kiro-cli/KAS (native) and for opencode/goose/deepseek/pi, whose
+    #: harness-native tools are refused by ``AcpClient._deny_zero_tools`` at the
+    #: permission layer (pi has no mirror; its ``zero_tools`` is read beside its
+    #: member mounts from the same spec parse). False for claude, whose routing is
+    #: declared but not enforced by this core -- an inherited ``~/.claude``
+    #: pre-approval can skip ``session/request_permission`` entirely, so the refusal
+    #: never runs. False for codex, whose sessions are served by ``AcpRuntime``,
+    #: which carries no zero-tool refusal at all. A consumer that
     #: spawns a zero-tool agent (the knowledge/research pool) asks this before
     #: trusting a resolved backend, rather than enumerating identities itself.
     honors_zero_tool_ban: bool

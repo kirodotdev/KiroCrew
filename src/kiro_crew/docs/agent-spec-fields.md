@@ -161,19 +161,22 @@ allowlist -- but it does NOT, by itself, stop the harness's own native tools
 (claude-agent-acp's Bash/Read/Write, for instance): those are outside the array
 entirely. Every mirrored backend carries a second signal from the same spec
 parse, `SessionMcpProjection.zero_tools` (true only for an explicit `[]`, not a
-missing key), but only `opencode` and `goose` close the gap on it:
+missing key), and `opencode`, `goose` and `deepseek` close the gap on it:
 `AcpClient._deny_zero_tools` refuses EVERY permission request on such a session
 -- MCP or native -- and the refusal runs only on `AcpClient` sessions of a
 backend that answers `SessionCapabilities.honors_zero_tool_ban` (an enforced
-routing, `tool_gate.ENFORCED_ROUTINGS`, plus a mirror). `claude`'s
+routing, `tool_gate.ENFORCED_ROUTINGS`, plus something that computes
+`zero_tools`). `pi` has no mirror, but its array is composed by Crew
+(`AcpClient._mirrorless_member_mounts`), which reads `zero_tools` from the same
+spec parse; and pi's gate extension raises `session/request_permission` for
+every tool call, so the same refusal closes the gap there. `claude`'s
 routing (`Routing.SEEDED_SETTINGS`) is declared but not enforced by this core, so
 an inherited `~/.claude` pre-approval can skip `session/request_permission`
 entirely; the refusal is not applied there. `codex` is served by `AcpRuntime` /
 `AcpSessionHandle` rather than `AcpClient`, which carries `spec_denied_tools`
 but no `zero_tools` and no equivalent refusal, so nothing closes the gap on a
-codex session either. `pi` and `deepseek` have no mirror, so neither this nor
-the ordinary allowlist ever applies to them; an agent spec relying on
-`tools: []` for any of claude, codex, pi or deepseek is not enforced at all.
+codex session either. An agent spec relying on `tools: []` on claude or codex is
+not enforced at all.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
