@@ -680,6 +680,8 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+        # _init_cron runs before the dashboard state exists, so it cannot register this.
+        self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice
@@ -725,6 +727,7 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
             self._dashboard_port = addresses[0][1]
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # API-only mode
+        self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
 
 
 async def run(self: GatewayOrchestrator) -> None:
