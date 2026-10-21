@@ -248,6 +248,24 @@ export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
 export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-stale-wake`
 
 /**
+ * Mastermind: one chat with a memory that never fills up, held at the very top
+ * of the Sessions list.
+ *
+ * The session is the backend's: Settings > Mastermind switches it on (which
+ * creates and pins the `mastermind` slot server-side), browses its memory tree,
+ * clears it or removes it. While it is enabled the sidebar draws that slot as
+ * its ordinary row, first in every layout, decorated and locked against close.
+ *
+ * Gating the INGRESS only, like every flag here: the flag lists the Settings >
+ * Mastermind tab. It does not switch the feature off -- a Mastermind enabled
+ * before the flag was turned off keeps working and keeps its place in the list,
+ * because that is what the backend reports.
+ *
+ * Default OFF because the memory tree is still settling.
+ */
+export const PREVIEW_MASTERMIND = `${PREVIEW_FLAG_PREFIX}mastermind`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -270,6 +288,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_SESSION_HARNESS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_MASTERMIND,
 ]
 
 /**

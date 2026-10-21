@@ -44,11 +44,14 @@ def test_every_listed_tool_carries_its_declared_title(server: str, monkeypatch) 
     # none installed, so the gate is held open here to compare the whole table.
     from kiro_crew.mcp_tools import app_tools
     from kiro_crew.mcp_tools import code_channels as code_channel_tools
+    from kiro_crew.mcp_tools import mastermind as mastermind_tools
 
     _install_builtins_that_declare_agent_tools()
     monkeypatch.setattr(app_tools, "app_enabled_state", lambda _name: True)
     # Likewise the code-channel tools, listed only while slack.code_channels is on.
     monkeypatch.setattr(code_channel_tools, "_toggle_on", lambda: True)
+    # And Mastermind's, listed only while it is on.
+    monkeypatch.setattr(mastermind_tools, "mastermind_on", lambda: True)
     listed = _SERVERS[server]._list_tools()
     assert {t["name"]: t.get("title") for t in listed} == _table()[server]
 

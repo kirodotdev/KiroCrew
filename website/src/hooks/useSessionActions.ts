@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { isMastermindLockedIn } from '../lib/mastermind'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError, slotAttachedDetail } from '../api/apiError'
@@ -505,6 +506,9 @@ export function useSessionActions(mode?: string, opts?: {
   // dialog, never the browser's native confirm(): in the desktop app that one
   // can leave the window unable to take input once it closes.
   const close = useCallback((slotKey: string) => {
+    // No prompt for the enabled Mastermind session: the close is refused (with a
+    // notice pointing to Settings), so asking first would confirm nothing.
+    if (isMastermindLockedIn(store.getState(), slotKey)) { dispatch(deleteSlot(slotKey)); return }
     const ask = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
     const closeSlot = () => {
       // Recorded as the close is dispatched, not on `fulfilled` (which trails

@@ -1398,6 +1398,13 @@
       "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in."
     },
     {
+      "id": "developer.mastermind",
+      "label": "Mastermind",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.mastermind",
+      "description": "One chat at the top of Sessions with a memory that never fills up — every message is summarized into a memory tree the agent can zoom back into, so it remembers across weeks without compaction. Turning this on adds Settings → Mastermind."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

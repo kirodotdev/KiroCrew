@@ -21,6 +21,7 @@ from kiro_crew.dashboard.state import (
     TOOL_STALL_RECOVERY_PREFIX,
     build_tool_stall_recovery_prompt,
 )
+from kiro_crew.mastermind.slot import is_mastermind_turn
 from kiro_crew.recovery.ladder import L1_TOOL_CALL, SESSION_RECOVERY_MAX_ATTEMPTS, default_ladder
 
 if TYPE_CHECKING:
@@ -496,6 +497,10 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
             _recovering_promise or _recovering_compaction or _noticed_leak or _recovering_infra
         ):
             post_turn_reply(state, slot, _note_reply_mids)
+            if is_mastermind_turn(state, slot):
+                from kiro_crew.mastermind.service import turn_landed  # only Mastermind loads it
+
+                turn_landed(state, slot, _note_reply_mids)
     # Reset ALL retry budgets once the cycle completes (success OR the
     # terminal second-empty error) so each new user turn gets fresh budgets.
     # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:

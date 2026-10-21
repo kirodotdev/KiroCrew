@@ -1265,6 +1265,19 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     denied = deny_app_slot_access(request_app, slot, name, "slot_delete")
     if denied is not None:
         return denied
+    from kiro_crew.mastermind.slot import (  # this owner runs on the facade's globals
+        is_mastermind_turn,
+    )
+
+    if is_mastermind_turn(state, slot):
+        # Removed only from Settings > Mastermind (POST /api/mastermind/remove).
+        return web.json_response(
+            {
+                "error": "Mastermind cannot be closed; turn it off or remove it in Settings.",
+                "code": "mastermind_protected",
+            },
+            status=409,
+        )
 
     # Read while the slot is still live, with no await before the close: its stamps
     # need it in the slot table, and the tree membership must be the one it closes.

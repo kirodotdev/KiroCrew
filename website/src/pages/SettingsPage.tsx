@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { Bell, Brain, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -26,6 +26,7 @@ import ReleasesPanel from './settings/ReleasesPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
+import { MastermindPanel } from './settings/MastermindPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanel } from './settings/SecretsPanel'
 import { ConnectionsPanel } from './settings/ConnectionsPanel'
@@ -62,7 +63,7 @@ import { SettingsCard } from '../components/settings'
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
-import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_MASTERMIND, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
@@ -94,6 +95,8 @@ function buildTabs() {
     // Old `/developer?tab=agent-backend` links are forwarded here by DeveloperPage.
     { key: 'agent', tile: 'var(--tile-teal)', label: i18nT('settings.tabs.agent.label'), icon: <Cpu size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.agent.description') },
     { key: 'chat', tile: 'var(--tile-green)', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.chat.description'), hostsSubNav: true },
+    // Mastermind: listed only while its Feature Previews flag is on (below).
+    { key: 'mastermind', tile: 'var(--tile-purple)', label: i18nT('settings.tabs.mastermind.label'), icon: <Brain size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.mastermind.description') },
     { key: 'display', tile: 'var(--tile-indigo)', label: i18nT('settings.tabs.display.label'), icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.display.description'), hostsSubNav: true },
     { key: 'voice', tile: 'var(--tile-pink)', label: i18nT('settings.tabs.voice.label'), icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.voice.description') },
     { key: 'notifications', tile: 'var(--tile-red)', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description'), hostsSubNav: true },
@@ -252,6 +255,9 @@ export default function SettingsPage() {
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
   const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  // Settings > Mastermind follows the same rule: the Feature Previews card is the
+  // switch that reveals it, and the tab is its page's only door.
+  const mastermindPreview = usePreviewFlag(PREVIEW_MASTERMIND)
   // People exists only while the gateway reports the Shared Crew preview
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
   const sharedCrew = useSharedCrewCapabilities()
@@ -259,6 +265,7 @@ export default function SettingsPage() {
   const allTabs = buildTabs().filter(t =>
     (t.key !== 'webhooks' || webhooksPreview)
     && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
+    && (t.key !== 'mastermind' || mastermindPreview)
     && (t.key !== 'people' || sharedCrewPreview),
   )
   // Review nudge: dot on the Security entry while a settings file edited outside
@@ -320,6 +327,7 @@ export default function SettingsPage() {
           </Suspense>
         )}
         {tab === 'chat' && <ChatPanel basePath={SETTINGS_BASE_PATH} />}
+        {tab === 'mastermind' && mastermindPreview && <MastermindPanel />}
         {tab === 'display' && <DisplayPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'voice' && <VoicePanel />}
         {tab === 'notifications' && <NotificationsPanel basePath={SETTINGS_BASE_PATH} />}

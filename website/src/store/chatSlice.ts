@@ -21,6 +21,7 @@ import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
 import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
 import { isChatPageSurface } from '../utils/channelOrigin'
+import { isMastermindLockedIn, isMastermindProtected } from '../lib/mastermind'
 import { isNoteRow } from '../lib/noteContract'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
@@ -650,6 +651,14 @@ export const deleteSlot = createAsyncThunk<
     // null, not the localized label: the notice outlives a language switch.
     const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
     const incarnation = deletedSlot?.incarnation
+    // The enabled Mastermind session is never closed from the client: every close
+    // path (the row, Cmd+W, a menu, a bulk close) lands here, so refuse it BEFORE
+    // the optimistic removal -- the row never flashes out and back -- and say
+    // where it is turned off instead. The backend refuses it too (409).
+    if (isMastermindLockedIn(root, key)) {
+      if (!discard) dispatch({ type: 'chat/setCloseRefused', payload: { key, title: refusedTitle, reason: 'mastermind' } })
+      throw new Error('mastermind_protected')
+    }
     // Use the surface key (forward-compat alias for `mode`) so a future
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
@@ -777,7 +786,7 @@ export const deleteSlot = createAsyncThunk<
       } else {
         dispatch({
           type: 'chat/setCloseRefused',
-          payload: { key, title: refusedTitle, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
+          payload: { key, title: refusedTitle, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : isMastermindProtected(err) ? 'mastermind' : 'failed' },
         })
       }
       throw new Error('save failed')
