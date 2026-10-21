@@ -637,7 +637,7 @@ by an unrelated harness's advertised ids.
 
 ## The one allowed concrete fallback
 
-The `claude_code` seam's `cc_model` (`_BACKGROUND_CC_MODEL` in `agent.py`) is the one
+The `claude_code` seam's `cc_model` (`_BACKGROUND_CC_MODEL` in `agent_parts/spec_build.py`) is the one
 allowed concrete fallback, because that backend cannot resolve `"auto"`. Keep it off
 the default path.
 

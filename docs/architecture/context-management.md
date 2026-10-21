@@ -348,7 +348,7 @@ re-adds, once:
    briefing and permanent rules back, not the pre-compaction copy;
 5. `[AGENT SYSTEM PROMPT]` — the managed spec prompt is a stub pointing at this
    block, so a compaction that drops it leaves the session with no contract.
-   The stub (`agent.py` → `_NATIVE_PROMPT_STUB`) is also the system-role text
+   The stub (`agent_parts/spec_build.py` → `_NATIVE_PROMPT_STUB`) is also the system-role text
    that tells the model the block is gateway-written, arrives inside the first
    user turn and again here, and is not a prompt injection — without it, the
    harness's own rule against identity claims in non-system content applies to

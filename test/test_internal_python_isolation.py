@@ -19,7 +19,7 @@ _SRC_ROOT = _REPO_ROOT / "src" / "kiro_crew"
 # Keeping the inventory explicit makes a new process boundary a reviewed change.
 _INTERNAL_PYTHON_SPAWN_SITES = (
     ("platform_compat_runtime.py", "reexec_python_module"),
-    ("agent.py", "_kirocrew_mcp_invocation"),
+    ("agent_parts/kirocrew_launcher.py", "_kirocrew_mcp_invocation"),
     ("apps/backend_runtime/provisioning.py", "_provision_app_deps_locked"),
     ("apps/backend.py", "_start_app_backend_body"),
     ("apps/bridges_mcp.py", "_pin_host_cli_command"),

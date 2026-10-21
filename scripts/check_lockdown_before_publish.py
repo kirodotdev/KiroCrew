@@ -103,7 +103,8 @@ GROUP_OTHER_BITS = 0o077
 #: exact defect (see ``workflows/store.py`` before this checker landed).
 WRITE_DESTINATION_ARG = {
     "atomic_write": 0,
-    # This repo's private JSON writer (agent.py): mkstemp + write + rename, so
+    # This repo's private JSON writer (agent_parts/spec_files.py, reached as
+    # ``kiro_crew.agent._atomic_json_write``): mkstemp + write + rename, so
     # the payload lands at the FINAL path when it returns. It is not
     # ``atomic_write`` and takes no ``restrict_to_owner``, so a lockdown after it
     # is the #5307 shape -- and it is the single most widely used writer in the

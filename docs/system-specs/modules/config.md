@@ -2743,7 +2743,7 @@ defer, rather than reading as applied; a successful rebuild also re-runs
 `SessionManager.refresh_defaults` so warm-pool providers minted from the old spec
 are reconciled (`dashboard/server_runtime/config_watch.py` `_apply_default_model`).
 The `wrote=False` refusal is one case of a general ownership guard: every write through
-the shared-spec primitive (`agent.py` `_atomic_json_write`) is refused with
+the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
 derived worker, conductor and service-agent specs and the read-only side spec all take
 that refusal, so the worker's stale mirror raises `DerivedSpecStale` rather than
@@ -2886,7 +2886,7 @@ happens to notice — which is the bug class this closes.
 | `KiroCrewConfig.save()` | `config/loader_config.py` |
 | `_persist_config_migration` | `config/loader_writeback.py` — a boot migration is a config write like any other |
 | `refresh_config_meta_stamp` | `config/loader_document.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
-| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`. A safety net rather than a route: no handler writes `config.json` through it — the per-channel savers (`messaging._LockedSectionWrite`), the STT PUT and the MCP gateway-enable toggle all go through `update_config_locked`, and `TestTheAtomicJsonWriteConfigFamilyIsRatcheted` pins that population to an empty baseline so a new saver cannot reopen it |
+| `_atomic_json_write` | `agent_parts/spec_files.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`. A safety net rather than a route: no handler writes `config.json` through it — the per-channel savers (`messaging._LockedSectionWrite`), the STT PUT and the MCP gateway-enable toggle all go through `update_config_locked`, and `TestTheAtomicJsonWriteConfigFamilyIsRatcheted` pins that population to an empty baseline so a new saver cannot reopen it |
 
 A handler that must answer only after the new value is in force calls
 `ConfigWatch.refresh_now()` (`handlers/core_config_view.py::_hot_apply_after_write`), which

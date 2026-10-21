@@ -413,7 +413,7 @@ def _get_agent_names() -> list[str]:
             # e.g. a macOS AppleDouble ._foo.json stub in ~/.kiro/agents.
             # Catching it here keeps a non-UTF-8 file from crashing the
             # `/kirocrew channels` handler / channel-modal refresh task before
-            # it opens. Mirrors agent.py's _load_json.
+            # it opens. Mirrors agent_parts/spec_build.py's _load_json.
             name = None
         names.append(name or f.stem)
     return sorted(names)

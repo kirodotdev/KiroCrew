@@ -57,8 +57,8 @@ _SPEC_REJECTION_MARKER = "is invalid"
 def _default_spec_lister() -> list[tuple[str, Path]]:
     """Production enumerator for :class:`KiroPrerequisiteService`'s spec probe.
 
-    Delegates so path resolution and the ownership guard stay in ``agent.py``
-    (see ``present_required_agent_specs``).
+    Delegates so path resolution and the ownership guard stay behind ``kiro_crew.agent``
+    (see ``present_required_agent_specs`` in ``agent_parts/spec_files.py``).
     """
     from kiro_crew.agent import present_required_agent_specs  # circular import
 

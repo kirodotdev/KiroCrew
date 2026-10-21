@@ -1037,8 +1037,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("session_mcp_servers", "unknown"),
         ("spec_hooks_project_agent", "unknown"),
     ],
-    "kiro_crew/agent.py": [
-        ("agent_spec_lookup", "unknown"),
+    "kiro_crew/agent_parts/spec_lookup.py": [("agent_spec_lookup", "unknown")],
+    "kiro_crew/agent_parts/spec_upgrades.py": [
         ("migrate_agent_specs", "unknown"),
         ("migrate_relocated_skill_uris", "unknown"),
     ],
@@ -1195,14 +1195,14 @@ _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 # The file scan under the name scan: most surfaces want the FILES, so they reach
-# the refusal directly and must name themselves the same way. ``agent.py`` holds
+# the refusal directly and must name themselves the same way. ``agent_parts/spec_lookup.py`` holds
 # two lookups with different user-facing meanings (resolving a markdown spec for
 # an agent, and deciding whether a checkout shadows a managed agent), so they are
 # labelled apart. The in-module hop inside ``project_agent_names`` is pinned as
 # forwarding: a literal there would erase the surface that asked.
 _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/session_mcp.py": [("session_mcp_project_agent", "unknown")],
-    "kiro_crew/agent.py": [
+    "kiro_crew/agent_parts/spec_lookup.py": [
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],

@@ -938,7 +938,7 @@ def rewrite_agents(
         # ``agent_name = ""`` and every wrapped stub carries ``--agent ""`` —
         # collapsing PoolKey identity across all such agents (cross-agent
         # backend-bucket sharing / isolation loss). Fall back to the file stem,
-        # mirroring ``agent.py`` (``data.get("name") or spec_path.stem``); any
+        # mirroring ``agent_parts/spec_upgrades.py`` (``data.get("name") or spec_path.stem``); any
         # stable non-empty identifier prevents the collapse.
         if not spec.get("name"):
             spec["name"] = path.stem

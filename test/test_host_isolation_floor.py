@@ -733,7 +733,11 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
         write guard is the one caller whose question is genuinely about the
         environment.
         """
-        allowed = {"kiro_crew/config/paths.py", "kiro_crew/agent.py"}
+        allowed = {
+            "kiro_crew/config/paths.py",
+            "kiro_crew/agent.py",
+            "kiro_crew/agent_parts/shared_home.py",
+        }
         callers = set()
         for path in sorted(_SRC.rglob("*.py")):
             if "_vendor" in path.parts:

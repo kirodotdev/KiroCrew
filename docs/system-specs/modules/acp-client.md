@@ -1329,7 +1329,7 @@ Data-driven — no code changes needed:
 - `~/.kiro/crew/agent.json` — user overrides (optional)
 - Run `kirocrew setup --agent-only` after editing
 
-There is no checked-in `agents/` directory. `agent.py` reads
+There is no checked-in `agents/` directory. `agent_parts/spec_build.py` reads
 `<KIROCREW_PROJECT_DIR>/agents/defaults.json` and `prompt.md` only when that variable
 points at a project holding them; otherwise it uses the bundled `src/kiro_crew/config/`.
 
@@ -1350,7 +1350,7 @@ relying on a skill pointer for those controls.
 
 Default model: `auto`. Default tools: `execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `tool_search`, `@kirocrew-cron`, `@kirocrew-core`, `@kirocrew-computer`, `@kirocrew-guide`.
 
-**Agent compatibility repair** (`agent.py`): `repair_agent_configs()` is the single
+**Agent compatibility repair** (`agent_parts/spec_upgrades.py`): `repair_agent_configs()` is the single
 entry point. It runs as the last step of every `rebuild_agent_config()`, which is
 event-driven (setup and install, a provider or model change, the MCP and connection
 handlers, a governance ceiling refresh); there is no timer. Its

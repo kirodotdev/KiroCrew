@@ -1723,7 +1723,7 @@ with it), so it is a trust-scale indicator, not a live metric. Absence means
 
 Writers: `apps/manager_builtins.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
 `_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
-`agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
+`agent_parts/kirocrew_launcher.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
 `apps/registry_pipeline/catalog.py::_apply_trust_fields`;
 consumers: `website/src/pages/apps/useAppsData.ts` (`pickFeatured`),
 `website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).

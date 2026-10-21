@@ -1847,7 +1847,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "context_assembly/session_start.py",
-        "agent.py",
+        "agent_parts/spec_build.py",
         # Capture-side, not egress: redacts a Slack thread's first message as it
         # is READ from Slack, before the text is kept for the model's fenced
         # thread-context block and for the transcript's display-only notice row.

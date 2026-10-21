@@ -570,12 +570,13 @@ class TestBothWritePointsConsultTheCeiling:
                 f"{mod.__name__} re-declares the builtin tool→scope map; it belongs to "
                 f"platform/governance.py (see BUILTIN_TOOL_SCOPES)"
             )
-        # agent.py's writers are composed from the agent_materialization modules:
-        # none of them may carry the map, and the one predicate they all consult
+        # agent.py's writers are composed from the agent_parts and agent_materialization
+        # modules: none of them may carry the map, and the one predicate they all consult
         # is the shared one.
         agent_parts = [agent] + [
-            importlib.import_module(f"{agent_materialization.__name__}.{info.name}")
-            for info in pkgutil.iter_modules(agent_materialization.__path__)
+            importlib.import_module(f"{package.__name__}.{info.name}")
+            for package in (agent_materialization, importlib.import_module("kiro_crew.agent_parts"))
+            for info in pkgutil.iter_modules(package.__path__)
         ]
         assert len(agent_parts) > 1, "the agent_materialization modules were not found"
         for mod in agent_parts:
