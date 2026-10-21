@@ -11,6 +11,7 @@ import { useAppDispatch, useAppSelector, type RootState } from '../../store'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../components/ui/dropdown-menu'
 import { ContextMenuStableTrigger, ContextMenuContent } from '../../components/ui/context-menu'
 import { offlineProps } from '../../utils/offline'
+import { sessionRefBlockReason } from '../../utils/sessionRefs'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
 import { slotIsRemoteBound } from '../../store/dashboardSlice'
@@ -228,6 +229,17 @@ interface SessionRowActions {
   openElsewhere: (path: string) => void
   /** The conductor lane's chevron: open or close the sessions this row opened. */
   toggleConductor: (identity: string) => void
+  /** Stage a reference to a session in the active chat's composer — the same
+   *  callback the drag-into-the-composer drop fires. The row menu's "Reference
+   *  in chat" item calls it for THIS row's session after the row has checked
+   *  `sessionRefBlockReason`; `canStageSessionRef` gates whether a composer
+   *  exists to stage into at all. Undefined on a surface with no chat pane
+   *  (the embed sessions list), which hides the item. */
+  onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
+  /** Whether a composer exists to stage a session reference into (not split
+   *  view, an active slot present). The row combines it with the per-row block
+   *  reason to decide whether to offer "Reference in chat". */
+  canStageSessionRef?: boolean
 }
 
 interface SessionRowProps {
@@ -248,7 +260,7 @@ interface SessionRowProps {
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isOut, isPinned, isUnread, isRunning,
+    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
@@ -300,7 +312,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
     slotRenameEnterRef,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
-    openElsewhere, toggleConductor,
+    openElsewhere, toggleConductor, onDropSessionRef, canStageSessionRef,
   } = actions
   // A LOCAL row whose surface this page does not render goes where it lives: click
   // and Enter land here instead of `switchSlot`, and every local-only affordance
@@ -1055,7 +1067,33 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // Removing an adopted remote-crew copy is reversible (the session stays on
       // its peer), so its menu item renders neutral, not destructive-red.
       closeNeutral: releaseLocally,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
+      // "Reference in chat": stage a link to THIS session in the active chat's
+      // composer, the discoverable form of the drag gesture. Offered only when a
+      // composer exists (`canStageSessionRef`) and this session may be referenced
+      // into it — `sessionRefBlockReason` refuses an incognito/temporary target
+      // and the already-active session (a self-reference). A foreign (peer) row's
+      // slot is owned elsewhere and stages nothing, so it is withheld there too.
+      // `crewWindowCovers` withholds it on EVERY row while a crew window covers
+      // the pane: the active composer is then hidden under an opaque cover, so a
+      // staged ref would land where the user cannot see it (the no-visible-
+      // composer case `canStageSessionRef` guards, which stays true here because
+      // activeSlot is still set). Re-decided at click time from the SAME pure
+      // function the drop zone uses, so the offer and the handler cannot drift.
+      // `isSidebarActiveSlot` is the raw key===activeSlot test (a per-row view
+      // field), NOT `isActive`: a crew window over the pane makes `isActive`
+      // false while the session is still active, which would otherwise offer a
+      // self-reference the drop zone refuses. Carried in the view, not
+      // `rowActions`, so a chat switch re-renders only the rows whose answer
+      // flips. Fires the same callback the drop does, with the row's snapshot.
+      onReferenceInChat: onDropSessionRef && canStageSessionRef && !foreignRow && !crewWindowCovers
+        && !sessionRefBlockReason({ key: rowKey, activeSlot: isSidebarActiveSlot ? rowKey : null, memoryMode: s.memory_mode })
+        ? () => onDropSessionRef({
+            key: rowKey,
+            title: rowTitle && rowTitle !== rowKey ? rowTitle : rowKey,
+            messages: s.messages,
+          })
+        : undefined,
+    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel, onDropSessionRef, canStageSessionRef, foreignRow, crewWindowCovers, isSidebarActiveSlot, s.memory_mode, s.messages])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       // In flow, not absolute: the phone ⋮ is always drawn, so the content
       // column must end before it. Absolutely placed, the column ran to the

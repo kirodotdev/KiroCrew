@@ -258,6 +258,22 @@ export interface SessionRowView {
   /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
   folderConductor: boolean
   isActive: boolean
+  /** Whether this row's own slot IS the sidebar's active slot — the raw
+   *  `key === activeSlot` test, independent of the crew-window logic `isActive`
+   *  folds in (a crew window over the pane makes `isActive` false while the
+   *  session is still the active one). The row menu's "Reference in chat" reads
+   *  it to refuse a self-reference, matching what the drop handler refuses. A
+   *  per-row view field so a chat switch re-renders only the two rows whose
+   *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
+   *  would cause). */
+  isSidebarActiveSlot: boolean
+  /** Whether a crew window is open over the chat pane. While it is, the active
+   *  session's composer is hidden under an opaque cover (`ChatPaneChrome`), so a
+   *  staged reference would land on a composer the user cannot see — the same
+   *  "no visible composer to land in" case `canStageSessionRef` guards. "Reference
+   *  in chat" is withheld on EVERY row while it is true, not just the active one.
+   *  Scene-global, carried per-row so the menu's availability tracks it. */
+  crewWindowCovers: boolean
   isOut: boolean
   isPinned: boolean
   isUnread: boolean
@@ -919,6 +935,14 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
     isActive: isActiveIn(scene, slot),
+    // Raw comparison, NOT isActiveIn: the self-reference refusal must hold even
+    // when a crew window covers the pane (where isActiveIn is false but the
+    // session is still active). Matches the key the drop handler refuses against.
+    isSidebarActiveSlot: local !== null && scene.activeSlot === local,
+    // A crew window covers the chat pane, so no composer is visible to stage a
+    // reference into — withhold "Reference in chat" on every row, same reason as
+    // the no-active-slot case.
+    crewWindowCovers: scene.crewWindow !== null,
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
     isUnread: local !== null && model.unread.has(local),
@@ -960,7 +984,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true,
-  isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  isActive: true, isSidebarActiveSlot: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,

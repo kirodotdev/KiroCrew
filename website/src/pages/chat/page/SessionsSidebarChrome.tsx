@@ -287,6 +287,7 @@ export default function SessionsSidebarChrome({
           // the chip — see canStageSessionRef for why this is a named predicate.
           chatDropTarget={canStageSessionRef ? chatPaneEl : null}
           onDropSessionRef={stageSessionRef}
+          canStageSessionRef={canStageSessionRef}
         />
         )
         return isMobile && mobileNavRail ? (

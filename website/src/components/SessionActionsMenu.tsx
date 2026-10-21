@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -21,6 +21,7 @@ import { selectSlotSubagentsActive } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { useCopyAck } from './FilePathMenu'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -62,6 +63,19 @@ export interface SessionActionsMenuProps {
    * hosts the fork button.
    */
   onDuplicate?: () => void
+  /**
+   * Stage a reference to THIS session in the active chat's composer — the
+   * discoverable form of the drag-a-session-into-the-composer gesture, matching
+   * exactly what that drop stages (a link, resolved by the agent on demand).
+   *
+   * Passed only by the sidebar row's menu, where "this session" is a DIFFERENT
+   * session than the open one. The header menu omits it: it acts on the active
+   * session itself, which `sessionRefBlockReason` refuses as a self-reference.
+   * Omitted (or undefined) means the row cannot stage one right now — no
+   * composer to land in, or an incognito/temporary/self target — and the item
+   * is not rendered, the same self-hiding other conditional rows use.
+   */
+  onReferenceInChat?: () => void
   /** A second, muted line under Close that says what the press reaches. It wraps,
    *  so on a phone, where this menu is the only close, nothing is cut off. */
   closeHint?: string
@@ -135,12 +149,12 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Reference in chat (sidebar rows only) · Copy link · Copy session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -175,6 +189,26 @@ export default function SessionActionsMenu({
   // and this is the only place that disagreement is said.
   const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
+  // "Copy session ID" acknowledges a successful copy in place through the
+  // shared copy-ack hook (the same one the file-path menu's Copy path uses):
+  // the item reads "Copied" with a check, then returns to its label. A stale
+  // resolution from an earlier press is dropped by the hook's attempt guard.
+  const { copyStatus: idCopyStatus, copyPath: copySessionId } = useCopyAck(slotKey)
+  // A refused copy (both clipboard layers) is said through ErrorNotice plus its
+  // menu hand-off, not only by the transient label. It stays on screen through
+  // retries and past the hook's acknowledgment window, and clears only once a
+  // copy succeeds: a retry that fails again re-sets the same `failed` status,
+  // so clearing before each press would hide the second failure.
+  const [copyIdFailed, setCopyIdFailed] = React.useState(false)
+  const copyIdErrorId = React.useId()
+  React.useEffect(() => {
+    if (idCopyStatus === 'failed') setCopyIdFailed(true)
+    else if (idCopyStatus === 'copied') setCopyIdFailed(false)
+  }, [idCopyStatus])
+  const onCopySessionId = () => { void copySessionId() }
+  const copyIdLabel = idCopyStatus === 'copied'
+    ? i18nT('components.sessionActionsMenu.copy_session_id_copied')
+    : i18nT('components.sessionActionsMenu.copy_session_id')
   const isRunning = !!slot?.running
   // The move-to submenu lists chat folders in the order the sidebar draws them.
   // A failed read (no body to draw from) is said once per screen, by the
@@ -394,9 +428,59 @@ export default function SessionActionsMenu({
           <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ),
+      // Stage a reference to this session in the open chat's composer — the
+      // menu form of dragging the row into the composer. Self-hiding: the
+      // caller passes the handler only when a reference can be staged right now
+      // (a composer exists, and this is not an incognito/temporary/self target).
+      onReferenceInChat && (
+        <Item key="reference-in-chat" onSelect={onReferenceInChat}>
+          <MessagesSquare size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reference_in_chat')}
+        </Item>
+      ),
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
+      // The bare session key (the `sid` hidden inside Copy link's URL), for
+      // pasting into a prompt or an issue. Its own `#` glyph, not another Copy
+      // glyph: the copy glyph already means Duplicate on this row and Copy text
+      // in the message footer, so a third overload would read as either.
+      <Item
+        key="copy-id"
+        // Keep the menu open on select so the acknowledgment is not taken off
+        // screen the instant it is earned, and a failure notice renders in
+        // place with its hand-off reachable; the label is announced politely.
+        onSelect={(e?: Event) => { e?.preventDefault?.(); onCopySessionId() }}
+      >
+        {idCopyStatus === 'copied'
+          ? <Check size={13} className="shrink-0 text-ok" aria-hidden="true" />
+          : <Hash size={13} className="shrink-0 text-muted" />}
+        {' '}
+        <span aria-live="polite" data-testid="session-menu-copy-id-label">{copyIdLabel}</span>
+      </Item>,
+      // Both clipboard layers refused, so the key never reached the clipboard:
+      // say so through ErrorNotice (the rule's in-menu form: a passive notice
+      // plus a hand-off item the roving focus reaches).
+      copyIdFailed && (
+        <React.Fragment key="copy-id-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={copyIdErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={i18nT('components.sessionActionsMenu.copy_session_id_failed')}
+              message={i18nT('components.sessionActionsMenu.copy_session_id_failed_detail')}
+              messagePlacement="below"
+              testId="session-menu-copy-id-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={i18nT('components.sessionActionsMenu.copy_session_id_failed_detail')}
+            describedBy={copyIdErrorId}
+          />
+          <Separator />
+        </React.Fragment>
+      ),
       // Copy this session to another Kiro Crew instance. Sits in nav/access
       // rather than the tab-modifier group above because it changes nothing
       // about this tab — the peer gets its own copy under its own key.
