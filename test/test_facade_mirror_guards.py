@@ -28,6 +28,7 @@ import functools
 import importlib
 import importlib.util
 import pkgutil
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
@@ -115,13 +116,41 @@ def manifest_mismatches(index: _facade_mirror.MirrorIndex, sources: Mapping[str,
     return problems
 
 
+def _import_package(owner: str) -> str:
+    """The package *owner*'s relative imports resolve against: itself if a package."""
+    module = sys.modules.get(owner)
+    spec = getattr(module, "__spec__", None)
+    if spec is not None and spec.submodule_search_locations is not None:
+        return owner
+    return owner.rpartition(".")[0]
+
+
+def _imported_module(node: ast.ImportFrom, package: str) -> str | None:
+    """The dotted module *node* imports from, its relative dots resolved against *package*.
+
+    ``None`` for a relative import that climbs past the top-level package, which fails
+    when it runs and so imports nothing.
+    """
+    if not node.level:
+        return node.module
+    try:
+        return importlib.util.resolve_name("." * node.level + (node.module or ""), package)
+    except ImportError:
+        return None
+
+
 def owner_imports_of_facade(
     index: _facade_mirror.MirrorIndex, sources: Mapping[str, str]
 ) -> list[str]:
-    """The owners whose source imports their facade outside ``if TYPE_CHECKING:``."""
+    """The owners whose source imports their facade outside ``if TYPE_CHECKING:``.
+
+    A relative import counts the same as an absolute one: its module is resolved against
+    the owner's own package before it is compared.
+    """
     head, _, leaf = index.facade.rpartition(".")
     found = set()
     for owner in index.owners:
+        package = _import_package(owner)
         tree = ast.parse(sources[owner])
         typing_only = {
             id(sub)
@@ -134,8 +163,8 @@ def owner_imports_of_facade(
             if id(node) in typing_only:
                 continue  # an annotation-only import, as of a class the facade still holds
             if isinstance(node, ast.ImportFrom) and (
-                node.module == index.facade
-                or (node.module == head and leaf in {alias.name for alias in node.names})
+                (module := _imported_module(node, package)) == index.facade
+                or (module == head and leaf in {alias.name for alias in node.names})
             ):
                 found.add(owner)
             elif isinstance(node, ast.Import) and index.facade in {a.name for a in node.names}:
@@ -368,6 +397,59 @@ def test_the_contract_checks_measure_the_synthetic_family_both_ways(family: Fami
         mp.setitem(vars(family.facade), _facade_mirror.INDEX_ATTRIBUTE, blind)
         missed = patch_reach_failures(family.facade, ["LIMIT"])
     assert missed == [f"LIMIT: the patch missed ['{family.high.__name__}']"]
+
+
+@pytest.mark.parametrize(
+    ("statement", "refused"),
+    [
+        ("from . import {leaf}", True),
+        ("from . import high, {leaf} as f", True),
+        ("from .{leaf} import ONLY_HERE", True),
+        ("def f():\n    from .{leaf} import ONLY_HERE", True),
+        ("from . import high", False),
+        ("from .high import high_dumps", False),
+        ("from .{leaf}_parts import ONLY_HERE", False),
+        ("from ..... import {leaf}", False),
+    ],
+    ids=[
+        "dot-import-leaf",
+        "dot-import-among-names",
+        "dot-leaf-module",
+        "dot-leaf-in-function",
+        "dot-import-sibling",
+        "dot-sibling-module",
+        "dot-lookalike-module",
+        "past-top-level",
+    ],
+)
+def test_an_owner_relative_import_of_its_facade_is_refused(
+    family: Family, statement: str, refused: bool
+) -> None:
+    low, facade = family.low.__name__, family.facade.__name__
+    line = statement.format(leaf=facade.rpartition(".")[2])
+    importing = dict(family.sources, **{low: family.sources[low] + f"\n{line}\n"})
+    assert owner_imports_of_facade(family.index, importing) == ([low] if refused else [])
+    annotating = "\nif TYPE_CHECKING:\n    " + line.replace("\n", "\n    ") + "\n"
+    typing_only = dict(family.sources, **{low: family.sources[low] + annotating})
+    assert owner_imports_of_facade(family.index, typing_only) == []
+
+
+def test_a_relative_import_resolves_against_the_owner_own_package(family: Family) -> None:
+    head, _, leaf = family.facade.__name__.rpartition(".")
+    nested = f"{head}.parts.low"
+    climbing = {nested: f"from .. import {leaf}\n"}
+    deep = dataclasses.replace(family.index, owners=(nested,))
+    assert _import_package(nested) == f"{head}.parts"
+    assert owner_imports_of_facade(deep, climbing) == [nested]
+    assert owner_imports_of_facade(deep, {nested: f"from . import {leaf}\n"}) == []
+    with pytest.MonkeyPatch.context() as mp:
+        # An owner that is a package resolves one dot against itself, not its parent.
+        spec = importlib.util.spec_from_loader(nested, loader=None, is_package=True)
+        assert spec is not None
+        mp.setitem(sys.modules, nested, importlib.util.module_from_spec(spec))
+        assert _import_package(nested) == nested
+        assert owner_imports_of_facade(deep, climbing) == []
+        assert owner_imports_of_facade(deep, {nested: f"from ... import {leaf}\n"}) == [nested]
 
 
 def test_every_mirrored_facade_is_installed_and_holds_one_object_per_name() -> None:
