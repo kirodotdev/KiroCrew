@@ -7123,7 +7123,7 @@
       "loopback_slow_hint": "時間がかかっていますか？サインインページがこのコンピューターに到達できない場合は、コードに切り替えてください。どの端末からでも使えます。",
       "loopback_fell_back": "サインインの結果がこのコンピューターに直接戻れなかったため、代わりにコードを表示しています。",
       "cancel_unsettled": "サインインをキャンセルできませんでした。サインインはまだ有効です。同じ項目をもう一度押して再試行してください。",
-      "card_intro": "KAS (kiro-agent) バックエンドのみが使用します。そのエージェントはこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
+      "card_intro": "Kiro Agent バックエンドのみが使用します。そのエージェントはこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
       "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
     },
@@ -13014,7 +13014,7 @@
         "experimental": "実験的",
         "in_use": "使用中。",
         "install_check_failed": "このマシンにインストールされているか確認できませんでした。",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "設定を読み込んでいます…",
         "mcp_concern_auto_approve": "エージェント設定ファイルが定める自動承認ルール — {{name}} はそれを適用しません",

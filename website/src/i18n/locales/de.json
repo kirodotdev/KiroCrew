@@ -7247,7 +7247,7 @@
       "loopback_slow_hint": "Dauert es lange? Wenn die Anmeldeseite diesen Computer nicht erreicht, wechsle zu einem Code — der funktioniert von jedem Gerät.",
       "loopback_fell_back": "Die Anmeldung konnte nicht direkt auf diesen Computer zurückkommen, deshalb gibt es stattdessen einen Code.",
       "cancel_unsettled": "Die Anmeldung konnte nicht abgebrochen werden. Sie läuft noch – wähle dieselbe Option erneut, um es noch einmal zu versuchen.",
-      "card_intro": "Wird nur vom KAS-Backend (kiro-agent) verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
+      "card_intro": "Wird nur vom Backend Kiro Agent verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
       "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
     },
@@ -13232,7 +13232,7 @@
         "experimental": "Experimentell",
         "in_use": "In Verwendung.",
         "install_check_failed": "Es konnte nicht geprüft werden, ob dies auf diesem Rechner installiert ist.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Konfiguration wird geladen…",
         "mcp_concern_auto_approve": "Die Auto-Freigabe-Regeln, die deine Agenten-Konfigurationsdatei setzt — {{name}} wendet sie nicht an",

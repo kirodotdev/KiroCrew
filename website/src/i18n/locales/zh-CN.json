@@ -7123,7 +7123,7 @@
       "loopback_slow_hint": "等了很久？如果登录页无法连回这台电脑，请改用验证码——它在任何设备上都可用。",
       "loopback_fell_back": "登录结果无法直接回到这台电脑，所以改为使用验证码。",
       "cancel_unsettled": "无法取消登录。登录仍在进行中，请再次点击同一选项重试。",
-      "card_intro": "仅供 KAS (kiro-agent) 后端使用：其 Agent 将以这个 Kiro 账号运行。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
+      "card_intro": "仅供 Kiro Agent 后端使用：其 Agent 将以这个 Kiro 账号运行。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
       "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
     },
@@ -13014,7 +13014,7 @@
         "experimental": "实验性",
         "in_use": "正在使用。",
         "install_check_failed": "无法检查本机是否已安装。",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "正在加载配置…",
         "mcp_concern_auto_approve": "代理配置文件设定的自动批准规则 — {{name}} 不会套用它们",

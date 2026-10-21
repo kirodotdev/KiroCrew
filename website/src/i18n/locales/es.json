@@ -7371,7 +7371,7 @@
       "loopback_slow_hint": "¿Tarda demasiado? Si la página de inicio de sesión no puede llegar a este equipo, cambia a un código: funciona desde cualquier dispositivo.",
       "loopback_fell_back": "El inicio de sesión no pudo volver directamente a este equipo, así que aquí tienes un código.",
       "cancel_unsettled": "No se pudo cancelar el inicio de sesión. Sigue activo: pulsa la misma opción otra vez para reintentar.",
-      "card_intro": "Solo lo usa el backend KAS (kiro-agent): sus agentes se ejecutan con esta cuenta de Kiro. Kiro CLI conserva su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
+      "card_intro": "Solo lo usa el backend Kiro Agent: sus agentes se ejecutan con esta cuenta de Kiro. Kiro CLI conserva su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
       "previous_sign_in_not_removed": "Sesión iniciada, pero no se pudo eliminar el inicio de sesión anterior",
       "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí."
     },
@@ -13450,7 +13450,7 @@
         "experimental": "Experimental",
         "in_use": "En uso.",
         "install_check_failed": "No se pudo comprobar si esto está instalado en esta máquina.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Cargando la configuración…",
         "mcp_concern_auto_approve": "Las reglas de aprobación automática que define tu archivo de configuración del agente — {{name}} no las aplica",

@@ -46,8 +46,8 @@ const signedOut = {
 
 // Each scene checks one picker row and waits for the string the frame is evidence for.
 const shots = [
-  { name: 'kas-core-card', theme: 'light', pick: 'KAS (kiro-agent)', ready: 'supports 7 of 7 features' },
-  { name: 'kas-details-open', theme: 'light', pick: 'KAS (kiro-agent)', ready: 'supports 7 of 7 features', open: true },
+  { name: 'kas-core-card', theme: 'light', pick: 'Kiro Agent', ready: 'supports 7 of 7 features' },
+  { name: 'kas-details-open', theme: 'light', pick: 'Kiro Agent', ready: 'supports 7 of 7 features', open: true },
   { name: 'kiro-cli-details-open', theme: 'dark', pick: 'Kiro CLI', ready: 'supports 6 of 7 features', open: true },
   { name: 'codex-core-card', theme: 'light', pick: 'Codex', ready: 'supports 6 of 7 features' },
 ]

@@ -7371,7 +7371,7 @@
       "loopback_slow_hint": "C'est long ? Si la page de connexion n'arrive pas à joindre cet ordinateur, passe à un code : ça marche depuis n'importe quel appareil.",
       "loopback_fell_back": "La connexion n'a pas pu revenir directement sur cet ordinateur, voici donc un code à la place.",
       "cancel_unsettled": "Impossible d’annuler la connexion. Elle est toujours en cours : appuyez de nouveau sur la même option pour réessayer.",
-      "card_intro": "Utilisé uniquement par le backend KAS (kiro-agent) : ses agents s'exécutent avec ce compte Kiro. Kiro CLI conserve sa propre connexion kiro-cli ; se connecter ici ne la modifie pas.",
+      "card_intro": "Utilisé uniquement par le backend Kiro Agent : ses agents s'exécutent avec ce compte Kiro. Kiro CLI conserve sa propre connexion kiro-cli ; se connecter ici ne la modifie pas.",
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
       "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."
     },
@@ -13450,7 +13450,7 @@
         "experimental": "Expérimental",
         "in_use": "Utilisé.",
         "install_check_failed": "Impossible de vérifier si ceci est installé sur cette machine.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Chargement de la configuration…",
         "mcp_concern_auto_approve": "Les règles d'approbation automatique définies par votre fichier de configuration d'agent — {{name}} ne les applique pas",

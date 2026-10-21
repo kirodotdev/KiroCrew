@@ -7371,7 +7371,7 @@
       "loopback_slow_hint": "Ci vuole molto? Se la pagina di accesso non riesce a raggiungere questo computer, passa a un codice: funziona da qualsiasi dispositivo.",
       "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice.",
       "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare.",
-      "card_intro": "Usato solo dal backend KAS (kiro-agent): i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
+      "card_intro": "Usato solo dal backend Kiro Agent: i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
       "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
     },
@@ -13450,7 +13450,7 @@
         "experimental": "Sperimentale",
         "in_use": "In uso.",
         "install_check_failed": "Non è stato possibile verificare se è installato su questa macchina.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Caricamento della configurazione…",
         "mcp_concern_auto_approve": "Le regole di approvazione automatica che il tuo file di configurazione dell'agente imposta — {{name}} non le applica",

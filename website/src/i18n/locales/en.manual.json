@@ -2631,7 +2631,7 @@
       "loopback_slow_hint": "Taking a while? If the sign-in page can't reach this computer, switch to a code — it works from any device.",
       "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead.",
       "cancel_unsettled": "Couldn’t cancel the sign-in. It is still active — press the same option again to retry.",
-      "card_intro": "Used only by the KAS (kiro-agent) backend: its agents run as this Kiro account. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
+      "card_intro": "Used only by the Kiro Agent backend: its agents run as this Kiro account. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
       "previous_sign_in_not_removed": "Signed in, but the previous sign-in could not be removed",
       "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here."
     },

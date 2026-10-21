@@ -7338,7 +7338,7 @@
         "experimental": "Experimental",
         "in_use": "In use.",
         "install_check_failed": "Could not check whether this is installed on this machine.",
-        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Loading configuration…",
         "mcp_concern_auto_approve": "The auto-approve rules your agent config file sets — {{name}} does not apply them",

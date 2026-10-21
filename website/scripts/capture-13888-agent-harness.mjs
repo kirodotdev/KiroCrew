@@ -82,7 +82,7 @@ const shots = [
   { name: 'settings-agent-harness', theme: 'light', current: 'claude' },
   { name: 'settings-agent-harness-dark', theme: 'dark', current: 'claude' },
   { name: 'settings-agent-harness-codex-missing', theme: 'light', current: 'claude', pick: 'codex' },
-  { name: 'settings-agent-harness-kas-sign-in', theme: 'dark', current: 'claude', pick: 'KAS (kiro-agent)' },
+  { name: 'settings-agent-harness-kas-sign-in', theme: 'dark', current: 'claude', pick: 'Kiro Agent' },
   { name: 'settings-agent-harness-restart-needed', theme: 'light', current: 'claude', pick: 'pi' },
   // KAS users read token expiry on Overview, so it points them at the new card.
   { name: 'overview-kiro-sign-in-moved', theme: 'dark', current: 'kas', path: '/overview', ready: 'kiro-sign-in-moved', crop: true },

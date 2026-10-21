@@ -34,7 +34,7 @@ export interface AgentItem {
    *  (see `rowMemoryTag`); never rendered. */
   memory_store?: string
   /** Set by `useAgents` when this markdown-only agent cannot run on the
-   *  harness this chat uses; the row wears the "KAS only" pill. */
+   *  harness this chat uses; the row wears the "Kiro Agent only" pill. */
   markdown_block?: MarkdownBlock
 }
 

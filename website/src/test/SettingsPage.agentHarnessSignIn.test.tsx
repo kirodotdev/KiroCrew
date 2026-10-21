@@ -108,7 +108,7 @@ describe('Settings > Agent Harness sign-in deep link, through the real tab', () 
     renderAt(KIRO_SIGN_IN_PATH)
     // Kiro CLI is the configured harness, so the tab would open on it by itself;
     // the highlight is what moves the check to KAS.
-    const kas = await screen.findByRole('radio', { name: 'KAS (kiro-agent)' })
+    const kas = await screen.findByRole('radio', { name: 'Kiro Agent' })
     await waitFor(() => expect(kas).toBeChecked())
     expect(screen.getByRole('radio', { name: 'Kiro CLI' })).toHaveAttribute('aria-current', 'true')
 
@@ -129,7 +129,7 @@ describe('Settings > Agent Harness sign-in deep link, through the real tab', () 
     renderAt('/settings/agent')
     const kiro = await screen.findByRole('radio', { name: 'Kiro CLI' })
     await waitFor(() => expect(kiro).toBeChecked())
-    expect(screen.getByRole('radio', { name: 'KAS (kiro-agent)' })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Kiro Agent' })).not.toBeChecked()
     expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
   })
 })

@@ -77,7 +77,7 @@ async function openList(browser, theme, viewport, deviceScaleFactor) {
     await page.getByTestId(`harness-logo-${id}`).waitFor()
   }
   const ghosts = await page.getByTestId('kiro-ghost-mark').count()
-  if (ghosts !== 2) throw new Error(`expected the Kiro ghost on Kiro CLI and KAS, saw it ${ghosts} times`)
+  if (ghosts !== 2) throw new Error(`expected the Kiro ghost on Kiro CLI and Kiro Agent, saw it ${ghosts} times`)
   if (await page.getByTestId('harness-logo-fallback').count() !== 1) throw new Error('expected one generic mark (zephyr)')
   await page.waitForTimeout(800)
   return { page, errors }

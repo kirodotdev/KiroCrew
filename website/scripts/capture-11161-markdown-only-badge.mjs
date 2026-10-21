@@ -3,7 +3,7 @@
  *
  * A template defined only in markdown (`kas-md-probe`) is listed in the chat
  * agent pop-up while the chat runs on kiro-cli, which loads JSON agents only.
- * The row must wear a compact "KAS only" pill whose hover text explains why,
+ * The row must wear a compact "Kiro Agent only" pill whose hover text explains why,
  * and must stay selectable. A second scene runs the same catalog on a chat
  * whose harness loads markdown (`session_backend: "kas"`): no pill.
  *
@@ -45,7 +45,7 @@ const catalog = sessionBackend => ({
   markdown_spec_backends: ['kas'],
 })
 
-const TOOLTIP = "This agent won't start here. It's defined in markdown, and Kiro CLI runs JSON agents only. Use KAS, or add a JSON file for it."
+const TOOLTIP = "This agent won't start here. It's defined in markdown, and Kiro CLI runs JSON agents only. Use Kiro Agent, or add a JSON file for it."
 
 function assert(label, ok, detail = '') {
   if (!ok) throw new Error(`${label}${detail ? `: ${detail}` : ''}`)
@@ -84,7 +84,7 @@ async function main() {
         const badges = pop.getByTestId('markdown-only-badge')
         if (backend === 'kiro') {
           assert('one pill', (await badges.count()) === 1, `found ${await badges.count()}`)
-          assert('pill text', (await badges.first().evaluate(el => el.firstChild?.textContent ?? '')).trim() === 'KAS only')
+          assert('pill text', (await badges.first().evaluate(el => el.firstChild?.textContent ?? '')).trim() === 'Kiro Agent only')
           assert('screen-reader reason', ((await badges.first().textContent()) ?? '').includes(TOOLTIP))
           assert('pill title', (await badges.first().getAttribute('title')) === TOOLTIP)
           const option = badges.first().locator('xpath=ancestor::*[@role="option"][1]')
