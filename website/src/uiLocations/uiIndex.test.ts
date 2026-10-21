@@ -287,6 +287,10 @@ const FORWARDING_PROVEN = [
   // ContextMenuItem, which spreads its props onto the Radix item the same way
   // (src/components/ui/context-menu.tsx); the row menu draws the dropdown one.
   'Item',
+  // Proven in src/test/NotificationFeed.senderStacks.test.tsx: the feed's
+  // two-press clear forwards its ref to its <button>, and both clear-all
+  // call sites register their location.
+  'NotificationClearButton',
 ]
 
 describe('a marker must register the element it sits on', () => {

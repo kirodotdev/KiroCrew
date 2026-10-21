@@ -27,13 +27,14 @@ vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 vi.mock('framer-motion', async () => {
   const React = await import('react')
   const SKIP = new Set(['layout', 'layoutId', 'initial', 'animate', 'exit', 'transition', 'variants', 'custom'])
-  const div = React.forwardRef<HTMLElement, Record<string, unknown> & { children?: React.ReactNode }>((props, ref) => {
+  const plain = (tag: 'div' | 'span') => React.forwardRef<HTMLElement, Record<string, unknown> & { children?: React.ReactNode }>((props, ref) => {
     const clean: Record<string, unknown> = {}
     for (const k of Object.keys(props)) if (k !== 'children' && !SKIP.has(k)) clean[k] = props[k]
-    return React.createElement('div', { ...clean, ref }, props.children)
+    return React.createElement(tag, { ...clean, ref }, props.children)
   })
   return {
-    motion: { div },
+    // The feed's clear control animates a span inside its button.
+    motion: { div: plain('div'), span: plain('span') },
     AnimatePresence: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     useReducedMotion: () => false,
   }
