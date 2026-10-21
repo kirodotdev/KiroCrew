@@ -482,6 +482,7 @@ def build_tool_stall_recovery_prompt(
     idle_secs: int,
     command: str = "",
     stuck_input: bool = False,
+    processes_terminated: int = 0,
 ) -> str:
     """Body of the continuation injected after a watchdog tool-stall cancel.
 
@@ -500,6 +501,16 @@ def build_tool_stall_recovery_prompt(
         f"~{idle_mins} minute(s) and the turn was ended by a Kiro Crew watchdog. "
         "This was NOT a user action — do not treat it as a cancellation or "
         "interruption by the user.",
+    ]
+    if processes_terminated > 0:
+        noun = "process" if processes_terminated == 1 else "processes"
+        lines += [
+            "",
+            f"The watchdog terminated {processes_terminated} {noun} from the "
+            "stalled shell command. Those old processes are no longer running; "
+            "still check for any related survivor before retrying.",
+        ]
+    lines += [
         "",
         "Before doing anything else, check whether the tool actually completed "
         "or left partial results — do NOT blindly re-run the whole task or "
