@@ -18846,6 +18846,7 @@
       "name_not_saved_keep_field_open": "게이트웨이가 오프라인입니다 — 아직 저장되지 않았습니다. 이 입력란을 열어 둔 채 다시 연결하세요. 닫으면 이름이 삭제됩니다.",
       "optimize": "최적화",
       "rename_folders": "폴더 이름을 변경",
+      "rename_sessions": "세션 이름을 변경",
       "resume_sessions": "세션을 재개",
       "save_folder_names": "폴더 이름 저장",
       "send": "보내기",

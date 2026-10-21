@@ -1,5 +1,5 @@
 import { screen, fireEvent } from '@testing-library/react'
-import { renderWithProviders, createTestStore } from '../test/helpers'
+import { renderWithProviders, createTestStore, createConnectedTestStore } from '../test/helpers'
 import SessionActionsMenu from './SessionActionsMenu'
 import { sseSlots, markSlotUnread } from '../store/dashboardSlice'
 import { sseSubagentSpawn } from '../store/chatSlice'
@@ -11,11 +11,13 @@ import type { ChatSlot } from '../types'
 const { Item, Separator } = vi.hoisted(() => ({
   Item: ({ children, onSelect, className, disabled }: {
     children?: React.ReactNode
-    onSelect?: () => void
+    // Radix hands `onSelect` the event, which a gated row uses to refuse
+    // (`offlineMenuRow`). A zero-arg stub throws for those rows.
+    onSelect?: (e: Event) => void
     className?: string
     disabled?: boolean
   }) => (
-    <button type="button" className={className} disabled={disabled} onClick={() => onSelect?.()}>{children}</button>
+    <button type="button" className={className} disabled={disabled} onClick={e => onSelect?.(e.nativeEvent)}>{children}</button>
   ),
   Separator: () => <hr data-testid="zzq-sep" />,
 }))
@@ -74,7 +76,10 @@ function setup(
   slot: Partial<ChatSlot> = {},
   unread = false,
 ) {
-  const store = createTestStore()
+  // Connected, because this suite's subject is which items the menu renders,
+  // not connectivity: the default store reads as offline, which now dims the
+  // gateway-writing rows and would decide these cases by accident.
+  const store = createConnectedTestStore()
   store.dispatch(sseSlots([{ key: 'zzq-slot', messages: 0, running: false, ...slot } as ChatSlot]))
   if (unread) store.dispatch(markSlotUnread('zzq-slot'))
   return renderWithProviders(

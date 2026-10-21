@@ -18846,6 +18846,7 @@
       "name_not_saved_keep_field_open": "网关离线 — 尚未保存。请保持此输入框打开并重新连接。关闭后名称将被丢弃。",
       "optimize": "优化",
       "rename_folders": "重命名文件夹",
+      "rename_sessions": "重命名会话",
       "resume_sessions": "恢复会话",
       "save_folder_names": "保存文件夹名称",
       "send": "发送",
