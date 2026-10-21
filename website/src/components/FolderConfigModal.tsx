@@ -12,6 +12,7 @@ import { ApiError } from '../api/apiError'
 import { parseErrorCode } from '../utils/errorReport'
 import { resolveFolderAgent, resolveFolderProjectDir, resolveFolderSteeringDirs } from '../utils/folderAgent'
 import { ChatFolder, ChatTag } from '../types'
+import { folderAgentOptions, type FolderAgentRow } from './folderAgentOptions'
 import { i18nT } from '../i18n/t'
 
 /** The folder fields this modal owns. */
@@ -55,7 +56,9 @@ interface Props {
   folder?: ChatFolder
   /** Every folder — powers the read-only destination breadcrumb. */
   folders: ChatFolder[]
-  installedAgents: { name: string }[]
+  /** The folded agent roster. A member row's `name` is its config key, the
+   *  value a folder must store; its `display_name` is only what the row reads. */
+  installedAgents: FolderAgentRow[]
   /** Global default agent, shown as what an empty agent choice falls back to. */
   globalDefaultAgent?: string
   /** The tag vocabulary, powering the folder-tag picker. Empty/absent hides the
@@ -275,7 +278,7 @@ export default function FolderConfigModal({
     ...(orphanAgent
       ? [{ value: orphanAgent, label: i18nT('components.folderConfigModal.agent_not_installed', { agent: orphanAgent }) }]
       : []),
-    ...installedAgents.map(a => ({ value: a.name, label: a.name })),
+    ...folderAgentOptions(installedAgents),
   ]
 
   const submit = useCallback(async () => {
@@ -737,3 +740,4 @@ export default function FolderConfigModal({
     </>
   )
 }
+

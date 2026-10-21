@@ -298,6 +298,82 @@ describe('FolderConfigModal', () => {
     })
   })
 
+  describe('member and template rows', () => {
+    // A crewmate keyed `Jira ticket` reads as `jira-ticket` everywhere, and a
+    // custom agent is also called `jira-ticket`. The folder must store the
+    // crewmate's KEY when the crewmate row is picked: the create route binds a
+    // stored name as a key or a template name, never as a label.
+    const PAIR = [
+      { name: 'Jira ticket', display_name: 'jira-ticket', selection_kind: 'member' as const },
+      { name: 'jira-ticket', selection_kind: 'template' as const },
+    ]
+
+    async function pick(sublabel: string) {
+      await openAgentPopup()
+      const row = screen.getAllByRole('option').find(o => o.textContent?.includes(sublabel))
+      expect(row).toBeDefined()
+      fireEvent.click(row!)
+      await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+    }
+
+    function submit(onSubmit: ReturnType<typeof vi.fn>) {
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Jira Tickets' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      return onSubmit
+    }
+
+    it('shows a crewmate under its label and says which row is which', async () => {
+      open({ installedAgents: PAIR })
+      await openAgentPopup()
+      const rows = screen.getAllByRole('option').map(o => o.textContent)
+      expect(rows).toContain('jira-ticket · Crewmates')
+      expect(rows).toContain('jira-ticket · Custom agents')
+      expect(rows.join('|')).not.toContain('Jira ticket')
+    })
+
+    it('picks the custom agent on Enter for its exact name, and the closed picker says so', async () => {
+      const { onSubmit } = open({ installedAgents: PAIR })
+      const box = await openAgentPopup()
+      fireEvent.change(box, { target: { value: 'jira-ticket' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+      expect(agentTrigger()).toHaveTextContent('jira-ticket · Custom agents')
+      expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'jira-ticket' }))
+    })
+
+    it('names the crewmate in the closed picker after it is picked', async () => {
+      open({ installedAgents: PAIR })
+      await pick('Crewmates')
+      expect(agentTrigger()).toHaveTextContent('jira-ticket · Crewmates')
+    })
+
+    it('saves the crewmate key when the crewmate row is picked', async () => {
+      const { onSubmit } = open({ installedAgents: PAIR })
+      await pick('Crewmates')
+      expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'Jira ticket' }))
+    })
+
+    it('saves the template name when the custom agent row is picked', async () => {
+      const { onSubmit } = open({ installedAgents: PAIR })
+      await pick('Custom agents')
+      expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'jira-ticket' }))
+    })
+
+    it('finds a crewmate by its key in the filter', async () => {
+      open({ installedAgents: [{ name: 'crew-7', display_name: 'Reviewer', selection_kind: 'member' as const }, { name: 'kirocrew', selection_kind: 'template' as const }] })
+      fireEvent.change(await openAgentPopup(), { target: { value: 'crew-7' } })
+      expect(screen.getAllByRole('option').map(o => o.textContent)).toEqual(['Reviewer'])
+    })
+
+    it('adds no kind line when no two rows read the same', async () => {
+      open({ installedAgents: [{ name: 'pr-review', display_name: 'PR review', selection_kind: 'member' as const }, { name: 'kirocrew', selection_kind: 'template' as const }] })
+      await openAgentPopup()
+      const rows = screen.getAllByRole('option').map(o => o.textContent)
+      expect(rows).toContain('PR review')
+      expect(rows).toContain('kirocrew')
+    })
+  })
+
   it('Enter on a typed agent name picks that agent, not the inherit row naming it', async () => {
     // "Inherit (kirocrew)" sits first and contains "kirocrew", so a top-row
     // commit would save '' (inherit) when the user typed the agent to pin.
