@@ -255,13 +255,15 @@ def test_json_shaped_malformations_raise_only_key_or_type_error() -> None:
 
 
 def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path) -> None:
-    """CHARACTERISATION (passes before and after): the documented contract for
-    a genuinely malformed record is unchanged.
+    """CHARACTERISATION: a genuinely malformed record is skipped on load and
+    dropped from ``crons.json`` by the next write, AND a copy survives.
 
-    ``docs/system-specs/modules/learn-cron-dashboard.md`` states that a
-    skipped record is dropped from disk by the first write that follows, and
-    the load warning is the operator's recovery window. Narrowing the caught
-    tuple must not alter that -- only which exceptions count as bad data.
+    ``docs/system-specs/modules/learn-cron-dashboard.md`` states that a skipped
+    record is dropped from the store FILE by the first write that follows. This
+    asserts that, and that the record is also copied verbatim into a ``.skipped-``
+    quarantine sidecar first, so the drop costs no data (see
+    ``test_load_quarantines_before_the_next_write_drops_the_record`` for the full
+    sidecar contract).
     """
     mgr = CronService(base_dir=tmp_path)
     bad = {"id": "bad", "message": "m", "schedule": {"kind": "every"}}  # no "name"
@@ -274,6 +276,12 @@ def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path
 
     reread = json.loads(mgr._path.read_text(encoding="utf-8"))
     assert [j["id"] for j in reread["jobs"]] == ["a"]
+
+    # The drop costs no data: the record survives in the sidecar.
+    sidecars = list((tmp_path / "cron-history" / "quarantine").glob("crons.json.skipped-*"))
+    assert len(sidecars) == 1
+    held = json.loads(sidecars[0].read_text(encoding="utf-8"))
+    assert held == [bad]
 
 
 # --- Corrupted-store resilience: non-string values in string-typed fields must not crash the listing ---

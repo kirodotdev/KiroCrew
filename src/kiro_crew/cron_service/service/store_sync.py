@@ -37,6 +37,7 @@ from kiro_crew.cron_service.store import (
     cron_store_lock,
     decode_store,
     encode_store,
+    quarantine_skipped_records,
 )
 
 if TYPE_CHECKING:
@@ -431,9 +432,17 @@ def _load(self: CronService, _preread: bytes | None = None) -> None:
             self._load_failed = True
             return
         # One malformed or legacy record is warned about and skipped by
-        # decode_jobs; every well-formed job survives, and the whole-store
+        # decode_store; every well-formed job survives, and the whole-store
         # reset below is reserved for a file that yields nothing parseable
-        # at all, where there is nothing to salvage.
+        # at all, where there is nothing to salvage. Before the next _save
+        # rewrites crons.json from the in-memory list -- dropping the skipped
+        # record from disk -- copy it verbatim to a quarantine sidecar, so the
+        # load warning is not the only window to recover it. Dedup keeps one
+        # copy per bad record across the repeated reloads _sync drives on every
+        # external change; a sidecar failure is logged and swallowed so a
+        # schedule that otherwise loaded keeps running.
+        if document.skipped:
+            quarantine_skipped_records(self._path, document.skipped)
         # Fingerprint from the stat taken BEFORE the read: if a writer
         # replaced the file between our stat and read we may have loaded the
         # newer content under an older fingerprint, which only costs one

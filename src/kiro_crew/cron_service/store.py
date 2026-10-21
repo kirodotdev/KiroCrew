@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+import tempfile
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -27,7 +28,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import atomic_write, platform_compat, sqlite_quarantine
 from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule
 
 logger = logging.getLogger("kiro_crew.cron")
@@ -751,12 +752,21 @@ class StoreDocument:
     ``version`` is the document's version when it is an integer above this build's,
     else this build's. ``extra`` holds the top-level keys other than ``version`` and
     ``jobs``; ``unknown_fields`` maps a loaded job's id to its unknown keys.
+
+    ``skipped`` holds the raw ``jobs[]`` entries :func:`decode_store` could not build
+    into a :class:`CronJob` -- a hand-edit or a partial schema migration that left one
+    record malformed. It is IN-MEMORY ONLY: :func:`encode_store` never writes it back,
+    so a skipped record is still absent from the next save of ``crons.json`` (the drop
+    this build cannot avoid). It exists so :meth:`CronService._load` can copy those
+    records to the quarantine sidecar BEFORE that save drops them, preserving the
+    operator's data beyond the single load warning that names the record.
     """
 
     jobs: list[CronJob]
     version: int
     extra: Mapping[str, Any]
     unknown_fields: Mapping[str, UnknownFields]
+    skipped: tuple[Any, ...] = ()
 
 
 def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
@@ -827,6 +837,7 @@ def decode_store(raw: bytes) -> StoreDocument | None:
     # See _job_from_record's docstring for why, and for what catching it
     # would cost.
     jobs: list[CronJob] = []
+    skipped: list[Any] = []
     for j in records:
         try:
             job = _job_from_record(j)
@@ -834,10 +845,11 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             entry_id = j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
             logger.warning(
                 "Skipping malformed cron job entry (id=%r): %r; "
-                "the entry will be dropped from the store on the next write",
+                "the entry is dropped from the store on the next write",
                 entry_id,
                 entry_exc,
             )
+            skipped.append(j)
             continue
         jobs.append(job)
         found = _unknown_fields_of(j)
@@ -857,12 +869,81 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             past_total,
             MAX_UNKNOWN_FIELDS_STORE_BYTES,
         )
-    return StoreDocument(jobs=jobs, version=version, extra=extra, unknown_fields=unknown_fields)
+    return StoreDocument(
+        jobs=jobs,
+        version=version,
+        extra=extra,
+        unknown_fields=unknown_fields,
+        skipped=tuple(skipped),
+    )
 
 
 #: Infix between the store's file name and the UTC stamp of a quarantine copy:
-#: ``crons.json.corrupt-20261005T071953Z``.
+#: ``crons.json.corrupt-20261005T071953Z``. Used when the WHOLE file was
+#: unreadable and the gateway moved it aside.
 _QUARANTINE_INFIX = ".corrupt-"
+
+#: Infix for a PER-RECORD quarantine sidecar: ``crons.json.skipped-20261005T071953Z``.
+#: Used when the file parsed but one or more individual records could not be built;
+#: the sidecar holds a JSON array of just those verbatim records, which the next
+#: save of ``crons.json`` would otherwise drop. Distinct from ``.corrupt-`` so a
+#: reader can tell a whole-file move-aside (restore it) from a partial sidecar
+#: (recover the records it holds, the rest of the schedule is intact and running).
+_SKIPPED_INFIX = ".skipped-"
+
+
+def _utc_stamp() -> str:
+    """The ``YYYYMMDDTHHMMSSZ`` stamp a quarantine copy's name carries.
+
+    One function so a test can force a same-second collision deterministically
+    without patching the stdlib ``time`` module (which replaces the clock for the
+    whole worker, including every thread and the event loop).
+    """
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+def _fsync_file(fd: int) -> None:
+    """``os.fsync`` behind a store-local name a test can patch in isolation.
+
+    A test that patched ``os.fsync`` itself (even via this module's ``os`` alias --
+    it is the one shared module object) would make the stub answer for every thread
+    on the worker, including the SEL writer and any other background fsync, and a
+    raising stub there can crash an unrelated daemon. Patching this name touches only
+    this module's durability calls.
+    """
+    os.fsync(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort directory fsync behind a store-local name, same isolation reason
+    as :func:`_fsync_file` -- patching ``atomic_write.fsync_dir`` would answer for
+    every other caller of that shared module too."""
+    atomic_write.fsync_dir(path, best_effort=True)
+
+
+def _mkdir_p_durable(folder: Path) -> None:
+    """``mkdir -p`` *folder*, fsyncing the PARENT of every level it creates.
+
+    ``Path.mkdir(parents=True)`` makes the leaf and any missing ancestors, but a
+    directory entry is only durable once its PARENT is synced -- so a newly created
+    ``cron-history/quarantine`` whose ``cron-history`` parent is never synced can be
+    lost whole on a power cut, taking the sidecar inside it with it. Create each
+    missing level in turn and sync the parent that now holds its name, deepest-last,
+    so the whole chain down to *folder* survives a crash. A level that already exists
+    is left alone (its name is already durable). ``fsync_dir`` is best-effort where a
+    directory sync cannot be expressed (Windows, some network mounts), as elsewhere.
+    """
+    missing: list[Path] = []
+    cur = folder
+    while not cur.exists():
+        missing.append(cur)
+        if cur.parent == cur:  # reached the filesystem root
+            break
+        cur = cur.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    # Sync parents top-down: the shallowest created level's name lands first.
+    for created in reversed(missing):
+        _fsync_dir(created.parent)
 
 
 def quarantine_dir(store: Path) -> Path:
@@ -878,9 +959,17 @@ def quarantine_dir(store: Path) -> Path:
 
 
 def quarantine_copies(store: Path) -> list[Path]:
-    """Every quarantine copy of *store* on disk, oldest first. NEVER raises."""
+    """Every quarantine copy of *store* on disk, oldest first. NEVER raises.
+
+    Covers both families: a whole-file move-aside (``.corrupt-``) and a
+    per-record sidecar (``.skipped-``). A reader tells them apart by the infix.
+    """
     try:
-        return sorted(quarantine_dir(store).glob(f"{store.name}{_QUARANTINE_INFIX}*"))
+        folder = quarantine_dir(store)
+        return sorted(
+            list(folder.glob(f"{store.name}{_QUARANTINE_INFIX}*"))
+            + list(folder.glob(f"{store.name}{_SKIPPED_INFIX}*"))
+        )
     except OSError:
         return []
 
@@ -917,4 +1006,152 @@ def quarantine_unreadable_store(store: Path) -> Path | None:
     except OSError:
         logger.warning("Could not move the unreadable cron store aside", exc_info=True)
         return None
+    return target
+
+
+def _serialized_record_key(record: Any) -> str:
+    """A stable identity for one skipped record, for de-duplicating sidecars.
+
+    ``sort_keys`` so two dict spellings of one record collapse, and ``default=str``
+    so a value JSON cannot serialise (it reached here BECAUSE it is malformed) still
+    yields a key rather than raising. The caller guards the call: a record nested
+    past the interpreter's stack raises ``RecursionError`` here, which is a
+    ``RuntimeError`` outside the ``ValueError`` family, so it must not escape into
+    a reader that only expects a value error.
+    """
+    return json.dumps(record, sort_keys=True, default=str)
+
+
+def _already_quarantined_keys(store: Path) -> set[str]:
+    """Every skipped record already held in a ``.skipped-`` sidecar. NEVER raises.
+
+    ``_load`` runs from ``_sync`` on every external change to ``crons.json``, so a
+    store left with a bad record is re-read again and again. Keying on the record's
+    serialized form means the same bad record is copied aside ONCE, not once per
+    reload, and a sidecar that cannot be read is treated as holding nothing (it does
+    not block a fresh copy) rather than aborting the quarantine.
+    """
+    seen: set[str] = set()
+    try:
+        sidecars = sorted(quarantine_dir(store).glob(f"{store.name}{_SKIPPED_INFIX}*"))
+    except OSError:
+        return seen
+    for sidecar in sidecars:
+        try:
+            held = json.loads(sidecar.read_bytes())
+        except (OSError, ValueError, RecursionError):
+            continue
+        if isinstance(held, list):
+            for record in held:
+                try:
+                    seen.add(_serialized_record_key(record))
+                except (ValueError, RecursionError):
+                    continue
+    return seen
+
+
+def quarantine_skipped_records(store: Path, skipped: Iterable[Any]) -> Path | None:
+    """Copy records ``decode_store`` could not build into a ``.skipped-`` sidecar.
+
+    The caller holds the store lock. ``crons.json`` itself is left exactly as it was
+    -- this NEVER deletes or rewrites the operator's store; it only preserves, beside
+    it, a verbatim copy of the records the next save would drop, so the load warning
+    stops being the only recovery window.
+
+    Records already present in an existing sidecar are not copied again (``_load``
+    re-reads the store on every external change, so without this the same bad record
+    would accumulate one copy per reload). Returns the sidecar written, or None when
+    there was nothing new to preserve or the write failed -- any failure is logged
+    and swallowed, because a schedule that loaded fine otherwise must keep running,
+    and the record it could not copy is no worse off than it was without this copy
+    at all.
+
+    DURABLE and COMPLETE: the payload is written with a zero-progress guard
+    (:func:`~kiro_crew.atomic_write._write_all`, which raises on a short write
+    instead of publishing a truncated sidecar), then the file AND the directory
+    entry are fsynced before success is reported, so a power loss after the next
+    (fsynced) store save cannot leave the record in neither place. The sidecar is
+    created with ``O_EXCL`` under a UTC-timestamped name and never overwrites an
+    older one (a numeric suffix breaks a same-second collision), so an earlier
+    quarantined copy is never lost. The whole body -- including the serialisation,
+    where a record nested past the interpreter's stack raises ``RecursionError`` --
+    is inside the swallow, so a record this function cannot encode degrades to a
+    logged no-op rather than aborting ``_load`` and emptying the live registry.
+    """
+    records = list(skipped)
+    if not records:
+        return None
+    folder = quarantine_dir(store)
+    try:
+        already = _already_quarantined_keys(store)
+        fresh = [r for r in records if _serialized_record_key(r) not in already]
+        if not fresh:
+            return None
+        payload = json.dumps(fresh, indent=2, default=str).encode("utf-8")
+        stamp = _utc_stamp()
+        target = folder / f"{store.name}{_SKIPPED_INFIX}{stamp}"
+        suffix = 1
+        _mkdir_p_durable(folder)
+        # Write to a unique temp file, fsync it, THEN rename it into the visible
+        # .skipped- name. The rename is the ONLY moment the sidecar appears at a
+        # name _already_quarantined_keys scans, and by then it is complete and
+        # fsynced -- so a concurrent unlocked load (the sandboxed mcp_cron and any
+        # loop-less CLI/MCP process construct a CronService whose _load runs without
+        # the store lock) can never deduplicate against a half-written sidecar that a
+        # failing fsync then unlinks. A partial temp is cleaned up on any failure and
+        # never carries the published name.
+        # The temp name is dot-led and does NOT carry the `.skipped-` infix, so
+        # neither _already_quarantined_keys nor quarantine_copies (both glob
+        # `<store>.skipped-*`) can mistake an in-progress temp for a committed copy
+        # before the link publishes it.
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{store.name}.sidecar-tmp-", suffix=".tmp", dir=str(folder)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            atomic_write._write_all(tmp_fd, payload, tmp_path)
+            _fsync_file(tmp_fd)
+        except BaseException:
+            os.close(tmp_fd)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        os.close(tmp_fd)
+        # Publish under a name not already taken. move_without_overwrite links (or,
+        # on a filesystem without hard links, renames behind an existence check) and
+        # raises FileExistsError on a collision without clobbering an older copy; the
+        # suffix loop then picks the next name. It consumes the temp on success, so
+        # drop the temp only when every attempt raised.
+        published = False
+        try:
+            while True:
+                try:
+                    sqlite_quarantine.move_without_overwrite(tmp_path, target)
+                except FileExistsError:
+                    target = folder / f"{store.name}{_SKIPPED_INFIX}{stamp}-{suffix}"
+                    suffix += 1
+                    continue
+                published = True
+                break
+        finally:
+            if not published:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        # Sync the directory so the new entry's NAME survives a crash, not just its
+        # bytes: the store save that follows is itself fsynced, so without this the
+        # record could be gone from crons.json and have no durable copy either.
+        _fsync_dir(folder)
+    except (OSError, RecursionError):
+        logger.warning("Could not quarantine skipped cron record(s)", exc_info=True)
+        return None
+    logger.warning(
+        "Quarantined %d skipped cron record(s) to %s; recover them from there, "
+        "the rest of the schedule loaded and is running",
+        len(fresh),
+        target.name,
+    )
     return target
