@@ -781,7 +781,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
       <div className="flex-1 min-h-0 overflow-hidden">
         <div
           ref={setScroller}
-          className="h-full flex flex-col overflow-y-auto sm:overflow-visible"
+          className="relative h-full flex flex-col overflow-y-auto sm:overflow-visible"
         >
           <DetailHeader
             collapsed={scrolledOut}
@@ -876,7 +876,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               scrolls invisibly, and the wrapper scroller never engages because the
               children already sum to the container. While narrow this takes its
               natural height and the wrapper is the single scroller. */}
-          <main className="min-w-0 sm:flex-1 sm:overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+          <main className="relative min-w-0 sm:flex-1 sm:overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
             <AiSummaryCard
               summary={aiQuery.data?.summary ?? ''}
               fromCache={aiQuery.data?.from_cache ?? false}
@@ -991,7 +991,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
           </main>
 
           {/* Sidebar — the most useful PR metadata. */}
-          <aside className="w-full sm:w-[236px] shrink-0 sm:overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
+          <aside className="w-full sm:w-[236px] relative shrink-0 sm:overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
             {/* Auto review first — failing/running checks are the most
                 actionable thing on a PR. */}
             <AutoReviewChecks
