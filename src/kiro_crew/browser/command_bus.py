@@ -15,11 +15,12 @@ Shape (why this design):
   ``POST /api/browser/command-result`` (:meth:`complete`).
 - ``drain`` is also the *liveness signal*: draining a set of session keys
   REGISTERS them as having a live native panel for a fixed ``panel_ttl_s``
-  window (refreshed by every drain AND every result post, independent of the
-  poll wait), and marks a native host as present for the same window (even an
-  empty-keys heartbeat does). :meth:`submit` raises :class:`NoPanelError` at
-  once when no host is polling at all (a remote / non-Electron gateway), so the
-  proxy falls back to Playwright without delay; when a host IS present but the
+  window (refreshed by every drain that names the key AND every result post for
+  one of the key's in-flight commands, independent of the poll wait), and marks
+  a native host as present for the same window (even an empty-keys heartbeat
+  does). :meth:`submit` raises :class:`NoPanelError` at once when no host is
+  polling at all (a remote / non-Electron gateway), so the ``browser`` tool
+  falls back to playwright-cli without delay; when a host IS present but the
   target's panel is not registered yet it holds for a bounded ``panel_wait_ms``,
   closing the cold-start race where the first ``navigate`` of a fresh session
   beats the drain loop's registration.
@@ -63,8 +64,8 @@ DEFAULT_DRAIN_WAIT_MS = 25000
 # with :class:`NoPanelError`. Covers the cold-start race between a chat slot
 # mounting (declaring its key so the Electron drain loop starts polling it) and
 # that key actually registering on the bus: the first ``navigate`` in a fresh
-# session otherwise beats registration and 503s straight to the Playwright
-# mirror. Only waited when a native host is actually polling (see
+# session otherwise beats registration and 503s straight to the playwright-cli
+# fallback. Only waited when a native host is actually polling (see
 # ``_host_present_locked``), so a remote / non-Electron gateway still fails fast.
 # Kept comfortably above the Electron drain loop's poll interval
 # (browser-agent-channel.js DEFAULT_WAIT_MS) so a freshly declared key is picked
@@ -72,13 +73,12 @@ DEFAULT_DRAIN_WAIT_MS = 25000
 DEFAULT_PANEL_WAIT_MS = 3000
 
 # Panel-liveness TTL (seconds), DECOUPLED from the drain poll interval. A panel
-# is "live" for this long after any contact from its window -- a drain OR a
-# result post (:meth:`complete`) -- NOT merely for ~2x the poll wait. This is
-# what lets the Electron loop use a short drain wait (frequent re-reads for
-# prompt cold-start registration) without the liveness lapsing while the loop is
-# busy dispatching a long op (e.g. ``wait_for``): the op's own result refreshes
-# it, and agent ops are serial per session so no submit races the gap. Also the
-# crash-safety net: a window that stops answering deregisters after this long.
+# is "live" for this long after the latest drain naming its key or result post
+# for one of its in-flight commands (:meth:`complete`) -- NOT merely for ~2x the
+# poll wait, so the Electron loop can use a short drain wait (frequent re-reads
+# for prompt cold-start registration) without shortening liveness. It is also
+# the crash-safety net: a panel nothing drains or answers for deregisters after
+# this long.
 DEFAULT_PANEL_TTL_S = 30.0
 
 
@@ -89,8 +89,10 @@ class BusError(Exception):
 class NoPanelError(BusError):
     """No live native panel is registered for the target session (maps to 503).
 
-    Raised by :meth:`BrowserCommandBus.submit` WITHOUT waiting, so the ``browser``
-    MCP tool can immediately fall back to playwright-cli.
+    Raised by :meth:`BrowserCommandBus.submit` at once when no native host is
+    polling; when one is, ``submit`` first waits up to the bounded
+    ``panel_wait_ms`` for the panel to register. Either way the ``browser`` MCP
+    tool falls back to playwright-cli.
     """
 
 
@@ -105,11 +107,10 @@ class _Command:
     op: str
     args: dict
     future: "asyncio.Future[dict]"
-    enqueued_at: float
 
 
 class BrowserCommandBus:
-    """Async, in-memory command bus bridging the MCP proxy and the native panel.
+    """Async, in-memory command bus bridging the ``browser`` MCP tool and the native panel.
 
     All public coroutines are safe to call concurrently; internal state is
     guarded by a single :class:`asyncio.Lock`, and a shared :class:`asyncio.Event`
@@ -135,11 +136,12 @@ class BrowserCommandBus:
         # session_key -> monotonic expiry; a session is "live" while now < expiry.
         self._panels: dict[str, float] = {}
         # Monotonic expiry of the "an Electron host is polling" signal, refreshed
-        # by every ``drain`` (including empty-keys heartbeats) with the SAME TTL a
-        # drain grants a panel. Lets ``submit`` distinguish "panel not registered
-        # YET, keep waiting" (a local host IS draining) from "no native host at
-        # all" (a remote / non-Electron gateway is never drained), so it only
-        # blocks in the first case.
+        # by every ``drain`` (including empty-keys heartbeats) and every result
+        # post for an in-flight command (:meth:`complete`), with the SAME TTL a
+        # drain grants a panel. Lets ``submit`` distinguish "panel not
+        # registered YET, keep waiting" (a local host IS draining) from "no
+        # native host at all" (a remote / non-Electron gateway is never
+        # drained), so it only blocks in the first case.
         self._host_expiry: float = float("-inf")
         self._lock = asyncio.Lock()
         # Set whenever a command is enqueued; a waiting drain wakes on it.
@@ -162,12 +164,14 @@ class BrowserCommandBus:
         return exp is not None and exp > self._now()
 
     def _host_present_locked(self) -> bool:
-        """Whether an Electron host is currently polling (drained recently).
+        """Whether an Electron host is currently polling (drained or answered recently).
 
-        True while within the TTL of the most recent ``drain`` -- a live host
-        re-polls well inside that window, so this stays true between its polls
-        and lapses only once it stops. A remote / non-Electron gateway is never
-        drained, so this is permanently false there and ``submit`` fails fast.
+        True while within the TTL of the most recent ``drain`` or result post for
+        an in-flight command (:meth:`complete`). An idle host re-polls well
+        inside that window, so this stays true between its polls; it lapses once
+        a whole TTL passes with neither, as it does when the host stops. A
+        remote / non-Electron gateway is never drained, so this is permanently
+        false there and ``submit`` fails fast.
         """
         return self._now() < self._host_expiry
 
@@ -219,14 +223,13 @@ class BrowserCommandBus:
             op=op,
             args=dict(args or {}),
             future=loop.create_future(),
-            enqueued_at=self._now(),
         )
         # Cold-start race: the slot may have declared its key microseconds ago
         # and the Electron drain loop has not registered it on the bus yet. Hold
         # briefly for that registration instead of 503-ing straight to the
-        # Playwright mirror -- but ONLY while a native host is actually polling
-        # (``_await_panel`` fails fast otherwise), so a remote / non-Electron
-        # gateway still falls back without delay.
+        # playwright-cli fallback -- but ONLY while a native host is actually
+        # polling (``_await_panel`` fails fast otherwise), so a remote /
+        # non-Electron gateway still falls back without delay.
         await self._await_panel(session_key)
         async with self._lock:
             self._purge_locked()
@@ -410,8 +413,8 @@ class BrowserCommandBus:
 
 # ── process-wide singleton ────────────────────────────────────────────────
 # The aiohttp handlers and the ``browser`` MCP tool ingress share one bus per
-# gateway process, mirroring how the frame path shares one DashboardState. Tests
-# construct their own BrowserCommandBus(now=...) directly for clock injection.
+# gateway process. Tests construct their own BrowserCommandBus(now=...) directly
+# for clock injection.
 _default_bus: Optional[BrowserCommandBus] = None
 
 
