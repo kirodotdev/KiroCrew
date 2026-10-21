@@ -10592,6 +10592,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "{{productName}} 메타데이터만 제거합니다 — 앱 자체는 외부에서 관리됩니다",
       "removing": "제거하는 중…",
       "repository": "저장소:",
+      "report_issue": "문제 신고",
       "requires_local_install": "로컬 설치 필요",
       "resources": "리소스",
       "resources_2": "| 리소스:",

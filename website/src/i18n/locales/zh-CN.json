@@ -10592,6 +10592,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "仅移除 {{productName}} 元数据 — 应用本身由外部管理",
       "removing": "正在移除…",
       "repository": "仓库：",
+      "report_issue": "报告问题",
       "requires_local_install": "需要本地安装",
       "resources": "资源",
       "resources_2": "| 资源：",

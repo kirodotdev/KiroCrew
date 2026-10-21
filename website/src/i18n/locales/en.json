@@ -6234,6 +6234,7 @@
       "previous": "Previous",
       "removes_kirocrew_metadata_only_the_app_itself_is": "Removes {{productName}} metadata only — the app itself is managed externally",
       "repository": "Repository:",
+      "report_issue": "Report an issue",
       "requires_local_install": "Requires local install",
       "resources": "Resources",
       "resources_2": "| Resources:",
