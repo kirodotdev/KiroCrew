@@ -796,6 +796,20 @@ async def test_side_turn_on_claude_with_an_unverified_adapter_runs_no_tools(
     assert parent._side.binding == (created[0]["agent"] or "", "", "reject_all")
 
 
+def _claude_adapter_remedy() -> dict[str, str]:
+    """The floor and update step the outdated-adapter footer names, from the
+    adapter's own constants rather than restated digits."""
+    from kiro_crew.acp.client import CLAUDE_ACP_NPM_PKG, CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION
+
+    return {
+        "claude_adapter_min_version": ".".join(map(str, CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)),
+        "claude_adapter_update_command": f"npm i -g {CLAUDE_ACP_NPM_PKG}",
+    }
+
+
+_CLAUDE_ADAPTER_REMEDY = _claude_adapter_remedy()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("backend", "adapter_verified", "read_only_tools", "claude_adapter_outdated"),
@@ -838,6 +852,7 @@ async def test_side_tools_answers_what_a_side_turn_runs(
         assert await resp.json() == {
             "read_only_tools": read_only_tools,
             "claude_adapter_outdated": claude_adapter_outdated,
+            **_CLAUDE_ADAPTER_REMEDY,
             "config_unavailable": False,
         }
 
@@ -856,5 +871,6 @@ async def test_side_tools_is_false_when_the_config_does_not_load(tmp_path, monke
         assert await resp.json() == {
             "read_only_tools": False,
             "claude_adapter_outdated": False,
+            **_CLAUDE_ADAPTER_REMEDY,
             "config_unavailable": True,
         }

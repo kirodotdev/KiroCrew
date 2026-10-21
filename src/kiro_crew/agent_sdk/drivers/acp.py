@@ -877,6 +877,14 @@ def pi_install_command() -> str:
     return PI_INSTALL_COMMAND
 
 
+def claude_adapter_min_version() -> str:
+    """``CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`` as ``x.y.z`` -- the floor the
+    read-only Side Chat shape needs, read from the constant the check uses."""
+    from kiro_crew.acp import client as _client
+
+    return ".".join(str(part) for part in _client.CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
+
+
 def claude_adapter_install_command() -> str:
     """``npm i -g <adapter package>`` -- the adapter's remedy, from the repo.
 

@@ -1033,13 +1033,14 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
             />
           ) : sideToolsQ.isSuccess ? (
             <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
-              {i18nT(
-                readOnlyToolsAvailable
-                  ? 'pages.chat.sideChat.context_only_tools_unavailable'
-                  : sideToolsQ.data?.claude_adapter_outdated === true
-                    ? 'pages.chat.sideChat.context_only_claude_adapter_outdated'
-                    : 'pages.chat.sideChat.context_only_tools_unavailable_backend',
-              )}
+              {readOnlyToolsAvailable
+                ? i18nT('pages.chat.sideChat.context_only_tools_unavailable')
+                : sideToolsQ.data?.claude_adapter_outdated === true
+                  ? i18nT('pages.chat.sideChat.context_only_claude_adapter_outdated', {
+                      version: sideToolsQ.data.claude_adapter_min_version,
+                      command: sideToolsQ.data.claude_adapter_update_command,
+                    })
+                  : i18nT('pages.chat.sideChat.context_only_tools_unavailable_backend')}
             </div>
           ) : null}
         </SlotProvider>

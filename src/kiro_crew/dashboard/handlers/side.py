@@ -24,6 +24,8 @@ from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import (
     claude_adapter_honours_session_options,
+    claude_adapter_install_command,
+    claude_adapter_min_version,
     goose_side_home_supported,
 )
 from kiro_crew.config.loader import (
@@ -946,6 +948,9 @@ async def api_side_tools(request: web.Request) -> web.Response:
     Not per-slot: the answer is the configured harness and the host's adapter.
     ``claude_adapter_outdated`` says the only thing missing is a newer
     claude-agent-acp, so the footer can tell the user to update it.
+    ``claude_adapter_min_version`` and ``claude_adapter_update_command`` are the
+    floor and the ``npm i -g`` step that footer names, read from the constants
+    the turn's own check uses so the copy cannot drift from them.
     ``config_unavailable`` says the config did not load, so the turn runs with
     no tools for that reason rather than because of the harness.
     """
@@ -967,6 +972,8 @@ async def api_side_tools(request: web.Request) -> web.Response:
         {
             "read_only_tools": read_only_tools,
             "claude_adapter_outdated": claude_adapter_outdated,
+            "claude_adapter_min_version": claude_adapter_min_version(),
+            "claude_adapter_update_command": claude_adapter_install_command(),
             "config_unavailable": config_unavailable,
         }
     )

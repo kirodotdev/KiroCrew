@@ -191,7 +191,7 @@ second time.
 | queue edit | PATCH | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Rewrite a queued entry in place |
 | close | POST | `/api/chat/slots/{slot}/side/close` | Drop buffer + queue + destroy LLM session |
 | stop | POST | `/api/chat/slots/{slot}/side/stop` | Cancel the in-flight side turn (hung-turn escape hatch); idempotent when none is running. Owner-gated like turn (`chat.side_stop`); 409 `side_not_open` when no sidecar is open |
-| tools | GET | `/api/chat/side/tools` | `{read_only_tools, claude_adapter_outdated, config_unavailable}`: whether a side turn runs read-only tools, from the same check the turn makes (`_side_read_only_tools`), whether an old claude adapter is the only reason it does not, and whether the config failed to load; the footer reads it |
+| tools | GET | `/api/chat/side/tools` | `{read_only_tools, claude_adapter_outdated, claude_adapter_min_version, claude_adapter_update_command, config_unavailable}`: whether a side turn runs read-only tools, from the same check the turn makes (`_side_read_only_tools`), whether an old claude adapter is the only reason it does not, that adapter's floor (`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`) and `npm i -g` step (`claude_adapter_install_command`), and whether the config failed to load; the footer reads it |
 
 **Stop.** A stop raises `SideState.is_stopping`, which the busy gate treats as a
 turn in flight, cancels the provider turn and waits for it for at most 5 s
@@ -551,8 +551,11 @@ kiro-cli binding records the spec digest. The footer asks `GET
 the harness's membership, then on claude the adapter floor), so on an adapter
 below the floor it says tools are unavailable, as the turn's prompt does. The
 same answer's `claude_adapter_outdated` names the old adapter as the reason, and
-the footer then says to update claude-agent-acp
-(`pages.chat.sideChat.context_only_claude_adapter_outdated`).
+the footer then names claude-agent-acp, the floor and the `npm i -g` step, read
+from the same answer's `claude_adapter_min_version` and
+`claude_adapter_update_command`
+(`pages.chat.sideChat.context_only_claude_adapter_outdated`). Each footer starts
+with what works: "Read-only" when lookups run, "No lookups" when they do not.
 
 **On goose the confinement is a goose home of its own.** goose reads no kiro
 agent spec either, and its pre-approval store is `permission.yaml` in its

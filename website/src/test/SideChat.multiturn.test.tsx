@@ -150,13 +150,15 @@ describe('Side multi-turn conversation', () => {
     // claude adapter below the verified floor, whose side turn runs no tools.
     it.each([
       [true, false, "Read-only · Lookups work here, but changes don't. Use the main chat to take action."],
-      [false, false, 'Context only · Tools are unavailable here on this agent backend. Use the main chat to take action.'],
-      [false, true, 'Context only · Update claude-agent-acp to use read-only tools here. Use the main chat to take action.'],
+      [false, false, "No lookups · This agent backend can't run lookups here, so answers come from the chat so far. Use the main chat to take action."],
+      [false, true, 'No lookups · Lookups need claude-agent-acp 0.84.0 or newer, the Claude Code adapter. Use the main chat to take action. To update, run: npm i -g @agentclientprotocol/claude-agent-acp'],
     ])('shows the footer for read_only_tools=%s, claude_adapter_outdated=%s', async (readOnlyTools, adapterOutdated, footer) => {
       const { api } = await import('../api/client')
       ;(api.sideTools as unknown as Mock).mockResolvedValue({
         read_only_tools: readOnlyTools,
         claude_adapter_outdated: adapterOutdated,
+        claude_adapter_min_version: '0.84.0',
+        claude_adapter_update_command: 'npm i -g @agentclientprotocol/claude-agent-acp',
       })
       const store = createTestStore({
         chat: {
@@ -185,7 +187,7 @@ describe('Side multi-turn conversation', () => {
         } as unknown as RootState['chat'],
       })
       const { queryClient } = renderWithProviders(<SideChat slot={SLOT} />, { store })
-      expect(await screen.findByRole('note')).toHaveTextContent('Context only')
+      expect(await screen.findByRole('note')).toHaveTextContent('No lookups')
       sideTools.mockResolvedValue({ read_only_tools: true, claude_adapter_outdated: false })
       // What a config refresh frame does (hooks/websocket/serverState.ts).
       await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })

@@ -44,6 +44,8 @@ function renderSide() {
 function serveSideTools(answer: { read_only_tools: boolean; claude_adapter_outdated?: boolean; config_unavailable?: boolean }) {
   vi.mocked(api.sideTools).mockResolvedValue({
     claude_adapter_outdated: false,
+    claude_adapter_min_version: '0.84.0',
+    claude_adapter_update_command: 'npm i -g @agentclientprotocol/claude-agent-acp',
     config_unavailable: false,
     ...answer,
   })
@@ -58,20 +60,22 @@ describe('SideChat footer follows the gateway answer for the side turn', () => {
     serveSideTools({ read_only_tools: true })
     renderSide()
     expect(await screen.findByText(/Lookups work here, but changes don't/)).toBeTruthy()
-    expect(screen.queryByText(/Tools are unavailable here/)).toBeNull()
+    expect(screen.queryByText(/^No lookups/)).toBeNull()
   })
 
-  it('says tools are unavailable on a backend outside the set', async () => {
+  it('says lookups are off on a backend outside the set', async () => {
     serveSideTools({ read_only_tools: false })
     renderSide()
-    expect(await screen.findByText(/Tools are unavailable here/)).toBeTruthy()
+    expect(await screen.findByText(/^No lookups · This agent backend can't run lookups here/)).toBeTruthy()
     expect(screen.queryByText(/Lookups work here, but changes don't/)).toBeNull()
   })
 
-  it('says to update claude-agent-acp when only the adapter is too old', async () => {
+  it('names the adapter, its floor and the update step when only the adapter is too old', async () => {
     serveSideTools({ read_only_tools: false, claude_adapter_outdated: true })
     renderSide()
-    expect(await screen.findByText(/Update claude-agent-acp/)).toBeTruthy()
+    const note = await screen.findByRole('note')
+    expect(note.textContent).toMatch(/^No lookups · Lookups need claude-agent-acp 0\.84\.0 or newer, the Claude Code adapter\./)
+    expect(note.textContent).toMatch(/To update, run: npm i -g @agentclientprotocol\/claude-agent-acp$/)
     expect(screen.queryByText(/Lookups work here, but changes don't/)).toBeNull()
   })
 
