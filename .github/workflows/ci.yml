@@ -2020,6 +2020,13 @@ jobs:
   # that reshaped the element would break every codex session's MCP surface with
   # nothing red to say so.
   #
+  # pi is the same story twice over: pi-acp and pi ship separately, and the gate
+  # extension Crew loads into pi only reaches the session if the adapter runs the
+  # launcher PI_ACP_PI_COMMAND names, pi lists the extension's probe command, and
+  # the adapter forwards its confirm dialog. test/test_pi_real_adapter.py drives
+  # the pinned pair through Crew's own launch against a loopback model, so a
+  # release that breaks any of those reds here.
+  #
   # Per pull request rather than nightly. The facts change when the adapter revs,
   # but what makes them load-bearing changes when Crew's own projection changes,
   # and this lane is what tells the author of that change. The whole job is ~5
@@ -2101,7 +2108,8 @@ jobs:
       # versions, and what Dependabot refreshes weekly. A bump therefore arrives as
       # its own PR, and THAT PR's run of this lane is where adapter drift shows up.
       # Nothing here holds a credential: the tests fabricate an API key inside a
-      # throwaway CODEX_HOME, and session/new makes no model call.
+      # throwaway CODEX_HOME, and session/new makes no model call; the pi tests
+      # point pi's own models.json at a loopback stub with a placeholder key.
       - name: Install the pinned adapters from the lockfile
         working-directory: test/real_adapters
         run: npm ci --no-audit --no-fund
@@ -2137,7 +2145,21 @@ jobs:
           assert opencode == gate.MEASURED_OPENCODE_VERSION, (
               f"opencode {opencode!r} installed, {gate.MEASURED_OPENCODE_VERSION} pinned"
           )
-          print(f"codex-acp {codex}, opencode {opencode}: both the pinned release")
+          # pi is two packages, both pinned: the adapter by its manifest, the agent
+          # by its own binary's answer (which also proves it starts here).
+          manifest = modules / gate.PI_ACP_PACKAGE / "package.json"
+          pi_acp = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+          assert pi_acp == gate.MEASURED_PI_ACP_VERSION, (
+              f"pi-acp {pi_acp} installed, {gate.MEASURED_PI_ACP_VERSION} pinned"
+          )
+          pi = subprocess.run(
+              [str(modules / ".bin" / "pi"), "--version"],
+              check=True, capture_output=True, encoding="utf-8", timeout=120,
+          ).stdout.strip()
+          assert pi == gate.MEASURED_PI_VERSION, (
+              f"pi {pi!r} installed, {gate.MEASURED_PI_VERSION} pinned"
+          )
+          print(f"codex-acp {codex}, opencode {opencode}, pi-acp {pi_acp}, pi {pi}: the pins")
           PY
 
       - uses: ./.github/actions/run-as-runner
@@ -2150,6 +2172,10 @@ jobs:
         env:
           CODEX_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/@agentclientprotocol/codex-acp/dist/index.js
           OPENCODE_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/opencode
+          # pi's two overrides, read by Crew's own resolvers: the adapter's entry
+          # script, and the agent it is told to wrap in Crew's gate launcher.
+          PI_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/pi-acp/dist/index.js
+          PI_ACP_PI_COMMAND: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/pi
         run: |
           # As in backend-test: the `python` matcher annotates any traceback in the
           # log, including one printed inside a warning, and never matches a pytest
@@ -2160,7 +2186,8 @@ jobs:
             test/test_codex_session_mcp.py \
             test/test_opencode_session_mcp.py \
             test/test_per_tool_mcp_deny_single_binary.py \
-            test/test_pi_gate_extension_mcp.py
+            test/test_pi_gate_extension_mcp.py \
+            test/test_pi_real_adapter.py
 
       # A pin bump must re-run the live captures taken against the old release, not
       # only the handshake assertions above. This reds when a pinned adapter's
@@ -2190,7 +2217,7 @@ jobs:
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "11"
+          MEASURED_CONTRACT_FLOOR: "18"
         run: |
           python3 - <<'PY'
           import os
