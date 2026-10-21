@@ -32,10 +32,11 @@ builder (``build_permission_event``) under the nonce the launch issued.
 
 Three things are stand-ins, each for a reason:
 
-- the OS sandbox: the preflight and the argv wrap are replaced by identity, because
-  the lane's runners (and this repository's developer hosts) may have no user
-  namespaces, and the facts measured here are the adapter's and the agent's, not the
-  sandbox's. The sandbox's own suites cover the mask;
+- the OS sandbox: the preflight and the argv wraps (the gate read-back's, and the
+  one the Node engine probe confines each ``node --version`` in) are replaced by
+  identity, because the lane's runners (and this repository's developer hosts) may
+  have no user namespaces, and the facts measured here are the adapter's and the
+  agent's, not the sandbox's. The sandbox's own suites cover the mask;
 - the model: a loopback OpenAI-compatible endpoint named in pi's own ``models.json``,
   scripted to call one tool per turn, so the lane needs no credential;
 - the MCP server: a stdio stub that logs what it is asked, mounted through the
@@ -563,8 +564,14 @@ def _drive(root: Path) -> dict:
         async def _unwrapped(argv, **_kwargs):
             return list(argv), None
 
+        def _unwrapped_sync(argv, **_kwargs):
+            return list(argv), None
+
         mp.setattr(launch_mod, "_run_preflight_bounded", _no_preflight)
+        # Both spellings of the wrap: the read-back's async one, and the sync one
+        # the Node engine probe (``_pi_probe_wrap``) confines each ``node`` child in.
         mp.setattr(pi_mod, "wrap_argv_async", _unwrapped)
+        mp.setattr(pi_mod, "wrap_argv", _unwrapped_sync)
         forget_cached_resolution(ACP_BACKEND_PI)
         try:
             client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_PI, extra_env=isolated)
