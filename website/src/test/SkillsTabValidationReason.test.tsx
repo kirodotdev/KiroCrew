@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -16,6 +16,7 @@ const mockApi = vi.hoisted(() => ({
   skillPendingDetail: vi.fn(),
   approvePendingSkill: vi.fn(),
   dismissPendingSkill: vi.fn(),
+  dismissAllPendingSkills: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   api: mockApi,
@@ -103,9 +104,9 @@ const LIVE_SKILL = {
  * the notice must state the outcome ONCE instead of hedging and then answering
  * itself a line below. */
 const HEDGED =
-  'Candidate “auto/evil-helper” is no longer pending — it was approved or dismissed in another window or by your Kiro Crew agent, so there was nothing left to approve.'
+  'Candidate “auto/evil-helper” is no longer pending — it was approved or removed in another window or by your Kiro Crew agent, so there was nothing left to approve.'
 const SETTLED_DISMISSED =
-  'Candidate “auto/evil-helper” is no longer pending — it was dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.'
+  'Candidate “auto/evil-helper” is no longer pending — it was removed in another window or by your Kiro Crew agent and does not appear in the Skills list below, so there was nothing left to approve. A replacement candidate can be proposed again later.'
 const SETTLED_APPROVED =
   'Candidate “auto/evil-helper” is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below, so there was nothing left to approve.'
 
@@ -344,13 +345,13 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       // surface with its Ask-agent hand-off is mandatory), NAMING the
       // candidate and mapping the coded reason to catalog text. The live
       // list (mocked empty) settles, so the reason states the DISMISSAL
-      // outright rather than "approved or dismissed".
+      // outright rather than "approved or removed".
       await waitFor(() =>
         expect(
-          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
+          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already removed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
         ).toBeInTheDocument(),
       )
-      expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
+      expect(screen.getByRole('alert').textContent).not.toContain('approved or removed')
       // The outcome resolved (handled elsewhere — nothing is broken), so the
       // hand-off follows it instead of naming a "failure".
       expect(
@@ -365,7 +366,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       fireEvent.click(screen.getByText('Dismiss'))
       await waitFor(() =>
         expect(
-          screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
+          screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already removed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
         ).not.toBeInTheDocument(),
       )
     } finally {
@@ -392,13 +393,13 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       fireEvent.click(screen.getByText('Dismiss'))
       await waitFor(() =>
         expect(
-          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
+          screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or removed in another window or by your Kiro Crew agent).'),
         ).toBeInTheDocument(),
       )
       await waitFor(() => expect(mockApi.skills.mock.calls.length).toBeGreaterThan(1))
       // The refetch has failed; the hedge stands and no outcome is asserted.
       expect(
-        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
+        screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or removed in another window or by your Kiro Crew agent).'),
       ).toBeInTheDocument()
       expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
       expect(screen.getByRole('alert').textContent).not.toContain('already approved')
@@ -432,7 +433,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
           screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below).'),
         ).toBeInTheDocument(),
       )
-      expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
+      expect(screen.getByRole('alert').textContent).not.toContain('approved or removed')
     } finally {
       confirmSpy.mockRestore()
     }
@@ -476,7 +477,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     // One statement per screen: no hedge above the answer, and no separate
     // resolution line repeating it below (the shot-05 "hedges then answers
     // itself" reading).
-    expect(alert.textContent).not.toContain('approved or dismissed')
+    expect(alert.textContent).not.toContain('approved or removed')
     expect(alert.textContent).not.toContain('It was dismissed')
     expect(screen.queryByText(HEDGED)).not.toBeInTheDocument()
     // The hand-off follows the resolved state: nothing is broken once the
@@ -516,7 +517,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       ).toBeInTheDocument(),
     )
     const alert = screen.getByRole('alert')
-    expect(alert.textContent).not.toContain('approved or dismissed')
+    expect(alert.textContent).not.toContain('approved or removed')
     expect(alert.textContent).not.toContain('It was approved')
     expect(screen.queryByText(HEDGED)).not.toBeInTheDocument()
   })
@@ -563,7 +564,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     // The hedge stands for good: no false "already approved" (the target
     // being live proves nothing) and no false "already dismissed".
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('approved or dismissed')
+    expect(screen.getByRole('alert').textContent).toContain('approved or removed')
     expect(screen.getByRole('alert').textContent).not.toContain('already approved')
     expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
   })
@@ -652,5 +653,242 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
     await waitFor(() => expect(screen.queryByText(SETTLED_DISMISSED)).not.toBeInTheDocument())
     expect(screen.queryByText(HEDGED)).not.toBeInTheDocument()
+  })
+
+  it('names sibling rows a recovery refetch dropped, in a polite live region', async () => {
+    // The queue holds the acted-on candidate AND a sibling. A not-found approve
+    // triggers the recovery refetch, which returns a queue missing BOTH: the
+    // subject (resolved by the click) and the sibling (resolved out-of-band in
+    // the same window). The subject's fate is narrated by the panel notice; the
+    // sibling would otherwise vanish with no trace, so a muted line names it.
+    mockApi.skillsPending
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW, CLEAN_ROW] })
+      .mockResolvedValue({ pending: [] })
+    // Live list has neither, so the subject resolves to a dismissal.
+    mockApi.skills.mockResolvedValue([])
+    mockApi.approvePendingSkill.mockRejectedValue(
+      Object.assign(new Error('pending skill not found'), {
+        status: 404,
+        body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
+      }),
+    )
+    renderWithQuery()
+    // Skills query must settle before the pending panel mounts and runs the
+    // pending-list query that renders this row — give the chain its ceiling.
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    // Two rows each render a Review and a (disabled-until-open) Approve; scope
+    // to the FLAGGED row's own container so we act only on it.
+    const subjectRow = screen.getByText('auto/evil-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(subjectRow).getByText('Review'))
+    const approve = within(subjectRow).getByText('Approve').closest('button') as HTMLButtonElement
+    // The detail query starts only once Review opens the row.
+    await waitFor(() => expect(approve).not.toBeDisabled(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    fireEvent.click(approve)
+    // The departed sibling is named in a muted line …
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          '1 other candidate also left the queue — approved or removed in another window or by your Kiro Crew agent: auto/good-helper.',
+        ),
+      ).toBeInTheDocument(),
+    )
+    // … inside a POLITE live region (announced, no focus theft) …
+    const line = screen.getByText(
+      '1 other candidate also left the queue — approved or removed in another window or by your Kiro Crew agent: auto/good-helper.',
+    )
+    const region = line.closest('[aria-live]') as HTMLElement
+    expect(region).not.toBeNull()
+    expect(region).toHaveAttribute('aria-live', 'polite')
+    // … and the subject itself is narrated by the panel notice, never counted
+    // among the departed siblings.
+    expect(screen.getByText(SETTLED_DISMISSED)).toBeInTheDocument()
+    expect(line.textContent).not.toContain('auto/evil-helper')
+  })
+
+  it('shows no sibling line when the acted-on candidate was the only row', async () => {
+    // A lone row leaving is the subject's own departure, narrated by the panel
+    // notice — there is no sibling to announce, so the muted line never renders.
+    mockApi.skillsPending
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW] })
+      .mockResolvedValue({ pending: [] })
+    mockApi.skills.mockResolvedValue([])
+    mockApi.approvePendingSkill.mockRejectedValue(
+      Object.assign(new Error('pending skill not found'), {
+        status: 404,
+        body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
+      }),
+    )
+    renderWithQuery()
+    // Skills → pending-list chain settles before this row renders.
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    fireEvent.click(screen.getByText('Review'))
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement
+    // The detail query starts only once Review opens the row.
+    await waitFor(() => expect(approve).not.toBeDisabled(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    fireEvent.click(approve)
+    await waitFor(() => expect(screen.getByText(SETTLED_DISMISSED)).toBeInTheDocument())
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+  })
+
+  it('never attributes a sibling the user later resolves HERE to the recovery refetch', async () => {
+    // The departed set is FROZEN at the first settled refetch. Queue A + B;
+    // approving A hits not-found and snapshots siblings [B], but the recovery
+    // refetch still shows B (nothing left out-of-band), so the frozen departed
+    // set is empty and no line renders. The user THEN dismisses B here and it
+    // succeeds: B leaves the live queue by the user's own action. A naive
+    // re-diff against the live list would now announce "B was also removed in
+    // another window", a lie about a local action — the freeze must prevent it.
+    mockApi.skillsPending
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW, CLEAN_ROW] }) // initial
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW, CLEAN_ROW] }) // recovery refetch: B still here
+      .mockResolvedValue({ pending: [FLAGGED_ROW] })                // after the local dismiss of B
+    mockApi.skills.mockResolvedValue([])
+    mockApi.approvePendingSkill.mockRejectedValue(
+      Object.assign(new Error('pending skill not found'), {
+        status: 404,
+        body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
+      }),
+    )
+    mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
+    renderWithQuery()
+    // Skills → pending-list chain settles before this row renders.
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    const subjectRow = screen.getByText('auto/evil-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(subjectRow).getByText('Review'))
+    const approve = within(subjectRow).getByText('Approve').closest('button') as HTMLButtonElement
+    // The detail query starts only once Review opens the row.
+    await waitFor(() => expect(approve).not.toBeDisabled(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    fireEvent.click(approve)
+    // The notice settles; B was still pending at the refetch, so no line.
+    await waitFor(() => expect(screen.getByText(SETTLED_DISMISSED)).toBeInTheDocument())
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+    // Now dismiss B HERE. window.confirm is stubbed to proceed.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const siblingRow = screen.getByText('auto/good-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(siblingRow).getByText('Dismiss'))
+    // B leaves the live queue by the user's own successful dismiss …
+    await waitFor(() => expect(screen.queryByText('auto/good-helper')).not.toBeInTheDocument())
+    // … and is NEVER announced as removed-elsewhere: the frozen set stays empty.
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('excludes a sibling resolved HERE even when a later not-found reads a stale queue', async () => {
+    // The race GPT/Opus flagged: B is dismissed locally and leaves the queue,
+    // then a not-found approve on A captures its sibling list. The name of a
+    // locally-resolved candidate is remembered independently of panelError
+    // (captured in onMutate, held in a ref), so A's capture excludes B even
+    // though B's success handler could not look it up in the live queue.
+    mockApi.skillsPending
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW, CLEAN_ROW] }) // initial
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW] })            // after B dismissed locally
+      .mockResolvedValue({ pending: [] })                           // after A's not-found refetch
+    mockApi.skills.mockResolvedValue([])
+    mockApi.approvePendingSkill.mockRejectedValue(
+      Object.assign(new Error('pending skill not found'), {
+        status: 404,
+        body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
+      }),
+    )
+    mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithQuery()
+    // Skills → pending-list chain settles before this row renders.
+    await waitFor(() => expect(screen.getByText('auto/good-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    // Dismiss B locally; its name is recorded as resolved-here.
+    const siblingRow = screen.getByText('auto/good-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(siblingRow).getByText('Dismiss'))
+    await waitFor(() => expect(screen.queryByText('auto/good-helper')).not.toBeInTheDocument())
+    // Now approve A → not-found. Its sibling capture must exclude B.
+    const subjectRow = screen.getByText('auto/evil-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(subjectRow).getByText('Review'))
+    const approve = within(subjectRow).getByText('Approve').closest('button') as HTMLButtonElement
+    // The detail query starts only once Review opens the row.
+    await waitFor(() => expect(approve).not.toBeDisabled(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    fireEvent.click(approve)
+    await waitFor(() => expect(screen.getByText(SETTLED_DISMISSED)).toBeInTheDocument())
+    // B was resolved here, so it is never attributed to another window.
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('Dismiss All records its candidates as resolved-here, so none is announced as removed elsewhere', async () => {
+    // Dismiss All is a local resolution of EVERY pending candidate. Its success
+    // handler records them all in the resolved-here set (so a racing not-found
+    // capture can never name one on the sibling line) and empties the queue —
+    // the panel closes with no sibling line ever shown.
+    mockApi.skillsPending
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW, CLEAN_ROW] }) // initial
+      .mockResolvedValue({ pending: [] })                           // after Dismiss All
+    mockApi.skills.mockResolvedValue([])
+    mockApi.dismissAllPendingSkills.mockResolvedValue({ dismissed_count: 2 })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithQuery()
+    // Skills → pending-list chain settles before this row renders.
+    await waitFor(() => expect(screen.getByText('auto/good-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    fireEvent.click(screen.getByText('Dismiss All'))
+    await waitFor(() => expect(mockApi.dismissAllPendingSkills).toHaveBeenCalled())
+    // The queue empties and no out-of-band sibling line is ever announced for a
+    // candidate the user bulk-dismissed here.
+    await waitFor(() => expect(screen.queryByText('auto/good-helper')).not.toBeInTheDocument())
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('excludes a sibling whose local dismiss is STILL IN FLIGHT when the recovery refetch settles', async () => {
+    // The invariant's reason for existence: a name enters the resolved-here set
+    // at onMutate — before the request leaves — so a not-found approve whose
+    // recovery refetch settles WHILE B's dismiss is still pending still
+    // excludes B. B's dismiss is held open here; A's not-found refetch returns
+    // a queue without B and freezes departed; B must not be on the line even
+    // though B's own success has not returned yet.
+    let releaseDismiss!: (v: unknown) => void
+    const dismissPending = new Promise(res => { releaseDismiss = res })
+    mockApi.skillsPending
+      .mockResolvedValueOnce({ pending: [FLAGGED_ROW, CLEAN_ROW] }) // initial
+      .mockResolvedValue({ pending: [] })                           // A's not-found refetch: both gone
+    mockApi.skills.mockResolvedValue([])
+    mockApi.dismissPendingSkill.mockReturnValue(dismissPending)     // B's dismiss hangs
+    mockApi.approvePendingSkill.mockRejectedValue(
+      Object.assign(new Error('pending skill not found'), {
+        status: 404,
+        body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
+      }),
+    )
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithQuery()
+    // Skills → pending-list chain settles before this row renders.
+    await waitFor(() => expect(screen.getByText('auto/good-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    // Start dismissing B — onMutate marks B resolving-locally; the request hangs.
+    const siblingRow = screen.getByText('auto/good-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(siblingRow).getByText('Dismiss'))
+    // Approve A → not-found; its recovery refetch (empty) settles while B is
+    // still in flight and freezes departed.
+    const subjectRow = screen.getByText('auto/evil-helper').closest('div.rounded-md.border') as HTMLElement
+    fireEvent.click(within(subjectRow).getByText('Review'))
+    const approve = within(subjectRow).getByText('Approve').closest('button') as HTMLButtonElement
+    // The detail query starts only once Review opens the row.
+    await waitFor(() => expect(approve).not.toBeDisabled(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    fireEvent.click(approve)
+    await waitFor(() => expect(screen.getByText(SETTLED_DISMISSED)).toBeInTheDocument())
+    // B was marked at onMutate, so it is excluded even though its dismiss has
+    // not returned — no false "removed in another window" for the user's action.
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+    // Let B's dismiss finish; still no sibling line.
+    await act(async () => { releaseDismiss({ dismissed: true }); await dismissPending })
+    expect(screen.queryByText(/also left the queue/)).not.toBeInTheDocument()
+    confirmSpy.mockRestore()
   })
 })
