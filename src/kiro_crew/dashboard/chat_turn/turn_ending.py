@@ -96,9 +96,10 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
         )
         slot.append(
             "notice",
-            "ℹ️ A tool call leaked into the reply text instead of executing — "
-            "nothing was run. Re-send your request to retry (an active monitor "
-            "loop retries on its next cycle).",
+            "ℹ️ The model wrote a tool call as plain text instead of making "
+            "it, so nothing was run. If this happens again in this chat, start "
+            "a new chat (or compact this one): the text stays in this chat's "
+            "context, so a plain re-send often repeats it.",
             "msg msg-info",
         )
         _noticed_leak = True
@@ -132,11 +133,12 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
         )
         slot.append(
             "notice",
-            "ℹ️ The last tool call leaked into the reply text instead of "
-            f"executing — the {_turn_tool_calls} call(s) before it were "
-            "attempted and may already have taken effect, so part of this turn "
-            "may have landed and part did not. Check what landed before "
-            "re-sending (an active monitor loop retries on its next cycle).",
+            "ℹ️ The model wrote its last tool call as plain text instead of "
+            f"making it, so that call did not run — the {_turn_tool_calls} "
+            "call(s) before it were attempted and may already have taken "
+            "effect, so part of this turn may have landed and part did not. "
+            "Check what landed before re-sending. If this happens again in "
+            "this chat, start a new chat (or compact this one).",
             "msg msg-info",
         )
         _leak_card_posted = True
