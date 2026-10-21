@@ -1,6 +1,6 @@
 /** View types the sidebar's owners share. `Slot` is the sidebar's narrowed view of a
  *  chat slot; the wire type is `ChatSlot` in ../../types. */
-import type { CodeChannelInfo, CrewWorkFacts, SessionLink, SourceProviderId } from '../../types'
+import type { CodeChannelInfo, CrewWorkFacts, SessionLink, SourceProviderId, WorkAggregate } from '../../types'
 import type { SessionAttribution } from '../../api/sharedCrew'
 
 export interface Slot {
@@ -133,6 +133,8 @@ export interface Slot {
   links?: SessionLink[]
   /** The Slack code channel this session runs in; absent for every other row. */
   code_channel?: CodeChannelInfo
+  /** The crew's work-ledger summary (see `WorkAggregate`); null with no workers. */
+  work_aggregate?: WorkAggregate | null
   color_index?: number | null
   color_hex?: string | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'

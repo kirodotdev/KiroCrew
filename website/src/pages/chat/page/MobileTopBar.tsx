@@ -5,7 +5,8 @@ import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } fro
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
-import { CodeChannelMark } from '../../../components/CodeChannelBadge'
+import { ChannelBrandIcon } from '../../../components/ChannelBrandIcon'
+import { CodeChannelMark, slackLinkTarget } from '../../../components/CodeChannelBadge'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
 import { PanelRightSolid } from '../../../components/icons/panels'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
@@ -94,6 +95,7 @@ export default function MobileTopBar({
   dispatch,
 }: MobileTopBarProps) {
   const explore = useExplorePreview()
+  const slackLink = slackLinkTarget(currentSlot)
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
@@ -165,7 +167,7 @@ export default function MobileTopBar({
                     {currentSlot?.memory_mode === 'temporary' && <VenetianMask size={13} className="lucide-inline shrink-0 text-aim" aria-label={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')} />}
                     {/* A code channel's session is marked here too, as a glyph
                         rather than a link: the bar holds two controls and this
-                        label is one of them. The sidebar row carries the link. */}
+                        label is one of them. The ⋯ menu carries the link. */}
                     {currentSlot?.code_channel && <span className="mr-1 inline-flex"><CodeChannelMark size={12} /></span>}
                     {title}
                   </>
@@ -233,6 +235,13 @@ export default function MobileTopBar({
               actions: renders nothing while no cut is in force. */}
           <ConcurrencyCutMenuItem Item={DropdownMenuItem} />
           {explore && <MilestonesMenuItem Item={DropdownMenuItem} />}
+          {/* The session header's Slack link (code channel or thread), which
+              the phone draws no header for. */}
+          {slackLink && (
+            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => { window.open(slackLink.href, '_blank', 'noopener,noreferrer') }} data-testid="mobile-topbar-slack-link">
+              <span className="flex items-center gap-2"><ChannelBrandIcon channel="slack" size={14} /><span>{slackLink.label}</span></span>
+            </DropdownMenuItem>
+          )}
           {activePoppedOut ? (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => focusActivePopout(activeSlot)}>
               <span className="flex items-center gap-2"><ExternalLink size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.focus_popped_out_window')}</span></span>
