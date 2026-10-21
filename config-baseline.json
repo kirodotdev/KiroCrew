@@ -3016,6 +3016,7 @@
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
         "dream": "off",
+        "consolidation_selection": "newest",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3775,6 +3776,23 @@
         "propose"
       ],
       "defaultValue": "off"
+    },
+    {
+      "path": "memory.consolidation_selection",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Consolidation Row Selection",
+      "help": "Which stored facts consolidation shows the model when they are too many for its table. 'newest' (default) shows the most recently updated ones, as before. 'relevance' shows the facts that match the conversation, the newest, recent lessons and a slice that rotates through the rest, so old facts can be updated or retired too.",
+      "hasChildren": false,
+      "enumValues": [
+        "newest",
+        "relevance"
+      ],
+      "defaultValue": "newest"
     },
     {
       "path": "memory.inject_memory",
