@@ -187,6 +187,23 @@ async def dispatch(payload: dict) -> None:
     if action_id == SESSION_LINK_ACTION:
         return
 
+    # ── Slack Code channel: the Workers tab's buttons ──
+    # Open in dashboard is a url button (no server work, like the session link
+    # above); Stop stops ONE worker's turn after the channel buttons' own gates,
+    # a check that the click came from this channel's own Workers tab, and the
+    # context-bar Stop's authorization (code_channels.worker_stop).
+    from kiro_crew.slack.code_channels.board.render import WORKER_OPEN_ACTION, WORKER_STOP_ACTION
+
+    if action_id == WORKER_OPEN_ACTION:
+        return
+    if action_id == WORKER_STOP_ACTION:
+        from kiro_crew.slack.code_channels.worker_stop import handle_stop_click
+
+        # Answered there, or (code channels off) by nobody: it never falls
+        # through to a handler that reads its value as something else.
+        await handle_stop_click(_orch, payload)
+        return
+
     # ── Slack Code channel: the wrap-up's Archive button ──
     # Answered there while slack.code_channels is on (origin-inherited
     # authorization, SEL-audited); otherwise it falls through as before.

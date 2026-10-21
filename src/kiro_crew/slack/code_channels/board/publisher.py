@@ -52,6 +52,8 @@ _GONE = frozenset({"message_not_found", "cant_update_message", "edit_window_clos
 _PLAN_REFUSED = frozenset({"invalid_blocks", "invalid_blocks_format", "feature_disabled"})
 #: Channels whose Slack refused the plan block (in this process; retried after a restart).
 _plan_refused: set[str] = set()
+#: Channels whose Slack refused the board's tab links (in this process).
+_tabs_refused: set[str] = set()
 #: Answers no retry cures: the board is not retried on a timer after one of these.
 _PERMANENT = frozenset(
     {
@@ -76,12 +78,17 @@ def _code(exc: BaseException) -> str:
         return ""
 
 
-def digest(snapshot: model.BoardSnapshot, links: dict[str, str], look: str = "plan") -> str:
+def digest(
+    snapshot: model.BoardSnapshot,
+    links: dict[str, str],
+    look: str = "plan",
+    tabs: render.Tabs | None = None,
+) -> str:
     """What the board SHOWS, hashed: its rendered blocks, without the "Updated" stamp.
 
     Hashing the render rather than the snapshot keeps the digest honest for any
     look: a row field the current renderer does not show never forces an edit,
-    and one it does always does.
+    and one it does always does -- a tab link appearing included.
     """
     blocks = render.board_blocks(
         snapshot,
@@ -89,6 +96,7 @@ def digest(snapshot: model.BoardSnapshot, links: dict[str, str], look: str = "pl
         conductor_link=links.get("@conductor", ""),
         updated="",
         look=look,
+        tabs=tabs,
     )
     payload = {"blocks": blocks, "text": render.fallback_text(snapshot)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
@@ -115,11 +123,16 @@ async def publish(
     *,
     link_for: Callable[[str], str],
     owner_id: str = "",
+    tabs: render.Tabs | None = None,
+    urgent: bool = False,
 ) -> str:
     """Bring the channel's board up to *snapshot*; returns what it did (for tests/logs).
 
     ``""`` nothing to do, ``posted`` / ``updated`` / ``reposted``, or a refusal
     word (``no_slack``, ``denied``, ``archived``, ``stopped``, ``failed``).
+    *tabs* deep-links the channel's own tabs from the board; a board Slack refuses
+    with them is sent again without them (and stays without them in this process)
+    before the plan block itself is given up.
     """
     if snapshot is None:
         return ""
@@ -149,19 +162,28 @@ async def publish(
     done = ""
     now = _clock()
     look = "rows" if channel in _plan_refused else "plan"
-    new_digest = digest(snapshot, links, look)
+    if channel in _tabs_refused:
+        tabs = None
+    new_digest = digest(snapshot, links, look, tabs)
     changed = not ts or record is None or record.board_digest != new_digest
     active = any(row.state in model.ACTIVE_STATES for row in snapshot.rows)
     last = _last_edit.get(channel)
     # A live board whose "Updated" stamp went stale is edited even unchanged.
     stale = bool(ts) and active and (last is None or now - last >= STALE_SECS)
-    if ts and (changed or stale) and last is not None and now - last < MIN_EDIT_GAP_SECS:
+    if (
+        ts
+        and (changed or stale)
+        and not urgent
+        and last is not None
+        and now - last < MIN_EDIT_GAP_SECS
+    ):
         # A busy board is edited at most once per gap: the latest state then.
         _retry_at[channel] = MIN_EDIT_GAP_SECS - (now - last)
         changed = stale = False
         done = "deferred"
     if changed or stale:
         text = render.fallback_text(snapshot)
+        dropped_tabs = False
         while True:
             # A new block_id on every edit: Slack requires it of a plan block.
             blocks = render.board_blocks(
@@ -171,6 +193,7 @@ async def publish(
                 updated=_stamp(),
                 look=look,
                 block_seed=uuid.uuid4().hex[:12],
+                tabs=tabs,
             )
             try:
                 if ts:
@@ -181,6 +204,21 @@ async def publish(
                 break
             except Exception as exc:
                 code = _code(exc)
+                if look == "plan" and code in _PLAN_REFUSED and tabs is not None and tabs.any:
+                    # The tab links first: the board itself must never go stale
+                    # for want of a deep link. Remembered only once the plan
+                    # without them lands, so a refusal of the plan block itself
+                    # is not blamed on the links.
+                    dropped_tabs = True
+                    logger.warning(
+                        "code channel %s: Slack refused the board with tab links (%s); "
+                        "sending it without them",
+                        channel,
+                        code,
+                    )
+                    tabs = None
+                    new_digest = digest(snapshot, links, look, tabs)
+                    continue
                 if look == "plan" and code in _PLAN_REFUSED:
                     # This client or workspace takes no plan block: the mrkdwn
                     # rows from now on, sent at once, so the board never goes stale.
@@ -192,12 +230,14 @@ async def publish(
                         code,
                     )
                     look = "rows"
-                    new_digest = digest(snapshot, links, look)
+                    new_digest = digest(snapshot, links, look, tabs)
                     continue
                 if ts and code in _GONE:
                     ts, pinned = "", False
                     continue
                 return _failed(channel, "update" if ts else "post", exc)
+        if dropped_tabs and look == "plan":
+            _tabs_refused.add(channel)
         if not ts or done != "updated":
             if not ts:
                 return _failed(channel, "post", None)
@@ -310,6 +350,7 @@ def forget(channel: str) -> None:
     for table in (_last_edit, _failures, _pin_checked, _retry_at):
         table.pop(channel, None)
     _plan_refused.discard(channel)
+    _tabs_refused.discard(channel)
 
 
 async def _record_link(slack: Any, channel: str, board_ts: str) -> None:

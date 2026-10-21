@@ -22,7 +22,9 @@ added without amending that rule:
 * the pull request number, URL and CI state;
 * for a worker with a tool approval pending, WHAT it asks for as one phrase of
   the closed :data:`APPROVAL_WORDS` vocabulary, chosen by the approval's ACP
-  tool-call kind -- never the approval's title, its command or its arguments.
+  tool-call kind -- never the approval's title, its command or its arguments;
+* for a worker someone stopped from the Workers tab, that person's Slack user id
+  and the ``HH:MM`` of the stop, until the worker's next turn (:mod:`.stops`).
 
 Never the acceptance bar, the conductor's decision, the event log, or any
 transcript text. :class:`WorkerRow` has no field that could carry one.
@@ -340,6 +342,14 @@ class WorkerRow:
     step: str = ""
     #: For a ``working`` row: when its turn started (ISO), for an elapsed time.
     turn_started_at: str = ""
+    #: Who stopped this worker from the Workers tab (a Slack user id) and when
+    #: (``HH:MM`` UTC), until its next turn starts (:mod:`.stops`).
+    stopped_by: str = ""
+    stopped_at: str = ""
+
+    @property
+    def stopped(self) -> bool:
+        return bool(self.stopped_by) and not self.settled
 
     @property
     def needs_owner(self) -> bool:

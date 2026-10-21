@@ -302,9 +302,21 @@ exactly as with the switch off, and the page says why under the switch.
   session instead.
   A button answers only the people who may use Kiro Crew; anyone else is told so
   privately. Comments people leave on the **Plan** tab reach the channel's agent as
-  feedback from the person who wrote them. When the channel already has Slack's maximum
-  of five tabs, the agent's tab it updated least recently makes room for a new one; the
-  Plan tab, the Code tab and tabs others added are never removed. The channel's
+  feedback from the person who wrote them.
+  The channel's newest open pull requests (its own and its workers', at most two) each
+  get Slack's own pull request tab, named **PR #N**; a PR that merges or closes loses
+  its tab. A conductor channel also gets a **Workers** tab: each worker with what it
+  is doing right now, its pull request and tests, **Open in dashboard** and, while it
+  works, **Stop** (it stops that worker's current turn only, after you confirm; the
+  conductor keeps going). Stop answers the same people as the context bar's Stop.
+  Within seconds the worker's row on the board and the Workers tab reads "Stopped by
+  @you · 14:05", until that worker starts its next turn.
+  The board links the Workers and Code tabs and each pull request to its tab, and the
+  wrap-up links the Code and pull request tabs. The context bar's links still open
+  GitHub: Slack's context bar cannot link a tab. When the channel already has Slack's
+  maximum of five tabs, the agent's tab it updated least recently makes room for a new
+  one, then (only for the Plan, Code or Workers tab) the oldest pull request tab; the
+  Plan, Code and Workers tabs and tabs others added are never removed. The channel's
   pull request is also its linked resource in Slack, and the work board is its live
   summary until the wrap-up replaces it. If Slack stops accepting the channel's updates
   (it is no longer a code channel, or Kiro Crew is no longer its agent), the dashboard

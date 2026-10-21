@@ -179,6 +179,18 @@ class SurfaceStore:
             self._ensure_loaded()
             return self._records.get(channel_id)
 
+    def loaded_get(self, channel_id: str) -> SurfaceRecord | None:
+        """The record from the snapshot already in memory, WITHOUT loading or locking.
+
+        For a synchronous gate that must never touch the disk or wait on a writer
+        (it may run inside a no-suspension window on the event loop): ``None``
+        before the store is loaded, which such a gate reads as "not ours" and
+        refuses. A commit replaces the snapshot dict whole, so the read is safe.
+        """
+        if not self._loaded:
+            return None
+        return self._records.get(channel_id)
+
     def update(self, channel_id: str, **changes: Any) -> SurfaceRecord:
         """Apply *changes* to the channel's record (made when missing); returns it."""
         unknown = set(changes) - _FIELDS

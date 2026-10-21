@@ -31,7 +31,11 @@ CANVAS_ALREADY_EXISTS = "channel_canvas_already_exists"
 #: channel ends with ``agents.conversations.archive``, and ``closed`` would not
 #: archive it (code channel lifecycle).
 AGENT_STATUSES = frozenset({"processing", "suspended", "active"})
-VIEW_TYPES = frozenset({"html", "block_kit", "canvas"})
+#: ``diff`` is sent by :meth:`~.client.CodeChannelsClient.set_diff_view` (a singleton
+#: with no ``view_key``); every other type goes through :meth:`SurfaceClient.set_view`.
+VIEW_TYPES = frozenset({"html", "block_kit", "canvas", "pull_request"})
+#: Longest ``pr_url`` sent (Slack's documented URL limit elsewhere on the surface).
+MAX_PR_URL = 2048
 
 
 def _check_size(text: str, what: str) -> None:
@@ -53,8 +57,13 @@ class SurfaceClient(CodeChannelsClient):
         blocks: list[dict[str, Any]] | None = None,
         canvas_id: str = "",
         access_level: str = "",
+        pr_url: str = "",
     ) -> str:
-        """``agents.conversations.setView`` (upsert by ``view_key``); returns the view id."""
+        """``agents.conversations.setView`` (upsert by ``view_key``); returns the view id.
+
+        A ``pull_request`` view takes only *pr_url*: an https link, which Slack
+        checks itself (``invalid_pr_url``).
+        """
         _check_id(channel_id, "channel_id")
         _check_id(view_key, "view_key")
         if type not in VIEW_TYPES:
@@ -71,6 +80,15 @@ class SurfaceClient(CodeChannelsClient):
             if not blocks:
                 raise CodeChannelRequestError("a block_kit view needs blocks")
             body["blocks"] = list(blocks)
+        elif type == "pull_request":
+            if (
+                not isinstance(pr_url, str)
+                or not pr_url.startswith("https://")
+                or len(pr_url) > MAX_PR_URL
+                or any(c.isspace() for c in pr_url)
+            ):
+                raise CodeChannelRequestError("a pull_request view needs an https pr_url")
+            body["pr_url"] = pr_url
         else:
             _check_id(canvas_id, "canvas_id")
             body["canvas_id"] = canvas_id

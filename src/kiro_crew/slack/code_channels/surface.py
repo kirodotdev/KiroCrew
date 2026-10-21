@@ -16,6 +16,8 @@ Three parts, each in its own module, wired here:
   (``code_channel_action``), each running the path its command or button runs.
 * :mod:`.comments` -- plan-canvas comments read back into the session.
 * :mod:`.views` -- the view tabs at Slack's five-tab cap.
+* :mod:`.tabs` -- the channel's own tabs: native pull-request tabs and the
+  interactive Workers tab; :mod:`.worker_stop` answers its Stop button.
 
 Everything here is inert while the code-channel gate
 (:func:`.binding.code_channels_on`) is shut: the hooks fire only for a bound

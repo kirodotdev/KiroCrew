@@ -295,6 +295,10 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "closed_as",
         "step",
         "turn_started_at",
+        # Who stopped the worker from the Workers tab, and when (model's
+        # published set; cleared by the worker's next turn).
+        "stopped_by",
+        "stopped_at",
     }
 
 
