@@ -70,6 +70,7 @@ _SECTIONS = (
     "_doctor_masked_credential_aliases",
     "_doctor_memory_pressure",
     "_doctor_runtime_tmpfs",
+    "_doctor_temp_directories",
     "_doctor_cli_installer_residue",
     "_doctor_cron_health",
     "_doctor_task_store",
@@ -438,6 +439,7 @@ Configuration
   <<_doctor_acp_runtimes>>
   <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
+  <<_doctor_temp_directories>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
   <<_doctor_task_store>>
@@ -621,6 +623,7 @@ Configuration
   <<_doctor_acp_runtimes>>
   <<_doctor_task_ceilings>>
   <<_doctor_runtime_tmpfs>>
+  <<_doctor_temp_directories>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
   <<_doctor_task_store>>

@@ -603,6 +603,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
         # names), no agent influence, 5s-capped, read-only query.
         "cli_doctor_parts/host_probes.py::_detect_userspace_oom_killer",
+        # ``systemd-tmpfiles --cat-config`` probe for the Temp directories row:
+        # fixed argv (the binary resolved through ``trusted_system_bin`` against
+        # the fixed system dirs, the subcommand a literal), no agent influence,
+        # 5s-capped, read-only query. Reads only stdout (the ageing config) to
+        # decide whether a tmpfiles rule ages the temp dir.
+        "doctor_checks/resources.py::_tmpfiles_ages",
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",

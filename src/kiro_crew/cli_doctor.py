@@ -340,10 +340,12 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _doctor_run_dirs,
         _doctor_runtime_tmpfs,
         _doctor_skill_view_census,
+        _doctor_temp_directories,
         _gateway_memory_lines,
         _runtime_tmpfs_roots,
         _scan_cli_installer_residue,
         _swap_total_kib,
+        _tmpfiles_ages,
         _tmpfs_usage,
     )
     from kiro_crew.doctor_checks.services import (  # noqa: F401
@@ -730,6 +732,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Runtime tmpfs headroom (sandbox mount-source roots; Linux only) ──
     resources._doctor_runtime_tmpfs(issues)
 
+    # ── Temp directory in use (filesystem / tmpfs-no-swap / age-cleaned; advisory) ──
+    resources._doctor_temp_directories(issues)
+
     # ── kiro-cli installer residue (silent unless residue is on disk) ──
     resources._doctor_cli_installer_residue(issues)
 
@@ -1011,10 +1016,12 @@ _EXPORTS: dict[str, str] = {
             "_doctor_run_dirs",
             "_doctor_runtime_tmpfs",
             "_doctor_skill_view_census",
+            "_doctor_temp_directories",
             "_gateway_memory_lines",
             "_runtime_tmpfs_roots",
             "_scan_cli_installer_residue",
             "_swap_total_kib",
+            "_tmpfiles_ages",
             "_tmpfs_usage",
         ),
         "kiro_crew.doctor_checks.resources",

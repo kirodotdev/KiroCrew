@@ -1022,6 +1022,223 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
             print(f"  {root}: ✅ {detail}")
 
 
+# ── Temp directory in use (tmpfs / no swap / age-cleaned) ────────────────────
+# Distinct from "Runtime tmpfs" above, which warns on space and inode headroom
+# for the sandbox launcher's mount-source roots, the shared ``/tmp`` and the
+# temp roots this process resolves (this very directory among them). This row adds what the doctor does not already show about the
+# directory ``tempfile.gettempdir()`` resolves — the filesystem backing it and
+# whether ``systemd-tmpfiles`` deletes files here by age — plus a warning when
+# it is a RAM-backed tmpfs with no swap. It deliberately does NOT re-measure
+# space/inodes (the Runtime tmpfs row owns those for this dir) and does NOT
+# re-print the swap total (the Memory Pressure section already shows it); swap
+# is read here only to decide the tmpfs-with-no-swap warning.
+#
+# The path is the one THIS doctor process resolves. With no ``TMPDIR`` set it is
+# the system default (``/tmp``), which is also what a gateway installed with no
+# ``TMPDIR`` override uses; a service given a divergent ``TMPDIR`` resolves that
+# instead, and this probe — reading the CLI's own environment and mount
+# namespace — cannot see it, so the row names the directory it actually measured
+# rather than claiming to read the service.
+#
+# Best effort and advisory only — never appended to ``issues`` and never fails
+# the doctor: a RAM-backed temp dir and its ageing policy are host configuration
+# the operator owns. Linux carries the probe; macOS and Windows report the dir
+# informationally, since the filesystem type, swap and tmpfiles sources are all
+# Linux procfs/systemd.
+
+
+def _tmpfiles_ages(temp_dir: str) -> bool | None:
+    """Whether a ``tmpfiles.d`` rule ages *temp_dir*, or ``None`` when unknown.
+
+    Best effort: runs ``systemd-tmpfiles --cat-config`` (resolved through the
+    trusted-bin pin so a PATH-planted shim cannot run) and matches ONLY plain
+    literal rule paths against *temp_dir*.
+
+    The invariant that keeps it honest: a rule path this reader cannot resolve
+    to one definite directory — one carrying a glob metacharacter, a systemd
+    ``%`` specifier, a quote or a backslash escape — is never matched literally,
+    because reconstructing systemd's glob/specifier/quoting semantics belongs to
+    systemd. So the result is ``None`` (unknown) rather than a guess whenever
+    ``systemd-tmpfiles`` is absent, the probe fails, or an AGEING rule's path is
+    unresolvable or an ``x``/``X`` exclusion provably covers the dir. ``True``
+    only on a plain literal ageing rule that covers the dir; ``False`` when every
+    ageing rule was a plain literal path and none covers it. Non-privileged and
+    capped at 5s so it can never hang the doctor.
+    """
+    tmpfiles = cli_doctor.platform_compat.trusted_system_bin("systemd-tmpfiles")
+    if tmpfiles is None:
+        return None
+    try:
+        res = cli_doctor.subprocess.run(
+            [tmpfiles, "--cat-config"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, cli_doctor.subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    target = os.path.realpath(temp_dir)
+    aged = False
+    for raw in res.stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Split off the argument (field 7) from the six STRUCTURAL fields
+        # (type, path, mode, uid, gid, age). The argument can legitimately
+        # carry quotes -- stock systemd ships ``f+! /run/nologin 0644 - - -
+        # "System is booting up."`` -- and it is irrelevant to path/age
+        # matching, so a quote THERE must not blind the whole probe.
+        structural = line.split(None, 6)[:6]
+        # A quote or backslash in a STRUCTURAL field means the path can contain
+        # whitespace or escapes, so the whitespace split mis-aligns the age and
+        # path and no structural field can be trusted. Such a line is unreadable
+        # here, so the honest answer for the whole probe is unknown -- never a
+        # verdict derived from mis-aligned fields.
+        if any(ch in tok for tok in structural for ch in "\"'\\"):
+            return None
+        fields = line.split()
+        # type, path, mode, uid, gid, age. The base type is the first alpha of
+        # field 0 (modifiers like +!=- may precede/follow it).
+        if len(fields) < 2:
+            continue
+        type_field = fields[0]
+        base_type = next((c for c in type_field if c.isalpha()), "")
+        rule_path = fields[1]
+        age = fields[5] if len(fields) >= 6 else "-"
+        ages = age not in ("", "-")
+
+        # A systemd ``%`` specifier expands to a directory this reader cannot
+        # compute (``q %T 10d`` -> /tmp), so an AGEING rule carrying one is
+        # unknowable; a non-ageing one cannot make the dir aged, so skip it.
+        # (Quotes and backslashes are handled at the line level above.)
+        if "%" in rule_path:
+            if ages:
+                return None
+            continue
+
+        # A glob metacharacter: the rule is anchored at the directory holding
+        # the first one (``/tmp/crew-*`` is anchored at ``/tmp``, matching a
+        # wildcard WITHIN the ``crew-*`` component, not just at a ``/`` boundary
+        # -- the case a naive prefix match misses). An AGEING glob whose anchor
+        # directory is related to the target (equal, above, or below) could
+        # cover it, so the verdict is unknown; one anchored elsewhere
+        # (``e /var/*/cache``) cannot reach the target and is skipped.
+        glob_at = min((i for i, ch in enumerate(rule_path) if ch in "*?["), default=-1)
+        if glob_at >= 0:
+            anchor = os.path.dirname(rule_path[:glob_at]) or "/"
+            related = (
+                target == anchor
+                or target.startswith(anchor.rstrip("/") + "/")
+                or anchor.startswith(target.rstrip("/") + "/")
+            )
+            if ages and related:
+                return None
+            continue
+
+        resolved = _realpath_or(rule_path)
+        covers = resolved == target or target.startswith(resolved.rstrip("/") + "/")
+        # An ignore/exclusion (``x``/``X``) AT OR ABOVE the target can stop a
+        # parent ageing rule from cleaning it, so the honest answer is unknown.
+        # One strictly BELOW the target excludes a child and does not stop the
+        # target's own files being aged.
+        if base_type in ("x", "X") and covers:
+            return None
+        if ages and covers:
+            aged = True
+    return aged
+
+
+def _realpath_or(path: str) -> str:
+    """``os.path.realpath(path)``, or *path* unchanged when it cannot resolve."""
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
+def _doctor_temp_directories(issues: list[str]) -> None:
+    """Report the temp dir in use: filesystem and ageing policy.
+
+    Shows the directory ``tempfile.gettempdir()`` resolves for THIS doctor run,
+    with the filesystem type backing it and whether a ``tmpfiles.d`` rule ages
+    it. Warns (never fails — advisory, like the Memory Pressure section) when
+    the dir is tmpfs with no swap: a RAM-backed temp dir with nothing to absorb
+    a spike throttles under memory pressure before the kernel OOM killer fires.
+    Swap is read only for that decision and not re-printed — the Memory Pressure
+    section already shows the swap total.
+
+    Space and inode headroom are deliberately NOT measured here — the Runtime
+    tmpfs row already warns on them for this directory. With no ``TMPDIR`` set
+    the path is the system default, which a gateway installed without a
+    ``TMPDIR`` override also uses; a service given a divergent ``TMPDIR`` is not
+    visible to this probe, so the row names the directory it measured rather than
+    claiming to read the service.
+
+    Linux carries the probe; macOS and Windows print the path informationally
+    (filesystem type, swap and tmpfiles are all Linux-specific sources).
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nTemp directories")
+    try:
+        temp_dir = tempfile.gettempdir()
+    except OSError:
+        # gettempdir() probes candidate dirs and raises when none is usable —
+        # exactly the host that most needs the rest of doctor to keep running.
+        print("  ⚠️  could not resolve the temp directory (no usable TMPDIR)")
+        return
+    print(f"  path: {temp_dir} (resolved by this doctor run)")
+
+    if not sys.platform.startswith("linux"):
+        print(
+            f"  ⏹ not applicable ({sys.platform} — filesystem type, swap and "
+            "tmpfiles ageing are read from Linux procfs/systemd)"
+        )
+        return
+
+    # Reuse the one mount-table filesystem-type resolver the repo already has
+    # (taskq) rather than ship a second. A function-local import keeps this
+    # family from binding a project module at module scope (test_cli_doctor_
+    # refactor_family_reads). It reads the type for the dir, honouring the
+    # topmost mount among stacked ones.
+    from kiro_crew.taskq.store import _linux_mount_type
+
+    fs_type = _linux_mount_type(Path(temp_dir))
+    if fs_type is not None:
+        print(f"  filesystem: {fs_type}")
+    else:
+        print("  filesystem: ⚠️  could not read the mount table")
+
+    # Swap is read (not re-printed — the Memory Pressure section already shows
+    # it) only to decide the tmpfs-with-no-swap warning below.
+    swap_kib = _swap_total_kib()
+    is_tmpfs = fs_type == "tmpfs"
+
+    aged = _tmpfiles_ages(temp_dir)
+    if aged is True:
+        print("  ageing: ⚠️  a tmpfiles.d rule deletes files here by age")
+    elif aged is False:
+        print("  ageing: ✅ no tmpfiles.d age rule covers this directory")
+    else:
+        print(
+            "  ageing: ⏹ could not determine (systemd-tmpfiles unavailable or the "
+            "probe failed, or a rule this reader cannot resolve — a glob, a "
+            "specifier, or an exclusion — covers this directory)"
+        )
+
+    # Advisory warning — a RAM-backed temp dir with no swap release valve.
+    if is_tmpfs and swap_kib == 0:
+        print(f"  ⚠️  {temp_dir} is tmpfs (RAM-backed) with no swap.")
+        print(
+            "       Its contents count against RAM, so a large write throttles "
+            "the host under memory pressure. Point TMPDIR at a disk-backed path "
+            "for whatever writes here."
+        )
+
+
 # ── kiro-cli installer residue ────────────────────────────────────────────────
 # kiro-cli runs its auto-update check on STARTUP — the ``app.disableAutoupdates``
 # setting is documented as "Disable automatic updates on startup" — and Crew

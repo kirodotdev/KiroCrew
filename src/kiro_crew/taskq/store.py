@@ -241,7 +241,11 @@ def _linux_mount_type(path: Path) -> str | None:
             continue
         mount = parts[1].replace("\\040", " ")
         if target == mount or target.startswith(mount.rstrip("/") + "/") or mount == "/":
-            if best is None or len(mount) > best[0]:
+            # ``>=`` so that, among mounts sharing the longest matching point,
+            # the LAST wins: /proc/mounts lists an over-mount after the mount it
+            # covers, so the last same-length entry is the one visible at that
+            # path (a tmpfs over an ext4 /tmp reads as tmpfs).
+            if best is None or len(mount) >= best[0]:
                 best = (len(mount), parts[2])
     return best[1] if best else None
 
