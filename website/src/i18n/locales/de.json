@@ -21444,6 +21444,7 @@
     "intro": "Ein Profil ist eine gespeicherte Einrichtung, auf der ein Chat laufen kann. Jeder Chat auf einem Profil bekommt einen eigenen Coder-Workspace, den Rechner, auf dem seine Dateien und Befehle liegen.",
     "introSprites": "Ein Profil ist eine gespeicherte Einrichtung, auf der ein Chat laufen kann. Jeder Chat auf einem Profil bekommt einen eigenen Sprite, den Rechner, auf dem seine Dateien und Befehle liegen.",
     "introBoxd": "Ein Profil ist eine gespeicherte Einrichtung, auf der ein Chat laufen kann. Jeder Chat auf einem Profil bekommt eine eigene boxd-Maschine, den Rechner, auf dem seine Dateien und Befehle liegen.",
+    "introKiroCloud": "Ein Profil ist eine gespeicherte Einrichtung, auf der ein Chat laufen kann. Ein Chat auf einem Kiro-Cloud-Profil läuft vollständig in einer eigenen Kiro-Cloud-Sandbox, mit dem Agenten, seinen Dateien und seinen Befehlen.",
     "settingsDescription": "Chats auf entfernten Coder-Workspaces ausführen",
     "globalDefaults": "Globale Standards",
     "defaultEnabled": "Neue Chats mit einem Profil starten",
@@ -21506,6 +21507,7 @@
       "choicesUnreadable": "Deine Profile konnten nicht geladen werden. Öffne das Menü erneut, um es noch einmal zu versuchen.",
       "unknownProfile": "Dieses Profil ist in den Einstellungen nicht mehr eingerichtet.",
       "environmentLocked": "Die Umgebung eines Chats steht fest, sobald seine erste Nachricht gesendet ist.",
+      "privateChat": "Kiro Cloud Sessions sind in Inkognito- und temporären Chats nicht verfügbar.",
       "appliesNext": "Wird mit der ersten Nachricht festgelegt. Um woanders zu arbeiten, starte einen neuen Chat.",
       "stage": {
         "checking": "Profil wird geprüft",
@@ -21540,6 +21542,8 @@
       "conflict": "Die Datei hat sich im Workspace geändert und wurde nicht gespeichert. Deine Änderungen sind noch da: Kopiere sie, wenn du sie behalten willst, und lade dann die neue Version.",
       "rootChanged": "Der Arbeitsordner dieses Profils hat sich geändert, seit du diese Datei geöffnet hast, daher wurde sie nicht gespeichert. Deine Änderungen sind noch da: Kopiere sie, wenn du sie behalten willst.",
       "openTerminal": "Terminal in diesem Workspace öffnen",
+      "cloudSandbox": "Dieser Chat läuft in einer Kiro-Cloud-Sandbox, daher können seine Dateien und sein Git hier nicht angezeigt werden.",
+      "cloudSandboxRefused": "Die Dateien dieses Chats konnten nicht geöffnet werden, da er in einer Kiro-Cloud-Sandbox läuft, die nur sein eigener Agent erreicht.",
       "copyEdits": "Meine Änderungen kopieren",
       "discardEdits": "Meine Änderungen verwerfen",
       "discardWhich": "Deine nicht gespeicherten Änderungen an {{path}} gehen verloren.",
@@ -21691,7 +21695,23 @@
     "verifyHintBoxd": "Prüft, ob die boxd CLI auf diesem Rechner installiert und angemeldet ist und bei welchen Git-Hosts dieser Rechner angemeldet ist. Es wird keine boxd-Maschine erstellt oder geweckt.",
     "managementHintSprites": "Ein Chat läuft auf einem Profil, sobald du es im Menü „Diesen Chat ausführen auf“ neben dem Nachrichtenfeld wählst. Jeder Chat erhält einen eigenen Sprite, der seine Dateien behält und im Leerlauf in den Ruhezustand geht; archivierst du den Chat, wird er nach 7 Tagen gelöscht.",
     "managementHintBoxd": "Ein Chat läuft auf einem Profil, sobald du es im Menü „Diesen Chat ausführen auf“ neben dem Nachrichtenfeld wählst. Jeder Chat erhält eine eigene boxd-Maschine, die ihre Dateien behält und im Leerlauf in den Ruhezustand geht; archivierst du den Chat, wird sie in den Ruhezustand versetzt und nach 7 Tagen gelöscht.",
+    "managementHintKiroCloud": "Ein Chat läuft auf einem Profil, sobald du es im Menü „Diesen Chat ausführen auf“ neben dem Nachrichtenfeld wählst. Jeder Chat erhält eine eigene Kiro-Cloud-Sandbox, die in Kiro Web (app.kiro.dev) aufgeführt ist und nicht hier. Archivierst oder löschst du den Chat, bleibt seine Sandbox dort erhalten.",
     "computeSurvivesStopMicroVm": "Unsicher? Lass es an, außer die Dateien dieser Vorlage gehen verloren, wenn ein Workspace anhält.",
+    "kiroCloud": {
+      "replayed": "Die Cloud-Sitzung konnte nicht erneut geöffnet werden, daher wurde eine neue Cloud-Sitzung gestartet, in die dieses Gespräch übernommen wurde. Dateien und Änderungen aus der früheren Sitzung sind darin nicht enthalten. Die frühere Sitzung ist weiterhin in Kiro Web (app.kiro.dev) aufgeführt.",
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profile, die die ganze Sitzung in einer Kiro-Cloud-Sandbox ausführen: den Agenten, seine Dateien und seine Befehle. Das Profil einer Sitzung wählst du über das Umgebungsmenü neben dem Nachrichtenfeld.",
+      "notVerified": "Diese Profile werden nicht vorab geprüft. Kann ein Cloud-Chat nicht starten, erklärt der Chat den Grund.",
+      "setup1": "Wähle unter Einstellungen → {{tab}} das {{backend}}-Backend und melde dich bei Kiro mit einem Konto an, das Kiro Cloud Sessions hat.",
+      "setup2": "Gib die Repositorys an, die die Sandbox öffnen soll, im Format owner/name. Eine leere Liste öffnet einen leeren Workspace.",
+      "repositories": "Repositorys",
+      "repositoriesHint": "Repositorys beim mit deinem Kiro-Konto verbundenen Quellanbieter (z. B. GitHub), durch Kommas getrennt im Format owner/name (z. B. acme/web), höchstens {{max}}. Lass das Feld leer für einen leeren Workspace.",
+      "emptyWorkspace": "Leerer Workspace",
+      "profiles": "Kiro-Cloud-Profile",
+      "limits": "Der Cloud-Agent führt Befehle aus, ohne dich vorher zu fragen, und kann die Tools und Verbindungen, die du in {{productName}} eingerichtet hast, nicht nutzen.",
+      "add": "Kiro-Cloud-Profil hinzufügen",
+      "remove": "Kiro-Cloud-Profil entfernen"
+    },
     "checkCoderLogin": "Zum Anmelden führe <code>coder login</code> in einem Terminal auf diesem Rechner aus."
   },
   "crewEditorNext": {
