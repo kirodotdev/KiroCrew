@@ -81,6 +81,11 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} keeps failing to restart",
+      "restart_exhausted_message_one": "{{app}} has failed to restart {{count}} time in a row and will keep retrying every few minutes. To retry now, disable and re-enable {{app}}.",
+      "restart_exhausted_message_other": "{{app}} has failed to restart {{count}} times in a row and will keep retrying every few minutes. To retry now, disable and re-enable {{app}}."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Details for whoever assembled this copy",
       "refused_page_handoff_note": "Asking the agent opens a chat with these details already attached.",
