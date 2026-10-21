@@ -1345,7 +1345,7 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # pins nothing usable, so the folding snapshot is the right reader.
     "kiro_crew/diagnose_probes.py": [("diagnose", "dashboard")],
     # Export/import warn about crew rows whose template this machine lacks.
-    "kiro_crew/portability.py": [("portability", "dashboard")],
+    "kiro_crew/portability_templates.py": [("portability", "dashboard")],
 }
 
 

@@ -780,7 +780,7 @@ class TestNotificationMergeResolvesEachNameOnce:
         regular file before any by-name re-check could run. The descriptor
         judgement refuses with the named reason; an ``os.path.isfile(src_path)``
         check would pass and hand the FIFO descriptor to the record reader.
-        ``pinned_fs.py`` records the identical finding for the pinned walk:
+        ``pinned_fs_files.py`` records the identical finding for the pinned walk:
         an ``lstat``-before-open compared against a later ``fstat`` is the same
         check-to-use window wearing a different name.
         """

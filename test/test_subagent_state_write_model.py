@@ -109,17 +109,17 @@ _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
         "holds the conversation until the worker lands; inherits the per-agent lock",
     ),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "create_agent_folder",
         "update_execution_context",
     ): (1, "on loop; the one acquire that can wait, bounded by the spawn and admission path"),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "create_agent_folder",
         "_atomic_write(state.json)",
     ): (1, "creation path; writes the initial file before any writer can race"),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_tombstones.py",
         "write_finished_result",
         "state_writer",
     ): (
@@ -128,22 +128,22 @@ _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
         "serialized by update_state's per-agent lock",
     ),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "promote_retention",
         "state_writer",
     ): (1, "on loop; fenced by a non-blocking probe of the state lock, RETRYABLE on contention"),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "tighten_run_memory_mode",
         "update_execution_context",
     ): (1, "off loop through to_thread; serialized by the callee's unconditional lock"),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "update_execution_context",
         "_atomic_write(state.json)",
     ): (2, "the writer's own rewrite, inside the lock it holds for read and write"),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "update_state",
         "_atomic_write(state.json)",
     ): (
@@ -151,7 +151,7 @@ _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
         "the writer's own rewrite; off-loop callers hold the lock, on-loop sites are listed here",
     ),
     (
-        "kiro_crew/subagent_persistence.py",
+        "kiro_crew/subagent_persistence_state.py",
         "write_run_agent",
         "update_execution_context",
     ): (1, "off loop pre-run write; serialized by the callee's unconditional lock"),
@@ -398,7 +398,7 @@ def test_every_census_entry_still_exists() -> None:
 #: gate's verdict. So each gate is driven here against a census or a site list
 #: that MUST fail it. Dropping an assertion above reddens one of these.
 _PINNED_SITE = (
-    "kiro_crew/subagent_persistence.py",
+    "kiro_crew/subagent_persistence_state.py",
     "promote_retention",
     "state_writer",
 )

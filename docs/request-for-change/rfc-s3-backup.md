@@ -67,7 +67,7 @@ which uploads snapshot and sessions backups off-host; its contract is
 | Mechanism | Code | Destination |
 |---|---|---|
 | CLI snapshot / restore | `snapshot.py`, `snapshot_components.py` (`VALID_COMPONENTS`, `CORE_FILES`) | `<data home>/snapshots/` — inside what it protects |
-| Dashboard export / import | `portability.py` (`EXPORT_EXCLUDE`, `EXCLUDE_DIRS`) | browser download, unscheduled |
+| Dashboard export / import | `portability.py` (`EXPORT_EXCLUDE`, `EXCLUDE_DIRS` in `portability_archive.py`) | browser download, unscheduled |
 | Session transfer | `dashboard/session_transfer.py`, `dashboard/handlers_instances.py` | another **live** instance over an SSH tunnel |
 
 Session transfer needs both hosts up simultaneously — the one condition a host loss
@@ -80,7 +80,7 @@ path in the repository wrote crew state to a remote store.
 store `session_storage.py:7-10` documents (`<data home>/sessions/*.jsonl` +
 `sessions/archive/`, resolver `_crew_sessions_dir` in `session_storage_parts/store_layout.py`; `<kiro home>/sessions/cli/<sid>.*`, resolver
 `config/paths.py` (`kiro_sessions_dir`)). `uploads/` is excluded outright on the dashboard path
-(`EXCLUDE_DIRS` in `portability.py`) and absent from `CORE_FILES`; `artifacts/` is in neither.
+(`EXCLUDE_DIRS` in `portability_archive.py`) and absent from `CORE_FILES`; `artifacts/` is in neither.
 Measured on one install: 385 MB irreplaceable (322 MB transcripts, 28 MB uploads,
 22 MB memory DBs, < 2 MB config + artifacts) against a ~30 MB bundle today. Small
 enough that full-bundle-per-run beats incremental.
@@ -90,7 +90,7 @@ enough that full-bundle-per-run beats incremental.
 sessions living outside the crew home (see the `dashboard/session_transfer.py` module docstring), while neither
 side of what it points at is staged; a `session_map` entry is load-bearing for
 storage reclamation in `DashboardState`. The dashboard path takes the opposite
-position (`session_map.json` is in `EXPORT_EXCLUDE` in `portability.py`). This RFC asserts no runtime consequence — M2
+position (`session_map.json` is in `EXPORT_EXCLUDE` in `portability_archive.py`). This RFC asserts no runtime consequence — M2
 lands a fix or a test pinning current behavior. It is evidence that "what belongs
 in a bundle" was never settled between the two implementations.
 

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import importlib as _importlib
 import json
 import logging
 import os
 import re
 import shutil
+import sys as _sys
 import tempfile
 import threading
 import time
@@ -22,8 +24,9 @@ import weakref
 from collections.abc import Collection
 from enum import Enum
 from pathlib import Path
-from typing import Callable, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 
+import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
@@ -33,1737 +36,79 @@ from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-
-logger = logging.getLogger(__name__)
-
-# Resolved per call, never captured at import: an import-time binding freezes
-# the data home and defeats pod isolation, the lazy legacy-home migration and
-# test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home";
-# dashboard/handlers/usage_store.py is the reference implementation.
-_SUBAGENTS_DIR: Path | None = None
-
-# Promotion and prune arbitrate per agent; the weak lock registry is defined
-# beside the state-writer registry below so unrelated conversations never couple.
-SUBAGENT_CONVERSATION_PREFIX = "subagent:"
-_CLEANUP_IDENTITIES_FILE = "cleanup-identities.json"
-_CLEANUP_IDENTITIES_TRUST_DIR = "subagent-cleanup-identities"
-_LIVE_RUN_STATES: dict[tuple[str, str], dict] = {}
-
-
-def _live_run_key(agent_id: str) -> tuple[str, str]:
-    return str(_subagents_dir()), agent_id
-
-
-_CLEANUP_IDENTITY_LOCK = threading.Lock()
-_LIVE_CLEANUP_IDENTITIES: dict[str, list[dict[str, object]]] = {}
-_LIVE_CLEANUP_HINTS: set[str] = set()
-
-
-class RetentionPromotionResult(Enum):
-    """Outcome of the non-blocking promotion transaction."""
-
-    PROMOTED = "promoted"
-    RETRYABLE = "retryable"
-
-
-def _cleanup_identities_path(agent_id: str) -> Path:
-    # Validate with the canonical agent-directory guard, but keep this durable
-    # cleanup authority OUTSIDE the agent-writable run folder. ``trust`` is on
-    # the shared file gate's read+write sensitive floor, so a subagent cannot
-    # replace another session ID and trick prune into deleting its transcript.
-    _agent_dir(agent_id)
-    return (
-        _subagents_dir().parent
-        / "trust"
-        / _CLEANUP_IDENTITIES_TRUST_DIR
-        / agent_id
-        / _CLEANUP_IDENTITIES_FILE
-    )
-
-
-def _protect_cleanup_identities_path(agent_id: str) -> Path:
-    """Return the cleanup record only after fail-loud owner-only lockdown."""
-    path = _cleanup_identities_path(agent_id)
-    for protected_dir in (path.parents[2], path.parents[1], path.parent):
-        platform_compat.make_owner_only_dir(protected_dir)
-        # ``make_owner_only_dir`` is best-effort by contract. Cleanup identity
-        # authorizes transcript deletion, so failure here must abort the read or
-        # write on Windows as well as POSIX instead of trusting a permissive ACL.
-        platform_compat.restrict_dir_to_owner(protected_dir)
-    if path.exists():
-        # Tightening a parent does not retrofit an existing Windows file DACL.
-        platform_compat.restrict_to_owner(path)
-    return path
-
-
-def _delete_cleanup_identities_file(agent_id: str) -> None:
-    """Remove the protected generation record after its run folder is gone."""
-    shutil.rmtree(_cleanup_identities_path(agent_id).parent, ignore_errors=True)
-
-
-# ── panel dismissals ─────────────────────────────────────────────────
-
-# One file per dismissed run, named for the run, so the whole set is one
-# directory listing and two dismissals never contend over a shared file.
-#
-# A top-level leaf of the data home, NOT a subdirectory of ``trust``. The same
-# name is registered in ``security/paths_lists.py`` and in three lists in ``sandbox_leaves.py``,
-# ``sandbox_precreate.py`` and ``sandbox_seals.py``; a rename here without those is a
-# silently unprotected store, which ``test_subagent_panel_durable_replay.py`` pins by
-# asserting this constant is present in each.
-_PANEL_DISMISSAL_LEAF = "panel-dismissals"
-
-#: What a dismissal write did. Three outcomes rather than a bool, because the two
-#: falsy ones need OPPOSITE answers from a caller that is about to publish the
-#: dismissal: a run with no folder has nothing durable to bring its card back, so
-#: the dismissal stands, while a write that FAILED means the card returns on the
-#: next rebuild and the caller must not report success.
-DISMISSAL_RECORDED = "recorded"
-DISMISSAL_NO_FOLDER = "no_folder"
-DISMISSAL_FAILED = "failed"
-
-
-def _panel_dismissals_dir() -> Path:
-    """Gateway-owned home for panel dismissals, outside the run folders.
-
-    A dismissal decides what the panel HIDES, so neither the run it is about nor
-    any other sandboxed process may write one. That makes it an OWNER-authority
-    record, and this repository already settled where those live: ``crew-panels``,
-    ``crew-teams`` and ``tag-grants`` are each their own top-level leaf
-    specifically because ``trust`` is a declared sandbox READ-WRITE exception
-    (in-sandbox ``verify_session_pid`` reads ``trust/sel_hmac.key`` and the
-    in-sandbox MCP servers append to the audit log). A record under ``trust``
-    stays writable by a sandboxed command that builds the path at runtime, which
-    command matching cannot catch because it has no literal path to match. So
-    this is a sibling of those three, not of the cleanup identities that predate
-    the rule, and it is registered in all four places one requires:
-    ``paths.SENSITIVE_*`` for the file gate, ``sandbox._CREW_HIDDEN_LEAVES`` for
-    the bind mask, ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` because the mask loop
-    SKIPS a name that does not exist yet and this directory is created on the
-    first dismissal, and ``_CREW_NO_ALIAS_LEAVES`` because a link would attach
-    the mask to the target while leaving the name writable.
-
-    ``tombstone.json`` and ``state.json``, by contrast, sit in the agent-writable
-    run folder, where a run could hide its own card from every later rebuild.
-
-    Resolved through ``_subagents_dir().parent`` rather than ``data_home()``
-    directly, which is this module's existing way of naming a data-home sibling
-    (see the member-memory bindings): in production the two are the same path,
-    and only the former follows the ``_SUBAGENTS_DIR`` test hook, so a test's
-    registry and its dismissals cannot end up in different homes.
-    """
-    return _subagents_dir().parent / _PANEL_DISMISSAL_LEAF
-
-
-def _panel_dismissal_path(agent_id: str) -> Path:
-    """The record's path, for an id that is safe to spell as a file name.
-
-    The canonical agent-directory guard settles traversal, and the remaining
-    charset rule is about the FILE this id names: a run id reaches here from the
-    route's URL, and ``:`` or a trailing dot is a legal folder name on POSIX and
-    an illegal file name on Windows. Ids are hex from ``_mint_agent_id``, so the
-    rule costs a real dismissal nothing.
-    """
-    _agent_dir(agent_id)
-    if len(agent_id) > _PANEL_ID_CAP or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", agent_id):
-        raise ValueError(f"Invalid agent_id for a dismissal record: {agent_id!r}")
-    return _panel_dismissals_dir() / agent_id
-
-
-def record_panel_dismissal(agent_id: str) -> bool:
-    """Record that a finished run's panel card was dismissed. True when stored.
-
-    A dismissal has to be durable because the panel's durable half reads run
-    FOLDERS: dropping the run from the manager hid the card only until the next
-    rebuild, which found the folder the delete left behind and sent the card
-    again. This record is what that reader consults.
-
-    The folder itself is deliberately left alone. ``spawn_continue`` reseeds its
-    session map from ``state.json`` in there, so deleting a folder to hide a card
-    would also destroy a conversation the user can still continue, and would take
-    the run's result text and its prune bookkeeping with it.
-
-    False when the run has no folder: nothing durable can resurrect that card, so
-    there is nothing to suppress, and a record for it would outlive every path
-    that reclaims one.
-
-    A caller that must not publish a dismissal it failed to store wants
-    :func:`record_panel_dismissal_outcome` instead: this bool cannot tell "no
-    folder, so nothing to suppress" from "the write failed", and those two need
-    opposite answers.
-    """
-    return record_panel_dismissal_outcome(agent_id) == DISMISSAL_RECORDED
-
-
-def record_panel_dismissal_outcome(agent_id: str) -> str:
-    """:func:`record_panel_dismissal`, with its two falsy cases kept apart.
-
-    One of them is success in every sense that matters -- a run with no folder has
-    nothing durable to resurrect its card -- and the other means the card WILL come
-    back. A caller that pops the run out of the manager on either one reports a
-    dismissal that did not happen, so the distinction lives here rather than in
-    each caller's reading of a bool.
-    """
-    try:
-        if not _agent_dir(agent_id).is_dir():
-            return DISMISSAL_NO_FOLDER
-        path = _panel_dismissal_path(agent_id)
-    except ValueError:
-        # Not an id any run could carry, so no folder can ever claim it: the same
-        # answer as a missing folder, not a fault.
-        return DISMISSAL_NO_FOLDER
-    except OSError:
-        # The folder check itself faulted, so whether a folder exists is UNKNOWN.
-        # Reporting "no folder" here would let a caller publish a dismissal for a
-        # run whose card the next rebuild still finds.
-        logger.warning("panel dismissal folder check failed for %s", agent_id, exc_info=True)
-        return DISMISSAL_FAILED
-    try:
-        directory = path.parent
-        directory.mkdir(parents=True, exist_ok=True)
-        platform_compat.make_owner_only_dir(directory)
-        platform_compat.restrict_dir_to_owner(directory)
-        # ``atomic_write``, not a write-then-restrict pair: it applies the
-        # owner-only lockdown to the TEMP file before any content reaches it and
-        # before the rename, so the record never exists in a world-readable file.
-        # ``scripts/check_lockdown_before_publish.py`` enforces that ordering.
-        # Every failure it raises -- a lockdown that cannot be applied, and the
-        # linked-parent refusal ``restrict_to_owner`` implies -- is an OSError,
-        # so the fail-open contract below still covers all of them.
-        atomic_write(
-            path,
-            json.dumps({"id": agent_id, "at": time.time()}),
-            restrict_to_owner=True,
-        )
-    except OSError:
-        # The card returns on the next rebuild, and no reader can explain why, so
-        # the operator log carries the reason. Raising instead would leave the run
-        # gone from the manager and still undismissed -- strictly worse.
-        logger.warning("panel dismissal not recorded for %s", agent_id, exc_info=True)
-        return DISMISSAL_FAILED
-    return DISMISSAL_RECORDED
-
-
-def panel_dismissal_recorded(agent_id: str) -> bool:
-    """Is THIS run's card dismissed? One stat, nothing retained.
-
-    The membership question the panel reader actually asks, per candidate it is
-    already scanning. Enumerating every dismissal into a set to answer it would
-    retain one entry per record inside a function whose whole contract is a
-    bounded working set -- the registry's size would set the memory, which is the
-    bound's own reason for existing.
-
-    Fails OPEN, the same direction as :func:`dismissed_panel_ids`: an unreadable
-    record answers "not dismissed", so a filesystem fault resurrects a card the
-    user can dismiss again rather than hiding a run nobody dismissed.
-    """
-    try:
-        return _panel_dismissal_path(agent_id).is_file()
-    except (OSError, ValueError):
-        return False
-
-
-def dismissed_panel_ids() -> frozenset[str]:
-    """Run ids whose panel card the user dismissed.
-
-    Fails OPEN. An unreadable record yields no id, so a filesystem fault
-    resurrects a dismissed card -- which the user can dismiss again -- rather
-    than hiding a run the operator never dismissed. Hiding is the direction that
-    must not happen by accident.
-    """
-    try:
-        scan = os.scandir(_panel_dismissals_dir())
-    except OSError:
-        return frozenset()
-    found: set[str] = set()
-    with scan:
-        for entry in scan:
-            try:
-                if entry.is_file():
-                    found.add(entry.name)
-            except OSError:
-                continue
-    return frozenset(found)
-
-
-def _delete_panel_dismissal(agent_id: str) -> None:
-    """Drop the record once its run folder is gone, so the set stays bounded."""
-    try:
-        _panel_dismissal_path(agent_id).unlink(missing_ok=True)
-    except (OSError, ValueError):
-        logger.debug("panel dismissal cleanup failed for %s", agent_id, exc_info=True)
-
-
-def prune_orphan_panel_dismissals() -> int:
-    """Drop records whose run folder is already gone. Returns the count removed.
-
-    The two folder-removal paths delete a run's record with the folder, so this
-    answers for a folder that left by some other route -- an operator clearing the
-    registry by hand, a restore from a backup taken before the dismissal.
-
-    Unlinks by DIRECTORY ENTRY rather than by rebuilding the path from the name: a
-    name this directory holds but the id rule rejects would otherwise be
-    unremovable, and counted as removed on every cycle. A scandir name is always
-    one path component, so the entry's own path needs no traversal check.
-    """
-    removed = 0
-    try:
-        scan = os.scandir(_panel_dismissals_dir())
-    except OSError:
-        return 0
-    with scan:
-        for entry in scan:
-            try:
-                if not entry.is_file():
-                    continue
-                if _agent_dir(entry.name).is_dir():
-                    continue
-            except OSError:
-                continue
-            except ValueError:
-                pass  # not an id any run could carry, so no folder can claim it
-            try:
-                os.unlink(entry.path)
-            except OSError:
-                logger.debug("panel dismissal sweep failed for %s", entry.name, exc_info=True)
-                continue
-            removed += 1
-    return removed
-
-
-def write_run_agent(agent_id: str, agent: str | None, *, kind: str = "template") -> None:
-    from dataclasses import replace
-
-    execution = read_run_execution(agent_id)
-    if (
-        not isinstance(agent, str)
-        or kind not in ("template", "member")
-        or (kind == "member" and not agent)
-    ):
-        raise ValueError("resume_failed: effective agent template is invalid")
-    if kind == "template":
-        update_execution_context(
-            agent_id,
-            replace(execution, template_id=agent or execution.template_id),
-            expected=execution,
-        )
-    elif execution.selection_kind != "member" or agent != execution.selection_name:
-        raise ValueError("resume_failed: selected member is unavailable")
-
-
-def read_run_agent_selection(agent_id: str) -> tuple[str, str]:
-    execution = read_run_execution(agent_id)
-    return execution.selection_kind, (
-        execution.selection_name if execution.selection_kind == "member" else execution.template_id
-    )
-
-
-def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
-    path = _protect_cleanup_identities_path(agent_id)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return []
-    if not isinstance(payload, dict) or not isinstance(payload.get("identities"), list):
-        raise ValueError("invalid protected cleanup identity payload")
-    raw = payload["identities"]
-    records: list[dict[str, object]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            raise ValueError("invalid protected cleanup identity record")
-        sid = item.get("session_id")
-        if not isinstance(sid, str) or not sid:
-            raise ValueError("invalid protected cleanup identity SID")
-        record: dict[str, object] = {"session_id": sid}
-        provider = item.get("provider")
-        cwd = item.get("cwd")
-        keep = item.get("keep")
-        conversation_key = item.get("conversation_key")
-        if "provider" in item and (not isinstance(provider, str) or not provider):
-            raise ValueError("invalid protected cleanup identity provider")
-        if "cwd" in item and (not isinstance(cwd, str) or not cwd):
-            raise ValueError("invalid protected cleanup identity CWD")
-        if "keep" in item and not isinstance(keep, bool):
-            raise ValueError("invalid protected cleanup identity retention")
-        if "conversation_key" in item and (
-            not isinstance(conversation_key, str) or not conversation_key
-        ):
-            raise ValueError("invalid protected cleanup identity owner")
-        if isinstance(provider, str):
-            record["provider"] = provider
-        if isinstance(cwd, str):
-            record["cwd"] = cwd
-        if isinstance(keep, bool):
-            record["keep"] = keep
-        if isinstance(conversation_key, str):
-            record["conversation_key"] = conversation_key
-        records.append(record)
-    return records
-
-
-def _merge_cleanup_identity_records(
-    *groups: object,
-) -> list[dict[str, object]]:
-    """Merge identity groups left-to-right, keyed by SID with richer fields kept."""
-    by_sid: dict[str, dict[str, object]] = {}
-    for group in groups:
-        if not isinstance(group, (list, tuple)):
-            continue
-        for item in group:
-            if not isinstance(item, dict):
-                continue
-            sid = item.get("session_id")
-            if not isinstance(sid, str) or not sid:
-                continue
-            record = by_sid.setdefault(sid, {"session_id": sid})
-            provider = item.get("provider")
-            cwd = item.get("cwd")
-            keep = item.get("keep")
-            conversation_key = item.get("conversation_key")
-            if isinstance(provider, str) and provider:
-                record["provider"] = provider
-            if isinstance(cwd, str) and cwd:
-                record["cwd"] = cwd
-            if isinstance(keep, bool):
-                record["keep"] = keep
-            if isinstance(conversation_key, str) and conversation_key:
-                record["conversation_key"] = conversation_key
-    return list(by_sid.values())
-
-
-def _cleanup_identity_record(
-    *,
-    session_id: str,
-    provider: str,
-    cwd: str,
-    keep: bool | None,
-    conversation_key: str,
-) -> dict[str, object]:
-    record: dict[str, object] = {"session_id": session_id}
-    if provider:
-        record["provider"] = provider
-    if cwd:
-        record["cwd"] = cwd
-    if isinstance(keep, bool):
-        record["keep"] = keep
-    if conversation_key:
-        record["conversation_key"] = conversation_key
-    return record
-
-
-def publish_live_cleanup_identity(
-    agent_id: str,
-    *,
-    session_id: str = "",
-    provider: str = "",
-    cwd: str = "",
-    keep: bool | None = None,
-    conversation_key: str = "",
-) -> None:
-    """Publish one generation in memory without waiting or filesystem I/O."""
-    if not session_id:
-        return
-    record = _cleanup_identity_record(
-        session_id=session_id,
-        provider=provider,
-        cwd=cwd,
-        keep=keep,
-        conversation_key=conversation_key,
-    )
-    # list.append is atomic under the interpreter lock. Deliberately do not
-    # acquire _CLEANUP_IDENTITY_LOCK: its owner may be blocked in fsync, while
-    # this path runs on the gateway event loop and must publish before a queued
-    # to_thread call can be cancelled. Deduplication belongs to snapshots and
-    # sidecar serialization; replacing the list here can lose a concurrent SID.
-    records = _LIVE_CLEANUP_IDENTITIES.setdefault(agent_id, [])
-    records.append(record)
-
-
-def remember_live_cleanup_identity(
-    agent_id: str,
-    *,
-    session_id: str = "",
-    provider: str = "",
-    cwd: str = "",
-    keep: bool | None = None,
-    conversation_key: str = "",
-) -> None:
-    """Durably append one complete live session generation for later cleanup."""
-    if not session_id:
-        return
-    publish_live_cleanup_identity(
-        agent_id,
-        session_id=session_id,
-        provider=provider,
-        cwd=cwd,
-        keep=keep,
-        conversation_key=conversation_key,
-    )
-    with _CLEANUP_IDENTITY_LOCK:
-        durable = _read_cleanup_identities_file(agent_id)
-        records = _merge_cleanup_identity_records(
-            durable,
-            _LIVE_CLEANUP_IDENTITIES.get(agent_id, []),
-        )
-        path = _protect_cleanup_identities_path(agent_id)
-        _atomic_write(path, {"identities": records})
-        platform_compat.restrict_to_owner(path)
-
-
-def _live_cleanup_identities(agent_id: str) -> list[dict[str, object]]:
-    """Snapshot already-published identities without performing filesystem I/O."""
-    if not _CLEANUP_IDENTITY_LOCK.acquire(blocking=False):
-        # The writer publishes its merged in-memory fallback before fsync, so a
-        # contending event-loop tombstone can snapshot it without waiting.
-        fallback = _LIVE_CLEANUP_IDENTITIES.get(agent_id, [])
-        return _merge_cleanup_identity_records(fallback)
-    try:
-        fallback = _LIVE_CLEANUP_IDENTITIES.get(agent_id, [])
-        return _merge_cleanup_identity_records(fallback)
-    finally:
-        _CLEANUP_IDENTITY_LOCK.release()
-
-
-def publish_live_cleanup_hint(agent_id: str) -> None:
-    """Mark run identity as cleanup-owned without trusting agent SID fields."""
-    _LIVE_CLEANUP_HINTS.add(agent_id)
-
-
-def trusted_cleanup_identity_record(
-    agent_id: str,
-    session_id: str,
-    conversation_key: str,
-) -> dict[str, object] | None:
-    """Return the trusted generation matching restart state, or ``None``.
-
-    Agent-folder state may request registry rebuild, but it cannot choose the SID,
-    owner, provider, or CWD that the TTL release path will later clean. Those
-    fields must match/source from gateway-published live or protected authority.
-    """
-    default_key = f"{SUBAGENT_CONVERSATION_PREFIX}{agent_id}"
-    records = _merge_cleanup_identity_records(
-        _read_cleanup_identities_file(agent_id),
-        _live_cleanup_identities(agent_id),
-    )
-    for record in records:
-        record_sid = record.get("session_id")
-        record_key = record.get("conversation_key") or default_key
-        if record_sid == session_id and record_key == conversation_key:
-            return record
-    return None
-
-
-def has_live_cleanup_identity(agent_id: str) -> bool:
-    """Return whether cleanup retention is hinted, without disk I/O."""
-    return agent_id in _LIVE_CLEANUP_HINTS or bool(_live_cleanup_identities(agent_id))
-
-
-def subagent_id_from_conversation_key(key: str) -> str | None:
-    """Return the subagent owner ID encoded by *key*, or ``None``."""
-    if not key.startswith(SUBAGENT_CONVERSATION_PREFIX):
-        return None
-    owner_id = key[len(SUBAGENT_CONVERSATION_PREFIX) :]
-    return owner_id or None
-
-
-def _subagents_dir() -> Path:
-    """Subagents registry directory, resolved against the live data home."""
-    return _SUBAGENTS_DIR if _SUBAGENTS_DIR is not None else data_home() / "subagents"
-
-
-def _agent_dir(agent_id: str) -> Path:
-    if (
-        not agent_id
-        or agent_id == "."
-        or ".." in agent_id
-        or "/" in agent_id
-        or "\\" in agent_id
-        or "\0" in agent_id
-    ):
-        raise ValueError(f"Invalid agent_id: {agent_id!r}")
-    base = _subagents_dir()
-    resolved = (base / agent_id).resolve()
-    parent = base.resolve()
-    if resolved == parent or not resolved.is_relative_to(parent):
-        raise ValueError(f"Path traversal blocked for agent_id: {agent_id!r}")
-    return resolved
-
-
-def agent_dir_for_display(agent_id: str) -> Path:
-    """The run directory in the home spelling the reader's own tooling uses.
-
-    :func:`_agent_dir` returns a symlink-RESOLVED path, and must: a traversal
-    check is only sound against the canonical target. That resolved spelling is
-    the right one to open a file with, and the wrong one to hand to somebody as
-    a path to go read.
-
-    On a host whose home is itself a symlink the two spellings differ. An Amazon
-    cloud desktop's ``/home/<user> -> /local/home/<user>`` is the ordinary case,
-    and there ``data_home()`` under ``$HOME`` resolves to a ``/local/home/...``
-    prefix that the reader's path allowlist -- keyed on the ``$HOME`` it was
-    given -- does not match. The file is readable; the spelling is not
-    recognized. So a result path emitted in resolved form is refused, while the
-    identical file in declared form is allowed, and the refusal arrives as an
-    approval prompt that times out rather than as an error anyone can act on.
-
-    Hence: validate on the resolved form, hand out the declared one. Callers
-    doing file I/O keep using :func:`_agent_dir`; this is for a path that a
-    human or an agent will read and then act on.
-
-    Raises the same ``ValueError`` as :func:`_agent_dir` for a rejected
-    ``agent_id`` -- the validation is not duplicated here, it is delegated, so
-    the two cannot drift apart.
-    """
-    _agent_dir(agent_id)  # validation only; the return value is deliberately unused
-    return _subagents_dir() / agent_id
-
-
-# ── create ───────────────────────────────────────────────────────────
-
-
-def create_agent_folder(
-    agent_id: str,
-    *,
-    task="",
-    agent="",
-    parent_session="",
-    max_turns=0,
-    context_groups="",
-    delegation=None,
-    memory_store="",
-    memory_mode="persistent",
-    app="",
-    execution_context=None,
-    backend=None,
-) -> Path:
-    from kiro_crew.execution_context import ExecutionContext, execution_for_store
-
-    execution = execution_context or execution_for_store(
-        memory_store, memory_mode=memory_mode, app=app, template_id=agent or ""
-    )
-    if not isinstance(execution, ExecutionContext):
-        raise ValueError("memory_unavailable: invalid execution context")
-    previous = read_state(agent_id)
-    if previous is not None:
-        from kiro_crew.execution_context import execution_from_record
-
-        original = execution_from_record(previous)
-        if execution_context is not None and execution.store != original.store:
-            raise ValueError("memory_unavailable: run identity is immutable")
-        execution = original.with_mode(memory_mode)
-        if execution.memory_mode != original.memory_mode:
-            update_execution_context(agent_id, execution, expected=original)
-    execution = execution.with_mode(memory_mode)
-    state = {
-        "id": agent_id,
-        "task": task,
-        "agent": agent,
-        "parent_session": parent_session,
-        "started": time.time(),
-        "max_turns": max_turns,
-        # No run status: no ending writes one back here, so a status set at
-        # creation would read as running forever. How a run ended is the
-        # tombstone's (``classify_persisted_ending``).
-        "pid": None,
-        "turns": 0,
-        "last_tool": "",
-        "context_groups": context_groups,
-        "delegation": dict(delegation or {}),
-        # The per-spawn backend, so a continuation after a restart resumes the
-        # conversation on the harness that holds it. Absent = the default.
-        **({"backend": backend} if isinstance(backend, str) else {}),
-        "execution_context": execution.to_record(),
-        "memory_store": execution.store.legacy_name,
-        "memory_mode": execution.memory_mode,
-        "app": execution.app,
-        "updated_at": time.time(),
-    }
-    d = _agent_dir(agent_id)
-    if execution.memory_mode != "persistent":
-        _LIVE_RUN_STATES[_live_run_key(agent_id)] = state
-    else:
-        ensure_directory(d)
-        _atomic_write(d / "state.json", state)
-    return d
-
-
-def read_run_execution(agent_id: str, *, state=...) -> "ExecutionContext":
-    from kiro_crew.execution_context import execution_for_store, execution_from_record
-
-    if state is ...:
-        state = read_state(agent_id)
-    if state is None:
-        raise ValueError("memory_unavailable: run record is unavailable")
-    execution = execution_from_record(state, required=False)
-    if execution is not None:
-        return execution
-    # Existing V1 runs retain their ordinary state; V2 never infers identity.
-    from kiro_crew.memory_stores import memory_store_version
-
-    store = state.get("memory_store", "")
-    if memory_store_version(store) == 2:
-        raise ValueError("memory_unavailable: run has no canonical execution")
-    legacy = state
-    if "memory_binding_version" in state:
-        # The old writer used version 2 for V1 runs too. Its ordinary app and
-        # retention fields live only in this existing sidecar; defaults would
-        # turn an app-owned/restricted run into a personal/persistent run.
-        _agent_dir(agent_id)
-        path = (
-            _subagents_dir().parent.resolve() / "member-memory-bindings" / agent_id / "memory.json"
-        )
-        if state["memory_binding_version"] != 2 or path.resolve() != path:
-            raise ValueError("memory_unavailable: legacy V1 execution is invalid")
-        try:
-            legacy = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, RecursionError) as exc:
-            raise ValueError("memory_unavailable: legacy V1 execution is unreadable") from exc
-        if (
-            not isinstance(legacy, dict)
-            or legacy.get("version") != 2
-            or legacy.get("memory_store") != store
-            or legacy.get("memory_mode") not in ("persistent", "incognito", "temporary")
-            or not isinstance(legacy.get("app"), str)
-        ):
-            raise ValueError("memory_unavailable: legacy V1 execution is invalid")
-    return execution_for_store(
-        store,
-        memory_mode=legacy.get("memory_mode", "persistent"),
-        app=legacy.get("app", ""),
-        template_id=state.get("agent") or "",
-    )
-
-
-def update_execution_context(agent_id: str, execution, *, expected=...) -> None:
-    """Bind *execution* onto a run, rewriting ``state.json`` whole.
-
-    The SECOND whole-file rewrite path for this file, and it does NOT share
-    :func:`update_state`'s on-loop/off-loop asymmetry: the per-agent lock is held
-    UNCONDITIONALLY, across the admission checks, the read and the write. Session
-    binding, mode tightening and the pre-run write all reach this from a pool
-    thread, so that hold serializes them like any off-loop writer. Only
-    :func:`create_agent_folder` reaches it on the event loop, on the spawn and
-    admission path rather than a per-turn one, and that is the bound which makes
-    an unconditional acquire affordable there. Its write model is the one
-    :func:`update_state` records.
-
-    A non-persistent owner keeps this turn's body out of the durable file: only
-    retained identity and mode metadata are tightened on disk, and the live record
-    carries the merged state.
-
-    Raises ValueError with a ``memory_unavailable:`` reason when the run changed
-    during admission, when the run's memory store would change (a run's store is
-    immutable), or when its state record cannot be read.
-    """
-    holder = _lock_for_agent(agent_id)
-    with holder.lock:
-        current = read_run_execution(agent_id)
-        if expected is not ... and current != expected:
-            raise ValueError("memory_unavailable: run changed during admission")
-        execution = execution.with_mode(current.memory_mode)
-        if execution.store != current.store:
-            raise ValueError("memory_unavailable: run memory is immutable")
-        state = read_state(agent_id)
-        if state is None:
-            raise ValueError("memory_unavailable: run record is unavailable")
-        state.update(
-            execution_context=execution.to_record(),
-            memory_mode=execution.memory_mode,
-            memory_store=execution.store.legacy_name,
-        )
-        if execution.memory_mode != "persistent":
-            # Tighten only an already persisted owner's retention metadata.
-            # This preserves restart policy without writing this turn's body.
-            path = _agent_dir(agent_id) / "state.json"
-            if path.exists():
-                durable = json.loads(path.read_text(encoding="utf-8"))
-                durable["execution_context"] = execution.to_record()
-                durable["memory_mode"] = execution.memory_mode
-                _atomic_write(path, durable)
-            _LIVE_RUN_STATES[_live_run_key(agent_id)] = state
-        else:
-            _atomic_write(_agent_dir(agent_id) / "state.json", state)
-
-
-def read_run_memory_mode(agent_id: str) -> str:
-    return read_run_execution(agent_id).memory_mode
-
-
-def tighten_run_memory_mode(agent_id: str, memory_mode: str) -> str:
-    execution = read_run_execution(agent_id)
-    tightened = execution.with_mode(memory_mode)
-    update_execution_context(agent_id, tightened, expected=execution)
-    return tightened.memory_mode
-
-
-def read_run_app(agent_id: str) -> str:
-    return read_run_execution(agent_id).app
-
-
-def read_run_memory_store(agent_id: str, *, validate_memory_files: bool = False) -> str:
-    from kiro_crew.execution_context import validate_execution
-
-    execution = read_run_execution(agent_id)
-    if validate_memory_files:
-        validate_execution(execution)
-    return execution.store.legacy_name
-
-
-# ── read / update ────────────────────────────────────────────────────
-
-
-def read_state(agent_id: str) -> dict | None:
-    """Read state.json. Returns None on missing, corrupt, or non-object data."""
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        return dict(_LIVE_RUN_STATES[_live_run_key(agent_id)])
-    try:
-        return _read_state_at(_agent_dir(agent_id))
-    except ValueError:
-        return None
-
-
-def _read_state_at(agent_dir: Path) -> dict | None:
-    """:func:`read_state` for a folder already resolved."""
-    try:
-        state = json.loads((agent_dir / "state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        return None
-    return state if isinstance(state, dict) else None
-
-
-def _read_tombstone_at(path: Path) -> tuple[dict | None, bool]:
-    """Parsed tombstone at *path*, plus whether a tombstone file is PRESENT.
-
-    The two answers are separate because their meanings are: nothing recorded an
-    ending, versus an ending was recorded and cannot be read.
-    """
-    try:
-        tombstone = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        try:
-            return None, path.exists()
-        except OSError:
-            return None, False
-    return (tombstone, True) if isinstance(tombstone, dict) else (None, True)
-
-
-def read_tombstone(agent_id: str) -> dict | None:
-    """Read tombstone.json as an object. Return None on missing/invalid data."""
-    try:
-        path = _agent_dir(agent_id) / "tombstone.json"
-    except ValueError:
-        return None
-    return _read_tombstone_at(path)[0]
-
-
-# ── per-agent write serialization ────────────────────────────────────
-
-#: ``update_state`` is a read / merge / rewrite, and its two halves are split by
-#: a blocking ``_atomic_write`` (fsync + rename). Two writers on one ``agent_id``
-#: therefore interleave: the second one's read predates the first one's write, so
-#: its rewrite restores a stale WHOLE-FILE snapshot and silently rolls back every
-#: field the first writer had just landed. Losing the other writer's fields is
-#: the visible half; rolling back fields NEITHER writer touched is the damaging
-#: half.
-#:
-#: The overlap is structural, not hypothetical. A run writes state from the event
-#: loop (PID, session id, provider, retention ``keep``) AND from the thread pool
-#: (model provenance, CC-path model refinement, per-turn diagnostics -- each via
-#: ``asyncio.to_thread``), so two pool writers overlap during a run and a
-#: loop-side write executes while the run's coroutine is suspended inside a
-#: pool-side one. Cancellation widens it: cancelling a ``to_thread``
-#: await DETACHES the worker rather than stopping it, so it finishes carrying a
-#: read that is already stale.
-#:
-#: SCOPE -- ordinary ``update_state`` callers take the lock OFF-LOOP only.
-#: Serializing every loop-side write by waiting would block the event loop behind
-#: a pool thread's fsync, which the no-blocking anchor forbids. Retention promotion
-#: instead probes the same per-agent lock non-blocking and returns RETRYABLE when
-#: busy; once acquired, its existing on-loop keep write cannot be overwritten by
-#: an older pool writer. Other on-loop callers keep their pre-existing unlocked
-#: behavior -- see :func:`update_state` for the remaining limitation.
-#:
-#: The ordinary acquire is UNBOUNDED, and can be, because the only on-loop caller
-#: that reaches it is ``create_agent_folder``, on the spawn and admission path
-#: rather than a per-turn one. Otherwise only pool workers block there, and their
-#: own read + fsync + rename already exposes them to a wedged filesystem.
-#: Promotion may hold the same lock around its
-#: existing loop-side write, but its acquire is always non-blocking and never parks
-#: the event loop.
-#:
-#: In-process only, mirroring the per-key ``threading.Lock`` registry this repo
-#: already uses to serialize file read-modify-write (``learn._lock_for``,
-#: ``artifacts._lock_for_root``, ``history.ConversationLog._file_locks``). A
-#: filesystem lock is the tool for cross-process contention and there is none
-#: here: every ``update_state`` caller lives in the gateway process that owns the
-#: run. Keyed by agent id so unrelated runs never queue behind one agent's fsync,
-#: SELF-CLEANING, with no explicit eviction anywhere. The values are held
-#: WEAKLY and every caller keeps a strong reference for the length of its
-#: critical section, so an entry lives exactly as long as some writer is using
-#: it and then disappears on its own. That is a correctness property, not a
-#: tidiness one: removing an entry explicitly while another writer still holds
-#: or is queued on it SPLITS the lock's identity -- the next caller mints a
-#: fresh lock and enters ``state.json`` alongside the writer still inside it,
-#: which is the very loss this lock exists to prevent. Any hook that evicts
-#: without holding the lock (a folder delete, the tombstone pruner) can do
-#: exactly that, and the pruner's case is not even hypothetical: ``_atomic_write``
-#: re-creates the parent directory, so a writer already inside its critical
-#: section resurrects the folder the pruner just removed. Weak values make that
-#: unrepresentable -- an entry cannot be dropped while anyone can still reach
-#: it -- and agent ids are per-run uuids, so nothing accumulates either.
-_STATE_LOCKS: "weakref.WeakValueDictionary[str, _AgentLock]" = weakref.WeakValueDictionary()
-_STATE_LOCKS_GUARD = threading.Lock()
-_RETENTION_LOCKS: "weakref.WeakValueDictionary[str, _AgentLock]" = weakref.WeakValueDictionary()
-_RETENTION_LOCKS_GUARD = threading.Lock()
-
-
-class _AgentLock:
-    """A ``threading.Lock`` that can be weakly referenced.
-
-    ``threading.Lock`` itself cannot, so the registry stores this one-field
-    wrapper instead. Callers must retain the WRAPPER (not just ``.lock``) for
-    the whole critical section: it is the strong reference that keeps the
-    registry entry alive, and therefore keeps every concurrent writer on the
-    same lock.
-    """
-
-    __slots__ = ("lock", "__weakref__")
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-
-
-def _on_event_loop() -> bool:
-    """True when the calling thread is running an asyncio event loop.
-
-    The seam that keeps the lock off the loop. A thread ``asyncio.to_thread`` /
-    ``run_in_executor`` dispatched to has no running loop, so pool writers
-    serialize; a synchronous call made from a coroutine does, so it does not
-    wait. Chosen over an explicit caller flag because ``update_state`` takes
-    ``**fields``: any keyword flag would be indistinguishable from a state field
-    a caller means to persist.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
-def _lock_for_registry(agent_id, registry, guard):  # type: ignore[no-untyped-def]
-    with guard:
-        holder = registry.get(agent_id)
-        if holder is None:
-            holder = _AgentLock()
-            registry[agent_id] = holder
-        return holder
-
-
-def _try_acquire_registry_lock(agent_id, registry, guard):  # type: ignore[no-untyped-def]
-    if not guard.acquire(blocking=False):
-        return None
-    try:
-        holder = registry.get(agent_id)
-        if holder is None:
-            holder = _AgentLock()
-            registry[agent_id] = holder
-    finally:
-        guard.release()
-    if not holder.lock.acquire(blocking=False):
-        return None
-    return holder
-
-
-def _lock_for_agent(agent_id: str) -> "_AgentLock":
-    """Return the process-wide ``state.json`` lock holder for *agent_id*."""
-    return _lock_for_registry(agent_id, _STATE_LOCKS, _STATE_LOCKS_GUARD)
-
-
-def _try_acquire_state_lock(agent_id: str) -> "_AgentLock | None":
-    """Return the held per-agent writer lock, or None without blocking."""
-    return _try_acquire_registry_lock(agent_id, _STATE_LOCKS, _STATE_LOCKS_GUARD)
-
-
-def _retention_lock_for_agent(agent_id: str) -> "_AgentLock":
-    """Return the process-wide retention arbitration holder for *agent_id*."""
-    return _lock_for_registry(agent_id, _RETENTION_LOCKS, _RETENTION_LOCKS_GUARD)
-
-
-def _try_acquire_retention_lock(agent_id: str) -> "_AgentLock | None":
-    """Return held per-agent retention arbitration, or None without blocking."""
-    return _try_acquire_registry_lock(agent_id, _RETENTION_LOCKS, _RETENTION_LOCKS_GUARD)
-
-
-def _acquire_retention_locks(*agent_ids: str) -> list["_AgentLock"]:
-    """Acquire retention locks in stable order for off-loop prune work."""
-    holders = [_retention_lock_for_agent(agent_id) for agent_id in sorted(set(agent_ids))]
-    for holder in holders:
-        holder.lock.acquire()
-    return holders
-
-
-def _release_retention_locks(holders: list["_AgentLock"]) -> None:
-    for holder in reversed(holders):
-        holder.lock.release()
-
-
-def update_state(agent_id: str, **fields: object) -> bool:
-    """Merge *fields* into state.json (atomic rewrite).
-
-    Returns True when the merge was written, False when it was SKIPPED because
-    the current state could not be read (missing/corrupt/unreadable). The skip
-    is deliberate -- fabricating a fresh state here would resurrect a record
-    the reaper deleted -- but callers with a durability contract (the pre-spawn
-    provenance write) need to see the skip to retry rather than mistake
-    a silent no-op for success.
-
-    The read / merge / rewrite is serialized per agent for OFF-LOOP callers (see
-    :data:`_STATE_LOCKS`), so two pool writers cannot rewrite a snapshot
-    that predates the other's write.
-
-    WRITE MODEL: the whole-file rewrite is the recorded choice for this file, not a
-    way station toward a revision counter or a compare-and-swap retry loop.
-    ``state.json`` is a run's artifact and evidence record, while scheduling's
-    source of truth is the durable task queue with its own generation fencing, so a
-    second coordination protocol here would order writes this file does not need at
-    the price of a format every reader must agree on. The invariant that keeps the
-    rewrite safe instead: every whole-file write happens at a KNOWN site, and each
-    site reachable from the event loop carries its own fence.
-    ``test_subagent_state_write_model`` holds that census and fails a new site.
-    The asymmetry below therefore closes by moving a site OFF the loop, where it
-    inherits the lock -- never by changing the on-disk format.
-
-    KNOWN LIMITATION: ordinary ON-LOOP callers do not take the lock, because waiting
-    on a pool thread's fsync from the event loop is exactly the blocking call the
-    repo's anchor forbids. Every writer inside a run goes off-loop through
-    ``_write_state_off_loop`` and is drained on cancellation; an abandoned writer
-    holds the conversation until it settles, so the
-    on-loop retention writes are deferred past it. Retention promotion adds a
-    second defense: on the event loop it probes the same per-agent lock
-    non-blocking and returns RETRYABLE on contention, while off-loop promotion
-    lets ``update_state`` acquire the lock normally. Thus no stale writer can
-    roll back ``keep=True`` and no loop-side caller waits for a pool writer's
-    fsync. Release runs its demote off-loop (``release_conversation_async``) while
-    its ``SessionMap`` mutation stays on the loop. The one remaining on-loop
-    caller is retention promotion, which stays there by design: its busy check,
-    promotion and spawn admission must commit with no await between them, and its
-    non-blocking probe already keeps a stale writer from rolling it back.
-    """
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        _LIVE_RUN_STATES[_live_run_key(agent_id)].update(fields)
-        return True
-    p = _agent_dir(agent_id) / "state.json"
-    # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.
-    # ``holder`` stays referenced for the whole critical section -- that strong
-    # reference is what keeps every concurrent writer on one lock (see
-    # :data:`_STATE_LOCKS`), so it must not be narrowed to ``holder.lock``.
-    holder = None if _on_event_loop() else _lock_for_agent(agent_id)
-    if holder is not None:
-        holder.lock.acquire()
-    try:
-        try:
-            # Off the loop, a Windows sharing violation on the read is retried
-            # like the rename at the other end of this rewrite (_atomic_write).
-            state = json.loads(read_bytes_with_retry(p).decode("utf-8"))
-        except (OSError, ValueError, RecursionError):
-            logger.debug("update_state: cannot read state for %s, skipping", agent_id)
-            return False
-        if not isinstance(state, dict):
-            logger.debug("update_state: non-object state for %s, skipping", agent_id)
-            return False
-        state.update(fields)
-        state["updated_at"] = time.time()
-        _atomic_write(p, state)
-    finally:
-        if holder is not None:
-            holder.lock.release()
-    return True
-
-
-def promote_retention(
-    agent_id: str,
-    *,
-    state_writer: Callable[..., bool] = update_state,
-) -> RetentionPromotionResult:
-    """Atomically promote *agent_id* against concurrent in-process prune.
-
-    Promotion acquires per-agent retention arbitration and, on the event loop,
-    probes the state-writer lock non-blocking. Contention returns ``RETRYABLE``
-    without parking the loop. Off-loop callers let ``update_state`` acquire its
-    normal non-reentrant state lock. Thus promotion either writes ``keep=True``
-    before prune's locked re-read or waits for a later retry; a process crash
-    leaves no half-committed claim format, and the next prune re-evaluates state.
-    """
-    retention_holder = _try_acquire_retention_lock(agent_id)
-    if retention_holder is None:
-        return RetentionPromotionResult.RETRYABLE
-    state_holder = None
-    if _on_event_loop():
-        state_holder = _try_acquire_state_lock(agent_id)
-        if state_holder is None:
-            retention_holder.lock.release()
-            return RetentionPromotionResult.RETRYABLE
-    try:
-        if not state_writer(agent_id, keep=True):
-            return RetentionPromotionResult.RETRYABLE
-        return RetentionPromotionResult.PROMOTED
-    finally:
-        if state_holder is not None:
-            state_holder.lock.release()
-        retention_holder.lock.release()
-
-
-# ── result streaming ─────────────────────────────────────────────────
-
-
-def _replace_in_run_folder(
-    path: Path, content: str | bytes, *, fsync: bool = False, newline: str | None = None
-) -> None:
-    """:func:`atomic_write` *path*, never recreating a run folder that is gone.
-
-    ``atomic_write`` creates a missing parent; a run's folder that was removed
-    (retention, a dismissal) stays removed, as an append into it would leave it.
-    """
-    if not path.parent.is_dir():
-        raise FileNotFoundError(f"run folder {path.parent} is gone")
-    atomic_write(path, content, fsync=fsync, newline=newline)
-
-
-def write_result_chunk(agent_id: str, text: str, *, fresh: bool = False) -> bool:
-    """Append *text* to ``result.txt``; *fresh* replaces the file with it.
-
-    An attempt's first chunk is written *fresh*, so ``result.txt`` holds that
-    attempt's text alone, never glued to what an earlier attempt on this id
-    left. The fresh write is a temp file and rename, so the earlier partial
-    stays readable until the new text is on disk, and a write that fails
-    leaves it in place. Written as is (``newline=""``), so the file is LF on
-    every platform, like the whole rewrite (:func:`write_finished_result`).
-    False when nothing was written.
-    """
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        return True
-    p = _agent_dir(agent_id) / "result.txt"
-    try:
-        if fresh:
-            _replace_in_run_folder(p, text, newline="")
-        else:
-            with p.open("a", encoding="utf-8", newline="") as f:
-                f.write(text)
-    except OSError:
-        logger.debug("write_result_chunk failed for %s", agent_id, exc_info=True)
-        return False
-    return True
-
-
-# ── tombstone ────────────────────────────────────────────────────────
-
-
-def _check_result_available(path: Path) -> bool:
-    """Check if result file exists and is non-empty (TOCTOU-safe)."""
-    try:
-        return path.stat().st_size > 0
-    except OSError:
-        return False
-
-
-def result_is_whole(state: dict) -> bool:
-    """Whether a run recorded that it finished with its whole answer.
-
-    THE completeness fact. True means the run claimed its completed ending and
-    rewrote ``result.txt`` whole from memory, durably, before recording it
-    (:func:`write_finished_result`). Anything else means the bytes in
-    ``result.txt``, if any, are a fragment: they are appended per streamed
-    chunk, so they prove only that a token arrived. A run that finished without
-    text is whole with no ``result.txt``. The orphan reconcile
-    (``tombstone_recovery_action``) and the task queue's boot probe decide with
-    this.
-    """
-    return bool(state.get("result_complete"))
-
-
-def write_finished_result(
-    agent_id: str,
-    text: str | None,
-    state_writer: Callable[..., bool] = update_state,
-    /,
-) -> bool:
-    """Leave ``result.txt`` as a run's ending reads it, then record ``result_complete``.
-
-    ONE worker job, so the executor finishes both halves even when its awaiting
-    run gives up the drain. *text* is the whole answer of a run that claimed its
-    completed ending: ``result.txt`` is rewritten from it, capped
-    (``cap_result_bytes``), by temp file and rename, and fsynced with its folder,
-    so the flag never vouches for a hole a failed append left or for bytes an OS
-    crash could lose. An empty answer leaves no ``result.txt``, and removes a
-    partial an earlier attempt left. A write that fails records
-    ``result_complete=False`` instead, logged at WARNING. ``None`` is any other
-    ending: the streamed file is capped in place (``cap_result_file``) and the
-    flag recorded False; a whole rewrite that fails falls back to that same
-    in-place cap, so the bound holds whatever refused the rename (a full disk,
-    a Windows reader holding the file). *state_writer* is the caller's seam for
-    ``update_state``. A transient run keeps its record in memory and its folder
-    never exists, so it records the flag and touches no disk.
-    """
-    from kiro_crew.context_management import cap_result_bytes, cap_result_file
-
-    whole = text is not None
-    if _live_run_key(agent_id) not in _LIVE_RUN_STATES:
-        try:
-            path = _agent_dir(agent_id) / "result.txt"
-            if text:
-                try:
-                    _replace_in_run_folder(path, cap_result_bytes(text.encode("utf-8")), fsync=True)
-                    fsync_dir(path.parent)
-                except OSError:
-                    logger.warning(
-                        "Could not write %s's finished result; it stays unflagged",
-                        agent_id,
-                        exc_info=True,
-                    )
-                    whole = False
-                    cap_result_file(path)
-            elif text is None:
-                cap_result_file(path)
-            else:
-                path.unlink(missing_ok=True)
-                fsync_dir(path.parent)
-        except (OSError, ValueError):
-            logger.warning(
-                "Could not finish %s's result file; it stays unflagged", agent_id, exc_info=True
-            )
-            whole = False
-    try:
-        return bool(state_writer(agent_id, result_complete=whole))
-    except (OSError, ValueError):
-        logger.warning("Could not record result_complete for %s", agent_id, exc_info=True)
-        return False
-
-
-#: Tombstone writes that failed (a full disk, say), by run id, with the arguments
-#: the write was given. A missing tombstone leaves the folder to the next boot's
-#: orphan reconciliation, which announces the run again, so the reaper retries
-#: these off the event loop each tick and graceful shutdown once more. Bounded:
-#: past the cap, or for an entry larger than ``_OWED_TOMBSTONE_MAX_BYTES``, the
-#: write is not retried and the folder stays an orphan -- announced again at the
-#: next boot, never lost.
-_OWED_TOMBSTONES_MAX = 4096
-_OWED_TOMBSTONE_MAX_BYTES = 16_384
-_owed_tombstones: dict[str, dict[str, object]] = {}
-#: Held for a whole retry, so two retries never write at once (see
-#: :func:`retry_owed_tombstones`).
-_owed_retry_lock = threading.Lock()
-_owed_tombstones_lock = threading.Lock()
-
-
-def _owe_tombstone(
-    agent_id: str, d: Path, cause: str, recovery_action: str, extra: dict[str, object]
-) -> None:
-    """Record a failed tombstone write for :func:`retry_owed_tombstones`.
-
-    Not recorded when a tombstone is already on disk: the folder is then out of
-    orphan reconciliation whatever the failed write would have replaced.
-    """
-    if (d / "tombstone.json").exists():
-        return
-    entry: dict[str, object] = {
-        "cause": cause,
-        "recovery_action": recovery_action,
-        "extra": dict(extra),
-    }
-    try:
-        size = len(json.dumps(entry, ensure_ascii=False, default=str))
-    except (TypeError, ValueError):
-        size = _OWED_TOMBSTONE_MAX_BYTES + 1
-    with _owed_tombstones_lock:
-        # The size bound applies to every write, a replacement included; the
-        # count bound only to a run not recorded yet. A record that does not fit
-        # also drops the run's earlier one, which describes an older ending.
-        if size > _OWED_TOMBSTONE_MAX_BYTES or (
-            agent_id not in _owed_tombstones and len(_owed_tombstones) >= _OWED_TOMBSTONES_MAX
-        ):
-            _owed_tombstones.pop(agent_id, None)
-            dropped = True
-        else:
-            _owed_tombstones[agent_id] = entry
-            dropped = False
-    if dropped:
-        logger.warning(
-            "write_tombstone for %s is not retried (%d writes already waiting, or the "
-            "entry is too large); the next start reports the run again",
-            agent_id,
-            len(_owed_tombstones),
-        )
-
-
-def has_owed_tombstones() -> bool:
-    """Whether a failed tombstone write is waiting for its retry. No I/O."""
-    return bool(_owed_tombstones)
-
-
-def _create_exclusive(path: Path, data: dict) -> None:
-    """Create *path* holding *data* only if it is absent and its directory exists.
-
-    The content becomes visible whole (a temp file hard-linked into place), an
-    existing file is never replaced (``FileExistsError``) and a removed directory is
-    never recreated (``FileNotFoundError``). The temp file's name is unique to the
-    call, so one left behind by a writer that died never blocks a later write.
-    """
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".owed")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, ensure_ascii=False))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.link(tmp, path)
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-    fsync_dir(path.parent, best_effort=True)
-
-
-def retry_owed_tombstones(
-    *, stop: Callable[[], bool] | None = None, budget: float | None = None
-) -> int:
-    """Retry every failed tombstone write; return how many landed.
-
-    Blocking file I/O: run it off the event loop. An entry is dropped without a
-    write when its run folder is gone or a tombstone has appeared since (another
-    path recorded the run's ending, which a retry must not replace). A write that
-    fails again keeps its entry and logs at DEBUG, so a full disk does not log a
-    WARNING on every tick.
-
-    One retry runs at a time. *stop* is read before each write, and a true
-    reading ends the retry there: the reaper passes the manager's shutdown flag,
-    so a retry it began before shutdown ends after the write it is in, and the
-    shutdown retry, which waits for it, is the last one to write. *budget*, in
-    seconds, bounds that wait and the writes after it; entries still owed at the
-    deadline stay owed, so their runs are reported again at the next start.
-    """
-    deadline = None if budget is None else time.monotonic() + budget
-    if not _owed_retry_lock.acquire(timeout=-1 if budget is None else budget):
-        logger.debug("Owed tombstone retry skipped: an earlier retry is still writing")
-        return 0
-    try:
-        return _retry_owed_tombstones_locked(stop, deadline)
-    finally:
-        _owed_retry_lock.release()
-
-
-def _retry_owed_tombstones_locked(stop: Callable[[], bool] | None, deadline: float | None) -> int:
-    with _owed_tombstones_lock:
-        pending = list(_owed_tombstones.items())
-    landed = 0
-    for agent_id, entry in pending:
-        if stop is not None and stop():
-            break
-        if deadline is not None and time.monotonic() >= deadline:
-            break
-        extra = entry["extra"]
-        if not isinstance(extra, dict):
-            continue
-        try:
-            _write_tombstone_file(
-                agent_id,
-                str(entry["cause"]),
-                str(entry["recovery_action"]),
-                extra,
-                owed_retry=True,
-            )
-        except (FileExistsError, FileNotFoundError):
-            logger.debug(
-                "Dropping the owed tombstone for %s: folder gone or tombstone written", agent_id
-            )
-        except OSError:
-            logger.debug("Owed tombstone for %s still cannot be written", agent_id, exc_info=True)
-            continue
-        else:
-            if (_agent_dir(agent_id) / "tombstone.json").exists():
-                landed += 1
-                logger.info(
-                    "Wrote the %s tombstone for %s after an earlier write failed",
-                    entry["cause"],
-                    agent_id,
-                )
-        with _owed_tombstones_lock:
-            if _owed_tombstones.get(agent_id) is entry:
-                del _owed_tombstones[agent_id]
-    return landed
-
-
-def write_tombstone(
-    agent_id: str,
-    *,
-    cause: str,
-    recovery_action: str,
-    **extra: object,
-) -> None:
-    """Write ``tombstone.json`` for an abnormally exited agent."""
-    _write_tombstone_file(agent_id, cause, recovery_action, extra, owed_retry=False)
-
-
-def _write_tombstone_file(
-    agent_id: str,
-    cause: str,
-    recovery_action: str,
-    extra: dict[str, object],
-    *,
-    owed_retry: bool,
-) -> None:
-    """:func:`write_tombstone`'s body; *owed_retry* marks a retry of a failed write."""
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        return
-    d = _agent_dir(agent_id)
-    state = read_state(agent_id)
-    # A delayed delivery acknowledgement cannot recreate a released transient
-    # run. Abnormal-exit diagnostics may still record missing state.
-    if state is None and cause == "delivered":
-        return
-    state = state or {}
-    execution = state.get("execution_context")
-    if isinstance(execution, dict) and execution.get("memory_mode") in ("incognito", "temporary"):
-        return
-    cleanup_identity = {
-        key: state[key] for key in ("session_id", "provider", "cwd") if state.get(key)
-    }
-    live_cleanup_identities = _live_cleanup_identities(agent_id)
-    latest_live_identity = live_cleanup_identities[-1] if live_cleanup_identities else {}
-    generation_metadata: dict[str, object] = {}
-    if live_cleanup_identities:
-        generation_metadata["cleanup_identities"] = live_cleanup_identities
-    # A terminal outcome, once recorded, is not erased by a later write that does
-    # not carry one. This write REPLACES the file, and only ``extra`` can supply
-    # ``outcome``, so a caller that has no opinion about the outcome -- a delivery
-    # acknowledgement is the ordinary one -- would otherwise drop the outcome an
-    # earlier write recorded, and the reader would fall back to deriving one from
-    # ``cause``. A user stop then reads as a completion. Carried forward here, at
-    # the single write, rather than left for each call site to remember.
-    #
-    # ``died`` is carried through the SAME read, on the same grounds, with one
-    # difference: every write stamps it, so the carry is what keeps it meaning the
-    # run's ENDING rather than the moment of the most recent bookkeeping write. A
-    # delivery acknowledgement lands whenever the parent got round to the result,
-    # and the panel reads this field as the end of the run, so an uncarried stamp
-    # shows the delivery wait as runtime.
-    #
-    # The read is taken on exactly one condition, ``outcome`` absent, and that is
-    # deliberate rather than incidental: a caller supplying an outcome is RECORDING
-    # an ending, so its own fresh stamp IS that ending and there is nothing to
-    # carry. Widening the condition to ``died`` absent as well would take the read
-    # on every such caller -- including sync writers reached from a coroutine, where
-    # this function's synchronous file I/O must not land.
-    carried: dict[str, object] = {}
-    if "outcome" not in extra:
-        prior, _present = _read_tombstone_at(d / "tombstone.json")
-        if isinstance(prior, dict):
-            if prior.get("outcome"):
-                carried["outcome"] = prior["outcome"]
-            if "died" not in extra and _finite_time(prior.get("died")):
-                carried["died"] = prior["died"]
-            # A process the kill left standing is still standing after a later
-            # bookkeeping write (a delivery acknowledgement), so the record of
-            # it is carried the same way rather than erased by that write.
-            if "leaked_process" not in extra and prior.get("leaked_process") is True:
-                carried["leaked_process"] = True
-    tombstone = {
-        "id": agent_id,
-        "task": state.get("task", ""),
-        "agent": state.get("agent", ""),
-        "parent_session": state.get("parent_session", ""),
-        "started": state.get("started"),
-        "died": time.time(),
-        "cause": cause,
-        "recovery_action": recovery_action,
-        "result_available": _check_result_available(d / "result.txt"),
-        "result_path": str(d / "result.txt"),
-        **cleanup_identity,
-        **latest_live_identity,
-        **generation_metadata,
-        **carried,
-        **extra,
-    }
-    try:
-        if owed_retry:
-            _create_exclusive(d / "tombstone.json", tombstone)
-        else:
-            _atomic_write(d / "tombstone.json", tombstone)
-    except OSError:
-        if owed_retry:
-            raise
-        logger.warning("write_tombstone failed for %s", agent_id, exc_info=True)
-        # Retried with the same fields and the same ``died``: the tombstone a
-        # retry writes describes this ending, not the moment space came back.
-        _owe_tombstone(agent_id, d, cause, recovery_action, {**extra, "died": tombstone["died"]})
-    state_sid = cleanup_identity.get("session_id")
-    if not live_cleanup_identities and isinstance(state_sid, str) and state_sid:
-        # The run folder is agent-writable. Preserve only the retention/exemption
-        # signal here; provider-deletion authority requires gateway-published live
-        # identity or the protected durable record.
-        publish_live_cleanup_hint(agent_id)
-
-
-def mark_delivered(
-    agent_id: str,
-    *,
-    elapsed: float | None = None,
-    credits: float | None = None,
-    leaked_process: bool = False,
-    outcome: str | None = None,
-    detail: str | None = None,
-) -> None:
-    """Mark a successfully-delivered subagent for deferred TTL cleanup.
-
-    ``leaked_process`` marks a delivered run whose kill left its process
-    standing: the next start ends that process without a notice. Such a run
-    has no earlier tombstone to carry its ending forward, so its ``outcome``
-    and ``detail`` (the kill failure the parent was told) are passed here.
-
-    Writes a ``cause="delivered"`` tombstone instead of deleting the folder
-    immediately, so (a) orphan reconciliation skips it on restart and (b) the
-    reaper prunes it after the (short) delivered TTL — giving the parent a grace
-    window to read ``result.txt`` via ``spawn_status`` / read / grep after the
-    completion event, rather than re-running the subagent.
-    """
-    terminal: dict[str, float] = {}
-    if elapsed is not None:
-        terminal["elapsed"] = elapsed
-    if credits is not None:
-        terminal["credits"] = credits
-    record: dict[str, object] = dict(terminal)
-    if leaked_process:
-        record["leaked_process"] = True
-    if outcome:
-        record["outcome"] = outcome
-    if detail:
-        record["detail"] = detail
-    write_tombstone(agent_id, cause="delivered", recovery_action="delivered", **record)
-
-
-class _SettleableDelivery(Protocol):
-    """The shape a held delivery has, without importing the class that defines it.
-
-    ``SubagentDelivery`` lives in ``subagent``, which imports this module, so naming
-    it here would close a cycle. The three fields are the whole contract.
-
-    Declared as read-only properties, not as attributes: ``SubagentDelivery`` is a
-    frozen dataclass, so its fields do not satisfy a protocol that asks for
-    settable ones -- and settable is not what this asks for anyway, since the batch
-    only ever reads them.
-    """
-
-    @property
-    def agent_id(self) -> str: ...
-
-    @property
-    def elapsed(self) -> float: ...
-
-    @property
-    def credits(self) -> float: ...
-
-
-def settle_delivered_batch(
-    deliveries: "Collection[_SettleableDelivery]",
-    *,
-    writer: "Callable[..., None] | None" = None,
-) -> None:
-    """Mark every delivery in *deliveries* delivered, as ONE indivisible operation.
-
-    Takes the held DELIVERIES rather than bare ids because the tombstone records
-    the run's terminal usage: settling by id alone would write a delivered
-    tombstone with no ``elapsed`` or ``credits``, and the panel then shows a
-    finished wave member with no usage while its siblings carry theirs.
-
-    For a caller that has already detached its ids from the state that held
-    them: awaiting :func:`mark_delivered` once per id makes each write a
-    cancellation point, and ``CancelledError`` is not an ``Exception``, so a
-    shutdown or a cancel arriving mid-batch discards the ids it has not reached
-    with nothing left holding them. Each unwritten tombstone leaves a folder that
-    restart reconciliation admits, which replays as a duplicate completion.
-    Offloaded whole by such a caller, this runs to the end of the batch whether or
-    not its waiter is still waiting.
-
-    ``writer`` is the write to perform per id, defaulting to
-    :func:`mark_delivered`. A caller inside the subagent manager passes its OWN
-    resolved ``mark_delivered`` instead, because the manager's modules resolve
-    that name through the facade and the facade is the single point anything
-    substituting the write replaces -- a batch that reached past it would be the
-    one delivery path that ignored the substitution.
-
-    A failing write is logged and skipped rather than raised, so one unwritable
-    run folder cannot strand the rest of the batch.
-    """
-    write = mark_delivered if writer is None else writer
-    for delivery in deliveries:
-        try:
-            write(delivery.agent_id, elapsed=delivery.elapsed, credits=delivery.credits)
-        except Exception:
-            logger.debug("Failed to settle delivered subagent %s", delivery.agent_id, exc_info=True)
-
-
-def clear_tombstone(agent_id: str) -> bool:
-    """Remove ``tombstone.json`` so the agent is visible to orphan recovery again.
-
-    A tombstone is the marker :func:`list_orphans` uses to EXCLUDE a folder from
-    restart reconciliation. That is correct once the outcome has reached the
-    parent, but the terminal record is written BEFORE delivery is attempted — so
-    if delivery is then abandoned (gateway shutdown cancelling a still-pending
-    terminal report), the tombstone would suppress the one mechanism that could
-    still hand the result to the parent, losing it permanently.
-
-    Clearing it re-admits the folder to the next start's reconciliation, which
-    sees ``result.txt`` and re-delivers. Returns True if a tombstone was
-    removed. Best-effort: never raises to the caller.
-    """
-    try:
-        p = _agent_dir(agent_id) / "tombstone.json"
-        existed = p.exists()
-        p.unlink(missing_ok=True)
-        return existed
-    except OSError:
-        logger.warning("clear_tombstone failed for %s", agent_id, exc_info=True)
-        return False
-
-
-# ── slow-command record (stalled but STILL RUNNING) ──────────────────
-
-
-# Rotate ``slow_commands.jsonl`` once it exceeds this size, keeping ONE
-# previous generation (``.jsonl.1``) — the same 1 MiB cap / ~2 MiB total
-# shape as ``mcp_gateway.stub._FALLBACK_LOG_MAX_BYTES``. The log lives at
-# the subagents-dir root so it survives per-agent folder cleanup, which
-# also keeps it outside ``prune_stale_tombstones``'s sweep (that prune
-# skips non-directories) — this cap is its only bound.
-_SLOW_LOG_MAX_BYTES = 1024 * 1024
-
-
-def record_slow_command(agent_id: str, **fields: object) -> None:
-    """Append a stalled subagent's slow command to ``slow_commands.jsonl``.
-
-    Unlike :func:`write_tombstone`, this does NOT mark the agent dead — a
-    stalled subagent is still running; the record is purely for later analysis
-    of which commands run slow. At the subagents-dir root so it survives
-    per-agent folder cleanup; rotated at :data:`_SLOW_LOG_MAX_BYTES` keeping
-    one previous generation. Best-effort: never raises to the caller.
-
-    Bounded via rotate-by-rename (``os.replace``, O(1)) rather than a
-    read-and-rewrite trim: this is invoked synchronously from the async
-    stall detector (``subagent._maybe_flag_stall``), so whole-file work
-    here would stall the gateway event loop.
-    """
-    entry = {"id": agent_id, "flagged": time.time(), **fields}
-    base = _subagents_dir()
-    try:
-        ensure_directory(base)
-        log_path = base / "slow_commands.jsonl"
-        # Rotation (shared helper): O(1) rotate-by-rename at the cap, guarded
-        # by a non-blocking try-lock so two writers hitting the cap together
-        # cannot both rotate, and a loser never waits — no call can stall the
-        # gateway event loop. The helper is best-effort by contract: ANY of
-        # its failures — the lock file unopenable (fd exhaustion, read-only or
-        # ACL-restricted dir), a fresh-boot missing log, a Windows sharing
-        # violation rejecting the rename — degrades to appending without
-        # rotating. Fd/disk exhaustion is a leading cause of the very stalls
-        # this log diagnoses, so a rotation failure must never cost the
-        # record; only a failure of the append itself may.
-        rotate_jsonl_at(log_path, _SLOW_LOG_MAX_BYTES)
-        with open(log_path, "a", encoding="utf-8", opener=owner_only_opener_for(log_path)) as fh:
-            fh.write(json.dumps(entry, default=str) + "\n")
-    except OSError:
-        logger.warning("record_slow_command failed for %s", agent_id, exc_info=True)
-
-
-# ── delete ───────────────────────────────────────────────────────────
-
-
-def forget_live_run_state(agent_id: str) -> None:
-    """Release transient run state after its lifecycle writers have settled."""
-    _LIVE_RUN_STATES.pop(_live_run_key(agent_id), None)
-
-
-def delete_agent_folder(agent_id: str) -> None:
-    """Remove the entire agent directory and its in-process identity fallback."""
-    d = _agent_dir(agent_id)
-    forget_live_run_state(agent_id)
-    with _CLEANUP_IDENTITY_LOCK:
-        shutil.rmtree(d, ignore_errors=True)
-        if not d.exists():
-            _delete_cleanup_identities_file(agent_id)
-            _delete_panel_dismissal(agent_id)
-            _LIVE_CLEANUP_IDENTITIES.pop(agent_id, None)
-            _LIVE_CLEANUP_HINTS.discard(agent_id)
-
-
-# ── list orphans ─────────────────────────────────────────────────────
-
-
-def list_orphans() -> list[dict]:
-    """Return parsed state for all non-tombstoned agent folders."""
-    results: list[dict] = []
-    try:
-        dirs = sorted(_subagents_dir().iterdir())
-    except (FileNotFoundError, OSError):
-        return results
-    for d in dirs:
-        if not d.is_dir():
-            continue
-        if (d / "tombstone.json").exists():
-            continue
-        state = read_state(d.name)
-        if state is None:
-            logger.debug("list_orphans: skipping corrupt state in %s", d.name)
-            continue
-        results.append(state)
-    return results
-
-
-def list_leaked_processes() -> list[dict]:
-    """Return state for every tombstoned run whose kill left its process standing.
-
-    The tombstone ended the run, so :func:`list_orphans` skips it and the parent
-    is not told about it again. Its ``leaked_process`` flag says only that a
-    process may still be running, which is what the next start's reconciliation
-    reads this for: to end the survivor without sending a notice.
-
-    A flagged folder whose ``state.json`` is missing or unreadable is returned
-    as ``{"id": <folder>}``: with no pid on record nothing can be ended, and
-    leaving it out would keep the flag -- and so the folder, which the pruner
-    skips while flagged -- forever.
-    """
-    results: list[dict] = []
-    try:
-        dirs = sorted(_subagents_dir().iterdir())
-    except (FileNotFoundError, OSError):
-        return results
-    for d in dirs:
-        if not d.is_dir():
-            continue
-        tombstone, _present = _read_tombstone_at(d / "tombstone.json")
-        if not isinstance(tombstone, dict) or tombstone.get("leaked_process") is not True:
-            continue
-        state = read_state(d.name)
-        results.append(state if state is not None else {"id": d.name})
-    return results
-
-
-def clear_leaked_process(agent_id: str) -> None:
-    """Drop the ``leaked_process`` flag from *agent_id*'s tombstone, keeping the rest.
-
-    Rewritten in place rather than through :func:`write_tombstone`, which would
-    replace the cause, the detail and the terminal usage the run recorded.
-    Best-effort: never raises.
-    """
-    path = _agent_dir(agent_id) / "tombstone.json"
-    tombstone, _present = _read_tombstone_at(path)
-    if not isinstance(tombstone, dict) or "leaked_process" not in tombstone:
-        return
-    tombstone.pop("leaked_process", None)
-    try:
-        _atomic_write(path, tombstone)
-    except OSError:
-        logger.warning("clear_leaked_process failed for %s", agent_id, exc_info=True)
-
+from kiro_crew.subagent_persistence_dismissals import (
+    _PANEL_APP_CAP,
+    _PANEL_ID_CAP,
+    _PANEL_PARENT_SESSION_CAP,
+    DISMISSAL_FAILED,
+    DISMISSAL_NO_FOLDER,
+    DISMISSAL_RECORDED,
+    _delete_panel_dismissal,
+    dismissed_panel_ids,
+    panel_dismissal_recorded,
+    prune_orphan_panel_dismissals,
+    record_panel_dismissal,
+    record_panel_dismissal_outcome,
+)
+from kiro_crew.subagent_persistence_layout import (
+    _CLEANUP_IDENTITY_LOCK,
+    _LIVE_CLEANUP_HINTS,
+    _LIVE_CLEANUP_IDENTITIES,
+    SUBAGENT_CONVERSATION_PREFIX,
+    _agent_dir,
+    _delete_cleanup_identities_file,
+    _live_cleanup_identities,
+    _merge_cleanup_identity_records,
+    _read_cleanup_identities_file,
+    _subagents_dir,
+    agent_dir_for_display,
+    has_live_cleanup_identity,
+    logger,
+    publish_live_cleanup_hint,
+    publish_live_cleanup_identity,
+    remember_live_cleanup_identity,
+    subagent_id_from_conversation_key,
+    trusted_cleanup_identity_record,
+)
+from kiro_crew.subagent_persistence_state import (
+    RetentionPromotionResult,
+    _acquire_retention_locks,
+    _read_tombstone_at,
+    _release_retention_locks,
+    bind_session_memory_mode,
+    create_agent_folder,
+    promote_retention,
+    read_run_agent_selection,
+    read_run_app,
+    read_run_execution,
+    read_run_memory_mode,
+    read_run_memory_store,
+    read_session_memory_mode,
+    read_state,
+    read_tombstone,
+    tighten_run_memory_mode,
+    update_execution_context,
+    update_state,
+    write_result_chunk,
+    write_run_agent,
+)
+from kiro_crew.subagent_persistence_tombstones import (
+    _finite_time,
+    clear_leaked_process,
+    clear_tombstone,
+    delete_agent_folder,
+    forget_live_run_state,
+    has_owed_tombstones,
+    list_leaked_processes,
+    list_orphans,
+    mark_delivered,
+    record_slow_command,
+    result_is_whole,
+    retry_owed_tombstones,
+    settle_delivered_batch,
+    write_finished_result,
+    write_tombstone,
+)
 
 #: The one tombstone cause that marks a run whose result reached its parent.
 _DELIVERED_CAUSE = "delivered"
@@ -1782,21 +127,6 @@ _PANEL_TRUNC_MARKER = " ...(truncated)"
 #: purpose: the alternative is reading the file whole, which the cap exists to
 #: refuse. Wide enough for any single token the redactors recognise.
 _PANEL_REDACT_MARGIN = 1024
-
-#: Ceilings on the record's EQUALITY KEYS. These REFUSE the record rather than
-#: clamping it, because each one is compared for equality and a truncated key
-#: would compare unequal while still looking like a value: the id addresses the
-#: run folder, the app is matched against a slot's current owner, and the parent
-#: session is matched against a caller and resolved into a slot key.
-#:
-#: Every string a record retains is accounted for here or clamped above, and the
-#: two lists are the whole record: ``id``, ``app`` and ``parent_session`` are
-#: keys; ``task``, ``agent``, ``error`` and ``result`` are text; ``started``,
-#: ``elapsed`` and ``stopped`` are numbers and a flag; ``outcome`` is one of
-#: three fixed words. A field added to the record belongs in one of the two.
-_PANEL_ID_CAP = 255
-_PANEL_APP_CAP = 200
-_PANEL_PARENT_SESSION_CAP = 400
 
 
 def _panel_keys_plausible(agent_id: str, app: str, parent_session: str) -> bool:
@@ -1883,16 +213,6 @@ def _record_app(state: dict) -> str:
         if isinstance(nested, str) and nested:
             return nested
     return ""
-
-
-def _finite_time(value: object) -> float:
-    """A finite, non-negative timestamp, or ``0.0`` for anything unusable."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    number = float(value)
-    if number != number or number in (float("inf"), float("-inf")) or number < 0:
-        return 0.0
-    return number
 
 
 def classify_persisted_ending(agent_dir: Path) -> tuple[str, str, bool]:
@@ -2555,42 +875,82 @@ def _cleanup_session_files_sync(
         return False
 
 
-# ── helpers ──────────────────────────────────────────────────────────
-
-
-def _atomic_write(path: Path, data: dict) -> None:
-    """Write JSON atomically via temp file + rename, fsynced, owner-only."""
-    ensure_directory(path.parent)
-    atomic_write(path, json.dumps(data, ensure_ascii=False), fsync=True, mode=0o600)
-
-
-def read_session_memory_mode(session_key: str) -> str | None:
-    from kiro_crew.execution_context import read_session_execution
-    from kiro_crew.history import ConversationLog
-
-    execution = read_session_execution(session_key)
-    if execution is not None:
-        return execution.memory_mode
-    metadata, readable = ConversationLog().get_metadata_status(session_key)
-    if not readable:
-        raise ValueError("memory_unavailable: session mode is unavailable")
-    mode = metadata.get("memory_mode")
-    if mode is not None and mode not in ("persistent", "incognito", "temporary"):
-        raise ValueError("memory_unavailable: invalid session mode")
-    return mode
-
-
-def bind_session_memory_mode(session_key: str, memory_mode: str) -> str:
-    from kiro_crew.execution_context import (
-        ExecutionContext,
-        MemoryStoreRef,
-        bind_session_execution,
-        read_session_execution,
+# This module keeps two of the readers that sweep every run folder: the panel records
+# (:func:`read_panel_records`, which redacts and clamps what a record retains) and the
+# stale-tombstone prune with its session-file cleanup. Every name its owners define still
+# resolves as ``kiro_crew.subagent_persistence.<name>``. A write through this module
+# (``monkeypatch.setattr``, ``mock.patch``) reaches every owner holding the name
+# (``kiro_crew._facade_mirror``). No owner imports this module; an owner imports only the
+# owners listed before it.
+# The owners log as ``kiro_crew.subagent_persistence``. New work goes to the owner of its
+# responsibility:
+#   ``subagent_persistence_layout`` -- run-folder paths, the registry root, the cleanup
+#     identities, the owner-only record write
+#   ``subagent_persistence_dismissals`` -- panel dismissals and the record-key ceilings
+#   ``subagent_persistence_state`` -- creating the folder, its execution context, state.json
+#     reads and locked writes, the tombstone reads, retention promotion, result streaming,
+#     a session's memory mode
+#   ``subagent_persistence_tombstones`` -- the finished result, the tombstone (owed and
+#     retried), delivery, the slow-command log, deletion, orphans and leaked processes
+#: Owner modules, lowest layer first: the first holder of a name answers its reads.
+_OWNERS = (
+    "kiro_crew.subagent_persistence_layout",
+    "kiro_crew.subagent_persistence_dismissals",
+    "kiro_crew.subagent_persistence_state",
+    "kiro_crew.subagent_persistence_tombstones",
+)
+for _owner in _OWNERS:
+    _importlib.import_module(_owner)
+#: Name the facade serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: the unsplit module's public names, and TYPE_CHECKING.
+__all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.subagent_persistence_dismissals import (  # noqa: F401
+        _PANEL_DISMISSAL_LEAF,
+        _panel_dismissal_path,
+        _panel_dismissals_dir,
     )
-
-    execution = read_session_execution(session_key)
-    if execution is None:
-        execution = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew")
-    execution = execution.with_mode(memory_mode)
-    bind_session_execution(session_key, execution)
-    return execution.memory_mode
+    from kiro_crew.subagent_persistence_layout import (  # noqa: F401
+        _CLEANUP_IDENTITIES_FILE,
+        _CLEANUP_IDENTITIES_TRUST_DIR,
+        _SUBAGENTS_DIR,
+        _atomic_write,
+        _cleanup_identities_path,
+        _cleanup_identity_record,
+        _protect_cleanup_identities_path,
+    )
+    from kiro_crew.subagent_persistence_state import (  # noqa: F401
+        _LIVE_RUN_STATES,
+        _RETENTION_LOCKS,
+        _RETENTION_LOCKS_GUARD,
+        _STATE_LOCKS,
+        _STATE_LOCKS_GUARD,
+        _AgentLock,
+        _live_run_key,
+        _lock_for_agent,
+        _lock_for_registry,
+        _on_event_loop,
+        _read_state_at,
+        _replace_in_run_folder,
+        _retention_lock_for_agent,
+        _try_acquire_registry_lock,
+        _try_acquire_retention_lock,
+        _try_acquire_state_lock,
+    )
+    from kiro_crew.subagent_persistence_tombstones import (  # noqa: F401
+        _OWED_TOMBSTONE_MAX_BYTES,
+        _OWED_TOMBSTONES_MAX,
+        _SLOW_LOG_MAX_BYTES,
+        _check_result_available,
+        _create_exclusive,
+        _owe_tombstone,
+        _owed_retry_lock,
+        _owed_tombstones,
+        _owed_tombstones_lock,
+        _retry_owed_tombstones_locked,
+        _SettleableDelivery,
+        _write_tombstone_file,
+    )

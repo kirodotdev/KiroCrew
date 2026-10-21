@@ -388,6 +388,15 @@ downstream is addressed through the descriptor already held. A validated path an
 inode later opened are otherwise not the same thing, and anything running as the user
 — which in this product includes an agent — can plant the swap between the two.
 
+`pinned_fs.py` stays the import path. It keeps the tree operations -- `stage_tree_pinned`
+and the verified scan, removal and put-back of a tree -- the two openers under a pinned
+parent (`open_in_pinned_parent`, `open_dir_pinned`) and its hand-written `__all__`, and is
+a `kiro_crew._facade_mirror` facade over three owners: `pinned_fs_primitives.py` (the
+refusal type, skip reasons, platform probes, pinning a parent, a descriptor's real path),
+`pinned_fs_dirs.py` (creating and opening directories under a pinned ancestor) and
+`pinned_fs_files.py` (copying, writing, reading and unlinking one file). New work goes to
+the owner of its responsibility.
+
 `os.supports_dir_fd` is empty and `O_NOFOLLOW` does not exist on Windows, so pinning
 is unavailable there. The decision, recorded here rather than only in the pull request
 that made it: staging is **refused** on such a platform unless

@@ -26,11 +26,8 @@
 2492 src/kiro_crew/dashboard/handlers/members.py
 2158 src/kiro_crew/dashboard/handlers/work_ledger.py
 2818 src/kiro_crew/dashboard/server.py
-2646 src/kiro_crew/pinned_fs.py
-2787 src/kiro_crew/portability.py
 2284 src/kiro_crew/sandbox_launcher_program.py
 3181 src/kiro_crew/security_posture.py
-2594 src/kiro_crew/subagent_persistence.py
 2641 test/conftest.py
 3125 test/test_cron_script.py
 3102 test/test_handlers_memory_coverage.py
