@@ -569,11 +569,9 @@ keyed on the harness label a turn is built with (`provider_type == PROVIDER_ACP`
 A chat or member session is built with its served harness's label, and KAS's is
 `kas`, not `acp`, so there an unmapped custom agent on KAS, Claude Code or any
 other harness gets no skill directory and an empty `skill_search` scope; map its
-skills with `skill://` entries to give it any. Known gap, not intended:
-`/api/hooks/agent` builds its first turn with the configured `agent.provider`
-(`acp` on every ACP backend) instead of the served label, so on KAS its skill
-directory lists trees that `skill_search` cannot load
-([#21860](https://github.com/kirodotdev/KiroCrew/issues/21860)).
+skills with `skill://` entries to give it any. Webhook turns from
+`/api/hooks/agent` follow the same rule: their first turn is built with the
+served label too, so on KAS its skill directory and `skill_search` scope agree.
 
 On kiro-cli, a workspace that
 sets `chat.disableInheritingDefaultResources` gets none, and so does an agent that

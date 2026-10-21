@@ -761,9 +761,14 @@ async def _run_hook_inner(
             session_key,
             agent=agent,
             resumed=resumed,
+            # Fallback label only: with the session's provider passed below,
+            # build_message builds on the SERVED harness label (`kas` on KAS),
+            # the same rule chat, cron, task and subagent turns follow, so the
+            # skill directory matches what skill_search can load.
             provider_type=KiroCrewConfig.load().agent.provider,
             memory_store=memory_store,
             execution_context=execution,
+            context_provider=client,
         )
         trusted_prompt = full_message
     if full_message is not trusted_prompt:
