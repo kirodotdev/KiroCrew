@@ -8,7 +8,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard.chat_runner import (
+    from kiro_crew.dashboard.chat_runner import (  # noqa: F401
         DashboardState,
         SessionMcpReport,
         _ChatSlot,
@@ -213,8 +213,9 @@ def _redact_acp_string(s: str) -> str:
     """
     if not s:
         return s
-    s, _ = redact_credentials(s)
-    s, _ = redact_exfiltration_urls(s)
+    from kiro_crew.security import redact
+
+    s = redact(s)
     return s
 
 

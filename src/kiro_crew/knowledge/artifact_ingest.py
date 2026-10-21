@@ -53,7 +53,7 @@ from datetime import datetime
 from pathlib import Path
 
 from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
-from kiro_crew.security import (
+from kiro_crew.security import (  # noqa: F401
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -101,8 +101,8 @@ def _redact_for_ingest(text: str) -> str:
     (never persist secrets), run the same redaction the chat
     path applies before the text lands in the Knowledge store.
     """
-    cleaned, _ = redact_credentials(text)
-    cleaned, _ = redact_exfiltration_urls(cleaned)
+    from kiro_crew.security import redact
+    cleaned = redact(text)
     return cleaned
 
 

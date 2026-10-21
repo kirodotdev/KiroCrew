@@ -62,8 +62,9 @@ def _redact_all(value: str) -> str:
     ``redact_for_display`` re-runs its redactor over each normalised form, so it
     needs the pair behind a single call rather than two sequential passes.
     """
-    value, _ = redact_exfiltration_urls(value)
-    value, _ = redact_credentials(value)
+    from kiro_crew.security import redact
+
+    value = redact(value)
     return value
 
 
@@ -285,8 +286,9 @@ async def api_delete_message(request: web.Request) -> web.Response:
         await slack.delete_message(channel, ts)
     except Exception as e:
         safe_error = str(e).split("\n")[0][:200]
-        safe_error, _ = redact_credentials(safe_error)
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        from kiro_crew.security import redact
+
+        safe_error = redact(safe_error)
         return web.json_response({"error": f"Delete failed: {safe_error}"}, status=502)
     return web.json_response({"ok": True})
 
@@ -434,8 +436,9 @@ async def api_update_message(request: web.Request) -> web.Response:
         await slack.update_message(channel, ts, text, blocks)
     except Exception as e:
         safe_error = str(e).split("\n")[0][:200]
-        safe_error, _ = redact_credentials(safe_error)
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        from kiro_crew.security import redact
+
+        safe_error = redact(safe_error)
         return web.json_response(
             {"error": f"Update failed: {safe_error}", "code": "update_failed"}, status=502
         )
@@ -772,8 +775,9 @@ def _proactive_source_line(
     else:
         return ""
     name = " ".join(str(name).split())
-    name, _ = redact_exfiltration_urls(name)
-    name, _ = redact_credentials(name)
+    from kiro_crew.security import redact
+
+    name = redact(name)
     if len(name) > _SOURCE_NAME_MAX:
         name = name[: _SOURCE_NAME_MAX - 1].rstrip() + "…"
     return f"Sent by {kind}: {name}" if name else ""
@@ -811,7 +815,7 @@ async def _deliver_send_message_fallback(
 
     Each leg records what it reached on *outcome* as it goes.
     """
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.security import redact
 
     # Snapshot before the suffix below: that sentence describes the BELL's
     # delivery, and a channel post is a real delivery, not the
@@ -821,8 +825,7 @@ async def _deliver_send_message_fallback(
     # path for one, not an edge case.
     channel_text = text
     if target_session and job_name:
-        safe_name, _ = redact_exfiltration_urls(job_name)
-        safe_name, _ = redact_credentials(safe_name)
+        safe_name = redact(job_name)
         title = f"⏰ {safe_name}"
         text += "\n\n_(session closed — delivered as notification)_"
     # Only an attested, non-app caller's key names the publishing crewmate
@@ -1215,11 +1218,10 @@ def _send_message_response(
     channel_type: str,
 ) -> web.Response:
     """The answer to a send whose legs have run: a failure, or where it was delivered."""
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.security import redact
 
     if outcome.channel_code:
-        safe_detail, _ = redact_credentials(outcome.channel_detail)
-        safe_detail, _ = redact_exfiltration_urls(safe_detail)
+        safe_detail = redact(outcome.channel_detail)
         detail = f"{channel_target} delivery failed: {safe_detail}"
         # Both responses are spelled out inline, with a literal status and a
         # literal body, rather than sharing a hoisted dict or computing the
@@ -1242,8 +1244,7 @@ def _send_message_response(
             {"ok": False, "error": unconfirmed, "code": outcome.channel_code}, status=502
         )
     if outcome.slack_attempted and not outcome.sent_slack:
-        safe_error, _ = redact_credentials(outcome.slack_error)
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(outcome.slack_error)
         # An unknown outcome says so, so the caller checks the conversation
         # instead of sending a message that may already be there.
         if outcome.slack_failure == "unconfirmed":

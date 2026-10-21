@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 
 #: Ceiling on a rendered label. A label written by ANOTHER install is
 #: foreign-authored text arriving through the same door object names arrive
@@ -35,8 +35,9 @@ def _redact_egress(text: str) -> str:
     SHAPES, the other removes URLs whose destination would exfiltrate. A conversation
     holds both, because a model was shown a key and was asked to POST somewhere.
     """
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    from kiro_crew.security import redact
+
+    text = redact(text)
     return text
 
 

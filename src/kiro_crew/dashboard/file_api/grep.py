@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard.handlers.files import (
+    from kiro_crew.dashboard.handlers.files import (  # noqa: F401
         _GREP_DOC_EXTS,
         _GREP_DOC_MAX_BYTES,
         _GREP_DOC_MAX_CHARS,
@@ -151,8 +151,9 @@ def _grep_hit(path: str, line: int, preview: str, label: str = "") -> dict:
     sensitive-path fence covers credential STORES, not a secret pasted into an
     ordinary file. Redaction runs BEFORE the cut: half a token matches no pattern.
     """
-    safe, _ = redact_credentials(preview.rstrip("\n"))
-    safe, _ = redact_exfiltration_urls(safe)
+    from kiro_crew.security import redact as redact_composed
+
+    safe = redact_composed(preview.rstrip("\n"))
     hit: dict = {
         # Segment-wise so two paths that both redact to a tag stay two rows; a
         # clean path is returned byte-for-byte.
@@ -161,8 +162,9 @@ def _grep_hit(path: str, line: int, preview: str, label: str = "") -> dict:
         "preview": safe[:_GREP_PREVIEW_CHARS],
     }
     if label:
-        safe_label, _ = redact_credentials(label)
-        safe_label, _ = redact_exfiltration_urls(safe_label)
+        from kiro_crew.security import redact as redact_composed
+
+        safe_label = redact_composed(label)
         hit["label"] = safe_label[:_GREP_LABEL_CHARS]
     return hit
 

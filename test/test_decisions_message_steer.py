@@ -310,7 +310,7 @@ class TestTheTurnTextIsRedacted:
         def _raise(_text):
             raise RuntimeError("scanner")
 
-        monkeypatch.setattr("kiro_crew.security.redact_credentials", _raise)
+        monkeypatch.setattr("kiro_crew.security.pass_compose.compose", _raise)
         assert (
             ms.redacted("anything at all", 100) == ""
         ), "no cleaned text is the only safe answer for text about to leave the machine"

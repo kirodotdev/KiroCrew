@@ -513,8 +513,9 @@ def _sanitize_progress_name(name: str) -> str:
     Whitespace collapse and the control strip run AFTER redaction so a
     redaction marker cannot reintroduce a break.
     """
-    scrubbed, _ = redact_exfiltration_urls(name)
-    scrubbed, _ = redact_credentials(scrubbed)
+    from kiro_crew.security import redact
+
+    scrubbed = redact(name)
     return _strip_unprintable(" ".join(scrubbed.split()))[:_MCP_PROGRESS_NAME_LEN_CAP]
 
 
@@ -2908,8 +2909,9 @@ class AcpRuntime:
         if not self._stderr_lines:
             return ""
         tail = "\n".join(self._stderr_lines)
-        tail, _ = redact_exfiltration_urls(tail)
-        tail, _ = redact_credentials(tail)
+        from kiro_crew.security import redact
+
+        tail = redact(tail)
         return tail
 
     @property
@@ -3067,8 +3069,9 @@ class AcpRuntime:
         # the SEL, the debug line lands in the gateway log -- so redact before
         # either, and before any cut, which then cannot split a secret into a
         # half the redactor fails to recognise.
-        tail, _ = redact_credentials(tail)
-        tail, _ = redact_exfiltration_urls(tail)
+        from kiro_crew.security import redact
+
+        tail = redact(tail)
         last = next((ln for ln in reversed(tail.splitlines()) if ln.strip()), "")
         if last:
             logger.debug(
@@ -3230,8 +3233,9 @@ class AcpRuntime:
         # which persists to sandbox-visible crons.json. Child stderr is
         # external-subprocess output that can carry credential material
         # (same treatment as the send-path's 'ACP process exited' detail).
-        tail, _ = redact_exfiltration_urls(tail)
-        tail, _ = redact_credentials(tail)
+        from kiro_crew.security import redact
+
+        tail = redact(tail)
         # Retain the summary for death_summary(): consumers that learn of the
         # death only through a poisoned queue (a live turn's frame wait) can
         # then attach WHO/WHY to their own error instead of raising bare.
@@ -4055,8 +4059,9 @@ class AcpRuntime:
                 # A failed server's error text can carry connection strings or
                 # tokens from its startup, so it takes the same scrub the
                 # dashboard banner applies before it lands in an exception.
-                err, _ = redact_exfiltration_urls(str(params.get("error") or ""))
-                err, _ = redact_credentials(err)
+                from kiro_crew.security import redact
+
+                err = redact(str(params.get("error") or ""))
                 err = _strip_unprintable(" ".join(err.split()))[:_MCP_PROGRESS_ERROR_CAP]
                 if name not in failed:
                     failed.append(name)

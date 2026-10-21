@@ -236,10 +236,9 @@ def _check_min_version(manifest_data: dict[str, Any]) -> str | None:
 
 def _redact_warning(msg: str) -> str:
     """Redact credentials and exfiltration URLs from warning strings."""
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
-    msg, _ = redact_credentials(msg)
-    msg, _ = redact_exfiltration_urls(msg)
+    msg = redact(msg)
     return msg
 
 
@@ -1659,10 +1658,9 @@ async def _run_uninstall(
                 action="on_uninstall",
             )
             if script_output.get("output"):
-                from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+                from kiro_crew.security import redact
 
-                cleaned, _ = redact_exfiltration_urls(script_output["output"])
-                cleaned, _ = redact_credentials(cleaned)
+                cleaned = redact(script_output["output"])
                 uninstall_log.append(cleaned)
             if script_output.get("failed"):
                 uninstall_log.append("onUninstall script failed (exit code non-zero)")
@@ -1964,11 +1962,10 @@ async def _run_uninstall(
     )
     resp = result.to_dict()
     if retired_builtin:
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
         for index, warning in enumerate(backend_warnings):
-            cleaned, _ = redact_exfiltration_urls(warning)
-            backend_warnings[index], _ = redact_credentials(cleaned)
+            backend_warnings[index] = redact(warning)
         notices = list(backend_warnings)
         if pointer_flush_failed:
             notices.append(
@@ -1976,8 +1973,7 @@ async def _run_uninstall(
                 "did not persist -- a reinstall may still resume one"
             )
         if notices:
-            notice, _ = redact_exfiltration_urls("\n".join(notices))
-            resp["notice"], _ = redact_credentials(notice)
+            resp["notice"] = redact("\n".join(notices))
     if uninstall_log:
         resp["uninstall_log"] = "\n".join(uninstall_log)
     if backend_warnings:
@@ -2699,16 +2695,14 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         # Redact install log and error before returning to client — build output
         # may contain internal hostnames, package URLs, or credential fragments.
         if result.get("log"):
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            from kiro_crew.security import redact
 
-            cleaned_log, _ = redact_exfiltration_urls(result["log"])
-            cleaned_log, _ = redact_credentials(cleaned_log)
+            cleaned_log = redact(result["log"])
             result["log"] = cleaned_log
         if result.get("error"):
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            from kiro_crew.security import redact
 
-            cleaned_err, _ = redact_exfiltration_urls(result["error"])
-            cleaned_err, _ = redact_credentials(cleaned_err)
+            cleaned_err = redact(result["error"])
             result["error"] = cleaned_err
 
         if result.get("needsClientInstall"):
@@ -2831,14 +2825,13 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
 
     async def _drain_queue() -> None:
         """Forward queued log lines to the SSE stream until sentinel."""
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
         while True:
             line = await queue.get()
             if line is None:
                 break  # sentinel — install finished
-            cleaned, _ = redact_exfiltration_urls(line)
-            cleaned, _ = redact_credentials(cleaned)
+            cleaned = redact(line)
             await _send_sse("log", cleaned)
 
     # Run install + drain concurrently. The complete lifecycle transaction —
@@ -2885,16 +2878,14 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # error may contain internal hostnames, git URLs, or credential
     # fragments from subprocess failures.
     if result.get("log"):
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
-        cleaned_log, _ = redact_exfiltration_urls(result["log"])
-        cleaned_log, _ = redact_credentials(cleaned_log)
+        cleaned_log = redact(result["log"])
         result["log"] = cleaned_log
     if result.get("error"):
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact
 
-        cleaned_err, _ = redact_exfiltration_urls(result["error"])
-        cleaned_err, _ = redact_credentials(cleaned_err)
+        cleaned_err = redact(result["error"])
         result["error"] = cleaned_err
 
     if result.get("needsClientInstall"):

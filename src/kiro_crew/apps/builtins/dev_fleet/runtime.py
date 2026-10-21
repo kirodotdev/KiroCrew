@@ -29,15 +29,16 @@ from kiro_crew.sandbox import (
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 
 logger = logging.getLogger("kiro_crew.apps.builtins.dev_fleet.server")
 
 
 def _redact(text: str) -> str:
     """Apply both credential and exfiltration-URL redaction to output text."""
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    from kiro_crew.security import redact
+
+    text = redact(text)
     return text
 
 

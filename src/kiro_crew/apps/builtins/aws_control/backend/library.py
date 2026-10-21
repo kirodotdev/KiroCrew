@@ -260,11 +260,10 @@ def list_pushable(account: str) -> list[dict[str, Any]]:
     quote a secret as easily as its body can, and this listing is a display
     surface (the same both-pass chain the push path applies to metadata).
     """
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
     def _clean(text: str) -> str:
-        text, _ = redact_credentials(text)
-        text, _ = redact_exfiltration_urls(text)
+        text = redact(text)
         return text
 
     ledger = read_ledger().get(account, {})
@@ -313,11 +312,7 @@ def push_artifact(
     # metadata sidecar runs both redaction passes — an LLM-authored name or
     # description can quote a secret as easily as the body can.
     from kiro_crew.deploy.scan import is_credential_finding, scan_content
-    from kiro_crew.security import (
-        redact_credentials,
-        redact_exfiltration_urls,
-        scan_exfiltration_urls,
-    )
+    from kiro_crew.security import redact, scan_exfiltration_urls
 
     if any(is_credential_finding(f) for f in scan_content(content)):
         raise ValueError(
@@ -335,8 +330,7 @@ def push_artifact(
         )
 
     def _clean(text: str) -> str:
-        text, _ = redact_credentials(text)
-        text, _ = redact_exfiltration_urls(text)
+        text = redact(text)
         return text
 
     meta = {

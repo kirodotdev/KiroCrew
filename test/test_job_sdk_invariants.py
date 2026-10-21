@@ -128,12 +128,11 @@ class TestDefensiveBranches:
     def test_redact_falls_back_to_raw_when_security_raises(self, sdk: JobSDK, monkeypatch) -> None:
         """If the redaction chain itself raises, the raw error text survives
         (redaction must never mask the error)."""
-        import kiro_crew.security as security
 
         def boom(_text):
             raise RuntimeError("redaction backend down")
 
-        monkeypatch.setattr(security, "redact_credentials", boom)
+        monkeypatch.setattr("kiro_crew.security.pass_compose.compose", boom)
 
         def failer(h, **kw):
             raise ValueError("SENTINEL-ERR-TEXT")

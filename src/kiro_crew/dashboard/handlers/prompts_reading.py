@@ -29,7 +29,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 
 from ._shared import _read_session_key
 
@@ -272,8 +272,9 @@ def _local_prompt_entry(name: str, project_dir: Path | None) -> dict[str, Any] |
 def _redact_prompt(p: dict[str, Any]) -> None:
     """Redact credential patterns and exfiltration URLs from prompt metadata."""
     for field in ("description", "path"):
-        p[field], _ = redact_credentials(p[field])
-        p[field], _ = redact_exfiltration_urls(p[field])
+        from kiro_crew.security import redact
+
+        p[field] = redact(p[field])
 
 
 async def api_prompts(request: web.Request) -> web.Response:

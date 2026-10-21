@@ -86,8 +86,6 @@ class WebSocketHubOwner(Protocol):
     _flush_task: asyncio.Task[Any] | None
 
 
-Redactor = Callable[[str], tuple[str, Any]]
-
 #: The ``data`` of a fan-out frame. A mapping, not ``object``: an unawaited async
 #: payload builder hands the fan-out a coroutine ``json.dumps`` cannot serialize,
 #: and with ``object`` that mistake type-checked at every call site.
@@ -108,16 +106,12 @@ class WebSocketHub:
         *,
         serving_loop_provider: Callable[[], asyncio.AbstractEventLoop | None],
         logger_provider: Callable[[], logging.Logger],
-        redact_credentials_provider: Callable[[], Redactor],
-        redact_exfiltration_urls_provider: Callable[[], Redactor],
         scope_state_provider: Callable[[], Any] | None = None,
         running_loop_provider: Callable[[], asyncio.AbstractEventLoop | None] | None = None,
     ) -> None:
         self._owner = owner
         self._serving_loop_provider = serving_loop_provider
         self._logger_provider = logger_provider
-        self._redact_credentials_provider = redact_credentials_provider
-        self._redact_exfiltration_urls_provider = redact_exfiltration_urls_provider
         self._scope_state_provider: Callable[[], Any] = (
             scope_state_provider if scope_state_provider is not None else lambda: owner
         )
@@ -644,13 +638,12 @@ class WebSocketHub:
 
     def broadcast_browser_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Redact and broadcast a browser activity event."""
-        redact_credentials = self._redact_credentials_provider()
-        redact_exfiltration_urls = self._redact_exfiltration_urls_provider()
         safe_data: dict[str, Any] = {}
         for key, value in data.items():
             if isinstance(value, str):
-                value, _ = redact_credentials(value)
-                value, _ = redact_exfiltration_urls(value)
+                from kiro_crew.security import redact
+
+                value = redact(value)
             safe_data[key] = value
         payload: dict[str, Any] = {
             "type": "browser_event",

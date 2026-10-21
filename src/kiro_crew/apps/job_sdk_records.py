@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 
 #: The Job SDK logs under its facade's name, so one logger covers the whole family.
 logger = logging.getLogger("kiro_crew.apps.job_sdk")
@@ -142,8 +142,9 @@ def _redact(text: str) -> str:
     way out, so the record on disk is clean too.
     """
     try:
-        out, _ = redact_credentials(text)
-        out, _ = redact_exfiltration_urls(out)
+        from kiro_crew.security import redact
+
+        out = redact(text)
         return out
     except Exception:  # noqa: BLE001 - redaction must never mask the error itself
         logger.debug("job text redaction failed", exc_info=True)

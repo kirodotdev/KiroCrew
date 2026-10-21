@@ -142,7 +142,7 @@ def redact(value: str) -> str:
     # warnings) tuples — a changed cleaned_text means something sensitive was
     # found. The AKIA/ASIA STS-token shape is also covered by the patterns
     # above.
-    if redact_exfiltration_urls(redact_credentials(value)[0])[0] != value:
+    if redact_credentials(redact_exfiltration_urls(value)[0])[0] != value:
         return "[REDACTED]"
     if _is_high_entropy(value):
         return "[REDACTED]"

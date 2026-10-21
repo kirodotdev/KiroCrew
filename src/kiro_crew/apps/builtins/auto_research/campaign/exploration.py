@@ -97,8 +97,7 @@ def _ingest_emergent_questions(campaign_id: str) -> list[dict]:
     # column and the dashboard UI — scrub creds + exfil URLs before it enters the
     # queue (same defense-in-depth the finding-read path applies).
     def _redact_em(s: str) -> str:
-        cleaned, _ = untrusted.redact_credentials(s)
-        cleaned, _ = untrusted.redact_exfiltration_urls(cleaned)
+        cleaned = untrusted.redact(s)
         return cleaned
 
     cands: list[dict] = []

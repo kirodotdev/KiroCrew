@@ -2570,8 +2570,7 @@ async def _run_chat(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
             elif event.kind == EVENT_AGENT_SWITCHED:
-                new_agent, _ = redact_credentials(event.text)
-                new_agent, _ = redact_exfiltration_urls(new_agent)
+                new_agent = redact(event.text)
                 if new_agent and (
                     private_member or (slot.mode == "member" and new_agent != slot.agent)
                 ):
@@ -2810,15 +2809,13 @@ async def _run_chat(
                 # with no explanation. When the card cannot exist yet, persist
                 # the explanation as a slot notice instead.
                 if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
-                    _txt, _ = redact_exfiltration_urls(event.text)
-                    _txt, _ = redact_credentials(_txt)
+                    _txt = redact(event.text)
                     slot.append("notice", _txt, "msg msg-info")
                 # Some kiro-cli builds also stream the sub-agent's own text via
                 # agent_message_chunk on this channel — surface it on the card.
                 if _sid in _native_tracker and event.text:
                     _card_id = f"native:{_redact_tool_field(_sid)}"
-                    _txt, _ = redact_exfiltration_urls(event.text)
-                    _txt, _ = redact_credentials(_txt)
+                    _txt = redact(event.text)
                     _native_card_output_len[_card_id] = _append_native_output(
                         _native_card_output.setdefault(_card_id, []),
                         _txt,
@@ -3625,8 +3622,7 @@ async def _run_chat(
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
                     _restore_skills_context_after_compaction(turn)
-                    summary, _ = redact_credentials(compaction_result.get("summary", ""))
-                    summary, _ = redact_exfiltration_urls(summary)
+                    summary = redact(compaction_result.get("summary", ""))
                     msg = (
                         f"✅ Conversation compacted: {summary}"
                         if summary
@@ -3647,8 +3643,7 @@ async def _run_chat(
                     # the text is backend-echoed, so it is not trusted to be
                     # free of credentials or exfiltration URLs even though the
                     # provider already redacts once at its own boundary.
-                    error, _ = redact_credentials(compaction_result.get("summary", ""))
-                    error, _ = redact_exfiltration_urls(error)
+                    error = redact(compaction_result.get("summary", ""))
                     error = error.strip()
                     if len(error) > _COMPACT_FAIL_REASON_MAX_CHARS:
                         # A notice is a one-line receipt, not a log: a provider
@@ -3761,8 +3756,7 @@ async def _run_chat(
                         # comes from config or the provider envelope.
                         _fb = slot._refusal_fallback_candidate
                         if _fb:
-                            _fb, _ = redact_exfiltration_urls(str(_fb))
-                            _fb, _ = redact_credentials(_fb)
+                            _fb = redact(str(_fb))
                             _fb = _fb[:120]
                         _refusal_card += (
                             f" The configured fallback model ('{_fb}') also declined this request."
@@ -3819,8 +3813,7 @@ async def _run_chat(
                     # the id comes from config or the provider envelope.
                     _fb = slot._refusal_fallback_candidate
                     if _fb:
-                        _fb, _ = redact_exfiltration_urls(str(_fb))
-                        _fb, _ = redact_credentials(_fb)
+                        _fb = redact(str(_fb))
                         _fb = _fb[:120]
                     _refusal_card += (
                         f" The configured fallback model ('{_fb}') also declined this request."
@@ -6006,8 +5999,7 @@ async def _run_chat(
                 slot._fallback_primary_model or "the selected model"
             )
             _fb_primary_safe, _ = redact_credentials(_fb_primary_safe)
-            _fb_cand_safe, _ = redact_exfiltration_urls(_fb_candidate)
-            _fb_cand_safe, _ = redact_credentials(_fb_cand_safe)
+            _fb_cand_safe = redact(_fb_candidate)
             # Persisted notice card (withheld-pin pattern): the explanation has
             # to survive a reload because the state it explains does (the
             # session stays on the fallback until the restore probe succeeds).
@@ -6201,10 +6193,8 @@ async def _run_chat(
             #     ``rejected_model`` and stays terminal, so a real fault is never
             #     masked as a model switch.
             slot.purge_chunks()
-            _rejected_safe, _ = redact_exfiltration_urls(str(_rejected_id))
-            _rejected_safe, _ = redact_credentials(_rejected_safe)
-            _cand_safe, _ = redact_exfiltration_urls(str(_access_fb_candidate))
-            _cand_safe, _ = redact_credentials(_cand_safe)
+            _rejected_safe = redact(str(_rejected_id))
+            _cand_safe = redact(str(_access_fb_candidate))
             # Move the live session onto the accessible model through the shared
             # substitute set_model seam (the same one the throttle walk uses);
             # candidates are pre-filtered against the advertised list, so the
@@ -6223,8 +6213,7 @@ async def _run_chat(
                     slot.key,
                     _rejected_id,
                 )
-                _entitle_text, _ = redact_exfiltration_urls(str(exc))
-                _entitle_text, _ = redact_credentials(_entitle_text)
+                _entitle_text = redact(str(exc))
                 slot.purge_chunks()
                 slot.append(
                     "error",
@@ -6280,8 +6269,7 @@ async def _run_chat(
                             _access_fb_candidate,
                             exc_info=True,
                         )
-                        _entitle_text, _ = redact_exfiltration_urls(str(exc))
-                        _entitle_text, _ = redact_credentials(_entitle_text)
+                        _entitle_text = redact(str(exc))
                         slot.purge_chunks()
                         slot.append(
                             "error",
@@ -6311,8 +6299,7 @@ async def _run_chat(
                                 _access_fb_candidate,
                                 _raw_after,
                             )
-                            _entitle_text, _ = redact_exfiltration_urls(str(exc))
-                            _entitle_text, _ = redact_credentials(_entitle_text)
+                            _entitle_text = redact(str(exc))
                             slot.purge_chunks()
                             slot.append(
                                 "error",
@@ -6646,8 +6633,7 @@ async def _run_chat(
                 slot._transient_5xx_retries = 0
                 slot._infra_retries = 0
             else:
-                _err_text, _ = redact_exfiltration_urls(str(exc))
-                _err_text, _ = redact_credentials(_err_text)
+                _err_text = redact(str(exc))
                 # Fallback-chain story (agent.fallback_model): when this cycle
                 # walked fallback candidates and STILL landed here, the error
                 # card must tell the whole story — the primary throttled AND
@@ -6660,8 +6646,7 @@ async def _run_chat(
                         f"{slot._fallback_primary_model or 'The selected model'} throttled; "
                         f"fallbacks {', '.join(slot._fallback_walked)} also unavailable. "
                     )
-                    _fb_story, _ = redact_exfiltration_urls(_fb_story)
-                    _fb_story, _ = redact_credentials(_fb_story)
+                    _fb_story = redact(_fb_story)
                     _err_text = _fb_story + _err_text
                 # Structural tag for a model-entitlement rejection, so the
                 # frontend can render the fix (model picker / Settings -> Chat)
@@ -6809,8 +6794,7 @@ async def _run_chat(
             await _persist_partial_reply(turn, "error: terminal")
         except Exception:
             logger.debug("Keeping the partial reply failed for slot %s", slot.key, exc_info=True)
-        _err_text, _ = redact_exfiltration_urls(str(exc))
-        _err_text, _ = redact_credentials(_err_text)
+        _err_text = redact(str(exc))
         from kiro_crew.memory_startup import MemoryStartupUnavailable
         from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F811
 

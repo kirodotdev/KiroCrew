@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
-    from kiro_crew.dashboard.chat_runner import (
+    from kiro_crew.dashboard.chat_runner import (  # noqa: F401
         MAX_PROMPT_BYTES,
         DashboardState,
         FileTooLargeError,
@@ -330,8 +330,9 @@ def _resolve_prompt_mention(
     # line operate on exactly what the agent receives.
     content = _strip_yaml_frontmatter(content)
 
-    content, _ = redact_credentials(content)
-    content, _ = redact_exfiltration_urls(content)
+    from kiro_crew.security import redact
+
+    content = redact(content)
 
     # Inject SOP as instructions the agent must follow
     expanded = f"Execute the following instructions:\n\n{content}"
@@ -477,8 +478,9 @@ def _expand_dollar_skills(
     names: list[str] = []
     snapshots: list[dict[str, str]] = []
     for _token, name, body in resolved:
-        body, _ = redact_credentials(body)
-        body, _ = redact_exfiltration_urls(body)
+        from kiro_crew.security import redact
+
+        body = redact(body)
         blocks.append(f"[Skill: {name}]\n\n{body}")
         names.append(name)
         snapshots.append({"name": name, "body": body})

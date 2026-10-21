@@ -1058,11 +1058,12 @@ def test_the_placement_scan_passes_the_constructs_an_owner_may_hold() -> None:
 
 def test_the_direct_send_sink_names_the_owner_that_redacts_compact() -> None:
     """``security_posture`` registers "Discord direct send" at the module holding
-    ``_handle_compact``'s redaction pass, and that pass runs both scanners, so the
-    posture panel names where the redaction happens and its checks read that code."""
+    ``_handle_compact``'s redaction pass, and that pass is the composed one that runs
+    both scanners, so the posture panel names where the redaction happens and its
+    checks read that code."""
     from kiro_crew import security_posture
 
     sinks = {label: module for label, module, _detail in security_posture._REDACTION_SINKS}
     assert sinks["Discord direct send"] == "discord/transport_dispatch_commands.py"
     compact = inspect.getsource(_owner("commands")._handle_compact)
-    assert "redact_credentials(" in compact and "redact_exfiltration_urls(" in compact
+    assert "redact(" in compact
