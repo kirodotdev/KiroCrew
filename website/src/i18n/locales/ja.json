@@ -19352,6 +19352,7 @@
       "name_not_saved_keep_field_open": "ゲートウェイがオフラインです — まだ保存されていません。この入力欄を開いたまま再接続してください。閉じると名前は破棄されます。",
       "optimize": "最適化",
       "rename_folders": "フォルダー名を変更",
+      "rename_sessions": "セッション名を変更",
       "resume_sessions": "セッションを再開",
       "save_folder_names": "フォルダー名を保存",
       "send": "送信",

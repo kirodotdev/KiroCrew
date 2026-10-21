@@ -14,6 +14,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
 import { ThemeProvider } from '../hooks/useTheme'
+import { sseDisconnected } from '../store/dashboardSlice'
 
 vi.mock('framer-motion', async () => {
   const React = await import('react')
@@ -171,6 +172,21 @@ describe('ChatSidebar slot rename — focus contract (#13598)', () => {
     act(() => { fireEvent.blur(textarea) })
     await nextFrame()
     await nextFrame()
+    const row = container.querySelector('[data-session-row]') as HTMLElement
+    expect(document.activeElement).toBe(row)
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('Enter on an unchanged title after the gateway drops closes and returns focus to the session row', async () => {
+    const { store, container } = renderSidebar()
+    const textarea = await openRenameAsync(container)
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.keyDown(textarea, { key: 'Enter' }) })
+    act(() => { fireEvent.blur(textarea) })
+    await nextFrame()
+    await nextFrame()
+    expect(container.querySelector('textarea')).toBeNull()
+    expect(renameSlotMock).not.toHaveBeenCalled()
     const row = container.querySelector('[data-session-row]') as HTMLElement
     expect(document.activeElement).toBe(row)
     expect(document.activeElement).not.toBe(document.body)
