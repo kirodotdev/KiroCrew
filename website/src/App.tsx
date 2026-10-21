@@ -15,8 +15,9 @@ import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorSlot } from './li
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
+import AgentSwitchNotice from './components/AgentSwitchNotice'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './shell/nav/mobileConnect'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
@@ -524,6 +525,17 @@ export default function App() {
         the dashboard inside the local pane (below), where it hides with the
         local Crew. */}
     {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
+    {/* Paired with the local pane's copy below, because the dispatchers are not
+        layout-scoped: the keyboard cycle, the session pickers and the auto-compact
+        write all run in a popout and an embed window too, and for several of them
+        this toast is the ONLY surface -- the picker closes on failure, and the
+        auto-compact flush fires from an unmount. */}
+    {(isPopout || isEmbed) && agentSwitchNotice && (
+      <AgentSwitchNotice
+        message={agentSwitchNotice.message}
+        onDismiss={() => dispatch(setAgentSwitchNotice(null))}
+      />
+    )}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
@@ -686,13 +698,6 @@ export default function App() {
       )}
 
       <ShellHeader shell={shell} />
-
-      {agentSwitchNotice && (
-        <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-          <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
-          <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
-        </div>
-      )}
 
       {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
       <ReportProblemModal open={reportProblemOpen} onClose={() => setReportProblemOpen(false)} />
@@ -881,13 +886,20 @@ export default function App() {
       </div>
     </div>{/* /Local dashboard grid */}
       {/* Opened from the local Crew, so they hide with it (components/overlayRoot).
-          The image viewer and the import notice render in place, fixed layers
-          inside this pane, so the pane's own display:none hides them; the other
-          two portal. The popout and embed frames mount their own copies. */}
+          The image viewer, the import notice and the switch notice render in
+          place, fixed layers inside this pane, so the pane's own display:none
+          hides them; the other two portal. The popout and embed frames mount
+          their own copies. */}
       <MetricsCard metrics={metrics} />
       <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
       <Lightbox />
       <ImportSessionOutcomeNotice />
+      {agentSwitchNotice && (
+        <AgentSwitchNotice
+          message={agentSwitchNotice.message}
+          onDismiss={() => dispatch(setAgentSwitchNotice(null))}
+        />
+      )}
       </LocalOverlayRoot>
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
