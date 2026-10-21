@@ -440,6 +440,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_dirty_gen": ("value", "0"),
     "_disk_meta_created_at": ("value", "''"),
     "_disk_meta_observed": ("value", "False"),
+    "_disk_meta_key": ("value", "''"),
     "_disk_older_count": ("value", "0"),
     "_disk_older_durable_count": ("value", "0"),
     "_disk_tail_ts": ("value", "None"),

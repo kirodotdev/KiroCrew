@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -565,6 +566,397 @@ class TestSaveDoesNotResurrectDeletedSession:
         assert (
             session_was_deleted(state, slot) is False
         ), "legacy metadata with no created_at must still fail open while the file exists"
+
+    def test_write_target_drift_to_another_file_is_not_read_as_a_delete(
+        self, tmp_path, monkeypatch
+    ):
+        """A routing drift to a DIFFERENT file is not a delete.
+
+        A cron-born slot observes its identity under ``cron:<id>`` (file A).
+        Later its ``linked_session_key`` lapses, so ``slot_history_key`` falls
+        back to the ``dashboard:cron_<id>`` spelling (file B) — a legitimately
+        existing transcript another writer created, with its own ``created_at``.
+        The delete witnesses stat file B and compare its unrelated identity
+        against the one observed from file A; without the observed-key check
+        they read "different created_at" as "deleted and recreated", skip every
+        save (fork then 409), and the session's new activity silently never
+        persists. The guard must tell "different file" apart from "same file,
+        new incarnation": a key mismatch is no delete evidence for the current
+        target, so the save must land and ``session_was_deleted`` stay False.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _save_slot_to_history,
+            session_was_deleted,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+
+        # File A: the cron transcript the slot observed its identity from.
+        cron_key = "cron:job-42"
+        slot = state.get_or_create_slot("cron_job-42")
+        slot.linked_session_key = cron_key
+        slot.append("user", "live cron activity", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_created_at, "the committed save must record identity"
+        assert slot._disk_meta_key == cron_key, "identity must be keyed to file A"
+        file_a_created = slot._disk_meta_created_at
+
+        # File B: a DIFFERENT transcript at the dashboard: fallback spelling,
+        # created independently with its own identity.
+        # Pin B's identity explicitly: two clock reads can land in one tick on
+        # coarse-resolution clocks and stamp both files identically.
+        fallback_key = "dashboard:cron_job-42"
+        log.append(fallback_key, "assistant", "unrelated row in the other file")
+        log.update_metadata(fallback_key, {"created_at": "2001-01-01T00:00:00+00:00"})
+        file_b_created = str(log.get_metadata(fallback_key)["created_at"])
+        assert (
+            file_b_created and file_b_created != file_a_created
+        ), "fixture must give the two files distinct identities"
+
+        # The routing drifts: linked_session_key lapses, so slot_history_key
+        # now resolves to the dashboard: fallback (file B), not file A.
+        slot.linked_session_key = ""
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        assert slot_history_key(slot) == fallback_key, "drift precondition"
+
+        # The drift must NOT be read as a delete-recreate of the observed file.
+        assert (
+            session_was_deleted(state, slot) is False
+        ), "a write-target drift to another file was misread as a delete"
+
+        # And a new save must land, not abort under the delete-won guard.
+        slot.append("user", "more cron activity after the drift", "msg msg-u2")
+        slot.drain()
+        assert (
+            _save_slot_to_history(state, slot, force=True) is True
+        ), "the save aborted because the drift was read as a delete-won race"
+
+    def test_drifted_save_does_not_reuse_the_observed_files_prefix_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """A drifted save reads the target file even when its stat matches the cache.
+
+        The frozen-prefix cache is keyed on the file's mtime and size only. It
+        was filled by the save to file A. After the write target drifts to file
+        B, a B whose stat happens to match those values (equal size on a
+        coarse-mtime filesystem) would be served A's cached prefix, so the
+        rewrite of B would never read B and would drop B's own rows. The test
+        pins that coincidence by aligning the cache with B's stat.
+        """
+        import os
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        observed_key = "cron:job-cache"
+        target_key = "dashboard:cron_job-cache"
+        slot = state.get_or_create_slot("cron_job-cache")
+        slot.linked_session_key = observed_key
+        slot.append("user", "row from A", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_key == observed_key
+        assert slot._frozen_prefix_cache is not None, "fixture needs a filled cache"
+
+        log.append(target_key, "assistant", "row only B has")
+        slot.linked_session_key = ""
+        slot.append("user", "row saved after the drift", "msg msg-u2")
+        slot.drain()
+
+        # Make B's stat match the cache, as a coarse-mtime filesystem can.
+        st = os.stat(log._path(target_key))
+        cache = slot._frozen_prefix_cache
+        slot._frozen_prefix_cache = (st.st_mtime, st.st_size, *cache[2:])
+
+        assert _save_slot_to_history(state, slot, force=True) is True
+        target_text = log._path(target_key).read_text(encoding="utf-8")
+        assert "row only B has" in target_text, "the drifted save dropped B's own row"
+        assert "row saved after the drift" in target_text
+
+    def test_delete_of_observed_file_before_drift_is_not_resurrected_in_the_new_target(
+        self, tmp_path, monkeypatch
+    ):
+        """A permanent delete of the observed file wins even once the key drifts.
+
+        The mirror of the drift case above. A cron-born slot observes its
+        identity under ``cron:<id>`` (file A) and the user then permanently
+        deletes A. Only after that does the slot's ``linked_session_key`` lapse,
+        so ``slot_history_key`` drifts the write target to
+        ``dashboard:cron_<id>`` (file B). The slot's window still holds A's rows.
+        A mismatch branch that returned "not deleted" outright would merge those
+        rows into B and bring the deleted conversation back under another key.
+        The witnesses must stat the OBSERVED file (A) on a mismatch: A is gone,
+        so the verdict is deleted and the save into B is refused.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _save_slot_to_history,
+            session_was_deleted,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+
+        # File A: the cron transcript the slot observed its identity from.
+        cron_key = "cron:job-77"
+        slot = state.get_or_create_slot("cron_job-77")
+        slot.linked_session_key = cron_key
+        slot.append("user", "secret cron activity", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_key == cron_key, "identity must be keyed to file A"
+        assert log._path(cron_key).exists()
+
+        # The user permanently deletes A.
+        assert log.delete_session(cron_key) is True
+        assert not log._path(cron_key).exists()
+
+        # Only then does the routing drift to the dashboard: fallback (file B).
+        slot.linked_session_key = ""
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        fallback_key = "dashboard:cron_job-77"
+        assert slot_history_key(slot) == fallback_key, "drift precondition"
+
+        # The observed file A is gone, so the drift must read as a delete.
+        assert (
+            session_was_deleted(state, slot) is True
+        ), "a delete of the observed file was missed once the target drifted"
+
+        # A save must NOT merge A's surviving window rows into file B.
+        slot.append("user", "more activity after the delete and drift", "msg msg-u2")
+        slot.drain()
+        assert (
+            _save_slot_to_history(state, slot, force=True) is False
+        ), "the deleted conversation was resurrected under the drifted key"
+        assert not log._path(fallback_key).exists(), "B was written from the deleted session's rows"
+
+    def test_observed_file_delete_during_empty_metadata_read_refuses_drifted_save(
+        self, tmp_path, monkeypatch
+    ):
+        """A delete between A's stat and metadata read cannot republish A into B."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        observed_key = "cron:job-empty-race"
+        target_key = "dashboard:cron_job-empty-race"
+        slot = state.get_or_create_slot("cron_job-empty-race")
+        slot.linked_session_key = observed_key
+        slot.append("user", "private row from A", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_key == observed_key
+
+        log.append(target_key, "assistant", "B stays independent")
+        target_before = log._path(target_key).read_text(encoding="utf-8")
+        slot.linked_session_key = ""
+        slot.append("user", "unpersisted A row", "msg msg-u2")
+        slot.drain()
+
+        real_status = log.get_metadata_status
+        deleted = False
+
+        def _delete_a_then_read(key):
+            nonlocal deleted
+            if key == observed_key and not deleted:
+                deleted = True
+                assert log.delete_session(observed_key) is True
+            return real_status(key)
+
+        monkeypatch.setattr(log, "get_metadata_status", _delete_a_then_read)
+        assert _save_slot_to_history(state, slot, force=True) is False
+        assert deleted, "the metadata read never opened the deletion window"
+        assert not log._path(observed_key).exists()
+        assert log._path(target_key).read_text(encoding="utf-8") == target_before
+
+    def test_drifted_save_holds_source_and_target_locks_through_commit(self, tmp_path, monkeypatch):
+        """The A-to-B delete check and B commit share one sorted lock union.
+
+        The test observes the real lock contexts rather than betting on a thread
+        schedule. It fails if A is absent from the acquisition, if either lock is
+        released before source verification or target commit, or if acquisition
+        stops being deterministic.
+        """
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+        from kiro_crew.history import transcript_lock_stems
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        observed_key = "cron:job-lock-span"
+        target_key = "dashboard:cron_job-lock-span"
+        slot = state.get_or_create_slot("cron_job-lock-span")
+        slot.linked_session_key = observed_key
+        slot.append("user", "private row from A", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_key == observed_key
+
+        log.append(target_key, "assistant", "B starts independently")
+        slot.linked_session_key = ""
+        slot.append("user", "row saved after the drift", "msg msg-u2")
+        slot.drain()
+
+        expected = sorted(
+            set(transcript_lock_stems(observed_key)) | set(transcript_lock_stems(target_key))
+        )
+        acquired: list[str] = []
+        active: list[str] = []
+        source_verified = False
+        target_committed = False
+        real_locked_stem = log._locked_stem
+        real_status = log.get_metadata_status
+        real_atomic_write = chat_persistence.atomic_write
+
+        @contextmanager
+        def _tracked_locked_stem(stem):
+            acquired.append(stem)
+            with real_locked_stem(stem):
+                active.append(stem)
+                try:
+                    yield
+                finally:
+                    assert active.pop() == stem
+
+        def _tracked_status(key):
+            nonlocal source_verified
+            if key == observed_key:
+                assert active == expected, "source verification did not hold A and B"
+                source_verified = True
+            return real_status(key)
+
+        def _tracked_atomic_write(path, payload, **kwargs):
+            nonlocal target_committed
+            if path == log._path(target_key):
+                assert source_verified, "target committed before source verification"
+                assert active == expected, "target commit did not retain A and B"
+                target_committed = True
+            return real_atomic_write(path, payload, **kwargs)
+
+        monkeypatch.setattr(log, "_locked_stem", _tracked_locked_stem)
+        monkeypatch.setattr(log, "get_metadata_status", _tracked_status)
+        monkeypatch.setattr(chat_persistence, "atomic_write", _tracked_atomic_write)
+
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert acquired == expected
+        assert source_verified is True
+        assert target_committed is True
+        assert active == []
+
+    def test_transient_observed_stat_error_raises_and_keeps_the_flush_retry(
+        self, tmp_path, monkeypatch
+    ):
+        """An unverifiable A raises for saves and refuses lock-free copies."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _save_slot_to_history,
+            session_was_deleted,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        observed_key = "cron:job-stat-retry"
+        target_key = "dashboard:cron_job-stat-retry"
+        slot = state.get_or_create_slot("cron_job-stat-retry")
+        slot.linked_session_key = observed_key
+        slot.append("user", "private row from A", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_key == observed_key
+
+        log.append(target_key, "assistant", "B stays independent")
+        target_before = log._path(target_key).read_text(encoding="utf-8")
+        slot.linked_session_key = ""
+        slot.append("user", "retry me", "msg msg-u2")
+        slot.drain()
+        assert slot._dirty is True
+
+        real_path = log._path
+
+        class _UnavailableObservedPath:
+            def stat(self):
+                raise OSError("observed file temporarily unavailable")
+
+        def _path(key):
+            if key == observed_key:
+                return _UnavailableObservedPath()
+            return real_path(key)
+
+        monkeypatch.setattr(log, "_path", _path)
+        with pytest.raises(OSError, match="temporarily unavailable"):
+            _save_slot_to_history(state, slot, force=True)
+        assert session_was_deleted(state, slot) is True
+
+        state.flush_slot_now(slot)
+        assert slot._dirty is True, "the transient save failure discarded its retry"
+        assert real_path(target_key).read_text(encoding="utf-8") == target_before
+
+        monkeypatch.setattr(log, "_path", real_path)
+        real_status = log.get_metadata_status
+        monkeypatch.setattr(
+            log,
+            "get_metadata_status",
+            lambda key: ({}, False) if key == observed_key else real_status(key),
+        )
+        with pytest.raises(OSError, match="transiently unreadable"):
+            _save_slot_to_history(state, slot, force=True)
+        assert session_was_deleted(state, slot) is True
+        state.flush_slot_now(slot)
+        assert slot._dirty is True, "the unreadable metadata failure discarded its retry"
+        assert real_path(target_key).read_text(encoding="utf-8") == target_before
+
+    def test_alias_spellings_of_one_transcript_still_witness_a_delete(self, tmp_path, monkeypatch):
+        """Two spellings of the SAME file are not a write-target drift.
+
+        An unbound channel slot is observed under the stem spelling
+        (``slack_<ts>``) and bound to the canonical ``slack:<ts>`` later; both
+        fold onto one ``.jsonl``. A raw string comparison would read the bind as
+        a drift to another file and switch the delete witnesses off, so a
+        permanent delete landing before the next save would be undone.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _save_slot_to_history,
+            session_was_deleted,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+
+        stem_key = "slack_1712345678.123456"
+        canonical_key = "slack:1712345678.123456"
+        assert log._path(stem_key) == log._path(canonical_key), "fixture: one file"
+
+        slot = state.get_or_create_slot("aliasbind")
+        slot.linked_session_key = stem_key
+        slot.append("user", "thread activity", "msg msg-u")
+        slot.drain()
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert slot._disk_meta_key == stem_key
+
+        # The bind re-spells the key; the file is the same one.
+        slot.linked_session_key = canonical_key
+        assert log.delete_session(canonical_key) is True
+        assert not log._path(canonical_key).exists()
+
+        assert (
+            session_was_deleted(state, slot) is True
+        ), "an alias re-spelling switched off the delete witness"
+        slot.append("user", "late activity", "msg msg-u2")
+        slot.drain()
+        assert (
+            _save_slot_to_history(state, slot, force=True) is False
+        ), "the save resurrected a deleted transcript under its alias spelling"
+        assert not log._path(canonical_key).exists()
 
 
 # ── Slot lifecycle ──
