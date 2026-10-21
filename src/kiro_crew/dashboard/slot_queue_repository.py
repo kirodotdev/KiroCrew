@@ -788,6 +788,7 @@ class SlotQueueRepository:
             else:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
+            item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

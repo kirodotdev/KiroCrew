@@ -1371,4 +1371,7 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     label = (item.get("meta") or {}).get("appLabel")
     if isinstance(label, str) and label:
         view.setdefault("meta", {})["appLabel"] = label
+    edit_rev = item.get("edit_rev")
+    if isinstance(edit_rev, int) and not isinstance(edit_rev, bool):
+        view["editRev"] = edit_rev
     return view
