@@ -70,6 +70,31 @@ describe('voice playback error notice', () => {
     expect(recentErrors()[0]).toMatchObject({ code: 'voice_consent_required', endpoint: '/api/voice/synthesize' })
   })
 
+  it('names the missing engine instead of the generic failure', () => {
+    renderNotice('chat-a')
+    act(() => { reportVoiceFailure({ slot: 'chat-a', code: 'voice_system_no_engine' }) })
+    const notice = screen.getByTestId('voice-playback-error')
+    expect(notice).toHaveTextContent(
+      'This Kiro Crew computer has no system speech installed, and no other provider is set, so Read aloud has no voice. In the Text-to-speech settings, set Provider to Amazon Polly (a cloud voice; needs an AWS account) or Piper (a local voice you download). Or keep System and install the espeak-ng voice on this Kiro Crew computer (for example: sudo apt install espeak-ng).',
+    )
+    expect(notice).not.toHaveTextContent('Read aloud failed')
+    expect(screen.getByRole('link', { name: 'Read aloud settings (Text-to-speech)' })).toHaveAttribute(
+      'href', '/settings/voice?highlight=voice.provider-2',
+    )
+    expect(recentErrors()[0]).toMatchObject({ code: 'voice_system_no_engine', endpoint: '/api/voice/synthesize' })
+  })
+
+  it('names an Amazon Polly rejection instead of the generic failure', () => {
+    renderNotice('chat-a')
+    act(() => { reportVoiceFailure({ slot: 'chat-a', code: 'voice_polly_rejected' }) })
+    const notice = screen.getByTestId('voice-playback-error')
+    expect(notice).toHaveTextContent(
+      'Amazon Polly does not offer the selected voice or engine in the selected AWS region. In the Text-to-speech settings, pick a different Voice, Engine, or Region.',
+    )
+    expect(notice).not.toHaveTextContent('Read aloud failed')
+    expect(recentErrors()[0]).toMatchObject({ code: 'voice_polly_rejected', endpoint: '/api/voice/synthesize' })
+  })
+
   it('keeps errors and retry cleanup scoped to the visible conversation', () => {
     const { rerender } = renderNotice('chat-a')
     emit('voice-error', 'chat-b')

@@ -5672,6 +5672,8 @@
     "voicePlaybackNotice": {
       "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",
       "consent_required": "« {{speak}} » a besoin que tu confirmes Amazon Polly pour ce profil AWS et cette région. Confirme-le dans les paramètres de synthèse vocale, puis réessaie.",
+      "system_no_engine": "Cet ordinateur {{productName}} n’a pas de synthèse vocale système installée ni d’autre fournisseur configuré, donc {{speak}} n’a aucune voix. Dans les paramètres de synthèse vocale, définis « Fournisseur » sur Amazon Polly (voix dans le cloud ; nécessite un compte AWS) ou Piper (voix locale à télécharger). Ou garde System et installe la voix espeak-ng sur cet ordinateur {{productName}} (par exemple : sudo apt install espeak-ng).",
+      "polly_rejected": "Amazon Polly ne propose pas la voix ou le moteur sélectionnés dans la région AWS sélectionnée. Dans les paramètres de synthèse vocale, choisis une autre « Voix », un autre « Moteur » ou une autre « Région ».",
       "blocked": "Le navigateur a bloqué la lecture automatique. Ouvre « {{moreActions}} » sous la réponse terminée, puis sélectionne « {{speak}} ».",
       "settings": "Paramètres de « {{speak}} » (synthèse vocale)"
     },

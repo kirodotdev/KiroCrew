@@ -5672,6 +5672,8 @@
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
       "consent_required": "«{{speak}}» necesita que confirmes Amazon Polly para este perfil de AWS y esta región. Confírmalo en los ajustes de texto a voz y vuelve a intentarlo.",
+      "system_no_engine": "Este equipo de {{productName}} no tiene voz del sistema instalada ni otro proveedor configurado, así que {{speak}} no tiene voz. En los ajustes de texto a voz, establece «Proveedor» en Amazon Polly (voz en la nube; necesita una cuenta de AWS) o Piper (voz local que descargas). O conserva System e instala la voz espeak-ng en este equipo de {{productName}} (por ejemplo: sudo apt install espeak-ng).",
+      "polly_rejected": "Amazon Polly no ofrece la voz o el motor seleccionados en la región de AWS seleccionada. En los ajustes de texto a voz, elige otra «Voz», «Motor» o «Región».",
       "blocked": "El navegador bloqueó la reproducción automática. Abre «{{moreActions}}» debajo de la respuesta completada y selecciona «{{speak}}».",
       "settings": "Ajustes de «{{speak}}» (texto a voz)"
     },

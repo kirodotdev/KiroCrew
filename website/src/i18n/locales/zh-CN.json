@@ -5470,6 +5470,8 @@
     "voicePlaybackNotice": {
       "failed": "{{speak}}失败。请检查文字转语音设置后重试。",
       "consent_required": "{{speak}}需要先为此 AWS 配置文件和区域确认使用 Amazon Polly。请在文字转语音设置中确认，然后重试。",
+      "system_no_engine": "这台 {{productName}} 计算机未安装系统语音，也未设置其他提供商，因此 {{speak}} 没有可用的语音。请在文字转语音设置中，将“提供商”设为 Amazon Polly（云端语音，需要 AWS 账户）或 Piper（需下载的本地语音）。或者保留 System 并在这台 {{productName}} 计算机上安装 espeak-ng 语音（例如：sudo apt install espeak-ng）。",
+      "polly_rejected": "Amazon Polly 在所选的 AWS 区域不提供所选的语音或引擎。请在文字转语音设置中选择其他“语音”、“引擎”或“区域”。",
       "blocked": "浏览器阻止了自动播放。回复完成后，打开回复下方的“{{moreActions}}”，然后选择“{{speak}}”。",
       "settings": "{{speak}}设置（文字转语音）"
     },

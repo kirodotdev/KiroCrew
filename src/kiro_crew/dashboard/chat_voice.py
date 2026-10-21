@@ -621,7 +621,12 @@ async def _synthesize_nonstreaming(
                 )
             code = "voice_synthesis_failed"
             if provider == PROVIDER_SYSTEM and resolved is None:
-                code = "voice_unavailable"
+                # The backend already composes the specific "no engine on this
+                # host" remedy, but the dashboard renders a localized sentence
+                # keyed on `code`, not this `error` text. A dedicated code is
+                # what lets voiceFailureMessage() name the cause instead of the
+                # generic "Read aloud failed" sentence.
+                code = "voice_system_no_engine"
             state.broadcast_ws("voice_error", {**identity, "error": msg, "code": code})
             return web.json_response(
                 {"ok": False, "error": msg, "code": code, "request_id": identity["request_id"]},

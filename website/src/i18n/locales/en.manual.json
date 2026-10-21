@@ -1562,6 +1562,8 @@
     "voicePlaybackNotice": {
       "failed": "{{speak}} failed. Check the Text-to-speech settings and try again.",
       "consent_required": "{{speak}} needs Amazon Polly confirmed for this AWS profile and region. Confirm it in the Text-to-speech settings, then try again.",
+      "system_no_engine": "This {{productName}} computer has no system speech installed, and no other provider is set, so {{speak}} has no voice. In the Text-to-speech settings, set Provider to Amazon Polly (a cloud voice; needs an AWS account) or Piper (a local voice you download). Or keep System and install the espeak-ng voice on this {{productName}} computer (for example: sudo apt install espeak-ng).",
+      "polly_rejected": "Amazon Polly does not offer the selected voice or engine in the selected AWS region. In the Text-to-speech settings, pick a different Voice, Engine, or Region.",
       "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",
       "settings": "{{speak}} settings (Text-to-speech)"
     },
