@@ -438,7 +438,15 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 32,060, by 37 lines for ``exfil_url_rules._heavy_percent_encoding``
 #: and its manifest entry: words percent-encoded in a URL path (a Chinese headline) do not trip the heavy
 #: percent-encoding rule. It is new rule logic, not glue; nothing else moved.
-_PACKAGE_LINE_BUDGET = 32_097
+#:
+#: Raised again, from 32,097, by 175 lines for ``shell_normalizer_walk.py``: the span walk
+#: now closes a ``$(...)`` / backtick substitution opened inside DOUBLE quotes, and skips a
+#: HEREDOC body so a ``)`` inside it cannot close the span early (with a ``<<<`` here-string
+#: left alone so its span is unchanged). Both are quote-context corrections to the span walk,
+#: so the two shapes (``echo "$(bash -c 'git push')"`` and a heredoc-bodied subshell before
+#: the push) are now carried into the existing scan. Detection only widens; no rule,
+#: threshold or pass moved.
+_PACKAGE_LINE_BUDGET = 32_272
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

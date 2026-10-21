@@ -268,6 +268,24 @@ def _substitution_bodies(text: str) -> "list[str]":
     verb, so the value assembled from it was never recognised. The closer for the
     BACKTICK form reads the same state machine now too, so the two spellings
     cannot disagree.
+
+    One quoting context the byte-literal scan above reads WRONG: a ``$(...)`` or
+    backtick substitution whose opener sits INSIDE double quotes. Bash still runs
+    such a substitution -- ``echo "$(bash -c '<cmd>')"`` executes ``<cmd>`` -- and
+    parses its body in a FRESH command context, so the opening double quote does
+    not reach into it. The byte-literal span above instead carries the outer
+    double-quote state into :func:`_matching_close_paren`, which counts a ``)`` as
+    a closer only at an UNQUOTED position; inside the double quote none is, the
+    span never proves, and the whole remainder (``bash -c '<cmd>')"`` -- note the
+    trailing ``)"``) is taken as the body. That tail makes the re-tokenization
+    drop the wrapped command, so a bare ``git push`` reached through
+    ``echo "$(bash -c 'git push')"`` was never scanned and the publish floor
+    allowed a push bash runs. The ADDITIVE second walk below recovers the clean
+    body of every substitution opened in double-quote context, computing its span
+    from the slice at a NEUTRAL state exactly as the self-protection floor's own
+    substitution walk does (``argv_floor_self``). It only ADDS bodies -- a
+    single-quoted (literal, non-executing) opener is left untouched, so no reading
+    is removed and the fix cannot loosen the floor.
     """
     bodies: list[str] = []
     i = 0
@@ -286,6 +304,62 @@ def _substitution_bodies(text: str) -> "list[str]":
             i = end
         else:
             i += 1
+    bodies.extend(_double_quoted_substitution_bodies(text))
+    return bodies
+
+
+def _double_quoted_substitution_bodies(text: str) -> "list[str]":
+    """Clean bodies of ``$(...)`` / backtick substitutions opened in double quotes.
+
+    The byte-literal scan in :func:`_substitution_bodies` mis-sizes a substitution
+    whose opener sits inside double quotes: it carries the outer double-quote state
+    into :func:`_matching_close_paren`, which counts a closing ``)`` only at an
+    UNQUOTED position, so the span never proves and the body comes back as the
+    whole remainder with a trailing ``)"``. Bash runs such a substitution and
+    parses its body in a FRESH command context, so this walk finds each opener
+    quote-awarely and proves its span from the SLICE at a neutral state -- the
+    identical ``_matching_close_paren(source[off + 2 :], 0)`` idiom the
+    self-protection floor's own substitution walk uses.
+
+    PURELY ADDITIVE: scoped to openers in double-quote state (``step.state == 2``),
+    so the single-quoted (literal, non-executing) and unquoted (already handled)
+    cases are untouched. A body recovered here only adds a scan target, so it can
+    add a denial, never remove one.
+    """
+    bodies: list[str] = []
+    i = 0
+    n = len(text)
+    state = 0
+    ansi = False
+    while i < n:
+        jumped = False
+        for step in _iter_shell_chars(text[i:], state, ansi):
+            off = i + step.offset
+            ch = step.char
+            escaped = len(step.text) == 2
+            # Only a DOUBLE-quoted opener is the gap: unquoted openers are already
+            # proven by the scan above, and a single-quoted opener is literal text
+            # bash never substitutes.
+            if not escaped and step.state == 2 and ch == "$" and text.startswith("$(", off):
+                rel, proven = _matching_close_paren(text[off + 2 :], 0)
+                bodies.append(text[off + 2 : off + 1 + rel] if proven else text[off + 2 :])
+                if not proven:
+                    return bodies
+                i = off + 2 + rel
+                state, ansi = step.state, step.ansi
+                jumped = True
+                break
+            if not escaped and step.state == 2 and ch == "`":
+                closer = _backtick_closer(text, off + 1)
+                bodies.append(text[off + 1 : closer if closer != -1 else n])
+                if closer == -1:
+                    return bodies
+                i = closer + 1
+                state, ansi = step.state, step.ansi
+                jumped = True
+                break
+        if not jumped:
+            break
     return bodies
 
 
@@ -811,6 +885,83 @@ def _arms_case_context(text: str, index: int, in_case_body: bool = False) -> boo
     return True  # chain too deep to decide -- arm, the long direction
 
 
+def _heredoc_operator(text: str, off: int) -> "tuple[str, bool, int] | None":
+    """Parse a heredoc operator at *off* (where ``text[off] == '<'``).
+
+    Returns ``(delimiter, strip_tabs, index_past_delimiter)`` for a ``<<`` or
+    ``<<-`` heredoc, or ``None`` when *off* begins no heredoc body: a ``<<<``
+    here-string feeds its operand on the SAME line, and a lone ``<`` is an
+    ordinary input redirect. The delimiter is dequoted, so ``<<'E'`` / ``<<"E"``
+    / ``<<\\E`` all end on a body line of ``E``; text comes in lower-cased and the
+    delimiter goes out lower-cased, so the caller's body-line comparison matches.
+
+    *off* must be the FIRST ``<`` of the operator. A ``<`` whose preceding
+    character is also ``<`` is the interior of a ``<<`` / ``<<<`` run, not the
+    start of a new operator, and returns ``None`` -- otherwise the second ``<``
+    of a ``<<<`` here-string reads as a ``<<`` heredoc (``text[off:]`` is then
+    ``<<e``), queues a spurious delimiter, and makes the caller skip the real
+    lines after it and close the span SHORT. The leading ``<<<`` guard only
+    rejects the here-string when *off* sits at its first ``<``; this covers the
+    interior positions the caller also visits.
+    """
+    if off > 0 and text[off - 1] == "<":
+        return None
+    if not text.startswith("<<", off) or text.startswith("<<<", off):
+        return None
+    j = off + 2
+    strip_tabs = text.startswith("-", j)
+    if strip_tabs:
+        j += 1
+    while j < len(text) and text[j] in " \t":
+        j += 1
+    chars: list[str] = []
+    while j < len(text):
+        char = text[j]
+        if char in " \t\n" or char in "()&;|<>`":
+            break
+        if char in "'\"":
+            j += 1
+            while j < len(text) and text[j] != char:
+                chars.append(text[j])
+                j += 1
+            j += 1
+            continue
+        if char == "\\" and j + 1 < len(text):
+            chars.append(text[j + 1])
+            j += 2
+            continue
+        chars.append(char)
+        j += 1
+    delimiter = "".join(chars)
+    if not delimiter:
+        return None
+    return (delimiter, strip_tabs, j)
+
+
+def _skip_heredoc_bodies(text: str, after_newline: int, pending: "list[tuple[str, bool]]") -> int:
+    """Index past the bodies of the *pending* heredocs that follow *after_newline*.
+
+    Each queued delimiter consumes whole lines (in FIFO order, the way bash
+    stacks ``cat <<A <<B``) until a line equal to it -- ``<<-`` first strips the
+    line's leading TABS. A delimiter that never appears consumes to the end, the
+    fail-closed direction for the caller (the span then runs long, never short).
+    """
+    cursor = after_newline
+    length = len(text)
+    for delimiter, strip_tabs in pending:
+        while cursor <= length:
+            newline = text.find("\n", cursor)
+            line_end = newline if newline != -1 else length
+            line = text[cursor:line_end]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            cursor = newline + 1 if newline != -1 else length + 1
+            if candidate == delimiter:
+                break
+            if newline == -1:
+                break
+    return cursor
+
+
 def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     """``(index just past the matching ``)``, proven)`` for a paren opened before
     *open_end*, walked QUOTE-AWARELY through :func:`_iter_shell_chars`.
@@ -850,12 +1001,22 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     caller must fail CLOSED on that: for an extractor the safe reading is the
     whole remainder (scan more, never less). All three call sites are extractors,
     so a span that reaches too far only feeds them text to inspect.
+
+    A HEREDOC body is skipped like a comment is. ``cat <<E`` makes the following
+    lines (up to a line equal to ``E``) DATA, so a ``)`` in them is not a closer:
+    ``$(cat <<E`` + newline + ``)`` + newline + ``E`` + newline + ``; <push>)``
+    closed the span at the heredoc-body ``)`` and dropped the real command after
+    it, so a push wrapped that way was never scanned. Each ``<<``/``<<-`` operator
+    queues its delimiter (:func:`_heredoc_operator`); the next unquoted newline
+    consumes the queued bodies (:func:`_skip_heredoc_bodies`) before paren
+    counting resumes. A here-string (``<<<``) has no body and is left alone.
     """
     depth = 1
     cases = 0
     pos = 0
     state = 0
     ansi = False
+    pending_heredocs: "list[tuple[str, bool]]" = []
     while pos <= len(text):
         jumped = False
         for step in _iter_shell_chars(text[pos:], state, ansi):
@@ -865,6 +1026,15 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
             if not step.active:
                 continue
             ch = step.char
+            # A newline ENDS the operator line of any queued heredoc: its body
+            # runs from here to the delimiter line and is DATA, so skip it before
+            # counting any paren inside it.
+            if ch == "\n" and pending_heredocs:
+                pos = _skip_heredoc_bodies(text, off + len(step.text), pending_heredocs)
+                pending_heredocs = []
+                state, ansi = 0, False
+                jumped = True
+                break
             # A ``#`` opens a comment only at the START of a word, and the
             # character before it is read as the shell reads it -- a folded
             # continuation leaves ``a\`` + newline + ``#b`` one ordinary word.
@@ -876,6 +1046,13 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
                 state, ansi = 0, False
                 jumped = True
                 break
+            # A ``<<``/``<<-`` heredoc operator queues its delimiter; the rest of
+            # the operator line is ordinary syntax and keeps being counted.
+            if ch == "<":
+                parsed = _heredoc_operator(text, off)
+                if parsed is not None:
+                    pending_heredocs.append((parsed[0], parsed[1]))
+                    continue
             if _word_at(text, off, "case") and _arms_case_context(text, off, cases > 0):
                 cases += 1
                 continue

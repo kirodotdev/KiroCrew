@@ -688,3 +688,153 @@ class TestNestedPayloadExtractionSpansTheProvenBoundary:
         )
         assert security._GIT_PUBLISH_UNGATED in floor("git push origin feature > >(echo main")
         assert security._git_push_args("bash -c '(cd /tmp && git push origin my-feature)'") is None
+
+
+class TestDoubleQuotedSubstitutionAndHeredocSpan:
+    """A substitution that RUNS inside double quotes, and a heredoc body that
+    must not close the span early, are both scanned.
+
+    Two spellings reached a publish through the nested-payload extractor without
+    being scanned, so the floor -- the SOLE enforcement for pushes -- allowed a
+    command bash runs:
+
+    * a ``$(...)`` / backtick substitution whose opener sits inside DOUBLE quotes.
+      Bash runs it, but the byte-literal body scan carried the outer double-quote
+      state into the span helper, which counts a ``)`` only at an unquoted
+      position; the span never proved and the body came back as the whole
+      remainder with a trailing ``)"``, whose re-tokenization dropped the wrapped
+      command. ``echo "$(bash -c 'git push')"`` reached no push check.
+    * a HEREDOC body inside a substitution. ``cat <<E`` makes the following lines
+      DATA until a line equal to ``E``, so a ``)`` in them is not a closer; the
+      span helper counted it and closed early, dropping the command after the
+      heredoc. ``echo "$((cat <<E`` + nl + ``)`` + nl + ``E`` + nl + ``; bash -c
+      'git push')"`` reached no push check.
+
+    The fix is purely ADDITIVE -- a single-quoted (literal, non-executing) opener
+    is left untouched and a heredoc only lengthens a span -- so it can add a
+    denial, never remove one.
+    """
+
+    def test_a_double_quoted_substitution_that_runs_is_scanned(self):
+        # Bare push (no remote/refspec): only the structural floor can see it, so
+        # it is the honest probe for the wrapper gap -- the verb+refspec regex
+        # would fire on the raw text regardless of the walk.
+        for cmd in (
+            "echo \"$(bash -c 'git push')\"",
+            "x=\"$(bash -c 'git push')\"",
+            "echo \"`bash -c 'git push'`\"",
+            'echo "$(git push)"',
+        ):
+            assert security.is_denied(cmd) is not None, (
+                f"{cmd!r}: a substitution running inside double quotes reached no " f"push check"
+            )
+
+    def test_a_single_quoted_substitution_is_literal_and_stays_allowed(self):
+        # Inside single quotes the text is printed, not run, so the additive
+        # double-quote pass must not reach it -- this stays exactly as on main.
+        assert (
+            security.is_denied("echo '$(bash -c \"git push\")'") is None
+        ), "a single-quoted substitution is literal text and must not be denied"
+
+    def test_a_benign_double_quoted_substitution_stays_allowed(self):
+        for cmd in (
+            'echo "$(git status)"',
+            'echo "$(echo hi)"',
+            'msg="$(git log --oneline -1)"',
+            "echo \"$(bash -c 'git fetch')\"",
+        ):
+            assert security.is_denied(cmd) is None, f"{cmd!r}: benign, must stay allowed"
+
+    def test_a_heredoc_body_paren_cannot_close_the_span_early(self):
+        push = "git push"
+        for cmd in (
+            # subshell + heredoc whose body holds a ')', then the push.
+            f"echo \"$((cat <<E\n)\nE\n) ; bash -c '{push}')\"",
+            # command-substitution + heredoc, no subshell.
+            f"echo \"$(cat <<E\n)\nE\n ; bash -c '{push}')\"",
+            # tab-stripping heredoc variant.
+            f"echo \"$(cat <<-E\n\t)\n\tE\n ; bash -c '{push}')\"",
+            # top-level (no outer quotes) for completeness.
+            f"$((cat <<E\n)\nE\n) ; bash -c '{push}')",
+        ):
+            assert security.is_denied(cmd) is not None, (
+                f"{cmd!r}: a ')' inside the heredoc body closed the span early and "
+                f"the push after it was never scanned"
+            )
+
+    def test_a_benign_heredoc_inside_a_substitution_stays_allowed(self):
+        for cmd in (
+            'echo "$(cat <<E\nhello world\nE\n)"',
+            'x="$(cat <<E\nnote )\nE\n)"',
+        ):
+            assert security.is_denied(cmd) is None, f"{cmd!r}: benign heredoc, must stay allowed"
+
+    def test_the_double_quoted_body_extractor_recovers_the_clean_body(self):
+        from kiro_crew.security.shell_normalizer_walk import (
+            _double_quoted_substitution_bodies,
+        )
+
+        assert _double_quoted_substitution_bodies("echo \"$(bash -c 'git push')\"") == [
+            "bash -c 'git push'"
+        ]
+        assert _double_quoted_substitution_bodies("echo \"`bash -c 'git push'`\"") == [
+            "bash -c 'git push'"
+        ]
+        # A single-quoted opener is literal: nothing is recovered from it.
+        assert _double_quoted_substitution_bodies("echo '$(bash -c \"git push\")'") == []
+        # An unquoted opener is already handled by the byte-literal scan, so this
+        # ADDITIVE pass leaves it alone.
+        assert _double_quoted_substitution_bodies("$(bash -c 'git push')") == []
+
+    def test_the_span_helper_skips_heredoc_bodies(self):
+        from kiro_crew.security.shell_normalizer_walk import _matching_close_paren
+
+        # offset 0 == just past a "$(" opener (the caller slices there). A ')' in
+        # the heredoc body is NOT the closer; the real one is after the body.
+        assert _matching_close_paren("cat <<e\n)\ne\n ; git x)", 0) == (21, True)
+        assert _matching_close_paren("(cat <<e\n)\ne\n) ; git x)", 0) == (23, True)
+        # A heredoc with no stray ')' closes at its real paren, unchanged.
+        assert _matching_close_paren("cat <<e\nhello\ne\n)", 0) == (17, True)
+        # <<- strips leading tabs from the delimiter line.
+        assert _matching_close_paren("cat <<-e\n)\n\te\n)", 0) == (15, True)
+
+    def test_the_heredoc_operator_parser(self):
+        from kiro_crew.security.shell_normalizer_walk import _heredoc_operator
+
+        assert _heredoc_operator("<<e rest", 0) == ("e", False, 3)
+        assert _heredoc_operator("<<-e rest", 0) == ("e", True, 4)
+        assert _heredoc_operator("<<'e' rest", 0) == ("e", False, 5)
+        assert _heredoc_operator('<<"e" rest', 0) == ("e", False, 5)
+        assert _heredoc_operator("<<\\e rest", 0) == ("e", False, 4)
+        # A here-string has its operand on the same line -- no body to skip.
+        assert _heredoc_operator("<<<x", 0) is None
+        # A lone input redirect is not a heredoc.
+        assert _heredoc_operator("<f", 0) is None
+
+    def test_a_herestring_is_not_mistaken_for_a_heredoc_mid_run(self):
+        # A ``<<<`` here-string feeds its operand on the SAME line, so it must
+        # queue NO heredoc body. The span helper visits every ``<``, so the guard
+        # has to hold at the interior positions too: at the second ``<`` the text
+        # reads ``<<e`` and, without the preceding-``<`` guard, would queue ``e``
+        # as a heredoc, skip the real lines after it, and close the span SHORT --
+        # the shared helper's rule is that a span runs long, never short.
+        from kiro_crew.security.shell_normalizer_walk import (
+            _heredoc_operator,
+            _matching_close_paren,
+        )
+
+        assert _heredoc_operator("<<<x", 0) is None  # here-string at its first <
+        assert _heredoc_operator("<<<x", 1) is None  # interior < of the run
+        assert _heredoc_operator("<<<x", 2) is None  # interior < of the run
+        # The span runs to the REAL closer, exactly as with no here-string, and
+        # matches what the helper returned on main for this input.
+        assert _matching_close_paren("cat <<<e\n(\ne\n) ; git x)", 0) == (23, True)
+        # A push hidden behind a here-string before its payload, inside a
+        # double-quoted substitution, is still scanned (DENY). Bare push: only the
+        # structural floor can see it.
+        hidden = "echo \"$(cat <<<e\n(\ne\n) ; bash -c 'git push')\""
+        assert (
+            security.is_denied(hidden) is not None
+        ), "a push behind a <<< here-string reached no push check"
+        # A plain here-string with no wrapped push is unaffected (stays allowed).
+        assert security.is_denied("cat <<<kirocrew") is None
