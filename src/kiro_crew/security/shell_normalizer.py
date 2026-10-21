@@ -1466,7 +1466,11 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
         nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
+        # A redirect before the ``-c`` operand hides the script from ``nested``.
+        from .shell_commands import redirect_hidden_payloads  # the reader imports this module
+
+        nested = list(nested) + redirect_hidden_payloads(source)
+        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.

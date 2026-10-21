@@ -592,7 +592,10 @@ def _url_payload_command(n: int) -> str:
 #: bare-secret pass: the closed ``_ELB_TARGET_GROUP_ARN_RE`` shape, its two span
 #: helpers, the lazy lookup in pass 3 that honours ``judged_sri_values``, and their
 #: comments; the exemption only narrows what pass 3 redacts.
-_PACKAGE_LINE_BUDGET = 32_970
+#: Raised by 177, from 32,970, for the ``rm`` floor reading each nested-shell payload
+#: through the shared reader, and ``shell_commands.redirect_hidden_payloads``: a redirect
+#: before the ``-c`` operand hides no payload. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 33_147
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
