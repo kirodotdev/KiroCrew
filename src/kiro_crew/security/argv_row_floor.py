@@ -860,12 +860,86 @@ _HEREDOC_RUNNERS = _STDIN_SHELLS | _PROGRAM_RUNNERS | frozenset({"eval", "source
 #: quotes, so it may cut more than the shell does, which only finds more runners.
 _RUNNER_WORD_SPLIT_RE = re.compile(r"[\s;&|<>()]+")
 
+#: Interpreters that read their PROGRAM from stdin when given no script, or ``-``,
+#: and whose language has no shell-command syntax of its own. A heredoc fed to one
+#: is code in that language, not shell, so this shell-argv floor does not read its
+#: plain lines as commands; the inline-payload tier owns interpreter code. Shells
+#: are not here (their stdin is shell), nor perl and ruby, whose backticks run a
+#: shell command.
+_STDIN_INTERPRETER_RE = re.compile(r"\A(?:python(?:[23](?:\.\d+)?)?|node|nodejs)\Z")
 
-def _data_heredoc_spans(source: str) -> "list[tuple[int, int, bool]]":
-    """``(start, end, quoted)`` of each heredoc body that a data program reads.
+#: A redirection (the shared operator form) and its target word.
+_REDIRECTION_RE = re.compile(
+    "(?:" + _REDIRECT_OPERATOR_RE.pattern + r""")[ \t]*(?:'[^']*'|"[^"]*"|\\.|[^\s;&|<>()'"\\])+"""
+)
 
-    The body is data when the line's program is in ``_HEREDOC_DATA_PROGRAMS`` and
-    nothing on the line could run it -- no pipe, no process substitution, no
+
+#: The one delimiter spelling an interpreter heredoc may use: a plain word wholly
+#: inside one pair of single or double quotes.
+_SIMPLE_QUOTED_DELIMITER_RE = re.compile(r"'[A-Za-z0-9_]+'|\"[A-Za-z0-9_]+\"")
+
+#: A text of printable ASCII, spaces, tabs and newlines only. Python splits words
+#: on separators the shell reads as part of a word (``\x1fpython3``), and bash
+#: drops a NUL from a closing line (``EOF\x00``) that the floor compares whole, so
+#: any other character turns the interpreter exemption off.
+_PLAIN_TEXT_RE = re.compile(r"[ -~\t\n]*")
+
+
+def _stdin_interpreter_opener(head_words: "list[str]", tail: str) -> str:
+    """The interpreter ``head_words <<DELIM tail`` feeds its heredoc to as code, else ``""``.
+
+    Only the bare forms count: a plain interpreter name (no path, which could be
+    any program), no options, then nothing or ``-`` (whose later words are the
+    script's argv), and only redirections after the delimiter. An option there
+    (``python3 <<EOF 2>/dev/null -c …``), a script path, a command boundary or any
+    other word makes stdin the input of code the floor does not see.
+    """
+    if not head_words or "/" in head_words[0]:
+        return ""
+    name = _program_basename(_dequote_token(head_words[0]))
+    if not _STDIN_INTERPRETER_RE.match(name):
+        return ""
+    if len(head_words) > 1 and _dequote_token(head_words[1]) != "-":
+        return ""
+    redirections = _REDIRECTION_RE.findall(tail)
+    if any("<" in redirection for redirection in redirections):
+        # Any input redirection replaces the heredoc as stdin.
+        return ""
+    return name if not _REDIRECTION_RE.sub(" ", tail).strip(" \t") else ""
+
+
+def _interpreter_alone(source: str, body: "tuple[int, int]", line: str, interpreter: str) -> bool:
+    """Is the interpreter heredoc on *line* the whole of *source*?
+
+    A function, alias, link, ``hash -p`` or ``PATH`` change anywhere else in the
+    text -- before it on the same line, or on any other line, spelled through a
+    variable or an escape -- can make ``python3`` run a shell, and no reading of
+    those forms is complete. So the exemption holds only for a text that is this
+    one command: the interpreter word first, nothing but its own words before the
+    ``<<``, and nothing after the closing line. Anything more keeps the body read
+    as commands; that refusal is the accepted cost of failing closed.
+    """
+    outside = source[: body[0]] + source[body[1] :]
+    head = line[: _heredoc_offset(line)].split()
+    return (
+        outside.strip(" \t\n") == line.strip(" \t\n")
+        and bool(head)
+        and head[0] == interpreter
+        and not any(_PREFIX_SYNTAX_RE.search(word) for word in head)
+    )
+
+
+def _data_heredoc_spans(source: str, interpreters: bool = False) -> "list[tuple[int, int, bool]]":
+    """``(start, end, quoted)`` of each heredoc body that is not shell commands.
+
+    A heredoc is judged by what reads it. The body is data when the line's program
+    is in ``_HEREDOC_DATA_PROGRAMS``. With *interpreters* (the top-level text only,
+    never a nested payload whose parent could rebind the name), it is code in
+    another language when the text is one bare stdin-interpreter heredoc with a
+    QUOTED delimiter (``python3 - <<'EOF'``; see :func:`_stdin_interpreter_opener`
+    and :func:`_interpreter_alone`): an unquoted one still has its ``$( )``
+    expanded by the shell, and the body's own quotes do not stop that. Either way
+    nothing on the line may run it -- no pipe, no process substitution, no
     shell, runner, ``eval`` or ``source`` word; a ``>`` file redirection is fine,
     since cat or tee only writes the body there. Its plain lines are never
     commands. With an UNQUOTED delimiter the shell still expands the body's
@@ -897,10 +971,16 @@ def _data_heredoc_spans(source: str) -> "list[tuple[int, int, bool]]":
             state = step.state
         opener = _data_heredoc_opener(line) if line_state == 0 else None
         if opener is not None:
-            strip_tabs, delimiter, quoted = opener
+            strip_tabs, delimiter, quoted, interpreter = opener
             numbers = (stripped if strip_tabs else exact).get(delimiter, [])
             at = bisect.bisect_left(numbers, index)
-            if at < len(numbers):
+            body = (offset_after, starts[numbers[at] + 1]) if at < len(numbers) else None
+            # An interpreter body is cut only when its heredoc is the whole text;
+            # otherwise it is read line by line like any heredoc no rule exempts.
+            if body is not None and (
+                not interpreter
+                or (interpreters and quoted and _interpreter_alone(source, body, line, interpreter))
+            ):
                 end = numbers[at]
                 cursor = starts[end + 1]
                 spans.append((offset_after, min(cursor, len(source)), quoted))
@@ -966,8 +1046,11 @@ def _data_head_prefix(head_words: "list[str]") -> int:
     return index
 
 
-def _data_heredoc_opener(line: str) -> "tuple[bool, str, bool] | None":
-    """``(strip_tabs, delimiter, quoted)`` of a data heredoc opened on *line*.
+def _data_heredoc_opener(line: str) -> "tuple[bool, str, bool, str] | None":
+    """``(strip_tabs, delimiter, quoted, interpreter)`` of a non-shell heredoc on *line*.
+
+    *interpreter* names the bare stdin interpreter that reads the body as code, or
+    is empty when a data program reads it.
 
     The program judged is the one of the command that holds the ``<<``, after the
     last ``&&`` or ``;`` before it: in ``mkdir -p out && cat > out/notes <<'EOF'``
@@ -987,9 +1070,18 @@ def _data_heredoc_opener(line: str) -> "tuple[bool, str, bool] | None":
         if step.active and (step.char == ";" or line.startswith("&&", step.offset)):
             command_start = step.offset + (1 if step.char == ";" else 2)
     head_words = line[command_start:heredoc_at].split()
-    skip = _data_head_prefix(head_words)
-    if skip >= len(head_words) or _program_basename(_dequote_token(head_words[skip])) not in (
-        _HEREDOC_DATA_PROGRAMS
+    delimiter_match = _HEREDOC_DELIMITER_RE.match(line, heredoc_at + 2)
+    # A heredoc fed to an interpreter as its program is code in that language, so
+    # its lines are not shell commands; every line-level test below still applies.
+    interpreter = (
+        _stdin_interpreter_opener(head_words, line[delimiter_match.end() :])
+        if delimiter_match is not None
+        else ""
+    )
+    skip = 0 if interpreter else _data_head_prefix(head_words)
+    if not interpreter and (
+        skip >= len(head_words)
+        or _program_basename(_dequote_token(head_words[skip])) not in _HEREDOC_DATA_PROGRAMS
     ):
         return None
     if skip:
@@ -1028,7 +1120,13 @@ def _data_heredoc_opener(line: str) -> "tuple[bool, str, bool] | None":
         # which this reader does not track, so both bodies stay read.
         return None
     quoted = any(quote in match.group(2) for quote in "'\"\\")
-    return bool(match.group(1)), _dequote_token(match.group(2)), quoted
+    if interpreter and not _SIMPLE_QUOTED_DELIMITER_RE.fullmatch(match.group(2)):
+        # The floor's quote removal and the shell's can differ inside the word
+        # (``'E\\OF'`` keeps its backslash in bash), so only a plain quoted word
+        # closes an interpreter body on the line both agree on. Not a data
+        # program either, so the heredoc is read as commands.
+        return None
+    return bool(match.group(1)), _dequote_token(match.group(2)), quoted, interpreter
 
 
 def _heredoc_offset(line: str) -> int:
@@ -1058,12 +1156,13 @@ def _heredoc_offset(line: str) -> int:
     return -1
 
 
-def _drop_literal_heredocs(source: str) -> str:
+def _drop_literal_heredocs(source: str, interpreters: bool = False) -> str:
     """*source* without its data heredoc bodies (see :func:`_data_heredoc_spans`)."""
-    return _cut_spans(source, [(start, end) for start, end, _q in _data_heredoc_spans(source)])
+    spans = _data_heredoc_spans(source, interpreters)
+    return _cut_spans(source, [(start, end) for start, end, _q in spans])
 
 
-def _inert_bodies(sources: "list[str]") -> "dict[str, bool]":
+def _inert_bodies(sources: "list[str]", interpreters: bool = False) -> "dict[str, bool]":
     """For each decoded ``$( )`` / backtick body in *sources*: is it ONLY ever inert?
 
     The payload walk reads every substitution body as a command, quoted or not.
@@ -1075,12 +1174,14 @@ def _inert_bodies(sources: "list[str]") -> "dict[str, bool]":
     Each frame is read once.
     """
     inert: dict[str, bool] = {}
-    for source in sources:
+    for at, source in enumerate(sources):
         folded = _fold_line_continuations(source)
         quiet = _single_quoted_offsets(folded)
         for start, end in _comment_spans(folded):
             quiet.update(range(start, end))
-        for start, end, quoted in _data_heredoc_spans(folded):
+        for start, end, quoted in _data_heredoc_spans(
+            folded, interpreters=interpreters and at == 0
+        ):
             if quoted:
                 quiet.update(range(start, end))
         # A backslash-escaped backtick (``\```) is a literal character, not a
@@ -1225,7 +1326,12 @@ def argv_row_denial(text_lower: str, enabled_patterns: "list[str]") -> "tuple[st
             logger.warning("argv_row_floor: no readable frame; refusing fail-closed")
             return unreadable
         sources = [source for source, _tokens in frames]
-        inert = _inert_bodies(sources)
+        # The reader folds every backslash-newline first, but the shell keeps one
+        # inside a quoted heredoc body, so the two can close a body on different
+        # lines. With one in the text, or any character outside plain ASCII, no
+        # interpreter body is cut.
+        interpreters = "\\\n" not in text_lower and bool(_PLAIN_TEXT_RE.fullmatch(text_lower))
+        inert = _inert_bodies(sources, interpreters)
         payloads = _payload_texts(frames)
         printers = _printer_index(sources)
         for index, source in enumerate(sources):
@@ -1239,7 +1345,12 @@ def argv_row_denial(text_lower: str, enabled_patterns: "list[str]") -> "tuple[st
             # before the heredoc and quote readers look.
             # Quoted newlines are folded while the heredoc bodies are still there to
             # be skipped; the data bodies are dropped after.
-            text = _drop_literal_heredocs(_quoted_newlines_as_spaces(_strip_comments(source)))
+            # Only the top-level text can be "the whole text" an interpreter
+            # heredoc needs: a nested payload's parent can rebind the name.
+            text = _drop_literal_heredocs(
+                _quoted_newlines_as_spaces(_strip_comments(source)),
+                interpreters=interpreters and index == 0,
+            )
             for segment in _split_push_command_segments(text):
                 for command in _split_background(segment):
                     row = _segment_row(_segment_argv(command), rows)
