@@ -92,7 +92,9 @@ function makeStore(unresumableResume: { key: string; title: string; surface: str
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
-        status: null,
+        // The slot list has landed, so a pane with no tab open shows the
+        // empty state rather than the loading placeholder (#21785).
+        status: null, slotsLoaded: true,
         slots: activeSlot ? [{ key: 'slot-a', messages: plainTurn.length, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }] : [],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},

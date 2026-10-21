@@ -157,6 +157,10 @@ interface DashboardState {
    *  tear apart and there are no orphans to reconcile at boot. */
   unreadSince: Record<string, string>
   slotsLoaded: boolean
+  /** Every slot-list fetch in flight has failed and no list has landed yet, so
+   *  `selectSlotListPending` stops waiting and the pane falls back to its empty
+   *  state instead of a placeholder that never resolves. */
+  slotsFetchFailed: boolean
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
   // downloaded). Drives the Settings nav dot + the About tab dot. Mirrored
@@ -356,6 +360,7 @@ const initialState: DashboardState = {
   refreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
   slotsLoaded: false,
+  slotsFetchFailed: false,
   updateProgress: null,
   desktopUpdateAvailable: false,
   subagentRunning: {},
@@ -1564,6 +1569,8 @@ const dashboardSlice = createSlice({
       .addCase(fetchSlots.pending, (state, action) => {
         if (!state.slotFetchesInFlight) state.slotFetchesInFlight = []
         state.slotFetchesInFlight.push(action.meta.requestId)
+        // A new attempt (e.g. the reconnect catch-up) may still land a list.
+        state.slotsFetchFailed = false
         // The reply cannot describe anything that happens from here on, so this
         // is the instant every later single-slot write outranks it from.
         if (!state.slotFetchWriteMark) state.slotFetchWriteMark = {}
@@ -1673,6 +1680,7 @@ const dashboardSlice = createSlice({
       })
       .addCase(fetchSlots.rejected, (state, action) => {
         settleSlotFetch(state, action.meta?.requestId)
+        if (!(state.slotFetchesInFlight ?? []).length) state.slotsFetchFailed = true
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })
       // The created slot joins the list on the SAME action that activates it
@@ -1832,6 +1840,18 @@ export function selectUnreadByMode(mode: string): UnreadByModeSelector {
     _unreadByModeCache.set(mode, sel)
   }
   return sel
+}
+
+/**
+ * True while the page has never seen a slot list and one may still arrive, so a
+ * pane with no open session cannot yet tell "no chats" from "chats loading".
+ * `slotsGeneration`, not `slotsLoaded`: a socket reconnect resets the latter,
+ * and a gateway whose list already landed is not waited on again. A failed
+ * fetch with none left in flight ends the wait.
+ */
+export const selectSlotListPending = (state: { dashboard: DashboardState }): boolean => {
+  const d = state.dashboard
+  return !d.slotsLoaded && (d.slotsGeneration ?? 0) === 0 && !d.slotsFetchFailed
 }
 
 export default dashboardSlice.reducer

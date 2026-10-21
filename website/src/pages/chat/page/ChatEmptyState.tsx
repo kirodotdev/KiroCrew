@@ -1,10 +1,12 @@
 import type { UseMutationResult } from '@tanstack/react-query'
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
-import { MessageSquare } from 'lucide-react'
+import { Loader2, MessageSquare } from 'lucide-react'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import { useState } from 'react'
 import { createSlot } from '../../../store/chatSlice'
+import { selectSlotListPending } from '../../../store/dashboardSlice'
+import { useAppSelector } from '../../../store'
 import { EmptyState, Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { errMessage } from '../../../utils/thunkError'
@@ -33,6 +35,24 @@ export default function ChatEmptyState({
   // A failed create from this button has no session pane to report into, so
   // the failure is shown here, beside the button that retries it.
   const [createError, setCreateError] = useState('')
+  // Before the first slot list lands, "no session open" may only mean "not
+  // arrived yet": saying "start a new chat" then tells a user with many chats
+  // that they have none (#21785). Show a neutral placeholder until it lands.
+  // A failed create still gets its retry button: that failure is known now.
+  const slotListPending = useAppSelector(selectSlotListPending)
+  if (slotListPending && !newSlotFailed) {
+    return (
+      <div
+        className="flex-1 flex items-center justify-center gap-2 px-8 text-[13px] text-muted"
+        role="status"
+        aria-busy="true"
+        data-testid="chat-pane-loading"
+      >
+        <Loader2 size={16} className="lucide-inline animate-spin" aria-hidden="true" />
+        {i18nT('pages.chatPage.loading')}
+      </div>
+    )
+  }
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8">
       <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} subtitle={i18nT('pages.chatPage.start_a_new_chat_to_begin')} />

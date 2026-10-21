@@ -4,10 +4,14 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { Provider } from 'react-redux'
+import { configureStore } from '@reduxjs/toolkit'
 import type { UseMutationResult } from '@tanstack/react-query'
 import type { ChatSlot } from '../types'
+import dashboardReducer, { fetchSlots } from '../store/dashboardSlice'
 
-vi.mock('../store/chatSlice', () => ({
+vi.mock('../store/chatSlice', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../store/chatSlice')>(),
   createSlot: (opts: unknown) => ({ type: 'chat/createSlot', opts }),
 }))
 
@@ -15,12 +19,17 @@ import ChatEmptyState from '../pages/chat/page/ChatEmptyState'
 
 function renderEmpty(dispatch: (action: unknown) => { unwrap: () => Promise<unknown> }) {
   const mutation = { isPending: false, mutate: vi.fn() } as unknown as UseMutationResult<ChatSlot, Error, void, unknown>
+  // The slot list has landed empty, so the pane shows its empty state.
+  const store = configureStore({ reducer: { dashboard: dashboardReducer } })
+  store.dispatch(fetchSlots.fulfilled([], 'boot', undefined))
   return render(
-    <ChatEmptyState
-      dispatch={dispatch as never} pendingAgent="" pendingAgentKindRef={{ current: undefined }} pendingModel=""
-      newSessionRef={{ current: false }} newSlotFailed={false} newSlotMutation={mutation}
-      setNewSlotFailed={vi.fn()} setSidError={vi.fn()}
-    />,
+    <Provider store={store}>
+      <ChatEmptyState
+        dispatch={dispatch as never} pendingAgent="" pendingAgentKindRef={{ current: undefined }} pendingModel=""
+        newSessionRef={{ current: false }} newSlotFailed={false} newSlotMutation={mutation}
+        setNewSlotFailed={vi.fn()} setSidError={vi.fn()}
+      />
+    </Provider>,
   )
 }
 
