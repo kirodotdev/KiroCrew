@@ -5,9 +5,10 @@ import { apiErrorCode, isSlotCapError } from '../api/apiError'
 import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { deleteSlot, listForkedSlot, switchSlot } from '../store/chatSlice'
-import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, setSlotCopyIdError, clearSlotCopyIdError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
+import { copyToClipboard } from '../utils/clipboard'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
@@ -111,6 +112,12 @@ export interface SessionActions {
   toggleMuted: (slotKey: string) => void
   /** Copy the session's share link. */
   copyLink: (slotKey: string) => void
+  /** Copy the bare session key — the same identifier the session tools take as
+   *  `X-Session-Key`, not a URL. "Copy link" wraps that key in `/chat?sid=…`;
+   *  this copies the key itself, for pasting into a prompt or an issue. Resolves
+   *  to whether the key actually reached the clipboard (never rejects), so the
+   *  caller can surface a failed copy. */
+  copyId: (slotKey: string) => Promise<boolean>
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
   move: (slotKey: string, folderId: string | null) => void
   /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
@@ -447,6 +454,21 @@ export function useSessionActions(mode?: string, opts?: {
     copySessionLink(slotKey, slot?.title, undefined, mode)
   }, [mode])
 
+  // The bare slot key IS the session identifier the gateway takes as
+  // `X-Session-Key` and the `sid=` param in every share URL, so there is no new
+  // ID format here — unlike copyLink, which wraps the same key in a loopback
+  // `/chat?sid=…` URL. A fresh attempt clears any prior failure; if both
+  // clipboard layers refuse (copyToClipboard resolves false, never rejects) the
+  // failure is recorded in the store so the menu renders it through ErrorNotice
+  // rather than closing with the key uncopied and no sign. Returns the result.
+  const copyId = useCallback((slotKey: string) => {
+    dispatch(clearSlotCopyIdError(slotKey))
+    return copyToClipboard(slotKey).then(ok => {
+      if (!ok) dispatch(setSlotCopyIdError({ key: slotKey, message: i18nT('components.sessionActionsMenu.copy_session_id_failed_detail') }))
+      return ok
+    })
+  }, [dispatch])
+
   const move = useCallback((slotKey: string, folderId: string | null) => {
     moveSlotToFolder(slotKey, folderId)
   }, [moveSlotToFolder])
@@ -462,5 +484,5 @@ export function useSessionActions(mode?: string, opts?: {
     if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, copyId, move, reload, close }
 }

@@ -22,6 +22,9 @@ vi.mock('../api/client', () => ({ api: apiMock }))
 const copySessionLink = vi.hoisted(() => vi.fn())
 vi.mock('../utils/shareUrl', () => ({ copySessionLink }))
 
+const copyToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
+vi.mock('../utils/clipboard', () => ({ copyToClipboard }))
+
 const moveSlotToFolder = vi.hoisted(() => vi.fn())
 vi.mock('./useMoveSlotToFolder', () => ({ useMoveSlotToFolder: () => moveSlotToFolder }))
 
@@ -67,6 +70,7 @@ beforeEach(() => {
   apiMock.setSlotPin.mockReset().mockResolvedValue({ ok: true })
   apiMock.chatSlots.mockReset().mockImplementation(async () => store.getState().dashboard.slots)
   copySessionLink.mockClear()
+  copyToClipboard.mockClear()
   moveSlotToFolder.mockClear()
   deleteSlot.mockClear()
   switchSlot.mockClear()
@@ -466,6 +470,24 @@ describe('copyLink', () => {
     const { result } = harness()
     act(() => result.current.copyLink('zzq-missing'))
     expect(copySessionLink).toHaveBeenCalledWith('zzq-missing', undefined, undefined, undefined)
+  })
+})
+
+describe('copyId', () => {
+  it('copies the bare slot key, not a URL', () => {
+    slots({ title: 'zzq title' })
+    const { result } = harness('zzq-mode')
+    act(() => { void result.current.copyId(KEY) })
+    // The key itself reaches the clipboard — never routed through the share-URL
+    // builder that copyLink uses.
+    expect(copyToClipboard).toHaveBeenCalledWith(KEY)
+    expect(copySessionLink).not.toHaveBeenCalled()
+  })
+
+  it('copies the key verbatim for a slot absent from the store', () => {
+    const { result } = harness()
+    act(() => { void result.current.copyId('zzq-missing') })
+    expect(copyToClipboard).toHaveBeenCalledWith('zzq-missing')
   })
 })
 

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Hash, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -61,6 +61,19 @@ export interface SessionActionsMenuProps {
    * hosts the fork button.
    */
   onDuplicate?: () => void
+  /**
+   * Stage a reference to THIS session in the active chat's composer — the
+   * discoverable form of the drag-a-session-into-the-composer gesture, matching
+   * exactly what that drop stages (a link, resolved by the agent on demand).
+   *
+   * Passed only by the sidebar row's menu, where "this session" is a DIFFERENT
+   * session than the open one. The header menu omits it: it acts on the active
+   * session itself, which `sessionRefBlockReason` refuses as a self-reference.
+   * Omitted (or undefined) means the row cannot stage one right now — no
+   * composer to land in, or an incognito/temporary/self target — and the item
+   * is not rendered, the same self-hiding other conditional rows use.
+   */
+  onReferenceInChat?: () => void
   /** A second, muted line under Close that says what the press reaches. It wraps,
    *  so on a phone, where this menu is the only close, nothing is cut off. */
   closeHint?: string
@@ -134,18 +147,18 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Reference in chat (sidebar rows only) · Copy link · Copy session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, copyId, move, reload, close } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -174,6 +187,14 @@ export default function SessionActionsMenu({
   // and this is the only place that disagreement is said.
   const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
+  // "Copy session ID" failed to reach the clipboard (both the async API and the
+  // execCommand fallback refused — rare, but then the menu would otherwise close
+  // with the key uncopied and no sign). Store-backed so the failure survives the
+  // kebab closing and reopening, rendered through ErrorNotice + its hand-off
+  // (the `errors-use-error-notice` in-menu form). Set by copyId's failure path,
+  // cleared when a fresh copy of this row starts.
+  const copyIdError = useAppSelector(s => s.dashboard.slotCopyIdError?.[slotKey])
+  const copyIdErrorId = React.useId()
   const isRunning = !!slot?.running
   // The move-to submenu lists chat folders in the order the sidebar draws them.
   // A failed read (no body to draw from) is said once per screen, by the
@@ -393,9 +414,57 @@ export default function SessionActionsMenu({
           <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ),
+      // Stage a reference to this session in the open chat's composer — the
+      // menu form of dragging the row into the composer. Self-hiding: the
+      // caller passes the handler only when a reference can be staged right now
+      // (a composer exists, and this is not an incognito/temporary/self target).
+      onReferenceInChat && (
+        <Item key="reference-in-chat" onSelect={onReferenceInChat}>
+          <MessagesSquare size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reference_in_chat')}
+        </Item>
+      ),
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
+      // The bare session key (the `sid` hidden inside Copy link's URL), for
+      // pasting into a prompt or an issue. Its own `#` glyph, not another Copy
+      // glyph: the copy glyph already means Duplicate on this row and Copy text
+      // in the message footer, so a third overload would read as either.
+      <Item
+        key="copy-id"
+        // Keep the menu open on select so a failure notice renders in place and
+        // its hand-off stays reachable; a success leaves the menu open too (the
+        // user may copy again or Escape out), the same as the message footer's
+        // copy affordances. The store-backed error below also survives a close.
+        onSelect={(e?: Event) => { e?.preventDefault?.(); void copyId(slotKey) }}
+      >
+        <Hash size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_session_id')}
+      </Item>,
+      // A clipboard write that both layers refused leaves the key uncopied; say
+      // so through ErrorNotice (the rule's in-menu form: a passive notice plus a
+      // hand-off item the roving focus reaches), rather than closing silently.
+      // Store-backed so it survives the kebab closing and reopening.
+      copyIdError && (
+        <React.Fragment key="copy-id-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={copyIdErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={i18nT('components.sessionActionsMenu.copy_session_id_failed')}
+              message={copyIdError}
+              messagePlacement="below"
+              testId="session-menu-copy-id-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={copyIdError}
+            describedBy={copyIdErrorId}
+          />
+          <Separator />
+        </React.Fragment>
+      ),
       // Copy this session to another Kiro Crew instance. Sits in nav/access
       // rather than the tab-modifier group above because it changes nothing
       // about this tab — the peer gets its own copy under its own key.

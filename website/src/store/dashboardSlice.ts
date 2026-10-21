@@ -79,6 +79,11 @@ interface DashboardState {
    *  closed and reopened. Set on the mutation's onError (after the optimistic
    *  flip is rolled back), cleared when a later toggle of that flag starts. */
   slotMuteFlagError: Record<string, string>
+  /** Per-slot "Copy session ID failed" message, keyed by slot key. Set when both
+   *  clipboard layers refuse (rare), so the session menu can render it through
+   *  ErrorNotice even after the kebab closed and reopened; cleared when a fresh
+   *  copy of that slot starts. */
+  slotCopyIdError: Record<string, string>
   /** Keys whose close is in flight, awaiting another close's outcome, or just
    *  confirmed. An ordinary in-flight key is held out of `slots`; an awaiting
    *  key also survives `CLOSE_CONFIRMED_GRACE_FRAMES` lists before a WebSocket
@@ -342,6 +347,7 @@ const initialState: DashboardState = {
   manualOrderError: '',
   slotPinGenerations: {},
   slotMuteFlagError: {},
+  slotCopyIdError: {},
   closingSlots: {},
   durablyRemoved: {},
   slotFetchesInFlight: [],
@@ -1366,6 +1372,16 @@ const dashboardSlice = createSlice({
       state.slotMuteFlagError ??= {}  // partial preloaded state
       state.slotMuteFlagError[muteFlagErrorKey(action.payload.flag, action.payload.key)] = action.payload.message
     },
+    /** Record a "Copy session ID" clipboard failure so the kebab menu can render
+     *  it through ErrorNotice. Set when both clipboard layers refuse. */
+    setSlotCopyIdError(state, action: PayloadAction<{ key: string; message: string }>) {
+      state.slotCopyIdError ??= {}  // partial preloaded state
+      state.slotCopyIdError[action.payload.key] = action.payload.message
+    },
+    /** Clear a slot's copy-id failure — a fresh copy attempt supersedes it. */
+    clearSlotCopyIdError(state, action: PayloadAction<string>) {
+      if (state.slotCopyIdError) delete state.slotCopyIdError[action.payload]
+    },
     /** Paint a pinned order. A bare list is the person's own gesture, shown
      *  before the gateway answers; `{order, rev}` is the gateway's answer,
      *  applied only if no newer revision has landed since. */
@@ -1754,7 +1770,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, setSlotCopyIdError, clearSlotCopyIdError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 /**
