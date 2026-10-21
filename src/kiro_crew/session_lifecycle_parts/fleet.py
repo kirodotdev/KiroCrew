@@ -264,6 +264,20 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
 
     if owner._cleanup_task:
         owner._cleanup_task.cancel()
+        # Await so the coroutine's finally-block runs while the event loop is
+        # still active.  Without this, _cleanup_loop is left suspended at an
+        # await point; when it is later garbage-collected Python throws
+        # GeneratorExit into it, the finally: runs boot_reclaim.cancel(), and
+        # boot_reclaim.cancel() calls Future.__schedule_callbacks() which calls
+        # loop.call_soon() on the now-closed loop, raising RuntimeError("Event
+        # loop is closed") -- which fires sys.unraisablehook and, if the call
+        # stack is deep at GC time, causes RecursionError inside
+        # traceback.format_exception and fails the next test's setup.
+        # return_exceptions=True absorbs the task's own CancelledError without
+        # swallowing a cancellation aimed at close_all itself (CancelledError
+        # propagates from gather when the *caller* cancels, not the gathered
+        # task).  This keeps close_all cancellable by its wait_for deadline.
+        await asyncio.gather(owner._cleanup_task, return_exceptions=True)
 
     # Pool-health and spawn tasks are registered in the same owned-task set.
     for task in list(owner._background_tasks):
