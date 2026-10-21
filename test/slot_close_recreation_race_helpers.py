@@ -73,6 +73,10 @@ class _Req:
     def __init__(self, state, slot: str = NAME, body: dict | None = None) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        # Read at CONSTRUCTION, not at call time: a replacement minted later in the
+        # test must not retroactively change what this request asked to archive.
+        live = getattr(state, "_slots", {}).get(slot)
+        self.query = {"incarnation": getattr(live, "incarnation", "")} if live else {}
         self._has_body = body is not None
         self._body = body if body is not None else {}
         # ``body is None`` is NO body, which is what every call site here sends and

@@ -150,7 +150,7 @@ describe('refused single-session close', () => {
     mocks.deleteChatSlot.mockResolvedValue({ ok: true })
     const { container, queryByTestId } = renderSidebar()
     fireEvent.click(await rowClose(container))
-    await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledWith('k-notes'))
+    await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledWith('k-notes', undefined))
     await new Promise(r => setTimeout(r, 0))
     expect(queryByTestId('close-refused')).toBeNull()
   })

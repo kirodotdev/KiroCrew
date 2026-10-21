@@ -430,7 +430,7 @@ describe('Welcome recreation of a crew archive', () => {
 
     await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
     expect(apiMocks.createChatSlot.mock.calls.at(-1)).not.toContain('crew-remote-1')
-    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
+    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined)
   })
 })
 
