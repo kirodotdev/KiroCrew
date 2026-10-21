@@ -19,6 +19,20 @@ routing authority. Admission resolves it once before awaiting preparation.
 Display names, provider templates and project paths cannot select a store.
 New member IDs exclude both live member IDs and retained store owner IDs, so
 deleting and recreating a name cannot reinterpret an earlier execution's identity.
+The one way a kept identity gets a live owner again is explicit: a create that
+names an ownerless kept V2 store (`adopt_memory_store` on `POST /api/agents`,
+`kirocrew agent create --adopt-memory-store`) binds the new crewmate to that
+store's recorded `owner_member_id` (`member_memory_adopt`). Nothing is copied and
+the database identity is unchanged; only the record's display `owner_member`
+follows the new name. It is refused unless no crewmate holds that id or binds the
+store, no legacy crewmate derives that id as its slug, the database identity is
+exactly `(owner_member_id, store)`, and no kept chat-thread binding under the slug
+is keyed by a former name only. A name match never adopts. Adopting deliberately
+reuses that identity, so everything keyed by the member id or its slug (the kept
+chat thread, member rules, activity) follows the new crewmate too; this is the
+one exception to the rule above, and only an explicit owner action takes it.
+The create's locked write re-checks that no crewmate on disk binds the store,
+holds the id, or (with no member id) derives it as its slug.
 Manual context resolves captured member IDs strictly; only explicitly named member
 inputs resolve configured aliases, never as a fallback for a missing captured ID.
 Cross-member `target_member` dispatch follows existing tool, delegation and app
@@ -2442,8 +2456,9 @@ self-contained file with no WAL to pair.
   it, independently of strict binding resolution.
   Unreferenced retained files remain untouched. Routine maintenance excludes
   stores without their active canonical member binding. Restore requires the
-  configured member/store identity; no retirement marker or archive reattachment
-  framework exists.
+  configured member/store identity; no retirement marker exists. A kept store is
+  reattached only by creating a crewmate on it (see the adopt rule in the
+  overview), after which it is an ordinary owned store again.
 - **Fail soft per store**: one unreadable store must not prevent another eligible
   store's backup, so the loop counts failures instead of propagating them.
 
@@ -3197,6 +3212,7 @@ the unconditional gate is the stronger check layered in front of it.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/memory/stores` | Enumerate every store for the picker: `name`, `is_default`, `lineage` (`v1`/`crew`), `exists`, `semantic_count`, `episodic_count`, `lessons_count`, `facets_supported`, `backup_count`, `newest_backup`. Takes no `?store=` — it answers for all of them. One exception: a crew (V2) store whose `owner_member_id` no living member holds — a deleted member's retained store — is omitted, because no content route can read it (every request fails the member lookup) and listing it would give the picker a row whose every click is a 503. The record itself stays in `memory_stores` (its member id is reserved, and `kirocrew memory scan` / `doctor` still report it) |
+| GET | `/api/memory/ownerless-stores` | The kept V2 stores the picker omits that a new crewmate can start from: `name`, `former_owner` (the record's last `owner_member`, for display only). A store whose directory is gone is left out. Owner-gated; reads config only, never a store's contents |
 | GET | `/api/memory/retired?store=&limit=&offset=` | Episodes a semantic write superseded, newest first: `id`, `text`, `superseded_by`, `retired_times`, `ts`. 400 `invalid_pagination` |
 | POST | `/api/memory/retired/restore` | Body `{"id", "store"}` — clears the tombstone in place. 400 `invalid_episode_id`, 404 `unknown_retired_episode` for an id that is not a restorable retirement in that store |
 | GET | `/api/memory/backups?store=` | That store's hot copies: `name`, `size_bytes`, `taken_at` |

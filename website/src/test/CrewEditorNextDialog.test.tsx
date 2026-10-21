@@ -637,6 +637,15 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     await waitFor(() => expect(mockApi.deleteKirocrewAgent).toHaveBeenCalled())
   })
 
+  it('says the deleted crewmate\u2019s memory is kept and can be given to a new crewmate', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
+    const pane = await within(dialog).findByTestId('next-pane-danger')
+    expect(pane).toHaveTextContent('memory store and past transcripts are kept, and a new crewmate can start from that memory later')
+    fireEvent.click(within(dialog).getByTestId('next-delete-crew'))
+    expect(pane).toHaveTextContent('a new crewmate can start from its memory later')
+  })
+
   it('cancels the armed danger delete', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-danger'))

@@ -1789,6 +1789,24 @@ def persist_member_config(
                     raise UnknownMemoryStore(
                         f"memory store {store!r} is already bound to another member"
                     )
+            if create and config.agents[member].member_id:
+                # A crewmate with no member id derives its slug from its name. One
+                # written by another process since the snapshot would share this
+                # member's slug, which the snapshot's checks could not see.
+                from kiro_crew.members import MemberSlugError, slug_for_name
+
+                for name, entry in agents.items():
+                    if name == member or not isinstance(entry, dict) or entry.get("member_id"):
+                        continue
+                    try:
+                        legacy_slug = slug_for_name(name)
+                    except MemberSlugError:
+                        continue
+                    if legacy_slug == config.agents[member].member_id:
+                        raise UnknownMemoryStore(
+                            f"Crew Member {name!r} was added concurrently with the same "
+                            "identity; reload the roster"
+                        )
             existing = stores.get(store)
             if existing is not None and (
                 not isinstance(existing, dict)

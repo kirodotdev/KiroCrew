@@ -117,6 +117,13 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
         stores: MemoryStoreSummary[]
         active: string
       }>,
+    /** Kept member stores no crewmate owns (a deleted crewmate's memory), which a
+     *  new crewmate can start from: `POST /api/agents` with `adopt_memory_store`.
+     *  Owner-gated. `former_owner` is a display name only. */
+    memoryOwnerlessStores: () =>
+      fetch('/api/memory/ownerless-stores').then(j) as Promise<{
+        stores: { name: string; former_owner: string }[]
+      }>,
     memoryRetired: (store?: string, limit?: number, offset = 0) =>
       fetch('/api/memory/retired' + memoryQuery({ store, limit, ...(offset ? { offset } : {}) })).then(j) as Promise<{ retired: RetiredMemory[] }>,
     memoryRestoreRetired: (id: string, store?: string) =>

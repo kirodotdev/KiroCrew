@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { api } from '../../api/client'
+import { ApiError } from '../../api/apiError'
 import NewCrewmateDialog from './NewCrewmateDialog'
 import { POSE_IDS, seedIconPose } from '../../lib/avatarPoses'
 
@@ -17,6 +18,7 @@ vi.mock('../../api/client', async importOriginal => {
       availableModels: vi.fn(() => Promise.resolve({ models: [] })),
       members: vi.fn(() => Promise.resolve({ members: [] })),
       createKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true, name: 'Scout' })),
+      memoryOwnerlessStores: vi.fn(() => Promise.resolve({ stores: [] })),
     },
   }
 })
@@ -442,6 +444,64 @@ describe('NewCrewmateDialog', () => {
     expect(unloadPrevented()).toBe(true)
     expect(mayLeave()).toBe(false)
     expect(confirm).toHaveBeenCalledTimes(1)
+  })
+
+  describe('starting from kept memory', () => {
+    const kept = { stores: [{ name: 'member-reviewer-abc', former_owner: 'Reviewer' }] }
+    beforeEach(() => { vi.mocked(api.memoryOwnerlessStores).mockResolvedValue(kept) })
+    const pick = async (label: string) => {
+      const select = await screen.findByRole('combobox', { name: 'Memory' })
+      fireEvent.click(select)
+      fireEvent.click(await screen.findByRole('option', { name: label }))
+    }
+
+    it('offers nothing extra when no memory was kept', async () => {
+      vi.mocked(api.memoryOwnerlessStores).mockResolvedValue({ stores: [] })
+      renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
+      await screen.findByRole('combobox', { name: 'Built from' })
+      await waitFor(() => expect(api.memoryOwnerlessStores).toHaveBeenCalled())
+      expect(screen.queryByRole('combobox', { name: 'Memory' })).toBeNull()
+    })
+
+    it('defaults to an empty memory and sends no adopt', async () => {
+      renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
+      const select = await screen.findByRole('combobox', { name: 'Memory' })
+      expect(select.textContent?.trim()).toBe('Start with an empty memory')
+      expect(fieldHint(select)).toHaveTextContent('nothing is copied')
+      typeName('Scout')
+      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).not.toHaveProperty('adopt_memory_store')
+    })
+
+    it('sends the picked kept store as adopt_memory_store', async () => {
+      renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
+      await pick('Kept memory of Reviewer')
+      typeName('Scout')
+      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+      await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({
+        name: 'Scout', adopt_memory_store: 'member-reviewer-abc',
+      })
+    })
+
+    it('says so when the kept memory was taken meanwhile, and re-reads the list', async () => {
+      vi.mocked(api.createKirocrewAgent).mockRejectedValueOnce(
+        new ApiError(409, 'conflict', JSON.stringify({ code: 'member_memory_unavailable' })),
+      )
+      renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
+      await pick('Kept memory of Reviewer')
+      typeName('Scout')
+      const reads = vi.mocked(api.memoryOwnerlessStores).mock.calls.length
+      fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+      expect(await screen.findByTestId('crewmate-create-error')).toHaveTextContent(
+        'That kept memory can no longer be used',
+      )
+      await waitFor(() => expect(vi.mocked(api.memoryOwnerlessStores).mock.calls.length).toBeGreaterThan(reads))
+      // The pick is put back where the user can see it, not kept as a stale value
+      // a retry would quietly drop.
+      expect(screen.getByRole('combobox', { name: 'Memory' }).textContent?.trim()).toBe('Start with an empty memory')
+    })
   })
 })
 

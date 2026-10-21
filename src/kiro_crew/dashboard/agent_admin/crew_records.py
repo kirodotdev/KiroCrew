@@ -391,6 +391,21 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Start from a kept memory store instead of a fresh one: the store a deleted
+    # crewmate left behind, named explicitly (member_memory_adopt). Absent or
+    # empty keeps the fresh allocation; a name is checked against the store's
+    # recorded identity under the namespace lock, never matched by crew name.
+    adopt_store = body.get("adopt_memory_store", "")
+    if not isinstance(adopt_store, str) or (
+        adopt_store and memory_store_binding_defect(adopt_store) is not None
+    ):
+        return web.json_response(
+            {
+                "error": "adopt_memory_store must name a kept memory store",
+                "code": "invalid_adopt_memory_store",
+            },
+            status=400,
+        )
     # Absent or empty means a workspace of the crew's own, allocated with the
     # record (member_workspace.provision_member_workspace); a name is the explicit
     # opt-in to share one, stored as given like every other create always did.
@@ -478,7 +493,14 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         new_workspace = ""
         try:
             try:
-                await _drained_to_thread(provision_member_memory, cfg, name)
+                if adopt_store:
+                    from kiro_crew.member_memory_adopt import provision_or_adopt_member_memory
+
+                    await _drained_to_thread(
+                        provision_or_adopt_member_memory, cfg, name, adopt_store
+                    )
+                else:
+                    await _drained_to_thread(provision_member_memory, cfg, name)
                 new_workspace = await _drained_to_thread(provision_member_workspace, cfg, name)
                 await _drained_to_thread(
                     lambda: persist_member_config(
@@ -490,7 +512,8 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                     cfg, name, new_workspace, previous_workspace=previous_workspace
                 )
                 allocated = cfg.agents[name].memory_store
-                if allocated != previous_store:
+                # An adopted store was never allocated here: it stays as it was.
+                if allocated != previous_store and not adopt_store:
                     await _drained_to_thread(
                         lambda: retire_unpublished_allocation(
                             cfg,

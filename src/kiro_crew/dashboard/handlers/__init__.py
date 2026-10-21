@@ -310,6 +310,7 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.memory_admin import (  # noqa: E402, F401
     api_memory_backup,
     api_memory_backups,
+    api_memory_ownerless_stores,
     api_memory_restore,
     api_memory_restore_cancel,
     api_memory_retired,

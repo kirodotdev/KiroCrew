@@ -741,6 +741,15 @@ def register_agent_parser(sub: _Commands) -> None:
         help="Create a fresh member store (already enabled for explicit member creation)",
     )
     agent_create.add_argument(
+        "--adopt-memory-store",
+        default="",
+        metavar="STORE",
+        help=(
+            "Start from the memory store a deleted crewmate left behind instead of a "
+            "fresh one (only a store no crewmate owns)"
+        ),
+    )
+    agent_create.add_argument(
         "--model",
         default=None,
         help=(

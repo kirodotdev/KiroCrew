@@ -294,6 +294,26 @@ async def api_memory_stores(request: web.Request) -> web.Response:
     return web.json_response({"stores": stores, "active": DEFAULT_MEMORY_STORE})
 
 
+async def api_memory_ownerless_stores(request: web.Request) -> web.Response:
+    """GET /api/memory/ownerless-stores — kept member stores a new crewmate can start from.
+
+    The stores the picker above omits: a deleted crewmate's V2 store that no
+    configured crewmate owns. Each row is ``name`` and ``former_owner`` (the
+    display name the record last carried). The create flow offers them, and
+    ``POST /api/agents`` with ``adopt_memory_store`` binds one to the new
+    crewmate (``member_memory_adopt``). Owner-gated like every route here: it
+    enumerates stores, and nothing is read from inside them.
+    """
+    denial = await require_owner_dashboard_request(request, "memory.stores.ownerless")
+    if denial is not None:
+        return denial
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.member_memory_adopt import ownerless_member_stores
+
+    stores = await asyncio.to_thread(lambda: ownerless_member_stores(KiroCrewConfig.load()))
+    return web.json_response({"stores": stores})
+
+
 async def api_memory_retired(request: web.Request) -> web.Response:
     """GET /api/memory/retired — episodes a semantic write superseded.
 

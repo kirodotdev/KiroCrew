@@ -182,6 +182,10 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        adopt_store = getattr(args, "adopt_memory_store", "") or ""
+        if adopt_store and memory_store_binding_defect(adopt_store) is not None:
+            print("Error: invalid memory store name", file=sys.stderr)
+            sys.exit(1)
         model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg)
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
@@ -201,7 +205,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
         new_workspace = ""
         try:
             require_member_memory_creation(args.name)
-            provision_member_memory(cfg, args.name)
+            if adopt_store:
+                from kiro_crew.member_memory_adopt import provision_or_adopt_member_memory
+
+                provision_or_adopt_member_memory(cfg, args.name, adopt_store)
+            else:
+                provision_member_memory(cfg, args.name)
             new_workspace = provision_member_workspace(cfg, args.name)
             persist_member_config(cfg, args.name, create=True, new_workspace=new_workspace)
         except BaseException as exc:
@@ -209,7 +218,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 cfg, args.name, new_workspace, previous_workspace=previous_workspace
             )
             allocated = cfg.agents[args.name].memory_store
-            if allocated != previous_store:
+            # An adopted store was never allocated here: it stays as it was.
+            if allocated != previous_store and not adopt_store:
                 retire_unpublished_allocation(
                     cfg,
                     args.name,
@@ -236,6 +246,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
         else:
             print(f"Created agent: {args.name}")
         print(f"Workspace: {created.workspace}")
+        if adopt_store:
+            print(f"Memory: started from kept store {created.memory_store}")
         if created.model:
             print(f"Model: {created.model}")
         from kiro_crew.member_mate_tools import GRANTED, grant_mate_tools_to_new_member
