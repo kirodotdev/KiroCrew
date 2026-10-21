@@ -73,6 +73,13 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
 
     monkeypatch.setattr(access, "is_allowed_user", lambda u: u in e.allowed)
     monkeypatch.setattr("kiro_crew.slack.handler.is_allowed_user", lambda u: u in e.allowed)
+    # The Stop's own user check (session_events._may_use_bot) reads these two
+    # through kiro_crew.slack.events: pinned per test, so another suite's
+    # import-time setup can never decide who may stop here.
+    monkeypatch.setattr("kiro_crew.slack.events.is_allowed_user", lambda u: u in e.allowed)
+    monkeypatch.setattr(
+        "kiro_crew.slack.events.is_owner", lambda u: u == OWNER and OWNER in e.allowed
+    )
     from kiro_crew.messaging import identity
 
     e.inbound_ok = True
@@ -88,6 +95,15 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     actions._seen = None
     worker_stop.reset_for_tests()
     tabs.reset_for_tests()
+    from kiro_crew.slack.code_channels.board import stops
+
+    stops.reset_for_tests()
+    # Per-process tables other suites may have filled: locks bound to their
+    # event loops, and the board publisher's per-channel throttles.
+    views._locks.clear()
+    views._record_locks.clear()
+    for channel in (CH, OTHER_CH):
+        publisher.forget(channel)
     clock = Clock()
     monkeypatch.setattr(tabs, "_clock", clock)
     e.clock = clock
@@ -312,17 +328,45 @@ async def test_a_merged_or_displaced_pr_loses_its_tab_and_only_ours_are_removed(
         tabs.PrRef(50, PR_URL.format(n=50), "open"),
         tabs.PrRef(42, PR_URL.format(n=42), "open"),
     ]
-    held = await tabs.sync_pr_tabs(binding, second)
+    held = await tabs.sync_pr_tabs(binding, second, settled={12})
     assert _calls(env, "agents.conversations.removeView") == [
         {"channel_id": CH, "view_id": "Vpr12"}
     ]
     assert held == {50: "Vpr50", 42: "Vpr42"}
-    # Nothing wanted: every PR tab of ours goes, an agent's view stays.
+    # Nothing wanted and both SEEN merged: every PR tab of ours goes, an agent's stays.
     surface_store().update(CH, views=[*surface_store().get(CH).views, _v("report", "html", "1")])
-    await tabs.sync_pr_tabs(binding, [])
+    await tabs.sync_pr_tabs(binding, [], settled={50, 42})
     removed = [c["view_id"] for c in _calls(env, "agents.conversations.removeView")]
     assert removed[0] == "Vpr12" and sorted(removed[1:]) == ["Vpr42", "Vpr50"]
     assert [v["key"] for v in surface_store().get(CH).views] == ["report"]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_could_not_read_a_pr_leaves_its_tab_alone(env: Any) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    both = [
+        tabs.PrRef(42, PR_URL.format(n=42), "open"),
+        tabs.PrRef(12, PR_URL.format(n=12), "open"),
+    ]
+    await tabs.sync_pr_tabs(binding, both)
+    # The board read failed (or the forge did not answer): only the channel's own
+    # PR is known this pass. The workers' PR tab is kept, not torn down and reopened.
+    held = await tabs.sync_pr_tabs(binding, [tabs.PrRef(42, PR_URL.format(n=42), "open")])
+    assert _calls(env, "agents.conversations.removeView") == []
+    assert held == {42: "Vpr42", 12: "Vpr12"}
+    # Nothing readable at all: still nothing removed.
+    assert await tabs.sync_pr_tabs(binding, []) == {42: "Vpr42", 12: "Vpr12"}
+    # Two newer PRs seen open: the unseen one gives up its slot.
+    newer = [
+        tabs.PrRef(60, PR_URL.format(n=60), "open"),
+        tabs.PrRef(42, PR_URL.format(n=42), "open"),
+    ]
+    held = await tabs.sync_pr_tabs(binding, newer)
+    assert _calls(env, "agents.conversations.removeView") == [
+        {"channel_id": CH, "view_id": "Vpr12"}
+    ]
+    assert held == {60: "Vpr60", 42: "Vpr42"}
 
 
 @pytest.mark.asyncio
@@ -333,8 +377,8 @@ async def test_the_service_hands_its_own_pr_and_its_workers_prs_to_the_tabs(
 
     seen: list[Any] = []
 
-    async def sync(binding: Any, wanted: Any) -> dict[int, str]:
-        seen.append([p.number for p in wanted])
+    async def sync(binding: Any, wanted: Any, settled: Any = None) -> dict[int, str]:
+        seen.append(([p.number for p in wanted], settled))
         return {}
 
     monkeypatch.setattr(tabs, "sync_pr_tabs", sync)
@@ -342,11 +386,14 @@ async def test_the_service_hands_its_own_pr_and_its_workers_prs_to_the_tabs(
         slack_off="", pr_number=10, pr_url=PR_URL.format(n=10), pr_state="open"
     )
     board = model.BoardSnapshot(
-        rows=(_row(pr_number=33, pr_url=PR_URL.format(n=33), pr_state="open"),)
+        rows=(
+            _row(pr_number=33, pr_url=PR_URL.format(n=33), pr_state="open"),
+            _row("it_00000002", pr_number=7, pr_url=PR_URL.format(n=7), pr_state="merged"),
+        )
     )
     service = svc.WorkspaceService(lambda: None)
     await service._publish_pr_tabs(_bind(env), record, board)
-    assert seen == [[33, 10]]
+    assert seen == [([33, 10], {7})]
 
 
 @pytest.mark.parametrize("code", ["invalid_view_type", "invalid_pr_url"])
@@ -360,7 +407,11 @@ async def test_a_pr_tab_slack_will_not_take_is_logged_once_and_not_asked_again(
     for _ in range(3):
         assert await tabs.sync_pr_tabs(binding, wanted) == {}
     assert len(_calls(env, "agents.conversations.setView")) == 1
-    assert sum("the pr-42 tab was not published" in r.getMessage() for r in caplog.records) == 1
+    assert sum(f"not published ({code})" in r.getMessage() for r in caplog.records) == 1
+    if code == "invalid_view_type":
+        # The type itself is refused: no OTHER PR is asked for in this channel either.
+        await tabs.sync_pr_tabs(binding, [tabs.PrRef(43, PR_URL.format(n=43), "open")])
+        assert len(_calls(env, "agents.conversations.setView")) == 1
 
 
 @pytest.mark.asyncio
@@ -567,7 +618,9 @@ def test_gather_facts_reads_the_pr_tabs_this_gateway_opened(env: Any) -> None:
             _v("pr-9", "html", "3"),
         ],
     )
-    assert wrapup._pr_tabs(CH) == ((30, "Vpr30"), (12, "Vpr12"))
+    # PR 12 merged: its tab is about to go, so the lasting wrap-up does not link it.
+    assert wrapup._pr_tabs(CH, {30}) == ((30, "Vpr30"),)
+    assert wrapup._pr_tabs(CH, {30, 12, 9}) == ((30, "Vpr30"), (12, "Vpr12"))
 
 
 # ── 4. The Workers tab ────────────────────────────────────────────────────
@@ -628,15 +681,28 @@ def test_done_workers_fold_into_one_line_each_at_the_bottom() -> None:
         pr_number=7,
         pr_url=PR_URL.format(n=7),
         pr_state="merged",
+        pr_checks="12/12/0",
+    )
+    shipped = _row(
+        "it_00000008",
+        model.DONE,
+        title="Fix login",
+        pr_number=12,
+        pr_url=PR_URL.format(n=12),
+        pr_state="open",
+        pr_checks="41/47/6",
     )
     closed = _row("it_00000007", model.CLOSED, title="Dropped", closed_as="rejected")
-    snap = model.BoardSnapshot(rows=(done, *_snapshot().rows, closed))
-    blocks = render.workers_view_blocks(snap, _link, now=_NOW)
-    last = blocks[-1]["elements"][0]["text"].splitlines()
-    assert last == [
-        "Rejected · *Dropped*",
-        f"Done · *Old fix* · <{PR_URL.format(n=7)}|PR #7> merged",
+    snap = model.BoardSnapshot(rows=(done, *_snapshot().rows[1:], shipped, closed))
+    blocks = render.workers_view_blocks(snap, _link, tabs=_TABS, now=_NOW)
+    assert blocks[-1]["block_id"] == "workers-settled"
+    assert _texts(blocks[-1]).split("\n") == [
+        "Rejected: Dropped",
+        "Done: Fix login · <#VPR12> · CI 41/47",  # its PR opens its own tab
+        "Done: Old fix · PR #7 · CI 12/12",  # merged, no tab: the forge link
     ]
+    elements = blocks[-1]["elements"][0]["elements"]
+    assert {"type": "link", "url": PR_URL.format(n=7), "text": "PR #7"} in elements
     assert not any(str(b.get("block_id", "")).startswith("worker-it_00000006") for b in blocks)
 
 
@@ -714,8 +780,85 @@ async def test_a_failed_workers_write_is_retried_with_backoff(env: Any) -> None:
     env.api.responses["agents.conversations.setView"] = {"ok": False, "error": "internal_error"}
     assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "failed"
     first = tabs.take_retry(CH)
+    assert first > 0
+    # Inside the backoff the next refresh sends nothing, it re-arms.
+    assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "backoff"
+    assert len(_calls(env, "agents.conversations.setView")) == 1
+    assert 0 < tabs.take_retry(CH) <= first
+    env.clock.now += first + 1
     assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "failed"
-    assert tabs.take_retry(CH) > first > 0
+    assert len(_calls(env, "agents.conversations.setView")) == 2
+    assert tabs.take_retry(CH) > first
+
+
+@pytest.mark.asyncio
+async def test_time_passing_alone_rewrites_the_workers_tab_only_every_few_minutes(
+    env: Any, monkeypatch: Any
+) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    wall = {"now": _NOW}
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+            return wall["now"]
+
+    monkeypatch.setattr(render, "datetime", _Clock)
+    assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "written"
+    for _ in range(3):  # three minutes of the elapsed count ticking
+        wall["now"] += timedelta(minutes=1)
+        env.clock.now += 60
+        assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == ""
+    wall["now"] += timedelta(minutes=3)
+    env.clock.now += tabs.ELAPSED_REFRESH_SECS
+    assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "written"
+    assert len(_calls(env, "agents.conversations.setView")) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_board_with_no_workers_left_empties_the_tab_once(env: Any) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    assert await tabs.publish_workers(binding, model.BoardSnapshot(), link_for=_link) == ""
+    assert _calls(env, "agents.conversations.setView") == []  # no tab yet: none opened
+    await tabs.publish_workers(binding, _snapshot(), link_for=_link)
+    env.clock.now += 60
+    assert await tabs.publish_workers(binding, model.BoardSnapshot(), link_for=_link) == "written"
+    sent = _calls(env, "agents.conversations.setView")[-1]
+    assert "kc_cc_worker_stop" not in json.dumps(sent["blocks"])
+    env.clock.now += 60
+    assert await tabs.publish_workers(binding, model.BoardSnapshot(), link_for=_link) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_stop_fence_landing_mid_publish_stops_the_write(env: Any, monkeypatch: Any) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    checks = {"n": 0}
+
+    def stopped(channel: str) -> bool:
+        checks["n"] += 1
+        return checks["n"] > 1  # Slack's Stop lands after the first fence check
+
+    monkeypatch.setattr(surface, "channel_stopped", stopped)
+    assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "fenced"
+    held = await tabs.sync_pr_tabs(binding, [tabs.PrRef(42, PR_URL.format(n=42), "open")])
+    assert held == {} and _calls(env, "agents.conversations.setView") == []
+
+
+@pytest.mark.asyncio
+async def test_a_view_recorded_while_the_list_was_read_is_not_pruned(env: Any) -> None:
+    _bind(env)
+
+    async def list_views(channel: str) -> list[dict[str, Any]]:
+        # A tool write lands while listViews is in flight.
+        await views.record_view(CH, key="report", view_id="Vreport", type="html")
+        return []
+
+    client = SimpleNamespace(list_views=list_views)
+    assert await views.reconcile(client, CH) == []
+    assert views.recorded(surface_store().get(CH), "report") is not None
 
 
 @pytest.mark.asyncio
@@ -779,18 +922,32 @@ def stop_world(env: Any, monkeypatch: Any) -> Any:
         return boards.get(b.channel_id)
 
     monkeypatch.setattr(source, "read_board", read_board)
+
+    def _slot(key: str, running: bool) -> Any:
+        # The running turn's own identity, as _cancel_target reads it.
+        return SimpleNamespace(
+            key=key, running=running, _active_turn_session_key=f"dashboard_{key}"
+        )
+
     slots = {
-        "chat-w1": SimpleNamespace(key="chat-w1", running=True),
-        "chat-w2": SimpleNamespace(key="chat-w2", running=False),
-        "chat-w9": SimpleNamespace(key="chat-w9", running=True),
-        SLOT: SimpleNamespace(key=SLOT, running=True),
+        "chat-w1": _slot("chat-w1", True),
+        "chat-w2": _slot("chat-w2", False),
+        "chat-w9": _slot("chat-w9", True),
+        SLOT: _slot(SLOT, True),
     }
     env.state.get_slot = lambda key: slots.get(key)
+    # The dashboard's session -> slot resolution, over these slots.
+    monkeypatch.setattr(
+        surface,
+        "caller_slot_key",
+        lambda _s, key: next((k for k in slots if key in (k, f"dashboard_{k}")), ""),
+    )
     stopped: list[Any] = []
+    answers: list[dict[str, Any]] = []
 
     async def stop_slot_turn(state: Any, slot: Any, **kw: Any) -> dict[str, Any]:
         stopped.append((slot.key, kw))
-        return {"info": ""}
+        return answers.pop(0) if answers else {"info": ""}
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", stop_slot_turn)
     noted: list[str] = []
@@ -798,14 +955,24 @@ def stop_world(env: Any, monkeypatch: Any) -> Any:
 
     monkeypatch.setattr(board, "note_session_turn", noted.append)
     return SimpleNamespace(
-        binding=binding, other=other, stopped=stopped, reads=reads, noted=noted, boards=boards
+        binding=binding,
+        other=other,
+        stopped=stopped,
+        reads=reads,
+        noted=noted,
+        boards=boards,
+        slots=slots,
+        answers=answers,
     )
+
+
+_STOP_KW = {"source": "slack", "escalate": False, "cancel_key": "dashboard_chat-w1"}
 
 
 @pytest.mark.asyncio
 async def test_stop_stops_only_that_workers_turn(env: Any, stop_world: Any) -> None:
     assert await worker_stop._handle(env.orch, _stop_payload()) == "stop:stopping"
-    assert stop_world.stopped == [("chat-w1", {"source": "slack", "escalate": False})]
+    assert stop_world.stopped == [("chat-w1", _STOP_KW)]
     assert stop_world.reads == [CH]  # resolved on THIS channel's own board
     assert stop_world.noted == ["chat-w1"]
     row = env.sel.ops(worker_stop.OPERATION)[-1]
@@ -951,3 +1118,541 @@ async def test_the_interactive_router_answers_the_workers_tab_buttons(
     open_click["actions"][0]["action_id"] = "kc_cc_worker_open"
     await interactions.dispatch(open_click)
     assert got == ["kc_cc_worker_stop"]
+
+
+# ── 6. The final gate: nothing decided before the board read is trusted after it ──
+
+
+@pytest.mark.asyncio
+async def test_a_worker_slot_whose_running_turn_is_the_conductors_is_never_stopped(
+    env: Any, stop_world: Any
+) -> None:
+    # The worker's slot was rebound mid-turn: the turn it would cancel is the
+    # conductor's own session.
+    stop_world.slots["chat-w1"]._active_turn_session_key = f"dashboard_{SLOT}"
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "denied"
+    assert stop_world.stopped == []
+    row = env.sel.ops(worker_stop.OPERATION)[-1]
+    assert row["outcome"] == "denied" and row["error"] == "the cancel target is not that worker"
+
+
+@pytest.mark.asyncio
+async def test_a_running_turn_of_another_slot_is_never_stopped(env: Any, stop_world: Any) -> None:
+    stop_world.slots["chat-w1"]._active_turn_session_key = "dashboard_chat-w9"
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "denied"
+    assert stop_world.stopped == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["revoked", "rebound", "dropped", "archived", "view", "code_off", "team", "inbound"],
+)
+@pytest.mark.asyncio
+async def test_what_changes_while_the_board_is_read_is_judged_again(
+    env: Any, stop_world: Any, monkeypatch: Any, change: str
+) -> None:
+    real = source.read_board
+    # The gateway's one config object, which a reload updates in place.
+    shared = env.cfg()
+    for mod in (worker_stop, actions):
+        monkeypatch.setattr(mod, "live_config", lambda _orch=None: shared)
+
+    async def read_board(state: Any, b: Binding) -> Any:
+        # Every gate actions.admit passed is revoked mid-read in one variant.
+        if change == "code_off":
+            shared.slack.code_channels = False
+        elif change == "team":
+            from kiro_crew.platform.context import installed_context
+
+            gate = installed_context().slack_gate
+            monkeypatch.setattr(gate, "check_message_origin", lambda team: False)
+        elif change == "inbound":
+            env.inbound_ok = False
+        elif change == "revoked":
+            env.allowed.discard(OWNER)  # the presser loses access meanwhile
+        elif change == "rebound":
+            env.store.replace_binding(Binding(**{**b.__dict__, "session_key": "chat-new-1"}))
+        elif change == "dropped":
+            env.store.drop_binding(CH)
+        elif change == "archived":
+            surface.fence_archived(CH)
+        else:
+            surface_store().update(CH, views=[_v("workers", "block_kit", "2")])
+        return await real(state, b)
+
+    monkeypatch.setattr(source, "read_board", read_board)
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "denied"
+    assert stop_world.stopped == []
+
+
+@pytest.mark.asyncio
+async def test_a_worker_the_store_says_another_conductor_made_is_not_stopped(
+    env: Any, stop_world: Any
+) -> None:
+    env.store.record_worker("chat-w1", "chat-9-1")
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "denied"
+    assert stop_world.stopped == []
+
+
+@pytest.mark.asyncio
+async def test_a_container_without_its_own_view_id_is_refused(env: Any, stop_world: Any) -> None:
+    payload = _stop_payload()
+    payload["container"] = {"type": "view", "tab_id": WORKERS_VIEW}
+    assert await worker_stop._handle(env.orch, payload) == "denied"
+    assert stop_world.stopped == []
+
+
+@pytest.mark.asyncio
+async def test_a_declined_stop_is_said_as_such_and_can_be_pressed_again(
+    env: Any, stop_world: Any
+) -> None:
+    stop_world.answers.append({"ok": True, "info": "compacting", "compacting": True})
+    assert await worker_stop._handle(env.orch, _stop_payload(ts="1.1")) == "stop:compacting"
+    assert "compacting" in env.slack.ephemerals[-1][2]
+    # Not "Already stopping": the next press stops it.
+    assert await worker_stop._handle(env.orch, _stop_payload(ts="1.2")) == "stop:stopping"
+    stop_world.answers.append({"ok": True, "info": "no active turn"})
+    assert await worker_stop._handle(env.orch, _stop_payload(ts="9.1")) == "repeat"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_errors_is_audited_and_told(
+    env: Any, stop_world: Any, monkeypatch: Any
+) -> None:
+    async def boom(*a: Any, **k: Any) -> dict[str, Any]:
+        raise RuntimeError("provider gone")
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", boom)
+    assert await worker_stop.handle_stop_click(env.orch, _stop_payload()) is True
+    row = env.sel.ops(worker_stop.OPERATION)[-1]
+    assert row["outcome"] == "error" and row["caller"] == OWNER
+    assert env.slack.ephemerals[-1] == (CH, OWNER, worker_stop.FAILED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_and_a_missing_dashboard_are_audited(
+    env: Any, stop_world: Any, monkeypatch: Any
+) -> None:
+    await worker_stop._handle(env.orch, _stop_payload(ts="1.1"))
+    await worker_stop._handle(env.orch, _stop_payload(ts="1.2"))
+    assert "result=repeat" in env.sel.ops(worker_stop.OPERATION)[-1]["resources"]
+    monkeypatch.setattr(surface, "dashboard_state", lambda: None)
+    assert await worker_stop._handle(env.orch, _stop_payload(ts="2.1")) == "denied"
+    assert env.sel.ops(worker_stop.OPERATION)[-1]["error"] == "no dashboard"
+
+
+@pytest.mark.asyncio
+async def test_a_pr_tab_that_gives_way_to_the_diff_reruns_the_refresh(monkeypatch: Any) -> None:
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+    from kiro_crew.slack.code_channels.workspace import service as svc
+
+    calls = {"n": 0}
+
+    class _Client:
+        async def set_diff_view(self, channel: str, *a: Any, **k: Any) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise CodeChannelApiError("agents.conversations.setView", "too_many_views")
+            return "Vdiff"
+
+    async def make_room(client: Any, channel: str, *, for_key: str) -> str:
+        assert for_key == "diff"
+        return "pr-12"
+
+    monkeypatch.setattr(views, "make_room", make_room)
+    service = svc.WorkspaceService(lambda: _Client())
+    record = SimpleNamespace(channel_id=CH, key=f"T1:{CH}", session_key=SLOT, slack_off="")
+    assert await service._call("set_diff_view", record, "diff --git", room_for="diff") == "Vdiff"
+    assert record.key in service._again
+
+
+# ── 7. Stopped by @user, until the worker's next turn ─────────────────────
+
+
+def _item(worker: str = "chat-w1") -> Any:
+    return SimpleNamespace(
+        item_id="it_00000001",
+        title="Fix login",
+        state="open",
+        status="progress",
+        reason=None,
+        summary="",
+        artifacts={},
+        pr=None,
+        worker_session_key=worker,
+        last_report_at="",
+        created_at="",
+        round=1,
+    )
+
+
+def _project(state: Any, live: str = model.LIVE_IDLE) -> model.BoardSnapshot:
+    from kiro_crew.slack.code_channels.board import stops
+
+    return source.project(
+        SimpleNamespace(goal="g", round=1),
+        [_item()],
+        lambda key: live,
+        activity_of=lambda key: model.Activity(),
+        stopped_of=lambda key: stops.current(state, key),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_workers_tab_stop_shows_who_stopped_it_on_the_board_and_the_tab(
+    env: Any, stop_world: Any
+) -> None:
+    stop_world.slots["chat-w1"]._turn_generation = 7
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "stop:stopping"
+    # Still unwinding (the turn reads as running) or already idle: either way it
+    # reads as stopped, and offers no Stop.
+    for live in (model.LIVE_RUNNING, model.LIVE_IDLE):
+        row = _project(env.state, live).rows[0]
+        assert (
+            row.stopped and row.stopped_by == OWNER and re.fullmatch(r"\d\d:\d\d", row.stopped_at)
+        )
+        blocks = render.workers_view_blocks(
+            model.BoardSnapshot(rows=(row,)), _link, tabs=_TABS, now=_NOW
+        )
+        by_id = {b.get("block_id"): b for b in blocks}
+        line = by_id["worker-it_00000001-text"]["elements"][0]["elements"]
+        assert {"type": "user", "user_id": OWNER} in line
+        assert _texts(by_id["worker-it_00000001-text"]).startswith("Fix login\nStopped by ")
+        assert [e["action_id"] for e in by_id["worker-it_00000001"]["elements"]] == [
+            "kc_cc_worker_open"
+        ]
+        board = render.board_blocks(model.BoardSnapshot(rows=(row,)), _link, now=_NOW)
+        details = board[-1]["tasks"][0]["details"]["elements"][0]["elements"]
+        assert details[:2] == [
+            {"type": "text", "text": "Stopped by "},
+            {"type": "user", "user_id": OWNER},
+        ]
+        rows_look = render.board_blocks(
+            model.BoardSnapshot(rows=(row,)), _link, look="rows", now=_NOW
+        )
+        assert f"Stopped by <@{OWNER}> · {row.stopped_at}" in json.dumps(
+            rows_look, ensure_ascii=False
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_stopped_line_clears_when_the_workers_next_turn_starts(
+    env: Any, stop_world: Any
+) -> None:
+    stop_world.slots["chat-w1"]._turn_generation = 7
+    await worker_stop._handle(env.orch, _stop_payload())
+    assert _project(env.state).rows[0].stopped
+    stop_world.slots["chat-w1"]._turn_generation = 8  # its next turn started
+    row = _project(env.state, model.LIVE_RUNNING).rows[0]
+    assert not row.stopped and row.stopped_by == ""
+    stop_world.slots["chat-w1"]._turn_generation = 7  # never comes back
+    assert not _project(env.state).rows[0].stopped
+
+
+@pytest.mark.asyncio
+async def test_a_refused_or_declined_stop_marks_nobody(env: Any, stop_world: Any) -> None:
+    await worker_stop._handle(env.orch, _stop_payload(user=STRANGER))
+    stop_world.answers.append({"ok": True, "info": "compacting", "compacting": True})
+    await worker_stop._handle(env.orch, _stop_payload(ts="2.1"))
+    assert not _project(env.state).rows[0].stopped
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_stop_skips_both_edit_gaps_once(env: Any, monkeypatch: Any) -> None:
+    from kiro_crew.slack.code_channels import board
+    from kiro_crew.slack.code_channels.board import stops
+
+    binding = _bind(env)
+    _set_views(env)
+    slot = SimpleNamespace(key="chat-w1", _turn_generation=3)
+    env.state.get_slot = lambda key: slot if key == "chat-w1" else None
+    fake = _Refusing(refuse=0)
+    fake.updates: list[Any] = []  # type: ignore[misc]
+
+    async def update_message(channel: str, ts: str, text: str = "", blocks: Any = None) -> None:
+        fake.updates.append(blocks)
+
+    fake.update_message = update_message  # type: ignore[method-assign]
+    monkeypatch.setattr(surface, "slack", lambda: fake)
+    real = surface.SurfaceClient(env.api.api_call)
+    monkeypatch.setattr(surface, "client", lambda: real)
+    clock = {"now": 5000.0}
+    monkeypatch.setattr(publisher, "_clock", lambda: clock["now"])
+    publisher.forget(CH)
+    working = model.BoardSnapshot(rows=(_row(session_key="chat-w1"),))
+    assert await board.publish(binding, working) == "posted"
+    clock["now"] += 1
+    env.clock.now += 1
+    stops.note(slot, OWNER)
+    stopped = model.BoardSnapshot(
+        rows=(_row(session_key="chat-w1", stopped_by=OWNER, stopped_at="13:31"),)
+    )
+    # One second after the last edit, well inside both gaps: still published now.
+    assert await board.publish(binding, stopped) == "updated"
+    sent = _calls(env, "agents.conversations.setView")
+    assert len(sent) == 2 and "Stopped by" in json.dumps(sent[-1]["blocks"])
+    # The mark is spent: the next change inside the gap waits as usual.
+    clock["now"] += 1
+    env.clock.now += 1
+    later = model.BoardSnapshot(
+        rows=(_row(session_key="chat-w1", stopped_by=OWNER, stopped_at="13:31", title="x"),)
+    )
+    assert await board.publish(binding, later) == "deferred"
+    publisher.forget(CH)
+
+
+@pytest.mark.asyncio
+async def test_stop_then_refresh_reads_stopped_on_board_and_tab_until_the_next_turn(
+    env: Any, stop_world: Any, monkeypatch: Any
+) -> None:
+    """Stop -> the refresh it schedules -> "Stopped by" on the board and the tab ->
+    the worker's next turn clears it, through the production board publisher."""
+    from kiro_crew.slack.code_channels import board
+
+    stop_world.slots["chat-w1"]._turn_generation = 4
+    fake = _Refusing(refuse=0)
+    posted: list[Any] = []
+
+    async def update_message(channel: str, ts: str, text: str = "", blocks: Any = None) -> None:
+        posted.append(blocks)
+
+    fake.update_message = update_message  # type: ignore[method-assign]
+    monkeypatch.setattr(surface, "slack", lambda: fake)
+    real = surface.SurfaceClient(env.api.api_call)
+    monkeypatch.setattr(surface, "client", lambda: real)
+    _set_views(env)
+    clock = {"now": 9000.0}
+    monkeypatch.setattr(publisher, "_clock", lambda: clock["now"])
+    publisher.forget(CH)
+
+    def refresh(live: str) -> Any:
+        # What the scheduled refresh reads: the board's own projection.
+        return board.publish(stop_world.binding, _project(env.state, live))
+
+    assert await refresh(model.LIVE_RUNNING) == "posted"
+    clock["now"] += 1
+    env.clock.now += 1
+    # The click comes from the Workers tab as the gateway recorded it just now.
+    payload = _stop_payload(view_id=worker_stop._workers_view(CH))
+    assert await worker_stop._handle(env.orch, payload) == "stop:stopping"
+    assert stop_world.noted == ["chat-w1"]  # the refresh path was armed
+    # The refresh lands inside both edit gaps and is still published at once.
+    assert await refresh(model.LIVE_IDLE) == "updated"
+    board_text = json.dumps(posted[-1])
+    tab = _calls(env, "agents.conversations.setView")[-1]
+    for text in (board_text, json.dumps(tab["blocks"])):
+        assert '"text": "Stopped by "' in text and f'"user_id": "{OWNER}"' in text
+    assert "kc_cc_worker_stop" not in json.dumps(tab["blocks"])
+    # The worker's next turn starts: the next refresh omits Stopped.
+    stop_world.slots["chat-w1"]._turn_generation = 5
+    clock["now"] += publisher.MIN_EDIT_GAP_SECS + 1
+    env.clock.now += tabs.WORKERS_MIN_GAP_SECS + 1
+    assert await refresh(model.LIVE_RUNNING) == "updated"
+    assert "Stopped by" not in json.dumps(posted[-1])
+    tab = _calls(env, "agents.conversations.setView")[-1]
+    assert "Stopped by" not in json.dumps(tab["blocks"])
+    assert "kc_cc_worker_stop" in json.dumps(tab["blocks"])  # Stop is offered again
+    publisher.forget(CH)
+
+
+@pytest.mark.asyncio
+async def test_newer_unseen_pr_tabs_are_not_removed_for_older_confirmed_prs(env: Any) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    newer = [
+        tabs.PrRef(100, PR_URL.format(n=100), "open"),
+        tabs.PrRef(90, PR_URL.format(n=90), "open"),
+    ]
+    await tabs.sync_pr_tabs(binding, newer)
+    # This pass only confirmed two OLDER open PRs; #100 and #90 were not read.
+    older = [
+        tabs.PrRef(20, PR_URL.format(n=20), "open"),
+        tabs.PrRef(10, PR_URL.format(n=10), "open"),
+    ]
+    held = await tabs.sync_pr_tabs(binding, older)
+    assert _calls(env, "agents.conversations.removeView") == []
+    assert held == {100: "Vpr100", 90: "Vpr90"}
+    assert len(_calls(env, "agents.conversations.setView")) == 2  # no third PR tab
+
+
+@pytest.mark.asyncio
+async def test_the_stop_reads_the_surface_store_only_off_the_loop_or_from_memory(
+    env: Any, stop_world: Any, monkeypatch: Any
+) -> None:
+    from kiro_crew.slack.code_channels import surface_store as ss
+
+    def on_the_loop(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a blocking SurfaceStore.get on the event loop")
+
+    real_get = ss.SurfaceStore.get
+
+    async def get_async(channel_id: str) -> Any:  # what the coroutine path uses
+        import asyncio
+
+        return await asyncio.to_thread(real_get, ss.store(), channel_id)
+
+    monkeypatch.setattr(ss, "get_async", get_async)
+    monkeypatch.setattr(ss.SurfaceStore, "get", on_the_loop)
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "stop:stopping"
+
+
+def test_an_unloaded_surface_store_answers_nothing_from_memory(tmp_path: Path) -> None:
+    fresh = SurfaceStore(tmp_path / "cold.json")
+    assert fresh.loaded_get(CH) is None  # never reads the disk to answer
+
+
+# ── Green-round review fixes ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_press_while_a_stop_is_already_in_flight_credits_nobody(
+    env: Any, stop_world: Any
+) -> None:
+    stop_world.slots["chat-w1"]._turn_generation = 7
+    stop_world.answers.append({"ok": True, "info": "already stopping", "already_stopping": True})
+    assert await worker_stop._handle(env.orch, _stop_payload()) == "stop:already"
+    row = _project(env.state).rows[0]
+    assert not row.stopped and row.stopped_by == ""
+    blocks = render.workers_view_blocks(
+        model.BoardSnapshot(rows=(row,)), _link, tabs=_TABS, now=_NOW
+    )
+    assert "Stopped by" not in json.dumps(blocks, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_pr_view_type_stops_the_rest_of_the_same_pass(env: Any) -> None:
+    binding = _bind(env)
+    env.api.responses["agents.conversations.setView"] = {
+        "ok": False,
+        "error": "invalid_view_type",
+    }
+    wanted = [
+        tabs.PrRef(42, PR_URL.format(n=42), "open"),
+        tabs.PrRef(12, PR_URL.format(n=12), "open"),
+    ]
+    assert await tabs.sync_pr_tabs(binding, wanted) == {}
+    assert len(_calls(env, "agents.conversations.setView")) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_removal_never_lets_a_third_pr_tab_open(env: Any) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    await tabs.sync_pr_tabs(
+        binding,
+        [
+            tabs.PrRef(100, PR_URL.format(n=100), "open"),
+            tabs.PrRef(90, PR_URL.format(n=90), "open"),
+        ],
+    )
+    env.api.responses["agents.conversations.removeView"] = {"ok": False, "error": "internal_error"}
+    held = await tabs.sync_pr_tabs(
+        binding,
+        [
+            tabs.PrRef(110, PR_URL.format(n=110), "open"),
+            tabs.PrRef(100, PR_URL.format(n=100), "open"),
+        ],
+    )
+    assert len(_calls(env, "agents.conversations.removeView")) == 1
+    assert len(_calls(env, "agents.conversations.setView")) == 2  # #110 waits for room
+    assert held == {100: "Vpr100", 90: "Vpr90"}
+
+
+def test_only_pr_digit_keys_are_reserved_for_pr_tabs() -> None:
+    assert views.reserved_key("pr-12")
+    assert not views.reserved_key("pr-summary")
+    assert not views.reserved_key("pr-")
+    assert not views.reserved_key("pr-²")
+
+
+@pytest.mark.asyncio
+async def test_the_agent_may_write_a_view_under_a_pr_word_key(env: Any) -> None:
+    _bind(env)
+    _set_views(env)
+    out = await tools.run_tool(
+        env.state,
+        SESSION,
+        tools.SET_VIEW,
+        {"type": "html", "view_key": "pr-summary", "content": "<html/>"},
+    )
+    assert out.ok, out.text
+    assert [c["view_key"] for c in _calls(env, "agents.conversations.setView")] == ["pr-summary"]
+    refused = await tools.run_tool(
+        env.state, SESSION, tools.SET_VIEW, {"type": "html", "view_key": "pr-7", "content": "x"}
+    )
+    assert not refused.ok and "'pr-<number>'" in refused.text
+
+
+# ── Fences asked again right before every removal ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_fence_landing_after_the_relist_removes_no_pr_tab(
+    env: Any, monkeypatch: Any
+) -> None:
+    binding = _bind(env)
+    _set_views(env)
+    both = [
+        tabs.PrRef(42, PR_URL.format(n=42), "open"),
+        tabs.PrRef(12, PR_URL.format(n=12), "open"),
+    ]
+    await tabs.sync_pr_tabs(binding, both)
+
+    async def relist(client: Any, channel: str, record: Any) -> Any:
+        surface.fence_archived(CH)  # archived while Slack's list was read
+        return record
+
+    monkeypatch.setattr(tabs, "_relist", relist)
+    await tabs.sync_pr_tabs(binding, [tabs.PrRef(42, PR_URL.format(n=42), "open")], settled={12})
+    assert _calls(env, "agents.conversations.removeView") == []
+    assert views.recorded(surface_store().get(CH), "pr-12") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_fence_landing_while_making_room_removes_nothing(env: Any) -> None:
+    _bind(env)
+    surface_store().update(CH, views=[_v("report", "html", "9")])
+    listed = [{"view_id": "Vreport"}] + [{"view_id": f"Vtheirs{n}"} for n in range(4)]
+    _set_views(env, listed, refuse="too_many_views")
+    real_list = env.api.responses["agents.conversations.listViews"]
+
+    def list_views(body: dict[str, Any]) -> dict[str, Any]:
+        surface.fence_archived(CH)  # archived between the refusal and the removal
+        return real_list(body)
+
+    env.api.responses["agents.conversations.listViews"] = list_views
+    snap = model.BoardSnapshot(rows=(_row(session_key="chat-w1"),))
+    assert await tabs.publish_workers(_bind(env), snap, link_for=_link) != "written"
+    assert _calls(env, "agents.conversations.removeView") == []
+    assert views.recorded(surface_store().get(CH), "report") is not None
+
+
+@pytest.mark.asyncio
+async def test_the_final_gate_resolves_no_config_and_composes_no_context(
+    env: Any, stop_world: Any, monkeypatch: Any
+) -> None:
+    import kiro_crew.platform as platform_pkg
+    from kiro_crew.platform import context as platform_context
+
+    real = source.read_board
+    reached: list[str] = []
+
+    def loader(name: str) -> Any:
+        def _reached(*_a: Any, **_k: Any) -> Any:
+            reached.append(name)
+            raise AssertionError(f"{name} reached on the way to the stop")
+
+        return _reached
+
+    async def read_board(state: Any, b: Binding) -> Any:
+        snapshot = await real(state, b)
+        # From here to the stop, nothing may resolve config or compose a context.
+        for mod in (worker_stop, actions):
+            monkeypatch.setattr(mod, "live_config", loader("live_config"))
+        monkeypatch.setattr(platform_context, "current_context", loader("current_context"))
+        monkeypatch.setattr(platform_pkg, "current_context", loader("current_context"))
+        return snapshot
+
+    monkeypatch.setattr(source, "read_board", read_board)
+    assert (await worker_stop._handle(env.orch, _stop_payload())).startswith("stop:")
+    assert reached == [] and len(stop_world.stopped) == 1

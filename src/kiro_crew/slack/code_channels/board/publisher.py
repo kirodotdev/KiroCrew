@@ -124,6 +124,7 @@ async def publish(
     link_for: Callable[[str], str],
     owner_id: str = "",
     tabs: render.Tabs | None = None,
+    urgent: bool = False,
 ) -> str:
     """Bring the channel's board up to *snapshot*; returns what it did (for tests/logs).
 
@@ -169,13 +170,20 @@ async def publish(
     last = _last_edit.get(channel)
     # A live board whose "Updated" stamp went stale is edited even unchanged.
     stale = bool(ts) and active and (last is None or now - last >= STALE_SECS)
-    if ts and (changed or stale) and last is not None and now - last < MIN_EDIT_GAP_SECS:
+    if (
+        ts
+        and (changed or stale)
+        and not urgent
+        and last is not None
+        and now - last < MIN_EDIT_GAP_SECS
+    ):
         # A busy board is edited at most once per gap: the latest state then.
         _retry_at[channel] = MIN_EDIT_GAP_SECS - (now - last)
         changed = stale = False
         done = "deferred"
     if changed or stale:
         text = render.fallback_text(snapshot)
+        dropped_tabs = False
         while True:
             # A new block_id on every edit: Slack requires it of a plan block.
             blocks = render.board_blocks(
@@ -198,11 +206,13 @@ async def publish(
                 code = _code(exc)
                 if look == "plan" and code in _PLAN_REFUSED and tabs is not None and tabs.any:
                     # The tab links first: the board itself must never go stale
-                    # for want of a deep link.
-                    _tabs_refused.add(channel)
+                    # for want of a deep link. Remembered only once the plan
+                    # without them lands, so a refusal of the plan block itself
+                    # is not blamed on the links.
+                    dropped_tabs = True
                     logger.warning(
-                        "code channel %s: Slack refused the board's tab links (%s); "
-                        "the board links the forge instead",
+                        "code channel %s: Slack refused the board with tab links (%s); "
+                        "sending it without them",
                         channel,
                         code,
                     )
@@ -226,6 +236,8 @@ async def publish(
                     ts, pinned = "", False
                     continue
                 return _failed(channel, "update" if ts else "post", exc)
+        if dropped_tabs and look == "plan":
+            _tabs_refused.add(channel)
         if not ts or done != "updated":
             if not ts:
                 return _failed(channel, "post", None)

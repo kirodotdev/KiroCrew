@@ -233,9 +233,16 @@ async def admit(
     return binding
 
 
-def _may_stop(orch: Any, binding: Binding, user: str) -> bool:
+_RESOLVE: Any = object()
+
+
+def _may_stop(orch: Any, binding: Binding, user: str, *, cfg: Any = _RESOLVE) -> bool:
     """The checks Slack's Stop runs for a code channel, asked first only to answer
-    a refused person privately: the stop itself checks them again."""
+    a refused person privately: the stop itself checks them again.
+
+    *cfg* is the live config the caller already resolved (the gateway's one
+    config object, updated in place), for a caller that must not resolve it here.
+    """
     from kiro_crew.slack.agent_sessions.session_events import _may_use_bot
     from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
     from kiro_crew.slack.handler import is_allowed_user
@@ -245,7 +252,8 @@ def _may_stop(orch: Any, binding: Binding, user: str) -> bool:
     if not _may_use_bot(user) or not is_allowed_user(user):
         return False
     origin = _origin_of(binding.channel_id, binding, None)
-    return channel_and_origin_permit(live_config(orch), binding.channel_id, origin)
+    live = live_config(orch) if cfg is _RESOLVE else cfg
+    return channel_and_origin_permit(live, binding.channel_id, origin)
 
 
 def _running(binding: Binding) -> bool:

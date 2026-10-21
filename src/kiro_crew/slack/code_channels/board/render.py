@@ -169,6 +169,9 @@ def _code_safe(text: str) -> str:
 def _mrkdwn(element: dict) -> str:
     """A rich-text element of :func:`_details` / :func:`_output` as mrkdwn."""
     text = str(element.get("text") or "")
+    if element.get("type") == "user":
+        user = str(element.get("user_id") or "")
+        return f"<@{user}>" if user.isalnum() else ""
     if element.get("type") == "link":
         return _link(str(element.get("url") or ""), text)
     style = element.get("style") or {}
@@ -297,9 +300,19 @@ def _rich(elements: list[dict]) -> dict:
     return {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": elements}]}
 
 
-def _details(row: model.WorkerRow, now: datetime) -> list[dict]:
+def _details(row: model.WorkerRow, now: datetime, elapsed: bool = True) -> list[dict]:
+    """The row's status words; *elapsed* off leaves the minute counts out (a digest)."""
+    if row.stopped:
+        # A Stop from the Workers tab, until the worker's next turn starts.
+        out: list[dict] = [
+            {"type": "text", "text": "Stopped by "},
+            {"type": "user", "user_id": row.stopped_by},
+        ]
+        if row.stopped_at:
+            out.append({"type": "text", "text": f" · {row.stopped_at}"})
+        return out
     if row.state == model.WAITING_ON_YOU:
-        out: list[dict] = [{"type": "text", "text": "Waiting on you:", "style": {"bold": True}}]
+        out = [{"type": "text", "text": "Waiting on you:", "style": {"bold": True}}]
         if row.waiting_on == "approval":
             asked = row.step
             for verb in _STEP_VERBS:
@@ -314,13 +327,13 @@ def _details(row: model.WorkerRow, now: datetime) -> list[dict]:
         return out
     if row.state == model.WORKING:
         out = _step_elements(row.step or model.STEP_THINKING)
-        elapsed = _elapsed(row.turn_started_at, now)
-        if elapsed:
-            out.append({"type": "text", "text": f" · {elapsed}"})
+        took = _elapsed(row.turn_started_at, now) if elapsed else ""
+        if took:
+            out.append({"type": "text", "text": f" · {took}"})
         return out
     if row.state == model.IDLE:
-        elapsed = _elapsed(row.report_stamp, now)
-        text = f"Idle · {elapsed}" if elapsed else "Idle"
+        idle_for = _elapsed(row.report_stamp, now) if elapsed else ""
+        text = f"Idle · {idle_for}" if idle_for else "Idle"
         note = row.step or row.summary
         return [{"type": "text", "text": f"{text} · {note}" if note else text}]
     label = model.row_label(row)
@@ -471,15 +484,17 @@ _CONFIRM_TITLE = 100
 _BUTTON_TEXT = 75
 
 
-def _status_elements(row: model.WorkerRow, now: datetime) -> list[dict]:
+def _status_elements(row: model.WorkerRow, now: datetime, elapsed: bool = True) -> list[dict]:
     """``Working · Running `pytest -q` · 4m`` / ``Waiting on you: approve `git push```."""
+    if row.stopped:
+        return _details(row, now, elapsed)
     if row.state == model.WORKING:
-        return [{"type": "text", "text": "Working · "}, *_details(row, now)]
+        return [{"type": "text", "text": "Working · "}, *_details(row, now, elapsed)]
     if row.state in {model.WAITING_ON_YOU, model.IDLE}:
-        return _details(row, now)
+        return _details(row, now, elapsed)
     word = {model.BLOCKED: "Stuck", model.LOST: "Lost"}.get(row.state)
     if word is None:
-        return _details(row, now)
+        return _details(row, now, elapsed)
     text = f"{word} · {row.summary}" if row.summary else word
     return [{"type": "text", "text": text}]
 
@@ -510,7 +525,7 @@ def _worker_actions(row: model.WorkerRow, link_for: LinkFor) -> dict | None:
                 "url": url,
             }
         )
-    if row.state == model.WORKING and row.session_key:
+    if row.state == model.WORKING and row.session_key and not row.stopped:
         # Outlined (no style): Stop is a rare, deliberate act, never the primary one.
         elements.append(
             {
@@ -542,11 +557,32 @@ def _worker_actions(row: model.WorkerRow, link_for: LinkFor) -> dict | None:
     return {"type": "actions", "block_id": f"worker-{row.item_id}", "elements": elements}
 
 
-def _settled_line(row: model.WorkerRow) -> str:
-    word = "Done" if row.state == model.DONE else (row.closed_as or "closed").capitalize()
-    line = f"{word} · *{_escape(row.title)}*"
-    pr = pr_words(row)
-    return f"{line} · {pr}" if pr else line
+def _settled_line(row: model.WorkerRow, tabs: Tabs | None) -> list[dict]:
+    """``Done: <title> · PR #N · CI x/y`` as rich text, the PR opening its tab.
+
+    A PR without a tab of its own (one that merged has none) links the forge. A
+    closed item reads ``Rejected: <title>`` (or ``Abandoned``).
+    """
+    if row.state == model.DONE:
+        head = "Done: "
+    else:
+        head = f"{(row.closed_as or 'closed').capitalize()}: "
+    out: list[dict] = [{"type": "text", "text": head}, {"type": "text", "text": row.title}]
+    if row.pr_number:
+        out.append({"type": "text", "text": " · "})
+        out.append(_output(row, tabs)[0])
+        counts = _CHECKS.fullmatch(row.pr_checks or "")
+        if counts is not None and int(counts.group(2)):
+            out.append({"type": "text", "text": f" · CI {counts.group(1)}/{counts.group(2)}"})
+    return out
+
+
+#: ``"<passed>/<total>/<running>"`` (``WorkerRow.pr_checks``).
+_CHECKS = re.compile(r"(\d+)/(\d+)/(\d+)")
+
+
+def _line_length(elements: list[dict]) -> int:
+    return sum(len(str(e.get("text") or "")) or 12 for e in elements)
 
 
 def workers_view_blocks(
@@ -556,6 +592,7 @@ def workers_view_blocks(
     tabs: Tabs | None = None,
     updated: str = "",
     now: datetime | None = None,
+    elapsed: bool = True,
 ) -> list[dict]:
     """The interactive Workers tab: the board's own rows, with Stop and Open in dashboard.
 
@@ -564,7 +601,8 @@ def workers_view_blocks(
     (state, the call in flight, elapsed); the PR -- linked to its own tab when
     the channel has one -- with its CI count; then the buttons. Stop shows only
     while the worker is working. Settled workers fold into one line each at the
-    bottom. *updated* (``HH:MM UTC``) is left out of the digest's render.
+    bottom. *updated* (``HH:MM UTC``) and, with *elapsed* off, the minute counts
+    are left out of the digest's render, so time passing alone changes nothing.
     """
     when = now or datetime.now(timezone.utc)
     header = f"Updated {updated}" if updated else "Workers"
@@ -576,7 +614,7 @@ def workers_view_blocks(
     settled = [r for r in snapshot.rows if r.settled]
     for row in open_rows[:WORKERS_TAB_ROWS]:
         lines: list[dict] = [{"type": "text", "text": row.title, "style": {"bold": True}}]
-        status = _status_elements(row, when)
+        status = _status_elements(row, when, elapsed)
         if status:
             lines += [{"type": "text", "text": "\n"}, *status]
         output = _output(row, tabs)
@@ -598,16 +636,24 @@ def workers_view_blocks(
             }
         )
     if settled:
-        kept: list[str] = []
+        done_lines: list[dict] = []
         used = 0
+        kept = 0
         for row in reversed(settled):  # the most recent first
-            line = _settled_line(row)
-            if used + len(line) + 1 > _DONE_CHARS:
+            line = _settled_line(row, tabs)
+            size = _line_length(line) + 1
+            if used + size > _DONE_CHARS:
                 break
-            kept.append(line)
-            used += len(line) + 1
-        rest = len(settled) - len(kept)
-        text = "\n".join(kept + ([f"+{rest} more"] if rest else []))
+            if done_lines:
+                done_lines.append({"type": "text", "text": "\n"})
+            done_lines += line
+            used += size
+            kept += 1
+        rest = len(settled) - kept
+        if rest:
+            done_lines.append({"type": "text", "text": f"\n+{rest} more"})
         blocks.append({"type": "divider"})
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": text}]})
+        done_block = _rich(done_lines)
+        done_block["block_id"] = "workers-settled"
+        blocks.append(done_block)
     return blocks

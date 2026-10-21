@@ -2281,19 +2281,26 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   its own snapshot, before the board. PR tabs: the channel's own PR and the board's
   worker PRs, open or draft and forge-confirmed, newest two by number
   (`tabs.wanted_prs`); upserted by `pr-<n>` (name `PR #<n>`, `pr_url`), removed by
-  recorded view id when no longer wanted; nothing is sent while the record already
-  holds the wanted set. Recorded tabs are re-checked against `listViews` at most every
+  recorded view id only on evidence -- the PR seen merged/closed, or two newer open
+  PRs seen -- so a pass whose board or forge read failed removes nothing; nothing is
+  sent while the record already holds the wanted set. Recorded tabs are re-checked against `listViews` at most every
   15 minutes so a tab someone removed is reopened. The Workers tab: a `block_kit` view
   (`render.workers_view_blocks`) from the board's own snapshot (so its text is the
   board's redacted, de-pinged, host-scrubbed set), per worker the title, a status line
   (state, the call in flight, elapsed), the PR linked to its tab with the CI count, and
   Open in dashboard (a url button, no credential) plus Stop (outlined, confirm dialog)
-  while working; settled workers fold into one line each. Written only when its blocks
-  (minus the "Updated" stamp) changed, at most every 15 s, a failure retried with
-  backoff through the board's own re-arm. A refusal is logged once per channel/tab/code
-  and never breaks the channel: `invalid_view_type` / `invalid_pr_url` are not asked
-  again in the process, `too_many_views` with nothing of ours to remove after 10
-  minutes. Archived, stopped or policy-denied channels get no tab writes.
+  while working; settled workers fold into one line each; a board with no rows leaves
+  one empty state. Written only when its blocks (minus the "Updated" stamp and the
+  elapsed counts, which refresh every 5 minutes) changed, at most every 15 s; a failed
+  write holds every send for its backoff (5 s x3, capped at 5 min), re-armed through
+  the board's own refresh. Every tab write re-checks the archive/Stop/`channels`
+  fences immediately before it is sent, the retry after making room included, and so
+  does every removal the tab paths make (a stale PR tab, or a view removed to make
+  room). A refusal is logged once per channel/tab/code
+  and never breaks the channel: `invalid_view_type` is not asked again in the process
+  for that channel and view type, `invalid_pr_url` for that PR, `too_many_views` with
+  nothing of ours to remove after 10 minutes. A diff publish that displaced a PR tab
+  runs one more refresh so the board drops the link.
 - **Tab deep links.** A `rich_text` `channel` element with `tab_id` = the `setView`
   `view_id` (the Code tab's static `code`), only ever from ids recorded as ours and
   shaped like Slack ids. The board (plan look) gets a `Tabs: Workers · Code` line and
@@ -2307,10 +2314,30 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   view id must equal the channel's recorded Workers view; the presser must pass
   `actions._may_stop` (the context-bar Stop's rule); the button value is an item id
   resolved on THIS channel's board via `board.source.read_board` (the scope-checked
-  conductor ledger read) -- a session key in the payload is never read and the
-  conductor itself is never a target. Then `stop_slot_turn(..., escalate=False)` on
-  that worker's slot only; a repeat within 5 s is answered, not re-sent. Audited as
+  conductor ledger read) -- a session key in the payload is never read, and the
+  container's own `view_id` is required (no fallback). Because that read awaits, the
+  `channels` policy (an off-loop read) is asked again as the last await, and then a
+  SYNCHRONOUS final gate runs with nothing between it and the stop (the rule
+  `session_control.stop_target` follows): code channels are still on and the click's
+  workspace still admitted (`actions.admit`'s in-memory gates), the channel's in-memory binding is still the
+  admitted one (same session and anchor, not archived), the view is still its recorded
+  Workers tab, `_may_stop` passes again, the slot is not the conductor's nor (per the
+  store's worker lineage) another conductor's worker, and the session the cancel will
+  address (`turn_stop._cancel_target`, the running turn's own identity) resolves back to
+  that worker's slot. Then `stop_slot_turn(..., escalate=False, cancel_key=<that key>)`
+  on that worker's slot only; a repeat within 5 s is answered, not re-sent; a declined
+  stop (compacting, no active turn) is said as such and may be pressed again. Every
+  decision (repeat and internal error included) is audited as
   `slack.code_channel.stop`; refusals are ephemeral. `kc_cc_worker_open` is a no-op.
+  A stop carried out is noted in `board/stops.py` (the clicker's Slack user id, the
+  `HH:MM` UTC, and the worker slot's `_turn_generation`); the board's one read path
+  (`source.read_board` -> `project(stopped_of=...)`) puts it on the row as
+  `stopped_by` / `stopped_at`, so the board (plan task details, and the mrkdwn rows)
+  and the Workers tab both read "Stopped by @user · HH:MM" with no Stop button, and a
+  new turn generation (the worker's next turn) clears it. The refresh the stop
+  schedules skips the board's and the Workers tab's edit gaps once
+  (`stops.take_urgent`), so it shows within seconds. Done workers fold into plain
+  `Done: <title> · PR #N · CI x/y` lines, the PR linking its tab.
 - **Resource and live summary.** A channel PR sets `agent_resource`
   (`pull_request`, `github`, `<title> (#N[, merged|closed|draft])`, redacted, within
   Slack's limits), resent only when it changes. The work board message is recorded as

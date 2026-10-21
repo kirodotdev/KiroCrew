@@ -108,7 +108,7 @@ def _gather_facts_sync(binding: Binding) -> Facts:
         pr_ci=record.pr_ci,
         worktree=record.worktree,
         code_tab=bool(record.view_id and record.diff_hash),
-        pr_tabs=_pr_tabs(binding.channel_id),
+        pr_tabs=_pr_tabs(binding.channel_id, _open_prs(binding, record)),
     )
     tree = record.worktree
     if not tree:
@@ -139,8 +139,28 @@ def _gather_facts_sync(binding: Binding) -> Facts:
     )
 
 
-def _pr_tabs(channel_id: str) -> tuple[tuple[int, str], ...]:
-    """The channel's pull-request tabs this gateway opened (blocking store read)."""
+def _open_prs(binding: Binding, record: Any) -> set[int]:
+    """The channel's PRs still open: its own (the workspace record's) and its workers'
+    (the board the workspace last published). A merged PR's tab is about to go, so
+    the wrap-up -- which stays in the channel -- does not link it."""
+    numbers = (
+        {record.pr_number} if record.pr_number and record.pr_state in ("open", "draft") else set()
+    )
+    try:
+        from kiro_crew.slack.code_channels.workspace import core as workspace
+
+        service = workspace.service()
+        board = service.board(binding.team_id, binding.channel_id) if service else None
+    except Exception:
+        board = None
+    for row in getattr(board, "rows", ()) or ():
+        if row.pr_number and row.pr_state in ("open", "draft"):
+            numbers.add(int(row.pr_number))
+    return numbers
+
+
+def _pr_tabs(channel_id: str, open_prs: set[int]) -> tuple[tuple[int, str], ...]:
+    """The channel's pull-request tabs this gateway opened, for PRs still open (blocking)."""
     from kiro_crew.slack.code_channels import views
     from kiro_crew.slack.code_channels.surface_store import store as surface_store
 
@@ -148,7 +168,11 @@ def _pr_tabs(channel_id: str) -> tuple[tuple[int, str], ...]:
         record = surface_store().get(channel_id)
     except Exception:
         return ()
-    held = [v for v in (record.views if record else ()) if views.is_pr_tab(v) and v.get("view_id")]
+    held = [
+        v
+        for v in (record.views if record else ())
+        if views.is_pr_tab(v) and v.get("view_id") and views.pr_number(v) in open_prs
+    ]
     return tuple(sorted(((views.pr_number(v), str(v["view_id"])) for v in held), reverse=True))
 
 

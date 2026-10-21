@@ -309,6 +309,8 @@ exactly as with the switch off, and the page says why under the switch.
   is doing right now, its pull request and tests, **Open in dashboard** and, while it
   works, **Stop** (it stops that worker's current turn only, after you confirm; the
   conductor keeps going). Stop answers the same people as the context bar's Stop.
+  Within seconds the worker's row on the board and the Workers tab reads "Stopped by
+  @you · 14:05", until that worker starts its next turn.
   The board links the Workers and Code tabs and each pull request to its tab, and the
   wrap-up links the Code and pull request tabs. The context bar's links still open
   GitHub: Slack's context bar cannot link a tab. When the channel already has Slack's

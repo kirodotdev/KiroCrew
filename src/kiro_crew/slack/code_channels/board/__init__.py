@@ -291,9 +291,10 @@ def reset_for_tests() -> None:
         handle.cancel()
     _timers.clear()
     from kiro_crew.slack.code_channels import tabs
-    from kiro_crew.slack.code_channels.board import publisher
+    from kiro_crew.slack.code_channels.board import publisher, stops
 
     tabs.reset_for_tests()
+    stops.reset_for_tests()
     for table in (
         publisher._last_edit,
         publisher._failures,
@@ -412,10 +413,17 @@ async def publish(binding: Any, snapshot: Any) -> str:
     cancelled = False
     try:
         code = await _code_tab_shown(binding)
-        await tabs.publish_workers(binding, snapshot, link_for=link_for, code=code)
+        from kiro_crew.slack.code_channels.board import stops
+
+        # A Stop from the Workers tab shows within seconds: both edit gaps are
+        # skipped once for the publish that first carries it.
+        urgent = stops.take_urgent(
+            r.session_key for r in getattr(snapshot, "rows", ()) if getattr(r, "stopped", False)
+        )
+        await tabs.publish_workers(binding, snapshot, link_for=link_for, code=code, urgent=urgent)
         linked = tabs.tabs_for(await get_async(channel), channel, code=code)
         return await publisher.publish(
-            binding, snapshot, link_for=link_for, owner_id=owner, tabs=linked
+            binding, snapshot, link_for=link_for, owner_id=owner, tabs=linked, urgent=urgent
         )
     except asyncio.CancelledError:
         cancelled = True  # shutting down: nothing is re-armed
