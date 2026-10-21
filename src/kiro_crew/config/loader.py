@@ -200,6 +200,7 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _build_wecom_config,
     _build_weixin_config,
     _build_whatsapp_config,
+    _build_work_ledger_config,
     coerce_runtime_ceiling,
 )
 from kiro_crew.config.sections import (  # noqa: F401

@@ -31,7 +31,6 @@ from kiro_crew.work_ledger_records import (
     ITEM_STATES,
     LEGACY_GOAL_BASE,
     MAX_DECISION_CHARS,
-    MAX_DEPTH,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
     MAX_GOAL_ITEM_CAP,
@@ -57,6 +56,7 @@ from kiro_crew.work_ledger_rules import (
     _require_count,
     _require_pr,
     _require_text,
+    depth_cap_hint,
     is_acceptance_concrete,
     may_conduct,
 )
@@ -218,7 +218,7 @@ def ensure_conductor(
     checked_depth = _require_count(depth, "depth")
     if not may_conduct(checked_depth):
         raise WorkLedgerError(
-            f"depth {checked_depth} may not conduct; the cap is {MAX_DEPTH} levels",
+            f"depth {checked_depth} may not conduct; {depth_cap_hint()}",
             code=CODE_DEPTH_EXCEEDED,
             field="depth",
         )
@@ -496,7 +496,7 @@ def _create_item(
     checked_round = None if round_number is None else _require_count(round_number, "round")
     if not may_conduct(record.depth):
         raise WorkLedgerError(
-            f"conductor is at depth {record.depth} and the cap is {MAX_DEPTH}; it may "
+            f"conductor is at depth {record.depth} and {depth_cap_hint()}; it may "
             "not dispatch further work",
             code=CODE_DEPTH_EXCEEDED,
             field="depth",

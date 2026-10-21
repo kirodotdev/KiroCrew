@@ -1227,7 +1227,7 @@ recording each dispatched item while keeping their own skills' stores as detail.
 
 **Q4. A `question` report costs a human click.** Answering means `session_send`, which prompts for approval by design. So a conductor cannot answer a worker's question unattended, which caps how autonomous a `question`-heavy goal can be. Either that is the correct safety boundary, or `question` needs a narrow structured answer channel — which would be this RFC's shape inverted, and should be argued separately.
 
-**Q5. Is `depth` 2 the right cap?** Two levels is a guess informed by session multiplication and summary fidelity, not by measurement. A conductor of conductors has not been run, so the number should be re-examined once one has.
+**Q5. Is `depth` 2 the right cap?** Two levels is a guess informed by session multiplication and summary fidelity, not by measurement. A conductor of conductors has not been run, so the number should be re-examined once one has. The cap is now operator-configurable (`work_ledger.max_depth`, 2 to 10, default 2). The default stays 2 until a run with a conductor of conductors shows that three levels keep summaries trustworthy at an acceptable session count.
 
 **Q6 — closed in Phase 1. Consecutive `progress` reports coalesce.** `_coalesce_progress` in `work_ledger_store.py` keeps only the newest of a run of `progress` events on an item, following the rule Issue Radar applies to consecutive sweeps. A rate limit was the alternative and is not needed: coalescing bounds the history cost without refusing a write, so a chatty worker loses nothing it said that still mattered. The rule deliberately does not extend to `message` — see §Security considerations.
 

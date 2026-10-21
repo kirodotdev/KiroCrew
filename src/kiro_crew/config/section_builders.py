@@ -21,6 +21,8 @@ schema/validation.
 
 from __future__ import annotations
 
+import logging
+
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
 # values in business logic); its defaults are the ComputerUseConfig fields'.
@@ -42,6 +44,7 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    field_default,
 )
 from kiro_crew.config.integration_sections import (
     ComputerUseConfig,
@@ -103,6 +106,7 @@ from kiro_crew.config.service_sections import (
     MonitoringConfig,
     TaskRunnerConfig,
     WatchdogConfig,
+    WorkLedgerConfig,
 )
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
@@ -122,6 +126,9 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+
+logger = logging.getLogger("kiro_crew.config.loader")
 
 # ---------------------------------------------------------------------------
 # Service sections (DTOs in ``config.service_sections``).
@@ -184,6 +191,26 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
+
+
+def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
+    default = field_default(WorkLedgerConfig, "max_depth")
+    if "max_depth" not in work_ledger_data:
+        return WorkLedgerConfig(max_depth=default)
+    raw = work_ledger_data["max_depth"]
+    depth = _safe_int(raw, -1)  # -1 is below the floor, so an unreadable value is refused
+    # Refused, not clamped: a clamped cap would read as configured while allowing a
+    # different number of levels. The default applies and the log says why.
+    if isinstance(raw, bool) or not (WORK_MAX_DEPTH_MIN <= depth <= WORK_MAX_DEPTH_MAX):
+        logger.warning(
+            "Config: work_ledger.max_depth %r is not an integer from %d to %d; using %d",
+            raw,
+            WORK_MAX_DEPTH_MIN,
+            WORK_MAX_DEPTH_MAX,
+            default,
+        )
+        return WorkLedgerConfig(max_depth=default)
+    return WorkLedgerConfig(max_depth=depth)
 
 
 # ---------------------------------------------------------------------------

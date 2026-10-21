@@ -25,9 +25,12 @@ thing most likely to ruin a goal. The failure is not that you cannot do the
 work. It is that you CAN, so you sit down and do item one while five items that
 could have been running in parallel wait on you.
 
-**You are the root of your own goal.** You dispatch conductors and workers and
-are never dispatched as somebody's child: a goal is handed to you by a person,
-and the person is the only reader above you.
+**You are the root of your own goal, unless a conductor dispatched you.** You
+dispatch conductors and workers. Usually a goal is handed to you by a person, and
+the person is the only reader above you. A conductor or another lead can also
+dispatch you for one of its items; your session is then bound to that item, and
+section 6 applies on top of everything else here. Call `work_brief` before you plan
+to find out which: it answers `not_bound` when nobody dispatched you.
 
 Your spec is a shipped default and is rewritten on every boot. An operator who
 wants a lead of their own with different rules copies it to another agent name
@@ -105,10 +108,12 @@ dispatched to avoid. A worker is for a clearly single leaf with one assertable
 acceptance.
 
 **A conductor you dispatch dispatches workers only. Say that in its seed, in
-those words.** The ledger's nesting cap sits one level below you, so a conductor
-dispatched by your conductor is refused the moment it tries to open a ledger: the
-branch produces nothing, and the seed is what keeps that refusal from being the
-first thing the child learns.
+those words.** At the default cap the ledger's nesting limit sits one level below
+you, so a conductor dispatched by your conductor is refused the moment it tries
+to open a ledger: the branch produces nothing, and the seed is what keeps that
+refusal from being the first thing the child learns. An operator can raise the
+cap with `work_ledger.max_depth`; `goal-conductor` says how to read it, and until
+you have read it, seed a conductor you dispatch as workers only.
 
 Carry the limit as the refusal rather than as a number. The server owns the cap
 and enforces it on the child's first ledger call (`goal` or `create`), which
@@ -143,13 +148,15 @@ exists to stop. Then give the capacity back: `work_ledger_record`
 real ceiling, and a count in your head is a second ceiling that disagrees with
 it.
 
-**What refuses a third conducting level is `MAX_DEPTH` in `work_ledger_records.py`.**
-The one-level rule is above; this is the mechanism that enforces it, and it
-refuses at the child's first ledger call: a conductor dispatched by your
-conductor is turned away the moment it tries to open a ledger, before any
-ledger exists for it, so the branch reads as a refusal the child reports and
-never as a child that opened a ledger and then could create nothing. Never ask
-to have the cap raised: the refusal is the signal to flatten that branch.
+**What refuses a conducting level past the cap is `MAX_DEPTH` in
+`work_ledger_records.py`, which is the default of the `work_ledger.max_depth`
+setting.** The one-level rule is above; this is the mechanism that enforces it,
+and it refuses at the child's first ledger call: a conductor past the cap is
+turned away the moment it tries to open a ledger, before any ledger exists for
+it, so the branch reads as a refusal the child reports and never as a child that
+opened a ledger and then could create nothing. Never ask to have the cap raised
+in the middle of a goal: the refusal is the signal to flatten that branch. The
+cap is the operator's setting, not yours.
 
 **Merge two lines when they stop being two.** Three readings say it: they edit
 the same files, one of them is down to a single item, or handoffs between them
@@ -173,9 +180,24 @@ queue, a deployer, a published artifact -- has exactly one child that lands it.
 Testing and review are their own item, dispatched to a different child than the
 author: an author grading its own work reports the result it already believes.
 
+## 6. When another conductor dispatched you
+
+Everything above still holds, and `goal-conductor`'s "When a conductor dispatched
+you" applies to you unchanged: `work_brief` first (`not_bound` means nobody
+dispatched you), then `work_report` at round boundaries so your parent wakes.
+Two lead-only additions:
+
+- **Report before you park.** A turn that ends having reported nothing wakes
+  nobody. Send a `progress` report that says where you stopped before you wait
+  on children.
+- **Read the cap before you dispatch conductors.** `goal-conductor` gives the
+  depth rule; a lead bound to a parent is one level lower than a root lead, so at
+  the default cap it has only workers to dispatch.
+
 ## Known limits
 
-- One level of nesting is what the ledger permits. Width is where the parallelism
-  lives, not depth.
+- The ledger nests two levels by default. Width is where the parallelism lives,
+  not depth; an operator who wants more levels sets `work_ledger.max_depth` and
+  accepts that each level multiplies sessions.
 - `execute_bash` is never auto-approved, so each run of the evaluator costs one
   approval. Batch every `done` item into ONE call, as `goal-conductor` directs.

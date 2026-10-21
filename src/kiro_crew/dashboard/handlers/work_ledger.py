@@ -78,7 +78,7 @@ from kiro_crew.validation import (
     validate_tool_args,
 )
 from kiro_crew.work_ledger import WorkLedgerError
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS
+from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_MAX_DEPTH_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -1497,10 +1497,13 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     # whether that line has gone past its cap, both read off the same header.
     # Advisory: the compact read carries them so a patrol that reads only the
     # status columns still sees a goal spending past what the user expected.
+    # ``max_depth`` is the conducting depth cap in force right now (never stored),
+    # so a conductor can see how many levels may still dispatch below its own.
     conductor = dict(
         record.to_dict(),
         goal_items_used=record.goal_items_used,
         cap_exceeded=record.cap_exceeded,
+        max_depth=work_ledger.max_depth(),
     )
     payload: dict[str, Any] = {"conductor": conductor, "items": rows}
     if compact:
@@ -1809,7 +1812,7 @@ async def _record_conductor_write(
         generation=_WIDEST_HEX_ID,
         goal=cleaned.get("goal"),
         round=_WIDEST_COUNTER,
-        depth=work_ledger.MAX_DEPTH,
+        depth=WORK_MAX_DEPTH_MAX,
         parent_item=_WIDEST_ITEM_ID,
         title=cleaned.get("title"),
         acceptance=cleaned.get("acceptance"),
@@ -1842,7 +1845,7 @@ async def _record_conductor_write(
             item_id=cleaned.get("item_id") or _WIDEST_ITEM_ID,
             generation=_WIDEST_HEX_ID,
             round=_WIDEST_COUNTER,
-            depth=work_ledger.MAX_DEPTH,
+            depth=WORK_MAX_DEPTH_MAX,
             parent_item=_WIDEST_ITEM_ID,
             fails=_WIDEST_COUNTER,
             event=_WIDEST_EVENT_TEXT,
@@ -2291,11 +2294,19 @@ async def _bootstrap(key: str) -> None | web.Response:
 
     A session that is ITSELF bound to an item is a second-level conductor, so its
     depth is one past its parent's and its ``parent_item`` is the item it was
-    dispatched for. :func:`work_ledger.child_depth` refuses past the cap, which
+    dispatched for. An existing ledger is returned untouched. For a new one,
+    :func:`work_ledger.child_depth` refuses past the cap, which
     is how a grandchild is stopped from conducting — the refusal surfaces as
     ``depth_exceeded`` (409) at the moment the child tries to open a ledger,
     rather than later when it tries to create an item.
     """
+    # A ledger that already exists keeps working whatever the cap has become since it
+    # opened: lowering ``work_ledger.max_depth`` refuses NEW ledgers and new items past
+    # the cap (``child_depth`` below, ``create`` in the store), never a ``goal`` update
+    # of a ledger that is already open. An unreadable header reads as absent here, so it
+    # falls through to the normal path and its strict re-read.
+    if await asyncio.to_thread(work_ledger.read_conductor, key) is not None:
+        return None
     depth = 0
     parent_item: str | None = None
     binding = await asyncio.to_thread(work_ledger.read_binding, key)

@@ -49,7 +49,7 @@ _BASE_IMPORTS = frozenset("""
     HeartbeatConfig InstancesConfig Iterable KnowledgeConfig MANAGED_STUB_FOLLOWERS
     MAX_RUNTIME_CEILING_SECS Mapping McpConfig McpGatewayConfig MemoryConfig MemoryStoreConfig
     MessagingConfig MonitoringConfig Path PublishConfig SECRET_URI_PREFIX SessionSummaryConfig
-    SkillsConfig TaskRunnerConfig TunnelConfig TypeVar WatchdogConfig _COLOR_HEX_RE
+    SkillsConfig TaskRunnerConfig TunnelConfig TypeVar WatchdogConfig WorkLedgerConfig _COLOR_HEX_RE
     _CONNECT_TIMEOUT_CEILING _CU_DEFAULT_ATTACH_SCREENSHOT _CU_DEFAULT_MAX_TREE_DEPTH
     _CU_DEFAULT_MAX_TREE_NODES _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY _CU_DEFAULT_SCREENSHOT_MAX_PX
     _CU_DEFAULT_TEXT_LIMIT _DEFAULT_BACKOFF_MAX _DEFAULT_MAX_RECOVERY _DEFAULT_PROBE_FAILS

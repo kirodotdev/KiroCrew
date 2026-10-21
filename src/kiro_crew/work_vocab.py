@@ -74,6 +74,16 @@ WORK_CLOSED_WINDOW: int = 32
 #: any unknown id. A baseline-born id goes only once the set holds nothing else, since a
 #: late baseline for one would materialise the item again.
 WORK_TOMBSTONE_LIMIT: int = 4096
+
+#: The conducting depth cap's default and bounds, and the config key it is set by. Here
+#: because the store (``work_ledger_records``) and the config section
+#: (``config.service_sections``, ``config.section_builders``) both need them, and the
+#: config package may not import the store. The meaning of the cap is documented on
+#: ``work_ledger_records.MAX_DEPTH``.
+WORK_MAX_DEPTH_DEFAULT: int = 2
+WORK_MAX_DEPTH_MIN: int = 2
+WORK_MAX_DEPTH_MAX: int = 10
+WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
 #: Fields a conductor action may set on an item. What the write route logs from
 #: the committed item is what the fold applies to the rebuilt one; the two read
 #: this one table so they cannot drift apart. A worker's fields are fixed.

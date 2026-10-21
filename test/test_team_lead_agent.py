@@ -122,6 +122,24 @@ class TestTheInstallerWritesADefaultAgent:
         assert sorted(p.name for p in tmp_path.iterdir()) == [TEAM_LEAD_AGENT_FILENAME]
 
 
+class TestTheLeadReportsToItsParent:
+    """A lead dispatched under another conductor is bound to a parent item, and a
+    report is the only thing that wakes that parent."""
+
+    def test_the_charter_tells_a_bound_lead_to_work_report(self):
+        prompt = agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert "work_brief" in prompt
+        assert "work_report" in prompt
+        assert "unless a conductor" in prompt
+
+    def test_the_spec_can_reach_both_worker_verbs(self, installed):
+        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` is
+        also auto-approved, ``work_report`` prompts like a nested conductor's."""
+        assert _reachable(installed, "kirocrew-work", "work_report")
+        assert _reachable(installed, "kirocrew-work", "work_brief")
+        assert "@kirocrew-work/work_brief" in installed["allowedTools"]
+
+
 class TestTheLeadCanDispatch:
     """The whole point of a team lead. ``build_agent_config`` skips every ``opt_in``
     server, so these tests fail on a spec that only names the servers, or that grants
@@ -254,6 +272,19 @@ class TestTheSkillCarriesTheTeamProcedure:
     def test_it_names_the_mechanisms_that_decide(self, text):
         for mechanism in ("resource_status", "MAX_DEPTH", "MAX_SLOTS_PER_CREATOR"):
             assert mechanism in text, mechanism
+
+    def test_a_lead_dispatched_by_a_conductor_is_told_to_report_up(self, text):
+        """A lead bound to a parent item reports to it like a worker; the skill must say
+        so, name the verbs, and stop claiming the lead is always the root."""
+        assert "## 6. When another conductor dispatched you" in text
+        section = text.split("## 6. When another conductor dispatched you", 1)[1]
+        for needle in ("work_brief", "work_report", "not_bound", "goal-conductor", "cap"):
+            assert needle in section, needle
+        assert "never dispatched as somebody's child" not in text
+        assert "unless a conductor dispatched you" in text
+
+    def test_the_depth_rule_names_the_setting_instead_of_a_fixed_number(self, text):
+        assert "work_ledger.max_depth" in text
 
     def test_it_no_longer_calls_dispatch_a_follow_up(self, text):
         assert "planned follow-up" not in text.lower()

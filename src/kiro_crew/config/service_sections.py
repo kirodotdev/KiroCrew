@@ -13,6 +13,11 @@ from dataclasses import dataclass, field
 
 from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
+from kiro_crew.work_vocab import (
+    WORK_MAX_DEPTH_DEFAULT,
+    WORK_MAX_DEPTH_MAX,
+    WORK_MAX_DEPTH_MIN,
+)
 
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: host memory over the per-agent cost (compute_memory_sized_parallel_cap)
@@ -325,5 +330,26 @@ class WatchdogConfig:
             "Wellness sample interval (s)",
             "Minimum spacing between CPU/IO counter samples used for movement "
             "deltas in the liveness oracle.",
+        ),
+    )
+
+
+@dataclass
+class WorkLedgerConfig:
+    """Work-ledger nesting (``work_ledger_records.MAX_DEPTH``, read through ``may_conduct``)."""
+
+    max_depth: int = field(
+        default=WORK_MAX_DEPTH_DEFAULT,
+        metadata=_meta(
+            "Max conducting depth",
+            "How many levels of the work ledger may conduct: depth 0 is the root, so 2 "
+            "(the default) lets a root dispatch one level of conductors whose own items "
+            "are workers, and 3 lets those conductors dispatch conductors of their own. "
+            f"Accepted range {WORK_MAX_DEPTH_MIN}-{WORK_MAX_DEPTH_MAX}; a value outside it is "
+            "refused at load with a warning and the default applies, it is never "
+            "clamped. Each extra level multiplies sessions (three levels of three items "
+            "is 27), so raise it only where concurrency is already capped per level. "
+            "Lowering it does not touch ledgers already open: new ledgers and new items "
+            "at the levels it removes are refused.",
         ),
     )

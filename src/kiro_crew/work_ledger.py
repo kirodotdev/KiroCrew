@@ -1087,10 +1087,12 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _require_text,
     _worker_owns_next_move,
     child_depth,
+    depth_cap_hint,
     is_acceptance_concrete,
     is_orphaned,
     is_pending_overdue,
     is_stale,
+    max_depth,
     may_conduct,
     parse_stamp,
 )
@@ -1191,6 +1193,10 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
     from kiro_crew.work_vocab import (  # noqa: F401
         WORK_BLOCKED_REASONS,
         WORK_ITEM_STATES,
+        WORK_MAX_DEPTH_DEFAULT,
+        WORK_MAX_DEPTH_MAX,
+        WORK_MAX_DEPTH_MIN,
+        WORK_MAX_DEPTH_SETTING,
         WORK_REASON_STATUSES,
         WORK_STORED_ITEM_LIMIT,
         WORK_VERDICTS,

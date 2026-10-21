@@ -232,8 +232,10 @@ cycle; an unbound running worker is neither visible nor recoverable.
 | `select_crew` names a specialist crew that fits | that crew |
 
 `depth` is computed when a child first opens its ledger (its first `goal` or
-`create`) and capped at 2, so you may dispatch a conductor and its own
-workers may not conduct. A `depth_exceeded` error means the item has to be
+`create`) and capped at 2 by default (the operator's `work_ledger.max_depth`
+setting raises it; `work_ledger_read` reports the value in force as `max_depth`),
+so at the default you may dispatch a conductor and its own workers may not
+conduct. A `depth_exceeded` error means the item has to be
 flattened into leaves, not retried.
 
 A specialist crew that does not mount `@kirocrew-work` cannot report to the
@@ -595,8 +597,10 @@ So the worker contract applies to you on top of everything in this skill:
   parent's record across a dispatch relationship, so it prompts. Reporting at
   round boundaries keeps that to a handful of approvals per goal.
 
-Depth is capped at 2, so your own children may be workers only — a
-`depth_exceeded` on a child's first `goal` or `create` means flatten, not retry.
+Depth is capped at 2 by default (`work_ledger.max_depth`), so your own children
+may be workers only unless `work_ledger_read` shows a larger `max_depth` than
+your `depth` plus one — a `depth_exceeded` on a child's first `goal` or `create`
+means flatten, not retry.
 
 ## Stop conditions
 

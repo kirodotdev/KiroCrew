@@ -5028,6 +5028,36 @@
       "defaultValue": 3.0
     },
     {
+      "path": "work_ledger",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Work ledger",
+      "help": "Work-ledger nesting: how many levels may conduct.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "max_depth": 2
+      }
+    },
+    {
+      "path": "work_ledger.max_depth",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max conducting depth",
+      "help": "How many levels of the work ledger may conduct: depth 0 is the root, so 2 (the default) lets a root dispatch one level of conductors whose own items are workers, and 3 lets those conductors dispatch conductors of their own. Accepted range 2-10; a value outside it is refused at load with a warning and the default applies, it is never clamped. Each extra level multiplies sessions (three levels of three items is 27), so raise it only where concurrency is already capped per level. Lowering it does not touch ledgers already open: new ledgers and new items at the levels it removes are refused.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 2
+    },
+    {
       "path": "resource_limits",
       "kind": "core",
       "type": "object",
