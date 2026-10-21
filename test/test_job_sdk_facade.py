@@ -35,7 +35,11 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_job_sdk_facade")
 SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
 
 FACADE = "kiro_crew.apps.job_sdk"
-OWNERS = ("kiro_crew.apps.job_sdk_records", "kiro_crew.apps.job_sdk_returns")
+OWNERS = (
+    "kiro_crew.apps.job_sdk_records",
+    "kiro_crew.apps.job_sdk_retention",
+    "kiro_crew.apps.job_sdk_returns",
+)
 APPS_DIR = Path(job_sdk.__file__).resolve().parent
 _THIS_FILE = Path(__file__).resolve()
 #: The ``from __future__ import annotations`` feature, as a module binds it.

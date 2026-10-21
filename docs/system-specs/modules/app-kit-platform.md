@@ -4905,10 +4905,11 @@ This section records which module owns which part, so a change lands in its owne
 | `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
 | `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
 | `job_sdk_returns.py` | What a runner hands back: `_undriven_result`, `_stop_returned_work`, `_close_quietly`, and the registration-time `_lazy_call_shape` |
+| `job_sdk_retention.py` | Opt-in run-record retention (§26.1): the per-SDK completion-order counter (`_SeqCounter`) and its bounds, the `JobLive`/`JobOnEvict` callback types, and the `JobSDK` members `ensure_seq_seeded`, `stamp_completion_seq`, `is_closed` and `sweep_retention` |
 
 Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`;
-`manifest_containment`, `manifest_contributes`, `job_sdk_records` and `job_sdk_returns`
-import no owner, and no owner imports its facade, even for type checking. Each facade
+`manifest_containment`, `manifest_contributes`, `job_sdk_records`, `job_sdk_returns` and
+`job_sdk_retention` import no owner, and no owner imports its facade, even for type checking. Each facade
 imports every name its owners define
 at its own import, private names included, so every `from kiro_crew.apps.manifest
 import ...` and every `kiro_crew.apps.job_sdk.<name>` read keeps one path and the same
@@ -4939,7 +4940,70 @@ fails. `test_setup_hooks_contract.py` excludes `manifest_sections.py`, where eve
 
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
 `apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
-`apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
+`apps/job_sdk_records.py`, `apps/job_sdk_returns.py`, `apps/job_sdk_retention.py`.
+
+### 26.1 Retention and liveness (per-kind, opt-in)
+
+`JobStore` writes one JSON file per run and, by itself, removes one only on app
+disable, so a consumer's run-file count grows without bound. `register` takes
+three optional, per-kind arguments that bound it without changing any kind that
+does not pass them:
+
+- `retention` — a count cap. After each terminal write the kind's terminal
+  records past the newest `retention` are evicted. It is **off by default**
+  (`0` keeps every record), so an app that never opts in behaves exactly as it
+  did before retention existed; the right bound is the consumer's to choose.
+- `live` — a predicate over a terminal run. Eviction asks it first and never
+  drops a run it returns True for, so a run that is terminal by status but still
+  using its resources (Code Review Sage's `posting` phase, where delivery runs
+  **after** the run reaches a terminal status) is kept past the cap and becomes
+  evictable only once `live` clears. Without one, terminal status alone decides
+  eviction. A live run is also not counted toward the cap, so a burst of live
+  runs cannot push a just-finished one off it.
+- `on_evict` — handed each run the moment it is dropped, before its record file
+  is removed, so the app can release what it owns for that run.
+
+Newest-first is decided by a per-SDK monotonic `seq` minted at a run's
+terminal write (completion order), not by `created_at`/`updated_at`, which are
+second-resolution and tie for a burst of fast runs. Completion order, not start
+order: a long run that started first but finished last sorts newest, so its own
+terminal-write sweep does not evict the result it just produced. Each `seq` is at
+least the wall clock in nanoseconds and above the previous one, so it strictly
+increases within a process and a run finishing after a gateway restart outranks
+every record an earlier process wrote. The counter is also seeded above the
+highest `seq` on disk the first time an SDK mints one — lazily, off the event loop
+(a worker thread or `reconcile`'s `to_thread`), never in the constructor, which
+runs on the loop — which keeps the order if the wall clock stepped back across
+the restart; a partial or failed seed leaves the wall-clock floor in charge. A
+run still executing in this process is never evicted: the sweep reads
+the same live-table snapshot `cancel` and `reconcile` consult.
+
+The sweep runs only when a run of that kind finishes, so a run whose `live`
+predicate clears after the kind's last completion stays on disk until the next
+completion of that kind: the store is bounded at the cap plus the runs still
+live, and a cleared run is not released the moment `live` goes False. The sweep
+and the seq seed read `jobs/` through the bounded, no-follow
+`safe_read_file_bytes_nolink` funnel the disable scan uses, by canonical filename:
+the directory is app-writable, so a planted link, an oversized file, or a file
+whose body names a different run id than its filename is skipped — neither
+counted nor evicted — and the seed ignores any `seq` outside a signed 64-bit
+range (and sorts such a value as 0), so a planted huge integer cannot push the
+counter past what the record writer can serialize. The counter is per SDK, never
+shared between apps, so one app's store can steer only that app's own order. A disabled SDK sweeps nothing: a worker that outlives
+disable's bounded join still returns into its sweep, so the sweep checks the SDK's
+closed flag under the lock disable sets it with, before it starts and again with
+each delete, and a re-enabled replacement SDK's records over the same directory
+are never evicted by the old instance's cap or `on_evict`. Seeding, minting a
+`seq` and sweeping never raise out of the terminal write: a failure in any is
+logged, and the run's terminal record and its live/dedupe cleanup still land.
+
+This adds to the public App Kit contract (the `register` signature and the
+`JobRun.seq` field), so it is **pending a maintainer decision**. The shape
+implemented here — cap + eviction callback + a `live` predicate registered
+alongside the runner — follows the proposal in the issue thread
+([#7588](https://github.com/kirodotdev/KiroCrew/issues/7588), comment of
+2026-09-28), which is a proposal and not a ruling under
+`docs/decisions/README.md`.
 
 ## 27. The app manager is composed by lifecycle owner
 
