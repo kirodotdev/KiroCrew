@@ -37,7 +37,9 @@ _TOKEN_LINK_TEXT = (
 )
 #: Each provider text, with the values its give-up line must not show.
 _CASES = {
-    "link-and-key": (_PROVIDER_TEXT, (_EXAMPLE_KEY, "X-Amz-Signature")),
+    # The key ID is Identifier tier and may stay; the signature that makes the
+    # link work may not.
+    "link-and-key": (_PROVIDER_TEXT, ("b" * 64, "X-Amz-Signature")),
     "token-parameter": (_TOKEN_LINK_TEXT, (_TOKEN_VALUE,)),
 }
 

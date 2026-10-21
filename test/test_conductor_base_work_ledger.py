@@ -489,7 +489,7 @@ async def test_a_session_send_hand_back_redacts_the_decision(tmp_path, monkeypat
     its crew-log entry hold the same redacted text, never the raw secret."""
     recorded: list[dict[str, Any]] = []
     item_id, slots = await _board_with_blocked_item(tmp_path, monkeypatch, recorded)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
 
     resp = await _session_send(
         monkeypatch, slots, caller=PIPELINE, target=WORKER, message=f"use key {secret}"

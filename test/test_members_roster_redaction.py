@@ -32,7 +32,7 @@ from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
 #: Credential-shaped, and short enough to fit the 32-char avatar trait cap, so
 #: one planted value exercises both the plain-string fields and the avatar.
-CRED = "AKIA" + "A" * 16
+CRED = "glpat-" + "A" * 16
 
 #: The other half of the redaction chain the roster was missing: an
 #: exfiltration-shaped URL is rewritten too, so it must mask as well.

@@ -33,7 +33,7 @@ from kiro_crew.memory import MemoryStore
 from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 #: A credential-shaped token for "sensitive document" fixtures.
-DOCUMENT_CREDENTIAL = "AKIAIOSFODNN7EXAMPLE"
+DOCUMENT_CREDENTIAL = "glpat-IOSFODNN7EXAMPLE"
 
 MEMBERS = ("alice", "bob")
 

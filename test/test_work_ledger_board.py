@@ -838,11 +838,11 @@ async def test_a_credential_in_a_worker_summary_is_redacted():
     """
     item_id = _item()
     _bind(item_id)
-    _report(item_id, "progress", summary="pushed with AKIAIOSFODNN7EXAMPLE just now")
+    _report(item_id, "progress", summary="pushed with glpat-IOSFODNN7EXAMPLE just now")
     body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
     raw = response.body.decode()
-    assert "AKIAIOSFODNN7EXAMPLE" not in raw
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
+    assert "glpat-IOSFODNN7EXAMPLE" not in raw
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(body)
 
 
 @pytest.mark.asyncio
@@ -853,10 +853,10 @@ async def test_redaction_reaches_nested_artifact_values():
     _report(
         item_id,
         "progress",
-        artifacts={"note": "token AKIAIOSFODNN7EXAMPLE in the branch name"},
+        artifacts={"note": "token glpat-IOSFODNN7EXAMPLE in the branch name"},
     )
     _body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
-    assert "AKIAIOSFODNN7EXAMPLE" not in response.body.decode()
+    assert "glpat-IOSFODNN7EXAMPLE" not in response.body.decode()
 
 
 @pytest.mark.asyncio
@@ -872,11 +872,11 @@ async def test_redaction_reaches_artifact_keys_not_only_values():
     _report(
         item_id,
         "progress",
-        artifacts={"AKIAIOSFODNN7EXAMPLE": "the branch"},
+        artifacts={"glpat-IOSFODNN7EXAMPLE": "the branch"},
     )
     body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
-    assert "AKIAIOSFODNN7EXAMPLE" not in response.body.decode()
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
+    assert "glpat-IOSFODNN7EXAMPLE" not in response.body.decode()
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(body)
 
 
 def test_two_keys_redacting_alike_both_survive(monkeypatch):

@@ -730,7 +730,7 @@ class TestRotationSeamCredentialSafety:
         key. The assertion is therefore on the delivered forms: comparing the raw frames
         is what makes this hazard invisible.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = "glpat-IOSF", "ODNN7EXAMPLE"
         prefix = "word " * 20
         src = prefix + head + "   " + tail + " trailing prose here"
         r, cli = self._renderer(monkeypatch, len(prefix + head) + 3)
@@ -821,7 +821,7 @@ class TestRotationSeamCredentialSafety:
         seal then redacts that buffer as one string -- where the key is intact and
         matches, so it is replaced rather than shown.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = "glpat-IOSF", "ODNN7EXAMPLE"
         src = self._straddling_source(head, tail)
         monkeypatch.setattr("kiro_crew.discord.renderer.safe_split_offset", lambda *a, **k: 0)
         r, cli = self._renderer(monkeypatch, self._LIMIT)
@@ -852,11 +852,12 @@ class TestRotationSeamCredentialSafety:
         legitimately ends up wider than the budget. That growth is the protection
         working, not a boundary escaping.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = "glpat-IOSF", "ODNN7EXAMPLE"
         # One unbroken word, so the splitter cuts hard at the budget and the first
         # cut lands inside the credential. Several budgets wide, so a single graded
         # offset would leave a remainder many times the budget.
-        src = "a" * (self._LIMIT - len(head)) + head + tail + "b" * (self._LIMIT * 6)
+        # The trailing run is `.`, which the token's body cannot absorb.
+        src = "a" * (self._LIMIT - len(head)) + head + tail + "." * (self._LIMIT * 6)
         assert severs_a_credential(
             await asyncio.to_thread(split_markdown_safe, src, self._LIMIT),
             _redact_all,
@@ -889,10 +890,10 @@ class TestRotationSeamCredentialSafety:
 
         Three pieces, where no neighbouring PAIR reveals anything -- the link needs
         its closing bracket, which is in the third piece -- while the full join
-        collapses the url to its label and puts that label against ``AKIA``. So the
+        collapses the url to its label and puts that label against ``glpat-``. So the
         middle piece is swallowed whole, which a pairwise grade cannot see.
         """
-        key_head, key_tail = "AKIA", "IOSFODNN7EXAMPLE"
+        key_head, key_tail = "glpat-", "IOSFODNN7EXAMPLE"
         src = (
             "a" * (self._LIMIT - len(key_head))
             + key_head
@@ -919,7 +920,7 @@ class TestRotationSeamCredentialSafety:
         """
         src = (
             "a" * (self._LIMIT - 8)
-            + "AKIAIOSF"
+            + "glpat-IOSF"
             + "ODNN7EXAMPLE"
             + "\n\npara two\n\n```py\nx = 1\n```\n\npara three "
             + "c" * self._LIMIT
@@ -941,7 +942,7 @@ class TestRotationSeamCredentialSafety:
         and the two messages sit flush together.
         """
         r, cli = self._renderer(monkeypatch, self._LIMIT)
-        r._buf = ["a" * (self._LIMIT - 8) + "AKIAIOSF" + "ODNN7EXAMPLE" + "b" * self._LIMIT]
+        r._buf = ["a" * (self._LIMIT - 8) + "glpat-IOSF" + "ODNN7EXAMPLE" + "b" * self._LIMIT]
         await r._rotate_on_length()
         await r._seal_current(extract_uploads=False)
         self._assert_no_key_on_screen([text for text, _ in cli.sent])
@@ -979,7 +980,7 @@ class TestRotationSeamCredentialSafety:
         )
         src = (
             "a" * (DISCORD_MAX_TEXT - 100)
-            + "[l](https://x/AKIA"
+            + "[l](https://x/glpat-"
             + "*" * 300
             + "IOSFODNN7EXAMPLE)"
             + "b" * 400
@@ -1057,7 +1058,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
     ) -> None:
         """The core B1 case: a note ends in a prefix, the answer bubble completes it.
 
-        The reasoning note ends ``...AKIA`` and the answer streamed into the fresh
+        The reasoning note ends ``...glpat-`` and the answer streamed into the fresh
         bubble below it begins ``IOSFODNN7EXAMPLE...``; the client renders the note's
         subtext marker away, so note-tail + bubble-head read as one key across two
         messages. The first answer frame is graded (fresh send), but the SECOND
@@ -1067,7 +1068,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
         # Reasoning note whose tail is a credential PREFIX (matches nothing alone).
-        await r.on_thinking("here is the reasoning and the key is AKIA")
+        await r.on_thinking("here is the reasoning and the key is glpat-")
         await r._flush_thinking()
         # The note is now a delivered message; a fresh answer lands below it.
         await r.on_text_chunk("IOSFODNN7EXAMPLE")
@@ -1094,7 +1095,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
-        await r.on_thinking("reasoning ending in AKIA")
+        await r.on_thinking("reasoning ending in glpat-")
         await r._flush_thinking()
         # A single answer chunk: fresh send opens the bubble, then on_done seals it
         # by EDITING that same bubble -- the seal-edit path.
@@ -1118,12 +1119,12 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
-        await r.on_text_chunk("the answer ends in AKIA")
+        await r.on_text_chunk("the answer ends in glpat-")
         await r.on_done()
         # Record must have captured the delivered frame (not stayed empty), so the
         # next fresh message has a real predecessor to grade against.
         assert r._sent_tail, "the delivered frame must be recorded for the next seam"
-        assert "AKIA" in r._sent_tail or _redact_all(r._sent_tail) != r._sent_tail
+        assert "glpat-" in r._sent_tail or _redact_all(r._sent_tail) != r._sent_tail
 
     @pytest.mark.asyncio
     async def test_a_transient_edit_failure_grades_the_fallback_against_sent_tail(
@@ -1136,14 +1137,14 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         message -- but on a transient failure the bubble is STILL ON SCREEN, so the
         fallback POST lands directly below that visible frame. Grading it against
         ``_bubble_above`` (the message ABOVE the bubble) would leave the seam to the
-        visible frame ungraded, and a frame ending ``AKIA`` + a fallback beginning
+        visible frame ungraded, and a frame ending ``glpat-`` + a fallback beginning
         ``IOSFODNN7EXAMPLE`` would deliver the key across the two. The fallback must
         grade against ``_sent_tail`` -- the frame the reader actually sees.
         """
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
         # Fresh send opens a bubble whose delivered frame ends in a credential PREFIX.
-        await r.on_text_chunk("the streamed answer so far AKIA")
+        await r.on_text_chunk("the streamed answer so far glpat-")
         assert r._stream_mid is not None, "a live bubble must be open"
         # The seal will EDIT that open bubble; force a TRANSIENT edit failure so it
         # falls through to a fresh POST while the bubble stays visible. The POST
@@ -1250,7 +1251,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
         r._stream_mid = "99"  # a live bubble exists...
-        r._bubble_above = "the visible neighbour above ends in AKIA"  # ...below THIS
+        r._bubble_above = "the visible neighbour above ends in glpat-"  # ...below THIS
         r._record_sent("an innocuous deleted-bubble frame")  # _sent_tail = deleted frame
         r._pending_note_tail = ""
         cli.edit_gone = True  # the edit finds the bubble DELETED (404)
@@ -1260,7 +1261,7 @@ class TestTheLiveBubbleSeamSurvivesItsEditLifecycle:
         frames = [t for t, _ in cli.sent] + [t for _m, t, _c in cli.edits]
         # The visible neighbour is what the reader sees above the POST; read them
         # together the way the grader must have accounted for.
-        neighbour = "the visible neighbour above ends in AKIA"
+        neighbour = "the visible neighbour above ends in glpat-"
         self._assert_no_key_on_screen(
             [_delivered_form(neighbour)] + [_delivered_form(f) for f in frames]
         )

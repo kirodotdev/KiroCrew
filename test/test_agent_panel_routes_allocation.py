@@ -571,7 +571,7 @@ async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
 
 
 async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vetted):
-    shaped = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+    shaped = "".join(["glpat-", "IOSFODNN7", "EXAMPLE"])
     assert agent_panel._scrub(shaped) != shaped, "fixture is no longer redacted"
 
     slug = members_mod.slug_for_name(shaped)

@@ -261,11 +261,11 @@ async def test_a_rejected_id_is_redacted_before_it_reaches_the_message():
     """
     handle = _make_handle(ACP_BACKEND_CODEX)
     handle.set_config_option = _Writes(_value_refusal_bare())  # type: ignore[method-assign]
-    leaky = "https://evil.example.com/m?access_token=AKIAIOSFODNN7EXAMPLE"
+    leaky = "https://evil.example.com/m?access_token=glpat-IOSFODNN7EXAMPLE"
 
     with pytest.raises(AcpModelUnavailable) as caught:
         await handle._push_model_config_option(leaky, strict=True)
-    assert "AKIAIOSFODNN7EXAMPLE" not in str(caught.value)
+    assert "glpat-IOSFODNN7EXAMPLE" not in str(caught.value)
     assert "REDACTED" in str(caught.value)
 
 

@@ -166,9 +166,9 @@ class TestActivityLog:
         an unredacted key here is persisted, rendered, and fed into a later prompt.
         Redaction lives in ``log_activity`` itself so a new caller cannot skip it.
         """
-        al.log_activity(tmp_path, "notification", "creds AKIAIOSFODNN7EXAMPLE done")
+        al.log_activity(tmp_path, "notification", "creds glpat-IOSFODNN7EXAMPLE done")
         stored = al.read_recent(tmp_path)[0]["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored
+        assert "glpat-IOSFODNN7EXAMPLE" not in stored
         assert "creds" in stored and "done" in stored
 
     def test_exfiltration_urls_are_redacted_too(self, tmp_path):
@@ -179,10 +179,10 @@ class TestActivityLog:
         real contract instead of an imagined one.
         """
         al.log_activity(
-            tmp_path, "notification", "sent to https://drop.example/p?key=AKIAIOSFODNN7EXAMPLE"
+            tmp_path, "notification", "sent to https://drop.example/p?key=glpat-IOSFODNN7EXAMPLE"
         )
         stored = al.read_recent(tmp_path)[0]["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored
+        assert "glpat-IOSFODNN7EXAMPLE" not in stored
         assert "REDACTED" in stored
 
     def test_ordinary_content_is_untouched(self, tmp_path):
@@ -252,8 +252,8 @@ class TestDashboardRoutes:
             # A FAKE AWS example key, split into two literals so CodeQL's
             # clear-text-storage source heuristic doesn't flag this
             # redaction-CONTROL test as storing a real secret. The runtime value
-            # is still a full AKIA key, so the redactor is genuinely exercised.
-            planted = "AKIA" + "IOSFODNN7EXAMPLE"
+            # is still a full glpat- key, so the redactor is genuinely exercised.
+            planted = "glpat-" + "IOSFODNN7EXAMPLE"
             qf.write_queue_atomic(
                 tmp_path / _QUEUE_FILE,
                 {

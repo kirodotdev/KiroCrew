@@ -138,3 +138,60 @@ describe('sanitizeCredentials: JWT family', () => {
     }
   })
 })
+
+describe('sanitizeCredentials: a signed link encoded more than once', () => {
+  const signature = '0123456789abcdef'.repeat(4)
+  const url =
+    'https://b.s3.amazonaws.com/o?X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260101' +
+    `&X-Amz-Signature=${signature}`
+
+  it.each([1, 2, 3])('drops the signature at depth %i and keeps the key ID', (depth) => {
+    let encoded = url
+    for (let i = 0; i < depth; i++) encoded = encodeURIComponent(encoded)
+    const out = sanitizeCredentials(`redirect next=${encoded} ok`)
+    expect(out).not.toContain(signature)
+    expect(out).toContain('AKIAIOSFODNN7EXAMPLE')
+  })
+
+  it.each(['Signature', 'sig', '%2553ignature'])('reads a twice-encoded %s', (name) => {
+    const out = sanitizeCredentials(`https://x/y?a=1%2526${name}%253DSECRETSECRET1234%2526b%253D2`)
+    expect(out).not.toContain('SECRETSECRET1234')
+    expect(out.endsWith('%2526b%253D2')).toBe(true)
+  })
+})
+
+describe('sanitizeCredentials: a signing value longer than 4096 characters', () => {
+  it.each(['X-Amz-Security-%54oken', 'X-Amz-Security-Token', '%53ignature'])('removes all of %s', (name) => {
+    const token = 'IQoJ' + 'AbCd'.repeat(1300)
+    const out = sanitizeCredentials(`GET https://b/o?a=1&${name}=${token}&x=2 done`)
+    expect(out).not.toContain(token.slice(-40))
+    expect(out.endsWith('&x=2 done')).toBe(true)
+  })
+})
+
+describe('sanitizeCredentials: a bare signature parameter', () => {
+  it.each(['def verify(signature=None): pass', 'check(signature=False, strict=True)'])(
+    'keeps %s',
+    (text) => {
+      expect(sanitizeCredentials(text)).toBe(text)
+    },
+  )
+
+  it.each([
+    ['https://x/y?a=1&Signature=abcDEF123456789xyz', 'abcDEF123456789xyz'],
+    ['signature=' + '0123456789abcdef'.repeat(4), '0123456789abcdef'.repeat(4)],
+    ['signature=Zk3p9QmX2vLr8TnB4yWc7HsD1jFa6GuE0oKiRtYq', 'Zk3p9QmX2vLr8TnB4yWc7HsD1jFa6GuE0oKiRtYq'],
+  ])('removes the value of %s', (text, value) => {
+    expect(sanitizeCredentials(text)).not.toContain(value)
+  })
+})
+
+describe('sanitizeCredentials: an HTML-escaped query separator', () => {
+  it.each([
+    'https://a.blob.core.windows.net/c?sv=1&amp;s%69g=SECRETSIGVALUE123&amp;se=2',
+    'https://a/c?sv=1&#38;sig=SECRETSIGVALUE123',
+    'https://a/c?sv=1&#x26;sig=SECRETSIGVALUE123',
+  ])('drops the sig value in %s', (link) => {
+    expect(sanitizeCredentials(link)).not.toContain('SECRETSIGVALUE123')
+  })
+})

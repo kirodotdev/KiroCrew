@@ -573,7 +573,7 @@ def test_hidden_character_split_credential_does_not_survive_the_transport(tmp_pa
     """A credential split by an invisible must not be rejoined downstream.
 
     ``redact_credentials`` matches the literal shape of a secret, so an invisible
-    planted inside one defeats it: ``AKIA<ZWSP>IOSFODNN7EXAMPLE`` matches no
+    planted inside one defeats it: ``glpat-<ZWSP>IOSFODNN7EXAMPLE`` matches no
     pattern. The danger is what happens NEXT. Every MCP response leaves through
     ``validation.build_tool_response`` -> ``sanitize_response`` ->
     ``sanitize_string`` -> ``strip_hidden_unicode``, which removes the invisible
@@ -587,8 +587,8 @@ def test_hidden_character_split_credential_does_not_survive_the_transport(tmp_pa
     """
     from kiro_crew import validation
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
-    split = "AKIA\u200bIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
+    split = "glpat-\u200bIOSFODNN7EXAMPLE"
     _source(monkeypatch, tmp_path, f"2026-09-06T16:00:00 request key={split}\n")
 
     out = diagnostics.read_kiro_cli_logs()
@@ -607,12 +607,12 @@ def test_scrub_strips_hidden_characters_before_redacting(tmp_path):
     """
     from kiro_crew import validation
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
 
     intact, n_intact = diagnostics._scrub(f"key={secret}\n")
     assert n_intact >= 1 and secret not in intact, "control: the intact form must be redacted"
 
-    split, n_split = diagnostics._scrub("key=AKIA\u200bIOSFODNN7EXAMPLE\n")
+    split, n_split = diagnostics._scrub("key=glpat-\u200bIOSFODNN7EXAMPLE\n")
     assert secret not in split, "the split form must not survive _scrub"
     assert secret not in validation.sanitize_response(split), "and must not be rejoinable"
 

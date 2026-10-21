@@ -355,21 +355,21 @@ class TestFlattenedCredentialIsRedacted:
     async def test_emphasis_split_key_does_not_survive_flattening(self) -> None:
         client = FakeClient()
         renderer = _renderer(client)
-        await renderer.on_text_chunk("key **AKIA**IOSFODNN7EXAMPLE ok")
+        await renderer.on_text_chunk("key **glpat-**IOSFODNN7EXAMPLE ok")
 
         # The raw markdown is what the driver's byte scan saw: still split, so
         # the literal pattern could not match it.
-        assert "**AKIA**IOSFODNN7EXAMPLE" in renderer.text()
+        assert "**glpat-**IOSFODNN7EXAMPLE" in renderer.text()
         # The form that actually ships must not contain the reassembled key.
         delivered = renderer.delivery_text()
-        assert "AKIAIOSFODNN7EXAMPLE" not in delivered
+        assert "glpat-IOSFODNN7EXAMPLE" not in delivered
 
     @pytest.mark.asyncio
     async def test_code_span_split_key_does_not_survive_flattening(self) -> None:
         client = FakeClient()
         renderer = _renderer(client)
-        await renderer.on_text_chunk("`AKIA`IOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" not in renderer.delivery_text()
+        await renderer.on_text_chunk("`glpat-`IOSFODNN7EXAMPLE")
+        assert "glpat-IOSFODNN7EXAMPLE" not in renderer.delivery_text()
 
     @pytest.mark.asyncio
     async def test_credential_reassembled_through_link_grammar_is_caught(self) -> None:
@@ -377,8 +377,8 @@ class TestFlattenedCredentialIsRedacted:
         # across the label/target boundary, so the byte scan sees no key at all.
         client = FakeClient()
         renderer = _renderer(client)
-        await renderer.on_text_chunk("[AKIA](https://x.example)IOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" not in renderer.delivery_text()
+        await renderer.on_text_chunk("[glpat-](https://x.example)IOSFODNN7EXAMPLE")
+        assert "glpat-IOSFODNN7EXAMPLE" not in renderer.delivery_text()
 
     @pytest.mark.asyncio
     async def test_ordinary_prose_is_delivered_unchanged(self) -> None:

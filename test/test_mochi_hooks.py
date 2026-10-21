@@ -246,7 +246,7 @@ class TestAgentAuthoredEventsAreRedacted:
 
     @pytest.mark.asyncio
     async def test_watchlist_changed_redacts_item_credentials(self, tmp_path):
-        planted = "AKIA" + "IOSFODNN7EXAMPLE"
+        planted = "glpat-" + "IOSFODNN7EXAMPLE"
         (tmp_path / "mochi-watchlist.json").write_text(
             json.dumps(
                 {
@@ -266,7 +266,7 @@ class TestAgentAuthoredEventsAreRedacted:
 
     @pytest.mark.asyncio
     async def test_degraded_notify_redacts_summary(self, tmp_path):
-        planted = "AKIA" + "IOSFODNN7EXAMPLE"
+        planted = "glpat-" + "IOSFODNN7EXAMPLE"
         ctx, events = await self._bus(tmp_path)
         try:
             hooks._WatchlistCallbacks(hooks._runtime).on_notify_direct(f"leaked {planted}")
@@ -278,7 +278,7 @@ class TestAgentAuthoredEventsAreRedacted:
 
     @pytest.mark.asyncio
     async def test_mood_is_redacted_before_set_mood(self, tmp_path):
-        planted = "AKIA" + "IOSFODNN7EXAMPLE"
+        planted = "glpat-" + "IOSFODNN7EXAMPLE"
         ctx, _events = await self._bus(tmp_path)
         sm = hooks._runtime.state_manager
         orig_set_mood = sm.set_mood
@@ -298,7 +298,7 @@ class TestAgentAuthoredEventsAreRedacted:
         # A notify carrying ONLY a mood (no summary) must still scrub it: the mood
         # reaches the browser via /pet-state and /stats. The redaction runs
         # outside the has_summary branch, so a mood-only notify does not leak the raw value.
-        planted = "AKIA" + "IOSFODNN7EXAMPLE"
+        planted = "glpat-" + "IOSFODNN7EXAMPLE"
         ctx, _events = await self._bus(tmp_path)
         sm = hooks._runtime.state_manager
         orig_set_mood = sm.set_mood

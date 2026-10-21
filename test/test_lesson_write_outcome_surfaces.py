@@ -1132,7 +1132,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         from kiro_crew import cli_commands
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         store = _store(tmp_path)
         store.write_lesson(f"never commit {secret} to the repository", "tool")
         args = argparse.Namespace(
@@ -1160,7 +1160,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
         """Pins the ORDER of the two treatments, which is where this went wrong once.
 
         The intuitive order is the unsafe one. Redacting first leaves
-        ``AKIA<CSI>IOSFODNN7EXAMPLE`` untouched -- the escape breaks the token so the
+        ``glpat-<CSI>IOSFODNN7EXAMPLE`` untouched -- the escape breaks the token so the
         credential regex does not match -- and the control-strip then REASSEMBLES the
         complete credential and prints it. Stripping first can only JOIN characters,
         never split a token, so the regex sees the whole credential.
@@ -1175,8 +1175,8 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         from kiro_crew import cli_commands
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        split = "AKIA\x1b[0mIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
+        split = "glpat-\x1b[0mIOSFODNN7EXAMPLE"
         store = _store(tmp_path)
         store.write_lesson(f"never commit {split} to the repository", "tool")
         args = argparse.Namespace(
@@ -1208,7 +1208,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
         that text is returned at all, and it reaches both the dashboard and the
         ``learn_add`` tool.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         resp, _state = await TestLessonsRouteReportsTheOutcome()._post(
             LessonWriteResult(
                 LessonWriteOutcome.INSERTED, None, (f"never commit the key {secret}",)
@@ -1241,7 +1241,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
         """
         import logging
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         cases = {
             # label -> (stored rule, submitted rule) selecting one branch each
             "substring-delete": (

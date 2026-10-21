@@ -803,10 +803,10 @@ class TestARefusalReachesTheAgentWhole:
         leaked = dashboard_agentic.WriteRefused(
             "unknown_field",
             "tok",
-            "no dashboard field 'tok'. Try AKIAIOSFODNN7EXAMPLE instead.",
+            "no dashboard field 'tok'. Try glpat-IOSFODNN7EXAMPLE instead.",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in dashboard_agentic.refusal_sentence(leaked)
-        assert "AKIAIOSFODNN7EXAMPLE" not in dashboard_agentic.refusal_entry(leaked)["reason"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in dashboard_agentic.refusal_sentence(leaked)
+        assert "glpat-IOSFODNN7EXAMPLE" not in dashboard_agentic.refusal_entry(leaked)["reason"]
 
 
 # ------------------------------------------- the discard happens under the lock
@@ -871,7 +871,7 @@ class TestRedactionDoesNotLoseRows:
         Assembled at runtime, like every other credential in this suite: the
         internal-content scan reads this change's own diff. Do not join them up.
         """
-        head = "AKIA" + "IOSFODNN7"
+        head = "glpat-" + "IOSFODNN7"
         return {f"{head}EXAMPLE": "first row", f"{head}SAMPLE2": "second row"}
 
     def test_both_values_survive_a_key_collision(self) -> None:
@@ -888,7 +888,7 @@ class TestRedactionDoesNotLoseRows:
         assert len(suffixed) == 1, f"no suffixed key: {sorted(out)}"
 
     def test_a_third_collision_keeps_counting(self) -> None:
-        head = "AKIA" + "IOSFODNN7"
+        head = "glpat-" + "IOSFODNN7"
         raw = {f"{head}EXAMPLE": 1, f"{head}SAMPLE2": 2, f"{head}SAMPLE3": 3}
         out = dashboard_agentic._redacted(raw)
         assert len(out) == 3, f"a row was lost: {out}"

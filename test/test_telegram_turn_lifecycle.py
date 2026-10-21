@@ -148,9 +148,9 @@ class TestTurnLifecycleCharacterization:
         assert scrubbed is not None and "/srv/op" not in scrubbed
         assert scrubbed.startswith("⚠️ failed reading ")
         secret = _user_safe_failure_reason(
-            AcpError("token AKIAIOSFODNN7EXAMPLE rejected", transient=False, user_worded=True)
+            AcpError("token glpat-IOSFODNN7EXAMPLE rejected", transient=False, user_worded=True)
         )
-        assert secret is not None and "AKIAIOSFODNN7EXAMPLE" not in secret
+        assert secret is not None and "glpat-IOSFODNN7EXAMPLE" not in secret
         assert _user_safe_failure_reason(
             UnknownMemoryStore("private memory 'm' is unavailable")
         ) == ("⚠️ private memory 'm' is unavailable")

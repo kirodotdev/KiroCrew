@@ -224,7 +224,7 @@ class TestBoundsAndSafety:
 
     def test_a_credential_in_a_prompt_is_redacted_before_truncation(self) -> None:
         """Truncate-then-sanitize leaves a credential's prefix in the surviving span."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         out = _call([_job(message=f"Check {secret} and report the timestamp.")])
         assert secret not in out
         for n in (8, 12, 16):

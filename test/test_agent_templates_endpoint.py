@@ -223,7 +223,7 @@ async def test_roster_flags_which_rows_the_picker_may_offer(agents_dir):
     assert rows["reviewer"] is True
     assert rows["scribe"] is False
     masked = AgentInfo(
-        name="AKIAIOSFODNN7EXAMPLE",
+        name="glpat-IOSFODNN7EXAMPLE",
         filename="masked.json",
         description="",
         model="",
@@ -259,7 +259,7 @@ async def test_roster_flags_which_rows_the_picker_may_offer(agents_dir):
         ({"name": "scribe", "filename": "notes--scribe.json"}, "", False),
         (
             {
-                "name": "AKIAIOSFODNN7EXAMPLE",
+                "name": "glpat-IOSFODNN7EXAMPLE",
                 "filename": "masked.json",
             },
             "",
@@ -317,7 +317,7 @@ async def test_roster_masks_package_controlled_strings_like_the_sibling_rosters(
     identity itself would be masked is left out rather than half-shown."""
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = "glpat-IOSFODNN7EXAMPLE"
     _write(agents_dir, "SomePkg-atlas.json", name="atlas", description=f"key {probe}", model=probe)
     _write(agents_dir, "reviewer.json", description="benign")
     _write(agents_dir, f"{probe}.json", name=probe)
@@ -1194,7 +1194,7 @@ async def test_delete_classifies_the_file_on_disk_not_the_row(agents_dir, monkey
 async def test_delete_refusal_masks_reference_labels_like_the_roster(agents_dir):
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = "glpat-IOSFODNN7EXAMPLE"
     _write(agents_dir, "reviewer.json")
     _seed_config({"pr-bot": "kirocrew"}, default="pr-bot")
     _seed_cron("reviewer", name=f"nightly {probe}")
@@ -1397,7 +1397,7 @@ def test_ambiguous_refusal_text_masks_a_credential_shaped_file_name(tmp_path):
     from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = "glpat-IOSFODNN7EXAMPLE"
     exc = _AmbiguousTemplateName("atlas", (tmp_path / "atlas.json", tmp_path / f"{probe}.json"))
     text = exc.refusal_text()
     assert probe not in text

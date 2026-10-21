@@ -190,7 +190,7 @@ def test_a_credential_shaped_answer_survives_the_transport_redaction():
         {
             "status": "answered",
             "questions": [{"question": "Which key?"}],
-            "answers": {"Which key?": 'SecretAccessKey="example"'},
+            "answers": {"Which key?": 'SecretAccessKey="example-value-1"'},
         }
     )
     # The transport scrub finds nothing left to change, so it cannot corrupt the line.

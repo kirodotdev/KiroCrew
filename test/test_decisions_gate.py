@@ -45,14 +45,14 @@ from kiro_crew.testing.wait import async_wait_until
 # Fixtures and doubles
 # ---------------------------------------------------------------------------
 
-#: AWS key-id samples, assembled from the prefix list in
-#: ``credential_patterns`` rather than written out. A contiguous key-shaped
-#: literal is refused by the repo's own secret scanners -- correctly, since
-#: neither the content scan nor Semgrep can tell a test vector from a real
-#: leak -- and deriving the samples means a prefix added there is exercised
-#: here without this list being edited to match.
-_AWS_KEY_BODY = "A2B3C4D5E6F7G8H9"  # 16 of [A-Z0-9], per AWS_KEY_ID_BODY
-_AWS_KEY_SAMPLES = tuple(prefix + _AWS_KEY_BODY for prefix in _cred.AWS_KEY_ID_PREFIXES.split("|"))
+#: Secret-tier token samples, assembled at run time so no complete token literal
+#: sits in the source for the repo's own secret scanners to refuse.
+_TOKEN_BODY = "A2B3C4D5E6F7G8H9"  # 16 chars, each vendor floor below is 16
+_SECRET_SAMPLES = ("glpat-" + _TOKEN_BODY, "sk-ant-" + _TOKEN_BODY)
+
+#: AWS access key IDs, built from the shared fragments. Identifier tier, so
+#: naming one is no reason to refuse a request.
+_AWS_KEY_ID_SAMPLES = tuple(prefix + _TOKEN_BODY for prefix in _cred.AWS_KEY_ID_PREFIXES.split("|"))
 
 #: A destination only the URL scanner objects to: the credential scanners clear it
 #: (probed above the assertion in ``test_the_two_scanners_are_distinguished``), so
@@ -751,7 +751,7 @@ class TestScrub:
     @pytest.mark.parametrize(
         "payload",
         [
-            *[f"here is my key {sample}" for sample in _AWS_KEY_SAMPLES],
+            *[f"here is my key {sample}" for sample in _SECRET_SAMPLES],
             "vendor key sk-" + "a" * 32,
             _EXFIL_URL,
         ],
@@ -767,10 +767,30 @@ class TestScrub:
         assert row["error"] in gate_mod.SCRUB_ERRORS
         assert row["answers"] is None
 
+    @pytest.mark.parametrize("key_id", _AWS_KEY_ID_SAMPLES)
+    def test_a_state_that_only_names_a_key_id_is_not_refused(self, key_id):
+        """A key ID is Identifier tier: naming one is no reason to refuse."""
+        assert gate_mod.scrub_reason(f"which key is {key_id}?", QUESTIONS) is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "id {key_id} secret aws_secret_access_key="
+            + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "https://b.s3.amazonaws.com/o?X-Amz-Credential={key_id}%2F20260101%2Fus-east-1"
+            "%2Fs3%2Faws4_request&X-Amz-Signature=" + "0123456789abcdef" * 4,
+            "https://d1.cloudfront.net/i.jpg?Expires=1700000000&Signature=Nq64~X-Ab_cd",
+        ],
+        ids=["key-id-beside-a-secret", "presigned-link", "signed-link"],
+    )
+    def test_a_secret_or_signed_link_beside_a_key_id_is_still_refused(self, payload):
+        text = payload.format(key_id=_AWS_KEY_ID_SAMPLES[0])
+        assert gate_mod.scrub_reason(text, QUESTIONS) == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+
     def test_the_two_scanners_are_distinguished_in_the_row(self, install_impl, log_home):
         """Which scanner refused is the finding; one category for both would lose it."""
         install_impl(_ExplodingOracle())
-        asyncio.run(decide(POINT, f"key {_AWS_KEY_SAMPLES[0]}", QUESTIONS, config=_config()))
+        asyncio.run(decide(POINT, f"key {_SECRET_SAMPLES[0]}", QUESTIONS, config=_config()))
         asyncio.run(decide(POINT, _EXFIL_URL, QUESTIONS, config=_config()))
         assert [row["error"] for row in log_home()] == [
             gate_mod.ERROR_SCRUBBED_CREDENTIAL,
@@ -779,7 +799,7 @@ class TestScrub:
 
     def test_a_credential_nested_in_a_dict_state_is_found(self, install_impl, log_home):
         oracle = install_impl(_ExplodingOracle())
-        state = {"messages": [{"text": f"key {_AWS_KEY_SAMPLES[0]}"}]}
+        state = {"messages": [{"text": f"key {_SECRET_SAMPLES[0]}"}]}
         assert asyncio.run(decide(POINT, state, QUESTIONS, config=_config())) is None
         assert oracle.entered is False
         assert log_home()[0]["scrubbed"] is True
@@ -788,7 +808,7 @@ class TestScrub:
         """The rubric leaves the machine in the same request as the state."""
         oracle = install_impl(_ExplodingOracle())
         questions = [
-            Choice(id="q", prompt=f"is {_AWS_KEY_SAMPLES[0]} the right key?", options=["yes", "no"])
+            Choice(id="q", prompt=f"is {_SECRET_SAMPLES[0]} the right key?", options=["yes", "no"])
         ]
         assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is None
         assert oracle.entered is False
@@ -796,8 +816,8 @@ class TestScrub:
 
     @pytest.mark.parametrize(
         "model",
-        ["jev latest", "a" * 65, "-x", "jev\nlatest", "AKIA" + "A" * 16],
-        ids=["space", "too-long", "leading-dash", "newline", "aws-key-shaped"],
+        ["jev latest", "a" * 65, "-x", "jev\nlatest", "glpat-" + "A" * 16],
+        ids=["space", "too-long", "leading-dash", "newline", "token-shaped"],
     )
     def test_a_provider_model_that_is_not_an_id_refuses_before_the_network(
         self, install_impl, log_home, model
@@ -829,7 +849,7 @@ class TestScrub:
 
     def test_a_credential_in_a_choice_option_is_found(self, install_impl, log_home):
         oracle = install_impl(_ExplodingOracle())
-        questions = [Choice(id="q", prompt="which?", options=["fine", _AWS_KEY_SAMPLES[0]])]
+        questions = [Choice(id="q", prompt="which?", options=["fine", _SECRET_SAMPLES[0]])]
         assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is None
         assert oracle.entered is False
         assert log_home()[0]["scrubbed"] is True
@@ -845,7 +865,7 @@ class TestScrub:
                 id="q",
                 prompt="which?",
                 options=["fine", "also-fine"],
-                criteria={"fine": f"the key is {_AWS_KEY_SAMPLES[0]}"},
+                criteria={"fine": f"the key is {_SECRET_SAMPLES[0]}"},
             )
         ]
         assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is None
@@ -879,7 +899,7 @@ class TestScrub:
                 id="q",
                 prompt="which?",
                 options=["fine", "also-fine"],
-                criteria={"fine": f"the key is {_AWS_KEY_SAMPLES[0]}"},
+                criteria={"fine": f"the key is {_SECRET_SAMPLES[0]}"},
             )
         ]
         assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is not None
@@ -897,7 +917,7 @@ class TestScrub:
     def test_a_credential_in_a_noul_or_score_rubric_is_found(self, install_impl, log_home, make):
         """Every rubric field the wire carries is scanned, whatever its type."""
         oracle = install_impl(_ExplodingOracle())
-        questions = [make(_AWS_KEY_SAMPLES[0])]
+        questions = [make(_SECRET_SAMPLES[0])]
         assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is None
         assert oracle.entered is False
         assert log_home()[0]["scrubbed"] is True
@@ -918,7 +938,7 @@ class TestScrub:
     def test_the_refusal_reason_never_quotes_what_it_found(self, install_impl, log_home):
         """The reason is a category: a quoted match would put the key in the log."""
         install_impl(_ExplodingOracle())
-        sample = _AWS_KEY_SAMPLES[0]
+        sample = _SECRET_SAMPLES[0]
         asyncio.run(decide(POINT, f"key {sample}", QUESTIONS, config=_config()))
         assert sample not in json.dumps(log_home())
 
@@ -1023,7 +1043,7 @@ class TestErrors:
         install_impl(_SlowOracle(5.0))
         asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config(timeout_ms=20)))
         install_impl(_RecordingOracle())
-        asyncio.run(decide(POINT, f"k {_AWS_KEY_SAMPLES[0]}", QUESTIONS, config=_config()))
+        asyncio.run(decide(POINT, f"k {_SECRET_SAMPLES[0]}", QUESTIONS, config=_config()))
         errors = [row["error"] for row in log_home()]
         assert len(errors) == 3 and all(err in known for err in errors)
 

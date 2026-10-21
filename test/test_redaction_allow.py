@@ -75,11 +75,11 @@ def test_an_allowed_host_keeps_its_long_query_link() -> None:
 
 
 def test_an_allowed_host_still_loses_a_credential() -> None:
-    url = "https://reviews.corp.example/x?k=AKIA" + "IOSFODNN7EXAMPLE"
+    url = "https://reviews.corp.example/x?k=glpat-" + "IOSFODNN7EXAMPLE"
     out, _, _ = redact_exfiltration_urls_with_records(
         url, extra_exempt_hosts=frozenset({"reviews.corp.example"})
     )
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    assert "glpat-IOSFODNN7EXAMPLE" not in out
 
 
 def test_display_pass_keeps_an_allowed_link_only_inside_its_scope() -> None:

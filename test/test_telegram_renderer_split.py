@@ -400,7 +400,7 @@ class TestRotationSeamCredentialSafety:
         """What the reader sees of one bubble: Telegram's HTML, rendered.
 
         The seal ships HTML, so the raw frame keeps a key apart with the very tags
-        that vanish on screen -- ``AKIA</a>IOSFODNN7EXAMPLE`` matches nothing while
+        that vanish on screen -- ``glpat-</a>IOSFODNN7EXAMPLE`` matches nothing while
         the reader reads one key straight through it.
         """
         return html.unescape(re.sub(r"<[^>]+>", "", frame))
@@ -454,7 +454,7 @@ class TestRotationSeamCredentialSafety:
         sit flush together.
         """
         r, cli = self._renderer(monkeypatch)
-        r._buf = ["a" * (self._CAP - 8) + "AKIAIOSF" + "\n    ODNN7EXAMPLE" + " tail" * 40]
+        r._buf = ["a" * (self._CAP - 10) + "glpat-IOSF" + "\n    ODNN7EXAMPLE" + " tail" * 40]
 
         async def _go() -> None:
             await r._rotate_on_length()
@@ -477,7 +477,7 @@ class TestRotationSeamCredentialSafety:
         is deterministic it would get the same answer on every later rotation: the
         segment would never go out at all.
         """
-        raw = "a" * (self._CAP - 8) + "AKIAIOSF" + "\n    ODNN7EXAMPLE" + " tail" * 40
+        raw = "a" * (self._CAP - 10) + "glpat-IOSF" + "\n    ODNN7EXAMPLE" + " tail" * 40
         raw_offset = safe_split_offset(raw, self._CAP, _default_redactor)
         assert not joins_to_a_credential(
             raw[:raw_offset], raw[raw_offset:], _default_redactor
@@ -512,7 +512,10 @@ class TestRotationSeamCredentialSafety:
         """
         bar = "-" * 120
         pad = "a" * 330
-        return pad + "\nAKIAIOS\n\n" + bar + "\n\nFODNN7\n\n" + bar + "\n\nEXAMPLE\n" + "b" * 330
+        # A Stripe-shaped key: its body takes no `-`, so a rule cannot extend it.
+        return (
+            pad + "\nsk_live_IOS\n\n" + bar + "\n\nFODNN7\n\n" + bar + "\n\nEXAMPLE\n" + "b" * 330
+        )
 
     def test_the_held_image_prefix_is_graded_as_a_sequence(
         self, monkeypatch: pytest.MonkeyPatch
@@ -556,11 +559,14 @@ class TestRotationSeamCredentialSafety:
 
         No neighbouring PAIR of these three pieces reveals anything -- the link needs
         its closing bracket, which is in the third -- while the full join collapses
-        the url to its label and puts that label against ``AKIA``.
+        the url to its label and puts that label against ``glpat-``.
         """
         r, cli = self._renderer(monkeypatch)
         r._buf = [
-            "a" * (self._CAP - 4) + "AKIA[IOSFODNN7EXAMPLE](http://q/" + "b" * self._CAP + ") rest"
+            "a" * (self._CAP - 4)
+            + "glpat-[IOSFODNN7EXAMPLE](http://q/"
+            + "b" * self._CAP
+            + ") rest"
         ]
 
         async def _go() -> None:
@@ -595,7 +601,7 @@ class TestRotationSeamCredentialSafety:
         # The key straddles a NEWLINE, which the splitter prefers as a break, so the
         # severing boundary needs no arithmetic. The leading `&` run is what makes a
         # head bounded by the source budget render past the cap.
-        src = "&" * 600 + "AKIAIOSF" + "\n" + "ODNN7EXAMPLE" + "a" * 2000
+        src = "&" * 600 + "glpat-IOSF" + "\n" + "ODNN7EXAMPLE" + "a" * 2000
         assert _rendered_len(src[:limit]) > cap, "fixture head does not inflate past the cap"
         r._buf = [src]
 
@@ -619,7 +625,7 @@ class TestRotationSeamCredentialSafety:
         """
         src = (
             "a" * (self._CAP - 8)
-            + "AKIAIOSF"
+            + "glpat-IOSF"
             + "ODNN7EXAMPLE"
             + "\n\n```py\n"
             + "x = 1\n" * 40

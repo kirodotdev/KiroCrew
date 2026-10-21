@@ -225,14 +225,14 @@ class TestWaitForCompaction:
             method=METHOD_COMPACTION_STATUS,
             params={
                 "status": {"type": "failed"},
-                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+                "summary": "backend error: key glpat-IOSFODNN7EXAMPLE rejected",
             },
         )
         client._read_message = AsyncMock(return_value=msg)
 
         result = await client.wait_for_compaction(timeout=5.0)
         assert result["type"] == "failed"
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in result["summary"]
         assert "[REDACTED: credential]" in result["summary"]
 
     @pytest.mark.asyncio

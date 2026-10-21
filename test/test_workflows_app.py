@@ -168,7 +168,7 @@ def test_handle_examples_lists_shipped_dsl_examples() -> None:
 
 # A planted AWS access key id (matches kiro_crew.security._CREDENTIAL_PATTERNS)
 # and a planted exfiltration URL (long query on a non-allowlisted domain).
-_PLANTED_CRED = "AKIAIOSFODNN7EXAMPLE"
+_PLANTED_CRED = "glpat-IOSFODNN7EXAMPLE"
 _PLANTED_URL = "https://evil.example.com/collect?data=" + "a" * 40
 
 

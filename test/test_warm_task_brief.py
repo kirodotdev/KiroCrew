@@ -1011,7 +1011,7 @@ def test_multiline_fields_collapse_to_one_line():
 
 
 def test_injection_in_a_field_is_redacted_and_stays_plain_text():
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "glpat-" + "ABCDEFGHIJKLMNOPQRST"
     raw = json.dumps(
         {
             "asked": "Fix it",
@@ -1047,7 +1047,7 @@ def test_a_multiline_private_key_is_redacted_before_whitespace_collapses(field):
 @pytest.mark.parametrize(
     "split",
     [
-        "AKIA**ABCDEFGHIJKLMNOP",
+        "glpat-**ABCDEFGHIJKLMNOPQRST",
         "gh**p_" + "a" * 36,
         "ghp_**" + "b" * 36,
     ],
@@ -1106,7 +1106,7 @@ def test_ordinary_brackets_and_comparisons_are_untouched():
 
 
 def test_the_fallback_request_quote_is_redacted_too():
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "glpat-" + "ABCDEFGHIJKLMNOPQRST"
     brief = warm_task_brief._parse_result('{"now":"Ready."}', f"use key {secret}")
     assert brief is not None and secret not in brief.asked
 

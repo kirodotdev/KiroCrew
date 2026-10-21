@@ -63,7 +63,6 @@ _EXFIL_PATTERNS = re.compile(
     r"(?:"
     r"[A-Za-z0-9+/]{40,}={0,2}|[A-Za-z0-9+/]{39}=|[A-Za-z0-9+/]{38}=="  # base64, "=" is padding
     r"|%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}"  # heavy URL-encoding (20+ encoded chars)
-    f"|{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
     r"|(?:ssh-rsa|ssh-ed25519)[\s+%]"  # SSH public key
     r"|BEGIN[\s+%](?:RSA|DSA|EC|OPENSSH)[\s+%]PRIVATE[\s+%]KEY"  # private key header
     r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
@@ -193,17 +192,17 @@ def _is_safe_presigned(domain: str, query: str) -> bool:
 
 
 # Hard, unambiguous credential markers scanned across the FULL URL path+query
-# — a real AWS key / SSH-or-PEM header / Slack token in a URL is
+# — a real AWS secret / SSH-or-PEM header / Slack token in a URL is
 # exfil even to an otherwise-safe host, and even with no ``?`` query (secret in
 # the PATH). Distinct from the broader _EXFIL_PATTERNS base64/length heuristics,
 # which stay query-only (long base64 PATH segments — CDN asset ids, git object
 # hashes — are benign).
 _HARD_CREDENTIAL_RE = re.compile(
     r"(?:"
-    f"{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
-    r'|(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
+    # No AWS access key ID here, bare or labelled: it is Identifier tier, so it is
+    # not grounds to remove or block a URL. The secret key and session token are.
+    r'(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
     r'|(?:SessionToken|aws_session_token)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:AccessKeyId|aws_access_key_id)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
     r"|(?:ssh-rsa|ssh-ed25519)[\s+%]"  # SSH public key
     r"|BEGIN[\s+%](?:RSA|DSA|EC|OPENSSH)[\s+%]PRIVATE[\s+%]KEY"  # private key header
     r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token

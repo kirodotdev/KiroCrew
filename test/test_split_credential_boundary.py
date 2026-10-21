@@ -85,7 +85,7 @@ def _repaired_names(tree: ast.AST) -> set[str]:
 
     ``redact_for_display`` / ``_display_safe`` are deliberately NOT here: they do
     no whitespace collapsing (``strip_ansi`` -> redactor -> ``_strip_format_chars``
-    -> ``canonicalize_display``), so ``AKIA\\nIOSFODNN7EXAMPLE`` passes through them
+    -> ``canonicalize_display``), so ``glpat-\\nIOSFODNN7EXAMPLE`` passes through them
     unredacted and a later no-redactor cut at that newline delivers the key whole
     across two messages. Certifying their output "safe to cut again" would weaken
     the universal ``test_every_splitter_call_passes_a_redactor`` gate to a property
@@ -346,7 +346,7 @@ class TestACutCannotRejoinAKey:
         objects. The cut lands on the space, the seal takes it, and the halves sit
         flush on screen.
         """
-        text = f"{'w ' * 12}{HEAD} {TAIL} and some trailing words"
+        text = f"{'w ' * 12}{HEAD} {TAIL} and some trailing"
         unguarded = split_markdown_safe(text, 35)
         assert len(unguarded) == 2
         assert KEY not in unguarded[0] and KEY not in unguarded[1]
@@ -459,13 +459,13 @@ class TestChunkForTransportGradesTheByteSeam:
         # key straddles a line break, so the splitter cuts HEAD and TAIL into
         # adjacent chunks the reader reads as one key once the break is gone.
         text = f"{HEAD}\n{TAIL} trailing here to force more content and length beyond"
-        raw = split_markdown_bytes(text, 11)
+        raw = split_markdown_bytes(text, 13)
         assert len(raw) > 1
         assert _rejoins(raw)
 
     def test_chunk_for_transport_closes_that_seam(self) -> None:
         text = f"{HEAD}\n{TAIL} trailing here to force more content and length beyond"
-        chunks = chunk_for_transport(text, self._byte_capped(11))
+        chunks = chunk_for_transport(text, self._byte_capped(13))
         assert len(chunks) > 1
         assert not _rejoins(chunks)
         assert KEY not in _on_screen(chunks)
@@ -497,7 +497,7 @@ class TestChunkForTransportGradesTheByteSeam:
         """
         from kiro_crew.messaging.renderer import _default_redactor as _dr
 
-        head, tail = "AKIAIOSFOD", "NN7EXAMPLE"
+        head, tail = "glpat-IOSFOD", "NN7EXAMPLE"
         bodies = (
             head + "# " + tail + " x" * 20,  # heading-marker seam (F7 shape)
             head + " " * 40 + tail + " filler" * 20,  # wide-space straddle -> floor
@@ -521,7 +521,7 @@ class TestChunkForTransportGradesTheByteSeam:
         ``repaired_for_delivery`` answers with the source UNCHANGED when no literal
         span collapses to a key and the whole-text canonical collapse reads clean.
         But this PR's ``^``-anchored heading rule is POSITION-dependent: a mid-line
-        ``AKIA# NN7EXAMPLE`` is clean whole-text (the ``#`` is not line-leading), yet
+        ``glpat-# NN7EXAMPLE`` is clean whole-text (the ``#`` is not line-leading), yet
         a byte cut that makes ``# NN7EXAMPLE`` piece-leading strips the ``#`` at
         render and rejoins the key across two messages. A single re-split of the
         unchanged repair reproduces that unsafe sequence, so the byte path must
@@ -529,7 +529,7 @@ class TestChunkForTransportGradesTheByteSeam:
         """
         from kiro_crew.messaging.renderer import _default_redactor as _dr
 
-        head, tail = "AKIAIOSFOD", "NN7EXAMPLE"
+        head, tail = "glpat-IOSFOD", "NN7EXAMPLE"
         # budget 10: the byte cut lands exactly so ``# NN7EXAMPLE`` is piece-leading
         # (measured; the OLD one-pass byte path leaked this exact fixture).
         body = head + "# " + tail + " x" * 20

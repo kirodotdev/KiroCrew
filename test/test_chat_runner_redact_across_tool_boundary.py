@@ -47,7 +47,7 @@ from kiro_crew.dashboard.chat_utils import _build_stream_chunk
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
 
 #: The AWS documentation's example access key id, split so no literal sits here.
-_HEAD, _TAIL = "AKIA", "IOSFODNN7EXAMPLE"
+_HEAD, _TAIL = "glpat-", "IOSFODNN7EXAMPLE1234"
 _KEY = _HEAD + _TAIL
 _TAG = REDACTED_CREDENTIAL_TAG
 #: A made-up URL credential parameter: the name, then a value no other pass reads

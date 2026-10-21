@@ -45,8 +45,12 @@ describe('sanitizeExfiltrationUrls: `=` is base64 padding, not a joiner', () => 
     }
   })
 
-  it('redacts an AWS-key-shaped value', () => {
-    expect(isRedacted(url('k=' + 'AKIA' + 'IOSFODNN7EXAMPLE'))).toBe(true)
+  it('redacts a Slack-token-shaped value', () => {
+    expect(isRedacted(url('k=' + 'xoxb-' + 'IOSFODNN7EXAMPLE'))).toBe(true)
+  })
+
+  it('keeps an AWS access key ID, which is Identifier tier', () => {
+    expect(isRedacted(url('k=' + 'AKIA' + 'IOSFODNN7EXAMPLE'))).toBe(false)
   })
 
   it('redacts heavy percent encoding', () => {

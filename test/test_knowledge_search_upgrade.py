@@ -340,17 +340,17 @@ class TestRedactMeta:
     def test_redacts_strings(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta
 
-        meta = {"title": "safe text", "content": "key is AKIAIOSFODNN7EXAMPLE here"}
+        meta = {"title": "safe text", "content": "key is glpat-IOSFODNN7EXAMPLE here"}
         result = _redact_meta(meta)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in result["content"]
         assert result["title"] == "safe text"
 
     def test_redacts_nested_dicts(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta
 
-        meta = {"knowledge": {"content": [{"title": "ok", "text": "AKIAIOSFODNN7EXAMPLE"}]}}
+        meta = {"knowledge": {"content": [{"title": "ok", "text": "glpat-IOSFODNN7EXAMPLE"}]}}
         result = _redact_meta(meta)
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(result)
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(result)
 
     def test_preserves_non_strings(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta

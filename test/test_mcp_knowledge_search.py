@@ -342,11 +342,11 @@ class TestKnowledgeSearchSourceFilter:
 
         _call_tool_inner(
             "local_knowledge_search",
-            {"query": "key AKIAIOSFODNN7EXAMPLE leak", "source_id": "no-such-id"},
+            {"query": "key glpat-IOSFODNN7EXAMPLE leak", "source_id": "no-such-id"},
         )
         logged = mock_sel.return_value.log_tool_invocation.call_args.kwargs
         assert logged["outcome"] == "unknown_source"
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged["metadata"]["query"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in logged["metadata"]["query"]
 
 
 class TestKnowledgeListSources:

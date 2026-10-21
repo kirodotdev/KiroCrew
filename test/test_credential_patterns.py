@@ -64,15 +64,14 @@ class TestSharedSpellings:
         """
         from kiro_crew import security
 
-        for name in (
-            "_EXFIL_PATTERNS",
-            "_S3_PRESIGNED_RE",
-            "_CREDENTIAL_RE",
-            "_HARD_CREDENTIAL_RE",
-            "_CREDENTIAL_PATTERNS",
-        ):
+        # The presigned-URL validators use the key ID as a structural anchor.
+        for name in ("_S3_PRESIGNED_RE", "_CREDENTIAL_RE"):
             pattern = getattr(security, name).pattern
             assert cp.AWS_KEY_ID in pattern, f"{name} no longer carries the shared AWS spelling"
+        # No redaction or blocking rule matches a key ID: it is Identifier tier.
+        for name in ("_EXFIL_PATTERNS", "_HARD_CREDENTIAL_RE", "_CREDENTIAL_PATTERNS"):
+            pattern = getattr(security, name).pattern
+            assert cp.AWS_KEY_ID not in pattern, f"{name} matches an AWS access key ID again"
 
         assert cp.JWT_MULTI_SEGMENT in security._CREDENTIAL_PATTERNS.pattern
 
@@ -87,10 +86,9 @@ class TestSharedSpellings:
         """No module under ``src/kiro_crew`` writes the prefix group as a literal.
 
         The point of the consolidation, enforced across the WHOLE tree rather than
-        the two original homes: five sites in ``security.py``, the redaction floor,
-        the pptx-maker data-URI scan, the metrics privacy scrub and the SEL
-        any-case audit net all read their prefixes from here, so a sixth copy
-        pasted anywhere reds here instead of becoming a new drift pair.
+        the two original homes: every site that spells a key-ID prefix reads it
+        from here, so a copy pasted anywhere reds here instead of becoming a new
+        drift pair.
 
         Matched on the regex-literal form ``(?:AKIA`` so prose that merely mentions
         an ``AKIA...`` key, and ``AWS_KEY_ID_PREFIXES`` itself, do not trip it.
@@ -107,52 +105,42 @@ class TestSharedSpellings:
             f"AWS_KEY_ID / AWS_KEY_ID_PREFIXES from credential_patterns instead: {offenders}"
         )
 
-    def test_siblings_read_their_spelling_from_the_home(self) -> None:
-        """The three sites outside the two original homes compile the shared strings."""
+    def test_siblings_no_longer_match_a_key_id(self) -> None:
+        """No site outside the two homes matches a key ID."""
         from kiro_crew import sel
         from kiro_crew.apps.builtins.pptx_maker.backend import routes as pptx_routes
         from kiro_crew.metrics import schema as metrics_schema
 
-        assert pptx_routes._ENCODED_CREDENTIAL_RE.pattern == cp.AWS_KEY_ID
-        assert metrics_schema._HIGH_ENTROPY_PATTERNS[0].pattern == cp.AWS_KEY_ID
-        # SEL shares only the PREFIXES: its body is mixed-case and boundary-bounded,
-        # a different pattern rather than another spelling of the same one.
-        assert f"(?:{cp.AWS_KEY_ID_PREFIXES})" in sel._AWS_KEY_ANYCASE_RE.pattern
-        assert cp.AWS_KEY_ID not in sel._AWS_KEY_ANYCASE_RE.pattern
+        assert not hasattr(pptx_routes, "_ENCODED_CREDENTIAL_RE")
+        assert all(cp.AWS_KEY_ID not in p.pattern for p in metrics_schema._HIGH_ENTROPY_PATTERNS)
+        assert not hasattr(sel, "_AWS_KEY_ANYCASE_RE")
 
 
-class TestDeliberateDivergence:
-    """The redaction floor is wider than the scrubber, by construction."""
+class TestDisjointSpellings:
+    """The log floor's key ids and the identifier anchor share no prefix."""
 
-    def test_redaction_spelling_is_a_strict_superset(self) -> None:
-        """Every id the scrubber matches, the redaction floor matches too."""
-        narrow, wide = re.compile(cp.AWS_KEY_ID), re.compile(cp.AWS_KEY_ID_REDACTION)
+    def test_the_two_spellings_match_disjoint_ids(self) -> None:
+        """The anchor matches ``AKIA`` / ``ASIA``; the log floor only ``ABIA`` / ``ACCA``."""
+        anchor, floor = re.compile(cp.AWS_KEY_ID), re.compile(cp.AWS_KEY_ID_REDACTION)
         body = "0123456789ABCDEF"
         for prefix in ("AKIA", "ASIA"):
-            assert narrow.search(prefix + body)
-            assert wide.search(prefix + body)
+            assert anchor.search(prefix + body)
+            assert not floor.search(prefix + body), "the log floor redacts a key ID again"
         for prefix in ("ABIA", "ACCA"):
-            assert not narrow.search(
-                prefix + body
-            ), "scrubber widened -- that is a behaviour change"
-            assert wide.search(prefix + body)
+            assert not anchor.search(prefix + body)
+            assert floor.search(prefix + body)
 
-    def test_divergence_is_only_the_named_extra_prefixes(self) -> None:
-        """The two spellings differ in nothing but the redaction-only prefixes.
-
-        Pins the shape the superset relation is derived from. Swapping the body
-        class or the prefix group on one side only -- the exact drift the deleted
-        grep pins were watching for -- fails here.
-        """
+    def test_both_are_built_from_the_shared_fragments(self) -> None:
+        """Swapping the body class or a prefix group on one side only fails here."""
         assert cp.AWS_KEY_ID == f"(?:{cp.AWS_KEY_ID_PREFIXES}){cp.AWS_KEY_ID_BODY}"
         assert cp.AWS_KEY_ID_REDACTION == (
-            f"(?:{cp.AWS_KEY_ID_PREFIXES}|{cp.AWS_KEY_ID_REDACTION_ONLY_PREFIXES})"
-            f"{cp.AWS_KEY_ID_BODY}"
+            f"(?:{cp.AWS_KEY_ID_REDACTION_ONLY_PREFIXES}){cp.AWS_KEY_ID_BODY}"
         )
 
     def test_both_spellings_reject_a_short_or_lowercase_body(self) -> None:
         """The body stays 16 UPPERCASE alphanumerics on both sides."""
         for spelling in (cp.AWS_KEY_ID, cp.AWS_KEY_ID_REDACTION):
             compiled = re.compile(spelling)
-            assert not compiled.search("AKIA" + "0123456789ABCDE")  # 15 chars
-            assert not compiled.search("AKIA" + "abcdefghijklmnop")  # lowercase
+            prefix = spelling[3:7]
+            assert not compiled.search(prefix + "0123456789ABCDE")  # 15 chars
+            assert not compiled.search(prefix + "abcdefghijklmnop")  # lowercase

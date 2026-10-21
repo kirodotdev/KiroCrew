@@ -1162,27 +1162,14 @@ class TestASuppressedScreenshotAlwaysSaysSoWhy:
 
 
 class TestScreenshotNoteStaysOutsideRedaction:
-    """Why ``render_tree`` appends the screenshot note AFTER ``policy.redact_result``.
+    """``render_tree`` appends the screenshot note AFTER ``policy.redact_result``.
 
-    The redactor keeps this host's default macOS temp dir intact, but that does not
-    make the order removable: it exempts only the per-user directory id ``confstr``
-    reports, and the spool follows ``$TMPDIR``.
-    Each case below is a real spool root whose path redaction still breaks, so
-    moving the note inside the redacted body would hand the model a mangled path.
-
-    The first assertion of each case pins that premise. If it ever fails, the
-    redactor has learned the shape and the order may be revisited.
+    The spool path reaches the model byte-exact while the tree body is still redacted.
     """
 
     # Real shape: two-char bucket, 30 lowercase alphanumerics, no vowels, ``0000gn``.
     _HOST_ID = "6r/9f82r1996wq9g2scz0v53nph0000gn"
     _LEAF = "kirocrew-computer-shots/shot-1700000000000-ab12cd34.jpeg"
-
-    @staticmethod
-    def _as_host(monkeypatch, host_id):
-        from kiro_crew.security import redaction as redaction_mod
-
-        monkeypatch.setattr(redaction_mod, "_host_darwin_user_dir_id", lambda: host_id)
 
     @staticmethod
     def _snap(image_path: str) -> Snapshot:
@@ -1199,24 +1186,14 @@ class TestScreenshotNoteStaysOutsideRedaction:
         )
 
     @pytest.mark.parametrize(
-        ("root", "host_id"),
+        "root",
         [
-            pytest.param(f"/var/folders/{_HOST_ID}/T", None, id="no-confstr-answer"),
-            pytest.param(
-                f"/var/folders/{_HOST_ID}/T/tmpk3x9q2zw", _HOST_ID, id="nested-random-tmpdir"
-            ),
+            pytest.param(f"/var/folders/{_HOST_ID}/T", id="default-tmpdir"),
+            pytest.param(f"/var/folders/{_HOST_ID}/T/tmpk3x9q2zw", id="nested-random-tmpdir"),
         ],
     )
-    def test_spool_path_reaches_the_model_byte_exact(self, monkeypatch, root, host_id):
-        from kiro_crew.computer_use import policy
-
-        self._as_host(monkeypatch, host_id)
+    def test_spool_path_reaches_the_model_byte_exact(self, root):
         path = f"{root}/{self._LEAF}"
-        assert policy.redact_result(f"Screenshot: {path}") != f"Screenshot: {path}", (
-            "redaction now keeps this spool path intact; the append-after-redaction "
-            "order in render_tree may be retirable"
-        )
-
         text = render.render_tree(self._snap(path), text_limit=DEFAULT_TEXT_LIMIT)
         assert f"Screenshot: {path}\n" in text
         # The order only spares our own note: the tree body is still redacted.

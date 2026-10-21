@@ -424,28 +424,15 @@ class TestTokenParamValueRedaction:
         Pass 4 ranks last and claims only uncovered gaps, so outputs existing
         callers assert on do not change for values the scrubber already caught.
         """
-        result, warnings = redact_credentials("?token=AKIAIOSFODNN7EXAMPLE")
+        result, warnings = redact_credentials("?token=glpat-IOSFODNN7EXAMPLE")
         assert result == "?token=[REDACTED: credential]"
-        assert warnings == ["Redacted credential pattern (20 chars)"]
-
-    def test_value_already_caught_by_pass_3_is_single_tagged(self) -> None:
-        """A bare 40-char secret AS the token value is claimed once, by pass 3.
-
-        This pins the `taken = sorted(taken + pass3)` fold ahead of pass 4:
-        without it, pass 4 re-claims the span pass 3 took, `_splice` receives
-        overlapping spans, the tag doubles, and the dashboard's redaction
-        notice counts two credentials where one was removed.
-        """
-        secret = "wJalrXUtnFEMI/K7MDENG/" "bPxRfiCYEXAMPLEKEY"
-        result, warnings = redact_credentials(f"?token={secret}")
-        assert result == "?token=[REDACTED: credential]"
-        assert warnings == [f"Redacted bare secret key ({len(secret)} chars)"]
+        assert warnings == ["Redacted credential pattern (22 chars)"]
 
     def test_redacted_output_is_a_fixed_point(self) -> None:
         """Canonical credential tags are fixed points; an exfil tag collapses once."""
         for text in (
             f"?token={self._OPAQUE}",
-            f"https://h.example/?token=AKIAIOSFODNN7EXAMPLE&x=1 and ?token={self._OPAQUE}",
+            f"https://h.example/?token=glpat-IOSFODNN7EXAMPLE&x=1 and ?token={self._OPAQUE}",
         ):
             once, _ = redact_credentials(text)
             twice, warnings = redact_credentials(once)
@@ -702,9 +689,9 @@ class TestTokenParamExemptUrlPrefixes:
 
     def test_earlier_pass_claim_keeps_whole_value_redacted(self) -> None:
         self._install(frozenset({self._PREFIX}))
-        out = redact_credentials(f"{self._PREFIX}?token={self._TOKEN}AKIAIOSFODNN7EXAMPLE")[0]
+        out = redact_credentials(f"{self._PREFIX}?token={self._TOKEN}glpat-IOSFODNN7EXAMPLE")[0]
         assert self._TOKEN not in out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
 
     @pytest.mark.parametrize(
         "text",

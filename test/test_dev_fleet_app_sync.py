@@ -430,8 +430,8 @@ def test_redact_applied():
     # Should not crash on normal strings
     assert _redact("hello world") == "hello world"
     # Should redact AWS keys
-    result = _redact("key=AKIAIOSFODNN7EXAMPLE")
-    assert "AKIAIOSFODNN7EXAMPLE" not in result
+    result = _redact("key=glpat-IOSFODNN7EXAMPLE")
+    assert "glpat-IOSFODNN7EXAMPLE" not in result
 
 
 # --- disk aggregation name derivation ---

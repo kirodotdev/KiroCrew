@@ -1332,7 +1332,7 @@ class TestDecideThroughTheLlmLane:
             answers = asyncio.run(
                 gate.decide(
                     gate.JUDGE_POINT,
-                    {"since_last_tick": [{"text": "AKIAIOSFODNN7EXAMPLE"}]},
+                    {"since_last_tick": [{"text": "glpat-IOSFODNN7EXAMPLE"}]},
                     QUESTIONS,
                     session_key="chat-1",
                     config=_config(NudgeWakeConfig(provider="llm")),

@@ -26,7 +26,7 @@ class TestTheRedactedProjectionCannotOverwriteTheStoredMessage:
     cannot drift apart. These are its non-regression arms.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = "glpat-IOSFODNN7EXAMPLE"
 
     @pytest.fixture()
     def audits(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
@@ -137,7 +137,7 @@ class TestAnEchoedBannerDoesNotOverwriteTheStoredOne:
     replaced the operator's stored banner with its own redaction -- irreversibly.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = "glpat-IOSFODNN7EXAMPLE"
 
     class _Svc:
         def __init__(self, row: object) -> None:
@@ -256,7 +256,7 @@ class TestAConfirmedGoalIsNotOverwrittenByAStaleClient:
         """
         # One key-shaped literal, and a distinct same-shape variant derived from it, so
         # the two goals differ only inside the mask.
-        key_seen = "AKIAIOSFODNN7EXAMPLE"
+        key_seen = "glpat-IOSFODNN7EXAMPLE"
         seen = f"deploy with {key_seen} now"
         rotated = f"deploy with {key_seen[:-1] + 'F'} now"
         svc = AutoNudgeService(base_dir=tmp_path)
@@ -287,7 +287,9 @@ class TestAConfirmedGoalIsNotOverwrittenByAStaleClient:
         """POSITIVE CONTROL: the token must not refuse an ordinary save."""
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
-            armed = await svc.add(slot_key="chat-9-995", message="deploy with AKIAIOSFODNN7EXAMPLE")
+            armed = await svc.add(
+                slot_key="chat-9-995", message="deploy with glpat-IOSFODNN7EXAMPLE"
+            )
             _loop, error, status = await authz.authorize_and_update_nudge(
                 svc=svc,
                 loop_id=armed.id,
@@ -372,7 +374,7 @@ class TestTheGoalTokenIsRotatedOnEveryLoad:
         scrub this change exists to add. ADDRESSING_FIELDS are exempt, and this field was
         effectively a third one nobody declared.
         """
-        planted = "AKIAIOSFODNN7EXAMPLE"
+        planted = "glpat-IOSFODNN7EXAMPLE"
         (tmp_path / "autonudge.json").write_text(
             json.dumps(
                 {

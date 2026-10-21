@@ -189,11 +189,11 @@ class TestEventLogging:
         log.log_api_access(
             caller="app:doc-store",
             operation="doc-store.publish",
-            outcome="failed for AKIAIOSFODNN7EXAMPLE " + "x" * 900,
+            outcome="failed for glpat-IOSFODNN7EXAMPLE " + "x" * 900,
         )
         sel_file = sel_dir / "security_events.jsonl"
         data = json.loads(sel_file.read_text(encoding="utf-8").strip())
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["outcome"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in data["outcome"]
         assert len(data["outcome"]) <= 500
 
     @pytest.mark.parametrize(

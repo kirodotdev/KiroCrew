@@ -126,11 +126,11 @@ class TestPathRetention:
         assert records[0]["path"] is None
 
     def test_path_carrying_a_credential_is_not_kept(self) -> None:
-        # A bare secret run the query heuristics never see (they scan only the
-        # query) passes the URL warning on the path alone but is stripped by
-        # credential redaction -- retention check 2 is what drops it.
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        cred_path = f"/d/{secret}"
+        # A labelled secret in the path, which the query heuristics never see
+        # (they scan only the query), passes the URL warning on the path alone but
+        # is stripped by credential redaction -- retention check 2 is what drops it.
+        secret = "wJalrXUtnFEMI" + "K7MDENGbPxRfiCYEXAMPLEKEY"
+        cred_path = f"/d/api_key={secret}"
         assert _exfil_url_warning(_DOMAIN, cred_path, frozenset()) is None
         assert redact_credentials(cred_path)[0] != cred_path
 
@@ -165,7 +165,7 @@ class TestTheFullAddressIsKeptSoItCanBeOpened:
         assert records[0]["url"] == url
 
     def test_a_link_carrying_a_credential_is_withheld(self) -> None:
-        url = f"https://{_DOMAIN}/dump/AKIAIOSFODNN7EXAMPLE"
+        url = f"https://{_DOMAIN}/dump/glpat-IOSFODNN7EXAMPLE"
 
         _, warnings, records = redact_exfiltration_urls_with_records(f"see {url}")
 
@@ -173,14 +173,14 @@ class TestTheFullAddressIsKeptSoItCanBeOpened:
         assert records[0]["query_chars"] == 0
         assert records[0]["url"] is None
         assert records[0]["url_withheld"] == "credential"
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(records)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(records)
 
     def test_a_partially_encoded_credential_is_withheld(self) -> None:
-        # Unchanged by the remover as literal text; a browser decodes %5F back
-        # into the underscore that makes it a GitHub token.
+        # A browser decodes %5F back into the underscore that makes it a GitHub
+        # token; the remover reads the decoded form too.
         token_tail = "A" * 36
         url = f"https://{_DOMAIN}/x/ghp%5F{token_tail}?q={_LONG_QUERY_TAIL}"
-        assert redact_credentials(url)[0] == url
+        assert f"ghp%5F{token_tail}" not in redact_credentials(url)[0]
 
         _, _, records = redact_exfiltration_urls_with_records(f"see {url}")
 
@@ -252,7 +252,7 @@ class TestTheFullAddressIsKeptSoItCanBeOpened:
             "rule": "exfil_query_length",
             "path": None,
             "query_chars": 0,
-            "url": f"https://{_DOMAIN}/dump/AKIAIOSFODNN7EXAMPLE",
+            "url": f"https://{_DOMAIN}/dump/glpat-IOSFODNN7EXAMPLE",
             "url_withheld": None,
         }
         assert revalidate_blocked_link(forged) is None
@@ -260,7 +260,7 @@ class TestTheFullAddressIsKeptSoItCanBeOpened:
 
 class TestQueryIsCounted:
     def test_query_chars_zero_when_absent(self) -> None:
-        url = f"https://{_DOMAIN}/dump/AKIAIOSFODNN7EXAMPLE"
+        url = f"https://{_DOMAIN}/dump/glpat-IOSFODNN7EXAMPLE"
 
         _, warnings, records = redact_exfiltration_urls_with_records(f"see {url}")
 
@@ -1072,7 +1072,7 @@ class TestMetaCarveOut:
                 {
                     "domain": _DOMAIN,
                     "rule": "exfil_query_length",
-                    "path": "/dump/AKIAIOSFODNN7EXAMPLE",
+                    "path": "/dump/glpat-IOSFODNN7EXAMPLE",
                     "query_chars": 0,
                     "url": None,
                     "url_withheld": "length",
@@ -1107,7 +1107,7 @@ class TestMetaCarveOut:
         record = {
             "domain": _DOMAIN,
             "rule": "exfil_query_length",
-            "path": "/dump/AKIAIOSFODNN7EXAMPLE",
+            "path": "/dump/glpat-IOSFODNN7EXAMPLE",
             "query_chars": 0,
             "url": None,
             "url_withheld": "length",
@@ -1214,7 +1214,7 @@ class TestAVariantsRecordsAreCheckedOnServe:
             "rule": "exfil_query_length",
             "path": None,
             "query_chars": 0,
-            "url": f"https://{_DOMAIN}/dump/AKIAIOSFODNN7EXAMPLE",
+            "url": f"https://{_DOMAIN}/dump/glpat-IOSFODNN7EXAMPLE",
             "url_withheld": None,
         }
         msgs = [
@@ -1229,7 +1229,7 @@ class TestAVariantsRecordsAreCheckedOnServe:
         out = _prepare_messages(msgs, False, live_child="")
 
         assert "blocked_links" not in out[0]["variants"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(out)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(out)
 
     def test_a_valid_variant_record_survives_emit(self) -> None:
         url = f"https://{_DOMAIN}/p?q={_LONG_QUERY_TAIL}"

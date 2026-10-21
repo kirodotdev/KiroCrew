@@ -160,21 +160,19 @@ class TestBare40CharSeverity:
         """40-char match on a line with AWS secret context should be credential."""
         from kiro_crew.deploy.scan import scan_content
 
-        text = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+        # Not the documented ...EXAMPLEKEY value: that one is an overridable placeholder.
+        text = "aws_secret_access_key = " + "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYzq8Rk2Lw0d\n"
         findings = scan_content(text)
         # Should have at least one credential-severity finding
         cred_findings = [f for f in findings if f.severity == "credential"]
         assert len(cred_findings) > 0
 
-    def test_base64_akia_stays_credential(self):
-        """Base64-encoded AKIA (QUtJ...) must remain credential-class."""
+    def test_a_key_id_is_an_overridable_warning(self):
+        """A plain AWS access key ID is an info finding, like an account id."""
         from kiro_crew.deploy.scan import scan_content
 
-        # QUtJQQ== is base64 of "AKIA"
-        text = "token QUtJQUlPU0ZPRE5ON0VYQU1QTEUK here\n"
-        findings = scan_content(text)
-        cred_findings = [f for f in findings if f.severity == "credential"]
-        assert len(cred_findings) > 0
+        findings = scan_content("token " + "AKIA" + "IOSFODNN7EXAMPLE" + " here\n")
+        assert [(f.kind, f.severity) for f in findings] == [("aws-key-id", "info")]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

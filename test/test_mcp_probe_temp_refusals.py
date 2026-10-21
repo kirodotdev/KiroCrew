@@ -26,7 +26,7 @@ from kiro_crew.mcp_discovery import (
 )
 
 # A credential-shaped path segment: the payload must carry the redacted text.
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+_SECRET = "glpat-IOSFODNN7EXAMPLE"
 _DECLARED = f"/data/run/{_SECRET}/tmp"
 _REDACTED = "/data/run/[REDACTED: credential]/tmp"
 

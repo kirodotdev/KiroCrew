@@ -871,7 +871,7 @@ class TestStateBounds:
         assert state["last_verdict"]["outcome"] == "quiet"
 
     def test_scrub_drops_an_item_carrying_a_credential(self) -> None:
-        assert point.evidence_item("pr:x#1", point.KIND_PR_CHECKS, 1.0, "AKIA" + "A" * 16) is None
+        assert point.evidence_item("pr:x#1", point.KIND_PR_CHECKS, 1.0, "glpat-" + "A" * 16) is None
 
     def test_unknown_kind_is_dropped(self) -> None:
         assert point.evidence_item("s", "not-a-kind", 1.0, "hello") is None
@@ -883,7 +883,7 @@ class TestStateBounds:
                     "source": "s",
                     "kind": point.KIND_PR_CHECKS,
                     "age_s": 1.0,
-                    "text": "AKIA" + "B" * 16,
+                    "text": "glpat-" + "B" * 16,
                 }
             ]
         )
@@ -1362,7 +1362,7 @@ class TestJudgeTickFallsOpen:
                         "source": "pr:acme/widgets#1",
                         "kind": point.KIND_PR_COMMENT,
                         "age_s": 2.0,
-                        "text": "please rotate AKIA" + "D" * 16,
+                        "text": "please rotate glpat-" + "D" * 16,
                     },
                 ],
                 trace=trace,
@@ -1390,7 +1390,7 @@ class TestJudgeTickFallsOpen:
                         "source": "s",
                         "kind": point.KIND_PR_CHECKS,
                         "age_s": 1.0,
-                        "text": "AKIA" + "C" * 16,
+                        "text": "glpat-" + "C" * 16,
                     }
                 ],
                 trace=trace,

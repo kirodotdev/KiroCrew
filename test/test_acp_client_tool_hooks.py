@@ -531,7 +531,7 @@ class TestAcpClientToolHooks:
         # frontmatter: the Post-fire path MUST redact it (parity with chat_runner's
         # PostToolUse) before handing it to the hook engine — addresses review-bot
         # security-controls.
-        raw_output = "---\nname: x\nsecret: AKIAIOSFODNN7EXAMPLE\n---"
+        raw_output = "---\nname: x\nsecret: glpat-IOSFODNN7EXAMPLE\n---"
         await client._maybe_fire_post_tool_hooks(self._result_ev(output=raw_output))
 
         pre = [c for c in store.calls if c["event"] == "PreToolUse"]
@@ -545,7 +545,7 @@ class TestAcpClientToolHooks:
         # redacted (not the raw form).
         fired_output = post[0]["tool_response"]["output"]
         assert fired_output == "---\nname: x\nsecret: [REDACTED: credential]\n---"
-        assert "AKIAIOSFODNN7EXAMPLE" not in fired_output  # raw credential scrubbed
+        assert "glpat-IOSFODNN7EXAMPLE" not in fired_output  # raw credential scrubbed
         # YAML frontmatter (name:) is untouched by redaction → skill capture intact.
         assert "name: x" in fired_output
 
@@ -565,14 +565,14 @@ class TestAcpClientToolHooks:
         client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
         client._observed_tool_calls["tc1"] = ("Reading /x/SKILL.md", "read")
         # Credential near the front + padding to blow past the 2000-char bound.
-        raw_output = "secret: AKIAIOSFODNN7EXAMPLE\n" + ("x" * 3000)
+        raw_output = "secret: glpat-IOSFODNN7EXAMPLE\n" + ("x" * 3000)
         await client._maybe_fire_post_tool_hooks(self._result_ev(output=raw_output))
 
         post = [c for c in store.calls if c["event"] == "PostToolUse"]
         assert len(post) == 1
         fired_output = post[0]["tool_response"]["output"]
         assert len(fired_output) == 2000  # bounded to first 2000 chars
-        assert "AKIAIOSFODNN7EXAMPLE" not in fired_output  # raw credential scrubbed
+        assert "glpat-IOSFODNN7EXAMPLE" not in fired_output  # raw credential scrubbed
         assert "[REDACTED: credential]" in fired_output  # redaction survives truncation
 
     @pytest.mark.asyncio
@@ -587,14 +587,14 @@ class TestAcpClientToolHooks:
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
         client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
-        raw_input = '{"cmd": "aws configure set key AKIAIOSFODNN7EXAMPLE"}'
+        raw_input = '{"cmd": "aws configure set key glpat-IOSFODNN7EXAMPLE"}'
         await client._maybe_fire_pre_tool_hooks(self._call_ev(tool_input=raw_input))
 
         pre = [c for c in store.calls if c["event"] == "PreToolUse"]
         assert len(pre) == 1
         fired_input = pre[0]["tool_input"]  # parsed by fire_tool_hooks
         fired_str = json.dumps(fired_input)
-        assert "AKIAIOSFODNN7EXAMPLE" not in fired_str  # raw credential scrubbed
+        assert "glpat-IOSFODNN7EXAMPLE" not in fired_str  # raw credential scrubbed
         assert "[REDACTED: credential]" in fired_str  # redaction marker present
 
     @pytest.mark.asyncio
@@ -610,14 +610,14 @@ class TestAcpClientToolHooks:
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
         client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
-        raw_input = {"cmd": "aws configure set key AKIAIOSFODNN7EXAMPLE"}
+        raw_input = {"cmd": "aws configure set key glpat-IOSFODNN7EXAMPLE"}
         await client._maybe_fire_pre_tool_hooks(self._call_ev(tool_input=raw_input))
 
         pre = [c for c in store.calls if c["event"] == "PreToolUse"]
         assert len(pre) == 1
         fired_input = pre[0]["tool_input"]  # parsed by fire_tool_hooks
         fired_str = json.dumps(fired_input)
-        assert "AKIAIOSFODNN7EXAMPLE" not in fired_str  # raw credential scrubbed
+        assert "glpat-IOSFODNN7EXAMPLE" not in fired_str  # raw credential scrubbed
         assert "[REDACTED: credential]" in fired_str  # redaction marker present
 
     @pytest.mark.asyncio

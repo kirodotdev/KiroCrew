@@ -242,7 +242,7 @@ async def test_unsafe_configured_url_makes_no_request(configured, served, config
     [
         # Refused for reasons an approved endpoint does not relax.
         _consent_url() + "#frag",
-        _consent_url(evil="AKIAIOSFODNN7EXAMPLE"),
+        _consent_url(evil="glpat-IOSFODNN7EXAMPLE"),
         _consent_url("https://auth.unlisted-idp.example:8443/oauth/authorize"),
         _consent_url("http://auth.unlisted-idp.example/oauth/authorize"),
     ],

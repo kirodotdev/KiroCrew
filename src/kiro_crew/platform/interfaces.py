@@ -221,7 +221,7 @@ class SandboxPolicy(Protocol):
 class CredentialPolicy(Protocol):
     """Redaction passes + the credential/exfil regex bundle.
 
-    Public default = the AKIA/ASIA credential patterns and exfil URL patterns in
+    Public default = the credential patterns and exfil URL patterns in
     ``security.py``.  The companion adds internal token/cookie regexes.
     """
 

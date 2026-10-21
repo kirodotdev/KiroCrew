@@ -204,10 +204,10 @@ def test_a_credential_in_the_task_text_never_reaches_the_log():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_subagent_spawned(
-        SESSION, 1, agent_id="sub-1", task="deploy with AKIAIOSFODNN7EXAMPLE now"
+        SESSION, 1, agent_id="sub-1", task="deploy with glpat-IOSFODNN7EXAMPLE now"
     )
     assert emit.flush()
-    assert "AKIAIOSFODNN7EXAMPLE" not in _opener("subagent/spawned")["task"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in _opener("subagent/spawned")["task"]
 
 
 def test_a_completed_child_records_the_credits_it_billed():

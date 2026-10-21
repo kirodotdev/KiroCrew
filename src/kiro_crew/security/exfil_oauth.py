@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
-from .redaction import _contains_fixed_credential, _text_contains_bare_secret
+from .redaction import _contains_fixed_credential
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -100,7 +100,7 @@ def _safe_oauth_parameter_name(name: str | None) -> str | None:
         or not _OAUTH_DIAGNOSTIC_PARAMETER_RE.fullmatch(name)
     ):
         return None
-    if _contains_fixed_credential(name) or _text_contains_bare_secret(name):
+    if _contains_fixed_credential(name):
         return None
     return name
 

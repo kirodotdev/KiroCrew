@@ -233,13 +233,13 @@ class TestApiCronScriptSource:
         # Scripts are LLM-writeable, so their content is agent-influenced text:
         # raw credential patterns must not reach the dashboard verbatim.
         script = crons_home / "crons" / "leaky.py"
-        script.write_text('KEY = "AKIAIOSFODNN7EXAMPLE"\n')
+        script.write_text('KEY = "glpat-IOSFODNN7EXAMPLE"\n')
         state = _make_state(_make_job(script=f"{script}:run"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/crons/j1/script")
             assert resp.status == 200
             data = await resp.json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["source"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in data["source"]
         # The display does not equal the raw body, so the approval flow must
         # treat this script as unreviewable (the operator cannot read the span).
         assert data["reviewable"] is False
@@ -250,15 +250,15 @@ class TestApiCronScriptSource:
         # content, so a credential-shaped name must not ride out unredacted on
         # the metadata fields either. A credential pattern is a legal Python
         # identifier and a legal file name, so both fields are reachable.
-        script = crons_home / "crons" / "AKIAIOSFODNN7EXAMPLE.py"
+        script = crons_home / "crons" / "glpat-IOSFODNN7EXAMPLE.py"
         script.write_text(SCRIPT_BODY)
-        state = _make_state(_make_job(script=f"{script}:AKIAIOSFODNN7EXAMPLE"))
+        state = _make_state(_make_job(script=f"{script}:glpat-IOSFODNN7EXAMPLE"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/crons/j1/script")
             assert resp.status == 200
             data = await resp.json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["file"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["function"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in data["file"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in data["function"]
 
     @windows_only
     @pytest.mark.asyncio

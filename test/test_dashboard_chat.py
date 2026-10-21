@@ -75,7 +75,7 @@ class TestAcpProcessDiedRecovery:
 
         async def _stream_then_die(msg):
             yield LLMEvent(
-                kind=EVENT_TEXT_CHUNK, text="partial output with AKIA1234567890ABCDEF secret"
+                kind=EVENT_TEXT_CHUNK, text="partial output with glpat-1234567890ABCDEF secret"
             )
             raise AcpProcessDied("pipe broken")
 
@@ -92,7 +92,7 @@ class TestAcpProcessDiedRecovery:
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert assistant_msgs, "Expected at least one assistant message with redacted content"
         for m in assistant_msgs:
-            assert "AKIA1234567890ABCDEF" not in m.get("content", "")
+            assert "glpat-1234567890ABCDEF" not in m.get("content", "")
         assert slot._queue == [
             {
                 "id": slot._queue[0]["id"],
@@ -115,7 +115,7 @@ class TestAcpProcessDiedRecovery:
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
 
         async def _stream_then_cancel(msg):
-            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial with AKIA1234567890ABCDEF key")
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial with glpat-1234567890ABCDEF key")
             raise asyncio.CancelledError()
 
         client.stream = _stream_then_cancel
@@ -126,7 +126,7 @@ class TestAcpProcessDiedRecovery:
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert assistant_msgs, "Expected at least one assistant message with redacted content"
         for m in assistant_msgs:
-            assert "AKIA1234567890ABCDEF" not in m.get("content", "")
+            assert "glpat-1234567890ABCDEF" not in m.get("content", "")
 
 
 # ── Transient backend 5xx retry on the interactive chat path ──

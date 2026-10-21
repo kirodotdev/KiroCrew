@@ -541,7 +541,7 @@ async def test_delete_by_id_persist_failure_returns_500_and_rolls_back(tmp_path,
 @pytest.mark.asyncio
 async def test_create_pin_redacts_credentials_in_preview(tmp_path):
     """A preview containing a credential is redacted before storage and listing."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     async with _client(tmp_path) as client:
         state: DashboardState = client.app["state"]
         resp = await client.post(
@@ -569,7 +569,7 @@ async def test_create_pin_redacts_credentials_in_preview(tmp_path):
 async def test_create_pin_redacts_credential_straddling_truncation_boundary(tmp_path):
     """A credential straddling the 200-char truncation boundary must not
     survive as an unrecognized fragment: redaction runs BEFORE truncation."""
-    secret = "AKIAIOSFODNN7EXAMPLE"  # 20 chars
+    secret = "glpat-IOSFODNN7EXAMPLE"  # 22 chars
     preview = "x" * 181 + secret + " trailing text beyond the cap"
     async with _client(tmp_path) as client:
         state: DashboardState = client.app["state"]
@@ -655,7 +655,7 @@ async def test_create_pin_body_error_with_malformed_text(tmp_path, monkeypatch):
 async def test_list_re_redacts_stale_unredacted_previews_from_disk(tmp_path):
     """A pre-existing pin with an unredacted credential in chat_pins.json is
     redacted at the list output boundary (stored text is never trusted)."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     async with _client(tmp_path) as client:
         state: DashboardState = client.app["state"]
         # Simulate a stale on-disk record that predates redaction
@@ -681,7 +681,7 @@ async def test_duplicate_create_re_redacts_stale_unredacted_preview(tmp_path):
     """A duplicate POST for an already-pinned message takes the idempotent
     `existing` branch -- that response path must re-redact too, or a stale
     unredacted credential on disk is returned verbatim."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     async with _client(tmp_path) as client:
         state: DashboardState = client.app["state"]
         # Simulate a stale on-disk record that predates redaction

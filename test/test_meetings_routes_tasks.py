@@ -77,7 +77,7 @@ class TestTaskRoutes:
         """``tasks.json`` is written by an LLM agent, so the file's shape is
         untrusted even though the app owns the path."""
         hostile: list[Any] = [
-            {"description": "rotate AKIAIOSFODNN7EXAMPLE", "priority": "critical"},
+            {"description": "rotate glpat-IOSFODNN7EXAMPLE", "priority": "critical"},
             {"text": "legacy field name"},
             "not a dict",
             {"assignee": "no description"},
@@ -86,7 +86,7 @@ class TestTaskRoutes:
         async with client_for(app) as client:
             tasks = (await (await client.get(f"{BASE}/meetings/standup/tasks")).json())["tasks"]
         assert len(tasks) == 2
-        assert "AKIAIOSFODNN7EXAMPLE" not in tasks[0]["description"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in tasks[0]["description"]
         assert tasks[0]["priority"] == k.DEFAULT_TASK_PRIORITY
         assert tasks[1]["description"] == "legacy field name"
 

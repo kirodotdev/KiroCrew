@@ -388,7 +388,7 @@ class TestExpandDollarSkills:
     def test_credentials_redacted_in_loaded_body(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.chat_runner import _expand_dollar_skills
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         state = self._state_with_skills(
             tmp_path,
             monkeypatch,

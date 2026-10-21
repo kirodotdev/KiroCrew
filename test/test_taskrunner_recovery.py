@@ -1110,7 +1110,7 @@ class TestSessionRecovery:
         provider = MagicMock()
 
         async def _stream_with_cred(msg: str):
-            yield LLMEvent(kind="text_chunk", text="key is AKIAIOSFODNN7EXAMPLE here")
+            yield LLMEvent(kind="text_chunk", text="key is glpat-IOSFODNN7EXAMPLE here")
             yield LLMEvent(kind="complete")
 
         provider.stream = _stream_with_cred
@@ -1127,7 +1127,7 @@ class TestSessionRecovery:
         success = await runner._execute_single_task(run, step)
 
         assert success
-        assert "AKIAIOSFODNN7EXAMPLE" not in (step.result or "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in (step.result or "")
         assert "[REDACTED" in (step.result or "")
 
 

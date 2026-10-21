@@ -9,7 +9,7 @@ import pytest
 
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+KEY = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _stage(tmp_path: Path, manifest: dict | None = None) -> Path:
@@ -159,7 +159,7 @@ class TestATriggerCannotPutBackWhatWasRemoved:
         with redact.sqlite3.connect(str(db)) as conn:
             assert conn.execute("PRAGMA integrity_check;").fetchone()[0] == "ok"
             found = conn.execute(
-                "SELECT count(*) FROM items_fts WHERE items_fts MATCH ?", (KEY,)
+                "SELECT count(*) FROM items_fts WHERE items_fts MATCH ?", (f'"{KEY}"',)
             ).fetchone()[0]
             assert found == 0, "the index still answers a search for the credential"
             assert (

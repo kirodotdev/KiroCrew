@@ -322,7 +322,7 @@ class TestSearchAllEndpoint:
         """Defense in depth: a peer's rows are re-redacted locally even though a
         well-behaved peer already redacted them."""
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         mgr = _Mgr({"a": (True, {"sessions": [{"key": "r", "title": f"creds {secret}"}]})})
         state = _state([], mgr)
 

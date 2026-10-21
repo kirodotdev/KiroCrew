@@ -88,12 +88,10 @@ FAKE_IMAGE_WIDTH = 1
 FAKE_IMAGE_HEIGHT = 1
 
 # ── Redaction fixtures ──
-# The canonical PUBLIC documentation access-key id (it appears verbatim in AWS's
-# own docs and in this repo's redaction tests) plus two exfiltration-shaped URLs
-# using IANA-reserved documentation ranges. None of these is a real credential or
-# a reachable host; they exist so a test can assert that the rendered tree comes
-# back MASKED.
-FAKE_CREDENTIAL_FIXTURE = "AKIA" "IOSFODNN7EXAMPLE"
+# A GitLab-shaped fake token plus two exfiltration-shaped URLs using IANA-reserved
+# documentation ranges. None of these is a real credential or a reachable host;
+# they exist so a test can assert that the rendered tree comes back MASKED.
+FAKE_CREDENTIAL_FIXTURE = "glpat-" "IOSFODNN7EXAMPLE"
 FAKE_EXFIL_URL = (
     "https://evil.example.com/collect?data="
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

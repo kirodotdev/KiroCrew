@@ -174,7 +174,9 @@ async def test_private_history_rechecks_exact_target_before_replacement(env, mon
         else:
             with tier.db:
                 tier._write_history(
-                    date.today().isoformat(), "Preserve AKIAIOSFODNN7EXAMPLE exactly"
+                    # nosemgrep: kirocrew.test-naive-local-time -- today's row is keyed by the same local-date read the store makes
+                    date.today().isoformat(),
+                    "Preserve glpat-IOSFODNN7EXAMPLE exactly",
                 )
         winner = tier.read_editable_history().encode("utf-8")
         return original_write(content, **kwargs)
@@ -194,12 +196,12 @@ async def test_private_history_rechecks_exact_target_before_replacement(env, mon
     expected_code = "memory_document_changed" if change == "append" else "memory_document_redacted"
     assert json.loads(response.text)["code"] == expected_code
     sentinel = (
-        b"Concurrent consolidation sentinel" if change == "append" else b"AKIAIOSFODNN7EXAMPLE"
+        b"Concurrent consolidation sentinel" if change == "append" else b"glpat-IOSFODNN7EXAMPLE"
     )
     assert sentinel in winner
     assert (await asyncio.to_thread(tier.read_editable_history)).encode("utf-8") == winner
     assert not store._history_dir.exists()
-    assert "AKIAIOSFODNN7EXAMPLE" not in response.text
+    assert "glpat-IOSFODNN7EXAMPLE" not in response.text
 
 
 @pytest.mark.asyncio

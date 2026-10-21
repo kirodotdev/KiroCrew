@@ -73,10 +73,8 @@ def _oauth_component_is_unsafe(text: str) -> bool:
         # REJECTION itself can fire on (plus-delimited private-key headers,
         # SSH keys, token shapes) — a component must never be echoed when it
         # matches what the gate refused. Over-matching only redacts more.
-        if (
-            _redaction._contains_fixed_credential(candidate)
-            or _redaction._text_contains_bare_secret(candidate)
-            or _exfil._EXFIL_PATTERNS.search(candidate)
+        if _redaction._contains_fixed_credential(candidate) or _exfil._EXFIL_PATTERNS.search(
+            candidate
         ):
             return True
         # unquote_plus, not unquote: form-encoded material delimits with "+"

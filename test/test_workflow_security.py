@@ -498,7 +498,7 @@ class TestAgentExecRedaction:
         fake_sessions = MagicMock()
         fake_provider = FakeProvider(
             [
-                FakeEvent(kind="text_chunk", title="", text="key=AKIAIOSFODNN7EXAMPLE"),
+                FakeEvent(kind="text_chunk", title="", text="key=glpat-IOSFODNN7EXAMPLE"),
                 FakeEvent(kind="complete", title=""),
             ]
         )
@@ -508,7 +508,7 @@ class TestAgentExecRedaction:
         agent_fn = build_agent_fn(fake_sessions, run_id="test-run")
         result = await agent_fn("show me creds", {})
         # The AWS key should be redacted
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
 
     @pytest.mark.asyncio
     async def test_safe_output_unchanged(self):

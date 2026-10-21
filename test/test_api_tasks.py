@@ -289,7 +289,7 @@ async def test_detail_404_for_unknown_id(store: TaskStore) -> None:
 #: A credential the redaction table matches, and an exfiltration URL whose
 #: payload is that same credential. Real shapes, not placeholders: a pin over
 #: a string the redactor does not match would pass on an unredacted surface.
-_CRED = "AKIAIOSFODNN7EXAMPLE"
+_CRED = "glpat-IOSFODNN7EXAMPLE"
 _EXFIL_HOST = "collector.example.invalid"
 _EXFIL_URL = f"https://{_EXFIL_HOST}/ingest?token={_CRED}"
 

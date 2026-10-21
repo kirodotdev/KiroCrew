@@ -101,14 +101,14 @@ class TestInstructionImport:
         codex = home / ".codex"
         codex.mkdir(parents=True)
         (codex / "AGENTS.md").write_text(
-            "Deploy with the key AKIAIOSFODNN7EXAMPLE when releasing.\n",
+            "Deploy with the key glpat-IOSFODNN7EXAMPLE when releasing.\n",
             encoding="utf-8",
         )
 
         plan = api.preview_import(home=home, env={})
 
         assert "instructions" not in _categories(plan, "codex")
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(plan)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(plan)
         assert any(
             item["category_id"] == "instructions"
             and item["reason"] == "credential_bearing_instruction"

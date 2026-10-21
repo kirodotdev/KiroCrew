@@ -824,9 +824,9 @@ class TestReadSurfaces:
     def test_running_agents_for_redacts_task(self) -> None:
         mgr = _manager()
         mgr._agents["a"] = _info(
-            "a", task="use AKIAIOSFODNN7EXAMPLE now", parent_session_key="dash:1"
+            "a", task="use glpat-IOSFODNN7EXAMPLE now", parent_session_key="dash:1"
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in mgr.running_agents_for("dash:1")[0]["task"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in mgr.running_agents_for("dash:1")[0]["task"]
 
     def test_task_memory_rows_reports_sampled_flag(self) -> None:
         mgr = _manager()
@@ -892,16 +892,16 @@ class TestReadSurfaces:
         The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
         the boundary loses its tail and does not match the credential regex —
         the raw prefix escaped into the session-memory surface.
-        The fabricated AKIA-shaped literal is inlined rather than bound to a
+        The fabricated glpat-shaped literal is inlined rather than bound to a
         ``secret``-named variable, which would trip CodeQL's name-based
         sensitive-source heuristic on this real call path.
         """
         # cut lands 8 chars into the fabricated 20-char key
-        task = "x" * 72 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
+        task = "x" * 72 + "glpat-IOSFODNN7EXAMPLE" + " trailing"
         mgr = _manager()
         mgr._agents["a"] = _info("a", task=task, parent_session_key="dash:1")
         row = {r["id"]: r for r in mgr.task_memory_rows()}["a"]
-        assert "AKIA" not in row["task"]
+        assert "glpat-" not in row["task"]
         assert len(row["task"]) <= 80
 
     def test_task_memory_rows_plain_task_truncation_unchanged(self) -> None:

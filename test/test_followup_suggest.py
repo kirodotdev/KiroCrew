@@ -371,7 +371,7 @@ class TestFollowupEndpoint:
     async def test_credentials_are_redacted_before_broadcast(self):
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/followup",
@@ -394,7 +394,7 @@ class TestFollowupEndpoint:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/followup",
-                json={"items": [_item(branch="AKIAIOSFODNN7EXAMPLE")]},
+                json={"items": [_item(branch="glpat-IOSFODNN7EXAMPLE")]},
             )
             assert resp.status == 200
         payload = state.deliver_ws_owners.call_args[0][1]

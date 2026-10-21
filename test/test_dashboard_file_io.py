@@ -292,7 +292,7 @@ class TestFileRead:
         # the redaction tag itself. A synthetic key shape, never a real secret.
         import hashlib
 
-        key = "A" + "KIA" + hashlib.sha256(b"kc-file-read-header").hexdigest().upper()[:16]
+        key = "gl" + "pat-" + hashlib.sha256(b"kc-file-read-header").hexdigest()[:20]
         f = tmp_path / "notes.txt"
         f.write_text(f"token = {key}\n", encoding="utf-8")
         plain = tmp_path / "plain.txt"

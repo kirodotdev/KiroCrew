@@ -186,7 +186,7 @@ class TestFolderCreate:
             "GET /api/chat/slots": _SLOTS,
             "POST /api/chat/folders": _post,
         }
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "xoxb-IOSFODNN7EXAMPL"
         args = {"name": "leaf", "parent": f"keys-{secret}"}
         _, first = _call("chat_folder_create", args, routes)
         _, second = _call("chat_folder_create", args, routes)
@@ -207,7 +207,7 @@ class TestFolderCreate:
         The segment is exactly 100 characters as typed; its access key redacts
         to a longer marker, so the stored form would be 102.
         """
-        seg = "k" * 79 + " AKIAIOSFODNN7EXAMPLE"
+        seg = "k" * 79 + " xoxb-IOSFODNN7EXAMPL"
         assert len(seg) == 100
         out, dash = _call("chat_folder_create", {"name": "leaf", "parent": seg})
         assert "too long" in out
@@ -220,7 +220,7 @@ class TestFolderCreate:
         during redaction would be persisted truncated — unmatchable by any later
         path, the same mismatch the segment walk refuses.
         """
-        out, dash = _call("chat_folder_create", {"name": "k" * 79 + " AKIAIOSFODNN7EXAMPLE"})
+        out, dash = _call("chat_folder_create", {"name": "k" * 79 + " xoxb-IOSFODNN7EXAMPL"})
         assert "too long after redaction" in out
         assert _writes(dash) == []
 
@@ -440,7 +440,7 @@ class TestFolderNameRedaction:
     every visit, so the name takes the egress pass BEFORE the write.
     """
 
-    LEAKY = "AKIAIOSFODNN7EXAMPLE"
+    LEAKY = "xoxb-IOSFODNN7EXAMPL"
 
     def test_leaf_name_is_redacted_before_the_write(self) -> None:
         _, dash = _call(
@@ -795,7 +795,7 @@ class TestFolderMoveSession:
         echoes the key verbatim, so it needs the same pass or a secret reaches
         the model and the tool-result audit.
         """
-        leaky = "AKIAIOSFODNN7EXAMPLE"
+        leaky = "xoxb-IOSFODNN7EXAMPL"
         rows = _slots_with_caller({"key": leaky, "title": "Leaky", "folder_id": "aaaaaaaaaaaa"})
         out, _ = _call(
             "chat_folder_move_session",
@@ -807,7 +807,7 @@ class TestFolderMoveSession:
 
     def test_ambiguous_session_refusal_is_redacted(self) -> None:
         """The refusal lists candidate slot keys — those need redaction too."""
-        leaky = "AKIAIOSFODNN7EXAMPLE"
+        leaky = "xoxb-IOSFODNN7EXAMPL"
         rows = [
             {"key": leaky, "title": "Same", "folder_id": ""},
             {"key": "chat-2-200", "title": "Same", "folder_id": ""},
@@ -858,10 +858,10 @@ class TestNamesTheEndpointWouldTruncate:
         ``chat_folder_create`` proves nothing, because that tool wraps its whole
         error in ``redact()`` and would mask an unredacted message.
         """
-        leaky = "AKIAIOSFODNN7EXAMPLE" + "z" * 90
+        leaky = "xoxb-IOSFODNN7EXAMPL" + "." * 90  # a "." ends the token
         out, dash = _call("chat_folder_move", {"folder": f"Travel/{leaky}"})
         assert "too long" in out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "xoxb-IOSFODNN7EXAMPL" not in out
         assert _writes(dash) == []
 
     def test_a_segment_at_the_limit_still_creates(self) -> None:

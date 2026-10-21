@@ -199,7 +199,7 @@ class TestSerializeShape:
         """
         from kiro_crew.dashboard.handlers.artifacts import _serialize
 
-        leak = "AKIAIOSFODNN7EXAMPLE"
+        leak = "glpat-IOSFODNN7EXAMPLE"
         art = store.create_image(
             name=f"pic {leak}",
             image_bytes=_png_bytes(4, 4),

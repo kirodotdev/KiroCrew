@@ -22,7 +22,7 @@ KEY = "dashboard_chat-1-1700000000"
 #: Storage is off on a platform with no uid to prove the directory is owned
 #: (``test_storage_stays_off_without_a_uid`` covers that branch on POSIX).
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="stored verdicts are POSIX-only")
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = "glpat-IOSFODNN7EXAMPLE"
 HOST = "docs.contoso.example"
 #: Clean only while HOST is exempt: its query trips the aggregate-length heuristic.
 LINK = f"https://{HOST}/view?" + "&".join(f"p{i}=value{i}" for i in range(30))

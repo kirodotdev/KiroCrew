@@ -159,10 +159,10 @@ class TestTagCreate:
     def test_a_credential_in_the_name_is_redacted_before_the_write(self) -> None:
         _, dash = _call(
             "chat_tag_create",
-            {"name": "key AKIAIOSFODNN7EXAMPLE"},
+            {"name": "key glpat-IOSFODNN7EXAMPLE"},
             _reads(post={"id": "dddddddddddd", "name": "x"}),
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in _writes(dash)[-1].body["name"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in _writes(dash)[-1].body["name"]
 
     def test_the_schema_refuses_an_overlong_name(self) -> None:
         out, dash = _call("chat_tag_create", {"name": "x" * 61})
@@ -210,10 +210,10 @@ class TestTagUpdate:
     def test_a_credential_in_the_new_name_is_redacted_before_the_write(self) -> None:
         _, dash = _call(
             "chat_tag_update",
-            {"tag": "Blocked", "name": "key AKIAIOSFODNN7EXAMPLE"},
+            {"tag": "Blocked", "name": "key glpat-IOSFODNN7EXAMPLE"},
             _reads(patch={"id": "bbbbbbbbbbbb", "name": "x"}),
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in _writes(dash)[-1].body["name"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in _writes(dash)[-1].body["name"]
 
     def test_an_unverifiable_caller_cannot_update(self) -> None:
         out, dash = _call("chat_tag_update", {"tag": "Blocked", "name": "X"}, caller=_UNVERIFIED)

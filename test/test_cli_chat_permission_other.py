@@ -115,7 +115,7 @@ class TestChatPermissionOtherReply(_TestChatPermissionRequestHarness):
     async def test_the_model_authored_title_is_redacted_in_the_reply_notice(self, monkeypatch):
         import kiro_crew.cli_chat as cli_chat
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-" "IOSFODNN7EXAMPLEABCD"
         notice = cli_chat._user_reply_notice(f"upload with {secret}", _REPLY)
         assert secret not in notice
         assert notice.startswith(cli_chat._USER_REPLY_TAG)

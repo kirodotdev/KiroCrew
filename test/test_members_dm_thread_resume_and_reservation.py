@@ -664,7 +664,7 @@ class TestOpenAiCompatPin:
         assert slot.agent == CREW
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "crew password=shortvalue"])
+    @pytest.mark.parametrize("name", ["glpat-IOSFODNN7EXAMPLE", "crew password=shortvalue"])
     async def test_completion_refuses_a_redaction_requiring_stored_member_pin(self, name):
         import asyncio as _asyncio
 

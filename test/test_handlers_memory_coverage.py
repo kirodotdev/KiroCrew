@@ -52,7 +52,7 @@ from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
-_CRED = "AKIAIOSFODNN7EXAMPLE"
+_CRED = "glpat-IOSFODNN7EXAMPLE"
 
 
 # ---------------------------------------------------------------------------

@@ -146,11 +146,13 @@ def test_a_report_page_takes_the_plain_scrub_exactly(_floor_monkeypatch) -> None
     """A page gets the same scrub as any other goal string; no payload is exempt.
 
     A report page embeds no raster image by contract, so a base64 run it carries
-    anyway (here a seeded blob in a data URI) is redacted as the plain scrub would.
+    anyway (here seeded bytes around an encoded token, in a data URI) is
+    redacted as the plain scrub would.
     """
     from kiro_crew import artifacts as artifacts_mod
 
-    blob = base64.b64encode(random.Random(7).randbytes(300)).decode()
+    raw = random.Random(7).randbytes(120) + f" token {TOKEN} ".encode() + bytes(120)
+    blob = base64.b64encode(raw).decode()
     page = PAGE + f'<img src="data:image/png;base64,{blob}"><p>{TOKEN}</p>'
     plain = member_goals.scrub_text(page)
     assert blob not in plain and TOKEN not in plain

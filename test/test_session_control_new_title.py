@@ -78,8 +78,8 @@ _TAIL = "ABCDEFGHIJKLMNOP"
     "title",
     [
         # A format character splitting a key: refused, so it is never stored.
-        "deploy AKIA\u200b" + _TAIL,
-        "deploy AKIA\u2060" + _TAIL,
+        "deploy glpat-\u200b" + _TAIL,
+        "deploy glpat-\u2060" + _TAIL,
         "deploy\u00adprod",
         "\ufeffdeploy prod",
         # Text-direction controls reorder the sidebar label.
@@ -93,7 +93,7 @@ _TAIL = "ABCDEFGHIJKLMNOP"
         "\u2800\u2800",
         "\ufe0f\ufe0e",
         # A blank glyph splits a key past the redactors.
-        "deploy AKIA\u2800" + _TAIL,
+        "deploy glpat-\u2800" + _TAIL,
         # A sidebar title is one line.
         "two\nlines",
         "esc\x1b[31m",
@@ -135,7 +135,7 @@ def test_a_secret_split_by_a_kept_invisible_character_is_redacted(tmp_path, verb
     state = _make_state(tmp_path)
     caller = _caller(state)
 
-    out = verb(state, caller, f"deploy AKIA{joiner}{_TAIL}")
+    out = verb(state, caller, f"deploy glpat-{joiner}{_TAIL}")
 
     child = state.get_slot(out["target"])
     assert child is not None
@@ -190,14 +190,14 @@ def test_a_long_title_is_cut_after_the_secret_is_redacted(tmp_path, verb):
     redactor pattern matches; the scrub runs on the whole title, then the cut."""
     state = _make_state(tmp_path)
     caller = _caller(state)
-    title = "x" * 190 + " AKIA" + _TAIL
+    title = "x" * 190 + " glpat-" + _TAIL
 
     out = verb(state, caller, title)
 
     child = state.get_slot(out["target"])
     assert child is not None
     assert len(child.title) == 200
-    assert "AKIA" not in child.title
+    assert "glpat-" not in child.title
     assert child.title.startswith("x" * 190)
 
 

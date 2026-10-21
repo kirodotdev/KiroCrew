@@ -114,7 +114,7 @@ async def test_session_new_timeout_scrubs_a_failed_servers_error_text():
         rt,
         METHOD_MCP_SERVER_INIT_FAILURE,
         "gamma",
-        error="connect failed: https://evil.example.com/?token=AKIAIOSFODNN7EXAMPLE",
+        error="connect failed: https://evil.example.com/?token=glpat-IOSFODNN7EXAMPLE",
     )
     _timeout(rt)
 
@@ -126,7 +126,7 @@ async def test_session_new_timeout_scrubs_a_failed_servers_error_text():
     # The credential is gone. The host survives inside the redactor's own marker
     # by design -- an operator chasing an exfil attempt needs to know where it
     # pointed -- so assert on the marker rather than on the host's absence.
-    assert "AKIAIOSFODNN7EXAMPLE" not in text
+    assert "glpat-IOSFODNN7EXAMPLE" not in text
     assert "REDACTED" in text
 
 
@@ -293,7 +293,7 @@ async def test_a_credential_shaped_server_name_is_scrubbed():
     so asserting on it would pass whether or not the scrub runs."""
     rt = _runtime()
     _stage(
-        rt, METHOD_MCP_SERVER_INIT_FAILURE, "svc-AKIAIOSFODNN7EXAMPLE", error="nope"
+        rt, METHOD_MCP_SERVER_INIT_FAILURE, "svc-glpat-IOSFODNN7EXAMPLE", error="nope"
     )
     _timeout(rt)
 
@@ -301,7 +301,7 @@ async def test_a_credential_shaped_server_name_is_scrubbed():
         await rt.create_session(mcp_servers=_roster("alpha"))
 
     text = str(caught.value)
-    assert "AKIAIOSFODNN7EXAMPLE" not in text
+    assert "glpat-IOSFODNN7EXAMPLE" not in text
     assert "svc-" in text  # scrubbed, not dropped -- the name stays identifiable
 
 

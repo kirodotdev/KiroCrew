@@ -218,7 +218,7 @@ class TestSlotDetailPaginationUnflushedTail:
         from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
-        raw = "AKIAIOSFODNN7EXAMPLE"
+        raw = "glpat-IOSFODNN7EXAMPLE"
         loaded, _ = redact_exfiltration_urls(raw)
         loaded, _ = redact_credentials(loaded)
         assert loaded != raw, "fixture no longer exercises a real redaction"

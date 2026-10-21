@@ -83,7 +83,7 @@ class TestHandleCronListNextRun:
 
     def test_message_is_redacted(self, cron_service: CronService) -> None:
         job = _make_job()
-        job.message = "token=AKIAIOSFODNN7EXAMPLE"
+        job.message = "token=glpat-IOSFODNN7EXAMPLE"
         cron_service._jobs = [job]
         # `security.redact` is the one pass now (it runs the exfiltration and
         # credential scanners internally and returns a plain str), so the assertion
@@ -96,7 +96,7 @@ class TestHandleCronListNextRun:
         mock_redact.assert_any_call(job.message)
         assert result is not None
         assert "[REDACTED]" in result
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
 
     def test_a_real_credential_in_a_message_does_not_survive_the_listing(
         self, cron_service: CronService
@@ -104,11 +104,11 @@ class TestHandleCronListNextRun:
         # Unmocked, so it exercises the real scanner rather than a stub that
         # returns whatever the test wanted.
         job = _make_job()
-        job.message = "token=AKIA" + "IOSFODNN7EXAMPLE"
+        job.message = "token=glpat-" + "IOSFODNN7EXAMPLE"
         cron_service._jobs = [job]
         result = asyncio.run(_handle_cron_command("cron list", cron_service, "C123", "t123"))
         assert result is not None
-        assert "AKIA" + "IOSFODNN7EXAMPLE" not in result
+        assert "glpat-" + "IOSFODNN7EXAMPLE" not in result
         assert "REDACTED" in result
 
     def test_remove_all_redacts_name(self, cron_service: CronService) -> None:
@@ -116,7 +116,7 @@ class TestHandleCronListNextRun:
         # persisted conversation log); j.name is free-form user/LLM-supplied,
         # so it must be redacted like j.message is in the `cron list` branch.
         job = _make_job()
-        job.name = "token=AKIAIOSFODNN7EXAMPLE"
+        job.name = "token=glpat-IOSFODNN7EXAMPLE"
         cron_service._jobs = [job]
         with patch("kiro_crew.messaging.commands.redact",
                    return_value="[REDACTED]") as mock_redact:
@@ -124,5 +124,5 @@ class TestHandleCronListNextRun:
         mock_redact.assert_any_call(job.name)
         assert result is not None
         assert "[REDACTED]" in result
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert not cron_service.list_jobs(include_disabled=True)  # jobs still removed

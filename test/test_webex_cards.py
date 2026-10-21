@@ -76,14 +76,14 @@ class TestCardShape:
     def test_stripping_the_markup_cannot_reassemble_a_credential(self) -> None:
         """The sanitizer is itself the reassembling transformation.
 
-        ``AKIA**IOSF**ODNN7EXAMPLE`` does not match a credential pattern as the
+        ``glpat-**IOSF**ODNN7EXAMPLE`` does not match a credential pattern as the
         driver streamed it, and removing the ``*`` characters — which the sanitizer
         does on purpose — would hand the room the intact key. So the scan runs on
         the stripped form, after the strip.
         """
-        label = _safe_tool_label("AKIA**IOSF**ODNN7EXAMPLE")
+        label = _safe_tool_label("glpat-**IOSF**ODNN7EXAMPLE")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in label
+        assert "glpat-IOSFODNN7EXAMPLE" not in label
         assert "REDACTED" in label
 
     def test_a_tool_name_keeps_its_underscores(self) -> None:

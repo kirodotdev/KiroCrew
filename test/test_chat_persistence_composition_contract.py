@@ -1103,7 +1103,7 @@ class TestPatchReach:
         original = cp.redact_credentials
         with pytest.MonkeyPatch.context() as patched:
             patched.setattr(cp, "redact_credentials", lambda text: ("x", []))
-            entry = cp._build_message_entry_uncached({"role": "assistant", "content": "AKIA"})
+            entry = cp._build_message_entry_uncached({"role": "assistant", "content": "glpat-"})
             assert entry is not None and entry["content"] == "x"
         assert cp.redact_credentials is original
 
@@ -1158,7 +1158,7 @@ def _scenario_full_save(state) -> dict:
     _rows(
         slot,
         ("user", "hello", 6, {"mid": "m-1", HUMAN_TURN_META_KEY: True}),
-        ("assistant", "the key is AKIAIOSFODNN7EXAMPLE", 7, {"mid": "m-2"}),
+        ("assistant", "the key is glpat-IOSFODNN7EXAMPLE", 7, {"mid": "m-2"}),
         ("system", "a notice", 8, {"mid": "m-3"}),
     )
     ok = cp._save_slot_to_history(state, slot, force=True)

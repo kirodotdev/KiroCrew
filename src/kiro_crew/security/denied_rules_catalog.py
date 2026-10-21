@@ -151,7 +151,7 @@ _ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
 # authored for does not have; and blocking only the ``grep`` spelling would be no
 # control at all, since ``awk``, ``sed`` and a plain ``cat`` of the same file read
 # it just as well and are equally unmatched. The output layer's
-# ``redact_credentials`` (AKIA/ASIA plus high-entropy detection) is what stands
+# ``redact_credentials`` (labelled secrets plus high-entropy detection) is what stands
 # between that shape and a chat surface.
 _ENV_DUMP_GREP_AWS_PATTERN = (
     rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"

@@ -1908,13 +1908,13 @@ class TestNormalizeBannerTruncate:
     def test_a_credential_straddling_the_cap_is_masked_not_sliced(self) -> None:
         # 20-char key starts 10 chars before the cap and runs past it: a
         # slice-before-redact (the old ``objective[:cap]``) would keep the raw
-        # 10-char prefix ``AKIAIOSFOD`` because the truncated token does not
+        # 10-char prefix ``glpat-IOSFOD`` because the truncated token does not
         # match the scanner.
-        straddling = "x" * (MAX_BANNER_CHARS - 10) + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        straddling = "x" * (MAX_BANNER_CHARS - 10) + "glpat-IOSFODNN7EXAMPLE" + " tail"
         value, error = normalize_banner(straddling, absent_ok=True, truncate=True)
         assert error is None
         assert len(value) <= MAX_BANNER_CHARS
-        assert "AKIA" not in value, "a raw credential prefix survived the cap cut"
+        assert "glpat-" not in value, "a raw credential prefix survived the cap cut"
 
     def test_a_long_credential_free_objective_truncates_instead_of_dropping(self) -> None:
         value, error = normalize_banner(

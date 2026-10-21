@@ -46,7 +46,7 @@ DISCORD_KEY = "discord:kirocrew:direct:U9"
 DISCORD_CONVERSATION = "C_DISCORD"
 
 #: A credential shaped exactly like the one the redactors exist to catch.
-LEAKED_KEY = "AKIAIOSFODNN7EXAMPLE"
+LEAKED_KEY = "glpat-IOSFODNN7EXAMPLE"
 
 
 # ─── Doubles ─────────────────────────────────────────────────────────────
@@ -877,12 +877,12 @@ class TestChannelEgressMeetsTheDisplayFloor:
     Cron results, run-failure alerts, crash alerts and subagent completions all
     land here, and NONE of them passes a renderer -- a renderer is where a turn
     gets the display-form floor. So a literal-only scan at this chokepoint is a
-    gap every one of those callers inherits: neither `AKIA**<rest>**` nor
-    `[AKIA](https://x)<rest>` matches a credential pattern as written, and the
+    gap every one of those callers inherits: neither `glpat-**<rest>**` nor
+    `[glpat-](https://x)<rest>` matches a credential pattern as written, and the
     client renders the markup away and shows the reader an intact key.
     """
 
-    _COLLAPSING = "AKIA**IOSFODNN7EXAMPLE**"
+    _COLLAPSING = "glpat-**IOSFODNN7EXAMPLE**"
 
     @pytest.mark.asyncio
     async def test_a_markdown_collapse_credential_never_reaches_the_transport(self):
@@ -896,7 +896,7 @@ class TestChannelEgressMeetsTheDisplayFloor:
             )
         body = _sent(tr)
         assert body
-        assert "AKIAIOSFODNN7EXAMPLE" not in body.replace("*", "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in body.replace("*", "")
         assert self._COLLAPSING not in body
 
     @pytest.mark.asyncio

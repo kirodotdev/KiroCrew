@@ -111,21 +111,21 @@ class TestEndpointAuthoredTextIsSanitised:
     def test_a_credential_echoed_by_the_endpoint_does_not_reach_the_detail(
         self, transport, install_ceiling
     ):
-        leaky = b'{"Authorization": "Bearer AKIAIOSFODNN7EXAMPLE" oops'
+        leaky = b'{"Authorization": "Bearer glpat-IOSFODNN7EXAMPLE" oops'
         source = transport(_static_fetcher(pd.FetchedPolicy(body=leaky)))
         install_ceiling(governance.parse_policy(_doc("running", distribution={"source": source})))
         outcome = pd.refresh_now()
         assert outcome.status == pd.REFRESH_REJECTED
-        assert "AKIAIOSFODNN7EXAMPLE" not in outcome.detail
+        assert "glpat-IOSFODNN7EXAMPLE" not in outcome.detail
 
     def test_the_sanitiser_runs_both_passes(self):
         """The source elision AND the shared credential chain, not one or the other."""
         source = "https://config.corp.example/p.json"
-        text = f"fetching {source} returned AKIAIOSFODNN7EXAMPLE"
+        text = f"fetching {source} returned glpat-IOSFODNN7EXAMPLE"
         clean = pd._sanitize_detail(text, source)
         assert source not in clean
         assert "config.corp.example" not in clean
-        assert "AKIAIOSFODNN7EXAMPLE" not in clean
+        assert "glpat-IOSFODNN7EXAMPLE" not in clean
 
 
 class TestTheSignatureAuditLabelIsRedacted:

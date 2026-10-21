@@ -365,19 +365,19 @@ _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 #: a cut may fall (``test_display_split_safety.py``) and the renderer that applies
 #: it (``test_wecom_renderer.py``) -- and a duplicated fixture table drifts.
 CREDENTIAL_STRADDLE_SHAPES = [
-    pytest.param("[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE", id="link-target-comma"),
+    pytest.param("[glpat-](https://ex.test/a,b)", "IOSFODNN7EXAMPLE", id="link-target-comma"),
     pytest.param(
         "Authorization: Bearer",
         " abcdefghijklmnopqrstuvwxyz0123456789",
         id="header-whitespace",
     ),
-    pytest.param("AKIAIOSF_", "_ODNN7EXAMPLE", id="underscore-emphasis"),
-    pytest.param("AKIAIOSF~", "~ODNN7EXAMPLE", id="tilde-emphasis"),
-    pytest.param("https://evil.test/?q=AKIAIOSFODNN7", "EXAMPLE.", id="url-punctuation"),
-    pytest.param("[l](https://ex.test/x/AKIAIOSF", "ODNN7EXAMPLE)", id="cut-inside-a-url"),
+    pytest.param("glpat-IOSF_", "_ODNN7EXAMPLE", id="underscore-emphasis"),
+    pytest.param("glpat-IOSF~", "~ODNN7EXAMPLE", id="tilde-emphasis"),
+    pytest.param("https://evil.test/?q=glpat-IOSFODNN7", "EXAMPLE.", id="url-punctuation"),
+    pytest.param("[l](https://ex.test/x/glpat-IOSF", "ODNN7EXAMPLE)", id="cut-inside-a-url"),
     pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
     pytest.param(f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"),
-    pytest.param("AKIAIOSF", "ODNN7EXAMPLE", id="no-markup-at-all"),
+    pytest.param("glpat-IOSF", "ODNN7EXAMPLE", id="no-markup-at-all"),
 ]
 
 

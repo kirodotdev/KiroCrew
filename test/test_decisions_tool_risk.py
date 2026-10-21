@@ -266,21 +266,21 @@ class TestTheRequest:
         with _answering(tr.TIER_RISKY, seen=seen):
             record = await tr.risk_record(
                 tool="bash",
-                arguments="aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
+                arguments="aws configure set aws_access_key_id glpat-IOSFODNN7EXAMPLE",
                 policy="trust",
                 session_key="chat-1",
             )
 
         assert record is not None, "the call is annotated rather than dropped"
         sent = seen[0]["state"]["arguments"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent
+        assert "glpat-IOSFODNN7EXAMPLE" not in sent
         assert "REDACTED" in sent
 
     @pytest.mark.asyncio
     async def test_the_redacted_state_gets_past_the_real_scrub(self, home):
         """End to end through ``gate.scrub_reason``, the code that actually decides."""
         state = tr.build_state(
-            "bash", "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE", "set it up"
+            "bash", "aws configure set aws_access_key_id glpat-IOSFODNN7EXAMPLE", "set it up"
         )
 
         assert gate.scrub_reason(state, tr.questions()) is None
@@ -290,7 +290,7 @@ class TestTheRequest:
         """The counterfactual, so the redaction above is shown to be load-bearing."""
         raw = {
             "tool": "bash",
-            "arguments": "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
+            "arguments": "aws configure set aws_access_key_id glpat-IOSFODNN7EXAMPLE",
         }
 
         assert gate.scrub_reason(raw, tr.questions()) == gate.ERROR_SCRUBBED_CREDENTIAL

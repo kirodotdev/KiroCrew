@@ -394,7 +394,7 @@ class TestNoRowidIsBelowTheScan:
     page) from merely lowering the old one.
     """
 
-    TOKEN = "AKIAIOSFODNN7EXAMPLE"
+    TOKEN = "glpat-IOSFODNN7EXAMPLE"
 
     def _staged(self, tmp_path):
         stage = tmp_path / "stage"
@@ -447,7 +447,7 @@ class TestAWriteOnlyTriggerThatReplacesARowIsRefused:
     product's own external-content index -- so the narrowness here is the point.
     """
 
-    TOKEN = "AKIAIOSFODNN7EXAMPLE"
+    TOKEN = "glpat-IOSFODNN7EXAMPLE"
 
     def _staged(self, tmp_path, schema: str, *, with_other: bool):
         stage = tmp_path / "stage"
@@ -524,7 +524,7 @@ class TestFtsDetectionIsCaseInsensitive:
     `content=''` would trade a false refusal for a real leak.
     """
 
-    TOKEN = "AKIAIOSFODNN7EXAMPLE"
+    TOKEN = "glpat-IOSFODNN7EXAMPLE"
 
     def _staged(self, tmp_path, ddl: str):
         stage = tmp_path / "stage"
@@ -573,7 +573,7 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
     covers a credential ASSEMBLED across columns: no single value matches, the DDL holds
     nothing, and the generated column materialises the whole key.
 
-    Reproduced before the fix with `a='AKIA'`, `b='IOSFODNN7EXAMPLE'` and
+    Reproduced before the fix with `a='glpat-'`, `b='IOSFODNN7EXAMPLE'` and
     `joined AS (a || b) STORED`: nothing refused, and the outbound copy carried the key.
 
     Refused rather than redacted, because a derived column cannot be rewritten in place. The
@@ -582,7 +582,7 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
     keep working, or this hardening becomes an outage for every full-text backup.
     """
 
-    HEAD = "AKIA"
+    HEAD = "glpat-"
     TAIL = "IOSFODNN7EXAMPLE"
 
     def _staged(self, tmp_path, ddl: str, rows: list[tuple]):
@@ -672,7 +672,7 @@ class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
     file for a database that still answers a search for it.
     """
 
-    HEAD = "AKIA"
+    HEAD = "glpat-"
     TAIL = "IOSFODNN7EXAMPLE"
 
     def _staged(self, tmp_path, *, go_stale: bool):
@@ -701,7 +701,8 @@ class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
         try:
             return conn.execute(
                 "SELECT count(*) FROM docs_fts WHERE docs_fts MATCH ?",
-                (self.HEAD + self.TAIL,),
+                # A phrase: the tokenizer splits the key at its `-`.
+                (f'"{self.HEAD}{self.TAIL}"',),
             ).fetchone()[0]
         finally:
             conn.close()
@@ -714,7 +715,7 @@ class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
 
         assert self._searchable(stage) == 0, "stale index still answers a search for the key"
         raw = (stage / "memory.db").read_bytes()
-        assert (self.HEAD + self.TAIL).lower().encode() not in raw
+        assert self.TAIL.lower().encode() not in raw
 
     def test_the_ordinary_case_still_works(self, tmp_path):
         stage = self._staged(tmp_path, go_stale=False)
@@ -738,7 +739,7 @@ class TestATriggerOverwritingAnotherTableIsRefused:
     must stay allowed; without them this class would read as a licence to widen the rule.
     """
 
-    KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+    KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 
     def _run(self, tmp_path, ddl: str, insert_body: str = "items"):
         stage = tmp_path / "stage"
@@ -840,7 +841,7 @@ class TestAWideEncodedCredentialCannotRideOutUnscanned:
     without refusing files that carry nothing -- both halves are asserted below.
     """
 
-    KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+    KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 
     def _stage(self, tmp_path):
         stage = tmp_path / "stage"

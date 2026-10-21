@@ -267,7 +267,7 @@ class TestGitPushEnforcement:
         # on the identifier, so a name like ``secret`` here makes this AWS
         # example key taint the pre-existing ``logger.warning`` calls that
         # ``is_denied`` reaches on its failure paths.
-        planted = "AKIA" + "IOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+        planted = "glpat-" + "IOSFODNN7EXAMPLE"  # a GitLab-shaped fake token
         prefix = f"{PUSH} origin Feature-"
         pad = "b" * (190 - len(prefix))  # key starts at 190, so the clip cuts it
         command = prefix + pad + planted + "-branch-suffix"

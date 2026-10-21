@@ -440,7 +440,7 @@ class TestLoadNormalizesANonStringBanner:
         the entire record — args included — into the emitted text. It is kept as
         a cheap guard for the non-caplog handler shape, not as proven coverage.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "xoxb-IOSFODNN7EXAMPL"
         self._write_store(tmp_path, [secret])
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
@@ -542,15 +542,15 @@ class TestLoadEnforcesTheBannerCap:
         file, direct agent ``svc.add``, or persisted before this scrub existed) is
         credential-scrubbed at load and re-persisted, so ``GET /api/autonudge``
         (``asdict``), the WS broadcast, and the fire path can never serve it raw."""
-        self._write_store(tmp_path, "deploy with AKIAIOSFODNN7EXAMPLE now")
+        self._write_store(tmp_path, "deploy with xoxb-IOSFODNN7EXAMPL now")
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             await svc.start()
             stored = svc._loops["abc123"].banner
-            assert "AKIAIOSFODNN7EXAMPLE" not in stored, "the credential survived the load scrub"
+            assert "xoxb-IOSFODNN7EXAMPL" not in stored, "the credential survived the load scrub"
             assert "[REDACTED" in stored, "the load-path scrub did not run"
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
-            assert "AKIAIOSFODNN7EXAMPLE" not in on_disk["loops"][0]["banner"]
+            assert "xoxb-IOSFODNN7EXAMPL" not in on_disk["loops"][0]["banner"]
         finally:
             svc.stop()
 
@@ -561,7 +561,7 @@ class TestLoadEnforcesTheBannerCap:
         credential is masked and kept — the test above), but an over-cap value is
         treated as absent, so no raw prefix of a straddling secret can survive a
         slice — there is no slice."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "xoxb-IOSFODNN7EXAMPL"
         straddling = "x" * (MAX_BANNER_CHARS - 10) + secret + " trailing context " * 5
         assert len(straddling) > MAX_BANNER_CHARS, "fixture must exceed the cap"
         self._write_store(tmp_path, straddling)
@@ -570,7 +570,7 @@ class TestLoadEnforcesTheBannerCap:
             await svc.start()
             assert svc._loops["abc123"].banner == "", "the over-cap banner was not blanked"
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
-            assert "AKIA" not in on_disk["loops"][0]["banner"]
+            assert "xoxb-" not in on_disk["loops"][0]["banner"]
         finally:
             svc.stop()
 
@@ -653,15 +653,15 @@ class TestLoadScrubsThePersistedMessage:
         """A message reaching the store past the authorized write paths is
         credential-scrubbed at load and re-persisted, so ``GET /api/autonudge``
         (``asdict``) and the WS broadcast can never serve it raw."""
-        self._write_store(tmp_path, "run the deploy with AKIAIOSFODNN7EXAMPLE now")
+        self._write_store(tmp_path, "run the deploy with xoxb-IOSFODNN7EXAMPL now")
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             await svc.start()
             stored = svc._loops["abc123"].message
-            assert "AKIAIOSFODNN7EXAMPLE" not in stored, "the credential survived the load scrub"
+            assert "xoxb-IOSFODNN7EXAMPL" not in stored, "the credential survived the load scrub"
             assert "[REDACTED" in stored, "the message load-path scrub did not run"
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
-            assert "AKIAIOSFODNN7EXAMPLE" not in on_disk["loops"][0]["message"]
+            assert "xoxb-IOSFODNN7EXAMPL" not in on_disk["loops"][0]["message"]
         finally:
             svc.stop()
 
@@ -956,7 +956,7 @@ class TestRestSurface:
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "xoxb-IOSFODNN7EXAMPL"
         at_cap_with_secret = "b" * (MAX_BANNER_CHARS - len(secret)) + secret
         assert len(at_cap_with_secret) == MAX_BANNER_CHARS, "fixture is not at the cap"
         svc = self._svc()
@@ -984,7 +984,7 @@ class TestRestSurface:
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "xoxb-IOSFODNN7EXAMPL"
         at_cap_with_secret = "b" * (MAX_BANNER_CHARS - len(secret)) + secret
         svc = self._svc()
         async with TestClient(TestServer(self._app(monkeypatch, svc))) as client:
@@ -1038,7 +1038,7 @@ class TestMonitorToolsCanSetTheBanner:
     the two redaction passes are the existing ones -- no second validation path.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = "xoxb-IOSFODNN7EXAMPL"
 
     @pytest.fixture()
     def default_install(self, monkeypatch):

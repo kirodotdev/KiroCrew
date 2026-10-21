@@ -82,7 +82,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "REPORT_VERSION",
     "ResolvedCrew",
     "SpecResult",
-    "_AWS_KEY_PREFIXES",
     "_B64_DECODE_BUDGET",
     "_B64_RUN_RE",
     "_BARE_SECRET_ENTROPY_MIN",

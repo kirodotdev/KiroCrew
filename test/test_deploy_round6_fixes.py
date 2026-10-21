@@ -11,13 +11,13 @@ from kiro_crew.deploy.scan import Finding, is_credential_finding, summarize
 
 
 def test_summarize_redacts_credential_snippets():
-    """A finding whose snippet contains a raw AKIA key must be redacted in summarize output."""
-    fake_key = "AKIAIOSFODNN7EXAMPLE"
+    """A finding whose snippet contains a raw glpat- key must be redacted in summarize output."""
+    fake_key = "glpat-IOSFODNN7EXAMPLE"
     findings = [
         Finding(kind="credential", snippet=fake_key, line=5, severity="credential"),
     ]
     result = summarize(findings)
-    assert fake_key not in result, "Raw AKIA key must not appear in summarize output"
+    assert fake_key not in result, "Raw glpat- key must not appear in summarize output"
     # The redaction should have replaced or masked it
     assert "[REDACTED" in result or "…" in result or len(fake_key) > len(result.split(fake_key[0])[0])
 
@@ -37,21 +37,21 @@ def test_summarize_redacts_internal_urls():
     assert info_snippet in result
     # But a credential-severity finding MUST be masked
     findings_cred = [
-        Finding(kind="credential", snippet="AKIAIOSFODNN7EXAMPLE",
+        Finding(kind="credential", snippet="glpat-IOSFODNN7EXAMPLE",
                 line=3, severity="credential"),
     ]
     result_cred = summarize(findings_cred)
-    assert "AKIAIOSFODNN7EXAMPLE" not in result_cred
+    assert "glpat-IOSFODNN7EXAMPLE" not in result_cred
 
 
 def test_409_response_does_not_leak_akia_key():
     """Integration: the 409 scan-blocked response body must not contain raw credentials."""
     from kiro_crew.deploy.handlers import _redact_text
 
-    fake_key = "AKIAIOSFODNN7EXAMPLE"
+    fake_key = "glpat-IOSFODNN7EXAMPLE"
     raw_summary = f"⚠️ 1 potential issue(s):\n  • line 5 [credential]: {fake_key}"
     redacted = _redact_text(raw_summary)
-    assert fake_key not in redacted, "Raw AKIA key must not appear in redacted response"
+    assert fake_key not in redacted, "Raw glpat- key must not appear in redacted response"
 
 
 def test_redact_text_passthrough_clean():
@@ -87,7 +87,7 @@ def test_text_file_with_credentials_still_caught():
     with tempfile.TemporaryDirectory() as tmp:
         cred_path = Path(tmp) / "config.js"
         cred_path.write_text(
-            'const key = "AKIAIOSFODNN7EXAMPLE";\n', encoding="utf-8"
+            'const key = "glpat-IOSFODNN7EXAMPLE";\n', encoding="utf-8"
         )
 
         findings, _ = _scan_tree(Path(tmp))

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from kiro_crew.mcp_core import _call_tool_inner
 
-_LEAKY = "notes AKIAIOSFODNN7EXAMPLE"
+_LEAKY = "notes glpat-IOSFODNN7EXAMPLE"
 
 
 def _add(title: str) -> str:
@@ -27,7 +27,7 @@ def _add(title: str) -> str:
 
 def test_a_credential_in_the_title_does_not_reach_the_chat_result():
     out = _add(_LEAKY)
-    assert "AKIAIOSFODNN7EXAMPLE" not in out, (
+    assert "glpat-IOSFODNN7EXAMPLE" not in out, (
         "the tool result is rendered into chat and persisted -- redact the title")
     assert "REDACTED" in out or "notes" in out
 

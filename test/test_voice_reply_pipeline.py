@@ -105,8 +105,8 @@ class TestSynthesizeSpeechDispatcher:
     @pytest.mark.asyncio
     async def test_redacts_credentials_before_synthesis(self) -> None:
         """LLM output must be redacted for credentials before crossing into audio."""
-        # AKIA... pattern is a typical AWS key shape caught by redact_credentials.
-        raw = "secret AKIAIOSFODNN7EXAMPLE here"
+        # glpat-... is a GitLab token shape caught by redact_credentials.
+        raw = "secret glpat-IOSFODNN7EXAMPLE here"
         captured_text: list[str] = []
 
         async def capture_polly(ssml, **kwargs):
@@ -120,8 +120,8 @@ class TestSynthesizeSpeechDispatcher:
             await synthesize_speech(raw, provider=PROVIDER_POLLY)
 
         assert captured_text, "polly should have been called"
-        # The raw AKIA key should NOT appear in the SSML passed to Polly.
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured_text[0]
+        # The raw glpat- key should NOT appear in the SSML passed to Polly.
+        assert "glpat-IOSFODNN7EXAMPLE" not in captured_text[0]
 
 
 # ── upload_voice_to_slack() ──────────────────────────────────────────────
@@ -236,13 +236,13 @@ class TestStreamingVoiceReply:
             "kiro_crew.voice_reply._synthesize_polly",
             side_effect=fake_polly,
         ):
-            gen = streaming_voice_reply("AKIAIOSFODNN7EXAMPLE is secret. Bye.")
+            gen = streaming_voice_reply("glpat-IOSFODNN7EXAMPLE is secret. Bye.")
             async for _idx, _sent, _bytes in gen:
                 pass
 
         assert sentences_seen, "polly should have been called per sentence"
         for s in sentences_seen:
-            assert "AKIAIOSFODNN7EXAMPLE" not in s
+            assert "glpat-IOSFODNN7EXAMPLE" not in s
 
     @pytest.mark.asyncio
     async def test_skips_sentences_with_failed_synth(self, tmp_path) -> None:

@@ -147,7 +147,6 @@ def rules_version() -> bytes:
         b"native=" + native,
         b"py=" + sys.version.encode("utf-8", "surrogatepass"),
         b"ucd=" + unicodedata.unidata_version.encode(),
-        b"darwin=" + str(redaction._host_darwin_user_dir_id()).encode("utf-8", "surrogatepass"),
     ]
     return hashlib.sha256(b"\0".join(parts)).digest()[:_VER]
 

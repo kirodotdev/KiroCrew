@@ -25,7 +25,7 @@ def test_label_rule_and_value_for_labelled_aws_secret() -> None:
     assert (m.ordinal, m.rule, m.label, m.value) == (
         0,
         "aws_secret_access_key",
-        "aws_secret_access_key = ",
+        "",
         _SECRET,
     )
 
@@ -33,13 +33,22 @@ def test_label_rule_and_value_for_labelled_aws_secret() -> None:
 def test_session_token_label() -> None:
     _, _, matches = redact_credentials_with_records("aws_session_token=" + "FwoGZXIvYXdzEBYaD")
     assert matches[0].rule == "aws_session_token"
-    assert matches[0].label == "aws_session_token="
+    # The label stays in the text, so the record carries none.
+    assert matches[0].label == ""
 
 
 def test_unlabelled_rule_ids() -> None:
-    _, _, matches = redact_credentials_with_records(f"here {_GH} and {_SECRET} end")
-    assert [m.rule for m in matches] == ["github_token", "bare_aws_secret"]
+    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+    text = f"here {_GH} and {key_id} {_SECRET} end"
+    cleaned, _, matches = redact_credentials_with_records(text)
+    assert [m.rule for m in matches] == ["github_token", "aws_key_pair"]
     assert all(m.label == "" for m in matches)
+    assert key_id in cleaned
+
+
+def test_a_value_with_no_prefix_label_or_key_id_is_not_guessed() -> None:
+    text = f"here {_SECRET} end"
+    assert redact_credentials_with_records(text) == (text, [], [])
 
 
 def test_ordinal_counts_tags_already_in_the_input() -> None:

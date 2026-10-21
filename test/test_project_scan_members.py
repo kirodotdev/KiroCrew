@@ -519,7 +519,7 @@ class TestDeclarationFailures:
 # AWS's documented example access-key id, split so no contiguous key-shaped
 # literal exists in this source file for a secrets scanner to flag; the joined
 # runtime value is what the redactor must catch.
-_FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+_FAKE_AWS_KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 
 
 class TestWarningReasonRedaction:

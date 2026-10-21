@@ -98,7 +98,7 @@ def test_a_row_from_this_version_round_trips_unchanged(tmp_path, monkeypatch):
 def test_a_field_this_build_changes_is_written_with_its_new_value(tmp_path, monkeypatch):
     """Restore redacts assistant content; the flush writes the redacted value, not the disk one."""
     state, path = _saved_slot(tmp_path, monkeypatch, ("user", "q1"), ("assistant", "a1"))
-    leaked = "key AKIAIOSFODNN7EXAMPLE here"
+    leaked = "key glpat-IOSFODNN7EXAMPLE here"
 
     def with_secret(rows):
         for row in rows:
@@ -111,7 +111,7 @@ def test_a_field_this_build_changes_is_written_with_its_new_value(tmp_path, monk
     restored.drain()
     _save_slot_to_history(state, restored, closed=False)
     written = [r["content"] for r in _rows(path) if r["role"] == "assistant"]
-    assert written and written != [leaked] and "AKIAIOSFODNN7EXAMPLE" not in written[0], written
+    assert written and written != [leaked] and "glpat-IOSFODNN7EXAMPLE" not in written[0], written
 
 
 def test_the_live_window_size_limit_is_unchanged(tmp_path, monkeypatch):

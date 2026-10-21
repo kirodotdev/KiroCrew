@@ -43,7 +43,7 @@ def test_a_file_read_names_path_section_and_the_aws_template() -> None:
     }
     assert rec["view_command"] == "aws configure get aws_secret_access_key --profile default"
     assert rec["profile_command"] is None
-    assert rec["label"] == "aws_secret_access_key = "
+    assert rec["label"] == ""
 
 
 def test_a_session_token_recommends_the_profile() -> None:
@@ -81,8 +81,12 @@ def test_the_record_never_carries_the_value() -> None:
 
 
 def test_a_command_carrying_a_secret_is_not_a_source() -> None:
-    ev = _evidence({"command": f"echo {_SECRET}"}, _SECRET, is_shell=True)
-    [rec] = _records(_SECRET, ev)
+    ev = _evidence(
+        {"command": f"echo secret_access_key={_SECRET}"},
+        f"secret_access_key={_SECRET}",
+        is_shell=True,
+    )
+    [rec] = _records(f"secret_access_key={_SECRET}", ev)
     assert rec["source"] is None
 
 

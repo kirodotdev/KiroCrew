@@ -32,16 +32,16 @@ def test_composed_pass_removes_the_url_whole() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "see https://AKIAIOSFODNN7EXAMPLE.wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-        "see https://10.0.0.1wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-        "see https://host.example:443wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
+        "see https://AKIAIOSFODNN7EXAMPLE.ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 x",
+        "see https://10.0.0.1ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 x",
+        "see https://host.example:443ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 x",
     ],
 )
 def test_url_match_never_ends_inside_a_word(text: str) -> None:
     """A URL host or port is matched whole, so the credential pass sees whole words."""
     out = security.redact(text)
-    assert "wJalrXUtnFEMI" not in out
-    assert "K7MDENGbPxRfiCY" not in out
+    assert "A1b2C3d4E5f6" not in out
+    assert "M3n4O5p6Q7r8" not in out
 
 
 _PAD = "a" * 40  # enough query to make the URL pass flag the address
@@ -76,7 +76,7 @@ def test_composed_pass_removes_what_either_pass_finds(text: str, gone: str, kept
 
 
 def test_composed_pass_does_not_repeat_a_host_a_credential_runs_through() -> None:
-    text = "see https://AKIAIOSFODNN7EXAMPLE.wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end"
+    text = "see https://AKIAIOSFODNN7EXAMPLE.x/api_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end"
     out = security.redact(text)
     assert "wJalrXUtnFEMI" not in out
     assert out.endswith(" end")

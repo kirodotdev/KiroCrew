@@ -317,8 +317,8 @@ def test_context_redact_runs_enterprise_policy(enterprise_ctx) -> None:
     assert "[REDACTED-SSO]" in mcp_core.redact("token=SSO-COOKIE")
     assert "[REDACTED-SSO]" in agent.redact("token=SSO-COOKIE")
     # Baseline credential redaction is preserved (delegated to security.redact).
-    out = mcp_core.redact("AKIAIOSFODNN7EXAMPLE")
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    out = mcp_core.redact("glpat-IOSFODNN7EXAMPLE")
+    assert "glpat-IOSFODNN7EXAMPLE" not in out
 
 
 # ── telemetry (point 5) ──

@@ -258,7 +258,7 @@ class TestSharedHelper:
         # discord, which have no display-state pass of their own.
         from kiro_crew.messaging.renderer import format_overflow
 
-        split = "AKIA`" + "`IOSFODNN7EXAMPLE"
+        split = "glpat-`" + "`IOSFODNN7EXAMPLE"
         out = format_overflow([f"Retry with {split}"], start=1)
         assert "IOSFODNN7EXAMPLE" not in out, (
             "a backtick-split key survived the overflow sink — the platform "
@@ -271,7 +271,7 @@ class TestSharedHelper:
         # still renders it whole. Pin the order with a choice that needs both.
         from kiro_crew.messaging.renderer import format_overflow
 
-        out = format_overflow(["@everyone use AKIA*IOSFODNN7EXAMPLE*"], start=0)
+        out = format_overflow(["@everyone use glpat-*IOSFODNN7EXAMPLE*"], start=0)
         assert "@everyone" not in out
         assert "IOSFODNN7EXAMPLE" not in out
 
@@ -282,7 +282,7 @@ class TestSharedHelper:
         # hole exactly one delimiter family wide.
         from kiro_crew.messaging.renderer import format_overflow
 
-        out = format_overflow(["Retry with AKIA||IOSFODNN7EXAMPLE||"], start=0)
+        out = format_overflow(["Retry with glpat-||IOSFODNN7EXAMPLE||"], start=0)
         assert "IOSFODNN7EXAMPLE" not in out, (
             "a spoiler-split key survived — Discord joins the halves when the "
             "reader reveals the spoiler"
@@ -303,7 +303,7 @@ class TestSharedHelper:
             ("BOM", "\ufeff"),
             ("soft hyphen", "\u00ad"),
         ):
-            out = format_overflow([f"Retry with AKIA{ch}IOSFODNN7EXAMPLE"], start=0)
+            out = format_overflow([f"Retry with glpat-{ch}IOSFODNN7EXAMPLE"], start=0)
             assert "IOSFODNN7EXAMPLE" not in out, f"{name} split the key past the scan"
 
     def test_non_ascii_text_is_not_mangled(self) -> None:
@@ -877,7 +877,7 @@ class TestDiscordEnforcement:
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 
         n = DISCORD_CAPABILITIES.max_buttons
-        leaked = "AKIA`" + "`IOSFODNN7EXAMPLE"
+        leaked = "glpat-`" + "`IOSFODNN7EXAMPLE"
         choices = [f"Choice {i}" for i in range(1, n + 1)] + [f"Retry with {leaked}"]
         cli = FakeClient()
         r = DiscordRenderer(  # type: ignore[arg-type]
@@ -951,7 +951,7 @@ class TestTeamsEnforcement:
         from kiro_crew.teams.transport import TEAMS_CAPABILITIES
 
         n = TEAMS_CAPABILITIES.max_buttons
-        choices = [f"Choice {i}" for i in range(1, n + 1)] + ["AKIAIOSFODNN7EXAMPLE"]
+        choices = [f"Choice {i}" for i in range(1, n + 1)] + ["glpat-IOSFODNN7EXAMPLE"]
         trailer = " | ".join(choices)
 
         class _Client:
@@ -982,7 +982,7 @@ class TestTeamsEnforcement:
 
         asyncio.run(_go())
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in "\n".join(cli.sent)
+        assert "glpat-IOSFODNN7EXAMPLE" not in "\n".join(cli.sent)
 
 
 class TestKeptChoicesAreDisplayRedacted:
@@ -1005,7 +1005,7 @@ class TestKeptChoicesAreDisplayRedacted:
     def test_a_credential_in_a_kept_label_is_redacted(self) -> None:
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = "glpat-" + "IOSFODNN7EXAMPLE"
         _body, kept = apply_options_cap("pick one", [key, "plain"], self._caps())
         assert key not in kept[0], "a credential must not reach a button label"
         assert "REDACTED" in kept[0]
@@ -1016,7 +1016,7 @@ class TestKeptChoicesAreDisplayRedacted:
         # the markup is flattened, which is exactly what display_safe does first.
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        head, tail = "AKIA", "IOSFODNN7EXAMPLE"
+        head, tail = "glpat-", "IOSFODNN7EXAMPLE"
         _body, kept = apply_options_cap("pick", [f"{head}**{tail}**"], self._caps())
         assert "REDACTED" in kept[0]
         assert head + tail not in kept[0]
@@ -1035,7 +1035,7 @@ class TestKeptChoicesAreDisplayRedacted:
         # The half that already worked, so a regression cannot trade one for the other.
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = "glpat-" + "IOSFODNN7EXAMPLE"
         body, kept = apply_options_cap("pick", ["a", "b", key], self._caps(max_buttons=2))
         assert len(kept) == 2
         assert key not in body and "REDACTED" in body
@@ -1047,7 +1047,7 @@ class TestKeptChoicesAreDisplayRedacted:
         # question the agent just asked.
         from kiro_crew.messaging.renderer import apply_options_cap
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = "glpat-" + "IOSFODNN7EXAMPLE"
         body, kept = apply_options_cap("pick", [key], self._caps(max_buttons=0))
         assert kept == [], "a zero-widget channel keeps no choice for a widget"
         assert "1. " in body, "the choice must still reach the user as text"
@@ -1120,7 +1120,7 @@ class TestWebexEnforcement:
         choices = [
             "ask kyle@example.com",
             *[f"Choice {i}" for i in range(n)],
-            "AKIAIOSFODNN7EXAMPLE",
+            "glpat-IOSFODNN7EXAMPLE",
         ]
         cli = FakeClient()
         r = WebexRenderer(
@@ -1146,7 +1146,7 @@ class TestWebexEnforcement:
         assert "​" not in "".join(labels)
         assert "​" not in final
         # The credential rides the OVERFLOW half, past the widget cap.
-        assert "AKIAIOSFODNN7EXAMPLE" not in final
+        assert "glpat-IOSFODNN7EXAMPLE" not in final
 
 
 class TestZeroWidgetBodyRedaction:
@@ -1155,7 +1155,7 @@ class TestZeroWidgetBodyRedaction:
     A buffered zero-widget channel that renders markdown (Feishu, WeChat-Work)
     sends the body through its own send boundary with no re-scan behind the
     literal channel-neutral stream pass, so a credential split by markup
-    (``AKIA**REST**``) is reassembled on screen. Each such channel scrubs the
+    (``glpat-**REST**``) is reassembled on screen. Each such channel scrubs the
     body render-aware at its send, the same way the markdown channels with a
     widget do. Asserted against the RENDERED form (``canonicalize_display``),
     because the split key passes a literal byte scan while the reader sees it
@@ -1185,11 +1185,11 @@ class TestZeroWidgetBodyRedaction:
         r = FeishuRenderer(cli, "m1", FEISHU_CAPABILITIES)
 
         async def _go() -> None:
-            await r.on_text_chunk("answer AKIAIOSF**ODNN7EXAMPLE** done")
+            await r.on_text_chunk("answer glpat-IOSF**ODNN7EXAMPLE** done")
             await r.on_done()
 
         asyncio.run(_go())
-        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(cli.sent)
+        assert "glpat-IOSFODNN7EXAMPLE" not in canonicalize_display(cli.sent)
 
     def test_weixin_delivered_body_redacts_but_persisted_text_is_untouched(self) -> None:
         import asyncio
@@ -1213,16 +1213,16 @@ class TestZeroWidgetBodyRedaction:
         r = WeixinRenderer(cli, "peer", WEIXIN_CAPABILITIES, ctx_store=_Ctx(), account_id="acct")
 
         async def _go() -> None:
-            await r.on_text_chunk("answer AKIAIOSF**ODNN7EXAMPLE** done")
+            await r.on_text_chunk("answer glpat-IOSF**ODNN7EXAMPLE** done")
             await r.on_done()
 
         asyncio.run(_go())
         shipped = "".join(cli.parts)
         # What ships is scrubbed against the rendered form ...
-        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(shipped)
+        assert "glpat-IOSFODNN7EXAMPLE" not in canonicalize_display(shipped)
         # ... but the persisted transcript form (text()) is not touched by the
         # send-boundary scrub.
-        assert "AKIAIOSF**ODNN7EXAMPLE**" in r.text()
+        assert "glpat-IOSF**ODNN7EXAMPLE**" in r.text()
 
     def test_feishu_clean_body_is_delivered_intact(self) -> None:
         import asyncio

@@ -15,7 +15,7 @@ from kiro_crew.messaging.renderer import _default_redactor
 
 #: AWS's own documented example key, the same fixture the display-safety tests
 #: use, so no real credential shape is introduced anywhere.
-KEY = "AKIAIOSFODNN7EXAMPLE"
+KEY = "glpat-IOSFODNN7EXAMPLE"
 HEAD, TAIL = KEY[:10], KEY[10:]
 
 SRC = Path(kiro_crew.__file__).parent

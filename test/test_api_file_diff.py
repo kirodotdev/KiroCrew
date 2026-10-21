@@ -506,7 +506,7 @@ async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path):
     _git_repo(tmp_path)
     f = tmp_path / "padded.txt"
     # Places the token across the byte offset the sibling endpoint caps at.
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     padding = "a" * (files_mod._FILE_READ_CAP - 10)
     f.write_text(padding + secret + "\nkeep\n")
     subprocess.run(["git", "add", "padded.txt"], cwd=tmp_path, capture_output=True, check=True)
@@ -595,7 +595,7 @@ async def test_an_edit_inside_a_key_block_serves_no_key_text(tmp_path, kind, edi
 
 @pytest.mark.asyncio
 @requires_git
-@pytest.mark.parametrize("shape", ["github", "aws"])
+@pytest.mark.parametrize("shape", ["github", "gitlab"])
 async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
     """A long line above a hunk serves no part of a token it holds."""
     import random
@@ -604,7 +604,7 @@ async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
     if shape == "github":
         token = "gh" + "p_" + _noise(rng, _ALNUM, 36)
     else:
-        token = "AK" + "IA" + _noise(rng, _ALNUM[:36].upper(), 16)
+        token = "gl" + "pat-" + _noise(rng, _ALNUM, 16)
     assert redact_credentials(token)[0] != token, "fixture must be a shape the redactor masks"
     line = "x" * (80 - len(" = ") - 8) + " = " + token
     rows = [line] + [f"  row {i}" for i in range(30)]

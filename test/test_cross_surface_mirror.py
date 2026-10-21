@@ -270,7 +270,7 @@ class TestDeliverCrossSurfaceReply:
         state.sessions.get_mirror_link = MagicMock(
             return_value=ChannelLink("telegram", channel_id="123")
         )
-        raw = "see https://evil.example/exfil?q=1 and AKIAIOSFODNN7EXAMPLE"
+        raw = "see https://evil.example/exfil?q=1 and glpat-IOSFODNN7EXAMPLE"
         expected = redact_credentials(redact_exfiltration_urls(raw)[0])[0]
         await _deliver_cross_surface_reply(state, "k", raw)
         assert tp.send_message.await_args.args[1] == expected
@@ -279,7 +279,7 @@ class TestDeliverCrossSurfaceReply:
     async def test_a_markdown_split_credential_is_redacted_in_display_form(self, tmp_path):
         """This leg passes no RENDERER, and a renderer is where a turn gets that floor.
 
-        ``AKIA**IOSF**ODNN7EXAMPLE`` survives a byte-for-byte scan and the client
+        ``glpat-**IOSF**ODNN7EXAMPLE`` survives a byte-for-byte scan and the client
         reassembles it whole once it renders the emphasis away, so the mirror has to
         scan the DISPLAYED form — the same argument, and the same context-aware
         redactor, as the Slack chokepoint already applies.
@@ -291,10 +291,10 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("telegram", channel_id="123")
         )
 
-        await _deliver_cross_surface_reply(state, "k", "token AKIA**IOSF**ODNN7EXAMPLE ok")
+        await _deliver_cross_surface_reply(state, "k", "token glpat-**IOSF**ODNN7EXAMPLE ok")
 
         sent = tp.send_message.await_args.args[1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent.replace("*", "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in sent.replace("*", "")
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self, tmp_path):
@@ -450,7 +450,7 @@ class TestDeliverCrossSurfaceUserMessage:
         state.sessions.get_mirror_link = MagicMock(
             return_value=ChannelLink("telegram", channel_id="123")
         )
-        raw = "tok AKIAIOSFODNN7EXAMPLE " + "x" * 800
+        raw = "tok glpat-IOSFODNN7EXAMPLE " + "x" * 800
         await _deliver_cross_surface_user_message(state, "k", raw)
         sent = tp.send_message.await_args.args[1]
         # _prepare_mirror_msg redacts over the FULL text (redact_via_context)

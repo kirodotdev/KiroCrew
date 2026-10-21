@@ -272,7 +272,7 @@ class TestReadPromptFile:
         secret_dir = fake_home / ".aws"
         secret_dir.mkdir(parents=True)
         secret = secret_dir / "credentials"
-        secret.write_text("AKIA-SECRET\n", encoding="utf-8")
+        secret.write_text("glpat--SECRET\n", encoding="utf-8")
         monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
         monkeypatch.setenv("HOME", str(fake_home))
         link = tmp_path / "prompt.md"
@@ -283,7 +283,7 @@ class TestReadPromptFile:
         with caplog.at_level(logging.WARNING, logger=ctx_mod.logger.name):
             resolved = ctx_mod._read_prompt_file(link)
         assert resolved == _shipped_text()
-        assert "AKIA-SECRET" not in resolved
+        assert "glpat--SECRET" not in resolved
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
         assert str(link) in warnings[0].getMessage()

@@ -22,7 +22,6 @@ import math
 import re
 from typing import Dict, Optional, Union
 
-from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # ---------------------------------------------------------------------------
@@ -68,8 +67,6 @@ RESOURCE_ATTR_PROCESS_START_TIME = "kirocrew.process.start_time"
 
 # Patterns that indicate high-entropy / credential-shaped values.
 _HIGH_ENTROPY_PATTERNS: list[re.Pattern[str]] = [
-    # AWS access key ID (AKIA) + STS temporary security credentials (ASIA)
-    re.compile(AWS_KEY_ID),
     # AWS SecretAccessKey= pattern
     re.compile(r"SecretAccessKey\s*=", re.IGNORECASE),
     # Private key headers
@@ -140,8 +137,7 @@ def redact(value: str) -> str:
     # First-party scrubbers (kiro_crew.security): scan for exfiltration URLs
     # AND credentials (incl. base64 variants). Both return (cleaned_text,
     # warnings) tuples — a changed cleaned_text means something sensitive was
-    # found. The AKIA/ASIA STS-token shape is also covered by the patterns
-    # above.
+    # found. An AWS access key ID is Identifier tier: neither pass removes it.
     if redact_credentials(redact_exfiltration_urls(value)[0])[0] != value:
         return "[REDACTED]"
     if _is_high_entropy(value):

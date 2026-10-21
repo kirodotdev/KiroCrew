@@ -1063,7 +1063,9 @@ class TestSkillsInstructionsSettings:
         profile = _profile(tmp_path)
         _write_json(
             profile / "user_preferences.json",
-            {"custom_prompt": "Use the deploy key AKIAIOSFODNN7EXAMPLE when asked."},
+            {
+                "custom_prompt": "Use the deploy token ghp_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dF3hJ5 when asked."
+            },
         )
 
         plan = _preview(tmp_path)
@@ -1249,7 +1251,13 @@ class TestScheduledTasks:
         profile = _profile(tmp_path)
         _write_json(
             profile / "agents.json",
-            {"agents": [_task(prompt_override="Deploy with AKIAIOSFODNN7EXAMPLE nightly.")]},
+            {
+                "agents": [
+                    _task(
+                        prompt_override="Deploy with ghp_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dF3hJ5 nightly."
+                    )
+                ]
+            },
         )
 
         plan = _preview(tmp_path)

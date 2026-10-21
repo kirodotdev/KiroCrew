@@ -45,9 +45,9 @@ class TestAnOuterLinkCannotSwallowAnInnerOne:
     """A destination may hold a balanced ``(...)``, but not the ``](...)`` of a link
     nested inside it.
 
-    ``[x](a [AKIA](u)REST)`` is not one link to a CommonMark reader: an unbracketed
-    destination admits no space, so the dashboard and Discord link ``[AKIA](u)`` and
-    show ``AKIAREST`` joined. A screen that read the outer span as one link would
+    ``[x](a [glpat-](u)REST)`` is not one link to a CommonMark reader: an unbracketed
+    destination admits no space, so the dashboard and Discord link ``[glpat-](u)`` and
+    show ``glpat-REST`` joined. A screen that read the outer span as one link would
     collapse it to ``x``, scan no key, and pass the message through unredacted.
     The unit refuses a ``[`` that opens a nested ``[label](``, so the outer span
     does not match, the inner link collapses, and the scan sees the joined key.
@@ -56,8 +56,8 @@ class TestAnOuterLinkCannotSwallowAnInnerOne:
     @pytest.mark.parametrize(
         "payload",
         [
-            f"[x](a [AKIA](u){_KEY[4:]})",
-            f"[x](a[AKIA](u){_KEY[4:]})",
+            f"[x](a [glpat-](u){_KEY[6:]})",
+            f"[x](a[glpat-](u){_KEY[6:]})",
         ],
     )
     def test_a_key_split_by_a_nested_link_is_redacted(self, payload):
@@ -74,9 +74,9 @@ class TestAnOuterLinkCannotSwallowAnInnerOne:
             # CommonMark links, and a space destination, which Slack links. A screen
             # class that excluded whitespace to refuse the nested shape would leave
             # all three raw, and each would reach its reader joined.
-            f'[AKIA](https://x "t"){_KEY[4:]}',
-            f"[AKIA](<a b>){_KEY[4:]}",
-            f"[AKIA](a b){_KEY[4:]}",
+            f'[glpat-](https://x "t"){_KEY[6:]}',
+            f"[glpat-](<a b>){_KEY[6:]}",
+            f"[glpat-](a b){_KEY[6:]}",
         ],
     )
     def test_a_destination_with_a_space_is_still_collapsed(self, payload):
@@ -86,7 +86,7 @@ class TestAnOuterLinkCannotSwallowAnInnerOne:
         assert _KEY not in safe
 
     def test_a_group_after_a_non_opener_label_fragment_is_redacted(self):
-        payload = f"[AKIA](https://x/a](b)){_KEY[4:]}"
+        payload = f"[glpat-](https://x/a](b)){_KEY[6:]}"
         assert canonicalize_display(payload) == _KEY
         safe, redacted = redact_for_display(payload, _default_redactor)
         assert redacted is True
@@ -96,17 +96,17 @@ class TestAnOuterLinkCannotSwallowAnInnerOne:
     def test_a_balanced_pair_still_links_beside_the_refusal(self):
         """The refusal is scoped to a nested ``[label](``; a URL group is untouched."""
         assert _slack(f"see [Python]({WIKI}) now") == f"see <{WIKI}|Python> now"
-        assert canonicalize_display(f"[AKIA]({WIKI}){_KEY[4:]}") == _KEY
+        assert canonicalize_display(f"[glpat-]({WIKI}){_KEY[6:]}") == _KEY
 
 
 class TestAKeySplitByEmphasisInsideAUrlIsRedacted:
     """The canonical form drops a collapsed link's url; a plain-text sink prints it.
 
-    ``[l](https://x/(a)/AKIA**REST**)`` collapses to ``l`` on the screen, so the
+    ``[l](https://x/(a)/glpat-**REST**)`` collapses to ``l`` on the screen, so the
     url and the key split inside it leave the canonical scan, and the literal scan
-    sees ``AKIA**`` and matches nothing. Telegram's ``_strip_md`` fallback (taken
+    sees ``glpat-**`` and matches nothing. Telegram's ``_strip_md`` fallback (taken
     when an HTML edit or send is rejected) strips the ``**`` and prints
-    ``l (https://x/(a)/AKIAIOSFODNN7EXAMPLE)``, the key whole. The screen scans
+    ``l (https://x/(a)/glpat-IOSFODNN7EXAMPLE)``, the key whole. The screen scans
     that plain-text reading too and answers with the canonical form, which carries
     no url. The url without parentheses and the Slack form leak the same way and
     are closed by the same reading.
@@ -115,9 +115,9 @@ class TestAKeySplitByEmphasisInsideAUrlIsRedacted:
     @pytest.mark.parametrize(
         "payload",
         [
-            f"[l](https://x/(a)/AKIA**{_KEY[4:]}**)",
-            f"[l](https://x/AKIA**{_KEY[4:]}**)",
-            f"<https://x/AKIA**{_KEY[4:]}**|l>",
+            f"[l](https://x/(a)/glpat-**{_KEY[6:]}**)",
+            f"[l](https://x/glpat-**{_KEY[6:]}**)",
+            f"<https://x/glpat-**{_KEY[6:]}**|l>",
         ],
     )
     def test_the_key_is_redacted_and_absent_from_the_plain_text_fallback(self, payload):
@@ -134,27 +134,27 @@ class TestAKeySplitByEmphasisInsideAUrlIsRedacted:
 
 
 class TestAKeyJoinedByALinkAnEarlierPassCloses:
-    """``AKIA[IOSF...]**(https://x)**`` is no link to the screen's link pass, which
+    """``glpat-[IOSF...]**(https://x)**`` is no link to the screen's link pass, which
     runs first; the emphasis pass then drops the ``**`` and the canonical form
-    ``AKIA[IOSF...](https://x)`` scans as split. Telegram's ``_strip_md`` removes
+    ``glpat-[IOSF...](https://x)`` scans as split. Telegram's ``_strip_md`` removes
     the ``**`` and THEN flattens the link to ``label (url)``, showing
-    ``AKIAIOSFODNN7EXAMPLE (https://x)``: the key whole. The plain reading has to
+    ``glpat-IOSFODNN7EXAMPLE (https://x)``: the key whole. The plain reading has to
     apply the fallback's link pass after its delimiter passes, as the fallback
     does, so the screen sees that join and answers with the canonical form, which
     the settling passes then collapse and redact.
     """
 
     _JOINED = [
-        ("double-star", f"AKIA[{_KEY[4:]}]**(https://x)**"),
-        ("double-underscore", f"AKIA[{_KEY[4:]}]__(https://x)__"),
-        ("inline-code", f"AKIA[{_KEY[4:]}]`(https://x)`"),
-        ("head-before-a-longer-label", f"AKIAIOSF[{_KEY[8:]}]**(https://x)**"),
+        ("double-star", f"glpat-[{_KEY[6:]}]**(https://x)**"),
+        ("double-underscore", f"glpat-[{_KEY[6:]}]__(https://x)__"),
+        ("inline-code", f"glpat-[{_KEY[6:]}]`(https://x)`"),
+        ("head-before-a-longer-label", f"glpat-IOSF[{_KEY[10:]}]**(https://x)**"),
     ]
     _LEFT_ALONE = [
-        ("rest-after-the-url", f"[AKIA]**(https://x)**{_KEY[4:]}"),
+        ("rest-after-the-url", f"[glpat-]**(https://x)**{_KEY[6:]}"),
         ("split-label-rest-after-the-url", f"[{_KEY[:10]}]**(https://x)**{_KEY[10:]}"),
-        ("a-space-before-the-url", f"AKIA[{_KEY[4:]}] **(https://x)**"),
-        ("a-space-inside-the-emphasis", f"AKIA[{_KEY[4:]}]** (https://x)**"),
+        ("a-space-before-the-url", f"glpat-[{_KEY[6:]}] **(https://x)**"),
+        ("a-space-inside-the-emphasis", f"glpat-[{_KEY[6:]}]** (https://x)**"),
     ]
 
     @pytest.mark.parametrize(("case_name", "payload"), _JOINED, ids=[c[0] for c in _JOINED])
@@ -176,9 +176,9 @@ class TestAKeyJoinedByALinkAnEarlierPassCloses:
 
 
 class TestAKeyJoinedByANativeLinkInsideARawMarkdownLink:
-    """``[l](https://x/AK<u|IA>IOSF...)`` collapses to ``l`` on the screen, so the
+    """``[l](https://x/gl<u|pat->IOSF...)`` collapses to ``l`` on the screen, so the
     url and everything in it leave the canonical scan, and the literal scan sees
-    ``AK<u|IA>IOSF...``, no key. Slack leaves the Markdown raw, because a ``|`` or
+    ``gl<u|pat->IOSF...``, no key. Slack leaves the Markdown raw, because a ``|`` or
     ``>`` in the destination cannot go into a native link, and renders the embedded
     ``<u|IA>`` as a native link showing ``IA``: the reader sees the key whole. The
     screen scans that reading too, Markdown links raw and native links collapsed,
@@ -186,12 +186,12 @@ class TestAKeyJoinedByANativeLinkInsideARawMarkdownLink:
     """
 
     _JOINED = [
-        ("token-in-the-middle", f"[l](https://x/AK<u|IA>{_KEY[4:]})"),
-        ("token-at-the-start", f"[l](https://x/<u|AKIA>{_KEY[4:]}|)"),
-        ("token-at-the-end", f"[l](https://x/AKIA<u|{_KEY[4:]}>)"),
-        ("two-tokens", f"[l](https://x/AK<u|IA>IOSF<v|ODNN>{_KEY[12:]})"),
-        ("angle-bracket-destination", f"[l](https://x/>AK<u|IA>{_KEY[4:]})"),
-        ("token-in-the-label", f"[AK<u|IA>{_KEY[4:]}](https://x/a|b)"),
+        ("token-in-the-middle", f"[l](https://x/gl<u|pat->{_KEY[6:]})"),
+        ("token-at-the-start", f"[l](https://x/<u|glpat->{_KEY[6:]}|)"),
+        ("token-at-the-end", f"[l](https://x/glpat-<u|{_KEY[6:]}>)"),
+        ("two-tokens", f"[l](https://x/gl<u|pat->IOSF<v|ODNN>{_KEY[14:]})"),
+        ("angle-bracket-destination", f"[l](https://x/>gl<u|pat->{_KEY[6:]})"),
+        ("token-in-the-label", f"[gl<u|pat->{_KEY[6:]}](https://x/a|b)"),
     ]
 
     @pytest.mark.parametrize(("case_name", "payload"), _JOINED, ids=[c[0] for c in _JOINED])
@@ -237,9 +237,9 @@ _PAIRS_OUTSIDE_THE_FALLBACK = [
 
 
 class TestAKeySplitByAPairInsideAParenthesisedUrlIsRedacted:
-    """``[l](https://x/(a)/AKIA~~IOSF...~~)`` collapses to ``l`` on the screen, so
+    """``[l](https://x/(a)/glpat-~~IOSF...~~)`` collapses to ``l`` on the screen, so
     the url and the key split inside it leave the canonical scan; the literal scan
-    sees ``AKIA~~`` and matches nothing, and the plain reading drops no ``~~``. A
+    sees ``glpat-~~`` and matches nothing, and the plain reading drops no ``~~``. A
     link grammar whose destination admits no parenthesis group leaves the link as
     written, its url text, where the emphasis pass joins the key: the screen scans
     that reading too, so a url the wider grammar links is never a url that leaves
@@ -248,8 +248,8 @@ class TestAKeySplitByAPairInsideAParenthesisedUrlIsRedacted:
     """
 
     @staticmethod
-    def _payload(pair: str, tail: str = _KEY[4:]) -> str:
-        return f"[l](https://x/(a)/AKIA{pair}{tail}{pair})"
+    def _payload(pair: str, tail: str = _KEY[6:]) -> str:
+        return f"[l](https://x/(a)/glpat-{pair}{tail}{pair})"
 
     @pytest.mark.parametrize(("case_name", "pair"), _PAIRS_OUTSIDE_THE_FALLBACK)
     def test_the_key_is_redacted_on_every_reading(self, case_name, pair):
@@ -283,8 +283,8 @@ class TestAKeySplitByAPairInsideAParenthesisedUrlIsRedacted:
 class TestTheEmittedCanonicalFormRendersAsItself:
     """A pass after the link pass can close a link the link pass went past.
 
-    ``[AKIA]*(https://x)REST`` is text to the link pass, and the emphasis pass
-    then drops the ``*`` and leaves ``[AKIA](https://x)REST``, a link on every
+    ``[glpat-]*(https://x)REST`` is text to the link pass, and the emphasis pass
+    then drops the ``*`` and leaves ``[glpat-](https://x)REST``, a link on every
     renderer that joins the key. The canonical scan cleared the text before the
     star was gone, so a branch that emitted that canonical form handed Slack a
     link the screen never saw. The emitted text is rendered again until
@@ -295,13 +295,13 @@ class TestTheEmittedCanonicalFormRendersAsItself:
         "payload",
         [
             # A: the emphasis pass closes the link.
-            f"{_URL_SPLIT_TRIGGER} [AKIA]*(https://x){_KEY[4:]}",
+            f"{_URL_SPLIT_TRIGGER} [glpat-]*(https://x){_KEY[6:]}",
             # C: the same shape on the canonical branch, a key split by ``**``.
-            f"AKIA**{_KEY[4:]}** [AKIA]*(https://x){_KEY[4:]}",
+            f"glpat-**{_KEY[6:]}** [glpat-]*(https://x){_KEY[6:]}",
             # D: a format character closes the link.
-            f"{_URL_SPLIT_TRIGGER} [AKIA]\u200b(https://x){_KEY[4:]}",
+            f"{_URL_SPLIT_TRIGGER} [glpat-]\u200b(https://x){_KEY[6:]}",
             # E: a collapsed Slack link closes the link.
-            f"{_URL_SPLIT_TRIGGER} [AKIA]<u|>(https://x){_KEY[4:]}",
+            f"{_URL_SPLIT_TRIGGER} [glpat-]<u|>(https://x){_KEY[6:]}",
         ],
     )
     def test_a_link_closed_by_a_later_pass_is_redacted(self, payload):
@@ -314,7 +314,7 @@ class TestTheEmittedCanonicalFormRendersAsItself:
 
     def test_a_link_nested_one_level_deeper_settles(self):
         """Each pass peels one level, so the fix has to repeat until nothing moves."""
-        payload = f"{_URL_SPLIT_TRIGGER} [[AKIA]*(https://x)]*(https://y){_KEY[4:]}"
+        payload = f"{_URL_SPLIT_TRIGGER} [[glpat-]*(https://x)]*(https://y){_KEY[6:]}"
         safe, redacted = redact_for_display(payload, _default_redactor)
         assert redacted is True
         assert canonicalize_display(safe) == safe
@@ -326,7 +326,7 @@ class TestTheEmittedCanonicalFormRendersAsItself:
     def test_nesting_past_the_pass_bound_leaves_no_markup_to_render(self, depth):
         """The bound is reached before the key surfaces, so the fallback strips
         every delimiter: the urls stay between the halves as text."""
-        payload = f"{_URL_SPLIT_TRIGGER} {_nested_link(depth)}{_KEY[4:]}"
+        payload = f"{_URL_SPLIT_TRIGGER} {_nested_link(depth)}{_KEY[6:]}"
         safe, redacted = redact_for_display(payload, _default_redactor)
         assert redacted is True
         assert _KEY not in safe
@@ -337,7 +337,7 @@ class TestTheEmittedCanonicalFormRendersAsItself:
     def test_the_construct_alone_is_left_as_written(self):
         """No reading of the text shows the key whole, so it goes out as written
         and the reader sees the brackets and the star."""
-        payload = f"[AKIA]*(https://x){_KEY[4:]}"
+        payload = f"[glpat-]*(https://x){_KEY[6:]}"
         assert redact_for_display(payload, _default_redactor) == (payload, False)
 
 
@@ -411,15 +411,15 @@ class TestATagShapedLabelPastTheSettlingBoundCannotBecomeALink:
     @staticmethod
     def _payload(label: str, *, separator: str = "", depth: int = 5) -> str:
         hidden_link = _nested_text(f"{label}(https://v)", depth)
-        return f"{_URL_SPLIT_TRIGGER} {hidden_link}{separator}{_KEY[4:]}"
+        return f"{_URL_SPLIT_TRIGGER} {hidden_link}{separator}{_KEY[6:]}"
 
     @pytest.mark.parametrize(
         ("case_name", "label", "separator", "depth"),
         [
-            ("tag-shaped-label-past-bound", "[REDACTED: AKIA]", "", 5),
-            ("space-after-link", "[REDACTED: AKIA]", " ", 5),
+            ("tag-shaped-label-past-bound", "[REDACTED: glpat-]", "", 5),
+            ("space-after-link", "[REDACTED: glpat-]", " ", 5),
             ("real-credential-tag-label", CREDENTIAL_REDACTION_TAGS[0], "", 5),
-            ("tag-shaped-label-at-bound", "[REDACTED: AKIA]", "", 4),
+            ("tag-shaped-label-at-bound", "[REDACTED: glpat-]", "", 4),
         ],
     )
     def test_no_renderer_shows_the_joined_key(self, case_name, label, separator, depth):
@@ -451,7 +451,7 @@ class TestTheSettlingBounds:
     ):
         payload = (
             f"{_URL_SPLIT_TRIGGER} {self._FALLBACK_MARKER}"
-            f"{_nested_link(passes_needed - 1)}{_KEY[4:]}"
+            f"{_nested_link(passes_needed - 1)}{_KEY[6:]}"
         )
         safe, redacted = redact_for_display(payload, _default_redactor)
         assert redacted is True
@@ -470,10 +470,12 @@ class TestTheSettlingBounds:
             return _default_redactor(text)
 
         monkeypatch.setattr(display_safety, "canonicalize_display", peel_one_layer)
-        payload = "layer:" * (DISPLAY_SETTLING_PASSES + 1) + f"AKIA{delimiter}{_KEY[4:]}"
+        # A Slack-shaped key: its body class has no `_`, so every delimiter splits it.
+        key = f"xoxb-{_KEY[6:]}"
+        payload = "layer:" * (DISPLAY_SETTLING_PASSES + 1) + f"xoxb-{delimiter}{_KEY[6:]}"
         assert recording_redactor(payload) == payload
 
         safe = display_safety.settled_display_form(payload, recording_redactor)
 
-        assert redactor_inputs[-1] == _KEY
+        assert redactor_inputs[-1] == key
         assert safe == CREDENTIAL_REDACTION_TAGS[0]

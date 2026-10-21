@@ -301,7 +301,7 @@ class TestTelegramDeliveryHook:
         """
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         split = secret[:6] + "​" + secret[6:]
 
         async def _go() -> str:

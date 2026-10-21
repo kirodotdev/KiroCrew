@@ -73,11 +73,11 @@ def _stamp(offset_hours: float) -> str:
 class TestTaskDraft:
     def test_sanitized_redacts_and_caps(self):
         draft = taskprov.TaskDraft(
-            description="ship AKIAIOSFODNN7EXAMPLE now",
+            description="ship glpat-IOSFODNN7EXAMPLE now",
             assignee="x" * 5000,
             priority="bogus",
         ).sanitized()
-        assert "AKIAIOSFODNN7EXAMPLE" not in draft.description
+        assert "glpat-IOSFODNN7EXAMPLE" not in draft.description
         assert len(draft.assignee) <= 2000
         assert draft.priority == k.DEFAULT_TASK_PRIORITY
 
@@ -630,9 +630,9 @@ class TestParseIcs:
 
     def test_redacts_credentials_in_fields(self):
         text = _ics(
-            _vevent(UID="c", SUMMARY="Review AKIAIOSFODNN7EXAMPLE", DTSTART=_stamp(1))
+            _vevent(UID="c", SUMMARY="Review glpat-IOSFODNN7EXAMPLE", DTSTART=_stamp(1))
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in cal.parse_ics(text)[0].title
+        assert "glpat-IOSFODNN7EXAMPLE" not in cal.parse_ics(text)[0].title
 
     def test_non_vevent_components_ignored(self):
         text = (

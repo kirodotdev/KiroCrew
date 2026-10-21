@@ -407,7 +407,7 @@ class TestApiChatSteer:
             {"id": "s-1"},
             "has spaces",
             "a/b+c=",
-            "AKIAIOSFODNN7EXAMPLE",
+            "glpat-IOSFODNN7EXAMPLE",
         ],
         ids=[
             "non-string",

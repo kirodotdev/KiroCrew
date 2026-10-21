@@ -553,7 +553,7 @@ class TestRunChatWakaTimeCodingAccounting:
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
-        coding_tool_call_id = "AKIAIOSFODNN7EXAMPLE"
+        coding_tool_call_id = "glpat-IOSFODNN7EXAMPLE"
         _set_stream(
             client,
             [
@@ -866,7 +866,7 @@ class TestRunChatWakaTimeCodingAccounting:
 
 
 #: Fixture tokens for the glued-credential cases (made up, not real keys).
-_AKIA_SAMPLE = "AKIA" + "5Q7XTR2M9LBC4WZN"
+_AKIA_SAMPLE = "glpat-" + "5Q7XTR2M9LBC4WZN"
 _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 _PEM_END = "-----END " + "PRIVATE KEY-----"
 _GLUED_PAT_A = "ghp_" + "eG7e5uHyQp2Lw9Rk4Ts8Vb1Nx6Jm3Cd0Zf5"
@@ -889,7 +889,7 @@ class TestBlockedLinkCardRecords:
     """
 
     H = "h.example-sink.net"
-    KEY = "AKIA" + "IOSFODNN7EXAMPLE"  # AWS docs example key, split so no literal sits in the repo
+    KEY = "glpat-" + "IOSFODNN7EXAMPLE"  # a fake token, split so no literal sits in the repo
 
     @staticmethod
     def _flush(deltas: list[str]) -> tuple[str, list[dict]]:
@@ -1051,8 +1051,12 @@ class TestBlockedLinkCardRecords:
 
     def test_a_credential_pass_that_eats_the_address_head_saves_no_tail(self):
         """``aws_secret_access_key=`` then a presigned link, cut right before its
-        ``?``: per delta the credential pass swallows the scheme and host with
-        the value; the saved copy is redacted whole, so no query is saved."""
+        ``?``: the saved copy is redacted whole, so no query is saved.
+
+        The stream holds a labelled value until it ends, so the link may now
+        reach the URL pass whole (one placeholder naming only the host) instead
+        of having its head eaten per delta (the segment withheld); both save no
+        query."""
         host = "my-bucket.s3.us-east-1.amazonaws.com"
         url = (
             f"https://{host}/r.csv?X-Amz-Credential={self.KEY}%2Fx&X-Amz-Security-Token="
@@ -1064,10 +1068,11 @@ class TestBlockedLinkCardRecords:
         for label in ("aws_secret_access_key=", "aws_secret_access_key: "):
             content, _ = self._flush([f"Set {label}{url[:q]}", url[q:], " done"])
             assert "X-Amz" not in content and "TTTT" not in content and "bbbb" not in content
-            # The per-delta credential value holds the host, so the saved
-            # placeholder's host pieces touch a removed credential and nothing
-            # but main's own text may vouch for them: the segment is withheld.
-            assert content == chat_runner._SEGMENT_UNCHECKED_TEXT
+            assert "r.csv" not in content and self.KEY not in content
+            assert content in (
+                chat_runner._SEGMENT_UNCHECKED_TEXT,
+                f"Set {label}[REDACTED: suspicious URL to {host}] done",
+            )
 
     def test_a_credential_label_that_damages_a_placeholder_saves_no_tail(self):
         """``aws_secret_access_key: <presigned link>`` cut before
@@ -1379,7 +1384,7 @@ class TestBlockedLinkCardRecords:
                 [
                     "x " + _GLUED_PAT_A,
                     _GLUED_PAT_B + " y https://h.example-sink.net/p?aws_access_key_id=",
-                    "AKIA" + "5Q7XTR2M9LBC4WZN",
+                    "glpat-" + "5Q7XTR2M9LBC4WZN",
                     "&note=" + _GLUED_PAT_B[-8:] + " z",
                 ],
                 id="an-unrelated-copy-of-the-tail",
@@ -1390,7 +1395,7 @@ class TestBlockedLinkCardRecords:
                     _GLUED_PAT_B + " y",
                     " https://h.example-sink.net/p?note="
                     + _GLUED_PAT_B[3:]
-                    + "&id=AKIA"
+                    + "&id=glpat-"
                     + "5Q7XTR2M9LBC4WZN z",
                 ],
                 id="a-blocked-address-quoting-the-body",
@@ -1468,7 +1473,7 @@ class TestBlockedLinkCardRecords:
         for cut in range(1, len(reply) - 1, 3):
             deltas = [reply[:cut], reply[cut:]]
             content, _ = self._flush(deltas)
-            assert self.KEY[4:] not in content, cut
+            assert self.KEY[6:] not in content, cut
             if content != chat_runner._SEGMENT_UNCHECKED_TEXT:
                 streamed = "".join(chat_runner._redact_delta(d)[0] for d in deltas)
                 main = redact_credentials(redact_exfiltration_urls(streamed)[0])[0]
@@ -1682,7 +1687,8 @@ class TestBlockedLinkCardRecords:
         rows ``website/src/test/fixtures/credInUrl.json`` and
         ``blockedLinkOneOne.json`` still render)."""
         host = "my-bucket.s3.us-east-1.amazonaws.com"
-        key = TestBlockedLinkCardRecords.KEY
+        # A presigned address carries a key ID in its credential field.
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
         deltas: list[str] = []
         for i, name in enumerate(("report.csv", "invoice.pdf")):
             url = (
@@ -1698,7 +1704,7 @@ class TestBlockedLinkCardRecords:
 
     def test_key_split_links_are_withheld_not_saved_unredacted(self):
         """A delta blocked each address's head, but the whole text keeps the
-        address (its key tagged): main's save never showed that address, so
+        address (a credential tag inside it): main's save never showed it, so
         under default refuse the segment is withheld, and no key is saved."""
         content, links = self._flush(self._key_split_presigned_deltas())
         assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])

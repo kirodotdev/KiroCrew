@@ -794,10 +794,10 @@ class TestReleasedTailIsRedacted:
     """
 
     #: Split so NEITHER half is a credential on its own: the leading half is a
-    #: bare `AKIA` and the trailing half is the remaining body. Only removing the
+    #: bare `glpat-` and the trailing half is the remaining body. Only removing the
     #: markup between them spells the key, which is what makes this a join
     #: hazard rather than a chunk the rolling redactor should already have caught.
-    _HEAD = "AKIA"
+    _HEAD = "glpat-"
     _TAIL = "IOSFODNN7EXAMPLE"
 
     @pytest.mark.asyncio
@@ -840,17 +840,17 @@ class TestReleasedTailIsRedacted:
         """Both outbound redactors, in the seal's order -- URLs then credentials."""
         slack = _FakeSlack(streaming=True)
         renderer = _renderer(slack)
-        renderer._ref_hold = "see https://evil.example.com/?q=AKIAIOSFODNN7EXAMPLE now"
+        renderer._ref_hold = "see https://evil.example.com/?q=glpat-IOSFODNN7EXAMPLE now"
 
         released = await renderer._release_refs()
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in released
+        assert "glpat-IOSFODNN7EXAMPLE" not in released
 
 
 class TestEveryRendererEgressMeetsTheDisplayFloor:
     """One floor at every sink in this renderer, not one scan per reviewed line.
 
-    Neither `AKIA**<rest>**` nor `[AKIA](https://x)<rest>` matches a credential
+    Neither `glpat-**<rest>**` nor `[glpat-](https://x)<rest>` matches a credential
     pattern as written, and Slack renders the markup away and shows the reader an
     intact key. A literal-only scan therefore checks one of the TWO forms that
     leave here, and the gap was found three times on three different lines --
@@ -859,8 +859,8 @@ class TestEveryRendererEgressMeetsTheDisplayFloor:
     """
 
     #: Emphasis markers Slack renders away; the literal string is not a credential.
-    _COLLAPSING = "AKIA**IOSFODNN7EXAMPLE**"
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _COLLAPSING = "glpat-**IOSFODNN7EXAMPLE**"
+    _KEY = "glpat-IOSFODNN7EXAMPLE"
 
     def _leaked(self, slack: _FakeSlack) -> bool:
         """True if any string this client was shown carries the key once rendered."""

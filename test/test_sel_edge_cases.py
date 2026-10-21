@@ -155,10 +155,10 @@ class TestLogHashAndCallbackExtras:
         log.set_forward_callback(captured.append)
         # Embed an AWS access key in resources — must be redacted before
         # forwarding to avoid credential exfiltration via the audit pipeline.
-        log.log(_make_event(resources="key=AKIAIOSFODNN7EXAMPLE"))
+        log.log(_make_event(resources="key=glpat-IOSFODNN7EXAMPLE"))
         assert len(captured) == 1
         forwarded = captured[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in forwarded["resources"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in forwarded["resources"]
         assert "REDACTED" in forwarded["resources"]
 
     def test_set_forward_callback_unregister(self, tmp_path: Path) -> None:

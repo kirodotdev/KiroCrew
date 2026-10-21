@@ -643,7 +643,7 @@ class TestGitStatus:
         BOTH appear in ``files``, as two distinct redacted entries.
 
         Real collision: two untracked files whose only differing segment is a
-        credential-shaped token (distinct AKIA... ids, each 4-letter prefix + 16
+        credential-shaped token (distinct xoxb-... tokens, a 5-char prefix + 16
         uppercase alphanumerics) both flatten to
         ``[REDACTED: credential]_model.txt`` under the whole-string redact().
         Each path is redacted with ``redact_path_segments`` so each member of
@@ -656,11 +656,11 @@ class TestGitStatus:
         # credential-shaped names collapse to ONE placeholder. key_a is the
         # documented example id Semgrep allowlists; key_b must stay a split
         # literal because detected-aws-access-key-id-value matches an
-        # AKIA-shaped literal and cannot tell a fixture from a real leak. Do
+        # xoxb-shaped literal and cannot tell a fixture from a real leak. Do
         # not re-join it -- the runtime value is identical and CI, not the
         # test, is what breaks.
-        key_a = "AKIAIOSFODNN7EXAMPLE"
-        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        key_a = "xoxb-IOSFODNN7EXAMPLE"
+        key_b = "xoxb-" + "JKLMNOPQRSTUVWXY"
         (repo / f"{key_a}_model.txt").write_text("one\n")
         (repo / f"{key_b}_model.txt").write_text("two\n")
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
@@ -688,7 +688,7 @@ class TestGitStatus:
         redacted the same way the tree root and ``repoRoot`` are (whole-string,
         no label), so the dashboard's prefix strip matches; only the part
         beneath it is labelled per segment."""
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "xoxb-IOSFODNN7EXAMPLE"
         sub = repo / key
         sub.mkdir()
         (sub / "notes.txt").write_text("x\n")
@@ -741,8 +741,8 @@ class TestGitStatus:
         by path (PierreWorkspaceTreeImpl), so one process must label a redacted
         path the same way in both -- including when the tree lists a colliding
         neighbour the status response does not carry."""
-        key_a = "AKIAIOSFODNN7EXAMPLE"
-        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        key_a = "xoxb-IOSFODNN7EXAMPLE"
+        key_b = "xoxb-" + "JKLMNOPQRSTUVWXY"
         (repo / f"{key_a}_model.txt").write_text("one\n")
         (repo / f"{key_b}_model.txt").write_text("two\n")
         _git(repo, "add", f"{key_b}_model.txt")

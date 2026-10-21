@@ -12,7 +12,7 @@ from test_snapshot import unpinnable_argv
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+KEY = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _tree_with_nested_link(tmp_path: Path) -> Path:

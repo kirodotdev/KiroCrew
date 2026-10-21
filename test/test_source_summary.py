@@ -81,12 +81,12 @@ class TestGenerateSourceSummary:
         sid = store.add_source("test", "local_file", "/tmp/test.md")
         store.add_item("title", "content", "doc", source_id=sid, summary="Some summary")
         # Simulate LLM returning a theme that _redact strips entirely
-        pipeline.extractor._pool.send.return_value = '{"topic": "safe topic", "themes": ["safe", "AKIA1234567890ABCDEF"]}'
+        pipeline.extractor._pool.send.return_value = '{"topic": "safe topic", "themes": ["safe", "glpat-1234567890ABCDEF"]}'
         await pipeline.generate_source_summary(sid)
         row = store.db.execute("SELECT summary_themes FROM sources WHERE id = ?", (sid,)).fetchone()
         themes = json.loads(row["summary_themes"])
         # The AWS key pattern should be redacted away, not preserved via 'or t'
-        assert "AKIA1234567890ABCDEF" not in str(themes)
+        assert "glpat-1234567890ABCDEF" not in str(themes)
 
     @pytest.mark.asyncio
     async def test_handles_malformed_llm_response(self, pipeline, store):

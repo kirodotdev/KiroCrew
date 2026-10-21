@@ -98,10 +98,8 @@ src/kiro_crew/apps/builtins/meetings/backend/providers/tasks.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/tasks.py
 src/kiro_crew/apps/builtins/mochi/backend/routes.py
-src/kiro_crew/apps/builtins/ops_mission_control/backend/ledger_sync.py
 src/kiro_crew/apps/builtins/ops_mission_control/backend/notify_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_index.py
-src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_notify_out.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers_datadog_cov80.py
 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
@@ -468,7 +466,6 @@ test/test_deploy_web_iam.py
 test/test_deploy_web_lifecycle.py
 test/test_deploy_web_profiles.py
 test/test_deploy_web_render_scan.py
-test/test_design_tweak_backend.py
 test/test_design_tweak_devproc.py
 test/test_design_tweak_discovery.py
 test/test_design_tweak_project_routes.py
@@ -631,7 +628,6 @@ test/test_notification_legacy_actions.py
 test/test_notification_phase5.py
 test/test_notifications_push.py
 test/test_official_catalog.py
-test/test_omc_ledger_sync_coverage.py
 test/test_onboarding_import.py
 test/test_one_conversation_one_session.py
 test/test_open_dm_retry.py

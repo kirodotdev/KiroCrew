@@ -528,10 +528,10 @@ class TestAppleStreamingSession:
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             assert (await ws.receive_json())["type"] == "ready"
-            await events.put({"type": "partial", "text": "  my key is AKIAIOSFODNN7EXAMPLE  "})
+            await events.put({"type": "partial", "text": "  my key is glpat-IOSFODNN7EXAMPLE  "})
             got = await ws.receive_json()
             assert got["type"] == "partial"
-            assert "AKIAIOSFODNN7EXAMPLE" not in got["text"]
+            assert "glpat-IOSFODNN7EXAMPLE" not in got["text"]
             # Edge whitespace is stripped: the frontend re-joins finals with a
             # space of its own, so a leading space would double it.
             assert got["text"] == got["text"].strip()
@@ -1149,7 +1149,7 @@ class TestStreamLifecycle:
             async def send_json(self, data):
                 captured.append(data)
 
-        alt = MagicMock(transcript="leaked AKIAIOSFODNN7EXAMPLE secret")
+        alt = MagicMock(transcript="leaked glpat-IOSFODNN7EXAMPLE secret")
         result = MagicMock(is_partial=False, alternatives=[alt])
         event = MagicMock()
         event.transcript.results = [result]
@@ -1160,7 +1160,7 @@ class TestStreamLifecycle:
         await h.handle_transcript_event(event)
 
         assert captured and captured[0]["type"] == "final"
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured[0]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in captured[0]["text"]
 
     @pytest.mark.asyncio
     async def test_partial_transcript_is_redacted(self, monkeypatch):
@@ -1175,7 +1175,7 @@ class TestStreamLifecycle:
             async def send_json(self, data):
                 captured.append(data)
 
-        alt = MagicMock(transcript="partial AKIAIOSFODNN7EXAMPLE text")
+        alt = MagicMock(transcript="partial glpat-IOSFODNN7EXAMPLE text")
         result = MagicMock(is_partial=True, alternatives=[alt])
         event = MagicMock()
         event.transcript.results = [result]
@@ -1186,7 +1186,7 @@ class TestStreamLifecycle:
         await h.handle_transcript_event(event)
 
         assert captured and captured[0]["type"] == "partial"
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured[0]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in captured[0]["text"]
 
     @pytest.mark.asyncio
     async def test_send_audio_failure_still_cleans_up(self, monkeypatch):

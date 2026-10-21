@@ -253,16 +253,16 @@ class TestFindingsAreRedactedBeforePersisting(unittest.TestCase):
 
     def test_a_credential_quoted_into_a_finding_is_not_persisted(self):
         captured, _ = self._call(
-            root_cause="the issue pasted AKIAIOSFODNN7EXAMPLE into the log",
+            root_cause="the issue pasted glpat-IOSFODNN7EXAMPLE into the log",
             summary="aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
         )
         findings = captured["body"]["findings"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["root_cause"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in findings["root_cause"]
         assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in findings["summary"]
 
     def test_a_credential_in_a_label_is_not_persisted(self):
-        captured, _ = self._call(suggested_labels=["AKIAIOSFODNN7EXAMPLE"])
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured["body"]["findings"]["suggested_labels"][0]
+        captured, _ = self._call(suggested_labels=["glpat-IOSFODNN7EXAMPLE"])
+        assert "glpat-IOSFODNN7EXAMPLE" not in captured["body"]["findings"]["suggested_labels"][0]
 
     def test_ordinary_prose_is_left_alone(self):
         # Redaction must not mangle a legitimate finding: only suspicious URLs

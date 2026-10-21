@@ -551,10 +551,10 @@ class TestRunChatCompactDeferredWait:
         the provider's text as untrusted.
         """
         slot = await self._run_failed_compaction(
-            tmp_path, monkeypatch, "auth failed for AKIAIOSFODNN7EXAMPLE key"
+            tmp_path, monkeypatch, "auth failed for glpat-IOSFODNN7EXAMPLE key"
         )
         notice = self._compaction_notice(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in notice
+        assert "glpat-IOSFODNN7EXAMPLE" not in notice
         assert "Compaction failed:" in notice
 
     @pytest.mark.asyncio

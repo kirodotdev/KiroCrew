@@ -24,7 +24,7 @@ async def test_private_profile_failure_is_stable_and_keeps_safe_log_diagnostics(
 ):
     memory = await markdown_memory_for_store(env.state, "member-alice")
     before = memory.read_preferences(), memory.read_projects()
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = "glpat-IOSFODNN7EXAMPLE"
     writer = MagicMock(side_effect=error_type(f"identity unavailable at {path}: {credential}"))
     monkeypatch.setattr(memory, "write_private_profile_validated", writer)
     req = request(

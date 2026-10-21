@@ -133,7 +133,7 @@ class TestWatchlistRoutes:
     async def test_agent_authored_credential_is_redacted_in_both_responses(self, tmp_path):
         """An MCP-authored watchlist item carrying a credential must not reach the
         browser verbatim through either the update echo or the GET payload."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         async with _live_runtime(tmp_path):
             upd = await routes._handle_watchlist_update(
                 _json_request(
@@ -376,8 +376,8 @@ class TestPinnedRoutes:
             target = tmp_path / "watched.txt"
             target.write_text("x")
             # Fake AWS key, split to avoid a CodeQL clear-text-storage FP on a
-            # redaction-control test (runtime value is a full AKIA key).
-            planted = "AKIA" + "IOSFODNN7EXAMPLE"
+            # redaction-control test (runtime value is a full glpat- key).
+            planted = "glpat-" + "IOSFODNN7EXAMPLE"
             assert runtime.pinned.add_pin(str(target), label=f"see {planted}", now_ms=1_000)
             resp = await routes._handle_pinned_get(
                 _owner_request("GET", "/api/apps/mochi/pinned")

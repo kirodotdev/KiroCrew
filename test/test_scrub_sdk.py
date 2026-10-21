@@ -14,7 +14,7 @@ import pytest
 from kiro_crew.apps.context import build_app_context
 from kiro_crew.apps.scrub_sdk import ScrubSDK
 
-_AKIA = "AKIAIOSFODNN7EXAMPLE"
+_AKIA = "glpat-IOSFODNN7EXAMPLE"
 
 
 def test_outbound_redacts_a_credential_and_counts_it() -> None:

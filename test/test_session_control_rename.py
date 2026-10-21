@@ -430,7 +430,7 @@ def test_a_credential_shaped_title_is_sanitized_before_it_is_stored(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "xoxb-" + "ABCDEFGHIJKLMNO"
 
     out = _rename(state, caller, "chat-2", f"deploy with {secret}")
 
@@ -552,11 +552,11 @@ def test_a_redacted_title_is_read_back_as_stored(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
-    title = "keys " + ("AKIA" + "ABCDEFGHIJKLMNOP") * 2
+    title = "keys " + ("xoxb-" + "ABCDEFGHIJKLMNO") * 2
 
     out = _rename(state, caller, "chat-2", title)
 
-    assert "AKIA" + "ABCDEFGHIJKLMNOP" not in target.title
+    assert "xoxb-" + "ABCDEFGHIJKLMNO" not in target.title
     assert len(target.title) <= 200
     assert out["title"] == target.title
 
@@ -732,7 +732,7 @@ def test_a_credential_split_by_a_kept_invisible_character_is_still_redacted(tmp_
     target = state.get_or_create_slot("chat-2")
     tail = "ABCDEFGHIJKLMNOP"
 
-    out = _rename(state, caller, "chat-2", f"deploy AKIA{joiner}{tail}")
+    out = _rename(state, caller, "chat-2", f"deploy xoxb-{joiner}{tail}")
 
     assert tail not in target.title
     assert tail not in out["title"]
@@ -750,7 +750,7 @@ def test_a_credential_split_by_a_kept_invisible_character_is_still_redacted(tmp_
         "deploy\ufff9prod",
         # A tag-block character outside the flag-subdivision range.
         "deploy\U000e0001prod",
-        "deploy AKIA\u200bABCDEFGHIJKLMNOP",
+        "deploy xoxb-\u200bABCDEFGHIJKLMNOP",
     ],
 )
 def test_a_format_character_inside_a_visible_title_is_refused(tmp_path, title):
@@ -793,7 +793,7 @@ def test_a_title_with_a_kept_format_character_is_stored(tmp_path, title):
     [
         "a\u2800b",
         # The blank glyph split a key past the redactors before it was refused.
-        "deploy AKIA" + "\u2800" + "ABCDEFGHIJKLMNOP",
+        "deploy xoxb-" + "\u2800" + "ABCDEFGHIJKLMNOP",
     ],
 )
 def test_a_blank_glyph_anywhere_in_a_title_is_refused(tmp_path, title):
@@ -815,8 +815,8 @@ def test_a_blank_glyph_anywhere_in_a_title_is_refused(tmp_path, title):
 @pytest.mark.parametrize(
     "title",
     [
-        # Ten keys: 200 characters sent, longer once each key becomes a marker.
-        ("AKIA" + "ABCDEFGHIJKLMNOP") * 10,
+        # Nine keys: 188 characters sent, past 200 once each key becomes a marker.
+        " ".join(["xoxb-" + "ABCDEFGHIJKLMNO"] * 9),
         # A marker with brackets of its own (an IPv6 URL host) past the cap.
         "a" * 160 + " http://[2001:db8::1]/ssh-rsa+",
     ],
@@ -836,7 +836,7 @@ def test_a_title_redaction_pushes_past_the_cap_is_refused(tmp_path, title):
 
     assert exc.value.code == "invalid_title"
     assert "redacted" in str(exc.value)
-    assert "AKIA" not in str(exc.value) and "2001" not in str(exc.value)
+    assert "xoxb-" not in str(exc.value) and "2001" not in str(exc.value)
     assert target.title == "untouched"
     assert target._title_epoch == epoch
 
@@ -846,7 +846,7 @@ def test_a_redacted_title_within_the_cap_is_stored_whole(tmp_path):
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
 
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "xoxb-" + "ABCDEFGHIJKLMNO"
     _rename(state, caller, "chat-2", "deploy key " + secret)
 
     assert target.title.startswith("deploy key [REDACTED")

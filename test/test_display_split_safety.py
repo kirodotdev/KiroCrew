@@ -110,8 +110,8 @@ class TestJoinsToACredential:
             pytest.param("plain prose ending here", " and continuing there", id="prose"),
             pytest.param("emphasis **spanning", " the cut** is harmless", id="emphasis-span"),
             pytest.param("a [link](https://ex.test/a,b) then", " more prose", id="whole-link"),
-            pytest.param("", "AKIAIOSFODNN7EXAMPLE is scrubbed here", id="key-wholly-in-tail"),
-            pytest.param("AKIAIOSFODNN7EXAMPLE is scrubbed here", "", id="key-wholly-in-head"),
+            pytest.param("", "glpat-IOSFODNN7EXAMPLE is scrubbed here", id="key-wholly-in-tail"),
+            pytest.param("glpat-IOSFODNN7EXAMPLE is scrubbed here", "", id="key-wholly-in-head"),
         ],
     )
     def test_a_harmless_cut_is_allowed(self, head: str, tail: str) -> None:
@@ -125,7 +125,7 @@ class TestJoinsToACredential:
         # Caught ONLY by canonicalising the concatenation: each half alone is an
         # unfinished link, and only together do they form a link that collapses to
         # its label, putting the two halves of the key side by side.
-        head = "[AKIA](https://ex.test/a,b"
+        head = "[glpat-](https://ex.test/a,b"
         tail = ")IOSFODNN7EXAMPLE"
         assert joins_to_a_credential(head, tail, _default_redactor)
 
@@ -134,7 +134,7 @@ class TestJoinsToACredential:
         # link makes the concatenation collapse to the label, so the key inside the
         # URL disappears from that reading -- while on screen each half is an
         # unfinished link whose URL text stays visible, and the reader reads through.
-        head = "[l](https://ex.test/x/AKIAIOSF"
+        head = "[l](https://ex.test/x/glpat-IOSF"
         tail = "ODNN7EXAMPLE)"
         assert joins_to_a_credential(head, tail, _default_redactor)
 
@@ -142,10 +142,10 @@ class TestJoinsToACredential:
         ("head", "tail", "seen_by_the_join"),
         [
             pytest.param(
-                "[AKIA](https://ex.test/a,b", ")IOSFODNN7EXAMPLE", True, id="cut-closes-a-link"
+                "[glpat-](https://ex.test/a,b", ")IOSFODNN7EXAMPLE", True, id="cut-closes-a-link"
             ),
             pytest.param(
-                "[l](https://ex.test/x/AKIAIOSF", "ODNN7EXAMPLE)", False, id="cut-inside-a-url"
+                "[l](https://ex.test/x/glpat-IOSF", "ODNN7EXAMPLE)", False, id="cut-inside-a-url"
             ),
         ],
     )
@@ -202,7 +202,7 @@ class TestSafeSplitOffset:
         assert safe_split_offset("anything", 0, _default_redactor) == 0
 
     def test_the_offset_moves_back_off_a_severed_key(self) -> None:
-        head, tail = "[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
+        head, tail = "[glpat-](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
         pad = "x" * 40
         text = pad + head + tail + " tail prose"
         limit = len(pad) + len(head)
@@ -223,7 +223,7 @@ class TestSafeSplitOffset:
             calls += 1
             return _default_redactor(text)
 
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "glpat-IOSFODNN7EXAMPLE"
         text = "x" * 2000 + key[:8] + key[8:] + " tail prose"
         limit = 2000 + 8
 
@@ -246,13 +246,13 @@ class TestSeversACredential:
     """
 
     def test_one_piece_has_no_boundary(self) -> None:
-        assert not severs_a_credential(["AKIAIOSFODNN7EXAMPLE"], _default_redactor)
+        assert not severs_a_credential(["glpat-IOSFODNN7EXAMPLE"], _default_redactor)
 
     def test_innocent_pieces_stay_clean(self) -> None:
         assert not severs_a_credential(["ordinary ", "prose in ", "three parts"], _default_redactor)
 
     def test_a_key_severed_between_two_pieces_is_caught(self) -> None:
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "glpat-IOSFODNN7EXAMPLE"
         pieces = [key[:8], key[8:]]
         for piece in pieces:
             assert _default_redactor(piece) == piece, "each piece alone must look clean"
@@ -265,18 +265,18 @@ class TestSeversACredential:
         report all three clean. This is why the middle piece being the whole of one
         message is not a defence.
         """
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "glpat-IOSFODNN7EXAMPLE"
         pieces = [key[:6], key[6:13], key[13:]]
         assert severs_a_credential(pieces, _default_redactor)
 
     def test_a_markup_span_covering_a_whole_piece_is_caught(self) -> None:
         """Canonicalising DROPS a link's target, so a piece of any size can vanish.
 
-        Split ``AKIA[label](url)`` so the closing bracket lands in the third piece:
+        Split ``glpat-[label](url)`` so the closing bracket lands in the third piece:
         no neighbouring pair canonicalises to anything, while the full join
-        collapses the url away and puts the label straight against ``AKIA``.
+        collapses the url away and puts the label straight against ``glpat-``.
         """
-        pieces = ["AKIA", "[IOSFODNN7EXAMPLE](https://ex.test/", "padpadpad)"]
+        pieces = ["glpat-", "[IOSFODNN7EXAMPLE](https://ex.test/", "padpadpad)"]
         assert severs_a_credential(pieces, _default_redactor)
 
     @pytest.mark.parametrize(
@@ -304,7 +304,7 @@ class TestSeversACredential:
         assert not severs_a_credential(pieces, _default_redactor)
 
     def test_balanced_link_reading_grades_the_full_sequence(self) -> None:
-        pieces = ["[AKIA](https://x/((a)))", "IOSFODNN7EXAMPLE"]
+        pieces = ["[glpat-](https://x/((a)))", "IOSFODNN7EXAMPLE"]
         assert severs_a_credential(pieces, _default_redactor)
 
     def test_the_pieces_are_graded_as_delivered_not_as_split(self) -> None:
@@ -314,7 +314,7 @@ class TestSeversACredential:
         pattern tolerates; the delivered pair sits flush. Grading the raw form is
         exactly the miss this function's contract warns callers about.
         """
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "glpat-IOSFODNN7EXAMPLE"
         raw = [key[:8] + "\n\n", "   " + key[8:]]
         delivered = [piece.strip() for piece in raw]
 
@@ -358,7 +358,7 @@ class TestSafeSplitOffsetGradesTheDeliveredForm:
 
     #: One trailing space is all it takes: the raw halves are separated by it and
     #: the delivered halves are not.
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _KEY = "glpat-IOSFODNN7EXAMPLE"
 
     def _text(self) -> tuple[str, int]:
         pad = "x" * 40
@@ -400,7 +400,7 @@ class TestTheDeliveredReadingCatchesWhatAPreSplitRedactionCannot:
     """
 
     def test_a_rule_between_the_halves_hides_the_key_from_a_pre_split_scan(self) -> None:
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "glpat-IOSFODNN7EXAMPLE"
         halves = [key[:8] + "\n\n---\n", "\n" + key[8:] + " tail prose"]
         delivered = [_strip_hr(piece).strip() for piece in halves]
 
@@ -473,15 +473,15 @@ class TestLinkReadingsAgreeWithoutAnOpener:
 
     _WINDOWS = [
         "plain words and digits 123",
-        "AKIA**IOSF**ODNN__7EXA__MPLE",
-        "AKIA`IOSF`ODNN``7EXA``MPLE ```fenced```",
-        "AKIA~~IOSF~~ODNN||7EXA||MPLE",
-        "<https://x/y|AKIAIOSF>ODNN<https://q|7EXAMPLE>",
-        "AKIA\u200bIOSF\u200dODNN\ufeff7EXA\u00adMPLE",
-        "[AKIAIOSF] (ODNN) [7EXA] (MPLE) and no opener",
+        "glpat-**IOSF**ODNN__7EXA__MPLE",
+        "glpat-`IOSF`ODNN``7EXA``MPLE ```fenced```",
+        "glpat-~~IOSF~~ODNN||7EXA||MPLE",
+        "<https://x/y|glpat-IOSF>ODNN<https://q|7EXAMPLE>",
+        "glpat-\u200bIOSF\u200dODNN\ufeff7EXA\u00adMPLE",
+        "[glpat-IOSF] (ODNN) [7EXA] (MPLE) and no opener",
         "[label] (https://x/y) [other][ref] ((nested)) )(",
-        "\\[AKIA\\]\\(IOSF\\) \\*ODNN\\* \\`7EXA\\` \\<MPLE\\>",
-        "line one **AKIA\nIOSF** line two <u|l>\n\n*_~`|",
+        "\\[glpat-\\]\\(IOSF\\) \\*ODNN\\* \\`7EXA\\` \\<MPLE\\>",
+        "line one **glpat-\nIOSF** line two <u|l>\n\n*_~`|",
         "the opener held apart: ] ( and ]\n( and ]\u200b(",
         "",
     ]
@@ -496,7 +496,7 @@ class TestLinkReadingsAgreeWithoutAnOpener:
 
     def test_the_equality_is_specific_to_the_missing_opener(self) -> None:
         """Control: with the opener present the readings genuinely diverge."""
-        window = "[AKIAIOSF](https://x/a_(b))ODNN7EXAMPLE"
+        window = "[glpat-IOSF](https://x/a_(b))ODNN7EXAMPLE"
         readings = {
             canonicalize_display(window),
             _first_close_reading(window),

@@ -543,7 +543,7 @@ def test_member_memory_refusal_redacts_before_posting(monkeypatch):
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     private_path = "/home/alice/.kiro/crew/memory_stores/member-one/memory.db"
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = "glpat-IOSFODNN7EXAMPLE"
     failure = UnknownMemoryStore(f"memory_unavailable: cannot open {private_path}; {credential}")
     monkeypatch.setattr(
         transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
@@ -634,7 +634,7 @@ class TestTransportErrorText:
 
     def test_classified_acp_error_is_redacted_before_posting(self):
         private_path = "/Users/alice/secret/x"
-        credential = "AKIAIOSFODNN7EXAMPLE"
+        credential = "glpat-IOSFODNN7EXAMPLE"
         err = AcpError(
             f"Backend refused: cannot read {private_path}; key {credential}",
             transient=False,
@@ -645,7 +645,7 @@ class TestTransportErrorText:
         assert private_path not in text and "alice" not in text
         assert credential not in text
 
-    @pytest.mark.parametrize("split", ["AKIA*{}*", "AKIA**{}**", "AKIA_{}_", "AKIA`{}`"])
+    @pytest.mark.parametrize("split", ["glpat-*{}*", "glpat-**{}**", "xoxb-_{}_", "glpat-`{}`"])
     def test_a_key_split_by_display_markup_is_redacted(self, split):
         rest = "IOSFODNN7EXAMPLE"
         err = _classified_acp_error(

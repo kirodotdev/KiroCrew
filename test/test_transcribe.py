@@ -810,14 +810,14 @@ class TestTranscriptRedaction:
         monkeypatch.setattr(stt, "availability", lambda: stt.Availability(True))
 
         async def fake_transcribe_pcm(pcm, **kwargs):
-            return "the key is AKIAIOSFODNN7EXAMPLE ok", stt.Availability(True)
+            return "the key is glpat-IOSFODNN7EXAMPLE ok", stt.Availability(True)
 
         monkeypatch.setattr(stt, "transcribe_pcm", fake_transcribe_pcm)
 
         result = await transcribe_audio(str(audio), cfg)
 
         assert result is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert "[REDACTED: credential]" in result
         # The surrounding speech survives: redaction replaces the secret, it does
         # not discard the utterance.

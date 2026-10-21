@@ -51,11 +51,10 @@ def test_the_local_subset_catches_it_without_the_canonical_detector(monkeypatch)
     assert "aws-secret-labelled" in kinds, kinds
 
 
-def test_the_key_id_pattern_still_works():
-    """The original coverage must survive the addition."""
+def test_a_key_id_alone_is_not_refused():
+    """An AWS access key ID is Identifier tier, so a bundle naming one ships."""
     mod = load_build()
-    kinds = {leak.kind for leak in mod.scan_text(_DOC_KEY_ID, "prompt")}
-    assert "aws-access-key" in kinds, kinds
+    assert mod.scan_text(_DOC_KEY_ID, "prompt") == []
 
 
 @pytest.mark.parametrize(

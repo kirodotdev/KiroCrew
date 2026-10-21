@@ -1183,9 +1183,9 @@ def test_validation_report_counts_all_truncation_once(loader):
 def test_validation_report_redacts_before_shortening(loader):
     cap = skills_mod._VALIDATION_REPORT_MAX_STRING_CHARS
     # Put a credential across the cut: shortening first leaks its prefix.
-    text = "z" * (cap - 5) + " AKIAIOSFODNN7EXAMPLE"
+    text = "z" * (cap - 5) + " glpat-IOSFODNN7EXAMPLE"
     bounded = loader._redact_validation_report({text: [text]})
-    assert "AKIA" not in json.dumps(bounded)
+    assert "glpat-" not in json.dumps(bounded)
     key = next(iter(bounded))
     assert key == loader._redact_text(text)[:cap]
     assert bounded[key] == [key]

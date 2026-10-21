@@ -576,14 +576,14 @@ class TestAgentRoutes:
             await _start(client)
             resp = await client.post(
                 f"{BASE}/meetings/standup/dispatch",
-                json={"text": "rotate AKIAIOSFODNN7EXAMPLE today"},
+                json={"text": "rotate glpat-IOSFODNN7EXAMPLE today"},
             )
             assert resp.status == 200
             body = await resp.json()
             assert body["dispatched"] == 3
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
+            assert "glpat-IOSFODNN7EXAMPLE" not in body["text"]
             assert body["segment"]["source"] == k.TRANSCRIPT_SOURCE_SPEECH
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+            assert "glpat-IOSFODNN7EXAMPLE" not in body["segment"]["text"]
 
             transcript = await client.get(f"{BASE}/meetings/standup/transcript")
             assert transcript.status == 200
@@ -1153,15 +1153,15 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             body = await (
                 await client.post(
                     f"{BASE}/meetings/standup/dispatch",
-                    json={"text": "rotate AKIAIOSFODNN7EXAMPLE today"},
+                    json={"text": "rotate glpat-IOSFODNN7EXAMPLE today"},
                 )
             ).json()
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+            assert "glpat-IOSFODNN7EXAMPLE" not in body["text"]
+            assert "glpat-IOSFODNN7EXAMPLE" not in body["segment"]["text"]
 
             session = _common.ACTIVE.get("standup")
             assert session is not None
-            assert not any("AKIAIOSFODNN7EXAMPLE" in line for line in _held_lines(session))
+            assert not any("glpat-IOSFODNN7EXAMPLE" in line for line in _held_lines(session))
 
             release.set()
             assert (await start).status == 200

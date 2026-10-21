@@ -568,7 +568,7 @@ class TestMcpHeaderRedaction:
         """
         import kiro_crew.mcp_discovery as disc
 
-        fake_key = "AKIA" + "IOSFODNN7EXAMPLE"
+        fake_key = "glpat-" + "IOSFODNN7EXAMPLE"
         redacted = disc.redact_mcp_error(
             f"remote rejected key {fake_key} during handshake",
             {"Authorization": "Bearer unrelated-configured-value"},

@@ -184,7 +184,7 @@ class DefaultSandboxPolicy:
 
 
 class DefaultCredentialPolicy:
-    """Today's AKIA/ASIA + exfil redaction passes from ``security.py``."""
+    """Today's credential + exfil redaction passes from ``security.py``."""
 
     def redact(self, text: str) -> str:
         return security.redact(text)

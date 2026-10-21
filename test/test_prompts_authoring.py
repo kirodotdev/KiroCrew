@@ -581,7 +581,7 @@ class TestPromptEditCompareAndSwap:
         """Editing a redacted copy is refused, so its hash serves no caller —
         and sha256 of the raw bytes would be an offline verification oracle
         for exactly the content the redaction hides."""
-        _user_prompt(tmp_path, "leaky", "aws_key = AKIAIOSFODNN7EXAMPLE\n")
+        _user_prompt(tmp_path, "leaky", "aws_key = glpat-IOSFODNN7EXAMPLE\n")
         detail = json.loads(
             asyncio.run(api_prompt_detail(_write_request("GET", "leaky", scope="global"))).body
         )
@@ -738,10 +738,10 @@ class TestPromptWriteHardening:
     def test_detail_reports_a_filtered_copy(self, tmp_path, mock_sel):
         """The editor writes back what it was given, so the read path has to say
         when what it gave back is not what is on disk."""
-        _user_prompt(tmp_path, "leaky", "aws_key = AKIAIOSFODNN7EXAMPLE\n")
+        _user_prompt(tmp_path, "leaky", "aws_key = glpat-IOSFODNN7EXAMPLE\n")
         body = json.loads(asyncio.run(api_prompt_detail(_api_request("leaky"))).body)
         assert body["redacted"] is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in body["content"]
 
     def test_detail_reports_an_untouched_copy(self, tmp_path, mock_sel):
         _user_prompt(tmp_path, "clean", "# Just prose\n")
@@ -754,7 +754,7 @@ class TestPromptWriteHardening:
         it actually opened, so a second link to a file outside the dir is
         refused rather than served."""
         secret = tmp_path / "secret.txt"
-        secret.write_text("AKIAIOSFODNN7EXAMPLE\n")
+        secret.write_text("glpat-IOSFODNN7EXAMPLE\n")
         d = tmp_path / ".kiro" / "prompts"
         d.mkdir(parents=True)
         os.link(secret, d / "looks-normal.md")
@@ -981,9 +981,9 @@ class TestScopedPromptDetail:
         assert loc["content"] == "LOCAL BODY" and loc["source"] == "local"
 
     def test_scoped_read_reports_redaction(self, tmp_path, mock_sel):
-        _user_prompt(tmp_path, "leaky", "aws_key = AKIAIOSFODNN7EXAMPLE\n")
+        _user_prompt(tmp_path, "leaky", "aws_key = glpat-IOSFODNN7EXAMPLE\n")
         body = json.loads(asyncio.run(api_prompt_detail(self._scoped("leaky", "global"))).body)
-        assert body["redacted"] is True and "AKIAIOSFODNN7EXAMPLE" not in body["content"]
+        assert body["redacted"] is True and "glpat-IOSFODNN7EXAMPLE" not in body["content"]
 
     def test_scoped_read_missing_is_coded_404(self, tmp_path, mock_sel):
         resp = asyncio.run(api_prompt_detail(self._scoped("ghost", "global")))

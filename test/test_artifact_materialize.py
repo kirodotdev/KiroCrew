@@ -251,12 +251,12 @@ def test_redaction_lives_at_the_api_boundary_only():
     shared flag. The external ``_scan_session_docs`` MUST redact a
     credential-shaped path; the internal ``_collect_session_docs`` (used by the
     authorization scan) MUST preserve the TRUE path so it can be ``stat``'d."""
-    cred_path = "/tmp/AKIAIOSFODNN7EXAMPLE/report.md"
+    cred_path = "/tmp/glpat-IOSFODNN7EXAMPLE/report.md"
     log = _FakeLog([cred_path])
     # API boundary: the path is redacted (never leaks a credential substring).
     api = h._scan_session_docs(log, {})
     assert api[0]["path"] != cred_path
-    assert "AKIAIOSFODNN7EXAMPLE" not in api[0]["path"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in api[0]["path"]
     # Internal collector: the true path is preserved (authorization can stat it).
     raw = h._collect_session_docs(log, {})
     assert raw[0]["path"] == cred_path

@@ -43,7 +43,7 @@ def _trust_ancestors_above(monkeypatch, base):
 
 
 def test_safe_error_redacts_credentials_and_exfiltration_urls() -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     payload = "x" * 80
     error = source._safe_error(
         f"failed with {secret} at https://attacker.example/c?data={payload}".encode()
@@ -724,7 +724,7 @@ async def test_run_json_sandboxes_with_minimal_provider_environment(monkeypatch)
     )
     spawn = AsyncMock(return_value=FakeProcess())
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "glpat-IOSFODNN7EXAMPLE")
     monkeypatch.setenv("GH_TOKEN", "ghp_" + "a" * 36)
     monkeypatch.setenv("PATH", "/workspace/attacker-bin")
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/gh")

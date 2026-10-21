@@ -399,7 +399,7 @@ class TestOutboundSecurity:
         assert module.local_destination("file:////attacker/share/a.png") is None
 
     def test_credential_in_raster_metadata_is_rejected(self, tmp_path: Path) -> None:
-        p = _png(tmp_path, body=_PNG + b"tEXtComment\0AKIAIOSFODNN7EXAMPLE")
+        p = _png(tmp_path, body=_PNG + b"tEXtComment\0glpat-IOSFODNN7EXAMPLE")
         text = f"![x]({p})"
 
         result = extract_local_refs(text)
@@ -1284,8 +1284,8 @@ class TestRealLocalJunctionAncestor:
 
 
 def _synth_aws_key() -> str:
-    """An AWS-access-key-SHAPED token: fixed public prefix plus synthetic body."""
-    prefix = "A" + "KIA"
+    """A GitLab-token-SHAPED value: fixed public prefix plus synthetic body."""
+    prefix = "gl" + "pat-"
     return prefix + hashlib.sha256(b"kc-outbound-wide").hexdigest().upper()[:16]
 
 
@@ -1355,21 +1355,20 @@ class TestSynthesizedMaterialActuallyTrips:
         assert _BASELINE_SYMBOL_TABLE.encode("latin-1") in raw
 
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
-    def test_the_wide_payload_is_a_raster_and_is_invisible_to_narrow_detectors(
+    def test_the_wide_payload_is_a_raster_and_is_caught_in_a_narrow_projection(
         self, encoding: str
     ) -> None:
-        """Both halves, or the wide cases below prove nothing.
+        """The bytes reach the content scan, and the key is caught even narrow.
 
-        The bytes must reach the content scan at all, and the key must genuinely
-        be invisible to a single-byte projection -- otherwise a plain narrow scan
-        would have caught it and the wide pass is not what the refusal measures.
+        The redactor's normalised view drops the NUL padding, so a single-byte
+        projection of the wide payload is redacted as well.
         """
         from kiro_crew import security
 
         raw = _wide_png(encoding)
         assert sniff_raster_mime(raw[:SNIFF_BYTES]) == "image/png"
         narrow = raw.decode("latin-1")
-        assert security.redact(narrow) == narrow
+        assert security.redact(narrow) != narrow
 
 
 class TestOneEgressScanOnEveryOutboundPath:

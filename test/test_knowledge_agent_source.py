@@ -226,7 +226,7 @@ class TestAddDocument:
 
     @pytest.mark.asyncio
     async def test_credentials_are_redacted_before_storage(self, pipeline, kstore):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         res = await add_agent_document(
             pipeline, title="Runbook", content=f"use key {secret} to deploy", source_uri="test://Runbook")
         stored = " ".join(_items(kstore, res["source_id"]))
@@ -247,7 +247,7 @@ class TestAddDocument:
         # SEL is a persisted, readable surface, so a credential in an
         # agent-authored title or reason must not reach it. `reason` never passes
         # through the content redaction at all.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         spy = MagicMock()
         monkeypatch.setattr(agent_source_mod, "sel", lambda: spy)
         res = await add_agent_document(
@@ -636,8 +636,8 @@ async def test_redaction_cannot_collapse_two_uris_into_one_document(pipeline, ks
     Hashing the redacted form gave them one slug, so the second add deleted the
     first document's items. The identity is hashed from the raw URI instead.
     """
-    u1 = "https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE"
-    u2 = "https://wiki.example.com/doc?key=AKIAJKLMNOPQR2SAMPLE"
+    u1 = "https://wiki.example.com/doc?key=glpat-IOSFODNN7EXAMPLE"
+    u2 = "https://wiki.example.com/doc?key=glpat-JKLMNOPQR2SAMPLE"
     first = await add_agent_document(pipeline, title="Runbook",
                                      content="Alpha runbook. " * 40, source_uri=u1)
     second = await add_agent_document(pipeline, title="Runbook",
@@ -651,7 +651,7 @@ async def test_redaction_cannot_collapse_two_uris_into_one_document(pipeline, ks
     assert ids1 and set(ids1) <= live
 
     # The stored/returned URI is redacted even though the identity is not.
-    assert "AKIA" not in second["source_uri"]
+    assert "glpat-" not in second["source_uri"]
     assert "REDACTED" in second["source_uri"]
 
 
@@ -858,10 +858,10 @@ class TestCitationSourceUri:
         # redacted form may be stored, so only the redacted form can be cited.
         res = await add_agent_document(
             pipeline, title="Runbook", content="the deploy runbook body",
-            source_uri="https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE")
+            source_uri="https://wiki.example.com/doc?key=glpat-IOSFODNN7EXAMPLE")
         assert res["status"] == "added"
         hit = self._hit(kstore, res["source_id"], "deploy runbook")
-        assert "AKIA" not in hit["source_uri"]
+        assert "glpat-" not in hit["source_uri"]
         assert "REDACTED" in hit["source_uri"]
 
     @pytest.mark.asyncio

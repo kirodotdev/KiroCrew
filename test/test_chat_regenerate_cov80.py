@@ -322,7 +322,7 @@ async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     slot.append("user", "what is the key?")
     slot.append("assistant", "v2")
     slot.messages[-1]["variants"] = [
-        {"content": "the key is AKIAIOSFODNN7EXAMPLE", "ts": "t1"},
+        {"content": "the key is glpat-IOSFODNN7EXAMPLE", "ts": "t1"},
         {"content": "v2", "ts": "t2"},
     ]
     async with _client(state) as client:
@@ -333,9 +333,9 @@ async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     msg_type, payload = state.broadcast_ws.call_args.args
     assert msg_type == "chat_variant_switch"
     assert payload["index"] == 0
-    assert "AKIAIOSFODNN7EXAMPLE" not in payload["content"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in payload["content"]
     # The stored row keeps the real content; only the wire copy is redacted.
-    assert slot.messages[-1]["content"] == "the key is AKIAIOSFODNN7EXAMPLE"
+    assert slot.messages[-1]["content"] == "the key is glpat-IOSFODNN7EXAMPLE"
     assert slot.messages[-1]["ts"] == "t1"
 
 
@@ -648,7 +648,7 @@ async def test_edit_resend_delivers_the_owners_edit_as_typed(state) -> None:
         async with _client(state) as client:
             resp = await client.post(
                 "/api/chat/slots/s1/edit-resend",
-                json={"index": 0, "content": "use AKIAIOSFODNN7EXAMPLE please"},
+                json={"index": 0, "content": "use glpat-IOSFODNN7EXAMPLE please"},
             )
             assert resp.status == 200
             await asyncio.sleep(0)
@@ -657,8 +657,8 @@ async def test_edit_resend_delivers_the_owners_edit_as_typed(state) -> None:
     # delivered as typed into both the persisted row and the turn input, the
     # same rule an idle send and a steer follow. An app-driven edit still
     # redacts (test_queued_user_text_display covers that boundary).
-    assert slot.messages[-1]["content"] == "use AKIAIOSFODNN7EXAMPLE please"
-    assert run.await_args.args[2] == "use AKIAIOSFODNN7EXAMPLE please"
+    assert slot.messages[-1]["content"] == "use glpat-IOSFODNN7EXAMPLE please"
+    assert run.await_args.args[2] == "use glpat-IOSFODNN7EXAMPLE please"
 
 
 @pytest.mark.asyncio

@@ -609,7 +609,7 @@ class TestFetchOnViewMerge:
                 RemoteComment(
                     remote_id="7",
                     thread_id="7",
-                    author="AKIAIOSFODNN7EXAMPLE",
+                    author="glpat-IOSFODNN7EXAMPLE",
                     body="looks good",
                 )
             ],
@@ -618,10 +618,10 @@ class TestFetchOnViewMerge:
         assert resp.status == 200
         cmt = next(c for c in _j(resp)["comments"] if c["origin"] == "fakeprov:7")
         # Credential in the provider-controlled author never reaches the wire.
-        assert "AKIAIOSFODNN7EXAMPLE" not in cmt["author"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in cmt["author"]
         # ...but it IS stored raw in the mirror (redaction is read-boundary only).
         stored = next(c for c in store.list_comments("doc") if c.origin == "fakeprov:7")
-        assert stored.author == "AKIAIOSFODNN7EXAMPLE"
+        assert stored.author == "glpat-IOSFODNN7EXAMPLE"
 
     @pytest.mark.asyncio
     async def test_merged_mirror_carries_routing_metadata(self, store, monkeypatch):

@@ -54,12 +54,12 @@ describe('CollapsibleMessage', () => {
     expect(bubbled).toBe(false)
   })
 
-  it('sanitizes LLM output (redacts AWS access keys)', () => {
-    const leaky = 'hi AKIAIOSFODNN7EXAMPLE bye'
+  it('sanitizes LLM output (redacts a Slack token)', () => {
+    const leaky = 'hi xoxb-IOSFODNN7EXAMPLE bye'
     const { container } = render(<CollapsibleMessage message={leaky} />)
-    expect(container.textContent).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(container.textContent).not.toContain('xoxb-IOSFODNN7EXAMPLE')
     fireEvent.click(container.querySelector('button')!)
-    expect(container.querySelector('pre')!.textContent).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(container.querySelector('pre')!.textContent).not.toContain('xoxb-IOSFODNN7EXAMPLE')
   })
 
   it('redacts exfiltration URLs in both states', () => {

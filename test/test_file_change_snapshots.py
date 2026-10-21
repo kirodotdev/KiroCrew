@@ -538,24 +538,24 @@ class TestFlushFileChanges:
 
     def test_redacts_credentials_in_after_content(self, tmp_path: Path):
         f = tmp_path / "config.ini"
-        f.write_text("aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n")
+        f.write_text("aws_access_key_id=glpat-IOSFODNN7EXAMPLE\n")
         slot = _make_slot_with_assistant_message()
         slot._file_changes = [{"path": str(f), "content": "(empty)"}]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        # AKIA key is scrubbed before reaching the UI.
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["after"]
+        # glpat- key is scrubbed before reaching the UI.
+        assert "glpat-IOSFODNN7EXAMPLE" not in changes[0]["after"]
 
     def test_redacts_credentials_in_before_content(self, tmp_path: Path):
         f = tmp_path / "post-edit.ini"
         f.write_text("clean\n")
         slot = _make_slot_with_assistant_message()
         slot._file_changes = [
-            {"path": str(f), "content": "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE\n"}
+            {"path": str(f), "content": "aws_secret_access_key=glpat-IOSFODNN7EXAMPLE\n"}
         ]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in changes[0]["before"]
 
     def test_an_unchanged_credential_line_is_not_turned_into_a_phantom_diff(
         self, tmp_path: Path
@@ -1159,14 +1159,14 @@ class TestContentBlockRedactionAndTruncation:
         slot = _make_slot_with_assistant_message()
         # Before content contains a credential (from content block)
         slot._file_changes = [
-            {"path": str(f), "content": "aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"}
+            {"path": str(f), "content": "aws_access_key_id=glpat-IOSFODNN7EXAMPLE\n"}
         ]
         _flush_file_changes(slot)
         meta = slot.messages[-1].get("meta", {})
         assert "file_changes" in meta
         changes = meta["file_changes"]
-        # The AKIA key in before must be scrubbed
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+        # The glpat- key in before must be scrubbed
+        assert "glpat-IOSFODNN7EXAMPLE" not in changes[0]["before"]
 
     def test_chip_scrub_is_the_exfil_first_composition(self, short_tmp_dir: Path):
         """A long-query exfil URL in chip content loses its WHOLE url.
@@ -1201,7 +1201,7 @@ class TestContentBlockRedactionAndTruncation:
         — credentials must never enter message meta regardless of source."""
         result = _snapshot_write_target(
             {"command": "strReplace", "path": "~/.aws/credentials"},
-            diff_old_text="[default]\naws_access_key_id=AKIAEXAMPLE\n",
+            diff_old_text="[default]\naws_access_key_id=glpat-EXAMPLE\n",
             diff_path="~/.aws/credentials",
         )
         # Must be None — sensitive path refusal takes priority

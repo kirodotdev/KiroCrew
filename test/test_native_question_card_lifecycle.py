@@ -190,7 +190,7 @@ async def test_a_second_native_card_supersedes_the_first() -> None:
 async def test_native_card_text_is_redacted_by_the_shared_pass() -> None:
     """Redaction lives in the coordinator now, not in the runner's tool branch."""
     st = _state("chat-1")
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     raw = _tool_input(f"Use key {secret}?")
     await _post_native_question_card(st, "chat-1", raw)
     payload = st.deliver_ws_owners.frames[0][1]  # type: ignore[attr-defined]

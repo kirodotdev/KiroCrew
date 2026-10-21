@@ -243,11 +243,11 @@ class TestNativeSubagentSync:
         _native_subagent_sync(
             state,
             slot,
-            [_sub("s1", "n", "role", "key AKIAIOSFODNN7EXAMPLE here", "working")],
+            [_sub("s1", "n", "role", "key glpat-IOSFODNN7EXAMPLE here", "working")],
             {},
         )
         spawn = _ws_calls(state)["subagent_spawn"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in spawn["task"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in spawn["task"]
 
     def test_nongeneric_status_message_emits_tool(self):
         state = _make_state()

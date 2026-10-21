@@ -340,7 +340,7 @@ class TestPreviewPredecessor:
 
         credential = onboarding_scan._Scan("predecessor", tmp_path, tmp_path)
         onboarding_plan._add_db_directive(
-            credential, "lesson.cred", "Use key AKIAIOSFODNN7EXAMPLE always"
+            credential, "lesson.cred", "Use key glpat-IOSFODNN7EXAMPLE always"
         )
 
         assert credential.items["instructions"] == []
@@ -356,7 +356,7 @@ class TestPreviewPredecessor:
         BROKEN code and lock in nothing. Escaped, the credential is invisible until
         `json.loads` runs, which is exactly the gap.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         # value_json as it sits on disk: the key present only as escape sequences.
         raw = '"Use this deploy key %s always"' % "".join("\\u%04x" % ord(c) for c in secret)
         assert secret not in raw
@@ -443,7 +443,7 @@ class TestPreviewPredecessor:
 
     def test_nested_decoded_credential_is_screened(self, tmp_path: Path) -> None:
         """The screen walks string leaves, so a key nested in an object is caught too."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         escaped = "".join("\\u%04x" % ord(char) for char in secret)
         raw = '{"rule": "Use key %s now", "note": "harmless"}' % escaped
         assert secret not in raw
@@ -483,7 +483,7 @@ class TestPreviewPredecessor:
         always-injected lesson tier — the bound becomes the bypass.
         """
         api = _api()
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         escaped = "".join("\\u%04x" % ord(char) for char in secret)
         raw = '"Use key %s now"' % escaped
         for _ in range(onboarding_scan._MAX_DECODED_VALUE_DEPTH + 4):
@@ -517,8 +517,12 @@ class TestPreviewPredecessor:
             store.close()
 
         assert "memories" not in _categories(plan, "predecessor")
+        # The screen of the raw text now reads ``\uXXXX`` escapes through the
+        # normalised view, so it may refuse the row before the depth bound is
+        # reached; either refusal keeps the nested credential out.
         assert any(
-            item["source_id"] == "predecessor" and item["reason"] == "unscreenable_memory_record"
+            item["source_id"] == "predecessor"
+            and item["reason"] in ("unscreenable_memory_record", "credential_bearing_memory")
             for item in plan["skipped"]
         )
         assert secret not in lessons_context

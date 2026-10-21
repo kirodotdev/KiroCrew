@@ -28,7 +28,7 @@ Two halves are tested here:
 * **the gateway dispatcher** — ``computer_use/tools.py::dispatch_tool`` against the
   shipped ``FakeComputerUseBackend``. Asserts the ordered chokepoint's refusals
   name their cause, that a result NEVER carries an image content block, that an
-  AKIA-shaped fixture comes back masked, and that SEL records a
+  glpat-shaped fixture comes back masked, and that SEL records a
   ``tool_invocation`` on both success and failure.
 
 The pointer verbs (click targeting, the click enums, ``auto`` never resolving to
@@ -960,7 +960,7 @@ def test_driver_failure_refusal_is_redacted_too(
 def test_credential_shaped_fixture_comes_back_masked(
     keystone: Path, fake_backend: FakeComputerUseBackend
 ):
-    """An AKIA-shaped literal in a tree node is REDACTED on the way out.
+    """A glpat-shaped literal in a tree node is REDACTED on the way out.
 
     Not belt-and-suspenders: accessibility values are arbitrary user content and
     live probes observed real filesystem paths, volume names and document names in

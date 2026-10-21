@@ -461,7 +461,7 @@ async def test_a_slide_file_that_is_a_symlink_or_altered_is_refused_and_audited(
     digest = _write_pptx(f)
     _seed_cache(cache, digest, 2)
     secret = tmp_path / "credentials"
-    secret.write_bytes(b"AKIA-not-for-you")
+    secret.write_bytes(b"glpat--not-for-you")
     (cache / digest / "slide-1.png").unlink()
     (cache / digest / "slide-1.png").symlink_to(secret)
     (cache / digest / "slide-2.png").write_bytes(b"\x89PNG-replaced")
@@ -471,7 +471,7 @@ async def test_a_slide_file_that_is_a_symlink_or_altered_is_refused_and_audited(
             linked_body = await linked.read()
             altered = await client.get(f"/api/file-office-slide?path={f}&n=2")
     assert linked.status == 404 and altered.status == 404
-    assert b"AKIA" not in linked_body
+    assert b"glpat-" not in linked_body
     integrity = [
         c
         for c in mock_sel.log_tool_invocation.call_args_list
@@ -544,7 +544,7 @@ async def test_a_deck_whose_slides_show_a_credential_is_not_rendered(tmp_path, m
         _validated(f),
         patch(f"{_MOD}.soffice_path", return_value="/usr/bin/soffice"),
         patch(f"{_MOD}._run_soffice", soffice),
-        patch(f"{_MOD}._deck_text", return_value=("rotate me: AKIAIOSFODNN7EXAMPLE", False)),
+        patch(f"{_MOD}._deck_text", return_value=("rotate me: glpat-IOSFODNN7EXAMPLE", False)),
     ):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-office-slides?path={f}")

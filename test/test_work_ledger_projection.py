@@ -118,7 +118,7 @@ async def test_each_write_records_one_entry_with_the_fields_it_set(recorded):
 async def test_caller_text_is_redacted_before_both_cache_and_log_are_written(recorded):
     """Both route entry points cross the same boundary before their fit probes
     and commits, so secrets and suspicious URLs reach neither durable copy."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     url = "https://evil.example.com/steal?data=" + "A" * 250
     acceptance = {"kind": "human_approval", "notes": [secret, url]}
 
@@ -177,7 +177,7 @@ async def test_caller_text_is_redacted_before_both_cache_and_log_are_written(rec
 
 @pytest.mark.asyncio
 async def test_credential_in_artifact_key_is_redacted_before_storage(recorded):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     item_id = await _board()
 
     status, body = await _report(
@@ -200,7 +200,7 @@ async def test_credential_in_artifact_key_is_redacted_before_storage(recorded):
 
 @pytest.mark.asyncio
 async def test_cache_and_crew_log_keep_byte_identical_redacted_fields(recorded):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     item_id = await _board()
 
     status, body = await _report(
@@ -1183,7 +1183,7 @@ async def test_a_legacy_items_first_conductor_write_keeps_the_whole_baseline(rec
 
 @pytest.mark.asyncio
 async def test_a_legacy_stored_baseline_is_redacted_before_recording(recorded):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     acceptance = {"kind": "human_approval", "notes": [f"inspect {secret}"]}
     wl.ensure_conductor(CONDUCTOR, goal="old goal")
     old = wl.apply_conductor_action(
@@ -1212,12 +1212,12 @@ async def test_a_legacy_stored_baseline_is_redacted_before_recording(recorded):
 
 @pytest.mark.asyncio
 async def test_a_legacy_baseline_key_collision_is_refused_before_writing(recorded):
-    first = "AKIAIOSFODNN7EXAMPLE"
-    # Assembled rather than written out: the internal content scan flags an AKIA
+    first = "glpat-IOSFODNN7EXAMPLE"
+    # Assembled rather than written out: the internal content scan flags a glpat-
     # literal in an added line, and only the well-known documentation key above is
     # allowlisted. The redactor sees a real credential shape at runtime, which is what
     # this test needs, while no line here carries one. Do not inline this back.
-    second = "AKIA" + "Z" * 16
+    second = "glpat-" + "Z" * 16
     wl.ensure_conductor(CONDUCTOR, goal="old goal")
     old = wl.apply_conductor_action(
         CONDUCTOR,

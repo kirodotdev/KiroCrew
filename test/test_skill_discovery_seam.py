@@ -316,13 +316,13 @@ def test_display_name_is_scrubbed_and_falls_back(monkeypatch) -> None:
     class _SecretLabel(_FakeProvider):
         @property
         def display_name(self) -> str:
-            return "Catalog key=AKIAIOSFODNN7EXAMPLE"
+            return "Catalog key=glpat-IOSFODNN7EXAMPLE"
 
     reg = ProviderRegistry()
     reg.register(_RaisingLabel(name="edition-raises"), name="edition-raises")
     reg.register(_SecretLabel(name="edition-secret"), name="edition-secret")
     assert discover._display_name(reg, "edition-raises") == "edition-raises"
-    assert "AKIAIOSFODNN7EXAMPLE" not in discover._display_name(reg, "edition-secret")
+    assert "glpat-IOSFODNN7EXAMPLE" not in discover._display_name(reg, "edition-secret")
     assert discover._display_name(reg, "unregistered") == "unregistered"
 
 

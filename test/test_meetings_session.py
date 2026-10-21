@@ -840,8 +840,8 @@ class TestPrompts:
         assert "/tmp/spec.md" in context
 
     def test_context_redacts_credentials(self):
-        context = sess.build_meeting_context({"title": "AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in context
+        context = sess.build_meeting_context({"title": "glpat-IOSFODNN7EXAMPLE"})
+        assert "glpat-IOSFODNN7EXAMPLE" not in context
 
     def test_context_skips_malformed_attachment(self):
         context = sess.build_meeting_context({"title": "T", "attachments": ["oops", None]})

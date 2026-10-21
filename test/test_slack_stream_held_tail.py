@@ -103,7 +103,9 @@ def test_a_value_split_around_a_tool_call_is_filtered_as_one(boundary):
 
 
 def test_a_held_run_is_replaced_by_the_final_copy_when_the_whole_text_redacts():
-    slack, _sessions = _run([_text("The access key is AKIA"), _text("IOSFODNN7"), _text("EXAMPLE")])
+    slack, _sessions = _run(
+        [_text("The access key is glpat-"), _text("IOSFODNN7"), _text("EXAMPLE")]
+    )
 
     streamed = "".join(text for _ts, text in _appends(slack))
     assert "IOSFODNN7EXAMPLE" not in streamed
@@ -282,7 +284,7 @@ def test_the_next_message_keeps_its_own_opening_word_in_its_final_copy(
             _text("Checking now 42"),
             _wait_call(),
             _text("42 tasks completed. "),
-            _text("key AKIAIOSFODNN7EXAMPLE done"),
+            _text("key glpat-IOSFODNN7EXAMPLE done"),
         ],
     )
 
@@ -356,10 +358,10 @@ def test_a_given_back_word_is_not_repeated_when_the_next_message_is_refused():
 @pytest.mark.parametrize(
     ("before", "after", "hidden"),
     [
-        ("Here it is key=AKI", "AIOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
+        ("Here it is key=glp", "at-IOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
         ("bot 12345", "67890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw then more", "AAHdqTcvCH1v"),
-        ("see x", "AKIAIOSFODNN7EXAMPLE then more", "IOSFODNN7EXAMPLE"),
-        ("The key is AKIA", "IOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
+        ("see x", "glpat-IOSFODNN7EXAMPLE then more", "IOSFODNN7EXAMPLE"),
+        ("The key is glpat-", "IOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
         ("Header: Authorization: Bearer ", f"{_OPAQUE} then more", _OPAQUE),
     ],
     ids=["after-a-name", "inside-digits", "no-break-inside-a-value", "after-a-prefix", "bearer"],
@@ -425,9 +427,9 @@ def test_a_value_split_by_a_wait_and_a_tool_line_stays_filtered():
 @pytest.mark.parametrize(
     ("before", "after", "hidden"),
     [
-        ("Here it is key=AKI", "AIOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
+        ("Here it is key=glp", "at-IOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
         ("bot 12345", "67890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw then more", "AAHdqTcvCH1v"),
-        ("see x", "AKIAIOSFODNN7EXAMPLE then more", "IOSFODNN7EXAMPLE"),
+        ("see x", "glpat-IOSFODNN7EXAMPLE then more", "IOSFODNN7EXAMPLE"),
     ],
     ids=["after-a-name", "inside-digits", "no-break-inside-a-value"],
 )
@@ -439,7 +441,7 @@ def test_a_value_split_by_a_wait_stays_filtered(before, after, hidden):
 
 def test_a_key_split_after_its_prefix_by_a_wait_is_filtered_as_one():
     slack, _sessions = _run(
-        [_text("The key is AKIA"), _wait_call(), _text("IOSFODNN7EXAMPLE and more")]
+        [_text("The key is glpat-"), _wait_call(), _text("IOSFODNN7EXAMPLE and more")]
     )
 
     assert "IOSFODNN7EXAMPLE" not in _every_text(slack)
@@ -510,7 +512,7 @@ def test_a_key_split_by_a_wait_and_another_tool_call_is_filtered_as_one():
         kind=EVENT_TOOL_CALL, title="Running: read", tool_name="read", tool_call_id="t1"
     )
     slack, _sessions = _run(
-        [_text("The key is AKIA"), _wait_call(), tool, _text("IOSFODNN7EXAMPLE and more")]
+        [_text("The key is glpat-"), _wait_call(), tool, _text("IOSFODNN7EXAMPLE and more")]
     )
 
     assert "IOSFODNN7EXAMPLE" not in _every_text(slack)

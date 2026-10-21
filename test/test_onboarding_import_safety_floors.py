@@ -408,7 +408,7 @@ class TestConservativeParsingRegressions:
         anchor = tmp_path / "memory"
         anchor.mkdir()
         memory_file = anchor / "secret.md"
-        memory_file.write_text("access key AKIAIOSFODNN7EXAMPLE lives here", encoding="utf-8")
+        memory_file.write_text("access key glpat-IOSFODNN7EXAMPLE lives here", encoding="utf-8")
 
         scan = onboarding_scan._Scan("predecessor", tmp_path, tmp_path)
         onboarding_plan._add_memory_files(scan, [(memory_file, anchor)])

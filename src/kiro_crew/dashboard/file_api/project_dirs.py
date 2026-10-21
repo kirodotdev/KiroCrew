@@ -13,14 +13,12 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _HEAD_READ_LIMIT,
-        _MACOS_TEMP_PROJECT_PREFIX_RE,
         DashboardState,
         _git_repo_touches,
         _sel,
         app_owns_slot_session,
         config_dir,
         is_sensitive_path,
-        platform_compat,
         redact,
         safe_read_prefix,
     )
@@ -136,83 +134,12 @@ def _match_known_project(raw: str, known: list[str]) -> str | None:
 
 
 def _redact_project_path(path: str) -> str:
-    """Redact a project path without treating Darwin's temp root as a secret.
+    """Redact a project path with the canonical redactor.
 
-    The generic bare-secret detector includes ``/`` because credentials may
-    contain base64 characters.  A macOS per-user temp prefix can therefore look
-    like one long high-entropy token even though its two variable components are
-    OS-owned and fixed-width.  Withhold those OS-owned components from the scan;
-    everything else still goes through the canonical redactor.
-
-    BOUNDARY CONTRACT -- WHERE THE SPLIT GOES, AND WHY IT STOPS THERE.
-    ``_contains_bare_secret`` slides an exactly-40-character window across a
-    complete base64-alphabet run precisely so that adjacent bytes cannot make a
-    credential invisible, and an AWS secret key may itself contain ``/``.  So a
-    window is a real credential candidate whenever every one of its bytes is
-    either fixed or user-controlled -- ``/T/`` followed by 37 user-controlled
-    characters is a well-formed 40-byte key, not a window that merely "borrows
-    OS bytes".  Two earlier splits were wrong for that reason: giving the scan
-    only ``path[match.end():]`` dropped every window crossing the boundary, and
-    giving it ``T`` + suffix still dropped the one starting at the ``/`` before
-    it.  Each produced a class where ``redact(path) != path`` while this helper
-    returned ``path`` unchanged -- the helper weakening the canonical output
-    policy rather than narrowing a false positive.
-
-    THE RESIDUAL OF THAT CLASS, MEASURED.  One such class survives this split, and
-    it is not a weakening: a 40-char key carrying MORE than
-    ``_SECRET_MAX_SLASHES`` separators.  Standalone, such a key is masked -- a
-    40-char run is the token somebody wrote, so the separator ceiling is
-    deliberately not applied to it.  Prepending ``/T`` makes the scanned run
-    longer than one whole key, which is exactly the condition that switches the
-    ceiling on, and every window is then declined.  Canonical on the whole path
-    still masks it, but NOT by recognising the key: the id supplies a slash-free
-    stretch that lets an id-straddling window clear the ceiling, i.e. it masks it
-    by the very false positive this exemption exists to remove.  The control is
-    that the same key also survives canonical on an ordinary deep path with no
-    exemption anywhere near it (``/srv/<key>``, ``/tmp/<key>``, ``/<key>``), so
-    the separator ceiling loses slash-dense keys everywhere in the product and
-    this helper is no weaker than the treatment the same key already gets
-    elsewhere.  Pinned by
-    ``test_a_slash_dense_key_is_treated_as_on_any_other_path``.
-
-    The split therefore sits at the END of the variable region, not one byte
-    inside it.  The prefix regex ends in the literal ``/T``, and everything to
-    the left of that literal is the OS-generated ``[a-z0-9]{2}/[a-z0-9_]{30}``
-    id.  Scanning ``/T`` + suffix covers EVERY window composed entirely of fixed
-    or user-controlled bytes, so there is no next byte to concede: a window
-    reaching further left necessarily contains id bytes, which the OS generates
-    and no caller can choose.  That is the terminating argument, and it is why
-    this is not "one more byte" a third time.
-
-    Withholding the id is the whole point of the exemption -- it is high-entropy
-    and self-flagging, and letting it into the scan is the false positive this
-    exemption exists to remove.
-    Measured over ordinary project names, pytest temp-dir names, truncated
-    sha-256 digests and uuid hex (300 samples each, under both a self-flagged and
-    a non-self-flagged prefix): the two-byte boundary costs ZERO additional
-    redactions, the same as the one-byte split it replaces.  The only names it
-    newly redacts are uniformly-random base64 runs of 37-38 characters, which the
-    canonical redactor already redacts on this path, so the boundary stays
-    strictly narrower than canonical rather than becoming a second policy.
-    DARWIN ONLY.  The withheld region is safe to withhold only because the OS
-    generates it: off Darwin ``/private/var/folders/<id>/T`` names nothing the OS
-    owns, so a caller who can choose a project directory can choose those bytes
-    outright and place a credential inside the one region this helper never
-    scans.  Everywhere but macOS the canonical redactor therefore decides alone,
-    which also keeps the exemption exactly as wide as the false positive it was
-    measured against.
-    Regression-guarded by ``TestMacosPrefixBoundary``.
+    A path carries no labelled value or key prefix of its own, so it is redacted
+    exactly as any other text is.
     """
-    if not platform_compat.IS_MACOS:
-        return redact(path)
-    match = _MACOS_TEMP_PROJECT_PREFIX_RE.match(path)
-    if match is None:
-        return redact(path)
-    prefix = match.group(0)
-    # Split at the end of the OS-generated id: the trailing ``/T`` is fixed, so
-    # it belongs to the scanned text. Preserving it instead would hide the
-    # 40-char window that starts on that ``/``.
-    return prefix[:-2] + redact(prefix[-2:] + path[match.end() :])
+    return redact(path)
 
 
 def _project_git_branch(base: str) -> dict:

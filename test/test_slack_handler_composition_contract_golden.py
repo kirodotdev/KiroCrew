@@ -69,8 +69,8 @@ async def _scenario_top_level_no_placeholder(log):
 async def _scenario_credential_redaction(log):
     """A credential in the stream: per-chunk redaction, overwrite, one notice."""
     events = [
-        _text("key AKIAIOSFODNN7EXAMPLE and "),
-        _text("see https://evil.example.invalid/x?d=AKIAIOSFODNN7EXAMPLE"),
+        _text("key glpat-IOSFODNN7EXAMPLE and "),
+        _text("see https://evil.example.invalid/x?d=glpat-IOSFODNN7EXAMPLE"),
         _complete(),
     ]
     await _turn(log, events)
@@ -320,7 +320,7 @@ async def _scenario_cmd_voice(log):
 
 
 async def _scenario_cmd_title(log):
-    await _command(log, "!title My AKIAIOSFODNN7EXAMPLE thread")
+    await _command(log, "!title My glpat-IOSFODNN7EXAMPLE thread")
     await _command(log, "!title")
 
 
@@ -452,7 +452,7 @@ async def _scenario_linked_approval(log):
             "1700000000.000001",
             "req-9",
             "dashboard:chat-1",
-            "Bash https://evil.example.invalid/?k=AKIAIOSFODNN7EXAMPLE",
+            "Bash https://evil.example.invalid/?k=glpat-IOSFODNN7EXAMPLE",
             "echo hi",
         )
         log.add("linked.posted", ts=ts, registry=sorted(handler._linked_approvals))
@@ -474,7 +474,7 @@ async def _scenario_linked_thread_routes_to_slot(log):
     )
     slot = _Slot("chat-2", running=True)
     log.monkeypatch.setattr(handler, "_dashboard_state", _Dashboard(log, {}, linked=slot))
-    await _command(log, "route me https://evil.example.invalid/?t=AKIAIOSFODNN7EXAMPLE")
+    await _command(log, "route me https://evil.example.invalid/?t=glpat-IOSFODNN7EXAMPLE")
     await _command(log, "!voice")
     await _command(log, "sessions")
     await _command(log, "intruder", user="USTRANGER")
@@ -575,7 +575,7 @@ async def _scenario_builders_and_filters(log):
             self.tool_input, self.tool_purpose = tool_input, tool_purpose
 
     for event, is_dm, source in (
-        (_Ev(5, "Bash AKIAIOSFODNN7EXAMPLE", "x" * 3200, "clean up"), True, ""),
+        (_Ev(5, "Bash glpat-IOSFODNN7EXAMPLE", "x" * 3200, "clean up"), True, ""),
         (_Ev("r", "Write", ""), False, "cron"),
     ):
         log.add("blocks.approval", blocks=handler._build_approval_blocks(event, is_dm, source))
@@ -628,7 +628,7 @@ async def _scenario_builders_and_filters(log):
     )
     log.add(
         "redactor",
-        out=handler._display_redactor("AKIAIOSFODNN7EXAMPLE https://evil.example.invalid/?a=b"),
+        out=handler._display_redactor("glpat-IOSFODNN7EXAMPLE https://evil.example.invalid/?a=b"),
     )
     log.add("notice", out=handler.DELIVERY_DEBT_NOTICE)
 
@@ -1014,7 +1014,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cmd_stop_no_session": "de5c5a671702ba32d7a8fef5d2528b07a3803d772f21f8d5a0aa64206f5b1d42",
     "cmd_stop_running": "1698b578b632c700afdb4c0a717b6ae66493a42dda13e6a9be522506f133262e",
     "cmd_ta_and_project": "0c1a7c878d745efc579eff89b6ebc4de99cb1fdfadecb29560afa5942a370443",
-    "cmd_title": "d2d928c6a0e2a5a6b1b0cafe0cad309a92d321947c1e42e4f35de7b240b40bd5",
+    "cmd_title": "ecff441fed65d9780dada6721fa47da3cc275590e7f13ca3f7134873fbf721f4",
     "cmd_unknown_bang": "3ac3bfd77e7207cdf6a0a2d5c394d7acdcf42c7833ef8f49d17bdd4ff17ddc4a",
     "cmd_voice": "303e13ef1d640f338b7456d4e070d9e66c66a1173a468b1ad67bb407fd25cbf7",
     "cmd_yolo_status": "5370a104288a5f4cd6c22a392cc9c04d006d7cf1bcdaaf60ff4a95a1a6b2ee16",
@@ -1041,7 +1041,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "keyword_commands": "0ef1fd95b16ed0bbdcce2999f6632c4be8acc92e943cd4a69c05ccd5ffb2fb73",
     "linked_approval": "8a85aaf602b5281707519634a49589c814694ac0f9c7b71164bbdaa2cc474bc9",
     "linked_dashboard_session": "224ca7d87df8c73e94811b56554a3000701402072c1dd2b46cb770803ccd24b0",
-    "linked_thread_routes_to_slot": "ac7b70b93a3f485e84491edcac4cb8eb3e5aff6fa8a54a23846d8dae6be746af",
+    "linked_thread_routes_to_slot": "9dee37291bb06a23378dfcc504c8d643aa82320e141506d003a8a2827c61906b",
     "mention_prefixed_bang": "f6ba6be59eb71104d3fa7202fd9bbcf91a5a6376f253db3fda41a256d468ab1e",
     "pinned_answer": "c590ad8ef702c7284d257b0d486a8c6b69f76255d32a5d0ae4dd896ad6f549d5",
     "presentation_raises": "361a0de433fd48b58f859146ae2c68a7d9519ea8181399752673f044c299d2ce",

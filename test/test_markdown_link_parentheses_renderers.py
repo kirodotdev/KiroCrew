@@ -79,8 +79,8 @@ class TestSlackLinksTheWholeUrl:
     @pytest.mark.parametrize(
         "payload",
         [
-            "AKIA[l](https://x/a|IOSFODNN7EXAMPLE)",
-            "[AKIA](https://x/|IOSFODNN7EXAMPLE)",
+            "glpat-[l](https://x/a|IOSFODNN7EXAMPLE)",
+            "[glpat-](https://x/|IOSFODNN7EXAMPLE)",
         ],
     )
     def test_a_pipe_destination_cannot_become_a_native_slack_link(self, payload):
@@ -268,27 +268,27 @@ class TestTheScreenCollapsesEveryLinkARendererShows:
 
 
 _MUST_CATCH_LINK_SHAPES = [
-    "[AKIA](https://x/((a)))IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/(((a))))IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/((((a)))))IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/((((((((a)))))))))IOSFODNN7EXAMPLE",
-    r"[AKIA](https://x/p\)q)IOSFODNN7EXAMPLE",
-    "[AKIA](<https://x/)>)IOSFODNN7EXAMPLE",
-    "[AKIA](https://x/((a)))IOSFODNN7EXAMPLE)",
-    "[AKIA](https://x/[y](z))IOSFODNN7EXAMPLE",
+    "[glpat-](https://x/((a)))IOSFODNN7EXAMPLE",
+    "[glpat-](https://x/(((a))))IOSFODNN7EXAMPLE",
+    "[glpat-](https://x/((((a)))))IOSFODNN7EXAMPLE",
+    "[glpat-](https://x/((((((((a)))))))))IOSFODNN7EXAMPLE",
+    r"[glpat-](https://x/p\)q)IOSFODNN7EXAMPLE",
+    "[glpat-](<https://x/)>)IOSFODNN7EXAMPLE",
+    "[glpat-](https://x/((a)))IOSFODNN7EXAMPLE)",
+    "[glpat-](https://x/[y](z))IOSFODNN7EXAMPLE",
 ]
 
 _MUST_STAY_CAUGHT_LINK_SHAPES = [
-    "[AKIA](https://x/(a))IOSFODNN7EXAMPLE",
-    '[AKIA](https://x "t")IOSFODNN7EXAMPLE',
-    '[AKIA](https://x/(a) "t")IOSFODNN7EXAMPLE',
-    "[x](https://a[AKIA](https://b)IOSFODNN7EXAMPLE)",
-    "[x](https://a [AKIA](https://b)IOSFODNN7EXAMPLE)",
+    "[glpat-](https://x/(a))IOSFODNN7EXAMPLE",
+    '[glpat-](https://x "t")IOSFODNN7EXAMPLE',
+    '[glpat-](https://x/(a) "t")IOSFODNN7EXAMPLE',
+    "[x](https://a[glpat-](https://b)IOSFODNN7EXAMPLE)",
+    "[x](https://a [glpat-](https://b)IOSFODNN7EXAMPLE)",
 ]
 
 _KEYLESS_LINK_SHAPES = [
     f"See [Python]({WIKI}) and [MSDN]({MSDN}).",
-    "[AKIA](a)(b)IOSFODNN7EXAMPLE",
+    "[glpat-](a)(b)IOSFODNN7EXAMPLE",
     "[a](http://x/(y)/(z))",
     "[a](b",
     "[a](<b)",
@@ -308,7 +308,7 @@ class TestBalancedLinkReadings:
     @pytest.mark.parametrize("depth", [2, 3, 4, 8])
     def test_parenthesis_nesting_is_not_depth_bounded(self, depth):
         destination = "https://x/" + "(" * depth + "a" + ")" * depth
-        payload = f"[AKIA]({destination}){_KEY[4:]}"
+        payload = f"[glpat-]({destination}){_KEY[6:]}"
         safe, redacted = redact_for_display(payload, _default_redactor)
         assert redacted is True
         assert all(_KEY not in reading for reading in _screen_readings(safe))

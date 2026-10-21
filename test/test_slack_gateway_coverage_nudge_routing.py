@@ -304,7 +304,7 @@ class TestAutonudgeRouterAndObserver:
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
         _on_fire, observer, _inst = await self._wire(orch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         loop = _loop("chat-1-1721")
         loop.monitor = MonitorState(
             kind="github_pull_request",

@@ -188,12 +188,12 @@ class TestImmediatePath:
         async with _client(state) as client:
             resp = await client.post(
                 "/api/chat/slots/s4/note",
-                json={"content": "token AKIAIOSFODNN7EXAMPLE here"},
+                json={"content": "token glpat-IOSFODNN7EXAMPLE here"},
                 headers={"X-Test-App": "cron"},
             )
             assert resp.status == 200
         row = _note_row(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in row["content"]
 
     @pytest.mark.asyncio
     async def test_zwj_emoji_content_survives_admission(self, tmp_path: Path, monkeypatch):

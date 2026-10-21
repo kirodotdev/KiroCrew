@@ -120,7 +120,9 @@ def omc(tmp_path, monkeypatch):
 
     config: dict[str, Any] = {}
     monkeypatch.setattr(ls, "read_config", lambda: dict(config))
-    monkeypatch.setattr(providers, "set_top_level", lambda key, value: config.__setitem__(key, value))
+    monkeypatch.setattr(
+        providers, "set_top_level", lambda key, value: config.__setitem__(key, value)
+    )
 
     # The audit sink is an assertion target here, never a real write.
     audit = MagicMock()
@@ -464,10 +466,10 @@ def test_credential_scan_is_quiet_on_ordinary_ops_prose(omc):
 
 
 def test_credential_scan_reports_line_numbers_for_a_core_pattern(omc):
-    """The AKIA shape comes from ``security.get_credential_patterns``."""
+    """The glpat- shape comes from ``security.get_credential_patterns``."""
     omc.ledger_lines(
         _entry("clean lesson"),
-        _entry("assume-role denied", "aws sts assume-role --access-key AKIAIOSFODNN7EXAMPLE"),
+        _entry("assume-role denied", "aws sts assume-role --access-key glpat-IOSFODNN7EXAMPLE"),
     )
     assert ls._credential_bearing_lines() == [2]
 
@@ -475,14 +477,28 @@ def test_credential_scan_reports_line_numbers_for_a_core_pattern(omc):
 def test_credential_scan_also_catches_a_provider_shape_the_core_does_not_know(omc):
     """The union of two detectors, because neither is a superset of the other.
 
-    Measured, the gap runs BOTH ways: the core patterns carry AKIA but not a prefixed
+    Measured, the gap runs BOTH ways: the core patterns carry glpat- but not a prefixed
     Datadog application key, while this app's ``redact_tokens`` knows the provider shapes
-    and not AKIA.
+    and not glpat-.
     """
     omc.ledger_lines(
         _entry("datadog probe", "ddapp_0123456789abcdef0123456789abcdef01234567"),
     )
     assert ls._credential_bearing_lines() == [1]
+
+
+def test_credential_scan_catches_a_key_pair_split_across_records(omc):
+    """An AWS key ID in one record and its unlabelled secret in the next: no single
+    line holds the pair, but the redactor over the whole ledger finds it."""
+    omc.ledger_lines(_entry("clean lesson"))
+    path = ls.ledger.ledger_path()
+    rows = [
+        {"id": "a", "fix": "new key AKIAIOSFODNN7EXAMPLE"},
+        {"id": "b", "fix": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+    ]
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("".join(json.dumps(row) + "\n" for row in rows))
+    assert 3 in ls._credential_bearing_lines()
 
 
 def test_credential_scan_reports_a_missing_ledger_as_clean(omc):
@@ -993,9 +1009,7 @@ async def test_pull_merges_and_reports_success(omc):
 @pytest.mark.asyncio
 async def test_pull_treats_an_empty_remote_as_the_normal_first_use(omc):
     omc.enable()
-    omc.git.aligned().when(
-        "fetch", rc=128, err="fatal: couldn't find remote ref main\n"
-    )
+    omc.git.aligned().when("fetch", rc=128, err="fatal: couldn't find remote ref main\n")
     ok, detail = await ls.pull()
     assert ok is True
     assert detail == "remote has no ledger branch yet (first sync will create it)"
@@ -1149,7 +1163,7 @@ async def test_push_refuses_credential_material_and_never_echoes_it(omc, caplog)
     so refusing -- which costs one operator a manual fix -- is the cheaper side.
     """
     omc.enable()
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     omc.ledger_lines(_entry("assume-role denied", f"aws sts assume-role --access-key {secret}"))
     omc.git.aligned()
 

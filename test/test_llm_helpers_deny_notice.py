@@ -372,7 +372,7 @@ async def test_a_failing_steer_still_rejects():
 @pytest.mark.asyncio
 async def test_agent_authored_text_is_redacted_before_it_reaches_the_model():
     provider = _Provider()
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     hooks = _hooks(ToolHookResult.deny(f"Blocked: key {secret} in command"))
     await _resolve_permission(
         provider, _event(title=f"curl -H 'x: {secret}'"), ToolApprovalPolicy.HOOK_BASED, hooks

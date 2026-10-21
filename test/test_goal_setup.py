@@ -233,7 +233,7 @@ def test_the_removed_nudge_names_the_goal_and_its_orphaned_milestones() -> None:
 
 
 def test_every_goal_nudge_quotes_goals_and_milestones_scrubbed() -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     goal = {"id": "g00000001", "text": f"Rotate {secret} weekly"}
     other = {"id": "g00000002", "text": f"Audit {secret} usage"}
     gone = {"id": "g00000003", "text": f"Drop {secret} keys"}

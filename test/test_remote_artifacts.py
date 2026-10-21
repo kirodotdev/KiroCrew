@@ -683,14 +683,14 @@ class TestRedactRemoteResponse:
     def test_redacts_credential_nested_in_list_within_list(self):
         """The prior walker only redacted strings/dicts inside a TOP-LEVEL list;
         a list nested inside a list silently passed through unredacted."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         data = {"rows": [["safe", [secret, "also-safe"]]]}
         out = art_handlers._redact_remote_response(data)
         assert secret not in json.dumps(out)
         assert out["rows"][0][1][0] == "[REDACTED: credential]"
 
     def test_redacts_credential_in_dict_within_nested_list(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         data = {"a": [[{"token": secret}]]}
         out = art_handlers._redact_remote_response(data)
         assert secret not in json.dumps(out)
@@ -704,7 +704,7 @@ class TestRedactRemoteResponse:
             child: dict = {}
             node["next"] = child
             node = child
-        node["leaf"] = "AKIAIOSFODNN7EXAMPLE"
+        node["leaf"] = "glpat-IOSFODNN7EXAMPLE"
         # Must not raise; depth beyond the cap is truncated to {}.
         out = art_handlers._redact_remote_response(payload)
         assert isinstance(out, dict)
@@ -712,7 +712,7 @@ class TestRedactRemoteResponse:
     def test_already_redacted_keys_are_not_rescanned(self):
         # A key named in ``already_redacted`` is passed through verbatim (the
         # caller already redacted it) — proves the double-pass is skipped.
-        raw = "AKIAIOSFODNN7EXAMPLE"
+        raw = "glpat-IOSFODNN7EXAMPLE"
         out = art_handlers._redact_remote_response(
             {"content": raw, "other": raw}, already_redacted=frozenset({"content"})
         )
@@ -862,7 +862,7 @@ class TestIndexByArtifactId:
             "artifacts": [
                 {
                     "external_id": "aB3xY9Qm2LpN8kR5tV7wZ1cD4eF6gH0jS2uI9oP7",
-                    "title": "leak AKIAIOSFODNN7EXAMPLE here",
+                    "title": "leak glpat-IOSFODNN7EXAMPLE here",
                     "snippet": "",
                 }
             ],
@@ -871,25 +871,25 @@ class TestIndexByArtifactId:
         resp = await api_remote_artifacts_browse(_request(match={"provider": "fakeprov"}))
         row = _json_body(resp)["artifacts"][0]
         assert row["external_id"] == "aB3xY9Qm2LpN8kR5tV7wZ1cD4eF6gH0jS2uI9oP7"
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["title"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in row["title"]
 
     @pytest.mark.asyncio
     async def test_browse_redacts_credential_embedded_in_external_id(
         self, isolated_store, patch_restricted, registered_provider
     ):
         """The id-key exemption skips ONLY the entropy heuristic — a LITERAL
-        credential (AKIA…) embedded in external_id is STILL hard-credential
+        credential (xoxb-…) embedded in external_id is STILL hard-credential
         redacted, so a malicious provider can't leak a token to the dashboard
         via the id field."""
         registered_provider.listing = {
             "artifacts": [
-                {"external_id": "doc-AKIAIOSFODNN7EXAMPLE-tail", "title": "Remote", "snippet": ""}
+                {"external_id": "doc-xoxb-IOSFODNN7EXAMPLE-tail", "title": "Remote", "snippet": ""}
             ],
             "next_page_token": None,
         }
         resp = await api_remote_artifacts_browse(_request(match={"provider": "fakeprov"}))
         row = _json_body(resp)["artifacts"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["external_id"]
+        assert "xoxb-IOSFODNN7EXAMPLE" not in row["external_id"]
 
     @pytest.mark.asyncio
     async def test_browse_redacts_base64_encoded_credential_in_external_id(
@@ -898,11 +898,11 @@ class TestIndexByArtifactId:
         """A base64-ENCODED hard credential smuggled into external_id is decoded,
         detected, and redacted — the id exemption skips only the entropy
         heuristic, not the hard-credential floor (literal OR base64)."""
-        # base64("AKIAIOSFODNN7EXAMPLE …padding to exceed 40 b64 chars"); decodes
-        # to text containing a literal AWS access-key id.
+        # base64("xoxb-IOSFODNN7EXAMPLE …padding to exceed 40 b64 chars"); decodes
+        # to text containing a literal Slack token.
         b64_cred = (
-            "QUtJQUlPU0ZPRE5ON0VYQU1QTEUgYW5kIG1vcmUgcGFkZGluZyB0ZXh0IGhlcmUg"
-            "dG8gZXhjZWVkIGZvcnR5IGJhc2U2NCBjaGFycw=="
+            "eG94Yi1JT1NGT0ROTjdFWEFNUExFIGFuZCBtb3JlIHBhZGRpbmcgdGV4dCBoZXJl"
+            "IHRvIGV4Y2VlZCBmb3J0eSBiYXNlNjQgY2hhcnM="
         )
         registered_provider.listing = {
             "artifacts": [{"external_id": b64_cred, "title": "Remote", "snippet": ""}],
@@ -982,16 +982,16 @@ class TestRemoteAuditRedaction:
         sel_stub = self._capture_sel(monkeypatch)
 
         async def _boom(*, scope="mine", page_token=None):
-            raise RuntimeError("upstream 500 for token AKIAIOSFODNN7EXAMPLE")
+            raise RuntimeError("upstream 500 for token glpat-IOSFODNN7EXAMPLE")
 
         monkeypatch.setattr(registered_provider, "list_remote", _boom)
         resp = await api_remote_artifacts_browse(_request(match={"provider": "fakeprov"}))
         assert resp.status == 502
         # Both the response AND the persisted audit error are redacted.
-        assert "AKIAIOSFODNN7EXAMPLE" not in _json_body(resp)["error"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in _json_body(resp)["error"]
         kwargs = sel_stub.log_tool_invocation.call_args.kwargs
         assert kwargs["outcome"] == "error"
-        assert "AKIAIOSFODNN7EXAMPLE" not in kwargs["error"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in kwargs["error"]
 
     @pytest.mark.asyncio
     async def test_clone_error_redacts_credential_in_external_id_metadata(
@@ -1005,14 +1005,14 @@ class TestRemoteAuditRedaction:
             raise RuntimeError("clone failed")
 
         monkeypatch.setattr(publish_sync, "clone_from_remote", _boom)
-        bad_id = "doc-AKIAIOSFODNN7EXAMPLE-tail"
+        bad_id = "doc-glpat-IOSFODNN7EXAMPLE-tail"
         resp = await api_remote_artifacts_clone(
             _request(match={"provider": "fakeprov"}, body={"external_id": bad_id})
         )
         assert resp.status == 502
         kwargs = sel_stub.log_tool_invocation.call_args.kwargs
         assert kwargs["outcome"] == "error"
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(kwargs["metadata"])
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(kwargs["metadata"])
 
 
 class TestPullLatestErrorMapping:

@@ -65,9 +65,9 @@ class TestRecap:
         assert "\n" not in line
 
     def test_items_are_one_redacted_capped_line(self):
-        line = member_recap._clip("deploy\n  with  AKIAIOSFODNN7EXAMPLE " + "x" * 300)
+        line = member_recap._clip("deploy\n  with  glpat-IOSFODNN7EXAMPLE " + "x" * 300)
         assert "\n" not in line
-        assert "AKIAIOSFODNN7EXAMPLE" not in line
+        assert "glpat-IOSFODNN7EXAMPLE" not in line
         assert len(line) <= member_recap.MAX_ITEM_CHARS
 
 

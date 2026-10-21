@@ -27,7 +27,7 @@ from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.llm_helpers import PromptBusyExhaustedError
 from kiro_crew.testing.wait import async_wait_until, await_until
 
-_RAW_CREDENTIAL = "AKIAIOSFODNN7EXAMPLE"
+_RAW_CREDENTIAL = "glpat-" "IOSFODNN7EXAMPLEABCD"
 
 
 @web.middleware

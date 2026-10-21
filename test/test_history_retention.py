@@ -399,7 +399,7 @@ class TestArchiveDashboardAPI:
         leaky = archive_dir / "leak__20260104-000000.jsonl"
         leaky.write_text(
             '{"_type":"archive","reason":"rotate","count":1}\n'
-            '{"role":"user","content":"here is AKIAIOSFODNN7EXAMPLE my key"}\n'
+            '{"role":"user","content":"here is glpat-IOSFODNN7EXAMPLE my key"}\n'
         )
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
@@ -407,7 +407,7 @@ class TestArchiveDashboardAPI:
             assert resp.status == 200
             body = await resp.text()
             # Raw credential must not appear in the response
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            assert "glpat-IOSFODNN7EXAMPLE" not in body
 
 
 class TestArchiveOnlyDropped:

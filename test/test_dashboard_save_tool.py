@@ -1189,7 +1189,7 @@ def test_the_page_is_run_over_the_read_the_tab_is_served(glue):
 #: Assembled at runtime, like the credential-shaped values in ``test_member_dashboard_routes``:
 #: a literal of this shape in the diff is a finding against the PR whatever the code
 #: around it is for. Do not join these back up.
-_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+_KEY = "glpat-" + "IOSFODNN7" + "EXAMPLE"
 
 
 def _keyed_package() -> dict[str, Any]:

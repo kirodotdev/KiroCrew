@@ -108,7 +108,7 @@ class TestProjectTreeFolderListing:
     async def test_the_echoed_folder_takes_the_same_redaction_as_the_rows(
         self, plain_project, mock_sel  # noqa: F811
     ):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         (plain_project / secret).mkdir(parents=True)
         (plain_project / secret / "f.txt").write_text("x")
         status, data = await self._get(plain_project, dir=secret)

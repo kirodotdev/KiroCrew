@@ -27,7 +27,7 @@ from kiro_crew.dashboard.chat_turn.turn_context import drain_pending_context
 
 # Fixture values are assembled at runtime so no literal credential shape sits
 # in the source file.
-_AWS_KEY_ID = "AKIA" + "QZSHAPETEST01234"
+_AWS_KEY_ID = "glpat-" + "QZSHAPETEST01234"
 _GITHUB_TOKEN = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
 _PRIVATE_KEY = (
     "-----BEGIN "

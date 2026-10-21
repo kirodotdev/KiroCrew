@@ -86,9 +86,9 @@ class TestDecoratedReplyIsReScanned:
         from kiro_crew.security import redact_credentials
 
         # A footer that (pathologically) carried an AWS key must be redacted.
-        decorated = "Your reply.\n\n_expires in 4m_ AKIAIOSFODNN7EXAMPLE"
+        decorated = "Your reply.\n\n_expires in 4m_ glpat-IOSFODNN7EXAMPLE"
         cleaned, warnings = redact_credentials(decorated)
-        assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
+        assert "glpat-IOSFODNN7EXAMPLE" not in cleaned
         assert warnings  # a credential was flagged
 
     def test_redaction_leaves_benign_footer_untouched(self) -> None:

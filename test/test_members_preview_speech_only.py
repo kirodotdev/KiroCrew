@@ -383,7 +383,7 @@ class TestLivePreviewEqualsTheRosterRead:
             "## Heading\n\n- one\n- two\n\n> quoted",
             "a long reply " * 40,
             # The AWS-documented example key, as test_members_dm_thread.py spells it.
-            "Token AKIAIOSFODNN7EXAMPLE in the middle of " + "padding " * 30,
+            "Token glpat-IOSFODNN7EXAMPLE in the middle of " + "padding " * 30,
         ],
     )
     def test_formatted_message_folds_to_the_read(self, tmp_path: Path, content) -> None:
@@ -394,7 +394,7 @@ class TestLivePreviewEqualsTheRosterRead:
         read, _ts, _stopped, _exhaustive = log.last_speech_info("k", sanitize=_redaction_chain)
         payload = member_message_payload("assistant", content, None, 5.0, sanitize=_redaction_chain)
         assert payload == {"ts": 5.0, "preview": read}
-        assert read and "AKIA" not in read
+        assert read and "glpat-" not in read
 
     def test_machinery_and_say_nothing_rows_carry_no_preview(self) -> None:
         from kiro_crew.eventlog_hooks import member_message_payload

@@ -401,7 +401,7 @@ class TestACutNeverLeavesACredentialFragment:
     # (token, the longest prefix the redactor does NOT recognize)
     TOKENS = (
         ("ghp_" + "a" * 36, 33),
-        ("AKIAIOSFODNN7EXAMPLE", 19),
+        ("glpat-IOSFODNN7EXAMPLE", 19),
     )
 
     def _pad(self, token: str, survives: int, limit: int) -> str:

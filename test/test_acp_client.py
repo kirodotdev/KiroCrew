@@ -540,20 +540,20 @@ class TestFormatAcpError:
         err = {
             "code": -32603,
             "message": "Internal error",
-            "data": "AccessDenied: AKIAIOSFODNN7EXAMPLE not authorized",
+            "data": "AccessDenied: glpat-IOSFODNN7EXAMPLE not authorized",
         }
         out = _format_acp_error(err)
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
 
     def test_credentials_in_unknown_dict_fallback_are_redacted(self):
         """The fallback path echoes raw dict — must still scrub secrets."""
         err = {
             "code": -32000,
             "message": "weird upstream",
-            "data": "leak: AKIAIOSFODNN7EXAMPLE",
+            "data": "leak: glpat-IOSFODNN7EXAMPLE",
         }
         out = _format_acp_error(err)
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         # The scrubbed placeholder proves redaction ran on this path.
         assert "REDACTED" in out
         # The surrounding provider text still reaches the user.
@@ -591,14 +591,14 @@ class TestFormatAcpError:
         err = {
             "code": -32000,
             "message": "weird upstream",
-            "data": "leak: AKIAIOSFODNN7EXAMPLE",
+            "data": "leak: glpat-IOSFODNN7EXAMPLE",
         }
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
             _format_acp_error(err)
 
         warnings = [r for r in caplog.records if "sensitive content" in r.getMessage()]
         assert warnings, "expected a redaction warning to be logged"
-        assert "AKIAIOSFODNN7EXAMPLE" not in warnings[0].getMessage()
+        assert "glpat-IOSFODNN7EXAMPLE" not in warnings[0].getMessage()
 
     def test_internal_server_error_rewrite(self):
         """A transient 5xx from the backend must
@@ -667,10 +667,10 @@ class TestFormatAcpError:
         err = {
             "code": -32603,
             "message": "Internal error",
-            "data": "InternalServerError: leaked AKIAIOSFODNN7EXAMPLE please try again",
+            "data": "InternalServerError: leaked glpat-IOSFODNN7EXAMPLE please try again",
         }
         out = _format_acp_error(err)
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert "transient error" in out.lower()
 
     def test_throttle_precedence_over_transient(self):
@@ -990,9 +990,9 @@ class TestCompactionFailureDetail:
         assert len(detail) == _COMPACTION_DETAIL_MAX_CHARS
 
         secret = compaction_failure_detail(
-            {"status": {"type": "failed", "error": "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE"}}
+            {"status": {"type": "failed", "error": "aws_secret_access_key=glpat-IOSFODNN7EXAMPLE"}}
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in secret
+        assert "glpat-IOSFODNN7EXAMPLE" not in secret
 
     def test_rejects_a_placeholder_reason(self):
         """A named reason of "error" is not a reason. KAS's summarization_failed
@@ -1043,7 +1043,7 @@ class TestKasSummarizationFailureLogging:
         import logging
 
         handle = self._bare_handle()
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         update = {
             "sessionUpdate": "session_info_update",
             "_meta": {

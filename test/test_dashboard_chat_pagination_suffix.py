@@ -105,7 +105,7 @@ class TestSlotDetailPaginationPersistedSuffix:
             redact_exfiltration_urls,
         )
 
-        secret = "key AKIAIOSFODNN7EXAMPLE here"
+        secret = "key glpat-IOSFODNN7EXAMPLE here"
         redacted, _ = redact_exfiltration_urls(secret)
         redacted, _ = redact_credentials(redacted)
         assert redacted != secret, "fixture needs content the real redactor changes"
@@ -188,11 +188,11 @@ class TestSlotDetailPaginationPersistedSuffix:
             out, _ = redact_credentials(out)
             return out
 
-        # Two different credential KINDS rather than two near-identical keys: an
-        # access-key id and a labelled secret-key assignment redact to the same tag,
-        # so no second key-shaped literal is needed to make the bodies collide.
-        mine = "key AKIAIOSFODNN7EXAMPLE here"
-        theirs = "key aws_secret_access_key=x here"
+        # Two different credential KINDS rather than two near-identical keys: two
+        # vendor tokens of different shapes redact to the same tag, so the bodies
+        # collide. The second is assembled so no source line spells a whole token.
+        mine = "key glpat-IOSFODNN7EXAMPLE here"
+        theirs = "key " + "ghp_" + "A" * 36 + " here"
         assert mine != theirs, "fixture needs two DISTINCT bodies"
         assert (
             red(mine) == red(theirs) != mine

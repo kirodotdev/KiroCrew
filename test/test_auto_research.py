@@ -333,14 +333,14 @@ class TestCycleFileMatching:
             (d / "cycle-1.json").write_text(json.dumps({
                 "cycle": 1,
                 "new_findings_count": 1,
-                "summary": "key AKIAIOSFODNN7EXAMPLE leaked",
+                "summary": "key glpat-IOSFODNN7EXAMPLE leaked",
                 "sources_checked": [exfil_url],
             }))
             findings = get_findings("a1b2c3d4")
             assert len(findings) == 1
             blob = json.dumps(findings[0])
             # Leg 1: the raw credential must not survive into the surfaced payload.
-            assert "AKIAIOSFODNN7EXAMPLE" not in blob
+            assert "glpat-IOSFODNN7EXAMPLE" not in blob
             # Leg 2: the exfil-shaped URL must be redacted wholesale — path and
             # payload gone, replaced by the redaction marker. (The marker itself
             # names the domain by design, so assert on the URL body, not the domain.)
@@ -1125,7 +1125,7 @@ class TestGrillHTTP:
 
         class _FakePool:
             async def send(self, prompt: str, timeout: float = 0) -> str:
-                return '[{"kind":"research","text":"key AKIAIOSFODNN7EXAMPLE leaked"}]'
+                return '[{"kind":"research","text":"key glpat-IOSFODNN7EXAMPLE leaked"}]'
 
             async def shutdown(self) -> None:
                 pass
@@ -1141,7 +1141,7 @@ class TestGrillHTTP:
                     "mode": "generate",
                 },
             )
-            assert "AKIAIOSFODNN7EXAMPLE" not in (await r.text())
+            assert "glpat-IOSFODNN7EXAMPLE" not in (await r.text())
 
     @pytest.mark.asyncio
     async def test_expand_requires_auth(self):

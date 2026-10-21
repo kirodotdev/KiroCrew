@@ -522,7 +522,7 @@ def test_mcp_result_exposes_redacted_finished_agent_outputs(monkeypatch, aggrega
     from kiro_crew import mcp_core
     from kiro_crew.mcp_tools import workflows
 
-    token = "AKIA" + "L" * 16
+    token = "glpat-" + "L" * 16
     handle = RunHandle(run_id="wf_mcp", name="example", status=STATUS_FINISHED)
     handle.result = aggregate
     handle.agent_results = {0: {"answer": "kept", "credential": token}, 1: None}

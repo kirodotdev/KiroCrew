@@ -30,7 +30,7 @@ def _b64(obj: Any) -> str:
 _JWS = f"{_b64({'alg': 'HS256', 'typ': 'JWT'})}.{_b64({'sub': 'u1'})}.{_b64(b'sig' * 11)}"
 _JWE_DIR = f"{_b64({'alg': 'dir', 'enc': 'A256GCM'})}..{_b64(b'iv' * 6)}.{_b64(b'ct' * 9)}.tag"
 _LINK = f"eyJ{'A' * 120}.{'B' * 43}"
-_AWS = "AKIAIOSFODNN7EXAMPLE"
+_AWS = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _search_loop(text: str) -> list[tuple[int, int]]:

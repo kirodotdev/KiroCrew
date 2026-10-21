@@ -450,19 +450,16 @@ def _display_clean_add(ck: int) -> None:
 def _display_scope_changes_battery() -> bool:
     """Whether this call runs inside a scope that changes the battery's answer.
 
-    The owner-view scope stands the credential pass down and ``code_text`` relaxes the
-    bare-secret pass. Neither is part of :func:`_display_redaction_cache_key`, so
-    inside either the display caches must be neither read nor filled: a cached
-    answer would be the wrong one there, and the scoped one wrong everywhere else.
+    The owner-view scope stands the credential pass down. It is not part of
+    :func:`_display_redaction_cache_key`, so inside it the display caches must be
+    neither read nor filled: a cached answer would be the wrong one there, and the
+    scoped one wrong everywhere else.
     """
     # Imported here, as ``display_verdicts.active`` does, so the chat_utils facade
-    # does not forward the two predicates as names of its own.
-    from kiro_crew.security.redaction_switch import (
-        bare_secret_pass_enabled,
-        credential_pass_bypassed,
-    )
+    # does not forward the predicate as a name of its own.
+    from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
-    return credential_pass_bypassed() or not bare_secret_pass_enabled()
+    return credential_pass_bypassed()
 
 
 def _redact_for_display(text: str) -> str:

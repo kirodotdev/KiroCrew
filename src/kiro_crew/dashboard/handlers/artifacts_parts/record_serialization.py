@@ -188,7 +188,7 @@ _MAX_REDACT_DEPTH = 10
 #: them the redactor skips ONLY the entropy/exfil heuristic (which false-positives
 #: on a benign high-entropy id — UUID / content hash — and would rewrite it to
 #: ``[REDACTED]``, breaking clone/fork of that id) but STILL runs hard-credential
-#: redaction, so a provider that embeds a literal AKIA/SSH/Slack token in an id
+#: redaction, so a provider that embeds a literal Slack/SSH/PEM token in an id
 #: cannot reach the dashboard verbatim. Titles/snippets/owners are redacted in
 #: full (both heuristic and hard-credential).
 _REMOTE_ID_KEYS = frozenset({"external_id", "artifactId", "id"})
@@ -252,12 +252,12 @@ def _redact_remote_response(data: dict, *, already_redacted: frozenset[str] = fr
         # id (UUID / content hash) and would rewrite it to [REDACTED], breaking
         # clone/fork of that id. So for these keys we skip ONLY the entropy
         # heuristic — but STILL run hard-credential redaction, so a provider that
-        # smuggles a literal AKIA/SSH/Slack token in the id can't reach the
+        # smuggles a literal Slack/SSH/PEM token in the id can't reach the
         # dashboard verbatim. A benign id passes through unchanged; an id that
         # actually contains a credential is redacted (and a clone of it would
         # legitimately fail rather than exfiltrate).
         if key in _REMOTE_ID_KEYS and isinstance(value, str):
-            # Use the HARD-credential floor only (literal AKIA/ASIA/SSH/PEM/Slack
+            # Use the HARD-credential floor only (literal SSH/PEM/Slack/labelled-AWS
             # markers + base64-encoded variants), NOT redact_credentials — the
             # latter also runs the bare-secret ENTROPY heuristic, which
             # false-positives on a benign high-entropy id (UUID / content hash)

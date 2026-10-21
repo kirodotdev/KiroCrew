@@ -408,7 +408,7 @@ class TestRunScriptHook:
     def test_subprocess_env_excludes_gateway_credentials(self, monkeypatch):
         from kiro_crew.hooks import _hook_subprocess_env
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         proxy_secret = "http://svc:pa55word@proxy.example.com"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         monkeypatch.setenv("HTTPS_PROXY", proxy_secret)
@@ -457,7 +457,7 @@ class TestRunScriptHook:
     @pytest.mark.asyncio
     async def test_subprocess_routes_allowlist_through_safe_spawn_funnel(self, monkeypatch):
         """The wrapper gets bus locators without widening the hook base env."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         bus_address = "unix:path=/run/user/4242/bus"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         seen: dict[str, object] = {}
@@ -505,7 +505,7 @@ class TestRunScriptHook:
 
     @pytest.mark.asyncio
     async def test_stdout_and_stderr_are_redacted_before_return(self, tmp_path):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         command = _script_command(
             tmp_path / "leaky_hook.py",
             "import sys\n"
@@ -531,7 +531,7 @@ class TestRunScriptHook:
 
     @pytest.mark.asyncio
     async def test_exception_text_is_redacted_before_return_or_persistence(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         hook = ScriptHook(
             id="redacted-exception",
             name="redacted-exception",
@@ -966,7 +966,7 @@ class TestLastError:
         # hooks.json is operator-writable; a persisted last_error can carry a
         # credential. from_dict() must scrub it before it reaches /api/hooks and
         # the dashboard InfoTip — not only the runtime write path.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         hook = ScriptHook.from_dict(
             {"id": "sek", "name": "leaky", "last_error": f"auth failed: {secret}"}
         )

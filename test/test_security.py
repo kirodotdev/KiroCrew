@@ -1,7 +1,7 @@
 """Tests for kiro_crew.security: ``redact_credentials`` patterns, base64 detection and bare keys.
 
 The rest of the family lives beside it: ``test_security_token_params.py``,
-``test_security_bare_secrets.py``, ``test_security_denied_commands.py``,
+``test_security_denied_commands.py``,
 ``test_security_oauth_urls.py``, ``test_security_exfil_urls.py``,
 ``test_security_sensitive_paths.py``, ``test_security_keystone_leaves.py``,
 ``test_security_bash_gate.py``, ``test_security_stream_redaction.py``,
@@ -25,17 +25,17 @@ from kiro_crew.security import (
 class TestRedactCredentials:
     """Tests for redact_credentials()."""
 
-    def test_redacts_aws_access_key_id(self) -> None:
-        text = "Found key AKIAIOSFODNN7EXAMPLE in output"
+    def test_redacts_a_vendor_token(self) -> None:
+        text = "Found key glpat-IOSFODNN7EXAMPLE in output"
         result, warnings = redact_credentials(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert "[REDACTED: credential]" in result
         assert len(warnings) == 1
 
-    def test_redacts_asia_key(self) -> None:
-        text = "ASIAXXXXXXXXXEXAMPLE"
-        result, _ = redact_credentials(text)
-        assert "ASIA" not in result
+    def test_an_aws_key_id_alone_stays_visible(self) -> None:
+        # A key ID names a key and cannot sign: Identifier tier.
+        for key_id in ("AKIA" "IOSFODNN7EXAMPLE", "ASIA" "XXXXXXXXXEXAMPLE"):
+            assert redact_credentials(f"key {key_id} here")[0] == f"key {key_id} here"
 
     def test_redacts_secret_access_key(self) -> None:
         text = "SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -438,10 +438,10 @@ class TestRedactCredentials:
         result, _ = redact_credentials(text)
         assert "XYZtokenvalue789" not in result
 
-    def test_redacts_json_access_key_id(self) -> None:
-        text = '{"aws_access_key_id": "someAccessKeyIdValue"}'
-        result, _ = redact_credentials(text)
-        assert "someAccessKeyIdValue" not in result
+    def test_keeps_json_access_key_id(self) -> None:
+        """An access key ID is Identifier tier: its labelled value stays."""
+        text = '{"aws_access_key_id": "AKIA' 'IOSFODNN7EXAMPLE"}'
+        assert redact_credentials(text) == (text, [])
 
     def test_bare_keyvalue_still_redacted(self) -> None:
         # Regression guard: the original bare forms must still work.
@@ -462,18 +462,26 @@ class TestRedactCredentials:
 
     def test_redacts_json_compact_no_overcapture(self) -> None:
         """Compact JSON: only the secret value is redacted, not adjacent fields."""
-        text = '{"aws_secret_access_key":"SECRET","region":"us-east-1"}'
+        secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+        text = f'{{"aws_secret_access_key":"{secret}","region":"us-east-1"}}'
         result, _ = redact_credentials(text)
-        assert "SECRET" not in result
-        assert '"region":"us-east-1"' in result  # adjacent field preserved
+        assert secret not in result
+        assert result == (
+            '{"aws_secret_access_key":"[REDACTED: credential]","region":"us-east-1"}'
+        )  # label and adjacent field preserved
 
     def test_multi_credential_json_both_redacted(self) -> None:
         """Multiple credentials in one compact JSON object — both must be redacted."""
-        text = '{"aws_secret_access_key":"SECRET1","aws_session_token":"TOKEN2","region":"x"}'
+        secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+        token = "FwoGZXIvYXdzEXAMPLE" + "SessionToken0123456789"
+        text = f'{{"aws_secret_access_key":"{secret}","aws_session_token":"{token}","region":"x"}}'
         result, _ = redact_credentials(text)
-        assert "SECRET1" not in result
-        assert "TOKEN2" not in result
-        assert '"region":"x"' in result
+        assert secret not in result
+        assert token not in result
+        assert result == (
+            '{"aws_secret_access_key":"[REDACTED: credential]",'
+            '"aws_session_token":"[REDACTED: credential]","region":"x"}'
+        )
 
     # ── JWT / Authorization: Bearer tokens (security-review cc1d6bdd) ──
     # JWTs and OAuth bearer tokens can leak in tool output / logs. They are
@@ -582,7 +590,7 @@ class TestRedactCredentials:
         text = f"Authorization: Bearer {self._JWT}"
         result, warnings = redact_credentials(text)
         assert self._JWT not in result
-        assert "Bearer" not in result
+        assert result == "Authorization: Bearer [REDACTED: credential]"  # label kept
         assert len(warnings) == 1
 
     def test_jwt_prefix_without_structure_not_redacted(self) -> None:
@@ -620,8 +628,8 @@ class TestRedactCredentials:
 
     def test_credential_inside_rejected_jwt_shape_still_redacted(self) -> None:
         """A rejected JWT-shaped span is rescanned, so nothing inside it leaks."""
-        result, _ = redact_credentials("eyJx.AKIAIOSFODNN7EXAMPLE.y")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        result, _ = redact_credentials("eyJx.glpat-IOSFODNN7EXAMPLE.y")
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         result, _ = redact_credentials(f"eyJfoo.{self._JWT}")
         assert result == "eyJfoo.[REDACTED: credential]"
         # a link token matched by the same start: the other branches are retried there
@@ -815,7 +823,7 @@ class TestRedactCredentialsBase64:
     """Tests for base64-encoded credential detection."""
 
     def test_detects_base64_encoded_access_key(self) -> None:
-        secret = "AccessKeyId=AKIAIOSFODNN7EXAMPLE SecretAccessKey=wJalrXUtnFEMI"
+        secret = "AccessKeyId=AKIA" "IOSFODNN7EXAMPLE SecretAccessKey=wJalrXUtnFEMI"
         encoded = base64.b64encode(secret.encode()).decode()
         text = f"Output: {encoded}"
         result, warnings = redact_credentials(text)
@@ -849,75 +857,32 @@ class TestRedactCredentialsBase64:
 
 
 class TestBareSecretKeyRedaction:
-    """Label-independent 40-char AWS secret-key redaction (security-review bf7b1baf).
+    """40-char AWS secret-key redaction and its lookalikes.
 
-    A bare 40-char base64 secret (the value paired with an AKIA/ASIA access key
-    ID) carries no distinctive prefix and no ``key=`` label, so the labelled
-    patterns miss it when it appears standalone. These tests prove the
-    entropy + structural heuristic catches real secret shapes WITHOUT
-    over-redacting git SHAs, hex digests, UUIDs, code identifiers, or file paths.
+    A 40-char secret is redacted when it sits next to its access key ID (rule
+    ``aws_key_pair``); the key ID itself stays visible. The lookalike tests
+    pin that git SHAs, hex digests, UUIDs, code identifiers and file paths
+    are never altered.
     """
 
-    # ── TRUE POSITIVES: real 40-char secret-key shapes must be redacted ──
+    _KEY_ID = "AKIA" + "IOSFODNN7EXAMPLE"
+    _SECRET = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
 
-    def test_redacts_bare_aws_example_secret_key(self) -> None:
-        # The canonical AWS documentation example secret access key, standalone
-        # (no label, no AKIA sibling) — the exact gap the finding describes.
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        result, warnings = redact_credentials(secret)
-        assert secret not in result
-        assert "[REDACTED: credential]" in result
+    # ── TRUE POSITIVES: a secret next to its key ID must be redacted ──
+
+    def test_redacts_secret_paired_with_key_id_in_prose(self) -> None:
+        text = f"Here is the pair {self._KEY_ID} {self._SECRET} - keep it safe"
+        result, warnings = redact_credentials(text)
+        assert self._SECRET not in result
+        assert self._KEY_ID in result  # the key ID is an identifier, kept
+        assert "keep it safe" in result  # surrounding prose preserved
         assert warnings
 
-    def test_redacts_bare_secret_in_prose_context(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        text = f"Here is the key: {secret} — keep it safe"
+    def test_redacts_paired_secret_in_json_array(self) -> None:
+        text = f'{{"keys": ["{self._KEY_ID}", "{self._SECRET}"]}}'
         result, _ = redact_credentials(text)
-        assert secret not in result
-        assert "keep it safe" in result  # surrounding prose preserved
-
-    def test_redacts_bare_secret_in_json_array(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        text = f'{{"keys": ["{secret}"]}}'
-        result, _ = redact_credentials(text)
-        assert secret not in result
-
-    def test_redacts_duplicate_bare_secret_occurrences(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        text = f"{secret} and again {secret}"
-        result, _ = redact_credentials(text)
-        assert secret not in result  # BOTH copies gone
-
-    @pytest.mark.parametrize(
-        "secret",
-        [
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",  # AWS doc example (40 chars)
-            "Kx3Q51tPusV/D0URlGfMmNbVc7Z8yJhLpQrStUwZ",  # random, with '/' (40 chars)
-            "Kx3Q51tPusVkD0URlGfMmNbVc7Z8yJhLpQrStUwZ",  # random alnum (40 chars)
-            "Zx9Kq2Wm7Vn4Bc1Xz8Lp5Rt3Yd6Fg0Hj2Ns4QwYt",  # random alnum (40 chars)
-        ],
-    )
-    def test_redacts_various_bare_secret_shapes(self, secret: str) -> None:
-        assert len(secret) == 40  # guard: AWS secret-key length
-        result, _ = redact_credentials(secret)
-        assert secret not in result, f"bare secret leaked: {secret!r}"
-
-    def test_redacts_secret_glued_to_adjacent_base64_char(self) -> None:
-        # A real 40-char secret glued to an adjacent base64 char with NO delimiter
-        # produces a 41+ char run that the exact-40 length gate would miss, leaking
-        # the key verbatim. The sliding 40-char window must still catch it. Covers:
-        # X+secret, secret+A, SECRET=+secret+ABC, and secret+X+secret.
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        for label, text in [
-            ("prefix char", "X" + secret),
-            ("suffix char", secret + "A"),
-            ("labelled + trailing", "SECRET=" + secret + "ABC"),
-            ("two secrets joined by one char", secret + "X" + secret),
-        ]:
-            result, warnings = redact_credentials(text)
-            assert secret not in result, f"glued secret leaked ({label}): {result!r}"
-            assert "[REDACTED: credential]" in result, label
-            assert warnings, label
+        assert self._SECRET not in result
+        assert self._KEY_ID in result
 
     # ── TRUE NEGATIVES: high-FP-risk lookalikes must NOT be redacted ──
 

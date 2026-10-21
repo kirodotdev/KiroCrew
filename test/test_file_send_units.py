@@ -57,9 +57,11 @@ class TestRedact:
     def test_clean_text_unchanged(self):
         assert redact("hello world") == "hello world"
 
-    def test_redacts_aws_key(self):
-        text = "key=AKIAIOSFODNN7EXAMPLE"
-        assert redact(text) != text
+    def test_keeps_an_aws_key_id_but_redacts_a_secret(self):
+        """A key ID is Identifier tier and stays; a labelled secret still goes."""
+        assert redact("key=AKIAIOSFODNN7EXAMPLE") == "key=AKIAIOSFODNN7EXAMPLE"
+        secret = "aws_secret_access_key=wJalrXUtnFEMI" "/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        assert redact(secret) != secret
 
     def test_redacts_exfiltration_url(self):
         # Exfiltration detection triggers on long query params with secret patterns
@@ -89,7 +91,7 @@ class TestBinaryFileHandling:
     def test_text_file_still_redacted(self, tmp_path):
         """Text files with sensitive content should still be caught."""
         f = tmp_path / "config.txt"
-        f.write_text("key=AKIAIOSFODNN7EXAMPLE")
+        f.write_text("aws_secret_access_key=wJalrXUtnFEMI" "/K7MDENG/bPxRfiCYEXAMPLEKEY")
         with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         text = raw.decode("utf-8")
@@ -153,7 +155,7 @@ class TestBinaryFileHandling:
     def test_text_notify_blocks_sensitive(self, tmp_path):
         """api_outbox_notify logic: text file with secrets is blocked."""
         f = tmp_path / "secrets.txt"
-        f.write_text("aws_secret=AKIAIOSFODNN7EXAMPLE")
+        f.write_text("aws_secret_access_key=wJalrXUtnFEMI" "/K7MDENG/bPxRfiCYEXAMPLEKEY")
         with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         try:

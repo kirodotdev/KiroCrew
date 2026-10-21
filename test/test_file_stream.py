@@ -257,7 +257,7 @@ async def test_text_credentials_behind_forged_magic_refused(tmp_path, mock_sel):
     """file-download refuses redact()-flagged text; the same file with a
     forged media prefix must not become retrievable through file-stream."""
     f = tmp_path / "secrets.mp3"
-    f.write_bytes(b"ID3" + b"AKIA_FAKE_CREDENTIAL_TEXT\n" * 10)
+    f.write_bytes(b"ID3" + b"glpat-_FAKE_CREDENTIAL_TEXT\n" * 10)
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
          patch("kiro_crew.dashboard.handlers.files.redact", side_effect=lambda t: "[REDACTED]"):
         async with TestClient(TestServer(_make_app())) as client:
@@ -272,7 +272,7 @@ async def test_invalid_utf8_magic_cannot_skip_the_scan(tmp_path, mock_sel):
     The probe then takes the shared binary scan, so the credential scan still
     runs and the file is refused -- a prepended byte is not a bypass."""
     f = tmp_path / "secrets2.mp3"
-    key_id = "AKIA" + "IOSFODNN7" + "EXAMPLE"  # built so no literal key sits here
+    key_id = "glpat-" + "IOSFODNN7" + "EXAMPLE"  # built so no literal key sits here
     f.write_bytes(b"\xff\xfb" + f"key {key_id}\n".encode() * 10)
 
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):

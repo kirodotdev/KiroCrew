@@ -23,7 +23,7 @@ from kiro_crew.telegram.renderer import TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundMessage
 
 # Split so the literal never appears whole in this file.
-_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+_AWS_KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 
 
 @pytest.fixture(autouse=True)

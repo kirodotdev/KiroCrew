@@ -196,7 +196,7 @@ def test_cell_text_is_credential_redacted():
     # class as api_file_read, so the same redaction pass must apply.
     from kiro_crew.platform import redact_via_context
 
-    sample = "aws key AKIA" + "IOSFODNN7EXAMPLE"
+    sample = "aws key glpat-" + "IOSFODNN7EXAMPLE"
     assert redact_via_context(sample) != sample  # fixture must be redactable
 
     def populate(wb):

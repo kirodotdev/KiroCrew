@@ -948,8 +948,8 @@ class TestSteerLifecycleState:
         from kiro_crew.dashboard.chat_delivery import sanitize_outbound, steer_into_running_turn
         from kiro_crew.dashboard.chat_runner import _mark_steer_row_state
 
-        first = "deploy with AKIAIOSFODNN7EXAMPLE"
-        second = "deploy with AKIAI44QH8DHBEXAMPLE"
+        first = "deploy with glpat-IOSFODNN7EXAMPLE"
+        second = "deploy with glpat-I44QH8DHBEXAMPLE"
         # precondition: different raw texts, identical persisted content
         assert first != second
         assert sanitize_outbound(first) == sanitize_outbound(second)
@@ -1007,8 +1007,8 @@ class TestSteerLifecycleState:
         )
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
 
-        first = "deploy with AKIAIOSFODNN7EXAMPLE"
-        second = "deploy with AKIAI44QH8DHBEXAMPLE"
+        first = "deploy with glpat-IOSFODNN7EXAMPLE"
+        second = "deploy with glpat-I44QH8DHBEXAMPLE"
         # precondition: distinct raw texts, one persisted content -- the collision
         assert first != second
         target = sanitize_outbound(first)
@@ -1071,7 +1071,7 @@ class TestSteerLifecycleState:
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
         from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 
-        msg = "deploy with AKIAIOSFODNN7EXAMPLE"
+        msg = "deploy with glpat-IOSFODNN7EXAMPLE"
         target = sanitize_outbound(msg)
         echo = f"<user_message>\n{target}\n</user_message>"
 

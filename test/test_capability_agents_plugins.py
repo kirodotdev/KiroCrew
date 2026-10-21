@@ -593,7 +593,7 @@ class TestRedactExternalLayerOrder:
     def test_credential_shapes_still_caught(self):
         from kiro_crew.dashboard.handlers.discover import _redact_external
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in _redact_external("AKIAIOSFODNN7EXAMPLE")
+        assert "glpat-IOSFODNN7EXAMPLE" not in _redact_external("glpat-IOSFODNN7EXAMPLE")
 
     def test_benign_text_passes_through(self):
         from kiro_crew.dashboard.handlers.discover import _redact_external
@@ -604,22 +604,22 @@ class TestRedactExternalLayerOrder:
     def test_already_redacted_label_is_not_re_mangled(self):
         """A credential shape inside a named param keeps the core's own label.
 
-        `redact_credentials` turns `?token=AKIA…` into `?token=[REDACTED:
+        `redact_credentials` turns `?token=glpat-…` into `?token=[REDACTED:
         credential]`; without a negative lookahead the scrub re-matches that value
         (its class stops at the space) and leaves `[REDACTED] credential]`. The
         secret is removed either way — this keeps the message readable.
         """
         from kiro_crew.dashboard.handlers.discover import _redact_external
 
-        out = _redact_external("?token=AKIAIOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = _redact_external("?token=glpat-IOSFODNN7EXAMPLE")
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert out == "?token=[REDACTED: credential]"
 
     def test_redaction_is_idempotent(self):
         """Re-redacting an already-redacted string must be a no-op."""
         from kiro_crew.dashboard.handlers.discover import _redact_external
 
-        once = _redact_external("?token=AKIAIOSFODNN7EXAMPLE&api_key=abc123")
+        once = _redact_external("?token=glpat-IOSFODNN7EXAMPLE&api_key=abc123")
         assert _redact_external(once) == once
 
 

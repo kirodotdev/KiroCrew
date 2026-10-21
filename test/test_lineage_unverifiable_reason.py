@@ -126,7 +126,7 @@ async def test_a_credential_shaped_spec_filename_is_masked(tmp_path: Path) -> No
     the listed paths pass through the agents API's credential redaction."""
     from kiro_crew.config.paths import kiro_agents_dir
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = "glpat-IOSFODNN7EXAMPLE"
     agents_dir = kiro_agents_dir()
     agents_dir.mkdir(parents=True, exist_ok=True)
     files = [agents_dir / "sh-eval.json", agents_dir / f"{probe}-sh-eval.json"]

@@ -161,12 +161,12 @@ class TestRunCommandSandboxed:
         longer matches and the raw tail reaches the cron result.
         """
         # Built at runtime so no credential-shaped literal lands in the repo.
-        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        fake_key = "xoxb-" + "B" * 15  # matches the Slack token pattern
         # Sized so the 1000-char tail window starts 2 chars into the credential:
         # a slice-then-redact order keeps "IA" + all 16 B's but drops the
         # "AK" prefix, so the pattern does not match and the tail leaks.
         padding = "p" * 100
-        trailing = "e" * 982
+        trailing = "." * 982  # the token body cannot absorb a "."
         stderr_text = padding + fake_key + trailing
         assert len(stderr_text) - 1000 == len(padding) + 2
         mock_proc = MagicMock()
@@ -175,12 +175,12 @@ class TestRunCommandSandboxed:
         with patch("subprocess.Popen", return_value=mock_proc):
             result = run_command_sandboxed("boom")
         assert result["status"] == "error"
-        assert "B" * 16 not in result["output"]
+        assert "B" * 15 not in result["output"]
         assert fake_key not in result["output"]
         # Positive proof the payload flowed through redaction (not a vacuous
         # pass on an empty result): the marker's tail survives the tail slice.
         assert "credential]" in result["output"]
-        assert "e" * 50 in result["output"]
+        assert "." * 50 in result["output"]
 
     def test_nonzero_exit_short_stderr_stays_whole(self):
         """A stderr already shorter than the 1000-char bound is kept whole."""
@@ -623,13 +623,13 @@ class TestRunScriptSandboxed:
             "import sys\n"
             'sys.stderr.write("W" * 900 + "\\n")\n'
             "sys.stderr.flush()\n"
-            'raise RuntimeError("boom AKIAIOSFODNN7EXAMPLE")\n',
+            'raise RuntimeError("boom xoxb-IOSFODNN7EXAMPL")\n',
         )
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = run_script_sandboxed(script_path + ":run", "test-job-id")
 
         assert result["status"] == "error"
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["error"]
+        assert "xoxb-IOSFODNN7EXAMPL" not in result["error"]
         assert "[REDACTED" in result["error"]
 
     def test_a_credential_straddling_the_bound_does_not_leak_a_fragment(self, tmp_path):
@@ -650,7 +650,7 @@ class TestRunScriptSandboxed:
             tmp_path,
             "import os, sys\n"
             'sys.stderr.write("W" * 300)\n'
-            'sys.stderr.write("AKIAIOSFODNN7EXAMPLE")\n'
+            'sys.stderr.write("xoxb-IOSFODNN7EXAMPL")\n'
             'sys.stderr.write("X" * 481)\n'
             "sys.stderr.flush()\n"
             "os._exit(2)\n",
@@ -659,7 +659,7 @@ class TestRunScriptSandboxed:
             result = run_script_sandboxed(script_path + ":run", "test-job-id")
 
         assert result["status"] == "error"
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["error"]
+        assert "xoxb-IOSFODNN7EXAMPL" not in result["error"]
         # The discriminator: the exact fragment the slice-then-redact order
         # leaves behind. Absent under redact-then-slice; present under the bug.
         assert "KIAIOSFODNN7EXAMPLE" not in result["error"]

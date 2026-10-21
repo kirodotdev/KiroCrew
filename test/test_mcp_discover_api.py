@@ -309,12 +309,12 @@ class TestDiscoverSearch:
             await client.close()
 
     async def test_provider_strings_are_redacted(self, sandbox, fake_sel, reset_registry):
-        leaked = "creds AKIAIOSFODNN7EXAMPLE leaked"
+        leaked = "creds glpat-IOSFODNN7EXAMPLE leaked"
         client = await _client(FakeOfficialProvider(results=[_search_result(description=leaked)]))
         try:
             resp = await client.get("/api/mcp/discover", params={"q": "weather"})
             body = await resp.text()
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            assert "glpat-IOSFODNN7EXAMPLE" not in body
         finally:
             await client.close()
 

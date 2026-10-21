@@ -352,12 +352,12 @@ class TestExtractToolCallUpdate:
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "tc-8",
                 "content": [
-                    {"content": {"type": "text", "text": "key=AKIAIOSFODNN7EXAMPLE secret"}},
+                    {"content": {"type": "text", "text": "key=glpat-IOSFODNN7EXAMPLE secret"}},
                 ],
             }
         )
         event = client._extract_tool_call_update(msg)
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_output
+        assert "glpat-IOSFODNN7EXAMPLE" not in event.tool_output
 
     def test_ignores_non_dict_content_blocks(self):
         client = self._client()
@@ -492,9 +492,9 @@ class TestDispatchToolResultContentShapes:
         from kiro_crew.acp._dispatch import _build_tool_result_event
 
         # Split so this file holds no literal-looking key; matches
-        # (?:AKIA|ASIA)[A-Z0-9]{16}, the same shape as
+        # glpat-[A-Za-z0-9_-]{16,}, the same shape as
         # test_core_path_redact_before_bound.
-        token = "AKIA" + "SHAPELEAK0123456"
+        token = "glpat-" + "SHAPELEAK0123456"
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
             assert (
@@ -630,7 +630,7 @@ class TestDispatchToolResultContentShapes:
         non-string type renders by CLASS instead."""
         from kiro_crew.acp._dispatch import unrenderable_content_shapes
 
-        token = "AKIA" + "NESTEDLEAK012345"
+        token = "glpat-" + "NESTEDLEAK012345"
         out = unrenderable_content_shapes([{"type": {"secret": token}, "other": 1}])
         assert token not in out
         assert "secret" not in out
@@ -673,13 +673,13 @@ class TestDispatchToolResultContentShapes:
         from kiro_crew.acp._dispatch import unrenderable_content_shapes
 
         out = unrenderable_content_shapes(
-            [{"type": "content", "content": {"kind": "text", "text": "AKIAIOSFODNN7SECRET"}}]
+            [{"type": "content", "content": {"kind": "text", "text": "glpat-IOSFODNN7SECRET"}}]
         )
         assert out, "a wrapped entry with an unreadable inner block must be reported"
         assert "inner_type=<NoneType>" in out
         assert "'kind'" in out and "'text'" in out
         # Key NAMES only at the inner level too -- this lands in the log ring.
-        assert "AKIAIOSFODNN7SECRET" not in out
+        assert "glpat-IOSFODNN7SECRET" not in out
 
     def test_a_wrapped_inner_block_carrying_no_text_stays_silent(self):
         """The negative control for the inner check, and the reason it is an
@@ -715,9 +715,9 @@ class TestDispatchToolResultContentShapes:
         named, never the string itself."""
         from kiro_crew.acp._dispatch import unrenderable_content_shapes
 
-        out = unrenderable_content_shapes([{"type": "content", "content": "AKIAIOSFODNN7SECRET"}])
+        out = unrenderable_content_shapes([{"type": "content", "content": "glpat-IOSFODNN7SECRET"}])
         assert "inner=<str>" in out
-        assert "AKIAIOSFODNN7SECRET" not in out
+        assert "glpat-IOSFODNN7SECRET" not in out
 
 
 # ── _extract_tool_call_refinement tests ──
@@ -931,12 +931,12 @@ class TestExtractToolCallRefinement:
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "tc-5",
                 "title": "Bash",
-                "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+                "rawInput": {"command": "echo glpat-IOSFODNN7EXAMPLE"},
             }
         )
         event = client._extract_tool_call_refinement(msg)
         assert event is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+        assert "glpat-IOSFODNN7EXAMPLE" not in event.tool_input
 
     def test_no_refinement_fields_returns_none(self):
         # Empty update with just tool_call_id should not emit a refinement.
@@ -1008,7 +1008,7 @@ class TestExtractToolCallRefinement:
                 "toolCallId": "tc-10",
                 "rawInput": {
                     "command": "aws s3 ls",
-                    "__tool_use_purpose": "Use AKIAIOSFODNN7EXAMPLE to list buckets",
+                    "__tool_use_purpose": "Use glpat-IOSFODNN7EXAMPLE to list buckets",
                 },
             }
         )
@@ -1016,7 +1016,7 @@ class TestExtractToolCallRefinement:
         assert event is not None
         assert event.tool_purpose.startswith("Use ")
         assert event.tool_purpose.endswith("to list buckets")
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_purpose
+        assert "glpat-IOSFODNN7EXAMPLE" not in event.tool_purpose
 
 
 class TestAcpClientIsShellSignal:

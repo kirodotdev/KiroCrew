@@ -1099,12 +1099,12 @@ def test_redact_untrusted_scans_every_source():
     # The `manual` source is not a redaction bypass: `source` is set once at
     # create and NOT re-derived when an agent
     # later updates the content, so a `manual`-labelled artifact can carry
-    # LLM/agent bytes by publish time — it MUST still be scanned. An AKIA-shaped
+    # LLM/agent bytes by publish time — it MUST still be scanned. A glpat-shaped
     # credential is redacted regardless of source.
-    secret = "leak AKIAIOSFODNN7EXAMPLE now"
+    secret = "leak glpat-IOSFODNN7EXAMPLE now"
     for source in ("manual", "chat", "cron", "subagent", "import"):
         out = publish_sync._redact_untrusted(secret, source)
-        assert "AKIAIOSFODNN7EXAMPLE" not in out, source
+        assert "glpat-IOSFODNN7EXAMPLE" not in out, source
     # Empty text short-circuits unchanged.
     assert publish_sync._redact_untrusted("", "manual") == ""
 
@@ -1310,7 +1310,7 @@ async def test_publish_redacts_the_providers_notice_before_persisting_it(store, 
     fake_client.upload_response = dict(
         fake_client.upload_response,
         # AWS's own documentation example key -- not a live credential.
-        notice="rolling out; debug key AKIAIOSFODNN7EXAMPLE",
+        notice="rolling out; debug key glpat-IOSFODNN7EXAMPLE",
         notice_code="rolling_out",
     )
     store.create(name="Doc", content="x", kind="text", slug="red1")
@@ -1318,7 +1318,7 @@ async def test_publish_redacts_the_providers_notice_before_persisting_it(store, 
     stored = store.get("red1").publication
     assert stored is not None
     # The key must not survive into the record the dashboard reads.
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored.notice
+    assert "glpat-IOSFODNN7EXAMPLE" not in stored.notice
     assert "REDACTED" in stored.notice
     # The discriminator is a constrained enum, so it passes through untouched.
     assert stored.notice_code == "rolling_out"

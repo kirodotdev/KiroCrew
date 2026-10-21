@@ -774,7 +774,7 @@ class TestCommandProviderNoShellAndTimeout:
         try:
             with caplog.at_level(logging.ERROR):
                 await self._apply_with_stderr(
-                    b"fetch rejected SSO-COOKIE=abc123 key=AKIAIOSFODNN7EXAMPLE"
+                    b"fetch rejected SSO-COOKIE=abc123 key=glpat-IOSFODNN7EXAMPLE"
                 )
         finally:
             reset_context()
@@ -783,7 +783,7 @@ class TestCommandProviderNoShellAndTimeout:
         # The companion's extra reach -- the whole point of routing via context.
         assert "SSO-COOKIE" not in logged
         # ...without losing the baseline pass underneath it.
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged
+        assert "glpat-IOSFODNN7EXAMPLE" not in logged
 
     @pytest.mark.asyncio
     async def test_apply_failure_withholds_stderr_when_composition_fails(
@@ -1861,7 +1861,7 @@ class TestRedactionHappensBeforeTruncation:
     @pytest.mark.asyncio
     async def test_a_credential_straddling_the_cap_is_not_leaked(self, caplog) -> None:
         # An AWS-key-shaped secret positioned so the 500-char cap would bisect it.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         padding = "x" * (500 - len(secret) // 2)
         stderr = (padding + secret + " trailing").encode()
 

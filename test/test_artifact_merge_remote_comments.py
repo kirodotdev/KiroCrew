@@ -102,7 +102,7 @@ class TestMergeRemoteComments:
         assert len(result) == 1 and result[0].id == "r1"
 
 
-_AKIA = "AKIAIOSFODNN7EXAMPLE"  # canonical AWS access-key-id shaped test token
+_AKIA = "glpat-IOSFODNN7EXAMPLE"  # a GitLab-shaped fake test token
 
 
 class TestRemoteCommentAnchorRedaction:

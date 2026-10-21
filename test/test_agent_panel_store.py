@@ -168,7 +168,7 @@ def test_a_crew_name_that_could_traverse_never_selects_a_template():
 #: which is the shape ``redact_exfiltration_urls`` flags -- a plain
 #: suspicious-looking host is NOT flagged, and a test built on one would have
 #: passed vacuously while proving nothing.
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = "glpat-IOSFODNN7EXAMPLE"
 EXFIL = (
     "https://api.notion.com/v1/oauth/authorize?client_id=client123"
     "&response_type=code&state=s3cr3tstate0123456789abcdef0123456789"
@@ -1148,7 +1148,7 @@ def test_an_invisible_character_inside_a_token_does_not_defeat_redaction():
     level only would pass a shallower test: a nested value, a list item, a KEY (the
     template renders it as a heading) and the title.
     """
-    split = "AKIA\u200bIOSFODNN7EXAMPLE"
+    split = "glpat-\u200bIOSFODNN7EXAMPLE"
     secret = split.replace("\u200b", "")
     record = agent_panel.publish(
         CREW,

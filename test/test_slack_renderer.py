@@ -1165,7 +1165,7 @@ class TestShowThinking:
         rec = _RecSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
         events = [
-            AcpEvent(kind=EVENT_THINKING_CHUNK, text="key AKIA1234567890ABCDEX here"),
+            AcpEvent(kind=EVENT_THINKING_CHUNK, text="key glpat-1234567890ABCDEX here"),
             AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
             AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
         ]
@@ -1174,7 +1174,7 @@ class TestShowThinking:
             kw["text"] for m, kw in rec.calls if m == "post_message" and kw["text"].startswith("💭")
         ]
         assert thinking, rec.calls
-        assert "AKIA1234567890ABCDEX" not in thinking[0]
+        assert "glpat-1234567890ABCDEX" not in thinking[0]
         assert "[REDACTED: credential]" in thinking[0]
 
 

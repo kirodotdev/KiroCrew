@@ -195,7 +195,7 @@ class TestOutboxNotifyBinary:
     async def test_text_with_secrets_rejected(self, outbox, mock_sel):
         """Text file with AWS key is rejected."""
         txt = outbox / "secrets.txt"
-        txt.write_text("key=AKIAIOSFODNN7EXAMPLE")
+        txt.write_text("key=glpat-IOSFODNN7EXAMPLE")
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(
                 "/api/outbox/notify",
@@ -432,27 +432,25 @@ class TestWideEncodedCredentialInAUtf8DecodableFile:
     """A wide-encoded credential in bytes that DECODE must still be refused.
 
     NUL-interleaved ASCII is itself valid UTF-8, so these bytes take each gate's
-    TEXT branch rather than its binary one, and ``redact`` matches contiguous
-    ASCII so it matches none of the key. A gate whose wide pass sits behind a
-    decode failure therefore never scans this file at all.
+    TEXT branch rather than its binary one. A gate whose wide pass sits behind a
+    decode failure would never run that pass on this file.
 
     A negative answer from the scan does not degrade to "owner only" on the
     download route -- it skips the owner conjunct entirely, so the bytes leave to
     any authenticated caller, and the completed-download record notes the
     handover without undoing it.
 
-    The first test is the control that keeps the rest honest: it asserts the
-    buffer really does decode as UTF-8 and that the text pass really does miss
-    the key, so a gate doing only the narrow pass fails the others.
+    The first test pins that the buffer really does decode as UTF-8 and that the
+    text pass, whose normalised view drops the NUL padding, catches the key too.
     """
 
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
-    def test_the_container_decodes_as_utf8_and_the_text_pass_misses_it(self, encoding):
+    def test_the_container_decodes_as_utf8_and_the_text_pass_catches_it(self, encoding):
         from kiro_crew import security
 
         raw = _synth_wide_utf8_pdf(encoding)
         text = raw.decode("utf-8")
-        assert security.redact(text) == text
+        assert security.redact(text) != text
 
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
     def test_the_shared_wide_pass_answers_on_it(self, encoding):
@@ -642,7 +640,7 @@ class TestContainerSymbolTablesAreNotCredentials:
         "secret",
         [
             _telegram_shaped_token("110201543"),
-            "AKIA" + "IOSFODNN7EXAMPLE",
+            "glpat-" + "IOSFODNN7EXAMPLE",
             "gh" + "p_" + hashlib.sha256(b"kc-gate").hexdigest()[:36],
         ],
         ids=["bot-token", "access-key-id", "forge-token"],
@@ -705,7 +703,7 @@ class TestContainerSymbolTablesAreNotCredentials:
             f"\x80{token}{table}\x80",
             f"\x80{table}\x00{token}\x80",
             "\x80" + "123456789:ABCDEFabcdefGHIJKLmnopqrSTUVWX" + "\x80",
-            f"\x80AKIAIOSFODNN7EXAMPLE{table}\x80",
+            f"\x80glpat-IOSFODNN7EXAMPLE{table}\x80",
         ):
             removed = Counter(probe) - Counter(mask_baseline_symbol_tables(probe))
             assert set(removed) <= set(table), (probe, removed)

@@ -458,7 +458,7 @@ async def test_a_credential_split_by_invisible_characters_is_not_displayed() -> 
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     split = secret[:6] + "\u200b" + secret[6:]
 
     task = asyncio.ensure_future(

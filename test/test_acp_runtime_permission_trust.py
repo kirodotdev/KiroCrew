@@ -562,7 +562,7 @@ def test_shared_permission_event_carries_redaction_provenance_without_secret():
             "toolCallId": "tc-secret",
             "title": "Run Command",
             "kind": "execute",
-            "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+            "rawInput": {"command": "echo glpat-IOSFODNN7EXAMPLE"},
         },
         input_cache,
         shell_cache=shell_cache,
@@ -588,7 +588,7 @@ def test_shared_permission_event_carries_redaction_provenance_without_secret():
     )
 
     assert event.tool_input_redacted is True
-    assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+    assert "glpat-IOSFODNN7EXAMPLE" not in event.tool_input
     assert "[REDACTED: credential]" in event.tool_input
     assert redacted_cache["tc-secret"] is True
     repeated, _ = build_permission_event(

@@ -735,7 +735,7 @@ class TestChannelUploadEndpoint:
         transport = MagicMock(spec_set=["send_document"])
         transport.send_document = AsyncMock(return_value="123")
         app = self._app()
-        leaky_name = "AKIA" + "IOSFODNN7EXAMPLE" + ".txt"
+        leaky_name = "glpat-" + "IOSFODNN7EXAMPLE" + ".txt"
         with patch(
             "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
             return_value=(self._link("telegram", "42"), transport),
@@ -754,13 +754,13 @@ class TestChannelUploadEndpoint:
     @pytest.mark.asyncio
     async def test_outbound_text_is_redacted_in_display_form(self, tmp_path, outbox_file):
         # redact() scans literal bytes; a channel renderer strips markdown
-        # delimiters at display, so AKIA**…** passes a literal scan and
+        # delimiters at display, so glpat-**…** passes a literal scan and
         # displays as an intact key. The caption must go through
         # redact_for_display before delivery — same boundary rule as every
         # renderer sink.
         from unittest.mock import AsyncMock
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = "glpat-" + "IOSFODNN7EXAMPLE"
         transport = MagicMock(spec_set=["send_document"])
         transport.send_document = AsyncMock(return_value="900")
         app = self._app()
@@ -778,7 +778,7 @@ class TestChannelUploadEndpoint:
                     json={
                         "file_path": str(outbox_file),
                         "filename": "report.txt",
-                        "description": f"{key[:4]}**{key[4:]}**",
+                        "description": f"{key[:6]}**{key[6:]}**",
                     },
                     headers={"X-Session-Key": "telegram:1"},
                 )
@@ -945,10 +945,10 @@ class TestChannelUploadEndpoint:
     @pytest.mark.asyncio
     async def test_discord_outbound_text_is_redacted_in_display_form(self, tmp_path, outbox_file):
         # Same boundary rule as the Telegram leg: redact() scans literal bytes,
-        # and Discord renders markdown, so AKIA**…** displays as an intact key.
+        # and Discord renders markdown, so glpat-**…** displays as an intact key.
         from unittest.mock import AsyncMock
 
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = "glpat-" + "IOSFODNN7EXAMPLE"
         transport = MagicMock(spec_set=["send_document"])
         transport.send_document = AsyncMock(return_value="900")
         app = self._app()
@@ -966,7 +966,7 @@ class TestChannelUploadEndpoint:
                     json={
                         "file_path": str(outbox_file),
                         "filename": "report.pdf",
-                        "description": f"{key[:4]}**{key[4:]}**",
+                        "description": f"{key[:6]}**{key[6:]}**",
                     },
                     headers={"X-Session-Key": "discord:1"},
                 )

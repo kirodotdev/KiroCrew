@@ -159,7 +159,7 @@ class TestFileRead:
         A cut first severs a credential at the cap and serves its prefix as real
         bytes; whoever writes the file chooses the offset.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         f = tmp_path / "padded.txt"
         f.write_bytes(("a" * (files_mod._FILE_READ_CAP - 10) + secret + "\nkeep\n").encode("utf-8"))
         async with TestClient(TestServer(self._client_app())) as client:
@@ -188,7 +188,7 @@ class TestFileRead:
         jwt = b64('{"alg":"HS256","typ":"JWT"}') + "." + b64("x" * 3000) + "." + "s" * 43
         head = (jwt + "\n") * 4
         cap, margin = files_mod._FILE_READ_CAP, files_mod._STREAM_HOLDBACK_JWT_MAX
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         filler = "a" * (cap + margin - 6 - len(head))
         f = tmp_path / "shrink.txt"
         f.write_bytes((head + filler + secret + "\nkeep\n").encode("utf-8"))
@@ -419,7 +419,7 @@ class TestFileRead:
     @pytest.mark.asyncio
     async def test_credentials_in_content_are_redacted(self, tmp_path, mock_sel):
         f = tmp_path / "creds.txt"
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         f.write_text(f"aws_access_key_id={secret}\n", encoding="utf-8", newline="\n")
         async with TestClient(TestServer(self._client_app())) as client:
             resp = await client.get(f"/api/file-read?path={f}")

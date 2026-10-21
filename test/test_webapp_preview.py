@@ -436,7 +436,7 @@ class TestRound5Fixes:
         store, app_dir = env
         pub = app_dir / "public"
         (pub / "leak.js").write_text(
-            'const k = "AKIAIOSFODNN7EXAMPLE";\n'
+            'const k = "glpat-IOSFODNN7EXAMPLE";\n'
             'const s = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";')
         token = _mint(store, app_dir, slug="redact-app")
         with pytest.raises(web.HTTPNotFound):
@@ -476,8 +476,8 @@ class TestRound6Fixes:
         (octet-stream) is scanned and rejected all the same."""
         store, app_dir = env
         pub = app_dir / "public"
-        (pub / "config").write_text('AccessKeyId=AKIAIOSFODNN7EXAMPLE')
-        (pub / "blob.bin").write_bytes(b'prefix AKIAIOSFODNN7EXAMPLE suffix')
+        (pub / "config").write_text('SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
+        (pub / "blob.bin").write_bytes(b'prefix glpat-IOSFODNN7EXAMPLE suffix')
         token = _mint(store, app_dir, slug="octet-app")
         for path in ("config", "blob.bin"):
             with pytest.raises(web.HTTPNotFound):

@@ -123,10 +123,10 @@ def test_snapshot_includes_requested_model_when_set():
 
 def test_snapshot_redacts_a_credential_shaped_requested_model():
     """The requested pin is caller-supplied (spawn_run.model), so an
-    AKIA-shaped value must be redacted before it reaches the socket."""
-    a = _agent(requested_model="AKIAIOSFODNN7EXAMPLE", resolved_model="model-1")
+    glpat-shaped value must be redacted before it reaches the socket."""
+    a = _agent(requested_model="glpat-IOSFODNN7EXAMPLE", resolved_model="model-1")
     data = build_subagent_snapshot(a, now=1000.0)
-    assert "AKIAIOSFODNN7EXAMPLE" not in data["requested_model"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in data["requested_model"]
 
 
 def test_snapshot_requested_model_is_empty_string_when_unset():

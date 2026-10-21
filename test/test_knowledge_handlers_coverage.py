@@ -656,7 +656,7 @@ class TestImportBundle:
 
     @pytest.mark.asyncio
     async def test_redacts_credentials_in_imported_content(self, store):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         bundle = {
             "items": [
                 {"id": "i1", "title": "t", "item_type": "note", "content": f"key {secret} here"}
@@ -1111,9 +1111,9 @@ class TestImportBundle:
             "agent_item_state": [
                 {
                     "source_id": "s1",
-                    "slug": "doc-AKIAIOSFODNN7EXAMPLE",
+                    "slug": "doc-glpat-IOSFODNN7EXAMPLE",
                     "content_hash": "h",
-                    "item_ids": json.dumps(["absent-AKIAIOSFODNN7EXAMPLE"]),
+                    "item_ids": json.dumps(["absent-glpat-IOSFODNN7EXAMPLE"]),
                     "updated_at": "2024-01-01T00:00:00",
                     "name": "N",
                 }
@@ -1128,7 +1128,7 @@ class TestImportBundle:
             w for w in result["withheld"] if w.get("reason") == "ownership_row_names_absent_items"
         ]
         assert named, f"fixture must produce a withheld entry: {result['withheld']}"
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(
             result
         ), "bundle-authored credential text reached the import response"
         assert "REDACTED" in named[0]["key"]
@@ -1159,8 +1159,8 @@ class TestImportBundle:
             ],
             "agent_item_state": [
                 {
-                    "source_id": "src-AKIAIOSFODNN7EXAMPLE",
-                    "slug": "doc-AKIAIOSFODNN7EXAMPLE",
+                    "source_id": "src-glpat-IOSFODNN7EXAMPLE",
+                    "slug": "doc-glpat-IOSFODNN7EXAMPLE",
                     "content_hash": "h",
                     "item_ids": json.dumps(["i1"]),
                     "updated_at": "2024-01-01T00:00:00",
@@ -1177,7 +1177,7 @@ class TestImportBundle:
             w for w in result["withheld"] if w.get("reason") == "ownership_row_source_undeclared"
         ]
         assert named, f"fixture must produce a withheld entry: {result['withheld']}"
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(
             result
         ), "bundle-authored credential text reached the import response"
         assert "REDACTED" in named[0]["source_id"]
@@ -1188,7 +1188,7 @@ class TestImportBundle:
         """The control on the other side: redaction belongs to the RESPONSE. The store
         matches this key against a PRIMARY KEY, so a redacted one would not find its own
         document."""
-        slug = "doc-AKIAIOSFODNN7EXAMPLE"
+        slug = "doc-glpat-IOSFODNN7EXAMPLE"
         bundle = {
             "sources": [
                 {

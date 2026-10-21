@@ -323,8 +323,8 @@ class TestRedactWarning:
 
     def test_redacts_credentials(self):
         from kiro_crew.apps.routes import _redact_warning
-        result = _redact_warning("error: AKIA1234567890ABCDEF leaked")
-        assert "AKIA" not in result or "[REDACTED]" in result
+        result = _redact_warning("error: glpat-1234567890ABCDEF leaked")
+        assert "glpat-" not in result or "[REDACTED]" in result
 
 
 # ── _notify_builtin_service edge cases ──

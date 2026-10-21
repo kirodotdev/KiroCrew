@@ -556,9 +556,9 @@ class TestOutboundSeal:
         client = _RenderClient()
         await _seal(
             _renderer(client, str(tmp_path)),
-            f"![AKIAIOSFODNN7EXAMPLE]({chart})",
+            f"![glpat-IOSFODNN7EXAMPLE]({chart})",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in client.images[0]["name"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in client.images[0]["name"]
 
     @pytest.mark.asyncio
     async def test_an_empty_alt_falls_back_to_the_path_and_STILL_redacts(self, tmp_path) -> None:
@@ -568,7 +568,7 @@ class TestOutboundSeal:
         attachment name is the only surviving sink -- and ``_SAFE_NAME_RE`` keeps
         every character a key id needs.
         """
-        chart = tmp_path / "AKIAIOSFODNN7EXAMPLE.png"
+        chart = tmp_path / "glpat-IOSFODNN7EXAMPLE.png"
         chart.write_bytes(PNG_BYTES)
         client = _RenderClient()
         await _seal(_renderer(client, str(tmp_path)), f"![]({chart})")

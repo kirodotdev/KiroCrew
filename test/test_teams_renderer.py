@@ -296,11 +296,11 @@ class TestDisplayRedaction:
         """Teams renders markup away, reassembling a key the raw scan saw as broken."""
         client = _EditingClient()
         r = TeamsRenderer(client, "conv-1", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
-        await r.on_text_chunk("key AKIA**IOSFODNN7EXAMPLE** here")
+        await r.on_text_chunk("key glpat-**IOSFODNN7EXAMPLE** here")
         await r.on_done()
 
         delivered = client.sent[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in delivered.replace("*", "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in delivered.replace("*", "")
 
 
 class TestRedactionNotice:

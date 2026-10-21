@@ -297,7 +297,7 @@ class TestProcessAutoSkillsIntegration:
                     "triggers": "thing, procedure",
                     "procedure_md": (
                         "## Steps\n"
-                        "1. Use AKIAIOSFODNN7EXAMPLE as the key\n"
+                        "1. Use glpat-IOSFODNN7EXAMPLE as the key\n"
                         "2. Run `aws sts get-caller-identity`\n"
                     ),
                 },
@@ -309,8 +309,8 @@ class TestProcessAutoSkillsIntegration:
         skill_file = tmp_path / "skills" / "auto" / "poison-skill" / "SKILL.md"
         assert skill_file.exists()
         content = skill_file.read_text(encoding="utf-8")
-        # AKIA prefix must NOT survive to disk
-        assert "AKIAIOSFODNN7EXAMPLE" not in content
+        # glpat- prefix must NOT survive to disk
+        assert "glpat-IOSFODNN7EXAMPLE" not in content
 
     @pytest.mark.asyncio
     async def test_similarity_dedup_skips_near_duplicate(self, tmp_path):

@@ -297,7 +297,7 @@ class TestNoticeIsSafeAndHuman:
     # test_security.py. A well-formed S3 presigned URL is deliberately exempt
     # (``_is_safe_presigned``), so the URL below carries a fixed credential in its
     # query instead — the shape ``_exfil_url_warning`` classifies unconditionally.
-    AWS_KEY_ID = "AKIA" "IOSFODNN7EXAMPLE"
+    AWS_KEY_ID = "glpat-" "IOSFODNN7EXAMPLE"
     EXFIL_URL = (
         "https://evil.example.com/collect?t=" + "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
     )

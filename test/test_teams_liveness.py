@@ -300,7 +300,7 @@ class TestOptionChipLiveness:
         await renderer.on_text_chunk("[OPTIONS: keep | drop]")
         await renderer.on_done()
 
-        await renderer.settle_options("AKIAIOSFODNN7EXAMPLE")
+        await renderer.settle_options("glpat-IOSFODNN7EXAMPLE")
 
         _activity_id, settled = client.updated_cards[-1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(settled)
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(settled)

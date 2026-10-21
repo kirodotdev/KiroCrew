@@ -14,11 +14,11 @@ import pytest
 
 
 def test_f1_sanitize_response_redacts_credential_in_error():
-    """Error response containing an AKIA key in local_dir path gets redacted."""
+    """Error response containing a glpat- key in local_dir path gets redacted."""
     from kiro_crew.deploy.handlers import _sanitize_response
-    payload = {"error": "local_dir not found: /tmp/AKIAIOSFODNN7EXAMPLE/build"}
+    payload = {"error": "local_dir not found: /tmp/glpat-IOSFODNN7EXAMPLE/build"}
     result = _sanitize_response(payload)
-    assert "AKIAIOSFODNN7EXAMPLE" not in result.get("error", "")
+    assert "glpat-IOSFODNN7EXAMPLE" not in result.get("error", "")
     assert "[REDACTED" in result.get("error", "") or "***" in result.get("error", "")
 
 
@@ -26,11 +26,11 @@ def test_f1_sanitize_response_recursive_nested():
     """Nested dicts and lists are recursively sanitized."""
     from kiro_crew.deploy.handlers import _sanitize_response
     payload = {
-        "outer": {"inner": "token=AKIAIOSFODNN7EXAMPLE"},
-        "list": ["safe", "AKIAIOSFODNN7EXAMPLE"],
+        "outer": {"inner": "token=glpat-IOSFODNN7EXAMPLE"},
+        "list": ["safe", "glpat-IOSFODNN7EXAMPLE"],
     }
     result = _sanitize_response(payload)
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(result)
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(result)
 
 
 def test_f1_sanitize_response_idempotent_on_clean():

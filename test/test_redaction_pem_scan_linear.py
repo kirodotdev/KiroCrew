@@ -28,7 +28,7 @@ _BR = f"{_D}BEGIN RSA PRIVATE KEY{_D}"
 _E = "-----END PRIVATE KEY-----"
 _ER = "-----END RSA PRIVATE KEY-----"
 _BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
-_AWS = "AKIAIOSFODNN7EXAMPLE"
+_AWS = "xoxb-IOSFODNN7EXAMPL"  # 20 chars, so the spans below hold
 _TAG = "[REDACTED: credential]"
 
 

@@ -363,7 +363,7 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
 
 _FIXED_NOW = 1_790_000_000.0
 #: AWS's documented example key: credential-shaped, so the loader holds its row aside.
-_HELD_ID = "AKIAIOSFODNN7EXAMPLE"
+_HELD_ID = "glpat-IOSFODNN7EXAMPLE"
 
 #: ``autonudge.json`` as the golden scenario writes it, each ``monitor`` object folded
 #: to ``<MONITOR>``: those bytes belong to ``monitoring.models.monitor_state_to_dict``,
@@ -537,7 +537,7 @@ _GOLDEN_SIDECAR = """\
   "version": 1,
   "quarantined": [
     {
-      "id": "AKIAIOSFODNN7EXAMPLE",
+      "id": "glpat-IOSFODNN7EXAMPLE",
       "slot_key": "chat-3-300",
       "message": "held aside"
     }

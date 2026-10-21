@@ -381,7 +381,7 @@ class TestSurfaceAgentWelcome:
         other foreign string on that path."""
         from kiro_crew.dashboard.chat_runner import _surface_agent_welcome
 
-        secret = "AKIA" + "I" * 16
+        secret = "glpat-" + "I" * 16
         state, slot, _ = self._slot(monkeypatch, tmp_path, f"use {secret} to start")
         await _surface_agent_welcome(state, slot, "helper")
 

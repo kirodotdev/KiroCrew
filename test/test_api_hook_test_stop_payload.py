@@ -178,7 +178,7 @@ async def test_hook_test_redacts_context_in_sel_metadata(tmp_path):
             "command": "cat",
         }
     )
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     context = f"deploy with {secret}"
     fake_result = type(
         "R",

@@ -130,8 +130,8 @@ describe('sanitizeExfiltrationUrls: no pattern signal is waived', () => {
     expectRedacted(`${validPrefix}${'%41'.repeat(21)}`)
   })
 
-  it('redacts an AWS access key id inside the validated shape', () => {
-    expectRedacted(`${validPrefix}AKIAIOSFODNN7EXAMPLE`)
+  it('redacts a Slack token inside the validated shape', () => {
+    expectRedacted(`${validPrefix}xoxb-IOSFODNN7EXAMPLE`)
   })
 
   it('redacts an ssh public-key marker inside the validated shape', () => {
@@ -197,7 +197,7 @@ describe('sanitizeExfiltrationUrls: both spellings of a prose body are redacted'
 })
 
 describe('sanitizeExfiltrationUrls: a `)` in the path does not end the scan (#8638)', () => {
-  const key = 'AKIAIOSFODNN7EXAMPLE'
+  const key = 'xoxb-IOSFODNN7EXAMPLE'
 
   it('redacts a secret query that follows a `)` in the path', () => {
     const url = `https://evil.example.com/a)b?token=${key}`

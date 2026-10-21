@@ -143,7 +143,6 @@ _EXPORTS: dict[str, str] = {
     "_STAGING_OWNED_TOP_LEVEL": "pipeline.contract",
     # scan
     "Leak": "pipeline.scan",
-    "_AWS_KEY_PREFIXES": "pipeline.scan",
     "_B64_DECODE_BUDGET": "pipeline.scan",
     "_B64_RUN_RE": "pipeline.scan",
     "_BARE_SECRET_ENTROPY_MIN": "pipeline.scan",
@@ -157,6 +156,9 @@ _EXPORTS: dict[str, str] = {
     "_CANONICAL_REDACTOR": "pipeline.scan",
     "_HARD_CREDENTIAL_RE": "pipeline.scan",
     "_HARD_PATTERNS": "pipeline.scan",
+    "_PCT_ALNUM_RE": "pipeline.scan",
+    "_DIGEST_PREFIX_RE": "pipeline.scan",
+    "_URL_SIGNING_VALUE": "pipeline.scan",
     "_VENDOR_TOKEN_COMPILED": "pipeline.scan",
     "_VENDOR_TOKEN_PATTERNS": "pipeline.scan",
     "_bare_secret_decodes_to_printable": "pipeline.scan",
@@ -408,7 +410,6 @@ if _typing.TYPE_CHECKING:  # pragma: no cover - read by the type checker, never 
         _write_report_temp,
     )
     from .pipeline.scan import (  # noqa: F401
-        _AWS_KEY_PREFIXES,
         _B64_DECODE_BUDGET,
         _B64_RUN_RE,
         _BARE_SECRET_ENTROPY_MIN,
@@ -420,8 +421,11 @@ if _typing.TYPE_CHECKING:  # pragma: no cover - read by the type checker, never 
         _BARE_SECRET_VOWELS,
         _CANONICAL_CREDENTIAL_RE,
         _CANONICAL_REDACTOR,
+        _DIGEST_PREFIX_RE,
         _HARD_CREDENTIAL_RE,
         _HARD_PATTERNS,
+        _PCT_ALNUM_RE,
+        _URL_SIGNING_VALUE,
         _VENDOR_TOKEN_COMPILED,
         _VENDOR_TOKEN_PATTERNS,
         Leak,

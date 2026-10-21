@@ -422,7 +422,7 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
                 "patch": {
                     "idle_secs": 120,
                     "max_tokens": 20_000,
-                    "wake_instructions": "Check AKIAIOSFODNN7EXAMPLE review threads.",
+                    "wake_instructions": "Check glpat-IOSFODNN7EXAMPLE review threads.",
                 }
             },
         )
@@ -431,7 +431,7 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
         assert loop.monitor.last_wake_fingerprint == "old-wake"
         assert loop.monitor.last_completion_fingerprint == "old-completion"
         assert loop.monitor.consecutive_provider_errors == 2
-        assert "AKIAIOSFODNN7EXAMPLE" not in loop.monitor.wake_instructions
+        assert "glpat-IOSFODNN7EXAMPLE" not in loop.monitor.wake_instructions
         reset = await apply_session_directive(
             state,
             slot,
@@ -451,12 +451,12 @@ async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
             slot,
             "dashboard:chat-1",
             "monitor_stop",
-            {"reason": "done AKIAIOSFODNN7EXAMPLE"},
+            {"reason": "done glpat-IOSFODNN7EXAMPLE"},
         )
     assert "stopped" in stopped
     assert loop.monitor.outcome is MonitorOutcome.USER_STOP
     assert "done" in loop.monitor.user_stop_reason
-    assert "AKIAIOSFODNN7EXAMPLE" not in loop.monitor.user_stop_reason
+    assert "glpat-IOSFODNN7EXAMPLE" not in loop.monitor.user_stop_reason
     assert service.get_by_slot("chat-1") is loop
     critical = [
         call.kwargs

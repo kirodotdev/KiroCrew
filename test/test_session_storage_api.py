@@ -855,7 +855,7 @@ class TestEmpty:
         documentation example key), because that is what "redacted" means here: a
         pattern match, not a filter over every possible sentence.
         """
-        leak = "refused near AKIAIOSFODNN7EXAMPLE " + ("y" * 900)
+        leak = "refused near glpat-IOSFODNN7EXAMPLE " + ("y" * 900)
 
         def _refuse(batch_ids, on_progress=None, on_skip=None, expect=None):  # type: ignore[no-untyped-def]
             raise session_storage_module.SessionStorageError(leak)
@@ -882,7 +882,7 @@ class TestEmpty:
 
         reported = body["job"]["error"]
         assert len(reported) <= handler._ERROR_TEXT_LIMIT
-        assert "AKIAIOSFODNN7EXAMPLE" not in reported
+        assert "glpat-IOSFODNN7EXAMPLE" not in reported
         assert "refused" in reported
 
     @pytest.mark.asyncio
@@ -1391,7 +1391,7 @@ class TestTranscriptContentIsRedacted:
     before they reach the dashboard — the same rule the artifact surface follows.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = "glpat-IOSFODNN7EXAMPLE"
 
     @pytest.mark.asyncio
     async def test_a_credential_in_a_title_never_reaches_the_list(
@@ -1582,7 +1582,7 @@ class TestACredentialInASessionIdIsScrubbed:
         self, stores: tuple[Path, Path]
     ) -> None:
         crew_home, kiro_home = stores
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         # A replay-only unit keyed by the offending id, which is what `_origin`
         # falls back to when there is no transcript stem.
         _retired(kiro_home, secret, age_days=40)

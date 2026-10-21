@@ -1299,7 +1299,7 @@ class TestTheDetailNeverNamesTheEndpoint:
         """The exception text is the ENDPOINT's, not ours: an error page, or a proxy echoing
         the request back, can carry the credential. ``_redact_source`` only knows the
         configured source, so the reason has to go through the full sanitiser."""
-        leaked = "AKIAIOSFODNN7EXAMPLE"
+        leaked = "glpat-IOSFODNN7EXAMPLE"
         source = transport(
             _failing_fetcher(TimeoutError(f"upstream said: aws_access_key_id={leaked}"))
         )

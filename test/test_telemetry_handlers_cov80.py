@@ -539,7 +539,7 @@ async def test_with_titles_is_a_noop_when_state_exposes_no_slot_accessor() -> No
 @pytest.mark.asyncio
 async def test_with_titles_prefers_the_live_slot_and_redacts_it() -> None:
     """This is a second serialization boundary for an LLM-authored field."""
-    slot = SimpleNamespace(display_title="key AKIAIOSFODNN7EXAMPLE leaked")
+    slot = SimpleNamespace(display_title="key glpat-IOSFODNN7EXAMPLE leaked")
     state = SimpleNamespace(get_slot=lambda key: slot, conversation_log=None)
     cost: dict[str, Any] = {
         "turns": [1],
@@ -547,7 +547,7 @@ async def test_with_titles_prefers_the_live_slot_and_redacts_it() -> None:
     }
     out = await h._with_conversation_titles(_mk(state=state), cost)
     title = out["conversations"][0]["title"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in title
+    assert "glpat-IOSFODNN7EXAMPLE" not in title
     assert "REDACTED" in title
     # The memoised cost object must not gain the title by reference.
     assert "title" not in cost["conversations"][0]

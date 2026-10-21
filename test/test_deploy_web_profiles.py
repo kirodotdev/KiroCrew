@@ -173,7 +173,7 @@ def test_verify_backfill_audited(monkeypatch):
 def test_configure_set_refuses_credential_keys():
     # Defense in depth: credential-material keys can never be written even if a
     # future caller passes them.
-    assert profiles_mod._configure_set("aws_access_key_id", "AKIA...", "p") is not None
+    assert profiles_mod._configure_set("aws_access_key_id", "glpat-...", "p") is not None
     assert profiles_mod._configure_set("aws_secret_access_key", "x", "p") is not None
 
 
@@ -217,7 +217,7 @@ def test_create_aws_profile_writes_only_allowlisted_keys(monkeypatch, tmp_path):
     fake_aws = fakebin / "aws"
     fake_aws.write_text(
         "#!/usr/bin/env python3\nimport json\n"
-        'print(json.dumps({"Credentials": {"AccessKeyId": "AKIATEST",'
+        'print(json.dumps({"Credentials": {"AccessKeyId": "glpat-TEST",'
         ' "SecretAccessKey": "sk", "SessionToken": "tok",'
         ' "Expiration": "2026-01-01T00:00:00Z"}}))\n'
     )
@@ -228,7 +228,7 @@ def test_create_aws_profile_writes_only_allowlisted_keys(monkeypatch, tmp_path):
     out = json.loads(proc.stdout)
     assert out == {
         "Version": 1,
-        "AccessKeyId": "AKIATEST",
+        "AccessKeyId": "glpat-TEST",
         "SecretAccessKey": "sk",
         "SessionToken": "tok",
         "Expiration": "2026-01-01T00:00:00Z",
@@ -277,7 +277,7 @@ def test_capacity_check_before_create_side_effect(monkeypatch):
 def test_profile_create_error_redacted_in_response(monkeypatch):
     """Raw aws-CLI stderr from create_aws_profile must be redacted before it
     reaches the dashboard response (the SEL audit keeps the raw text)."""
-    fake_key = "AKIAIOSFODNN7EXAMPLE"
+    fake_key = "glpat-IOSFODNN7EXAMPLE"
     monkeypatch.setattr(handlers.profiles_mod, "create_aws_profile",
                         lambda *a, **k: f"aws configure failed: key {fake_key} rejected")
     resp = _run(handlers._handle_profiles_post(
@@ -318,11 +318,11 @@ def test_locked_registry_concurrent_writes_survive():
 # --- profile redaction in GET response (item 1 R18) --------------------------
 
 def test_profiles_get_redacts_credentials_in_note(monkeypatch):
-    """A note containing a fake AKIA key is redacted in the GET /profiles response."""
+    """A note containing a fake glpat- key is redacted in the GET /profiles response."""
     # GET also discovers CLI profiles via subprocess — mock it out (sandbox-free env).
     monkeypatch.setattr(profiles_mod, "discover_aws_profiles", lambda: [])
     # Register a profile with a credential-like value in the note field
-    fake_akia = "AKIAIOSFODNN7EXAMPLE"
+    fake_akia = "glpat-IOSFODNN7EXAMPLE"
     profiles_mod.save_registry({
         "version": 2,
         "profiles": [
@@ -333,7 +333,7 @@ def test_profiles_get_redacts_credentials_in_note(monkeypatch):
     resp = _run(handlers._handle_profiles_get(_FakeReq()))
     import json as _json
     body = _json.loads(resp.text)
-    # The raw AKIA key must NOT appear in the response
+    # The raw glpat- key must NOT appear in the response
     assert fake_akia not in resp.text
     # But the profile entry should still be there
     assert len(body["profiles"]) == 1

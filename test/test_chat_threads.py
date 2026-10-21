@@ -511,7 +511,7 @@ def test_unreadable_sidecar_is_refused_never_overwritten(tmp_path):
                     M("m"): "not-a-list",
                     # A key that is not a minted row id is not a thread: the
                     # summary route hands keys to the dashboard as they are.
-                    "AKIAIOSFODNN7EXAMPLE": [
+                    "glpat-IOSFODNN7EXAMPLE": [
                         {"id": "3" * 32, "role": "user", "content": "x", "ts": ""}
                     ],
                     M("n"): [
@@ -522,13 +522,13 @@ def test_unreadable_sidecar_is_refused_never_overwritten(tmp_path):
                             "role": "user",
                             "content": "ok",
                             "ts": "2026-09-22T07:41:00+00:00",
-                            "token": "AKIA...",
+                            "token": "glpat-...",
                         },
                         # Metadata not in the writer's shape is not a reply the
                         # store wrote: an id or ts that could carry prose (a
                         # credential an agent put there) never reaches the
                         # dashboard, since only ``content`` is redacted on the way out.
-                        {"id": "AKIAIOSFODNN7EXAMPLE", "role": "user", "content": "x", "ts": ""},
+                        {"id": "glpat-IOSFODNN7EXAMPLE", "role": "user", "content": "x", "ts": ""},
                         {"id": "1" * 32, "role": "user", "content": "x", "ts": "ghp_secret"},
                         {"id": "2" * 32, "role": "system", "content": "x", "ts": ""},
                     ],
@@ -1392,7 +1392,7 @@ def test_a_credential_straddling_the_line_cap_is_scrubbed_before_the_cut():
     """The envelope leaves the dashboard's storage, so a crewmate row is redacted on
     the way out -- and BEFORE the per-line cap, or a secret straddling the cap would
     be cut to a fragment the redactor cannot recognise and leave as plain text."""
-    secret = "AKIA" + "Q" * 16
+    secret = "glpat-" + "Q" * 16
     prefix = "x" * 30
     cap = len(prefix) + 12  # the cut lands inside the key
     line = chat_threads._line(chat_threads.ROLE_ASSISTANT, prefix + secret, cap)

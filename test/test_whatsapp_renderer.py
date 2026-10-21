@@ -16,14 +16,14 @@ from kiro_crew.whatsapp.renderer import (
 #: Split across the assertion so this file never holds the contiguous key: an
 #: absence assertion against a literal the source already contains proves nothing
 #: about the literal a scanner would have to match.
-KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 
 
 def shown(text: str) -> str:
     """*text* as a WhatsApp client renders it, with its markup consumed.
 
     Asserting on the raw bytes is the mistake this whole module exists to
-    prevent: ``AKIA*I*OSFODNN7EXAMPLE`` passes ``KEY not in out`` while the
+    prevent: ``glpat-*I*OSFODNN7EXAMPLE`` passes ``KEY not in out`` while the
     reader sees the key. The delivered form has to be collapsed first, by the
     same canonicaliser the screen scans through.
     """
@@ -68,23 +68,23 @@ class TestDisplaySafety:
     """
 
     def test_a_credential_split_by_markup_never_renders_as_a_key(self):
-        """``AKIA**I**…`` matches no credential pattern as written, survives the
-        driver's stream scan, becomes ``AKIA*I*…`` in the dialect, and is an
+        """``glpat-**I**…`` matches no credential pattern as written, survives the
+        driver's stream scan, becomes ``glpat-*I*…`` in the dialect, and is an
         intact key on screen once the client eats the asterisks.
         """
-        out = render_chunks(f"AKIA**I**{KEY[5:]}")
+        out = render_chunks(f"glpat-**I**{KEY[7:]}")
         assert out, "the reply must still be delivered"
         assert KEY not in shown("".join(out))
 
     def test_the_screen_runs_after_the_reductions_not_only_before(self):
         """Every reduction DELETES a span, which joins what sat on either side.
 
-        A scan of the authored form sees ``AKIA<thinking>…</thinking>IOSF…`` and
+        A scan of the authored form sees ``glpat-<thinking>…</thinking>IOSF…`` and
         matches nothing; the reduction then hands the reader the joined key. This
         is the case a pre-conversion screen alone cannot catch, so it is what pins
         the screen's position at the END of the pipeline.
         """
-        out = to_whatsapp_text(f"AKIA<thinking>a note</thinking>{KEY[4:]}")
+        out = to_whatsapp_text(f"glpat-<thinking>a note</thinking>{KEY[6:]}")
         assert KEY not in shown(out)
 
     def test_no_ansi_escape_reaches_the_chat(self):
@@ -107,7 +107,7 @@ class TestDisplaySafety:
         """The strip is itself a transformation that REASSEMBLES the key, so it
         has to happen on the scanned side of the screen.
         """
-        out = to_whatsapp_text(f"AKIA\x1b[0m{KEY[4:]}")
+        out = to_whatsapp_text(f"glpat-\x1b[0m{KEY[6:]}")
         assert KEY not in shown(out)
 
     def test_the_dialect_only_sink_is_screened_too(self):
@@ -115,7 +115,7 @@ class TestDisplaySafety:
         conversion -- a rejection note, an image caption, an approval prompt --
         which WhatsApp still renders markup in.
         """
-        assert KEY not in shown(display_safe_text(f"AKIA`I`{KEY[5:]}"))
+        assert KEY not in shown(display_safe_text(f"glpat-`I`{KEY[7:]}"))
 
     def test_inline_code_is_never_reformatted(self):
         """An inline-code span is the only way to show text WhatsApp must leave

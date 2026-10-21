@@ -114,7 +114,7 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
             ),
             # No canonical name: the title is all there is, so scrub it -- SEL
             # does not redact for its callers.
-            (dict(title="deploy with AKIAIOSFODNN7EXAMPLE"), None, "AKIAIOSFODNN7EXAMPLE"),
+            (dict(title="deploy with glpat-IOSFODNN7EXAMPLE"), None, "glpat-IOSFODNN7EXAMPLE"),
         ],
     )
     async def test_the_audited_identity_is_not_model_authored(
@@ -213,7 +213,7 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
             # Capped, with the cut made explicit.
             ("echo " + "x" * 400, "... [truncated]", "x" * 400),
             # Redacted on the way to the screen.
-            ("deploy --key AKIAIOSFODNN7EXAMPLE", None, "AKIAIOSFODNN7EXAMPLE"),
+            ("deploy --key glpat-IOSFODNN7EXAMPLE", None, "glpat-IOSFODNN7EXAMPLE"),
             # Nothing to show for a non-shell call.
             (None, None, "Command:"),
         ],

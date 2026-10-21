@@ -19,9 +19,10 @@ from kiro_crew import security
 from kiro_crew.security import redaction_switch
 
 
-def _synth_aws_key() -> str:
-    prefix = "A" + "KIA"
-    return prefix + hashlib.sha256(b"kc-redaction-switch").hexdigest().upper()[:16]
+def _synth_secret() -> str:
+    # A secret-shaped fake token (a GitLab-style prefix), assembled at runtime.
+    prefix = "gl" + "pat-"
+    return prefix + hashlib.sha256(b"kc-redaction-switch").hexdigest()[:20]
 
 
 def _synth_token_url() -> str:
@@ -47,8 +48,8 @@ def _isolated_switch(tmp_path, monkeypatch):
 
 
 class TestSynthesizedMaterialActuallyTrips:
-    def test_aws_key_is_redacted_by_default(self):
-        key = _synth_aws_key()
+    def test_secret_is_redacted_by_default(self):
+        key = _synth_secret()
         assert security.redact_credentials(key)[0] != key
 
     def test_token_url_value_is_redacted_by_default(self):
@@ -116,19 +117,19 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_owner_view_passes_credentials_through_when_off(self):
         _off()
-        key, url = _synth_aws_key(), _synth_token_url()
+        key, url = _synth_secret(), _synth_token_url()
         with _owner_view():
             assert security.redact_credentials(key) == (key, [])
             assert security.redact_credentials(url) == (url, [])
 
     def test_owner_view_still_redacts_when_on(self):
-        key = _synth_aws_key()
+        key = _synth_secret()
         with _owner_view():
             assert security.redact_credentials(key)[0] != key
 
     def test_set_enabled_true_restores_redaction_in_owner_view(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_secret()
         with _owner_view():
             assert security.redact_credentials(key)[0] == key
         redaction_switch.set_enabled(True, changed_at="2026-09-24T23:01:00+00:00")
@@ -144,7 +145,7 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_the_verdict_is_the_one_the_scope_was_entered_with(self):
         """One render, one verdict: a flip mid-render is seen by the NEXT request."""
-        key = _synth_aws_key()
+        key = _synth_secret()
         with _owner_view():  # entered ON
             assert redaction_switch.credential_pass_bypassed() is False
             _off()  # the owner flips the switch while this render is in flight
@@ -159,7 +160,7 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_scope_is_task_local_and_restored_on_exit(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_secret()
         assert redaction_switch.credential_pass_bypassed() is False
         with _owner_view():
             assert redaction_switch.credential_pass_bypassed() is True
@@ -172,7 +173,7 @@ class TestSwitchedOffInsideOwnerView:
         import asyncio
 
         _off()
-        key = _synth_aws_key()
+        key = _synth_secret()
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -198,29 +199,29 @@ class TestSwitchedOffOutsideOwnerView:
 
     def test_bare_redact_credentials_is_unconditional(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_secret()
         assert security.redact_credentials(key)[0] != key
         assert security.redact(key) != key
         assert security.redact_with_findings(key)[0] != key
 
     def test_stream_redactor_default_is_unconditional(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_secret()
         sr = security.StreamRedactor()
         out = sr.feed(key + " ") + sr.flush()
         assert key not in out
 
     def test_request_blocking_predicate_is_untouched(self):
         _off()
-        assert security._contains_fixed_credential(_synth_aws_key()) is True
+        assert security._contains_fixed_credential(_synth_secret()) is True
 
     def test_diagnostics_bundle_scrubs_regardless(self):
         """The bundle goes to a public issue; it never opens the owner scope."""
         from kiro_crew import diagnostics
 
         _off()
-        clean, count = diagnostics._scrub(_synth_aws_key())
-        assert clean != _synth_aws_key()
+        clean, count = diagnostics._scrub(_synth_secret())
+        assert clean != _synth_secret()
         assert count >= 1
 
     def test_channel_renderers_never_open_the_scope(self):
@@ -505,8 +506,8 @@ class TestHandlers:
             True,
         ) in _quiet_audit  # synchronous, fail-loud write; REAL subject
         with _owner_view():
-            assert security.redact_credentials(_synth_aws_key())[0] == _synth_aws_key()
-        assert security.redact_credentials(_synth_aws_key())[0] != _synth_aws_key()
+            assert security.redact_credentials(_synth_secret())[0] == _synth_secret()
+        assert security.redact_credentials(_synth_secret())[0] != _synth_secret()
 
     @pytest.mark.asyncio
     async def test_put_pushes_the_change_to_every_owner_dashboard(
@@ -544,7 +545,7 @@ class TestHandlers:
         assert json.loads(resp.text)["enabled"] is True
         assert ("enabled", "owner-1", True) in _quiet_audit
         with _owner_view():
-            assert security.redact_credentials(_synth_aws_key())[0] != _synth_aws_key()
+            assert security.redact_credentials(_synth_secret())[0] != _synth_secret()
 
     def test_write_and_audit_are_one_unit_on_the_worker_thread(self):
         """A cancelled handler cannot skip the audit: both run in the same closure,

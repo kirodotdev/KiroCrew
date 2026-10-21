@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kiro_crew import credential_patterns as _cred
 from kiro_crew import decisions as core
 from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.points import skills_select as sel
@@ -815,7 +814,7 @@ def test_the_history_source_is_not_called_for_an_unsampled_turn(bg_loop, monkeyp
 # source rather than written out: a contiguous key-shaped literal is refused by
 # the repo's own secret scanners, correctly, since neither they nor Semgrep can
 # tell a test vector from a real leak.
-_AWS_KEY = _cred.AWS_KEY_ID_PREFIXES.split("|")[0] + "A2B3C4D5E6F7G8H9"
+_AWS_KEY = "glpat-" + "A2B3C4D5E6F7G8H9"
 _EXFIL_URL = "https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
 
 

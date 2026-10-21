@@ -996,7 +996,7 @@ class TestReposRoute:
         would only ever show an error. It is left out, out of ``listed``, and the
         listing says it is incomplete."""
         # Shaped like an access key id, so the credential redactor masks it.
-        credential_shaped = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+        credential_shaped = "glpat-" + "IOSFODNN7" + "EXAMPLE"
         plain = _init_repo(tmp_path / "plain")
         secretish = _init_repo(tmp_path / credential_shaped)
         if masked == "agent":
