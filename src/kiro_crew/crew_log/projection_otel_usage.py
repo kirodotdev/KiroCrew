@@ -102,7 +102,7 @@ def _agent_kind(raw_agent: str, raw_slot: str) -> str:
     session is identified by that key's shape (``members.is_member_session_key``, which
     accepts the key under every prefix it travels under), and the slot key is the only
     field that carries it. The ``agent`` of such a session is the crewmate's own crew
-    name -- ``handlers/members.py`` mints the DM slot with ``agent=member_name`` and
+    name -- ``handlers/members_thread.py`` mints the DM slot with ``agent=member_name`` and
     ``chat_runner`` writes ``agent=slot.agent``, ``slot=slot.key`` -- so asking the
     agent name for a slot-key shape is asking the wrong field and can only answer no.
 

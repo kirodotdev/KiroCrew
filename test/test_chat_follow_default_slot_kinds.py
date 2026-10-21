@@ -84,7 +84,7 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ("dashboard/handlers/cron_runs.py", "api_cron_to_chat"): (
         "excluded: origin=SlotOrigin.CRON on both calls"
     ),
-    ("dashboard/handlers/members.py", "api_member_thread"): (
+    ("dashboard/handlers/members_thread.py", "api_member_thread"): (
         "excluded: mode=members_mod.DM_SLOT_MODE ('member') at birth"
     ),
     ("dashboard/handlers/taskrunner.py", "_open_result_slot"): (

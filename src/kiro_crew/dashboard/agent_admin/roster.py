@@ -218,7 +218,7 @@ def _agent_roster_row(
     """Serialize ONE ``GET /api/agents`` roster row.
 
     **Key half.** Explicit allowlist -- never a ``dataclasses.asdict`` spread,
-    mirroring the rule ``handlers/members.py`` already documents for
+    mirroring the rule ``handlers/members_roster.py`` already documents for
     ``GET /api/members``. The response is a network-boundary contract, and a
     spread makes that contract "every field ``KiroCrewAgentConfig`` has now, plus
     every field anyone adds later", automatically -- so a field added by someone

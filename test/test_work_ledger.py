@@ -1421,9 +1421,17 @@ def test_is_stale_reads_an_extreme_naive_stamp_without_raising():
 #: for one int) belongs OUT of this set, mirroring the value instead.
 _PERMITTED_STORE_IMPORTERS = frozenset(
     {
-        # The four tools' HTTP routes, and the ONLY module that touches the store
-        # directly: identity comes from X-Session-Key, never from the body.
+        # The four tools' HTTP routes -- the facade and the owners their code lives
+        # in -- and the ONLY modules that touch the store directly: identity comes
+        # from X-Session-Key, never from the body.
         "dashboard/handlers/work_ledger.py",
+        "dashboard/handlers/work_ledger_caller.py",
+        "dashboard/handlers/work_ledger_conductor.py",
+        "dashboard/handlers/work_ledger_handback.py",
+        "dashboard/handlers/work_ledger_read.py",
+        "dashboard/handlers/work_ledger_recording.py",
+        "dashboard/handlers/work_ledger_refusals.py",
+        "dashboard/handlers/work_ledger_worker.py",
         # The operator-run cleanup sweep behind ``kirocrew ledger-sweep``.
         # It is a seam deliberately, and it does not weaken the rule the
         # allowlist exists for: it resolves NO caller identity — there is no

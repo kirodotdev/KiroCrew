@@ -238,7 +238,7 @@ WORK_REPORT_SCHEMA = ToolSchema(
 #: Every parameter of ``work_ledger_read`` narrows or shapes the read; none is
 #: required, and with none the whole board comes back as it always has. The
 #: ``events`` ceiling restates the route's own tail cap (``_MAX_EVENT_TAIL`` in
-#: ``dashboard/handlers/work_ledger.py``), pinned together by its tests.
+#: ``dashboard/handlers/work_ledger_read.py``), pinned together by its tests.
 WORK_LEDGER_READ_SCHEMA = ToolSchema(
     tool_name="work_ledger_read",
     fields=[

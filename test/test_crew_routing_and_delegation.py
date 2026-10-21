@@ -372,11 +372,15 @@ class TestTheMembersRosterCarriesIdentity:
         sentinel. That is a redaction of the VALUE, not a withdrawal of the
         field, so the roster still carries a crew's identity.
         """
+        import importlib
         import inspect
 
         from kiro_crew.dashboard.handlers import members as members_handler
 
         src = inspect.getsource(members_handler)
+        src += "".join(
+            inspect.getsource(importlib.import_module(o)) for o in members_handler._OWNERS
+        )
         assert '"description": _roster_mask(agent_cfg.description)' in src
         assert '"triggers": _roster_mask(agent_cfg.triggers)' in src
 

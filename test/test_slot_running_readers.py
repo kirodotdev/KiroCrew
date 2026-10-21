@@ -138,8 +138,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # binding did not persist: it reads the RESERVATION, because a
                 # turn that started on the slot during the write keeps it.
                 ("chat_api/slot_create.py", "api_chat_slot_create"),
-                ("handlers/members.py", "_turn_busy"),
-                ("handlers/members.py", "_turn_ends_within"),
+                ("handlers/members_thread_turns.py", "_turn_busy"),
+                ("handlers/members_thread_turns.py", "_turn_ends_within"),
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
                 ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
@@ -171,9 +171,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
                 ("handlers/mcp_apps.py", "api_mcp_apps_message"),
-                ("handlers/members.py", "api_member_fresh_start"),
-                ("handlers/members.py", "api_member_thread"),
-                ("handlers/members.py", "api_members"),
+                ("handlers/members_thread_turns.py", "api_member_fresh_start"),
+                ("handlers/members_thread.py", "api_member_thread"),
+                ("handlers/members_roster.py", "api_members"),
                 ("handlers/messaging.py", "api_send_message"),
                 ("session_control_parts/session_create.py", "create_session"),
                 # The roster verb. Reservation state, like `read_messages` beside

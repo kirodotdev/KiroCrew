@@ -160,7 +160,7 @@ class TestTheFold:
     def test_a_member_dm_session_lands_in_the_crewmate_bucket(self) -> None:
         """A crewmate's pinned DM session as the WRITERS actually spell it: the agent is
         the crewmate's own crew name and the ``member-<slug>`` shape is in ``slot``
-        (``handlers/members.py`` mints the slot with ``agent=member_name``, and
+        (``handlers/members_thread.py`` mints the slot with ``agent=member_name``, and
         ``chat_runner`` writes ``agent=slot.agent``, ``slot=slot.key``). Classifying off
         the agent name alone can only answer ``other`` for this entry, which empties the
         ``crewmate`` value of ``agent_kind`` -- so the step reads the slot key.

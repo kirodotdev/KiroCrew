@@ -627,7 +627,7 @@ async def test_route_record_answers_a_typed_refusal_when_the_crew_log_refuses(_o
 
     409 with the crew log's own code, which is the answer the sibling work-ledger
     route already gives for the same refusal on the same store
-    (``handlers/work_ledger.py``, ``crew_log_unreadable``): the request is well
+    (``handlers/work_ledger_conductor.py``, ``crew_log_unreadable``): the request is well
     formed and the state of the record's home is what blocks it.
 
     The damage here is the one an append-only writer cannot produce — a
