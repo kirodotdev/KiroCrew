@@ -1,12 +1,12 @@
 ---
 title: Keep semantic memory small enough for consolidation to dedupe against
-status: draft
+status: in-progress
 author: iamwhatever
 created: 2026-10-22
-last-audited: 2026-10-22
-audited-at: e844065dea
+last-audited: 2026-10-24
+audited-at: 5f77c3f85
 doc-pr: null
-implementation-prs: []
+implementation-prs: [23591]
 tracking-issues: [16354]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Keep semantic memory small enough for consolidation to dedupe against
 
-- Status: draft
+- Status: in-progress. The implementation of part 2 is [#23591](https://github.com/kirodotdev/KiroCrew/pull/23591).
 - Author: iamwhatever
 - Created: 2026-10-22
 - Tracks [#16354](https://github.com/kirodotdev/KiroCrew/issues/16354) and answers its "Direction to decide".
