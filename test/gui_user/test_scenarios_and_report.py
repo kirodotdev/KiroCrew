@@ -420,6 +420,65 @@ class TestShippedScenarios:
         assert f'"{REPLY_TEXT}"' in expectations
         assert "no bubble from you" in expectations
 
+    def test_customize_and_memory_scenarios_quote_the_shipped_labels(self) -> None:
+        """Each label these scenarios tell the tester to find is a string the UI ships.
+
+        A quoted label the dashboard does not draw fails the scenario on every
+        nightly, at a model-call cost, so the quote is read from the same en
+        catalog the page renders and the retired readings are refused.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        manual = json.loads((locales / "en.manual.json").read_text(encoding="utf-8"))
+        pages = en["pages"]
+        rail = manual["crewEditorNext"]
+
+        def text(name: str) -> str:
+            sc = scenarios.load_scenario(SCENARIOS_DIR / f"{name}.yaml")
+            return " ".join([*sc.steps, *sc.expectations])
+
+        new_crewmate = pages["kiroCrewAgentsPage"]["add_crew_member"]
+        editor = text("capabilities-agents-list-and-open-editor")
+        for label in (
+            new_crewmate,
+            pages["kiroCrewAgentsPage"]["filter_agents"],
+            manual["components"]["avatarBuilder"]["edit_avatar"],
+            *(rail[k] for k in ("section_general", "section_built_from", "tab_approvals")),
+            *(rail[k] for k in ("tab_schedules", "tab_webhooks", "section_memory")),
+            rail["section_danger"],
+        ):
+            assert f'"{label}"' in editor, label
+        for retired in ("Add crewmate", "Chat with this crewmate", "Who it is", "Overview"):
+            assert retired not in editor, retired
+
+        customize = text("customize-tabs")
+        assert f'"{new_crewmate}"' in customize
+        assert f'"{pages["capabilitiesPage"]["agent_capabilities"]}"' in customize
+        assert "Add crewmate" not in customize
+        picker_step = next(s for s in customize.split(". ") if "New sessions use" in s)
+        assert "At its top" in picker_step, picker_step
+
+        memory = text("memory-open-browser-from-overview")
+        memory_tab = pages["overview"]["memoryTab"]
+        assert f'"{memory_tab["consolidation_idle_hours"]}"' in memory
+        assert f'"{memory_tab["memory_settings"]}"' in memory
+        assert f'"{pages["overview"]["memoryStoreCard"]["memory_store"]}"' in memory
+        assert "Consolidation idle" not in memory
+
+    def test_shortcuts_scenario_judges_everything_on_the_frame_it_lands_on(self) -> None:
+        """The harness judges every expectation on the last screenshot.
+
+        A scroll moves the Preferences switch off screen, so the scenario reads
+        the first frame only: the switch and the Chat Navigation rows under it.
+        """
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "settings-shortcuts.yaml")
+        assert not any("scroll down" in s.lower() for s in sc.steps), sc.steps
+        assert any('"Enable shortcuts"' in e for e in sc.expectations), sc.expectations
+        assert any('"Chat Navigation"' in e for e in sc.expectations), sc.expectations
+        for exp in sc.expectations:
+            assert "screenshot taken" not in exp, exp
+            assert "Panel Navigation" not in exp, exp
+
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.
 

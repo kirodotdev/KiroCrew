@@ -1,14 +1,18 @@
 # Nightly: the Customize page in launch vocabulary -- the rail says
 # "Crewmates" and "Custom agents", the roster comes first, and the Custom
-# agents pane is a flat list under one toolbar row (filter + "New custom
-# agent"), with none of the retired copy left ("Agent Capabilities",
-# "Agent templates", the four-term glossary, a "New sessions use" picker).
+# agents pane keeps its filter and "New custom agent" on one toolbar row, with
+# none of the retired copy left ("Agent Capabilities", "Agent templates", the
+# four-term glossary, "Apply & Restart"). "Customize" is the small heading
+# above the tab rail; the large pane heading names the selected tab. The
+# Custom agents pane opens with the "New sessions use" default-agent picker
+# above its toolbar row; the Crewmates pane has no such picker.
 #
-# The `rich` seed ships no crews; the one card is the member `boot.sh` adds
-# (`nova-sky`), built from the `kirocrew` custom agent, which is also the one
-# custom agent the fresh KIRO_HOME lists. The tab rail remembers its last tab
-# per browser session, so the first step selects "Crewmates" explicitly.
-# Reading only: nothing here writes, so a retried attempt sees the same page.
+# The `rich` seed ships no crews of its own, so the roster is the built-in
+# `default` crewmate (with its "Default" badge) and the member `boot.sh` adds
+# (`nova-sky`), both built from the `kirocrew` custom agent. The tab rail
+# remembers its last tab per browser session, so the first step selects
+# "Crewmates" explicitly. Reading only: nothing here writes, so a retried
+# attempt sees the same page.
 name: customize-tabs
 tier: nightly
 feature: capabilities
@@ -25,14 +29,14 @@ preconditions:
   fresh_target: true
 steps:
   - You are on the chat page. In the left rail find the item labelled "Customize" (it is in the bottom group, above "Settings") and click it.
-  - The page title reads "Customize". On its left is a rail of tabs grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Crewmates" (first under "Agent") is not already highlighted, click it.
-  - Read the Crewmates tab. Under the tab label the rail says "Your AI teammates". The pane starts with a toolbar (a "Filter crewmates…" box, a "Cards | List" switcher and an "Add crewmate" button) and then the roster, which is one card named "nova-sky". Note whether anything sits between the toolbar and the cards.
-  - Click the rail tab labelled "Custom agents" (second under "Agent"). Its description reads "What a crewmate is built from. Pick one when you add a crewmate."
-  - Read the Custom agents pane. Its first row is a filter box with a "New custom agent" button on the same row; under that row the list of custom agents starts directly, and "kirocrew" is one of the entries. Do not click "New custom agent".
+  - The small heading above the tab rail reads "Customize". The rail's tabs are grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Crewmates" (first under "Agent") is not already highlighted, click it.
+  - Read the Crewmates tab. The pane heading reads "Crewmates" with "Your AI teammates" beneath it. A toolbar ("Filter crewmates…" box, "Cards | List" switcher, "New crewmate" button) comes first, then the roster listing "default" (with a "Default" badge) and "nova-sky", as cards or table rows. Note whether anything sits between the toolbar and the roster.
+  - Click the rail tab labelled "Custom agents" (second under "Agent"). The pane heading reads "Custom agents" with "What a crewmate is built from. Pick one when you add a crewmate." beneath it.
+  - Read the Custom agents pane. At its top is a box with a "New sessions use" picker; under it is a row with a filter box and a "New custom agent" button; under that row the list of custom agents starts, and "kirocrew" is one of the entries. Do not click "New custom agent" and do not change the picker.
   - Click the "kirocrew" entry so its detail shows on the right; then wait a second.
 expectations:
-  - The page title reads "Customize" and the rail has tabs labelled "Crewmates" and "Custom agents"; no tab is labelled "Agents" or "Agent templates", and the words "Agent Capabilities" appear nowhere on the page.
-  - On the Crewmates tab the roster card "nova-sky" is the first thing under the toolbar -- no notice about memory and no "New sessions use" picker sits above it.
+  - The heading above the tab rail reads "Customize" and the rail has tabs labelled "Crewmates" and "Custom agents"; no tab is labelled "Agents" or "Agent templates", and the words "Agent Capabilities" appear nowhere on the page.
+  - On the Crewmates tab the roster ("default" and "nova-sky") is the first thing under the toolbar -- no notice about memory and no "New sessions use" picker sits above it.
   - On the Custom agents tab the filter box and the "New custom agent" button share one row, and no "Glossary" heading and no "Apply & Restart" button are visible anywhere on the page.
   - The "kirocrew" detail is showing on the right with no red error notice on the page.
 max_steps: 16
