@@ -129,6 +129,7 @@ _CRON_FIELD_JSON_TYPES = {
     "skip_dates": "an array of YYYY-MM-DD strings",
     "timeout": "a whole number of seconds",
     "timeout_secs": "a whole number of seconds",
+    "strict_schedule": "a boolean",
 }
 
 #: Refusal for a manifest that schedules ``crons`` without the ``permissions.cron``

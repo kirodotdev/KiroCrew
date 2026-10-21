@@ -54,6 +54,10 @@ class CronEntry:
     # default. On a command/script job it must cover ``timeout`` plus cleanup;
     # the same create-time check the cron SDK applies runs at validate().
     timeout_secs: int = 0
+    # Fire exactly on the schedule instead of after the scheduler's random start
+    # delay (up to 59 minutes on a daily job), for a job whose time the user
+    # chose on purpose -- a report wanted ready at 06:50, not near 07:40.
+    strict_schedule: bool = False
     # Schedule-page folder NAME to file the job in (names, not ids: a manifest
     # is portable across installs, and folder ids are minted per-machine by the
     # dashboard). Resolved against existing folders at registration; a name
@@ -113,6 +117,8 @@ class CronEntry:
             d["timeout"] = self.timeout
         if self.timeout_secs:
             d["timeout_secs"] = self.timeout_secs
+        if self.strict_schedule:
+            d["strict_schedule"] = True
         if not self.persistent_session:
             d["persistent_session"] = False
         if self.silent:
@@ -188,6 +194,15 @@ class CronEntry:
                 invalid.append(key)
             return ""
 
+        def _bool_or_false(key: str, v: Any) -> bool:
+            # Strict like ``enabled``: the string "false" is truthy, and reading
+            # it as True would drop the start delay an author never gave up.
+            if isinstance(v, bool):
+                return v
+            if v is not None:
+                invalid.append(key)
+            return False
+
         entry = cls(
             name=_str_or_empty(data.get("name")),
             every=_int_or_zero("every", data.get("every", 0)),
@@ -207,6 +222,7 @@ class CronEntry:
             timeout_secs=_int_or_zero("timeout_secs", data.get("timeout_secs", 0)),
             persistent_session=bool(data.get("persistent_session", True)),
             silent=bool(data.get("silent", False)),
+            strict_schedule=_bool_or_false("strict_schedule", data.get("strict_schedule")),
             # STRICT boolean: "enabled" gates whether a cron fires at all, so a
             # type slip (the string "false" is truthy) must not silently
             # re-enable a disabled-by-design cron. Non-boolean values are

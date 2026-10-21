@@ -79,6 +79,7 @@ def _cron_defs_from_manifest(
                 "folder": cron.folder,
                 "timeout": cron.timeout,
                 "timeout_secs": cron.timeout_secs,
+                "strict_schedule": cron.strict_schedule,
             }
         )
         registered.append(namespaced)
@@ -229,7 +230,17 @@ _MANIFEST_OWNED_CRON_KEYS: tuple[str, ...] = (
     "folder",
     "timeout",
     "timeout_secs",
+    "strict_schedule",
 )
+
+
+#: Manifest-owned keys added after jobs already carried stamps without them,
+#: with the value an entry that does not name the key means. A stamp lacking
+#: one was written by a build that never sent the key, so whatever the job
+#: holds for it is a person's choice; only a manifest value other than this
+#: default is the author's change. Without it, the first pass after an upgrade
+#: would reset a hand-set value on every app job to the default.
+_LATE_KEY_DEFAULTS: dict[str, Any] = {"strict_schedule": False}
 
 
 #: Hex characters kept of each per-key sha256. 12 (48 bits) tells "the author
@@ -261,7 +272,18 @@ def app_cron_manifest_digest(cron_def: dict[str, Any]) -> str:
 
 
 def _stamp_digests(cron_def: dict[str, Any]) -> dict[str, str]:
-    return {key: _field_digest(cron_def.get(key)) for key in _MANIFEST_OWNED_CRON_KEYS}
+    return {
+        key: _field_digest(cron_def.get(key, _LATE_KEY_DEFAULTS.get(key)))
+        for key in _MANIFEST_OWNED_CRON_KEYS
+    }
+
+
+def _stored_digest(stored: dict[str, str], key: str) -> str | None:
+    """*key*'s digest in a readable stamp, reading a late key the stamp lacks as
+    its default (see ``_LATE_KEY_DEFAULTS``)."""
+    if key not in stored and key in _LATE_KEY_DEFAULTS:
+        return _field_digest(_LATE_KEY_DEFAULTS[key])
+    return stored.get(key)
 
 
 def _join_stamp(digests: dict[str, str]) -> str:
@@ -321,6 +343,7 @@ def _manifest_job_fields(
         # default; CronService validates the pair.
         timeout=cron_def.get("timeout") or 0,
         timeout_secs=cron_def.get("timeout_secs") or 0,
+        strict_schedule=bool(cron_def.get("strict_schedule", False)),
         folder_id=folder_id,
         app_manifest_digest=digest,
     )
@@ -349,6 +372,7 @@ _UPDATE_KWARGS_FOR_KEY: dict[str, tuple[str, ...]] = {
     "folder": ("folder_id",),
     "timeout": ("timeout",),
     "timeout_secs": ("timeout_secs",),
+    "strict_schedule": ("strict_schedule",),
 }
 
 
@@ -424,7 +448,9 @@ async def _resync_app_cron(
     if stored is None:
         changed = list(_MANIFEST_OWNED_CRON_KEYS)
     else:
-        changed = [key for key in _MANIFEST_OWNED_CRON_KEYS if stored.get(key) != current[key]]
+        changed = [
+            key for key in _MANIFEST_OWNED_CRON_KEYS if _stored_digest(stored, key) != current[key]
+        ]
 
     pending: list[str] = []
     applied = dict(current)
@@ -544,6 +570,7 @@ def _overwritten_fields(job: Any, update_kwargs: dict[str, Any]) -> list[tuple[s
         "skip_dates": list(job.skip_dates or []),
         "timeout": int(job.timeout or 0),
         "timeout_secs": int(job.timeout_secs),
+        "strict_schedule": bool(job.strict_schedule),
         "folder_id": job.folder_id or "",
     }
     changed: list[tuple[str, Any, Any]] = []

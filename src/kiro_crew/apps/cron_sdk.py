@@ -333,6 +333,7 @@ class CronSDK:
         approval_mode: str,
         timeout_secs: int,
         timeout: int,
+        strict_schedule: bool = False,
         folder_id: str = "",
         app_manifest_digest: str = "",
     ) -> dict[str, Any]:
@@ -402,6 +403,10 @@ class CronSDK:
         # no stamp, so their kwargs stay exactly what they were.
         if app_manifest_digest:
             kwargs["app_manifest_digest"] = app_manifest_digest
+        # Only when set, for the same reason: the manifest bridge is the one caller
+        # that asks for an exact start time.
+        if strict_schedule:
+            kwargs["strict_schedule"] = True
         return kwargs
 
     # ── Create ──
@@ -559,6 +564,7 @@ class CronSDK:
         approval_mode: str = "",
         timeout_secs: int = 0,
         timeout: int = 0,
+        strict_schedule: bool = False,
         folder_id: str = "",
         app_manifest_digest: str = "",
     ) -> Any:
@@ -600,6 +606,7 @@ class CronSDK:
                 enabled=enabled, timezone=timezone, skip_dates=skip_dates,
                 approval_mode=approval_mode, timeout_secs=timeout_secs,
                 timeout=timeout,
+                strict_schedule=strict_schedule,
                 folder_id=folder_id,
                 app_manifest_digest=app_manifest_digest,
             ),

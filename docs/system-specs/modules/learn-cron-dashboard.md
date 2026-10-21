@@ -685,8 +685,17 @@ calendar fields), each for a reason a follow-up `update_job` cannot serve:
   305s. Pinned in both directions by
   `::test_a_short_wake_budget_needs_its_subprocess_timeout`.
 
+`strict_schedule` is threaded too, for `add_job_if_absent_async` only: it is the
+one method the manifest bridge calls, and an `app.json` cron entry carries the
+field (#22519) so a job at a time the user chose is not delayed by up to 59
+minutes of start jitter. It is manifest-owned on re-registration like the other
+entry fields, with one rule of its own: a stamp written before the key existed
+reads it as `false` (`bridges_crons._LATE_KEY_DEFAULTS`), so the first pass
+after an upgrade does not reset a value a person set on the Schedule page. The
+published `add_job` / `add_job_async` signatures are unchanged.
+
 Still absent from the allowlist, and deliberately not widened here: `model`,
-`member_id`, `minimal_context`, `hide_in_chat`, `strict_schedule`,
+`member_id`, `minimal_context`, `hide_in_chat`,
 `delete_after_run`, `at_ts` and `chat_folder_id`. `at_ts` with
 `delete_after_run` would give an app one-shot jobs, which interacts with the
 add-if-absent registration contract (a one-shot that deletes itself is absent
