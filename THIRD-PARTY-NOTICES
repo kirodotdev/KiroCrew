@@ -10800,3 +10800,80 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Brand marks
+
+Agent-harness brand marks shown beside each harness's name on Settings >
+Agent Harness, as static SVG assets under `website/src/assets/harness-logos/`
+(rendered one-colour by `website/src/components/HarnessLogo.tsx`). Each file is
+reproduced unmodified from the source named below. The copyright status of the
+artwork is given per mark; every mark remains a trademark of its owner, is used
+only to identify that owner's product, and implies no endorsement. Kiro CLI and KAS use the Kiro ghost mark this
+project already ships (`website/src/assets/kiro-ghost-mark.svg`).
+
+### Claude (Claude Code) — `claude.svg`
+
+- Owner: Anthropic, PBC (trademark)
+- Source: Simple Icons 16.35.0, `icons/claude.svg` (icon source
+  https://claude.ai) — https://github.com/simple-icons/simple-icons
+- License: CC0-1.0 (Simple Icons)
+
+### DeepSeek — `deepseek.svg`
+
+- Owner: Hangzhou DeepSeek Artificial Intelligence Co., Ltd. (trademark)
+- Source: Simple Icons 16.35.0, `icons/deepseek.svg` (icon source
+  https://www.deepseek.com) — https://github.com/simple-icons/simple-icons
+- License: CC0-1.0 (Simple Icons)
+
+### OpenCode — `opencode.svg`
+
+- Owner: the OpenCode project (trademark)
+- Source: Simple Icons 16.35.0, `icons/opencode.svg` (icon source: the
+  project's own `packages/identity/mark.svg` in
+  https://github.com/anomalyco/opencode) — https://github.com/simple-icons/simple-icons
+- License: CC0-1.0 (Simple Icons)
+
+### Pi (pi coding agent) — `pi.svg`
+
+- Owner: Earendil Inc. (trademark)
+- Source: Simple Icons 16.35.0, `icons/pi.svg` (icon source
+  https://pi.dev/favicon.svg, the pi coding agent's site) —
+  https://github.com/simple-icons/simple-icons
+- License: CC0-1.0 (Simple Icons)
+
+### OpenAI (Codex) — `openai.svg`
+
+- Owner: OpenAI (trademark)
+- Source: Wikimedia Commons, "File:OpenAI logo 2025 (symbol).svg" (author:
+  OpenAI) —
+  https://commons.wikimedia.org/wiki/File:OpenAI_logo_2025_(symbol).svg
+- Copyright status: public domain (Commons PD-textlogo: simple geometric
+  shapes below the threshold of originality); trademarked. Simple Icons no
+  longer carries an OpenAI icon, so it is not the source here.
+
+### goose — `goose.svg`
+
+- Owner: Block, Inc. (trademark)
+- Source: the goose project's own logo,
+  `documentation/static/img/goose.svg` in https://github.com/aaif-goose/goose
+  (formerly block/goose), last changed at commit
+  bf760fd630b9accd1eff63adba24798d6bf7413a
+- License: Apache-2.0
+
+```
+Copyright 2024 Block, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

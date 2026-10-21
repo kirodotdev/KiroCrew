@@ -74,7 +74,7 @@ vi.mock('../pages/developer/KasBundleCard', () => ({
 }))
 
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
-import { DEFAULT_ACP_BACKEND } from '../api/acpBackend'
+import { acpBackendName, DEFAULT_ACP_BACKEND } from '../api/acpBackend'
 import {
   schemaWith,
   card,
@@ -177,6 +177,35 @@ describe('AgentBackendTab list', () => {
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas', 'future-agent']))
     wrap()
     await waitFor(() => expect(row('future-agent')).toBeInTheDocument())
+  })
+
+  it('draws each harness its own brand mark, and an unknown one the generic glyph', async () => {
+    // The marks themselves are pinned in HarnessLogo.test.tsx; this pins that the
+    // ROW renders them, decoratively, beside a name that stays the accessible one.
+    const ids = ['kiro', 'kas', 'claude', 'codex', 'zephyr']
+    acpBackendsMock.mockResolvedValue({ backends: ids.map(id => probeRow(id)) })
+    schemaMock.mockReturnValue(schemaWith(ids))
+    wrap()
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(ids.length))
+    const markIn = (name: string) => {
+      const label = rowLabel(name)
+      return {
+        brand: (id: string) => within(label).queryByTestId(`harness-logo-${id}`),
+        ghost: within(label).queryByTestId('kiro-ghost-mark'),
+        generic: within(label).queryByTestId('harness-logo-fallback'),
+      }
+    }
+    expect(markIn('Kiro CLI').ghost).toBeInTheDocument()
+    expect(markIn('KAS (kiro-agent)').ghost).toBeInTheDocument()
+    expect(markIn('Claude Code').brand('claude')).toBeInTheDocument()
+    expect(markIn(acpBackendName({ id: 'codex' })).brand('codex')).toBeInTheDocument()
+    const unknown = markIn('zephyr')
+    expect(unknown.generic).toBeInTheDocument()
+    expect(unknown.ghost).toBeNull()
+    // Decorative: the mark adds nothing to the radio's accessible name.
+    expect(row('Claude Code')).toHaveAccessibleName('Claude Code')
+    expect(within(rowLabel('Claude Code')).getByTestId('harness-logo-claude').closest('[aria-hidden="true"]'))
+      .not.toBeNull()
   })
 
   it('lists an agent this frontend has no name for, under its policy id', async () => {
