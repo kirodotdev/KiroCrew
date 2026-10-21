@@ -104,7 +104,10 @@ class TestTheForkWindowsScopeWiring:
     def test_the_windows_job_skips_only_on_an_explicit_false(self) -> None:
         job = _ci()["jobs"]["backend-test-windows"]
         # `!= 'false'`, so an absent output (the changes job failed) still runs it.
-        assert job["if"] == "needs.changes.outputs.windows_tests != 'false'"
+        assert job["if"] == (
+            "${{ !cancelled() && needs.lint-gate.result == 'success'"
+            " && needs.changes.outputs.windows_tests != 'false' }}"
+        )
 
     def test_the_output_comes_from_the_scope_step(self) -> None:
         outputs = _ci()["jobs"]["changes"]["outputs"]

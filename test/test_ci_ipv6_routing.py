@@ -246,7 +246,9 @@ def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
         "fail-fast": False,
         "matrix": {"os": ["ubuntu-latest", "windows-latest"]},
     }
-    assert "if" not in hosted and "continue-on-error" not in hosted
+    # Not diff-gated: its only condition is the lint gate's own success.
+    assert hosted["if"] == "${{ !cancelled() && needs.lint-gate.result == 'success' }}"
+    assert "continue-on-error" not in hosted
     assert hosted["defaults"]["run"]["shell"] == "bash"
     run = _step(jobs, "backend-test-ipv6", "Run required")["run"]
     assert "-m ipv6_required" in run and "--file-shard" not in run

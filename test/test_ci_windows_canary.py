@@ -167,7 +167,10 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     assert job["timeout-minutes"] == 60
     # The one condition is the fork Windows scope, and it skips only on an
     # explicit 'false' (test_ci_fork_windows_scope_posix.py runs that logic).
-    assert job["if"] == "needs.changes.outputs.windows_tests != 'false'"
+    assert job["if"] == (
+        "${{ !cancelled() && needs.lint-gate.result == 'success'"
+        " && needs.changes.outputs.windows_tests != 'false' }}"
+    )
     assert "continue-on-error" not in job
     step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests (Windows shard"))
     command = re.sub(

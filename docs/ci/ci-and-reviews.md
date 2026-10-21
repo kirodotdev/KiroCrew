@@ -556,6 +556,12 @@ pushes whose red jobs included a lint job.
   cancelled, `lint-gate` is SKIPPED, not failed: the lint job is the red check and
   the heavy jobs skip behind `lint-gate` exactly as they skip behind a red
   `await-fast-gate`.
+- **A skipped lint job does not skip the heavy jobs.** Each job behind `lint-gate`
+  carries `if: !cancelled() && needs.lint-gate.result == 'success'` (ANDed with
+  its own condition), and `coverage-combine` names each shard's success the same
+  way. Without it GitHub's implicit `success()` reads every ancestor, so the lint
+  job skipped on a backend-only or frontend-only diff skipped every shard behind
+  a green `lint-gate`, and Coverage Gate failed closed.
 - **Coverage Gate names lint.** It fails closed on skipped shards, and now reads
   `backend-lint` and `frontend-lint` first: when either failed or was cancelled it
   fails with "lint did not pass ... Fix 'Backend Lint & Type Check' / 'Frontend Lint

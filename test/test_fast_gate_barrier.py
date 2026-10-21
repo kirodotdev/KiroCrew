@@ -28,6 +28,7 @@ Three properties, each of which fails silently rather than loudly if it regresse
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -93,6 +94,119 @@ _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
 }
+
+_STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\(\)")
+
+
+def _reaches_job(jobs: dict, job: str, target: str) -> bool:
+    seen: set[str] = set()
+    frontier = [job]
+    while frontier:
+        raw = jobs[frontier.pop()].get("needs") or []
+        for parent in [raw] if isinstance(raw, str) else raw:
+            if parent == target:
+                return True
+            if parent not in seen and parent in jobs:
+                seen.add(parent)
+                frontier.append(parent)
+    return False
+
+
+def _has_status_function(guard: str) -> bool:
+    return bool(_STATUS_FUNCTION.search(guard))
+
+
+def _evaluate_guard(guard: str, values: dict[str, str]) -> bool:
+    """Evaluate the subset of GitHub expression syntax ci.yml's job `if:`s use.
+
+    Every context reference (``needs.<job>.result``, ``needs.<job>.outputs.<k>``,
+    ``github.<k>``, ``vars.<k>``) is replaced by its value from ``values`` (absent
+    means ``''``, as on GitHub), so what is left is constants joined by
+    ``&&`` / ``||`` / ``==`` / ``!=`` / ``contains``, walked as a Python AST.
+    """
+    expr = guard.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2]
+    expr = re.sub(
+        r"\b(?:needs\.[\w-]+\.(?:result|outputs\.\w+)|github\.\w+|vars\.\w+)",
+        lambda m: repr(values.get(m.group(0), "")),
+        expr,
+    )
+    expr = re.sub(
+        r"contains\(fromJSON\('(\[[^\]]*\])'\),\s*('[^']*')\)",
+        lambda m: f"({m.group(2)} in {m.group(1)})",
+        expr,
+    )
+    expr = expr.replace("!cancelled()", "True").replace("&&", " and ").replace("||", " or ")
+
+    def walk(node: ast.AST) -> object:
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.List):
+            return [walk(item) for item in node.elts]
+        if isinstance(node, ast.BoolOp):
+            parts = [bool(walk(value)) for value in node.values]
+            return all(parts) if isinstance(node.op, ast.And) else any(parts)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, right = walk(node.left), walk(node.comparators[0])
+            op = node.ops[0]
+            if isinstance(op, ast.Eq):
+                return left == right
+            if isinstance(op, ast.NotEq):
+                return left != right
+            if isinstance(op, ast.In):
+                return left in right  # type: ignore[operator]
+        raise AssertionError(f"unsupported expression in {guard!r}: {ast.dump(node)}")
+
+    return bool(walk(ast.parse(f"({expr})", mode="eval")))
+
+
+def _simulate_pull_request(
+    ci: dict, surface: dict[str, str], forced: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Each job's result on a pull_request run, with GitHub's skip semantics.
+
+    A job whose `if:` has no status function gets the implicit `success()`, which
+    is true only when EVERY ancestor (not just each direct need) succeeded. A job
+    that runs is taken to succeed unless ``forced`` names its result.
+    """
+    jobs = ci["jobs"]
+    forced = forced or {}
+
+    def needs(job: str) -> list[str]:
+        raw = jobs[job].get("needs") or []
+        return [raw] if isinstance(raw, str) else list(raw)
+
+    ancestors: dict[str, set[str]] = {}
+
+    def ancestors_of(job: str) -> set[str]:
+        if job not in ancestors:
+            ancestors[job] = set()
+            for parent in needs(job):
+                ancestors[job] |= {parent} | ancestors_of(parent)
+        return ancestors[job]
+
+    results: dict[str, str] = {}
+    values = {
+        "github.event_name": "pull_request",
+        "github.ref": "refs/pull/1/merge",
+        **{f"needs.changes.outputs.{key}": value for key, value in surface.items()},
+    }
+    pending = list(jobs)
+    while pending:
+        job = next(j for j in pending if all(p in results for p in needs(j)))
+        pending.remove(job)
+        guard = str(jobs[job].get("if") or "")
+        runs = all(results[a] == "success" for a in ancestors_of(job))
+        if guard:
+            seen = {**values, **{f"needs.{p}.result": results[p] for p in needs(job)}}
+            explicit = _evaluate_guard(guard, seen)
+            runs = explicit if _has_status_function(guard) else runs and explicit
+        results[job] = forced.get(job, "success") if runs else "skipped"
+    return results
+
 
 # DENY-BY-DEFAULT: every job in ci.yml must wait for the barrier unless it is
 # exempt here for a reason that is not about cost. An enumeration of the jobs that
@@ -262,9 +376,18 @@ def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
             for clause in ("needs.changes.result == 'success'", _BARRIER_PASSED):
                 assert clause in guard, f"{name} can run on push without {clause!r}"
             continue
-        assert (
-            "always()" not in guard and "!cancelled()" not in guard
-        ), f"{name} overrides the skipped dependency with {guard!r} and can run on push"
+        if "always()" not in guard and "!cancelled()" not in guard:
+            continue
+        # An override is safe only while it still requires a direct need that the
+        # queued push skips: the barrier, or a job behind it (checked by this loop).
+        held = [
+            parent
+            for parent in direct_needs
+            if parent in jobs
+            and f"needs.{parent}.result == 'success'" in guard
+            and (parent == "await-fast-gate" or _reaches_job(jobs, parent, "await-fast-gate"))
+        ]
+        assert held, f"{name} overrides the skipped dependency with {guard!r} and can run on push"
 
     boot = jobs["e2e-boot-matrix"]
     boot_guard = str(boot["if"])
@@ -1043,17 +1166,89 @@ class TestLintRunsBeforeTheHeavyJobs:
 
     def test_the_heavy_jobs_do_not_override_the_skip(self, ci: dict) -> None:
         # A heavy job carrying `always()` / `!cancelled()` would run on a skipped
-        # gate. Only the jobs that fail closed on skips may, and each is checked.
-        allowed = {
-            _LINT_GATE,
-            "e2e-boot-matrix",
-            "coverage-gate",
-            "frontend-coverage-merge",
-        }
+        # gate unless it also requires the gate's success. Only the jobs that fail
+        # closed on skips may omit that, and each is checked.
+        fail_closed = {_LINT_GATE, "coverage-gate", "frontend-coverage-merge"}
         for job, spec in ci["jobs"].items():
             guard = str(spec.get("if", ""))
-            if "always()" in guard or "!cancelled()" in guard:
-                assert job in allowed, f"{job} can run behind a skipped lint gate: {guard!r}"
+            if job in fail_closed or not ("always()" in guard or "!cancelled()" in guard):
+                continue
+            for parent in self._needs(ci, job):
+                if parent == _LINT_GATE or self._reaches(ci, parent, _LINT_GATE):
+                    assert (
+                        f"needs.{parent}.result == 'success'" in guard
+                    ), f"{job} can run behind a skipped {parent}: {guard!r}"
+
+    def test_no_job_behind_a_lint_job_relies_on_the_implicit_success(self, ci: dict) -> None:
+        # GitHub's implicit `success()` reads EVERY ancestor, not only the direct
+        # needs, so a lint job skipped on a one-surface diff skips the whole chain
+        # behind a green gate. Each such job must say which results it needs.
+        implicit = [
+            job
+            for job, spec in ci["jobs"].items()
+            if job not in _LINT_JOBS
+            and any(self._reaches(ci, job, lint) for lint in _LINT_JOBS)
+            and not _has_status_function(str(spec.get("if", "")))
+        ]
+        assert not implicit, (
+            f"job(s) behind a lint job have no status check in `if:`: {sorted(implicit)}. "
+            "Add `!cancelled() && needs.<parent>.result == 'success'` for each direct need."
+        )
+
+    @pytest.mark.parametrize(
+        ("surface", "runs", "skips"),
+        [
+            (
+                {"only_backend": "true", "only_frontend": "false"},
+                {"backend-test", "frontend-test", "coverage-combine", "real-adapter-contract"},
+                {"frontend-lint", "bundle-size", "frontend-coverage-merge"},
+            ),
+            (
+                {"only_backend": "false", "only_frontend": "true"},
+                {"backend-test", "frontend-test", "bundle-size", "frontend-coverage-merge"},
+                {"backend-lint", "coverage-combine", "real-adapter-contract"},
+            ),
+            (
+                {"only_backend": "false", "only_frontend": "false"},
+                {"backend-test", "frontend-test", "coverage-combine", "bundle-size"},
+                set(),
+            ),
+        ],
+        ids=["backend-only", "frontend-only", "mixed"],
+    )
+    def test_each_surface_runs_its_shards_behind_the_gate(
+        self, ci: dict, surface: dict[str, str], runs: set[str], skips: set[str]
+    ) -> None:
+        results = _simulate_pull_request(ci, surface)
+        shared = {
+            _LINT_GATE,
+            "backend-test-windows",
+            "backend-test-ipv6",
+            "backend-test-kernel-lock-owner",
+            "e2e",
+            "integration",
+            "electron-test",
+            "coverage-gate",
+        }
+        ran = {job for job, result in results.items() if result == "success"}
+        assert runs | shared <= ran, sorted((runs | shared) - ran)
+        assert not skips & ran, sorted(skips & ran)
+
+    @pytest.mark.parametrize("lint", _LINT_JOBS)
+    def test_a_failed_lint_job_still_skips_every_heavy_job(self, ci: dict, lint: str) -> None:
+        surface = {"only_backend": "false", "only_frontend": "false"}
+        results = _simulate_pull_request(ci, surface, forced={lint: "failure"})
+        assert results[_LINT_GATE] == "skipped"
+        heavy = [
+            job
+            for job in ci["jobs"]
+            if self._reaches(ci, job, _LINT_GATE) and job not in {"coverage-gate"}
+        ]
+        assert heavy
+        ran = [job for job in heavy if results[job] == "success"]
+        assert not ran, f"ran behind a red {lint}: {sorted(ran)}"
+        # The one job that reports the red still runs and names lint.
+        assert results["coverage-gate"] == "success"
 
     def test_the_coverage_gate_names_lint_when_lint_is_why_the_shards_are_skipped(
         self, ci: dict
