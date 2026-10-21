@@ -17,6 +17,15 @@ superseded-by: []
 - Status: draft. No implementation. Every "exists today" claim below was
   checked at `14929e9302` (main, 2026-10-20); citations name symbols, not line
   numbers.
+- Decision (2026-11-02): maintainer bolichen97
+  [signed Phases 0 to 2](https://github.com/kirodotdev/KiroCrew/pull/22529#issuecomment-6569521598)
+  as written. Phase 3, per-message injection, needs its own sign-off later,
+  backed by the note miss rate (§7). The limits and exclusions are part of
+  the sign-off and stay in every phase: the per-message and per-conversation
+  budgets and the pointer fallback (§6.6), the time limit (§6.4), no project
+  context for chats whose replies reach a messaging channel, for temporary
+  sessions or for automation turns (§6.3), and no way for an app or an agent
+  to add project context or turn the switch on (§6.2).
 - Author: Aravind Reddy (aravindpvreddy24)
 - Related: [rfc-crew-projects.md](rfc-crew-projects.md) (Projects; its
   knowledge phase is listed under "Later"),
@@ -39,7 +48,8 @@ superseded-by: []
   sends in a chat under that folder gets the best-matching excerpts from that
   context, and only from it, provided they clear a relevance floor.
 - Nothing changes for chats in folders without project context, or in no
-  folder.
+  folder. Chats whose replies reach a messaging channel get nothing either,
+  even in a folder with project context (§6.3).
 - When nothing clears the floor, the message goes to the agent unchanged. Two
   budgets keep the context from filling up: one per message and one per
   conversation. A session whose context window is already well used gets
@@ -146,7 +156,12 @@ Three findings:
    value and drops it: `HybridRetriever._vector_search` returns ranks only.
 
 Six messages are a sample, not a calibration. Phase 0 (§7) calibrates the
-floor.
+floor and records two figures for it here: the false-injection rate, the
+share of off-topic messages whose best match clears the floor, and the floor
+miss rate, the share of on-topic messages whose best match falls below it.
+A second miss rate follows once Phase 2 ships: the note miss rate, the share
+of on-topic messages the agent answers without calling
+`local_knowledge_search` when it has only the session-start note (§7).
 
 ### 2.4 Relation to Projects
 
@@ -220,7 +235,7 @@ The path a message takes through §6.3 to §6.6:
 
 ```mermaid
 flowchart TD
-  M["A message arrives"] --> F{"Sent by the person, not in a temporary session,<br/>folder has project context,<br/>per-message injection on?"}
+  M["A message arrives"] --> F{"Sent by the person, not in a temporary session,<br/>replies not sent to a channel,<br/>folder has project context,<br/>per-message injection on?"}
   F -- no --> N["Message reaches the agent unchanged"]
   F -- yes --> L["Find matching excerpts in that<br/>project context only, 400 ms limit"]
   L -- "timeout or error" --> N
@@ -294,6 +309,18 @@ On a turn where all of these hold:
   preparation (`_run_chat` in `dashboard/chat_runner.py`). Incognito sessions
   are included, because the lookup writes no memory. Their audit row (§6.5)
   records item ids and similarities but not the message;
+- the chat's replies stay with the person. A conversation that started on a
+  messaging channel gets no project context, and neither does a dashboard
+  chat mirrored to a channel, even when it is filed into a folder that has
+  project context (§9). The work ledger uses the same test to keep its text
+  out of channels (`contained_channel_caller` in
+  `dashboard/handlers/work_ledger.py`): `is_channel_session_key`
+  (`messaging/link.py`) recognizes a conversation that started on a channel,
+  and `reaches_a_channel` recognizes a dashboard chat with an outbound
+  mirror, counting a mirror store it cannot read as mirrored. The ledger then
+  exempts the owner's own direct messages. This RFC makes no such exemption,
+  so no messaging channel gets project context, not even the owner's own
+  direct messages;
 - `knowledge.project_context_enabled` is true.
 
 ### 6.4 Finding the matching excerpts
@@ -397,7 +424,9 @@ saying `local_knowledge_search` with that namespace looks it up. The agent
 then knows what the library holds, which is the missing piece in §2.1. The
 note appears whether per-message injection is on or off. With injection on,
 the note covers what injection cannot: questions that come up mid-turn,
-follow-ups too short to match, and matches sent as pointers.
+follow-ups too short to match, and matches sent as pointers. Like the
+excerpts, the note is not added to a chat whose replies reach a messaging
+channel (§6.3), because it points the agent at the library.
 
 ### 6.8 Configuration
 
@@ -414,14 +443,21 @@ follow-ups too short to match, and matches sent as pointers.
 
 | Phase | Delivers | Exit criteria |
 |---|---|---|
-| 0 | Calibration; nothing lands in code. Repeat the §2.3 measurement on at least 60 labelled messages taken from real sessions (half on-topic, half off-topic) over at least two libraries, and choose the floor | The chosen floor, its false-injection rate and its miss rate are written into §2.3 |
+| 0 | Calibration; nothing lands in code. Repeat the §2.3 measurement on at least 60 labelled messages taken from real sessions (half on-topic, half off-topic) over at least two libraries, and choose the floor | The chosen floor, its false-injection rate and its floor miss rate are written into §2.3 |
 | 1 | Retriever: `search()` takes sets of source ids and namespaces; rows carry `vector_similarity`. No change for existing callers | Existing callers get identical rows; a set-scoped call returns only in-scope keyword and vector rows; `vector_similarity` equals the cosine the leg computed |
-| 2 | Folder settings: both fields, validation, person-only additions, the `folder.project_context` change card, inheritance, the ownership gate, the settings dialog and the session-start note. Nothing is injected per message yet | An addition from an app or an agent is refused with 403 `project_context_forbidden`, and a removal from one is allowed; a child folder resolves its parent's entries root first; a child's switch overrides its parent's; a deleted source is skipped; a folder with project context gets the note at session start |
-| 3 | Per-message injection: §6.3 to §6.6 and §6.8, including the transcript row in §6.5, a section in `knowledge.md`, and the amended on-demand line | A chat whose best in-scope match clears the floor gets the block, and its transcript gets a row showing the same excerpts the agent received; below the floor the prompt is byte-identical to the same chat with per-message injection off and no row is written; with the switch off no block is added; temporary sessions and automation turns get none; a lookup that runs past the limit leaves the turn on time and without the block; an excerpt is not sent twice in one conversation; once the conversation budget is spent, matches arrive as pointers; above the fullness threshold, matches arrive as pointers; a credential planted in an excerpt arrives redacted in both the block and the row; an out-of-scope graph hit never appears |
+| 2 | Folder settings: both fields, validation, person-only additions, the `folder.project_context` change card, inheritance, the ownership gate, the settings dialog and the session-start note. Nothing is injected per message yet | An addition from an app or an agent is refused with 403 `project_context_forbidden`, and a removal from one is allowed; a child folder resolves its parent's entries root first; a child's switch overrides its parent's; a deleted source is skipped; a folder with project context gets the note at session start, and a channel conversation in that folder, or a dashboard chat in it mirrored to a channel, does not |
+| 3 | Per-message injection: §6.3 to §6.6 and §6.8, including the transcript row in §6.5, a section in `knowledge.md`, and the amended on-demand line | A chat whose best in-scope match clears the floor gets the block, and its transcript gets a row showing the same excerpts the agent received; below the floor the prompt is byte-identical to the same chat with per-message injection off and no row is written; with the switch off no block is added; temporary sessions and automation turns get none; a channel conversation filed into the folder, and a dashboard chat in it mirrored to a channel, get no block and no row, and a mirror store that cannot be read counts as mirrored; a lookup that runs past the limit leaves the turn on time and without the block; an excerpt is not sent twice in one conversation; once the conversation budget is spent, matches arrive as pointers; above the fullness threshold, matches arrive as pointers; a credential planted in an excerpt arrives redacted in both the block and the row; an out-of-scope graph hit never appears |
 | Later | When rfc-crew-projects adds Project knowledge, a Project carries the same two settings and its sessions use the same path | Defined then |
 
 Phases 1 and 2 can each ship and be abandoned on their own. Phase 3 builds on
-both and needs Phase 0's floor.
+both and needs Phase 0's floor. Phase 3 also needs evidence that the
+session-start note alone is not enough. Once Phase 2 ships, send the on-topic
+half of Phase 0's labelled messages to chats in a folder with project context,
+count how often the agent answers without calling `local_knowledge_search`,
+and write that share into §2.3 as the note miss rate. Phase 3 needs its own
+maintainer sign-off, decided from that figure. As a starting value, Phase 3
+goes ahead when the note miss rate is above 25%, that is, when the agent
+answers more than one on-topic message in four without looking.
 
 ## 8. Backward compatibility
 
@@ -450,6 +486,17 @@ both and needs Phase 0's floor.
 4. **Exfiltration links in excerpts.** `_redact` strips them before injection.
 5. **Cost.** At most one lookup per message the person sends, time-limited,
    with bounded output.
+6. **Leakage to other people in a channel.** A channel conversation can be
+   filed into a folder (`slack.session_folder` and the other channels'
+   equivalents, `dashboard/channel_folders.py`), and other people can be in
+   it: `wecom.allowed_users` can admit other people and
+   `wecom.allow_all_users` the whole organization, and
+   `telegram.allow_forum` serves group forum topics. The agent's replies,
+   drawing on injected excerpts, would reach people the person never shared
+   the library with. Checking who sent the message would not close this,
+   because a reply in a shared conversation reaches everyone in it, even
+   when the owner sent the message. §6.3 therefore checks where replies go,
+   and Phases 2 and 3 test it.
 
 ## 10. Alternatives considered
 
@@ -482,18 +529,21 @@ both and needs Phase 0's floor.
 
 ## 11. Open questions
 
-1. **Follow-ups.** "And the second one?" gives little to match on. Should the
-   lookup include the previous message the person sent?
+1. **Short follow-ups.** The lookup matches only the message just sent. If
+   the person asks "What are the two retry options in the upload design?"
+   and then "And the second one?", the second message says nothing a
+   document could match, so it gets no excerpts, even though the person is
+   still asking about the upload design. Should the lookup also use the
+   person's previous message? That would catch follow-ups like this one, but
+   after a change of topic it could pull in excerpts about the old topic.
 2. **A floor per embedding model.** A cosine floor holds for one embedding
    space only. Should it be stored against the embedding signature
    (`embedding_space_signature`), so a model change invalidates it?
 3. **Sub-agents.** Should a sub-agent spawned from a chat with project context
    inherit it?
-4. **Unattended chats.** Channel conversations can be filed into a folder
-   (`slack.session_folder` and the other channels' equivalents,
-   `dashboard/channel_folders.py`), and cron jobs can carry a chat folder
-   (`lookup_cron_folder_id` in `cron_service/folders.py`). Messages people
-   send on a channel meet §6.3. Is that wanted on every channel?
-5. **Default for the switch.** This RFC turns per-message injection on when
+4. **Default for the switch.** This RFC turns per-message injection on when
    project context is first attached. Should it start off instead, leaving
-   only the session-start note until the person opts in?
+   only the session-start note until the person opts in? Nothing reads the
+   switch before Phase 3, so the note miss rate (§7) is measured without
+   per-message injection whatever the default is. The question is settled
+   with Phase 3's sign-off.
