@@ -26,7 +26,8 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_session_not_found_retry_used``, ``_stale_recovery_exhausted_emitted``,
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
-``_steer_audience_fences``, ``_steer_channel_origin``, ``_steer_confirmed``,
+``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
+``_steer_confirmed``,
 ``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_possibly_delivered``,
 ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
 ``_steer_user_origin``, ``_subagent_deliveries_inflight``,
@@ -469,6 +470,10 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # and released the same ways. Requeue stamps ``STEER_INTENT_META`` on the
     # entry, so the sub-agent hold lets it drain instead of parking it.
     self._steer_act_now = set()
+    # Pending AUTOMATION steers (a work-ledger wake), each with the
+    # ``meta.nudge`` its row carries. Requeue stamps it on the entry
+    # (``AUTOMATION_STEER_META``), so the drained row is a nudge row too.
+    self._steer_automation = {}
     # In-flight `wait` tool sleep, as reported by the tool's own keepalive
     # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
     # deadline is on the dashboard's clock (see api_session_keepalive) so

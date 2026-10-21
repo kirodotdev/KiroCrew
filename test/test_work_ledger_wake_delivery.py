@@ -418,6 +418,10 @@ class TestSteeringAWakeIntoARunningTurn:
             "nobody typed this into the session's own surface, so it must not inherit "
             "the composer's exemption from the drain's linked drop"
         )
+        assert steer.await_args.kwargs["nudge_meta"] == {
+            "cycle": loop.cycle_count + 1,
+            "loop_id": loop.id,
+        }, "the wake is automation, so its row is the loop's nudge chip (#22747)"
 
     @pytest.mark.asyncio
     async def test_the_steer_carries_the_whole_wake_and_fences_nothing(self):

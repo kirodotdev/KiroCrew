@@ -765,6 +765,7 @@ class SlotQueueRepository:
             # away is not this feature's call. The frontend pencil gate
             # (`isAppMessageQueued`) withholds exactly this same set.
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
+            from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 
             if item.get("kind") == MCP_APP_MESSAGE_KIND:
                 return False
@@ -788,6 +789,10 @@ class SlotQueueRepository:
             else:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
+            # Replacement words belong to the editor, not the automation that queued them.
+            meta = item.get("meta")
+            if isinstance(meta, dict):
+                meta.pop(AUTOMATION_STEER_META, None)
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

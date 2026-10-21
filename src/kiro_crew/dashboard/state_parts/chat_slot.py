@@ -316,6 +316,7 @@ class _ChatSlot:
         "_steer_audience_fence_holders",
         "_steer_attachment_meta",
         "_steer_act_now",
+        "_steer_automation",
         "_wait_state",
         "_end_wait_request",
         "_end_wait_by",
@@ -581,6 +582,7 @@ class _ChatSlot:
     _steer_audience_fence_holders: dict[str, int]
     _steer_attachment_meta: dict[str, dict[str, Any]]
     _steer_act_now: set[str]
+    _steer_automation: dict[str, dict]
     _wait_state: dict | None
     _end_wait_request: str | None
     _end_wait_by: str

@@ -558,6 +558,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_attachment_meta": ("value", "{}"),
     "_steer_audience_fence_holders": ("value", "{}"),
     "_steer_audience_fences": ("value", "{}"),
+    "_steer_automation": ("value", "{}"),
     "_steer_channel_origin": ("value", "{}"),
     "_steer_confirmed": ("value", "set()"),
     "_steer_decision_strips": ("value", "{}"),

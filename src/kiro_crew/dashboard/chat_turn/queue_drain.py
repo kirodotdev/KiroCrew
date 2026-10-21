@@ -9,6 +9,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
+from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
         _remove_queued_by_id,
         _run_chat,
         app_inject_row,
+        append_and_surface,
         attachment_meta,
         effective_session_key,
         is_synthetic_payload_item,
@@ -689,7 +691,27 @@ async def _start_next_queued_turn(
     # own bubble. Never merges (a system-injection kind), so ``consumed`` holds
     # it alone.
     is_automation_notice = any(item.get("kind") == AUTOMATION_NOTICE_KIND for item in consumed)
-    if not (is_cron or is_subagent or is_recovery or is_app_message or is_automation_notice):
+    # A requeued automation steer (a work-ledger wake the turn never took): its
+    # entry names the `meta.nudge` its row carries, so it drains as the same
+    # nudge row it was steered as, never as the person's `user` row. Never
+    # merges (`_dequeue_next_message` stops at it), so `consumed` holds it alone.
+    automation_nudge = next(
+        (
+            (item.get("meta") or {}).get(AUTOMATION_STEER_META)
+            for item in consumed
+            if isinstance((item.get("meta") or {}).get(AUTOMATION_STEER_META), dict)
+        ),
+        None,
+    )
+    is_automation_steer = automation_nudge is not None
+    if not (
+        is_cron
+        or is_subagent
+        or is_recovery
+        or is_app_message
+        or is_automation_notice
+        or is_automation_steer
+    ):
         # A user message after the last completion takes over from the armed
         # synthesis and ends its batch, so its count starts over. Only the
         # caller that read the fire gate as `clear` with the floor held says so
@@ -735,6 +757,7 @@ async def _start_next_queued_turn(
             or is_recovery
             or is_app_message
             or is_automation_notice
+            or is_automation_steer
             or responsive_chat.reusable_row(slot, consumed, next_msg) is not None,
         }
         # The client rebuilds the drained entry as a user row from this frame
@@ -772,13 +795,17 @@ async def _start_next_queued_turn(
                 break
         app_label, _ = redact_exfiltration_urls(app_label)
         app_label, _ = redact_credentials(app_label)
-    if is_subagent:
+    if is_automation_steer:
+        row_role = "nudge"
+    elif is_subagent:
         row_role = "subagent"
     elif is_cron or is_recovery or is_app_message or is_automation_notice:
         row_role = "inject"
     else:
         row_role = "user"
-    if is_cron:
+    if is_automation_steer:
+        row_cls = "msg msg-nudge"
+    elif is_cron:
         # A cron row's `cls` slot carries a JSON payload, not a CSS class name:
         # `cronLabel` is structured data the frontend reads off the row.
         row_cls = json.dumps({"cronLabel": cron_label})
@@ -871,6 +898,10 @@ async def _start_next_queued_turn(
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     # Queue plumbing for the sub-agent hold only; says nothing about the row.
     _drained_meta.pop(STEER_INTENT_META, None)
+    # Queue plumbing too: the row says it as `meta.nudge`, the key the chip reads.
+    _drained_meta.pop(AUTOMATION_STEER_META, None)
+    if automation_nudge is not None:
+        _drained_meta["nudge"] = dict(automation_nudge)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
     # ANY consumed entry a channel hand-off stamped keeps the merged text content,
     # so a batch cannot smuggle a channel's "/clear" into a command by sitting
@@ -952,12 +983,17 @@ async def _start_next_queued_turn(
         _drained_meta[RESTORED_TURN_META_KEY] = True
     current_row = responsive_chat.reusable_row(slot, consumed, next_msg)
     if current_row is None:
-        current_row = slot.append(
-            row_role,
-            next_msg,
-            row_cls,
-            meta=_drained_meta or None,
-        )
+        if is_automation_steer:
+            current_row = append_and_surface(
+                state, slot, row_role, next_msg, row_cls, meta=_drained_meta or None
+            )
+        else:
+            current_row = slot.append(
+                row_role,
+                next_msg,
+                row_cls,
+                meta=_drained_meta or None,
+            )
 
     # Per-turn consumption cell for a drained sub-agent completion (see
     # _arm_queued_delivery_settlement): owned by THIS turn, so a successor turn

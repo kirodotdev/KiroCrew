@@ -335,6 +335,7 @@ async def steer_into_running_turn(
     attachments: dict | None = None,
     delivery_id: str | None = None,
     responsive: bool = False,
+    nudge_meta: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -408,7 +409,19 @@ async def steer_into_running_turn(
     slot can move while the RPC is suspended -- mints it and passes it in, so its
     reconciliation reads identity and never content: the same text can recur in
     a restored transcript, and only an id names THIS delivery.
+
+    ``nudge_meta`` says the text is AUTOMATION (a monitor loop's work-ledger
+    wake), and is the ``meta.nudge`` (``{"cycle", "loop_id"}``) its row carries.
+    The row's role follows the origin, not the branch that ran: the steer is
+    persisted as a ``nudge`` row, the same role the idle fire writes, so it
+    draws as the nudge chip rather than a bubble the person typed. It
+    implies ``user_origin=False``. A requeue stamps it on the queue entry
+    (``AUTOMATION_STEER_META``), so the drained row is a ``nudge`` row too and
+    never merges into a person's queued text. Absent for every other caller,
+    which keeps their rows unchanged.
     """
+    if nudge_meta is not None:
+        user_origin = False
     # Only api_chat's owner/member gate grants this mode. Keep the wire prefix
     # out of pending identity, transcript rows, mirrors and send receipts.
     from kiro_crew.dashboard import responsive_chat
@@ -477,6 +490,7 @@ async def steer_into_running_turn(
             slot._steer_attachment_meta,
             slot._steer_act_now,
             slot._steer_decision_strips,
+            slot._steer_automation,
         )
     )
     if retained_steer_count >= MAX_PENDING_STEERS:
@@ -561,6 +575,10 @@ async def steer_into_running_turn(
         # never sees this call's arguments. Absent stores nothing, so a manual steer's
         # requeued entry keeps the exact prior shape.
         slot._steer_decision_strips[message] = decision_strip
+    if nudge_meta is not None:
+        # Held for the REQUEUE like the maps above: a steer the turn ends before
+        # taking drains as its own row, and that row must still be the nudge.
+        slot._steer_automation[message] = dict(nudge_meta)
     slot._pending_steers.append(message)
     possibly_delivered = False
     slot._steer_rpc_in_flight.add(message)
@@ -641,6 +659,7 @@ async def steer_into_running_turn(
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
         slot._steer_decision_strips.pop(message, None)
+        slot._steer_automation.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -681,6 +700,7 @@ async def steer_into_running_turn(
             slot._steer_attachment_meta.pop(message, None)
             slot._steer_act_now.discard(message)
             slot._steer_decision_strips.pop(message, None)
+            slot._steer_automation.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -790,6 +810,7 @@ async def steer_into_running_turn(
     if not still_registered:
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
+        slot._steer_automation.pop(message, None)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -892,6 +913,22 @@ async def steer_into_running_turn(
     # display redaction even though the provenance marks say a person typed it.
     _shown_as_typed = user_origin and not channel_origin
     _row_content = message if _shown_as_typed else sanitized
+    if nudge_meta is not None:
+        # Automation: the same `nudge` row the idle fire writes, so it draws as
+        # the nudge chip. `meta.steer` stays, which keeps it a steer for every
+        # reader that asks (it opens no turn). No `steer_push`: that frame is
+        # drawn as a user bubble. The append broadcasts the row itself, and
+        # since no tab drew an optimistic bubble for it, open tabs are told to
+        # freeze their streaming text first, so the chip lands at the cut.
+        # `append_and_surface`, not a bare append: with an HTTP stream reader
+        # attached the append's own broadcast is suppressed, and the other tabs
+        # would otherwise get the cut but never the row.
+        from kiro_crew.dashboard.state import append_and_surface
+
+        meta["nudge"] = dict(nudge_meta)
+        state.broadcast_ws("chat_segment", {"slot": slot.key})
+        append_and_surface(state, slot, "nudge", _row_content, "msg msg-nudge", meta=meta)
+        return STEER_STEERED
     _row = slot.append("user", _row_content, "msg msg-u", ts=ts, meta=meta)
     push_payload: dict[str, Any] = {
         "slot": slot.key,

@@ -581,6 +581,7 @@ async def stop_slot_turn(
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
             slot._steer_act_now.discard(_discarded)
+            slot._steer_automation.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)
             slot._steer_possibly_delivered.discard(_discarded)
         slot._pending_steers.clear()

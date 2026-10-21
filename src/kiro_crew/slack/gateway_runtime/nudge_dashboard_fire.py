@@ -702,8 +702,16 @@ async def _steer_work_ledger_wake(
     # turn would also be the wrong promise -- the teardown clears it, and a
     # requeued steer's successor would run without it.
     try:
+        # ``nudge_meta`` names the text as this loop's, so its row is the same
+        # nudge chip the idle fire writes and never a bubble the person typed.
+        # The cycle is the one this delivery charges.
         outcome = await steer_into_running_turn(
-            state, slot, text, user_origin=False, admission=admission
+            state,
+            slot,
+            text,
+            user_origin=False,
+            admission=admission,
+            nudge_meta={"cycle": loop.cycle_count + 1, "loop_id": loop.id},
         )
     except Exception:
         logger.warning(

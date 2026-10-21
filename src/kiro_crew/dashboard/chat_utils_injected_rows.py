@@ -455,6 +455,13 @@ STEER_POSSIBLY_DELIVERED_NOTE = (
 #: behind the children would turn that choice into a Queue they never picked.
 STEER_INTENT_META = "steer_intent"
 
+#: Queue-entry meta key: this entry is an AUTOMATION steer (a work-ledger wake)
+#: that the running turn ended before taking. Its value is the row's
+#: ``meta.nudge`` (``{"cycle", "loop_id"}``). The drain writes the entry as a
+#: ``nudge`` row instead of a ``user`` row, and the entry drains alone: merged,
+#: its text would be glued onto the human's own queued words in one row.
+AUTOMATION_STEER_META = "automation_steer"
+
 
 def releases_past_subagent_hold(item: dict) -> bool:
     """Whether the sub-agent hold lets *item* drain while children still run.
@@ -505,7 +512,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
 
     A merge run stops at a system injection, at an attachment-bearing entry
     (see :func:`carries_attachments`), at a possibly-delivered steer
-    (``STEER_POSSIBLY_DELIVERED_META``) and where the stamped turn actor
+    (``STEER_POSSIBLY_DELIVERED_META``), at a requeued automation steer
+    (:data:`AUTOMATION_STEER_META`) and where the stamped turn actor
     changes, so an app's queued send never folds into the user's own words; an
     entry that starts no run pops alone.
     """
@@ -518,6 +526,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 # Its note speaks for one message; merged, it would vouch that
                 # messages never written to any pipe may already have run.
                 or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
+                # Automation text, never folded into a person's row.
+                or (item.get("meta") or {}).get(AUTOMATION_STEER_META)
             ):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):
