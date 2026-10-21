@@ -527,5 +527,6 @@
   "pages.chat.gatewayNotice.turn_limit_minutes",
   "pages.chat.gatewayNotice.turn_limit_hours",
   "pages.chat.gatewayNotice.background_turn_waited",
-  "pages.chat.gatewayNotice.eager_spawn_stopped"
+  "pages.chat.gatewayNotice.eager_spawn_stopped",
+  "components.frontmatterCard.heading"
 ]

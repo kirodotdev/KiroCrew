@@ -360,6 +360,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const knowledge = useFileKnowledgeState(filePath, reportActionError)
   const artifactState = useFileArtifactState(filePath, content, reportActionError)
   const previewRef = useRef<HTMLDivElement>(null)
+  // Find searches the frontmatter strip too; comment offsets stay body-only (`previewRef`).
+  const findRootRef = useRef<HTMLDivElement>(null)
   const sidePanelScrollRef = useRef<HTMLDivElement>(null)
   // Cross-remount scroll memory for the embedded (side-panel) scroll box —
   // a chat-slot switch unmounts the whole tab body. A pending line reveal is
@@ -372,6 +374,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     { suppressRestore: !!revealLine },
   )
   const fullscreenPreviewRef = useRef<HTMLDivElement>(null)
+  const fullscreenFindRootRef = useRef<HTMLDivElement>(null)
   const fullscreenBodyRef = useRef<HTMLDivElement>(null)
   const ext = extOf(filePath)
   const fileType = detectFileType(filePath)
@@ -417,7 +420,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     setDiffMode(false)
     setEditing(false)
   }, [showBinaryCard, isMarkdown, isRichType, readOnly])
-  const find = useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fullscreen, content, previewRef, fullscreenPreviewRef })
+  const find = useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fullscreen, content, previewRef, fullscreenPreviewRef, findRootRef, fullscreenFindRootRef })
   const { findOpen, closeFind } = find
 
   const findBar = find.findOpen ? <MarkdownPanelFindBar find={find} ime={ime} /> : null
@@ -1456,7 +1459,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={previewRef} findRootRef={findRootRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={sidePanelScrollRef} />}
         </div>}
@@ -1553,7 +1556,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={fullscreenPreviewRef} findRootRef={fullscreenFindRootRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>

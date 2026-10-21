@@ -4145,7 +4145,7 @@
         "backup_others_on_drive": "Other installs backing up to this drive: {{count}}",
         "backup_show_others": "Include archives from other installs",
         "backup_others_truncated": "Only the first {{max}} other installs are shown.",
-"backup_archives_truncated": "Some {{kind}} archives could not be listed. The newest may be missing.",
+        "backup_archives_truncated": "Some {{kind}} archives could not be listed. The newest may be missing.",
         "backup_shared_note": "One drive shared by two installs is not shared memory and not shared sessions. Each backup is a separate archive of one point in time, and a restore only downloads that file to a staging folder — you replace files yourself, with the gateway stopped.",
         "backup_restore_foreign_confirm": "This archive was uploaded by another install ({{install}}). Restoring it downloads that install's data, not this install's. Download it anyway?",
         "backup_restore_unverified_confirm": "This archive is stored under this install's own folder, but this install has no record of uploading it. Anything that can write to the drive can create that folder, so it may not be this install's. Download it anyway?",
@@ -6499,6 +6499,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (paused) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (paused)"
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} field",
+      "heading_other": "Frontmatter · {{count}} fields"
     }
   },
   "hooks": {
