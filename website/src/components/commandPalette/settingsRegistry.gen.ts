@@ -1826,6 +1826,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.mastermind",
+    "label": "Mastermind",
+    "labelKey": "pages.developer.featurePreviewsTab.mastermind",
+    "description": "One chat at the top of Sessions with a memory that never fills up — every message is summarized into a memory tree the agent can zoom back into, so it remembers across weeks without compaction. Turning this on adds Settings → Mastermind.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.model-for-the-small-model-judge",
     "label": "Model for the small-model judge",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",

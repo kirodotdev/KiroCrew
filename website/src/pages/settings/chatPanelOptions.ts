@@ -150,7 +150,7 @@ export type KirocrewConfigShape = {
   agent?: {
     acp_backend?: string
     model?: string
-    role_models?: { background?: string; subagent?: string }
+    role_models?: { background?: string; subagent?: string; mastermind?: string }
     role_efforts?: { background?: string; subagent?: string }
     reasoning_effort?: string
     soft_stop_budget_secs?: number

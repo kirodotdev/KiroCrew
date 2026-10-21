@@ -6299,7 +6299,9 @@
       "attachment_removed": "{{file}} 첨부에서 제거됨",
       "attachment_restored": "{{file}} 첨부됨",
       "trusted_command_until": "‘{{cmd}}’을(를) {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
-      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다"
+      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
+      "mastermind_summaries": "요약: {{model}}",
+      "mastermind_summaries_title": "Mastermind 요약에 쓰는 모델: {{model}}"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -12548,7 +12550,10 @@
       "broadcast_col_result": "결과",
       "broadcast_open_unknown": "확인 안 됨 · 열기",
       "broadcast_delivery_hint": "진행 중인 작업은 중단되지 않아요. 실행 중인 턴은 현재 도구 호출이 끝난 뒤 읽고, 쉬는 세션은 새 턴을 시작해요.",
-      "broadcast_retry": "실패한 {{n}}개 다시 보내기"
+      "broadcast_retry": "실패한 {{n}}개 다시 보내기",
+      "mastermind": "Mastermind",
+      "mastermind_remembered_other": "기억한 메시지 {{formattedCount}}개",
+      "close_refused_mastermind": "Mastermind는 여기서 닫을 수 없습니다. 설정 → Mastermind에서 끄거나 제거하세요."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -13160,7 +13165,9 @@
         "decisions_runtime_error": "모델을 시작하지 못했습니다.",
         "decisions_runtime_retry": "다시 시도",
         "folder_conductor": "폴더 지휘자",
-        "folder_conductor_desc": "폴더의 다른 채팅을 시작한 채팅을 그 폴더의 맨 위로 올립니다. 왼쪽 가장자리에 강조 막대가 생기고 에이전트 이름 옆에 작은 conductor 태그가 붙습니다. 세션 목록의 순서가 바뀌므로 켜기 전에는 목록이 그대로입니다. 폴더 메뉴의 채팅 항목은 항상 있습니다."
+        "folder_conductor_desc": "폴더의 다른 채팅을 시작한 채팅을 그 폴더의 맨 위로 올립니다. 왼쪽 가장자리에 강조 막대가 생기고 에이전트 이름 옆에 작은 conductor 태그가 붙습니다. 세션 목록의 순서가 바뀌므로 켜기 전에는 목록이 그대로입니다. 폴더 메뉴의 채팅 항목은 항상 있습니다.",
+        "mastermind": "Mastermind",
+        "mastermind_desc": "세션 목록 맨 위에 놓이는 하나의 채팅으로, 기억이 절대 가득 차지 않습니다 — 모든 메시지가 기억 트리에 요약되고 에이전트가 언제든 다시 확대해 볼 수 있어서, 압축 없이도 몇 주 동안 기억합니다. 켜면 설정 → Mastermind가 추가됩니다."
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",
@@ -17775,6 +17782,45 @@
         "none_enabled": "활성화된 앱이 없습니다.",
         "load_failed": "앱을 불러오지 못했습니다.",
         "failed_to_save": "{{app}}의 모델을 저장하지 못했습니다."
+      },
+      "mastermindPanel": {
+        "intro": "Mastermind는 세션 목록 맨 위에 놓이는 하나의 채팅으로, 기억이 절대 가득 차지 않습니다. 모든 메시지가 기억 트리에 요약되고 에이전트가 언제든 다시 확대해 볼 수 있어서, 압축 없이도 몇 주 동안 기억합니다.",
+        "enabled": "사용",
+        "enabled_desc": "켜면 Mastermind 채팅이 만들어지고 세션 목록 맨 위에 고정됩니다. 끄면 채팅과 기억은 그대로 남고, 다시 켤 때까지 일반 채팅처럼 동작합니다.",
+        "toggle_failed": "Mastermind 설정을 바꾸지 못했습니다",
+        "action_failed": "요청에 실패했습니다.",
+        "stats_title": "기억",
+        "stat_messages": "기억한 메시지",
+        "stat_view_size": "기억 보기 크기",
+        "stat_lines": "보기의 줄 수",
+        "stat_pending": "대기 중인 요약",
+        "stats_failed": "Mastermind 기억을 읽지 못했습니다",
+        "browser_title": "기억 브라우저",
+        "browser_hint": "에이전트가 매 턴을 시작할 때 읽는 내용이며, 오래된 것부터 보입니다. 줄을 열면 그 줄이 요약한 메시지를 확대해 볼 수 있습니다.",
+        "browser_empty": "아직 기억한 내용이 없습니다.",
+        "not_summarized": "아직 요약되지 않음",
+        "expand_line": "{{ref}} 확대",
+        "collapse_line": "{{ref}} 닫기",
+        "loading": "불러오는 중…",
+        "load_more": "더 불러오기",
+        "browse_failed": "기억을 열지 못했습니다",
+        "export": "기억 내보내기",
+        "export_failed": "기억을 내보내지 못했습니다",
+        "danger_title": "위험 구역",
+        "clear": "기억 지우기",
+        "clear_desc": "Mastermind가 기억한 모든 것을 잊습니다. 채팅 기록은 남습니다.",
+        "clear_confirm_title": "Mastermind 기억을 지우시겠습니까?",
+        "clear_confirm_body": "채팅 기록은 계속 보이지만, Mastermind는 기억한 모든 것을 잊고 다음 메시지부터 다시 기억합니다.",
+        "clear_failed": "기억을 지우지 못했습니다",
+        "remove": "Mastermind 제거",
+        "remove_desc": "Mastermind를 끄고 그 채팅을 삭제합니다.",
+        "remove_confirm_title": "Mastermind를 제거하시겠습니까?",
+        "remove_confirm_body": "Mastermind가 꺼지고 그 채팅이 삭제됩니다. 기억까지 지우지 않으면 기억은 남습니다.",
+        "remove_forget": "기억도 지우기",
+        "remove_failed": "Mastermind를 제거하지 못했습니다",
+        "summary_model": "요약 모델",
+        "summary_model_desc": "요약은 백그라운드에서 이 모델로 실행됩니다. 채팅이 답변하는 모델은 바뀌지 않습니다.",
+        "summary_model_failed": "요약 모델을 저장하지 못했습니다"
       }
     },
     "settingsPage": {
@@ -18707,6 +18753,10 @@
       "connections": {
         "label": "OAuth 앱",
         "description": "등록된 클라이언트가 필요한 제공업체용 OAuth 앱"
+      },
+      "mastermind": {
+        "label": "Mastermind",
+        "description": "기억이 가득 차지 않는 채팅"
       }
     },
     "secrets": {

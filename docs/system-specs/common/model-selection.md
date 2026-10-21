@@ -541,7 +541,8 @@ its own once the cache refreshes with a list that carries it.
   current catalog. Enabling the configured effort default moves the slider thumb to
   that level before the setting write completes.
 - **Pin a cheaper model** for the worker roles only through
-  `agent.role_models.<role>` (`background`, `subagent`), read by
+  `agent.role_models.<role>` (`background`, `subagent`, `mastermind` for the
+  Mastermind memory tree's summaries), read by
   `AgentConfig.resolve_model(role)` in `config/sections_agent.py`. Roles default to
   `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat model
   does not silently become the price of every background task. The sessions a

@@ -6523,7 +6523,9 @@
       "attachment_removed": "{{file}} retiré des pièces jointes",
       "attachment_restored": "{{file}} joint",
       "trusted_command_until": "Confiance accordée à « {{cmd}} » jusqu’à {{time}}, puis la demande réapparaît",
-      "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît"
+      "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît",
+      "mastermind_summaries": "Résumés : {{model}}",
+      "mastermind_summaries_title": "Modèle utilisé pour les résumés de Mastermind : {{model}}"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -12976,7 +12978,12 @@
       "broadcast_col_result": "Résultat",
       "broadcast_open_unknown": "Non confirmé · ouvrir",
       "broadcast_delivery_hint": "Aucun travail en cours n’est interrompu : un tour actif le lit après l’appel d’outil en cours ; une session inactive commence un nouveau tour.",
-      "broadcast_retry": "Réessayer {{n}} en échec"
+      "broadcast_retry": "Réessayer {{n}} en échec",
+      "mastermind": "Mastermind",
+      "mastermind_remembered_one": "{{formattedCount}} message mémorisé",
+      "mastermind_remembered_many": "{{formattedCount}} messages mémorisés",
+      "mastermind_remembered_other": "{{formattedCount}} messages mémorisés",
+      "close_refused_mastermind": "Mastermind reste ouvert. Désactive-le ou retire-le dans Paramètres → Mastermind."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -13596,7 +13603,9 @@
         "decisions_runtime_error": "Impossible de démarrer le modèle.",
         "decisions_runtime_retry": "Réessayer",
         "folder_conductor": "Conducteur du dossier",
-        "folder_conductor_desc": "Remonte en haut du dossier le chat qui a lancé les autres chats de ce dossier : une barre de couleur sur son bord gauche et une petite étiquette conductor à côté du nom de l'agent. Cela change l'ordre de la liste des sessions, donc la liste reste telle quelle jusqu'à ce que tu l'actives. L'entrée de chat du menu du dossier est toujours là."
+        "folder_conductor_desc": "Remonte en haut du dossier le chat qui a lancé les autres chats de ce dossier : une barre de couleur sur son bord gauche et une petite étiquette conductor à côté du nom de l'agent. Cela change l'ordre de la liste des sessions, donc la liste reste telle quelle jusqu'à ce que tu l'actives. L'entrée de chat du menu du dossier est toujours là.",
+        "mastermind": "Mastermind",
+        "mastermind_desc": "Un seul chat tout en haut de Sessions, avec une mémoire qui ne se remplit jamais — chaque message est résumé dans un arbre de mémoire où l’agent peut zoomer à nouveau, si bien qu’il se souvient de tout pendant des semaines sans compactage. L’activer ajoute Paramètres → Mastermind."
       },
       "kasBundleCard": {
         "toggle_label": "Exécuter KAS avec le moteur de {{productName}}",
@@ -18319,6 +18328,45 @@
         "none_enabled": "Aucune application n’est activée.",
         "load_failed": "Impossible de charger tes applications.",
         "failed_to_save": "Impossible d’enregistrer le modèle pour {{app}}."
+      },
+      "mastermindPanel": {
+        "intro": "Mastermind est un seul chat, gardé tout en haut de Sessions, dont la mémoire ne se remplit jamais. Chaque message est résumé dans un arbre de mémoire où l’agent peut zoomer à nouveau, si bien qu’il se souvient de tout pendant des semaines sans compactage.",
+        "enabled": "Activé",
+        "enabled_desc": "Activé, il crée le chat Mastermind et l’épingle tout en haut de Sessions. Désactivé, le chat et sa mémoire sont conservés, et il fonctionne comme un chat ordinaire jusqu’à ce que tu le réactives.",
+        "toggle_failed": "Impossible de modifier Mastermind",
+        "action_failed": "La requête a échoué.",
+        "stats_title": "Mémoire",
+        "stat_messages": "Messages mémorisés",
+        "stat_view_size": "Taille de la vue mémoire",
+        "stat_lines": "Lignes dans la vue",
+        "stat_pending": "Résumés en attente",
+        "stats_failed": "Impossible de lire la mémoire de Mastermind",
+        "browser_title": "Explorateur de mémoire",
+        "browser_hint": "Ce que l’agent lit au début de chaque tour, du plus ancien au plus récent. Ouvre une ligne pour zoomer sur les messages qu’elle résume.",
+        "browser_empty": "Rien n’a encore été mémorisé.",
+        "not_summarized": "pas encore résumé",
+        "expand_line": "Zoomer sur {{ref}}",
+        "collapse_line": "Fermer {{ref}}",
+        "loading": "Chargement…",
+        "load_more": "Charger plus",
+        "browse_failed": "Impossible d’ouvrir la mémoire",
+        "export": "Exporter la mémoire",
+        "export_failed": "Impossible d’exporter la mémoire",
+        "danger_title": "Zone de danger",
+        "clear": "Effacer la mémoire",
+        "clear_desc": "Mastermind oublie tout ce qu’il a mémorisé. La transcription du chat est conservée.",
+        "clear_confirm_title": "Effacer la mémoire de Mastermind ?",
+        "clear_confirm_body": "La transcription du chat reste visible, mais Mastermind oublie tout ce qu’il a mémorisé et recommence à partir du prochain message.",
+        "clear_failed": "Impossible d’effacer la mémoire",
+        "remove": "Retirer Mastermind",
+        "remove_desc": "Désactive Mastermind et supprime son chat.",
+        "remove_confirm_title": "Retirer Mastermind ?",
+        "remove_confirm_body": "Cela désactive Mastermind et supprime son chat. Sa mémoire est conservée, sauf si tu l’effaces aussi.",
+        "remove_forget": "Effacer aussi sa mémoire",
+        "remove_failed": "Impossible de retirer Mastermind",
+        "summary_model": "Modèle des résumés",
+        "summary_model_desc": "Les résumés tournent sur ce modèle en arrière-plan. Il ne change pas le modèle avec lequel le chat répond.",
+        "summary_model_failed": "Impossible d’enregistrer le modèle des résumés"
       }
     },
     "settingsPage": {
@@ -19291,6 +19339,10 @@
       "connections": {
         "label": "Applications OAuth",
         "description": "Applications OAuth pour les fournisseurs qui exigent un client enregistré"
+      },
+      "mastermind": {
+        "label": "Mastermind",
+        "description": "Un chat dont la mémoire ne se remplit jamais"
       }
     },
     "secrets": {

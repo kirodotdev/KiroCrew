@@ -997,6 +997,19 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_delete")
     if denied is not None:
         return denied
+    from kiro_crew.mastermind.slot import (  # this owner runs on the facade's globals
+        is_mastermind_turn,
+    )
+
+    if is_mastermind_turn(state, slot):
+        # Removed only from Settings > Mastermind (POST /api/mastermind/remove).
+        return web.json_response(
+            {
+                "error": "Mastermind cannot be closed; turn it off or remove it in Settings.",
+                "code": "mastermind_protected",
+            },
+            status=409,
+        )
 
     try:
         await close_slot(state, slot, name)

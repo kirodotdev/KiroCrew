@@ -143,6 +143,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
+    # Mastermind's memory-tree summaries (``mastermind.service.summary_model``),
+    # read at each summary call, so a change applies from the next summary.
+    "agent.role_models.mastermind": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": _MODEL_PIN_PATTERN,
+        "validate_fn": _validate_role_model,
+    },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
     # to the backend's availability-aware routing; a concrete id is tried first
     # with "auto" as the final fallthrough; "" disables the feature. Same

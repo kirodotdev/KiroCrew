@@ -6523,7 +6523,9 @@
       "attachment_removed": "{{file}} rimosso dagli allegati",
       "attachment_restored": "{{file}} allegato",
       "trusted_command_until": "«{{cmd}}» è attendibile fino alle {{time}}, poi verrà chiesto di nuovo",
-      "trusted_base_until": "Qualsiasi comando «{{base}}» è attendibile fino alle {{time}}, poi verrà chiesto di nuovo"
+      "trusted_base_until": "Qualsiasi comando «{{base}}» è attendibile fino alle {{time}}, poi verrà chiesto di nuovo",
+      "mastermind_summaries": "Riassunti: {{model}}",
+      "mastermind_summaries_title": "Modello con cui Mastermind genera i riassunti: {{model}}"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -12976,7 +12978,12 @@
       "broadcast_col_result": "Esito",
       "broadcast_open_unknown": "Non confermato · apri",
       "broadcast_delivery_hint": "Nessun lavoro in corso viene interrotto: un turno attivo lo legge dopo la chiamata allo strumento in corso; una sessione inattiva avvia un nuovo turno.",
-      "broadcast_retry": "Riprova {{n}} non riusciti"
+      "broadcast_retry": "Riprova {{n}} non riusciti",
+      "mastermind": "Mastermind",
+      "mastermind_remembered_one": "{{formattedCount}} messaggio ricordato",
+      "mastermind_remembered_many": "{{formattedCount}} messaggi ricordati",
+      "mastermind_remembered_other": "{{formattedCount}} messaggi ricordati",
+      "close_refused_mastermind": "Mastermind resta aperto. Disattivalo o rimuovilo in Impostazioni → Mastermind."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
@@ -13596,7 +13603,9 @@
         "decisions_runtime_error": "Impossibile avviare il modello.",
         "decisions_runtime_retry": "Riprova",
         "folder_conductor": "Conductor della cartella",
-        "folder_conductor_desc": "Porta in cima alla cartella la chat che ha avviato le altre chat di quella cartella: una barra colorata sul bordo sinistro e una piccola etichetta conductor accanto al nome dell'agente. Questo cambia l'ordine dell'elenco delle sessioni, quindi l'elenco resta com'è finché non la attivi. La voce di chat nel menu della cartella c'è sempre."
+        "folder_conductor_desc": "Porta in cima alla cartella la chat che ha avviato le altre chat di quella cartella: una barra colorata sul bordo sinistro e una piccola etichetta conductor accanto al nome dell'agente. Questo cambia l'ordine dell'elenco delle sessioni, quindi l'elenco resta com'è finché non la attivi. La voce di chat nel menu della cartella c'è sempre.",
+        "mastermind": "Mastermind",
+        "mastermind_desc": "Una sola chat in cima a Sessioni con una memoria che non si riempie mai — ogni messaggio viene riassunto in un albero di memoria in cui l’agente può tornare a zoomare, così ricorda per settimane senza compattazione. Attivarla aggiunge Impostazioni → Mastermind."
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",
@@ -18319,6 +18328,45 @@
         "none_enabled": "Nessuna app è attiva.",
         "load_failed": "Impossibile caricare le tue app.",
         "failed_to_save": "Impossibile salvare il modello per {{app}}."
+      },
+      "mastermindPanel": {
+        "intro": "Mastermind è una sola chat, tenuta in cima a Sessioni, la cui memoria non si riempie mai. Ogni messaggio viene riassunto in un albero di memoria in cui l’agente può tornare a zoomare, così ricorda per settimane senza compattazione.",
+        "enabled": "Attivato",
+        "enabled_desc": "Attivandolo si crea la chat di Mastermind e la si fissa in cima a Sessioni. Disattivandolo restano la chat e la sua memoria; funziona come una chat normale finché non lo riattivi.",
+        "toggle_failed": "Impossibile modificare Mastermind",
+        "action_failed": "La richiesta non è riuscita.",
+        "stats_title": "Memoria",
+        "stat_messages": "Messaggi ricordati",
+        "stat_view_size": "Dimensione della vista della memoria",
+        "stat_lines": "Righe nella vista",
+        "stat_pending": "Riassunti in attesa",
+        "stats_failed": "Impossibile leggere la memoria di Mastermind",
+        "browser_title": "Esploratore della memoria",
+        "browser_hint": "Ciò che l’agente legge all’inizio di ogni turno, dal più vecchio al più recente. Apri una riga per zoomare sui messaggi che riassume.",
+        "browser_empty": "Ancora nulla da ricordare.",
+        "not_summarized": "non ancora riassunto",
+        "expand_line": "Zooma su {{ref}}",
+        "collapse_line": "Chiudi {{ref}}",
+        "loading": "Caricamento…",
+        "load_more": "Carica altro",
+        "browse_failed": "Impossibile aprire la memoria",
+        "export": "Esporta memoria",
+        "export_failed": "Impossibile esportare la memoria",
+        "danger_title": "Zona pericolosa",
+        "clear": "Cancella memoria",
+        "clear_desc": "Mastermind dimentica tutto ciò che ricorda. La trascrizione della chat resta.",
+        "clear_confirm_title": "Cancellare la memoria di Mastermind?",
+        "clear_confirm_body": "La trascrizione della chat resta visibile, ma Mastermind dimentica tutto ciò che ha ricordato e ricomincia dal messaggio successivo.",
+        "clear_failed": "Impossibile cancellare la memoria",
+        "remove": "Rimuovi Mastermind",
+        "remove_desc": "Disattiva Mastermind ed elimina la sua chat.",
+        "remove_confirm_title": "Rimuovere Mastermind?",
+        "remove_confirm_body": "Questo disattiva Mastermind ed elimina la sua chat. La sua memoria resta, a meno che tu non cancelli anche quella.",
+        "remove_forget": "Cancella anche la sua memoria",
+        "remove_failed": "Impossibile rimuovere Mastermind",
+        "summary_model": "Modello dei riassunti",
+        "summary_model_desc": "I riassunti vengono generati con questo modello in background. Non cambia il modello con cui risponde la chat.",
+        "summary_model_failed": "Impossibile salvare il modello dei riassunti"
       }
     },
     "settingsPage": {
@@ -19291,6 +19339,10 @@
       "connections": {
         "label": "App OAuth",
         "description": "App OAuth per i provider che richiedono un client registrato"
+      },
+      "mastermind": {
+        "label": "Mastermind",
+        "description": "Una chat la cui memoria non si riempie mai"
       }
     },
     "secrets": {

@@ -169,6 +169,24 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
+ * Mastermind: one chat with a memory that never fills up, held at the very top
+ * of the Sessions list.
+ *
+ * The session is the backend's: Settings > Mastermind switches it on (which
+ * creates and pins the `mastermind` slot server-side), browses its memory tree,
+ * clears it or removes it. While it is enabled the sidebar draws that slot as
+ * its ordinary row, first in every layout, decorated and locked against close.
+ *
+ * Gating the INGRESS only, like every flag here: the flag lists the Settings >
+ * Mastermind tab. It does not switch the feature off -- a Mastermind enabled
+ * before the flag was turned off keeps working and keeps its place in the list,
+ * because that is what the backend reports.
+ *
+ * Default OFF because the memory tree is still settling.
+ */
+export const PREVIEW_MASTERMIND = `${PREVIEW_FLAG_PREFIX}mastermind`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

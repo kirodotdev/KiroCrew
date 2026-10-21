@@ -94,6 +94,8 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ThemeDroppedRulesNotice.tsx': 'informational notice, zero controls',
   'TranslucentPanelsPreview.tsx': 'aria-hidden illustration under the Translucent panels switch (registry id display.translucent-panels, on DisplayPanel); it holds no control of its own',
   'WebhooksPanel.tsx': 'status summary card; the real controls live on the /webhooks page',
+  'MastermindPanel.tsx': "the preview-gated Settings > Mastermind page; its switch is a backend action (POST /api/mastermind/enabled), not a config path, and the tab is hidden while the flag is off, so a search hit would deep-link to nothing; the Feature Previews card (developer.mastermind) is its indexed entry",
+  'MastermindMemoryBrowser.tsx': "the memory browser MastermindPanel mounts: a read-only tree over the memory view, zero controls",
 }
 
 describe('settings coverage gate — PANEL_TAB_MAP completeness', () => {
@@ -216,6 +218,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'ConnectBrowserSection.tsx': {
     counts: { Input: 1 },
     reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
+  },
+  'MastermindPanel.tsx': {
+    counts: { Toggle: 1, Checkbox: 1, SimpleSelect: 1 },
+    reason: "the Enabled switch is a backend action (POST /api/mastermind/enabled), not a config path, on a preview-gated tab; the Checkbox is the remove dialog's \"also erase its memory\" option, not a setting; the SimpleSelect is the summary model (agent.role_models.mastermind), kept out of search because the tab is hidden while the preview flag is off -- its SettingsField still carries the configKey anchor",
   },
   'DecisionsCard.tsx': {
     counts: { input: 1 },

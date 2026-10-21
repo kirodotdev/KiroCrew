@@ -662,6 +662,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # cookie auth and are refused before the handler's own session
         # recognition can run.
         "/api/session-ledger",
+        # MCP-only (mastermind_zoom / mastermind_date tools); no browser caller.
+        # The handler then answers the Mastermind session alone.
+        "/api/mastermind/zoom",
+        "/api/mastermind/date",
         # MCP-only (the four kirocrew-work tools); no browser caller. Prefix
         # matching covers "/record", "/brief" and "/report". Without this entry
         # the tools' internal-secret calls fall through to cookie auth and are

@@ -56,6 +56,18 @@
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
 .session-row.session-reveal-flash,.folder-row.session-reveal-flash,.folder-col.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade,.folder-row.session-reveal-flash-fade,.folder-col.session-reveal-flash-fade{outline-color:transparent}
+/* The Mastermind row's faint ring (chat-sidebar/mastermind.tsx MastermindRowGlow).
+   A 1px ring drawn by masking a gradient to the border box minus its content box,
+   so it never covers the row's text or its own background state. Every stop is the
+   theme's --accent mixed toward transparent, so the ring follows each theme in light
+   and dark with no colour of its own; the mask colour only sets alpha. The gradient
+   is 200% wide and periodic (it starts and ends on the same stop), and Framer Motion
+   sweeps background-position-x 0% -> 200% over 8s -- one tile, so the loop is
+   seamless. No @keyframes: the repo's motion is Framer-only. */
+.mastermind-row-glow{position:absolute;inset:0;border-radius:inherit;pointer-events:none;padding:1px;background-image:linear-gradient(90deg,color-mix(in srgb,var(--accent) 22%,transparent) 0%,color-mix(in srgb,var(--accent) 70%,transparent) 25%,color-mix(in srgb,var(--accent) 22%,transparent) 50%,color-mix(in srgb,var(--accent) 70%,transparent) 75%,color-mix(in srgb,var(--accent) 22%,transparent) 100%);background-size:200% 100%;background-repeat:repeat-x;background-position:0% 0%;-webkit-mask:linear-gradient(white 0 0) content-box,linear-gradient(white 0 0);-webkit-mask-composite:xor;mask:linear-gradient(white 0 0) content-box exclude,linear-gradient(white 0 0);opacity:.55}
+/* Reduced motion: a static ring. The component already stops the sweep; this pins
+   the gradient (over the inline style Framer writes) should a sweep still run. */
+@media(prefers-reduced-motion:reduce){.mastermind-row-glow{background-position:0% 0% !important}}
 /* Pinned folder headers in the Sessions lane (chat-sidebar/folderBlocks.tsx renderFolderHeader).
    A sticky row needs an opaque surface or the session rows scroll visibly
    through it; it takes the card's own surface so it reads as part of the

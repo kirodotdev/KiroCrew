@@ -437,6 +437,12 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 {({ setNodeRef }) => (
                   <div ref={setNodeRef} className="flex flex-col flex-1 min-h-0">
                     {localGroupHeader}
+                    {/* The head row (the enabled Mastermind session) sits above
+                     *  every folder and every pinned row: the ordinary row, in the
+                     *  root lane's nav scope so the arrows walk on into the list,
+                     *  and in a hold container of its own. The flat and conductor
+                     *  lanes draw it first through `laneOrder` instead. */}
+                    {sidebarRows.lanes.head && renderSessionRow(sidebarRows.lanes.head, 0, false, 'list', 'list', 'tree:head')}
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
                       {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>

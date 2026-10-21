@@ -2359,6 +2359,8 @@ answers `tools/list` from):
   timer loop's presence reading, whichever the session holds)
 - **Crew routing:** `route_crew`, `select_crew`
 - **Session work ledger:** `session_ledger_read`, `session_ledger_record`
+- **Mastermind memory:** `mastermind_zoom`, `mastermind_date` (answered for the
+  Mastermind session only; see [mastermind](../system-specs/modules/mastermind.md))
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
 - **Artifacts:** `artifact_list`, `artifact_get`, `artifact_save`,

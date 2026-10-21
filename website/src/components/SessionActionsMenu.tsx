@@ -22,6 +22,7 @@ import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
+import { useMastermindLocked } from '../hooks/useMastermind'
 
 import { uiLocation } from '../uiLocations/uiLocation'
 import { i18nT } from '../i18n/t'
@@ -175,6 +176,12 @@ export default function SessionActionsMenu({
   const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
   const isRunning = !!slot?.running
+  // The enabled Mastermind session (read from the shared cache, never fetched
+  // here) is LOCKED: its title is fixed, it stays pinned at the top level, and it
+  // is turned off or removed from Settings > Mastermind rather than closed. So
+  // rename, auto-title, pin, move-to-folder and close are withheld for it, on
+  // every surface that mounts this menu.
+  const locked = useMastermindLocked(slotKey)
   // The move-to submenu lists chat folders in the order the sidebar draws them.
   // A failed read (no body to draw from) is said once per screen, by the
   // sidebar's banner over the tree -- so while that banner is on screen this
@@ -204,12 +211,12 @@ export default function SessionActionsMenu({
     infoSlots ?? [],
     // Modifiers to the tab itself
     [
-      onRename && (
+      !locked && onRename && (
         <Item key="rename" onSelect={onRename} {...uiLocation('sessions.row-menu.rename')}>
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),
-      onAutoTitle && (
+      !locked && onAutoTitle && (
         <Item key="auto-title" onSelect={onAutoTitle}>
           <Sparkles size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.auto_title')}
         </Item>
@@ -217,9 +224,11 @@ export default function SessionActionsMenu({
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
         <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
       </Item>,
-      <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
-        <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
-      </Item>,
+      !locked && (
+        <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
+          <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
+        </Item>
+      ),
       // Per-row mute, keyed to THIS row's slotKey (not the active tab), so a
       // background session can be silenced while the user works elsewhere.
       <Item key="mute" onSelect={() => toggleMuted(slotKey)}>
@@ -284,7 +293,7 @@ export default function SessionActionsMenu({
           <Separator />
         </React.Fragment>
       ),
-      folders.length > 0 && (
+      !locked && folders.length > 0 && (
         <FolderMoveSubmenu
           key="move"
           variant={variant}
@@ -303,7 +312,7 @@ export default function SessionActionsMenu({
       // reaches (a button nested in an item is skipped), described by that id;
       // the plain line under the notice says what the list is showing and that
       // the read retries on its own.
-      folders.length > 0 && folderOrderUnsaid && (
+      !locked && folders.length > 0 && folderOrderUnsaid && (
         <React.Fragment key="folder-order-error">
           {/* Bounded width: the notice is the menu's widest child when the
               server string is long, and an unbounded inline-flex would stretch
@@ -473,7 +482,7 @@ export default function SessionActionsMenu({
     // machine's copy", distinct from the destructive close ✕ every other row
     // shows, so the two actions never look like the same thing (#19958).
     [
-      (() => {
+      !locked && (() => {
         const CloseGlyph = closeNeutral ? Unlink : X
         return (
           <Item key="close" className={closeNeutral ? undefined : 'text-danger focus:text-danger'} onSelect={() => close(slotKey)}>

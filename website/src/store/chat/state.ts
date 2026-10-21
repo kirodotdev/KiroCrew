@@ -585,7 +585,7 @@ export interface ChatState {
   // Set by `deleteSlot` itself, so every close path (sidebar X, any session
   // menu, Cmd+W) reports it; the sidebar renders it. `historyWrite` is the
   // server's "still saving" refusal; anything else is a plain failed close.
-  closeRefused: { key: string; title: string; reason: 'historyWrite' | 'failed' } | null
+  closeRefused: { key: string; title: string; reason: 'historyWrite' | 'mastermind' | 'failed' } | null
 }
 
 export const initialState: ChatState = {

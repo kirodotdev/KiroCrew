@@ -190,6 +190,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.role_efforts.background",
         "agent.role_efforts.subagent",
         "agent.role_models.background",
+        "agent.role_models.mastermind",
         "agent.role_models.subagent",
         "agent.soft_stop_budget_secs",
         "agent.tool_search",
