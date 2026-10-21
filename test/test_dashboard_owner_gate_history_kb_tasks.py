@@ -7,7 +7,8 @@ checks on these routes (``_app_transcript_refusal``, ``_app_bulk_history_refusal
 return ``None`` for every caller with an empty app claim, so on their own they
 admit it. ``require_owner_for_dashboard_caller`` refuses it, layered on top:
 
-* ``GET`` / ``DELETE /api/sessions/{key}`` and ``DELETE /api/sessions``;
+* ``GET`` / ``DELETE /api/sessions/{key}``, ``DELETE /api/sessions`` and
+  ``POST /api/sessions/summarize``;
 * every ``GET /api/knowledge/*`` read, the whole-library export included;
 * ``POST /api/tasks/{task_id}`` (``answer_input`` / ``cancel_wait``) and
   ``POST /api/tasks/{task_id}/cancel``, which ends a parked row through the
@@ -266,6 +267,53 @@ async def test_the_owner_clears_history(state):
         resp = await client.delete("/api/sessions", params=_token(OWNER_ID))
         assert resp.status == 200, await resp.text()
     assert not state.conversation_log.has_log("dashboard:owner-chat")
+
+
+@pytest.fixture
+def summarizer(monkeypatch):
+    """Stub the model call behind ``POST /api/sessions/summarize``; record each call."""
+    from kiro_crew.dashboard.handlers.sessions_parts import summaries
+
+    calls: list[str] = []
+
+    async def _reply(_sessions, prompt, **_kwargs):
+        calls.append(prompt)
+        return "Owner planning chat"
+
+    monkeypatch.setattr(summaries, "run_bg_oneliner", _reply)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_non_owner_dashboard_session_cannot_summarize_a_transcript(state, summarizer):
+    _seed(state)
+    async with _serve(state) as client:
+        resp = await client.post(
+            "/api/sessions/summarize",
+            params=_token(NON_OWNER_ID),
+            json={"keys": ["dashboard:owner-chat"]},
+        )
+        text = await resp.text()
+    assert resp.status == 403, text
+    assert _owner_only(json.loads(text))
+    assert "Owner planning chat" not in text
+    # Refused before the handler runs: no model call is spent.
+    assert summarizer == []
+
+
+@pytest.mark.asyncio
+async def test_the_owner_summarizes_a_transcript(state, summarizer):
+    _seed(state)
+    async with _serve(state) as client:
+        resp = await client.post(
+            "/api/sessions/summarize",
+            params=_token(OWNER_ID),
+            json={"keys": ["dashboard:owner-chat"]},
+        )
+        text = await resp.text()
+    assert resp.status == 200, text
+    assert "Owner planning chat" in text
+    assert len(summarizer) == 1
 
 
 #: The other history reads behind the same module-level guard: the list, the
