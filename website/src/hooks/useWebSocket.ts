@@ -739,7 +739,7 @@ export function useWebSocket() {
             break
           }
           case 'chat.side_result':
-            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean }))
+            dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string }))
             break
           case 'chat.thread_reply':
             handleThreadReply(queryClient, data)

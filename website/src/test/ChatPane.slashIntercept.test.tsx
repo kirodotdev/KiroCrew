@@ -31,6 +31,7 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([]),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 }),
     sendChat: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) }),
+    sideState: vi.fn().mockResolvedValue({ open: false }),
     sideOpen: vi.fn().mockResolvedValue({ ok: true }),
     sideTurn: vi.fn().mockResolvedValue({ ok: true }),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),

@@ -1,5 +1,6 @@
-import { openActivityToTab, setAgentSwitchNotice, sideSendStatus } from '../../store/chatSlice'
+import { openActivityToTab, restoreSideConversation, setAgentSwitchNotice, sideSendStatus } from '../../store/chatSlice'
 import { api } from '../../api/client'
+import { i18nT } from '../../i18n/t'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { sideTurnWire } from './sideTurnWire'
@@ -144,6 +145,20 @@ export async function interceptSlashCommand(
     // eslint-disable-next-line no-console
     console.warn('[/side] sideOpen failed:', e)
     return { intercepted: true, failed: true, error: failureMessage(e), stage: 'open' }
+  }
+  // After a page reload the gateway can hold a side conversation this page has not
+  // drawn yet, and the question joins it. Read it first, as the panel does; a read
+  // that fails holds the question back, so it is not sent into a conversation the
+  // panel cannot show. The command stays in the composer.
+  try {
+    await dispatch(restoreSideConversation(slot)).unwrap()
+  } catch (e: unknown) {
+    // eslint-disable-next-line no-console
+    console.warn('[/side] side restore failed:', e)
+    // Not the panel's `restore_failed`: that notice tells the reader to press
+    // Retry, and there is no Retry here. Nothing opened, so this reports in the
+    // composer's own terms, where the command is what stayed behind.
+    return { intercepted: true, failed: true, error: i18nT('pages.chat.sideChat.restore_failed_command'), stage: 'open' }
   }
   if (opts.openSide) {
     if ((await opts.openSide()) === false) return { intercepted: true, failed: true, stage: 'open' }

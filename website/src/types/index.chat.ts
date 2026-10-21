@@ -391,6 +391,20 @@ export interface TagColumn {
   state_key?: SessionLaneKey | ''
 }
 
+/** `GET /api/chat/slots/{slot}/side`: the side conversation the gateway holds in
+ *  memory, which a reloaded panel restores from. Texts arrive redacted, as the
+ *  side frames carry them; `id` is the one the frame that announced the row
+ *  carried as `message_id`. */
+export interface SideSnapshot {
+  open: boolean
+  created_at?: string
+  last_run_id?: string
+  /** A side turn is in flight, so a submit would steer or queue. */
+  running?: boolean
+  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean }>
+  queue?: Array<{ id: string; content: string; ts: string }>
+}
+
 export interface ChatMessage {
   role: string; content: string; cls: string; ts?: string
   /** Original unprocessed text — source of truth for reparse on stream completion. */

@@ -599,6 +599,7 @@ def broadcast_side_result(
     final: bool = False,
     ts: float | None = None,
     steer: bool = False,
+    message_id: str = "",
 ) -> None:
     """Broadcast a side conversation event on the dedicated side channel.
 
@@ -616,6 +617,11 @@ def broadcast_side_result(
     Set final=True on the terminal frame of a side turn so the frontend
     can flip the streaming flag off cleanly.
 
+    ``message_id`` names the sidecar row the frame announces (a question, a
+    steer, a final answer, a stop row). A panel restored from ``GET .../side``
+    already holds that row, and the id is how it knows. Streaming deltas and
+    the error notices the sidecar does not store carry none.
+
     No payload field is persisted — sidecar-only, ephemeral.
     """
     payload: dict[str, object] = {
@@ -632,6 +638,8 @@ def broadcast_side_result(
         payload["final"] = True
     if steer:
         payload["steer"] = True
+    if message_id:
+        payload["message_id"] = message_id
     # Owner-only, matching the queue frame and `_check_slot_ownership`: side answers and
     # steer echoes are the owner's own conversation, and an app that asks the HTTP API
     # about a slot it does not own gets a 404.

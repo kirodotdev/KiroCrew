@@ -101,7 +101,7 @@ def _dispatch_side_turn(
     is_first_turn = not any(m.get("role") == "assistant" for m in side.messages)
     side.last_run_id = run_id
     side.is_complete = False
-    side.append_user(question)
+    message_id = side.append_user(question, run_id=run_id)
 
     broadcast_side_result(
         state,
@@ -109,6 +109,7 @@ def _dispatch_side_turn(
         run_id=run_id,
         role="user",
         content=question,
+        message_id=message_id,
     )
 
     task = asyncio.create_task(
@@ -399,14 +400,16 @@ async def _run_side_turn(
         # still unproven, and committing then duplicated any question the model
         # never consumed (the finally requeues it and the queue runs it for real).
         for entry in side_at_start.steer_settle(snapshot):
-            side_at_start.append_user(entry["text"], steer=True)
+            steer_run_id = side_at_start.last_run_id or ""
+            message_id = side_at_start.append_user(entry["text"], steer=True, run_id=steer_run_id)
             broadcast_side_result(
                 state,
                 slot_key=slot.key,
-                run_id=side_at_start.last_run_id or "",
+                run_id=steer_run_id,
                 role="user",
                 content=entry["text"],
                 steer=True,
+                message_id=message_id,
             )
 
     provider = None
@@ -709,16 +712,37 @@ async def _run_side_turn(
                 run_id,
             )
             response_text = redact("".join(chunks))
+            notice = "(side conversation interrupted — please retry)"
+            # The partial answer stays in the history the model is handed; the
+            # notice is stored after it, so a panel restored from ``GET .../side``
+            # draws the turn as these frames do: what streamed, then the notice.
+            # The answer goes out only when this sidecar stored it: a conversation
+            # closed and reopened meanwhile must not receive the old run's text.
+            partial_message_id = ""
+            message_id = ""
             if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
-                slot._side.append_assistant(response_text)
+                if response_text:
+                    partial_message_id = slot._side.append_assistant(response_text, run_id=run_id)
+                message_id = slot._side.append_assistant(notice, run_id=run_id, is_error=True)
+            if partial_message_id:
+                broadcast_side_result(
+                    state,
+                    slot_key=slot.key,
+                    run_id=run_id,
+                    role="assistant",
+                    content=response_text,
+                    final=True,
+                    message_id=partial_message_id,
+                )
             broadcast_side_result(
                 state,
                 slot_key=slot.key,
                 run_id=run_id,
                 role="assistant",
-                content="(side conversation interrupted — please retry)",
+                content=notice,
                 is_error=True,
                 final=True,
+                message_id=message_id,
             )
             return
 
@@ -744,8 +768,9 @@ async def _run_side_turn(
                 run_id,
             )
 
+        message_id = ""
         if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
-            slot._side.append_assistant(response_text)
+            message_id = slot._side.append_assistant(response_text, run_id=run_id)
 
         broadcast_side_result(
             state,
@@ -755,6 +780,7 @@ async def _run_side_turn(
             content=response_text,
             ts=time.time(),
             final=True,
+            message_id=message_id,
         )
     except asyncio.CancelledError:
         # A stop request (``api_side_stop``) cancels this task. The terminal
@@ -940,6 +966,81 @@ async def api_side_open(request: web.Request) -> web.Response:
             "created_at": slot._side.created_at,
         }
     )
+
+
+def _wire_side_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """One stored side row as ``GET .../side`` returns it, redacted like its frame."""
+    row: dict[str, Any] = {
+        "id": entry.get("id", ""),
+        "role": entry.get("role", ""),
+        "content": redact(entry.get("content", "") or ""),
+        "ts": entry.get("ts", ""),
+    }
+    if entry.get("run_id"):
+        row["run_id"] = entry["run_id"]
+    if entry.get("steer"):
+        row["steer"] = True
+    if entry.get("is_error"):
+        row["is_error"] = True
+    return row
+
+
+async def api_side_state(request: web.Request) -> web.Response:
+    """GET /api/chat/slots/{slot}/side — the side conversation this gateway holds.
+
+    A reloaded panel restores from this: the transcript, the queue and whether a
+    turn is still running. It reads the sidecar in memory and writes nothing, so
+    a gateway restart still ends the conversation.
+
+    Owner-only, for every caller: the ``chat.side_result`` and ``chat.side_queue``
+    frames reach owner sockets only, and this read answers the same audience,
+    including for an app on a slot it owns. Every text is redacted the way those
+    frames redact it, so the read reveals nothing a frame would not have.
+    """
+    state: DashboardState = request.app["state"]
+    slot = state._slots.get(request.match_info["slot"])
+    if not slot:
+        return slot_not_found()
+
+    own = _check_slot_ownership(request, slot, "chat.side_state")
+    if own is not None:
+        return own
+
+    # Body-scope import, for the cycle ``api_side_turn`` explains.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "chat.side_state")
+    if owner_denied is not None:
+        return owner_denied
+
+    side = slot._side
+    if side is None or not side.open:
+        is_open, message_count, queue_count = False, 0, 0
+        payload: dict[str, Any] = {"open": False}
+    else:
+        is_open, message_count, queue_count = True, len(side.messages), len(side.queue)
+        payload = {
+            "open": True,
+            "created_at": side.created_at,
+            "last_run_id": side.last_run_id,
+            # The busy gate ``api_side_turn`` applies, so the panel offers steer and
+            # queue exactly when a submit would get them.
+            "running": bool(side.last_run_id) and (not side.is_complete or side.is_stopping),
+            "messages": [_wire_side_row(entry) for entry in side.messages],
+            "queue": [
+                {"id": entry["id"], "content": redact(entry["content"]), "ts": entry["ts"]}
+                for entry in side.queue
+            ],
+        }
+    # Counted from the side state, not the redacted payload: the audit row carries no side text.
+    sel().log_api_access(
+        caller=request.get("app", "") or "dashboard",
+        operation="chat.side_state",
+        outcome="allowed",
+        source="dashboard",
+        resources=f"slot={slot.key},open={is_open},messages={message_count},queue={queue_count}",
+    )
+    return web.json_response(payload)
 
 
 async def api_side_tools(request: web.Request) -> web.Response:
@@ -1494,7 +1595,7 @@ async def _cancel_and_settle_side_turn(
     # the stopped question as an open, unanswered ``User:`` line. Without this
     # ``side.messages`` ends ``[user: Q1]`` and ``_format_side_history`` hands
     # the model Q1 as still-pending.
-    side.append_assistant("(side response stopped)")
+    message_id = side.append_assistant("(side response stopped)", run_id=run_id, is_error=True)
 
     # The terminal frame the client needs to clear streaming/pending. A fresh
     # run_id would read as a new turn's answer; this one matches the row the
@@ -1507,6 +1608,7 @@ async def _cancel_and_settle_side_turn(
         content="(side response stopped)",
         is_error=True,
         final=True,
+        message_id=message_id,
     )
 
     sel().log_api_access(

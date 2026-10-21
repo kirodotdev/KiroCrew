@@ -79,6 +79,9 @@ export interface SideMessage {
   content: string
   ts: string
   run_id?: string
+  /** The gateway's id for the stored row, from the frame's `message_id` or the
+   *  restore read. A streaming answer has none until its final frame lands. */
+  id?: string
   is_error?: boolean
   /** Injected into a turn that was already running, not asked from idle. */
   steer?: boolean
@@ -100,6 +103,9 @@ export interface SideQueueEntry {
   /** This client typed the content, so it is unredacted. A scrubbed broadcast edit cannot
    *  overwrite it — see the edit branch of `sseSideQueue`. */
   raw?: boolean
+  /** Pushed to the head of the queue (a `front` frame). A restore keeps such an entry
+   *  ahead of the read's older entries, because the gateway runs it first. */
+  front?: boolean
 }
 
 /** A notice that describes a STANDING state; `restoredDraft` marks the variant
@@ -136,6 +142,15 @@ export interface SideState {
   removedQueueIds?: string[]
   openedAtTurnCount: number
   createdAt: string
+  /** This tab did not see the side conversation open (it was restored), so the
+   *  banner counts the parent turns newer than `createdAt` instead of comparing
+   *  with `openedAtTurnCount`. Counted at render: the parent transcript can load
+   *  after the restore. */
+  countsTurnsSinceCreated?: boolean
+  /** The answer of this run streamed before this tab joined it, so its deltas
+   *  begin part-way through. They are held back until the run's final frame,
+   *  which carries the whole text. Set by `sideRestore`. */
+  awaitingFinalRunId?: string
 }
 
 /**
@@ -492,6 +507,11 @@ export interface ChatState {
   slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'; activityOpen?: boolean }>
   slotSide: Record<string, SideState>
   slotSideClosed: Record<string, boolean>
+  /** Slots whose side conversation this page has already settled against the
+   *  gateway: restored from `GET .../side`, or closed here. Outlives `sideClose`
+   *  on purpose, so a read still in flight when the user closed the panel cannot
+   *  bring the closed conversation back. */
+  slotSideRestored: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
   /** Fresh `has_more` for a BACKGROUND pane, written by every bounded warm.
    *  The pane's own query is staleTime:Infinity, so its has_more freezes at
@@ -727,6 +747,7 @@ export const initialState: ChatState = {
   slotLoading: false,
   slotSide: {},
   slotSideClosed: {},
+  slotSideRestored: {},
   slotHistory: [],
   slotsSnapshotSeen: false,
   slotListPartial: false,

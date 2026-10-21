@@ -20,6 +20,7 @@ from chat_test_helpers import stub_readonly_spec_publisher
 from kiro_crew.dashboard.handlers.side import (
     api_side_close,
     api_side_open,
+    api_side_state,
     api_side_stop,
     api_side_tools,
     api_side_turn,
@@ -52,6 +53,7 @@ def _make_side_app(
     app.router.add_post("/api/chat/slots/{slot}/side/stop", api_side_stop)
     app.router.add_post("/api/chat/slots/{slot}/side/close", api_side_close)
     app.router.add_get("/api/chat/side/tools", api_side_tools)
+    app.router.add_get("/api/chat/slots/{slot}/side", api_side_state)
     return app
 
 

@@ -10,6 +10,7 @@ import { ApiError } from '../api/apiError'
 
 vi.mock('../api/client', () => ({
   api: {
+    sideState: vi.fn().mockResolvedValue({ open: false }),
     sideOpen: vi.fn().mockResolvedValue({ ok: true, open: true, messages: 0, last_run_id: '', created_at: new Date().toISOString() }),
     sideTurn: vi.fn().mockResolvedValue({ ok: true, run_id: 'r1', messages: 1 }),
     sideClose: vi.fn().mockResolvedValue({ ok: true, was_open: true }),
@@ -76,7 +77,7 @@ describe('SideChat stale-context banner', () => {
     vi.clearAllMocks()
   })
 
-  it('banner shows correct turn count when parent has advanced', () => {
+  it('banner shows correct turn count when parent has advanced', async () => {
     const store = makeStore(
       [
         { role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' },
@@ -90,6 +91,8 @@ describe('SideChat stale-context banner', () => {
       }
     )
     const { container } = renderWithStore(store)
+    // The panel reads the gateway's side conversation on mount: let it land inside act().
+    await waitFor(() => expect(store.getState().chat.slotSideRestored?.['slot-1']).toBe(true))
     const banner = container.querySelector('span.italic')
     expect(banner).not.toBeNull()
     const text = (banner?.textContent ?? '').replace(/\s+/g, ' ').trim()

@@ -22,7 +22,7 @@ import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
-import type { ChatMessage, TurnIdentityFields } from '../types'
+import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { initialState, type ChatState } from './chat/state'
@@ -1010,7 +1010,7 @@ export const {
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
-  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideOptimisticAppend, sideOptimisticRollback,
+  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideRestore, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 
 /** The `GET /api/spawn` read in flight, shared by every gone card that asks
@@ -1030,6 +1030,35 @@ export const reconcileGoneSubagent = createAsyncThunk<void, { slot: string; id: 
     const response = await readSpawnInventory()
     const agent = (response.agents ?? []).find(a => a.id === id) ?? null
     dispatch(reconcileSubagentApprovalGone({ slot, id, approval_id, agent }))
+  },
+)
+
+/** The `GET .../side` read in flight per slot, shared by the panel and the
+ *  `/side` command so one reload costs one read. */
+const sideRestoreReads = new Map<string, Promise<SideSnapshot>>()
+
+/**
+ * Settle a slot's Side Chat against the gateway's copy of its side conversation,
+ * once per page (`sideRestore`). A 404 is nothing to restore: the slot is gone, or
+ * the gateway predates the read. Any other failure rejects and settles nothing, so
+ * the caller can hold a question back instead of sending it into a conversation
+ * the panel cannot show.
+ */
+export const restoreSideConversation = createAsyncThunk<void, string, { state: RootState }>(
+  'chat/restoreSideConversation',
+  async (slot, { dispatch, getState }) => {
+    if (getState().chat.slotSideRestored?.[slot]) return
+    let read = sideRestoreReads.get(slot)
+    if (!read) {
+      read = api.sideState(slot)
+        .catch((e: unknown): SideSnapshot => {
+          if (isNotFoundError(e)) return { open: false }
+          throw e
+        })
+        .finally(() => { sideRestoreReads.delete(slot) })
+      sideRestoreReads.set(slot, read)
+    }
+    dispatch(sideRestore({ slot, snapshot: await read }))
   },
 )
 

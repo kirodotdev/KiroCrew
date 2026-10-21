@@ -33,10 +33,11 @@ export const SEND_ABORT_MS = 10_000
  *                        The `queue_push` broadcast owns its on-screen card, so
  *                        this is NOT a receipt for an optimistic bubble, and a
  *                        queued message is still cancellable.
- * - `refused`         -- the server said no: a non-2xx status, or a readable
- *                        body with neither `ok` nor `queued`. Nothing was sent,
- *                        so the payload is safe to hand back. `reason` is the
- *                        server's own explanation when there is one.
+ * - `refused`         -- the send was refused: the server said no (a non-2xx
+ *                        status, or a readable body with neither `ok` nor
+ *                        `queued`), or the caller refused before sending.
+ *                        Nothing was sent, so the payload is safe to hand back.
+ *                        `reason` is the explanation when there is one.
  * - `unknown`         -- a 2xx whose body could not be read. The request WAS
  *                        accepted and only the answer is mangled, so the send
  *                        may well have started a turn; reporting it as a
@@ -82,8 +83,9 @@ export interface SendReceipt {
    *  through so card/ask logic that reads the raw acceptance
    *  (`resolveAskAfterSend`) keeps working unchanged. */
   body: SendReceiptBody
-  /** Server-provided explanation, present only on `refused` with a readable
-   *  body. */
+  /** Why a `refused` send was refused: the server's explanation when its body
+   *  is readable, or the caller's own when it refuses before sending (Side Chat
+   *  holding a question until its restore read lands). */
   reason?: string
 }
 

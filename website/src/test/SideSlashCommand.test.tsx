@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createTestStore } from './helpers'
 
-const { mockSideOpen, mockSideTurn, mockSendChat } = vi.hoisted(() => ({
+const { mockSideOpen, mockSideTurn, mockSendChat, mockSideState } = vi.hoisted(() => ({
   mockSideOpen: vi.fn().mockResolvedValue({ ok: true, open: true, messages: 0, last_run_id: '', created_at: '' }),
   mockSideTurn: vi.fn().mockResolvedValue({ ok: true, run_id: 'r1', messages: 1 }),
   mockSendChat: vi.fn().mockResolvedValue({ ok: true }),
+  mockSideState: vi.fn().mockResolvedValue({ open: false }),
 }))
 
 vi.mock('../api/client', () => ({
-  api: new Proxy({ sideOpen: mockSideOpen, sideTurn: mockSideTurn, sendChat: mockSendChat }, {
+  api: new Proxy({ sideOpen: mockSideOpen, sideTurn: mockSideTurn, sendChat: mockSendChat, sideState: mockSideState }, {
     get: (t, prop) => {
       if (prop in t) return (t as Record<string, unknown>)[prop as string]
       return vi.fn().mockResolvedValue({})
@@ -103,6 +104,33 @@ describe('/side slash command interception', () => {
       continueOnboarding: true,
     })
     window.removeEventListener('mc-start-import', listener)
+  })
+
+  it('reads the side conversation before it asks, so the panel shows what the question joins', async () => {
+    mockSideState.mockResolvedValueOnce({
+      open: true, created_at: '2026-10-21T06:00:00.000Z', last_run_id: 'r0', running: false, queue: [],
+      messages: [
+        { id: 'u0', run_id: 'r0', role: 'user', content: 'remember pineapple', ts: '2026-10-21T06:00:01.000Z' },
+        { id: 'a0', run_id: 'r0', role: 'assistant', content: 'noted', ts: '2026-10-21T06:00:02.000Z' },
+      ],
+    })
+    const result = await interceptSlashCommand('/side what word?', SLOT, store.dispatch)
+    expect(result).toEqual({ intercepted: true })
+    expect(store.getState().chat.slotSide[SLOT].messages.map(m => m.content)).toEqual(['remember pineapple', 'noted'])
+    expect(mockSideState.mock.invocationCallOrder[0]).toBeLessThan(mockSideTurn.mock.invocationCallOrder[0])
+  })
+
+  it('holds the question back when that read fails, so it is not asked into a conversation nobody can see', async () => {
+    mockSideState.mockRejectedValueOnce(new Error('offline'))
+    const result = await interceptSlashCommand('/side what word?', SLOT, store.dispatch)
+    expect(result).toMatchObject({ intercepted: true, failed: true, stage: 'open' })
+    // The COMPOSER's wording, not the panel's notice: nothing opened, so there is
+    // no Retry button here, and copy that told the reader to press one would point
+    // at a control they cannot see.
+    expect(result.intercepted && result.error).toMatch(/the command was not run\. Your message is still in the composer\./)
+    expect(result.intercepted && result.error).not.toMatch(/Retry before asking/)
+    expect(mockSideTurn).not.toHaveBeenCalled()
+    expect(store.getState().chat.slotSideRestored[SLOT]).toBeUndefined()
   })
 
   it('reports failed when there is no active slot', async () => {
