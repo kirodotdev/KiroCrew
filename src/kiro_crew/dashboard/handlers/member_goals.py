@@ -624,8 +624,9 @@ async def _notify_report(request: web.Request, member: str, label: str, saved: d
 
 
 async def api_member_self_goal_report(request: web.Request) -> web.Response:
-    """POST /api/member/self/goals/report — ``{kind, title, markdown}``.
+    """POST /api/member/self/goals/report — ``{kind, title, markdown | html}``.
 
+    The report is Markdown or a whole self-contained HTML page, one of the two.
     Saves a weekly report or monthly review as an artifact under
     ``Crewmates/<name>/Reports``, remembers it on the goal record, and sends one
     notification linking it. The answer carries the link for the crewmate's one
@@ -639,7 +640,8 @@ async def api_member_self_goal_report(request: web.Request) -> web.Response:
         return who
     sk, slug, member = who
     body = await _agent_body(request)
-    kind, title, markdown = str(body.get("kind") or ""), body.get("title"), body.get("markdown")
+    kind, title = str(body.get("kind") or ""), body.get("title")
+    markdown, html = body.get("markdown", ""), body.get("html", "")
     title_max = member_goals.REPORT_TITLE_MAX_CHARS
     if not isinstance(title, str) or not title.strip() or len(title) > title_max:
         return _deny(
@@ -647,6 +649,8 @@ async def api_member_self_goal_report(request: web.Request) -> web.Response:
         )
     if not isinstance(markdown, str) or len(markdown) > REPORT_MAX_CHARS:
         return _deny(400, "invalid_report", f"the report is text of up to {REPORT_MAX_CHARS} chars")
+    if not isinstance(html, str):
+        return _deny(400, "invalid_report", "the html report is one page of text")
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     label = _label(cfg, member)
     try:
@@ -658,6 +662,7 @@ async def api_member_self_goal_report(request: web.Request) -> web.Response:
             kind=kind,
             title=title.strip(),
             markdown=markdown,
+            html=html,
             session_key=sk,
         )
     except member_goals.GoalError as exc:

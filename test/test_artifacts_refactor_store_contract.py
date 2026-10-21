@@ -96,6 +96,7 @@ class TestPersistedBytes:
             '  "events_backfilled": true,\n'
             '  "folder_id": "",\n'
             '  "fork_metadata": null,\n'
+            '  "goal_report": false,\n'
             '  "image": null,\n'
             '  "kind": "widget",\n'
             '  "kind_auto": false,\n'
@@ -337,6 +338,7 @@ class TestResponseShape:
             "pinned",
             "session_key",
             "auto_registered",
+            "goal_report",
             "publication",
             "fork_metadata",
             "version_kinds",

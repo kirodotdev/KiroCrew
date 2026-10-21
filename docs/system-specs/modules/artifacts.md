@@ -1644,7 +1644,16 @@ to this kind would store content no reader can parse.
   parent's port, from a validly-signed token claim) and each is re-validated
   against a strict origin form, so a malformed or inexpressible source — a
   bracketed IPv6 literal is not a valid CSP host-source — cannot reach the header.
-  See `dashboard/handlers/sandbox_doc.py`. No `dangerouslySetInnerHTML` without
+  See `dashboard/handlers/sandbox_doc.py`. A crewmate's weekly report or monthly
+  review carries `goal_report: true` on its record, set only by
+  `dashboard/goal_reminder.save_report` and kept across every later write; such
+  an artifact opens, on its detail page, its side panel and its gallery
+  thumbnail, in the same sandbox as the crewmate Dashboard page: grants
+  `allow-scripts` only and a document CSP without the CDN script origins
+  (`buildSrcdoc`'s `offlineScripts`), with in-frame links left as they are
+  (`website/src/lib/artifactFrame.ts`). Every other artifact keeps the frame
+  above. The host's injected height reporter and comment bridge are inline, so
+  they run in both. No `dangerouslySetInnerHTML` without
   DOMPurify; no inline event handlers.
 - **The detail frame is sized to its document, and promoted to its own
   compositing layer.** Both are corrections to shapes that only misbehave on iOS

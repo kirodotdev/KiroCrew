@@ -216,6 +216,7 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         pinned=bool(raw.get("pinned", False)),
         session_key=str(raw.get("session_key", "")),
         auto_registered=bool(raw.get("auto_registered", False)),
+        goal_report=raw.get("goal_report") is True,
         publication=publication,
         fork_metadata=fork_metadata,
         version_kinds=version_kinds,

@@ -1813,8 +1813,9 @@ compare-and-set; a goal card adds a goal, or replaces one by `goal_id`, and the
 Undo of an added goal removes exactly that one). `goal_read`, `key_result_progress` and `save_goal_report`
 are direct reads and writes through `/api/member/self/goals/*`
 (`dashboard/handlers/member_goals.py`). `save_goal_report` files a weekly
-report or monthly review as a Markdown artifact under `Crewmates/<name>/Reports`
-and sends one notification linking it. These goal operations are deliberately
+report or monthly review under `Crewmates/<name>/Reports`, as `markdown` or as
+`html` (one self-contained printable page, one of the two), and sends one
+notification linking it. These goal operations are deliberately
 NOT in `_USER_TURN_OPERATIONS`: the check-in turns of
 `dashboard/goal_reminder.py` are gateway-authored hidden turns in the
 mate's own thread, and recording readings and filing reports is what they

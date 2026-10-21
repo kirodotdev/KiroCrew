@@ -357,6 +357,13 @@ class Artifact:
     #: that predates auto-registration defaults to ``False`` and is therefore
     #: never swept.
     auto_registered: bool = False
+    #: True for a crewmate's weekly report or monthly review, saved through
+    #: ``save_goal_report`` (:func:`kiro_crew.dashboard.goal_reminder.save_report`).
+    #: The artifact viewer opens such a page in the same sandbox as the crewmate
+    #: Dashboard page. Set only at create time by that one caller, never through
+    #: the artifact API, and kept across every later write. Tolerant-loaded:
+    #: every artifact that predates the field defaults to ``False``.
+    goal_report: bool = False
     #: Publication state. ``None`` until the artifact
     #: is published; carries the stable provider id/URL, visibility,
     #: shared-with aliases, and version-sync bookkeeping once published.

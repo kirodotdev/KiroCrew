@@ -10,6 +10,7 @@ import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
+import { artifactFrame } from '../lib/artifactFrame'
 import {
   widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight,
   clampFrameHeight,
@@ -287,14 +288,18 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [heightKey])
+  // A crewmate's report opens in the crewmate Dashboard page's sandbox; every
+  // other artifact keeps the library frame (lib/artifactFrame.ts).
+  const frame = artifactFrame(artifact)
   const srcdoc = useMemo(
     () => artifact.content
       ? buildSrcdoc({
         html: artifact.content, themeVars, mode: theme, enableComments: true,
         includeHeightReporter: true,
+        offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
       })
       : null,
-    [artifact.content, themeVars, theme],
+    [artifact.content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks],
   )
   // One shared hook rather than this effect in four components: the previous
   // document survives both an in-flight and a failed re-mint, and `failed`
@@ -466,7 +471,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
               onFrameLoaded()
               onIframeLoad?.()
             }}
-            sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+            sandbox={frame.sandbox}
             // NO clipboard-write delegation here, deliberately. These frames host
             // agent-generated HTML whose scripts run on load, so a delegated
             // permission would let one overwrite the user's clipboard with no Copy

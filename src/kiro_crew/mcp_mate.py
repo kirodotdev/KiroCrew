@@ -367,8 +367,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "save_goal_report",
             "description": (
                 "Save your weekly report or monthly review as a report the user can "
-                "open: kind weekly or monthly, a short title, and the report in "
-                "Markdown. It is filed under Crewmates/<your name>/Reports and the user "
+                "open: kind weekly or monthly, a short title, and the report itself as "
+                "one of two formats -- html, a whole self-contained page laid out as a "
+                "printable document (the check-in prompt's 'How the report looks' "
+                "describes it), or markdown for a plain one. Send one of the two. "
+                "It is filed under Crewmates/<your name>/Reports and the user "
                 "gets a notification linking it. After saving, reply in the chat with "
                 "one short line that points at it; the report itself stays out of the "
                 "chat."
@@ -387,8 +390,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "minLength": 1,
                         "maxLength": _goals.REPORT_MAX_CHARS,
                     },
+                    "html": {
+                        "type": "string",
+                        "minLength": 1,
+                        # The server holds the real cap, in bytes of UTF-8.
+                        "maxLength": _goals.REPORT_HTML_MAX_BYTES,
+                    },
                 },
-                "required": ["kind", "title", "markdown"],
+                "required": ["kind", "title"],
                 "additionalProperties": False,
             },
         },
@@ -491,7 +500,7 @@ def _goal_call(name: str, args: dict[str, Any], sk: str) -> str:
     if name == "save_goal_report":
         d = _post(
             "/api/member/self/goals/report",
-            {k: args.get(k, "") for k in ("kind", "title", "markdown")},
+            {k: args.get(k, "") for k in ("kind", "title", "markdown", "html")},
             session_key=sk,
         )
         refused = _error_for(name, d)

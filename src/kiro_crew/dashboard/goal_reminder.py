@@ -337,6 +337,47 @@ def dashboard_line(slug: str, rec: dict[str, Any]) -> str:
     return DASHBOARD_BUILD_LINE
 
 
+#: How a weekly report or monthly review looks: one piece both prompts share, and
+#: the one ``save_goal_report``'s description points at. Principles the crewmate
+#: phrases itself; the look is its own, inside them. The viewer opens the page in
+#: the crewmate Dashboard page's sandbox, so it reaches no network and loads no
+#: library, which is why a chart is inline SVG and an image inline data.
+REPORT_LOOK = (
+    "How the report looks: send it as html, one whole self-contained page that "
+    "reads like a printed document a team lead hands round as a PDF, top to "
+    "bottom, rather than an app screen; markdown stays available for a plain one. "
+    "Lay it out on A4 sheets (@page { size: A4; margin: 0 }, each sheet 210mm by "
+    "297mm) with a strong header band, numbered sections, and a footer on each "
+    "sheet carrying your name, the date range and the page number. A sheet has a "
+    "fixed height, so plan what each one holds: a section that would run past a "
+    "sheet's bottom or into its footer starts on the next sheet, and a chart takes a height that "
+    "fits. Break pages between sheets so nothing is cut at a sheet's edge, and keep "
+    "print-color-adjust: exact so the colours survive printing. Open with the "
+    "conclusion of the period, readable at a glance. Give each section the shape "
+    "of its content: a comparison as a table, a flow as steps, movement over time "
+    "as a chart drawn from the readings, a blocker as a card that says who it "
+    "waits on, rather than a wall of bullets. Keep one visual system across the "
+    "page, a type scale, a spacing rhythm and a small palette on light paper, so "
+    "it reads well on screen and on paper. For type, build every family from the "
+    "CSS generic families alone (system-ui, sans-serif; ui-serif, serif; "
+    "ui-monospace, monospace) and name no typeface, so each system draws its own "
+    "face; when the page has its own :root, define them there as --font-sans, "
+    "--font-serif and --font-mono. Two families at most, each with a clear job: "
+    "serif headings with sans for body and tables, or sans for both; mono only for "
+    "code, ids and aligned figures, and not for body text or headings. Build the "
+    "hierarchy with size, weight and colour rather than more families, align "
+    "figures with font-variant-numeric: tabular-nums, and keep text in any one "
+    "script in one style; the generic families already pick each script's system "
+    "face. The page is a snapshot: its numbers are "
+    "the readings at the time you wrote it, so it needs no live data, no scripts "
+    "and no motion; draw a chart as inline SVG, and give any image as inline data, "
+    "since the page opens with no network. Use plain words, without internal ids "
+    "or file paths, and only real evidence: real states and real counts that agree "
+    "with the readings above, with no invented percentage or made-up time. Your "
+    "own style is welcome; a style the user has asked for wins."
+)
+
+
 def reminder_prompt(
     rec: dict[str, Any],
     cadence: str = member_goals.CADENCE_DAILY,
@@ -368,12 +409,13 @@ def reminder_prompt(
             + _movement_lines(rec, cadence)
             + "\n\nTasks you finished this week, from your work ledger:\n"
             + done
-            + "\n\nWrite this week's report for the user in Markdown: how each key "
+            + "\n\nWrite this week's report for the user: how each key "
             "result moved, the tasks you finished, what is stuck and why, "
             "and the plan for next week. Base the numbers on the readings above, and "
-            "take a fresh reading first when one is stale. Save it with "
-            'save_goal_report (kind "weekly"), then reply in the thread with one short '
-            "line pointing at it; the report itself stays out of the chat."
+            "take a fresh reading first when one is stale. "
+            + REPORT_LOOK
+            + ' Save it with save_goal_report (kind "weekly"), then reply in the thread '
+            "with one short line pointing at it; the report itself stays out of the chat."
         )
     return (
         "[Monthly review] "
@@ -383,10 +425,11 @@ def reminder_prompt(
         + "\n\nTasks you finished this month, from your work ledger:\n"
         + done
         + "\n\nReview whether your goals and their key results still fit the "
-        "work you are actually doing. Write the review in Markdown: what the month "
-        "showed, whether the direction still holds, and what you would change. Save "
-        'it with save_goal_report (kind "monthly"), then reply in the thread with one '
-        "short line pointing at it. When the key results or a goal no longer fit the "
+        "work you are actually doing. Write the review for the user: what the month "
+        "showed, whether the direction still holds, and what you would change. "
+        + REPORT_LOOK
+        + ' Save it with save_goal_report (kind "monthly"), then reply in the thread '
+        "with one short line pointing at it. When the key results or a goal no longer fit the "
         "work, propose the replacement as a card in this turn (set_key_results for the "
         "whole set, set_goal with that goal's id for a goal) with the reason drawn from "
         "the review; the user decides with the card's button. When they still fit, "
@@ -671,33 +714,66 @@ def _folder_label(label: str) -> str:
 
 
 def save_report(
-    slug: str, member: str, label: str, *, kind: str, title: str, markdown: str, session_key: str
+    slug: str,
+    member: str,
+    label: str,
+    *,
+    kind: str,
+    title: str,
+    session_key: str,
+    markdown: str = "",
+    html: str = "",
 ) -> dict[str, Any]:
-    """Save one report as a Markdown artifact under ``Crewmates/<name>/Reports``.
+    """Save one report as an artifact under ``Crewmates/<name>/Reports``.
 
-    Records it on the goal record and returns ``{"slug", "title", "url",
-    "folder"}``. Blocking IO.
+    The report is either *markdown* (a ``markdown`` artifact) or *html*, a whole
+    self-contained page (an ``html`` artifact), and exactly one of the two is
+    given. Both are marked :attr:`~kiro_crew.artifact_store.model.Artifact.goal_report`,
+    so the viewer opens the page in the crewmate Dashboard page's sandbox. Records
+    it on the goal record and returns ``{"slug", "title", "url", "folder",
+    "format"}``. Blocking IO.
     """
     from kiro_crew.artifacts import get_default_folder_store, get_default_store
 
     if kind not in member_goals.REPORT_KINDS:
         raise member_goals.GoalError("invalid_report_kind", "a report is weekly or monthly")
-    if not isinstance(markdown, str) or not markdown.strip():
-        raise member_goals.GoalError("empty_report", "the report needs some text")
+    given = [
+        (fmt, text)
+        for fmt, text in (("markdown", markdown), ("html", html))
+        if isinstance(text, str) and text.strip()
+    ]
+    if not given:
+        raise member_goals.GoalError(
+            "empty_report", "the report needs some text, as markdown or as html"
+        )
+    if len(given) > 1:
+        raise member_goals.GoalError(
+            "report_format_ambiguous", "send the report as markdown or as html, not both"
+        )
+    ((fmt, body),) = given
+    if fmt == "html":
+        size = len(body.encode("utf-8"))
+        if size > member_goals.REPORT_HTML_MAX_BYTES:
+            raise member_goals.GoalError(
+                "report_too_large",
+                f"the html report is {size} bytes, over the "
+                f"{member_goals.REPORT_HTML_MAX_BYTES}-byte limit",
+            )
     # The crewmate wrote the report: scrubbed like every goal string it writes.
     title = member_goals.scrub_text(title)
-    markdown = member_goals.scrub_text(markdown)
+    body = member_goals.scrub_text(body)
     folder_path = REPORTS_FOLDER.format(name=_folder_label(label))
     folder_id = get_default_folder_store().resolve_path(folder_path, create_missing=True)
     art = get_default_store().create(
         name=title,
-        content=markdown,
-        kind="markdown",
+        content=body,
+        kind=fmt,
         source="chat",
         description=f"{_NAMES[kind]} by {label}",
         tags=["goal-report", kind],
         folder_id=folder_id,
         session_key=session_key,
+        goal_report=True,
     )
     member_goals.record_report(slug, member, kind=kind, artifact=art.slug, title=title)
     return {
@@ -705,4 +781,5 @@ def save_report(
         "title": title,
         "url": f"/artifacts/{art.slug}",
         "folder": folder_path,
+        "format": fmt,
     }

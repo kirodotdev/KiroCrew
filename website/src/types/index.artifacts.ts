@@ -183,6 +183,11 @@ export interface Artifact {
    * "save permanently" action changes. Absent on older payloads — treat
    * undefined as false. */
   auto_registered?: boolean
+  /** True for a crewmate's weekly report or monthly review, set by the gateway
+   * when `save_goal_report` files it (never through the artifact API). The
+   * viewer opens such a page in the crewmate Dashboard page's sandbox
+   * (lib/artifactFrame.ts). Absent on older payloads — treat undefined as false. */
+  goal_report?: boolean
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   /** Metadata for kind="image" artifacts. The bytes themselves are never inlined

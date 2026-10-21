@@ -8,6 +8,7 @@ import { framablePreviewUrl } from '../../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../../hooks/useCloudDeploymentEnabled'
 import { useAppPreview } from '../WebAppArtifactCard'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
+import { artifactFrame } from '../../lib/artifactFrame'
 import MarkdownRenderer from '../MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
 import { stripMd } from '../notifications/notifMeta'
@@ -31,7 +32,13 @@ const THUMB_HEIGHT_SPACE = 'thumb900'
  * thumbnail: the iframe lays out at a fixed desktop width (BASE_W) so the
  * widget looks normal, then the whole frame is CSS-scaled to fit the column —
  * a minified webpage, not a cramped narrow render. */
-export function WidgetThumb({ content, slug }: { content: string; slug: string }) {
+export function WidgetThumb({ content, slug, goalReport = false }: {
+  content: string
+  slug: string
+  /** The artifact's server-side `goal_report`: a crewmate's report previews in
+   *  the same sandbox it opens in (lib/artifactFrame.ts). */
+  goalReport?: boolean
+}) {
   const BASE_W = 900
   // Fixed iframe viewport height (in BASE_W space). The iframe NEVER grows past
   // this — it only shrinks for genuinely short flow-content. This makes
@@ -42,9 +49,15 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
+  const frame = artifactFrame({ goal_report: goalReport })
   const srcdoc = useMemo(
-    () => (content ? buildSrcdoc({ html: content, themeVars, mode: theme, includeHeightReporter: true }) : null),
-    [content, themeVars, theme],
+    () => (content
+      ? buildSrcdoc({
+        html: content, themeVars, mode: theme, includeHeightReporter: true,
+        offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
+      })
+      : null),
+    [content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks],
   )
   // Reserve the height this content had last time, or the median of thumbnails
   // already measured, before falling back to the viewport ceiling.
@@ -166,7 +179,7 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
         <iframe
           ref={iframeRef}
           src={frameSrc}
-          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+          sandbox={frame.sandbox}
           title={i18nT('pages.artifactsPage.preview', { slug })}
           tabIndex={-1}
           className="border-none bg-card block"

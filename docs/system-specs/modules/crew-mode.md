@@ -2300,8 +2300,26 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   also compares against the complete schedule values that write returned, so
   rollback cannot erase a later schedule edit.
   A switch turned on with no goal is refused (`no_goal`). Weekly and monthly reports are saved with
-  `save_goal_report` as Markdown artifacts under `Crewmates/<name>/Reports`, the
+  `save_goal_report` as artifacts under `Crewmates/<name>/Reports`, the
   user gets one notification linking it, and the thread carries one short line.
+  A report is `markdown` or `html` (one whole self-contained page), one of the
+  two: both or neither is refused (`report_format_ambiguous`, `empty_report`),
+  Markdown is capped at `REPORT_MAX_CHARS` and a page at the crewmate Dashboard
+  page's own ceiling (`REPORT_HTML_MAX_BYTES` = `dashboard_frame.MAX_PAGE_BYTES`,
+  in bytes, `report_too_large`), and either is scrubbed like every goal string.
+  Both formats get the same folder, tags, notification and goal-record entry, and
+  the artifact carries `goal_report: true` (set only by `goal_reminder.save_report`),
+  so the viewer opens it in the crewmate Dashboard page's sandbox (see
+  [artifacts](artifacts.md)). The weekly and monthly prompts share one
+  `goal_reminder.REPORT_LOOK` piece, which `save_goal_report`'s description
+  points at: a printable document on A4 sheets with a header band, numbered
+  sections and a footer, conclusion first, each section shaped by its content,
+  static with charts in inline SVG, type from the CSS generic families only (no
+  named typeface; `--font-sans` / `--font-serif` / `--font-mono` on the page's
+  own `:root`), two families at most with mono only for code, ids and aligned
+  figures, plain words that agree with the readings, and the user's stated style
+  over the crewmate's own. Written as principles; prompt-only, with no save-time
+  look check on reports.
   A check-in that fires with the thread not open or busy does nothing that time;
   the weekly and monthly ones check again after reading the work ledger, so a
   turn that started meanwhile never carries the review mark.

@@ -693,7 +693,9 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
                 "kind", str, required=True, max_len=8, allowed=frozenset({"weekly", "monthly"})
             ),
             FieldSpec("title", str, required=True, max_len=_goals.REPORT_TITLE_MAX_CHARS),
-            FieldSpec("markdown", str, required=True, max_len=_goals.REPORT_MAX_CHARS),
+            # One of the two; the server refuses both or neither.
+            FieldSpec("markdown", str, max_len=_goals.REPORT_MAX_CHARS),
+            FieldSpec("html", str, max_len=_goals.REPORT_HTML_MAX_BYTES),
         ],
     ),
 }

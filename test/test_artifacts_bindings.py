@@ -84,7 +84,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "allowed_source_roots": ("function", "4c8ae5b2fe43", "artifacts_source_link"),
     "artifact_index_key": ("staticmethod", "06db94384f74", "artifacts_scans"),
     "clear_publication": ("function", "0feb3239807e", "artifacts"),
-    "create": ("function", "5b813895bf93", "artifacts_writes"),
+    "create": ("function", "8800112eea34", "artifacts_writes"),
     "create_image": ("function", "bf9291cc3a6d", "artifacts_writes"),
     "delete": ("function", "43b04068284b", "artifacts"),
     "delete_comment": ("function", "18734594b0c6", "artifacts_comments"),

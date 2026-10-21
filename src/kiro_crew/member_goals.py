@@ -71,7 +71,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import dashboard_frame, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
 
@@ -95,6 +95,10 @@ KR_READING_MAX_CHARS = 120
 #: One saved weekly or monthly report: its title and its Markdown body.
 REPORT_TITLE_MAX_CHARS = 200
 REPORT_MAX_CHARS = 40_000
+#: A report saved as a whole HTML page, in bytes of UTF-8: the crewmate
+#: Dashboard page's own ceiling, since the viewer opens a report in that page's
+#: sandbox (``dashboard_frame.MAX_PAGE_BYTES``).
+REPORT_HTML_MAX_BYTES = dashboard_frame.MAX_PAGE_BYTES
 #: The record file itself, as read back: a hand-edited file past this is
 #: unreadable rather than loaded whole.
 _RECORD_MAX_BYTES = 64 * 1024

@@ -75,6 +75,7 @@ def create(
     session_key: str = "",
     webapp_metadata: "WebAppMetadata | None" = None,
     auto_registered: bool = False,
+    goal_report: bool = False,
 ) -> Artifact:
     """Persist a new artifact and return it.
 
@@ -100,6 +101,10 @@ def create(
     chat-emitted widget, making it sweepable by
     :meth:`prune_auto_widgets` while it remains unpinned. Only
     :mod:`kiro_crew.widget_artifacts` should set it.
+
+    ``goal_report=True`` marks a crewmate's weekly report or monthly review
+    (:attr:`Artifact.goal_report`). Only
+    :func:`kiro_crew.dashboard.goal_reminder.save_report` should set it.
     """
     name = _validate_name(name)
     content = _validate_content(content)
@@ -162,6 +167,7 @@ def create(
             folder_id=folder_id or "",
             session_key=session_key[:256] if session_key else "",
             auto_registered=bool(auto_registered),
+            goal_report=bool(goal_report),
             version_kinds={"1": kind},
             webapp_metadata=webapp_metadata,
             slug_collided_with=collided_with,
