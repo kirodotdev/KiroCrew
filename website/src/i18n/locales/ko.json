@@ -11937,7 +11937,6 @@
         "placeholder": "{{name}}의 에이전트에게 메시지 보내기…",
         "version_mismatch": "이 크루는 {{productName}} {{peer}}을(를) 실행하지만 이 컴퓨터는 {{local}}을(를) 실행합니다. 한쪽을 업데이트해 버전을 맞추세요.",
         "create_unnamed": "크루가 세션을 열었지만 이름을 지정하지 않았습니다.",
-        "untitled": "제목 없는 세션",
         "close_hint": "닫아도 {{name}}의 에이전트는 멈추지 않습니다.",
         "feed_lost": "{{name}}의 실시간 업데이트가 끊겼습니다.",
         "feed_lost_hint": "업데이트가 멈췄습니다. 다시 시도해 최신 상태로 맞추세요.",

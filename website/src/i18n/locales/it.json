@@ -12303,7 +12303,6 @@
         "placeholder": "Messaggio per l’agente su {{name}}…",
         "version_mismatch": "Questo equipaggio esegue {{productName}} {{peer}}, ma questa macchina esegue {{local}}. Aggiornane uno perché coincidano.",
         "create_unnamed": "L’equipaggio ha aperto una sessione senza darle un nome.",
-        "untitled": "Sessione senza titolo",
         "close_hint": "Chiudere non ferma l’agente su {{name}}.",
         "feed_lost": "Aggiornamenti in tempo reale da {{name}} persi.",
         "feed_lost_hint": "Gli aggiornamenti si sono fermati. Riprova per rimetterti in pari.",

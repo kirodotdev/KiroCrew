@@ -171,6 +171,8 @@ describe('CrewChatWindow', () => {
     // The header reads the untitled label, and the routing key never appears there.
     expect(await screen.findByText('Untitled session', {}, PEER_ROW_WAIT)).toBeTruthy()
     expect(screen.queryByText('k1')).toBeNull()
+    // Once resolved, the "On devbox" subtitle names the crew under the label.
+    expect(screen.getByText('On devbox')).toBeTruthy()
     // A title arriving on the live slot feed replaces the label; routing is unchanged.
     await waitFor(() => expect(FakeEventSource.all.length).toBeGreaterThan(0))
     const es = FakeEventSource.all[0]
@@ -193,6 +195,8 @@ describe('CrewChatWindow', () => {
     // The header title span shows the crew name, not the label and not the key.
     const titleEl = document.querySelector('span.font-semibold.min-w-0')
     expect(titleEl?.textContent).toBe('devbox')
+    // The "On devbox" subtitle is dropped here: it would only repeat the title.
+    expect(screen.queryByText('On devbox')).toBeNull()
     expect(screen.queryByText('Untitled session')).toBeNull()
     expect(screen.queryByText('k1')).toBeNull()
   })

@@ -12120,7 +12120,6 @@
         "placeholder": "Nachricht an den Agenten auf {{name}}…",
         "version_mismatch": "Diese Crew nutzt {{productName}} {{peer}}, dieser Rechner aber {{local}}. Aktualisiere eines davon, damit sie übereinstimmen.",
         "create_unnamed": "Die Crew hat eine Sitzung geöffnet, ihr aber keinen Namen gegeben.",
-        "untitled": "Unbenannte Sitzung",
         "close_hint": "Schließen stoppt den Agenten auf {{name}} nicht.",
         "feed_lost": "Live-Updates von {{name}} unterbrochen.",
         "feed_lost_hint": "Updates wurden unterbrochen. Erneut versuchen, um aufzuholen.",
