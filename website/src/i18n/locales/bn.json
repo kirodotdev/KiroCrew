@@ -18445,8 +18445,6 @@
       "close": "বন্ধ করো",
       "driving_none": "এই মুহূর্তে কোনো সেশন পরিচালনা করছে না।",
       "driving_idle": "নিষ্ক্রিয়",
-      "driving_show_all": "সব দেখুন ({{count}})",
-      "driving_show_less": "কম দেখুন",
       "patrol_error_roster": "তালিকার পেট্রোল অবস্থা লোড করা যায়নি।",
       "loop_on": "নজরে রাখছে",
       "profile_monitor": "মনিটর",

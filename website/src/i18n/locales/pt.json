@@ -18730,8 +18730,6 @@
       "close": "Fechar",
       "driving_none": "Não está conduzindo nenhuma sessão no momento.",
       "driving_idle": "Inativo",
-      "driving_show_all": "Mostrar todas ({{count}})",
-      "driving_show_less": "Mostrar menos",
       "patrol_error_roster": "Não foi possível carregar o status de patrulha da lista.",
       "loop_on": "De vigia",
       "profile_monitor": "Monitor",

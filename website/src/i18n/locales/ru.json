@@ -19015,8 +19015,6 @@
       "close": "Закрыть",
       "driving_none": "Сейчас не управляет ни одним сеансом.",
       "driving_idle": "Простой",
-      "driving_show_all": "Показать все ({{count}})",
-      "driving_show_less": "Свернуть",
       "patrol_error_roster": "Не удалось загрузить состояние патруля для списка.",
       "loop_on": "На страже",
       "profile_monitor": "Монитор",

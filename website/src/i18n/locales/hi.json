@@ -18445,8 +18445,6 @@
       "close": "बंद करें",
       "driving_none": "अभी कोई सेशन संचालित नहीं कर रहा है।",
       "driving_idle": "निष्क्रिय",
-      "driving_show_all": "सभी दिखाएँ ({{count}})",
-      "driving_show_less": "कम दिखाएँ",
       "patrol_error_roster": "रोस्टर की पेट्रोल स्थिति लोड नहीं हो सकी।",
       "loop_on": "निगरानी पर",
       "profile_monitor": "मॉनिटर",

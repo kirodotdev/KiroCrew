@@ -18160,8 +18160,6 @@
       "close": "닫기",
       "driving_none": "현재 구동 중인 세션이 없습니다.",
       "driving_idle": "유휴",
-      "driving_show_all": "모두 보기({{count}})",
-      "driving_show_less": "접기",
       "patrol_error_roster": "멤버 목록의 순찰 상태를 불러오지 못했습니다.",
       "loop_on": "지켜보는 중",
       "profile_monitor": "모니터",

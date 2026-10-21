@@ -18730,8 +18730,6 @@
       "close": "Chiudi",
       "driving_none": "Al momento non guida nessuna sessione.",
       "driving_idle": "Inattivo",
-      "driving_show_all": "Mostra tutte ({{count}})",
-      "driving_show_less": "Mostra meno",
       "patrol_error_roster": "Impossibile caricare lo stato di pattuglia dell'elenco.",
       "loop_on": "Di guardia",
       "profile_monitor": "Monitor",

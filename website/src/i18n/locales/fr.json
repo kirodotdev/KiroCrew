@@ -18730,8 +18730,6 @@
       "close": "Fermer",
       "driving_none": "Ne pilote aucune session pour le moment.",
       "driving_idle": "Inactif",
-      "driving_show_all": "Tout afficher ({{count}})",
-      "driving_show_less": "Afficher moins",
       "patrol_error_roster": "Impossible de charger l'état de patrouille de la liste.",
       "loop_on": "En veille",
       "profile_monitor": "Moniteur",

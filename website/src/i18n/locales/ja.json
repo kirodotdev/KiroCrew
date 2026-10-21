@@ -18160,8 +18160,6 @@
       "close": "閉じる",
       "driving_none": "現在操作中のセッションはありません。",
       "driving_idle": "アイドル",
-      "driving_show_all": "すべて表示（{{count}}）",
-      "driving_show_less": "折りたたむ",
       "patrol_error_roster": "メンバー一覧のパトロール状態を読み込めませんでした。",
       "loop_on": "見守り中",
       "profile_monitor": "モニター",

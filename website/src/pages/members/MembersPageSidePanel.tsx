@@ -49,7 +49,7 @@ import { type ChatSlot } from '../../types'
 import { type MembersPageProfileFlight, type MembersPageProfileState } from './MembersPageProfile'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageThreadState } from './MembersPageThread'
-import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, DRIVING_VISIBLE, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_WITHHELD_VIEWS, PANEL_GAPS_W, type ProfileCardOpen } from './membersPageModel'
+import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_WITHHELD_VIEWS, PANEL_GAPS_W, type ProfileCardOpen } from './membersPageModel'
 import { type MembersPageDrawers } from './useMembersPageDrawers'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageNavigation } from './useMembersPageNavigation'
@@ -114,8 +114,7 @@ export function useMembersPageSidePanel({
   // on every WS slots frame and `lastActivityEpoch` advances whenever a worker
   // does anything, so sorting per render moves rows under the cursor mid-click —
   // and each row is a jump into a session, so a shifted row navigates into the
-  // WRONG one. It also decides which rows sit behind the DRIVING_VISIBLE fold,
-  // so a live re-sort can pull a row out from under the pointer entirely.
+  // WRONG one.
   // Row CONTENT still updates from every frame (status dot, title, timestamp);
   // only the positions hold, until the driven set changes (a worker opens or
   // closes) or the member does, either of which re-sorts from scratch by
@@ -435,12 +434,6 @@ export function useMembersPageSidePanel({
     committedDrivingRef.current = { member: activeMemberKey, keys }
     return keys.map((k) => byKey.get(k)).filter((s): s is (typeof mine)[number] => !!s)
   }, [liveSlots, activeMemberKey])
-  // Collapsed past DRIVING_VISIBLE rows. Keyed to the member: the fold is a
-  // reading position in ONE member's list, so switching members starts the
-  // next list folded rather than inheriting the previous member's expansion.
-  const [drivingExpandedFor, setDrivingExpandedFor] = useState('')
-  const drivingExpanded = drivingExpandedFor === activeMemberKey
-  const visibleDriving = drivingExpanded ? drivingSessions : drivingSessions.slice(0, DRIVING_VISIBLE)
   // A PREVIEW LINK -- `?dashboard=preview`, the link `dashboard_preview` hands the
   // crewmate to show the person -- opens the side panel on the Dashboard tab, where
   // the staged page is drawn under its preview label. Once per crewmate and strip
@@ -493,7 +486,7 @@ export function useMembersPageSidePanel({
     setSchedAtStake, schedReleased, schedulesMountedRef, dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
     openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openArtifactGuarded,
-    openSessionGuarded, drivingSessions, setDrivingExpandedFor, drivingExpanded, visibleDriving,
+    openSessionGuarded, drivingSessions,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay,
   }
 }

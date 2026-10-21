@@ -18445,8 +18445,6 @@
       "close": "Schließen",
       "driving_none": "Steuert derzeit keine Sitzungen.",
       "driving_idle": "Inaktiv",
-      "driving_show_all": "Alle anzeigen ({{count}})",
-      "driving_show_less": "Weniger anzeigen",
       "patrol_error_roster": "Patrouillenstatus für die Liste konnte nicht geladen werden.",
       "loop_on": "Hält Wache",
       "profile_monitor": "Monitor",

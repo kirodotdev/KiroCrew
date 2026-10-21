@@ -33,7 +33,7 @@ function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
     thread: { activeSlot: '', freshStart: { isPending: false }, askFreshStart: vi.fn(), confirmedSlot: '' },
     sidePanel: {
       profileCardW: 400, activeMemberKey: 'mate', openCrewView: vi.fn(), openSessionGuarded,
-      drivingSessions: slots, setDrivingExpandedFor: vi.fn(), drivingExpanded: false, visibleDriving: slots,
+      drivingSessions: slots,
     },
     schedules: {
       schedAgentField: '', profileGoalsQuery: { data: undefined, isError: false },

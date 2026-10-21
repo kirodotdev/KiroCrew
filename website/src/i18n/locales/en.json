@@ -7739,8 +7739,6 @@
       "close": "Close",
       "driving_none": "Not driving any sessions right now.",
       "driving_idle": "Idle",
-      "driving_show_all": "Show all ({{count}})",
-      "driving_show_less": "Show less",
       "patrol_error_roster": "Couldn't load patrol status for the roster.",
       "loop_on": "On watch",
       "profile_monitor": "Monitor",

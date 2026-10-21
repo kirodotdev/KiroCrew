@@ -175,8 +175,6 @@ export function panelChrome({ beside, dockedOpen, overlayOpen }: {
     showOpener: !beside || !dockedOpen,
   }
 }
-/** Driving-sessions rows shown before the list folds behind "Show all". */
-export const DRIVING_VISIBLE = 5
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 export const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
 
