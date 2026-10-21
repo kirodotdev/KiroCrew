@@ -2419,6 +2419,34 @@ waits is refused 409 `target_replaced` before the next step that acts by key: th
 shared close raises `slot_replaced` and `close_target` answers it with this
 surface's code, the one its own pre-pop re-check uses.
 
+### Naming a slot instance: the server-minted incarnation
+
+`close_slot` pops the slot only after the nudge-lock and app-close-hook awaits, so a
+list read issued before the close can be serialized while the closing slot is still
+listed and arrive after it is gone. Nothing else on the wire identifies an instance:
+`api_chat_slot_resume` restores `slot.created_at`, so `created` cannot tell a resumed
+replacement from the original.
+
+**Slot identity is explicit on the wire.** A key is reusable, so `created` cannot
+identify an instance. Every slot row carries an `incarnation`: the slot's
+`_dashboard_card_identity`, minted once per live slot object and never restored. The
+card lifecycle already uses that id to tell a replacement from the original, so there is
+one identity per slot, not two. `DELETE /api/chat/slots/{key}` accepts `?incarnation=`
+to name the object the caller meant. A mismatch answers `target_replaced` at HTTP 409
+before any teardown step runs. A replacement that takes the key during the close's
+awaits is refused by `close_slot`'s own `slot_replaced` check.
+
+**The dashboard sends it, and omitting it is permitted but unprotected.** A key-only
+close cannot distinguish the object the user dismissed from a replacement that took the
+key before the request arrived: the lookup resolves `slot` to that replacement, so object
+identity holds and a live turn is archived. `deleteChatSlot` therefore carries the row's
+`incarnation`. The parameter stays optional rather than required, because requiring it
+would hard-fail two callers that cannot supply one: `docs/app-kit/migration-guide.md`
+documents a key-only `DELETE` as the app pattern, and a client whose store holds no row
+for the key names no instance. Naming the instance is protection a caller opts into; one
+that omits it keeps the identity-only guarantee and nothing weaker. The client that
+holds a dismissed row out of the sidebar lands as a separate change.
+
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
 takes the AutoNudge lock, and the app hook awaits external work — and a target
