@@ -89,6 +89,7 @@ class _ChatSlot:
         "_memory_assignment_from_history",
         "_binding",
         "created_at",
+        "incarnation",
         "_messages",
         "_lazy_window",
         "_lazy_tail",
@@ -408,6 +409,7 @@ class _ChatSlot:
     instance_id: str
     remote_slot: str
     created_at: str
+    incarnation: str
     _titled: bool
     _title_origin: str
     _title_epoch: int

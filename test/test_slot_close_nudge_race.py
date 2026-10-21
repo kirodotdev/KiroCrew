@@ -52,6 +52,10 @@ class _Req:
     def __init__(self, state, slot: str) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        # Read at CONSTRUCTION, not at call time: a replacement minted later in the
+        # test must not retroactively change what this request asked to archive.
+        live = getattr(state, "_slots", {}).get(slot)
+        self.query = {"incarnation": getattr(live, "incarnation", "")} if live else {}
 
     def get(self, key: str, default: str = "") -> str:
         del key

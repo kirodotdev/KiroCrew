@@ -25,8 +25,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
-``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
-``jev_route``, ``memory_store``,
+``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``incarnation``,
+``instance_id``, ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
 
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -231,6 +232,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     self.instance_id = ""
     self.remote_slot = ""
     self.created_at = datetime.now(timezone.utc).isoformat()
+    # Identity of THIS live object. Four paths restore ``created_at`` from persisted
+    # metadata, so a resumed slot cannot be told apart by it.
+    self.incarnation = uuid.uuid4().hex
     self._titled = False  # True once a title has been assigned
     # Provenance of the current title: "auto" (LLM auto-titler or its
     # fallback) or "user" (manual rename). Governs the background title
