@@ -4426,7 +4426,10 @@
       "resize_terminal_panel": "Resize terminal panel",
       "move_panel_to_right": "Move panel to right",
       "move_panel_to_bottom": "Move panel to bottom",
-      "more_actions": "More actions"
+      "more_actions": "More actions",
+      "fullscreen": "Fullscreen",
+      "exit_fullscreen": "Exit fullscreen",
+      "find": "Find"
     },
     "chatInput": {
       "approval_hint_adjust": "Adjust approval mode",
@@ -6126,6 +6129,16 @@
       "session_queued": "This session: {{queued}} queued",
       "session_queued_hint": "Agents this session started are waiting for a free slot while fewer run at once.",
       "load_failed": "Could not check for queued agents"
+    },
+    "terminalFindBar": {
+      "find": "Find",
+      "search_scrollback": "Search terminal scrollback",
+      "no_results": "No results",
+      "match_count": "{{index}} of {{total}}",
+      "match_overflow": "{{total}} matches",
+      "previous_match": "Previous match",
+      "next_match": "Next match",
+      "close_search": "Close search"
     }
   },
   "hooks": {

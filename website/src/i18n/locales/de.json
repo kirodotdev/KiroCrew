@@ -6385,7 +6385,10 @@
       "move_panel_to_bottom": "Panel nach unten verschieben",
       "more_actions": "Weitere Aktionen",
       "close_failed": "Die Shell dieses Terminals konnte auf dem Server nicht beendet werden und wird automatisch aufgeräumt.",
-      "closing_terminal": "Terminal wird geschlossen…"
+      "closing_terminal": "Terminal wird geschlossen…",
+      "fullscreen": "Vollbild",
+      "exit_fullscreen": "Vollbild beenden",
+      "find": "Suchen"
     },
     "tabCloseMenu": {
       "close_all_terminals": "Alle Terminals schließen",
@@ -10402,6 +10405,16 @@
         "tool_search_label": "Werkzeugsuche",
         "tool_search_description": "Zurückgestellte MCP-Tool-Spezifikationen bei Bedarf laden."
       }
+    },
+    "terminalFindBar": {
+      "find": "Suchen",
+      "search_scrollback": "Terminal-Verlauf durchsuchen",
+      "no_results": "Keine Ergebnisse",
+      "match_count": "{{index}} von {{total}}",
+      "match_overflow": "{{total}} Treffer",
+      "previous_match": "Vorheriger Treffer",
+      "next_match": "Nächster Treffer",
+      "close_search": "Suche schließen"
     }
   },
   "hooks": {

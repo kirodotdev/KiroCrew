@@ -927,6 +927,17 @@
     "crewWorkerKit.current_directions": "Muted line on the behavior-directions row of the Add abilities preview, under the incoming directions. {{directions}} is the crewmate's current directions text, which the incoming directions will overwrite.",
     "crewWorkerKit.done_replaced": "Sentence in the confirmation after an add succeeds, shown when it replaced the crewmate's behavior directions. May follow the \"Added N to NAME.\" sentence or stand alone.",
     "crewEditorNext.band_remove_stale": "Error in the mate abilities view when Remove is refused because the displayed revision changed; nothing was removed, the list refreshes, and the user must check it and press the Remove button again.",
-    "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant."
+    "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant.",
+    "components.terminalFindBar.find": "Placeholder text in the terminal scrollback search input; the VERB 'find', as in find-in-page.",
+    "components.terminalFindBar.search_scrollback": "Accessible label for the terminal find input. 'Scrollback' is the terminal's output buffer above the viewport.",
+    "components.terminalFindBar.no_results": "Shown in the terminal find bar when the search term matches nothing.",
+    "components.terminalFindBar.match_count": "Terminal find bar position readout, e.g. '3 of 12'. {{index}} is the current match, {{total}} the match count.",
+    "components.terminalFindBar.match_overflow": "Terminal find bar readout when there are too many matches to track a position; shows just the total count.",
+    "components.terminalFindBar.previous_match": "Terminal find bar button: jump to the previous search match.",
+    "components.terminalFindBar.next_match": "Terminal find bar button: jump to the next search match.",
+    "components.terminalFindBar.close_search": "Terminal find bar button: close the search bar.",
+    "components.bottomTerminalPanel.fullscreen": "Menu item: expand the terminal panel to fill the dashboard area.",
+    "components.bottomTerminalPanel.exit_fullscreen": "Menu item: restore the terminal panel from fullscreen to its previous size.",
+    "components.bottomTerminalPanel.find": "Terminal overflow-menu item: open the find bar to search the active terminal's scrollback; the VERB 'find', as in find-in-page."
   }
 }
