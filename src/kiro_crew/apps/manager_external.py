@@ -36,6 +36,8 @@ from kiro_crew.apps.manager_records import (
     app_data_dir,
     app_dir,
     get_app_manifest,
+    hold_app_record_lock,
+    holds_app_record_locks,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.apps.manifest import (
@@ -56,6 +58,7 @@ logger = logging.getLogger("kiro_crew.apps.manager")
 # ---------------------------------------------------------------------------
 
 
+@holds_app_record_locks
 def register_external_app(
     name: str,
     version: str,
@@ -145,6 +148,7 @@ def register_external_app(
         )
         return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
+    hold_app_record_lock(name)
     existing = _read_installed(name)
     requested_repository = source_repository.strip()
     preserve_server_provenance = bool(

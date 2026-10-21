@@ -31,6 +31,8 @@ from kiro_crew.apps.manager_records import (
     _write_installed,
     app_dir,
     apps_dir,
+    hold_app_record_lock,
+    holds_app_record_locks,
 )
 from kiro_crew.apps.manifest import AppManifest, contain_command_agents
 from kiro_crew.platform_compat import is_link_or_junction
@@ -602,6 +604,7 @@ def app_disabled(name: str) -> bool:
     return meta is not None and not meta.enabled
 
 
+@holds_app_record_locks
 def set_app_source(name: str, source: str) -> bool:
     """Update the ``source`` field of an installed app's metadata.
 
@@ -609,6 +612,7 @@ def set_app_source(name: str, source: str) -> bool:
     Used by the registry module to mark apps as registry-installed after
     the temp clone directory is cleaned up.
     """
+    hold_app_record_lock(name)
     meta = _read_installed(name)
     if not meta:
         return False
@@ -617,6 +621,7 @@ def set_app_source(name: str, source: str) -> bool:
     return True
 
 
+@holds_app_record_locks
 def set_app_provenance(
     name: str,
     *,
@@ -641,6 +646,7 @@ def set_app_provenance(
 
     Returns True if the update succeeded, False if the app is not installed.
     """
+    hold_app_record_lock(name)
     meta = _read_installed(name)
     if not meta:
         return False

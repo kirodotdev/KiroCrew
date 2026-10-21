@@ -1188,6 +1188,11 @@ async def install_from_registry(
 
             display = manifest_data.get("displayName", name)
             version = manifest_data.get("version", "0.0.0")
+            # On the loop, not in a worker: a worker keeps writing after this
+            # task is cancelled, while the `finally` would restore the old
+            # checkout beside the new record. The route holds this app's
+            # lifecycle lock, and a contended record lock refuses before the
+            # record is read, so the refusal path below stays consistent.
             reg_result = register_external_app(
                 name=name,
                 version=version,
@@ -1216,7 +1221,8 @@ async def install_from_registry(
             # the caller while the `finally` rolled the source checkout back
             # underneath it.
             durable_success = True
-            set_app_provenance(
+            await asyncio.to_thread(
+                set_app_provenance,
                 name,
                 source=f"{SOURCE_REGISTRY_PREFIX}{name}",
                 url=persisted_git_url,
@@ -1286,7 +1292,8 @@ async def install_from_registry(
             # either outcome. A failed receipt is a bookkeeping problem to log; it does
             # not un-install what is installed.
             durable_success = True
-            set_app_provenance(
+            await asyncio.to_thread(
+                set_app_provenance,
                 result.name,
                 source=f"{SOURCE_REGISTRY_PREFIX}{name}",
                 url=persisted_git_url,

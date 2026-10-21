@@ -42,6 +42,8 @@ from kiro_crew.apps.manager_records import (
     app_data_dir,
     app_dir,
     get_app_manifest,
+    hold_app_record_lock,
+    holds_app_record_locks,
     refresh_app_config_keys,
 )
 from kiro_crew.apps.manager_tree import (
@@ -122,6 +124,7 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
 # ---------------------------------------------------------------------------
 
 
+@holds_app_record_locks
 def install_app(
     source: str | Path,
     *,
@@ -209,6 +212,7 @@ def install_app(
         return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
     # Check if already installed — reject, use update_app() or uninstall first
+    hold_app_record_lock(name)
     existing = _read_installed(name)
     if existing:
         sel().log_api_access(
@@ -447,6 +451,7 @@ def install_app(
 # ---------------------------------------------------------------------------
 
 
+@holds_app_record_locks
 def update_app(
     source: str | Path,
     *,
@@ -506,6 +511,7 @@ def update_app(
     # replaced so the old grant remains the consent boundary, and read the record
     # against that same manifest: the replacement record lands in a new tree, so
     # the record's pending state must not depend on a second manifest read.
+    hold_app_record_lock(name)
     old_manifest = get_app_manifest(name)
     existing = _read_installed(name, manifest=old_manifest)
     if not existing:

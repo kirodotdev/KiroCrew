@@ -224,6 +224,91 @@ class InstalledApp:
         return inst
 
 
+# ---------------------------------------------------------------------------
+# Record lock: one writer of an app's installed.json at a time
+# ---------------------------------------------------------------------------
+
+# Every writer reads the record, changes it and replaces the whole file, so two
+# writers that overlap lose one change (a dev-mode save landing after a widening
+# update undoes its consent-pending mark). The lock is a SIDECAR outside the app
+# directories, never installed.json: the record is replaced via os.replace, so a
+# lock on it would sit on an inode the next writer never opens; and update_app
+# moves the whole app directory aside, so a lock inside it would too.
+_record_lock_state = threading.local()
+
+
+def _record_lock_path(name: str) -> Path:
+    # Outside apps/ so app listings and tree scans never meet a lock file.
+    return config_dir() / "app-record-locks" / f"{name}.lock"
+
+
+@contextmanager
+def app_record_lock(name: str) -> Iterator[None]:
+    """Hold *name*'s cross-process record lock; reentrant within one thread.
+
+    POSIX ``flock`` / Windows ``msvcrt.locking`` via ``platform_compat.file_lock``,
+    bounded and FAIL-CLOSED: a lock that cannot be taken raises, so no writer
+    proceeds unserialized. A nested acquire in the same thread (a transaction
+    calling ``_write_installed``) reuses the held lock instead of deadlocking on
+    a second descriptor.
+    """
+    held: dict[str, int] = getattr(_record_lock_state, "held", None) or {}
+    _record_lock_state.held = held
+    if held.get(name):
+        held[name] += 1
+        try:
+            yield
+        finally:
+            held[name] -= 1
+        return
+    from kiro_crew import platform_compat
+
+    path = _record_lock_path(name)
+    ensure_directory(path.parent)
+    fd = platform_compat.open_create_or_existing(path, os.O_RDWR)
+    try:
+        with platform_compat.file_lock(fd, exclusive=True):
+            held[name] = 1
+            try:
+                yield
+            finally:
+                held.pop(name, None)
+    finally:
+        os.close(fd)
+
+
+def holds_app_record_locks(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Release every record lock *fn* took with :func:`hold_app_record_lock`."""
+    import functools
+    from contextlib import ExitStack
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        stacks: list[ExitStack] = getattr(_record_lock_state, "stacks", None) or []
+        _record_lock_state.stacks = stacks
+        with ExitStack() as stack:
+            stacks.append(stack)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                stacks.pop()
+
+    return wrapper
+
+
+def hold_app_record_lock(name: str) -> None:
+    """Take *name*'s record lock until the enclosing ``@holds_app_record_locks`` returns.
+
+    Called right before a writer first reads the record, so the lock spans its
+    read, its checks and its write. Outside such a function it raises rather
+    than run unserialized.
+    """
+    stacks = getattr(_record_lock_state, "stacks", None)
+    if not stacks:
+        raise RuntimeError("hold_app_record_lock needs an @holds_app_record_locks caller")
+    stacks[-1].enter_context(app_record_lock(name))
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -349,23 +434,26 @@ def _write_installed(
     """
     from kiro_crew.apps.registry import _strip_git_target_userinfo
 
-    rule = _session_approval_save_rule(
-        name, meta, session_approval_consent=session_approval_consent
-    )
-    credential_free_meta = replace(
-        meta,
-        approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_path(name).is_file(),
-        sessionApprovalConsentPending=meta.sessionApprovalConsentPending or rule == "pending",
-        source=_credential_free_source_metadata(str(meta.source or "")),
-        sourceUrl=_strip_git_target_userinfo(str(meta.sourceUrl or "")),
-        sourceRegistry=_credential_free_source_metadata(str(meta.sourceRegistry or "")),
-    )
-    body = credential_free_meta.to_dict()
-    if rule == "unrecorded":
-        body.pop(SESSION_APPROVAL_PENDING_KEY, None)
-    meta_path = app_dir(name) / INSTALLED_META_FILENAME
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(meta_path, json.dumps(body, indent=2) + "\n")
+    # The save rule's on-disk read and the replace run under the record lock,
+    # so no other writer can land between them.
+    with app_record_lock(name):
+        rule = _session_approval_save_rule(
+            name, meta, session_approval_consent=session_approval_consent
+        )
+        credential_free_meta = replace(
+            meta,
+            approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_path(name).is_file(),
+            sessionApprovalConsentPending=meta.sessionApprovalConsentPending or rule == "pending",
+            source=_credential_free_source_metadata(str(meta.source or "")),
+            sourceUrl=_strip_git_target_userinfo(str(meta.sourceUrl or "")),
+            sourceRegistry=_credential_free_source_metadata(str(meta.sourceRegistry or "")),
+        )
+        body = credential_free_meta.to_dict()
+        if rule == "unrecorded":
+            body.pop(SESSION_APPROVAL_PENDING_KEY, None)
+        meta_path = app_dir(name) / INSTALLED_META_FILENAME
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(meta_path, json.dumps(body, indent=2) + "\n")
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
