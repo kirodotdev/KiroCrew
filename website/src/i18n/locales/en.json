@@ -8237,7 +8237,8 @@
         "tools_2": "tools",
         "undo": "Undo",
         "uninstall": "Uninstall",
-        "declared": "Declared"
+        "declared": "Declared",
+        "mcp_deny_spared": "This is one of {{productName}}'s own servers, so on {{name}} turning off one tool here stops only that tool."
       },
       "memoryGraphTab": {
         "loading_graph_data": "Loading graph data…",

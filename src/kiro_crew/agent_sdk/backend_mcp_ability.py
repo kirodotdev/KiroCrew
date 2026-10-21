@@ -220,6 +220,29 @@ class McpAbility:
             return False
         return any(m.costs_whole_server for m in PerToolDeny if m.value == self.per_tool_deny)
 
+    @property
+    def spared_servers(self) -> Tuple[str, ...]:
+        """The servers that keep per-tool deny where a tool-off costs others whole.
+
+        Non-empty only on a reach that costs a whole server and spares Crew's own
+        control plane (today ``per-call``): there Crew refuses the call itself on its
+        own servers, by the per-call identity the codex and opencode mirrors attach to
+        exactly ``CONTROL_PLANE_SERVERS``. The names are that same tuple, read from
+        the ``mcp_cleanup`` leaf ``acp.session_mcp`` re-exports it from, so the page
+        never holds a list of its own that could drift from the mirrors.
+
+        Empty everywhere else, and that is two different truths: on ``settings-file``
+        no server is costed whole, and on ``whole-server`` none is spared.
+        """
+        if not self.costs_whole_server or self.costs_control_plane:
+            return ()
+        try:
+            # function-local for the same load-path reason as :func:`_declaration`.
+            from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+        except Exception:
+            return ()
+        return tuple(CONTROL_PLANE_SERVERS)
+
 
 def _declaration(backend: str) -> Any | None:
     """*backend*'s ``McpProjection``, or ``None`` when it has no entry.
@@ -331,7 +354,8 @@ def ability_payload(backend: str) -> Dict[str, object]:
 
     * the per-tool deny reach and whether it can cost a whole server -- a RISK the
       reader meets by accident, since switching a tool off says nothing about
-      servers;
+      servers -- and the servers that cost spares, so the tool list words the
+      right one of the two facts on each server;
     * the spec settings that will not take effect here, as ONE list. The
       withheld/no-channel split is a maintainer's distinction between a settled
       ruling and an open gap; the reader's question is the same either way -- does
@@ -356,6 +380,9 @@ def ability_payload(backend: str) -> Dict[str, object]:
         # renderer comparing values itself would promote a new reach on one surface
         # and bury it on the next.
         "costs_whole_server": ability.costs_whole_server,
+        # Which servers that cost spares, so the MCP tool list can say the rule on
+        # every other server and the per-tool fact on these alone.
+        "spared_servers": list(ability.spared_servers),
         # Stated only where it HOLDS, so a harness that honours the whole file sends an
         # empty list and renders nothing: a reader never reads a row of "delivered"
         # marks that mean "as expected".

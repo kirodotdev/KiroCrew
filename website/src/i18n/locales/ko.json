@@ -14167,7 +14167,8 @@
         "sign_in_timeout": "로그인이 제시간에 승인 링크를 생성하지 못했습니다. 다시 시도하세요.",
         "temp_refusal_sealed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 읽기 전용 런타임 폴더 안에 있습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
         "temp_refusal_unclassifiable": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 실제 위치를 확인할 수 없습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
-        "temp_refusal_check_failed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 위치 확인에 실패했습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다."
+        "temp_refusal_check_failed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 위치 확인에 실패했습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
+        "mcp_deny_spared": "이 서버는 {{productName}}의 자체 서버이므로 {{name}}에서 여기의 도구 하나를 끄면 그 도구만 멈춥니다."
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",

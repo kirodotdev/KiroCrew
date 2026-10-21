@@ -31,6 +31,7 @@ const ROW_WAIT = { timeout: 5000 }
 
 const RULE = /stops every tool on the same server/
 const EXCEPTION = /One exception/
+const SPARED = /stops only that tool/
 
 const server: McpServer = {
   name: 'kirocrew-core',
@@ -42,7 +43,7 @@ const server: McpServer = {
 }
 
 /** One `/api/acp-backends` row; only `mcp` matters to this surface. */
-function probeRow(id: string, perToolDeny: string, policyId = id): AcpBackendProbe {
+function probeRow(id: string, perToolDeny: string, policyId = id, spared?: string[]): AcpBackendProbe {
   return {
     id,
     policy_id: policyId,
@@ -56,6 +57,8 @@ function probeRow(id: string, perToolDeny: string, policyId = id): AcpBackendPro
     mcp: {
       per_tool_deny: perToolDeny,
       costs_whole_server: perToolDeny === 'whole-server' || perToolDeny === 'per-call',
+      // The servers that reach spares, from the gateway's CONTROL_PLANE_SERVERS.
+      ...(spared ? { spared_servers: spared } : {}),
       ineffective: [],
     },
   } as AcpBackendProbe
@@ -63,9 +66,11 @@ function probeRow(id: string, perToolDeny: string, policyId = id): AcpBackendPro
 
 const BACKENDS = {
   backends: [
-    probeRow('goose', 'whole-server', 'Goose'),
-    probeRow('codex', 'per-call', 'Codex'),
-    probeRow('claude', 'settings-file'),
+    probeRow('goose', 'whole-server', 'Goose', []),
+    probeRow('codex', 'per-call', 'Codex', ['kirocrew-core', 'kirocrew-cron']),
+    probeRow('claude', 'settings-file', 'claude', []),
+    // An older gateway sends no list.
+    probeRow('codex-old', 'per-call', 'Codex'),
   ],
 }
 
@@ -80,11 +85,20 @@ function renderTab() {
   )
 }
 
+const thirdParty: McpServer = {
+  name: 'github',
+  command: 'github-cmd',
+  status: 'ok',
+  source: 'user',
+  enabled: true,
+  tools: ['create_issue', 'list_issues'],
+}
+
 /** Open the server's tool list and return the row it sits in. */
-async function openTools(): Promise<HTMLElement> {
-  const row = (await screen.findByText('kirocrew-core', { selector: 'code' }, ROW_WAIT)).closest('tr')!
+async function openTools(name = 'kirocrew-core', first = 'send_message'): Promise<HTMLElement> {
+  const row = (await screen.findByText(name, { selector: 'code' }, ROW_WAIT)).closest('tr')!
   fireEvent.click(within(row).getByRole('button', { name: /2\s+tools/i }))
-  await within(row).findByRole('button', { name: 'send_message' }, ROW_WAIT)
+  await within(row).findByRole('button', { name: first }, ROW_WAIT)
   return row
 }
 
@@ -122,8 +136,31 @@ describe('McpTab: what turning one tool off costs on the harness in use (#11969)
     expect(reach.compareDocumentPosition(firstTool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('adds the per-call exception, muted, right under the rule', async () => {
+  it('on a per-call harness, Crew\'s own server shows only the tool-by-tool fact (#21334)', async () => {
     mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'codex' } })
+    renderTab()
+    const row = await openTools()
+    const reach = await within(row).findByTestId('mcp-deny-reach', undefined, ROW_WAIT)
+    const spared = within(reach).getByText(SPARED)
+    expect(spared.textContent).toContain('Codex')
+    expect(spared).toHaveClass('text-muted')
+    expect(within(reach).queryByText(RULE)).toBeNull()
+    expect(within(reach).queryByText(EXCEPTION)).toBeNull()
+  })
+
+  it('on a per-call harness, any other server shows only the rule (#21334)', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'codex' } })
+    mockApi.mcpServers.mockResolvedValue([server, thirdParty])
+    renderTab()
+    const row = await openTools('github', 'create_issue')
+    const reach = await within(row).findByTestId('mcp-deny-reach', undefined, ROW_WAIT)
+    expect(within(reach).getByText(RULE).textContent).toContain('Codex')
+    expect(within(reach).queryByText(EXCEPTION)).toBeNull()
+    expect(within(reach).queryByText(SPARED)).toBeNull()
+  })
+
+  it('keeps the rule and its exception on a gateway that sends no spared list', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'codex-old' } })
     renderTab()
     const row = await openTools()
     const reach = await within(row).findByTestId('mcp-deny-reach', undefined, ROW_WAIT)

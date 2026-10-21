@@ -4,7 +4,7 @@ import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, 
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { configuredAcpBackend, mcpWholeServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
+import { configuredAcpBackend, mcpServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
@@ -429,6 +429,17 @@ interface McpTabProps {
   onManagedProviderClick?: (slug: string) => void
 }
 
+/** The cost of one tool-off on this server, or nothing where none holds. */
+function McpDenyReach({ reach }: { reach: { rule: string; exception: string } }) {
+  if (!reach.rule && !reach.exception) return null
+  return (
+    <div className="mb-1 max-w-prose text-[12px] leading-relaxed" data-testid="mcp-deny-reach">
+      {reach.rule && <p className="m-0 text-text-strong">{reach.rule}</p>}
+      {reach.exception && <p className="m-0 text-muted">{reach.exception}</p>}
+    </div>
+  )
+}
+
 export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   const provider = useProvider()
   const queryClient = useQueryClient()
@@ -501,10 +512,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     queryFn: () => api.acpBackends(),
     retry: false,
   })
-  const denyReach = useMemo(() => {
-    if (!harnessCfg || !harnessProbe) return { rule: '', exception: '' }
+  const denyProbe = useMemo(() => {
+    if (!harnessCfg || !harnessProbe) return undefined
     const active = configuredAcpBackend(harnessCfg)
-    return mcpWholeServerDeny(harnessProbe.backends?.find(b => b.id === active))
+    return harnessProbe.backends?.find(b => b.id === active)
   }, [harnessCfg, harnessProbe])
 
   const pendingCount = useMemo(() => {
@@ -1098,13 +1109,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     {/* The cost of a tool-off, above the tools and before any click,
                         at the card's weight: the rule strong, its exception muted
                         right under it. Shown whenever the list is open on a harness
-                        whose reach can cost a whole server; nothing otherwise. */}
-                    {(denyReach.rule || denyReach.exception) && (
-                      <div className="mb-1 max-w-prose text-[12px] leading-relaxed" data-testid="mcp-deny-reach">
-                        {denyReach.rule && <p className="m-0 text-text-strong">{denyReach.rule}</p>}
-                        {denyReach.exception && <p className="m-0 text-muted">{denyReach.exception}</p>}
-                      </div>
-                    )}
+                        whose reach can cost a whole server; nothing otherwise.
+                        Worded for THIS server: a server the reach spares shows
+                        only that fact. */}
+                    <McpDenyReach reach={mcpServerDeny(denyProbe, s.name)} />
                     <div className="space-y-0.5">{s.tools.map(t => {
                       const currentlyDisabled = (s.disabledTools || []).includes(t)
                       const toolOverride = pendingTools[s.name]?.[t]

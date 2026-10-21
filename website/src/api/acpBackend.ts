@@ -127,6 +127,35 @@ export function mcpWholeServerDeny(
 }
 
 /**
+ * The same cost, worded for ONE server's open tool list.
+ *
+ * The gateway lists the servers its reach spares (`mcp.spared_servers`, read from
+ * the same `CONTROL_PLANE_SERVERS` tuple the codex and opencode mirrors use), so
+ * the list says only the fact that holds there: the rule on every other server,
+ * and "stops only that tool" on a spared one. The harness card keeps both
+ * sentences, since it describes the harness rather than one server.
+ *
+ * A gateway that predates the field sends no list, and then this is the pair
+ * `mcpWholeServerDeny` returns, as before: guessing which servers are spared
+ * from a name here would drift from the server's tuple.
+ */
+export function mcpServerDeny(
+  probe: AcpBackendProbe | undefined,
+  server: string,
+): { rule: string; exception: string } {
+  const pair = mcpWholeServerDeny(probe)
+  const spared = probe?.mcp?.spared_servers
+  if (!probe || !Array.isArray(spared)) return pair
+  if (!spared.includes(server)) return { rule: pair.rule, exception: '' }
+  return {
+    rule: '',
+    exception: pair.rule
+      ? i18nT('pages.overview.mcpTab.mcp_deny_spared', { name: acpBackendName(probe) })
+      : '',
+  }
+}
+
+/**
  * The parsed body of a 503 `setup_marker_write_failed`, or `null` for any other
  * error. Both the first-run gate and Settings → Agent Harness read it, so it
  * lives here rather than in either screen: the config PATCH and the backend

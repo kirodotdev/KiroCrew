@@ -14397,7 +14397,8 @@
         "sign_in_timeout": "Die Anmeldung hat nicht rechtzeitig einen Freigabelink erzeugt. Erneut versuchen.",
         "temp_refusal_sealed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil es im schreibgeschützten Laufzeitordner liegt. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
         "temp_refusal_unclassifiable": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil sein tatsächlicher Ort nicht bestätigt werden konnte. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
-        "temp_refusal_check_failed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil die Ortsprüfung fehlgeschlagen ist. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet."
+        "temp_refusal_check_failed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil die Ortsprüfung fehlgeschlagen ist. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
+        "mcp_deny_spared": "Dies ist einer der eigenen Server von {{productName}}. Auf {{name}} stoppt das Ausschalten eines Tools hier nur dieses Tool."
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

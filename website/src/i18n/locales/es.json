@@ -14627,7 +14627,8 @@
         "sign_in_timeout": "El inicio de sesión no produjo un enlace de aprobación a tiempo. Inténtalo de nuevo.",
         "temp_refusal_sealed": "Se ignoró el {{key}}={{path}} declarado porque está dentro de la carpeta de ejecución de solo lectura. La comprobación usó en su lugar la carpeta temporal gestionada.",
         "temp_refusal_unclassifiable": "Se ignoró el {{key}}={{path}} declarado porque no se pudo confirmar su ubicación real. La comprobación usó en su lugar la carpeta temporal gestionada.",
-        "temp_refusal_check_failed": "Se ignoró el {{key}}={{path}} declarado porque falló la comprobación de la ubicación. La comprobación usó en su lugar la carpeta temporal gestionada."
+        "temp_refusal_check_failed": "Se ignoró el {{key}}={{path}} declarado porque falló la comprobación de la ubicación. La comprobación usó en su lugar la carpeta temporal gestionada.",
+        "mcp_deny_spared": "Este es uno de los servidores propios de {{productName}}, así que en {{name}} desactivar una herramienta aquí detiene solo esa herramienta."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

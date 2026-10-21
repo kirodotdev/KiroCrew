@@ -14627,7 +14627,8 @@
         "sign_in_timeout": "L’accesso non ha prodotto un link di approvazione in tempo. Riprova.",
         "temp_refusal_sealed": "Il {{key}}={{path}} dichiarato è stato ignorato perché si trova nella cartella di runtime di sola lettura. La verifica ha usato invece la cartella temporanea gestita.",
         "temp_refusal_unclassifiable": "Il {{key}}={{path}} dichiarato è stato ignorato perché non è stato possibile confermarne la posizione reale. La verifica ha usato invece la cartella temporanea gestita.",
-        "temp_refusal_check_failed": "Il {{key}}={{path}} dichiarato è stato ignorato perché il controllo della posizione non è riuscito. La verifica ha usato invece la cartella temporanea gestita."
+        "temp_refusal_check_failed": "Il {{key}}={{path}} dichiarato è stato ignorato perché il controllo della posizione non è riuscito. La verifica ha usato invece la cartella temporanea gestita.",
+        "mcp_deny_spared": "Questo è uno dei server di {{productName}}, quindi su {{name}} disattivare uno strumento qui ferma solo quello strumento."
       },
       "memoryGraphTab": {
         "all_count": "Tutti ({{count}})",

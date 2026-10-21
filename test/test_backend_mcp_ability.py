@@ -323,6 +323,7 @@ def test_a_mirror_whose_rulings_raise_answers_nothing_established(monkeypatch) -
     assert payload == {
         "per_tool_deny": "",
         "costs_whole_server": False,
+        "spared_servers": [],
         "ineffective": [],
     }, payload
 
@@ -452,6 +453,42 @@ def test_the_classification_reaches_the_wire_for_every_shipped_harness() -> None
         assert isinstance(payload["costs_whole_server"], bool), backend
 
 
+def test_the_spared_servers_are_the_tuple_the_mirrors_use() -> None:
+    """The tool list learns which servers keep per-tool deny from the wire.
+
+    The names must be the SAME tuple the codex and opencode mirrors attach the
+    per-call identity to, never a copy, so a server added there reaches the page
+    with no frontend edit. And only a reach that costs others whole while sparing
+    the control plane lists any: on ``settings-file`` nothing is costed whole, and
+    on ``whole-server`` nothing is spared.
+    """
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
+    from kiro_crew.providers.mirrors import codex, opencode
+
+    assert codex.CONTROL_PLANE_SERVERS is session_mcp.CONTROL_PLANE_SERVERS
+    assert opencode.CONTROL_PLANE_SERVERS is session_mcp.CONTROL_PLANE_SERVERS
+
+    def spared(reach: str) -> tuple:
+        return McpAbility(
+            projection="mirror", per_tool_deny=reach, withheld=(), no_channel=()
+        ).spared_servers
+
+    assert spared(PerToolDeny.PER_CALL.value) == session_mcp.CONTROL_PLANE_SERVERS
+    assert spared(PerToolDeny.WHOLE_SERVER.value) == ()
+    assert spared(PerToolDeny.SETTINGS_FILE.value) == ()
+    assert spared("") == ()
+
+    per_call = [b for b, d in PROJECTIONS.items() if d.per_tool_deny is PerToolDeny.PER_CALL]
+    assert per_call, "no harness declares the per-call reach any more"
+    for backend in sorted(PROJECTIONS):
+        listed = mcp_mod.ability_payload(backend)["spared_servers"]
+        assert isinstance(listed, list), backend
+        want = list(session_mcp.CONTROL_PLANE_SERVERS) if backend in per_call else []
+        assert listed == want, backend
+    assert mcp_mod.ability_payload(STRANGER)["spared_servers"] == []
+
+
 # ── 5. the shipped declarations, end to end ─────────────────────────────────
 
 
@@ -532,7 +569,7 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
     payload = mcp_mod.ability_payload(
         next(b for b, d in PROJECTIONS.items() if d.kind is ProjectionKind.MIRROR)
     )
-    assert set(payload) == {"per_tool_deny", "costs_whole_server", "ineffective"}
+    assert set(payload) == {"per_tool_deny", "costs_whole_server", "spared_servers", "ineffective"}
     assert isinstance(payload["ineffective"], list)
 
 
@@ -543,6 +580,7 @@ def test_the_card_endpoint_carries_the_mcp_group() -> None:
         assert set(payload["mcp"]) == {  # type: ignore[arg-type]
             "per_tool_deny",
             "costs_whole_server",
+            "spared_servers",
             "ineffective",
         }, backend
 
@@ -562,7 +600,12 @@ def test_the_wire_carries_only_what_costs_the_reader_something() -> None:
     """
     for backend in sorted(PROJECTIONS):
         payload = mcp_mod.ability_payload(backend)
-        assert set(payload) == {"per_tool_deny", "costs_whole_server", "ineffective"}, backend
+        assert set(payload) == {
+            "per_tool_deny",
+            "costs_whole_server",
+            "spared_servers",
+            "ineffective",
+        }, backend
 
 
 def test_the_projection_kind_is_known_and_not_sent() -> None:

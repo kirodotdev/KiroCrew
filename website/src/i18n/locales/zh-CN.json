@@ -14167,7 +14167,8 @@
         "sign_in_timeout": "登录未能及时生成批准链接。请重试。",
         "temp_refusal_sealed": "已忽略声明的 {{key}}={{path}}，原因：它位于只读的运行时文件夹内。探测改用了托管的临时文件夹。",
         "temp_refusal_unclassifiable": "已忽略声明的 {{key}}={{path}}，原因：无法确认它的实际位置。探测改用了托管的临时文件夹。",
-        "temp_refusal_check_failed": "已忽略声明的 {{key}}={{path}}，原因：位置检查失败。探测改用了托管的临时文件夹。"
+        "temp_refusal_check_failed": "已忽略声明的 {{key}}={{path}}，原因：位置检查失败。探测改用了托管的临时文件夹。",
+        "mcp_deny_spared": "这是 {{productName}} 自己的服务器，因此在 {{name}} 上关闭这里的一个工具只会停止该工具。"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",

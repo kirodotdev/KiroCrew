@@ -14627,7 +14627,8 @@
         "sign_in_timeout": "O login não produziu um link de aprovação a tempo. Tente novamente.",
         "temp_refusal_sealed": "O {{key}}={{path}} declarado foi ignorado porque está dentro da pasta de execução somente leitura. A verificação usou a pasta temporária gerenciada no lugar.",
         "temp_refusal_unclassifiable": "O {{key}}={{path}} declarado foi ignorado porque não foi possível confirmar sua localização real. A verificação usou a pasta temporária gerenciada no lugar.",
-        "temp_refusal_check_failed": "O {{key}}={{path}} declarado foi ignorado porque a verificação da localização falhou. A verificação usou a pasta temporária gerenciada no lugar."
+        "temp_refusal_check_failed": "O {{key}}={{path}} declarado foi ignorado porque a verificação da localização falhou. A verificação usou a pasta temporária gerenciada no lugar.",
+        "mcp_deny_spared": "Este é um dos servidores do próprio {{productName}}, então no {{name}} desativar uma ferramenta aqui para só essa ferramenta."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

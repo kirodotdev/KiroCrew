@@ -166,6 +166,8 @@ export interface AcpBackendProbe {
   mcp?: {
     per_tool_deny: string
     costs_whole_server?: boolean
+    /** Servers that keep per-tool deny where the reach costs others whole. */
+    spared_servers?: string[]
     ineffective: string[]
   }
 }

@@ -956,6 +956,7 @@ class TestEndpointPayloadShape:
             assert set(row["mcp"]) == {
                 "per_tool_deny",
                 "costs_whole_server",
+                "spared_servers",
                 "ineffective",
             }
             # Sign-in is the harness's own third fact, so every row carries it --
