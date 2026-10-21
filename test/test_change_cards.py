@@ -78,6 +78,8 @@ def test_a_secret_card_has_no_value_field_at_all():
                 ("knowledge.auto_add_documents", True, False, "tighten"),
                 ("agent.acp_backend", "", "claude", "code_exec"),
                 ("session.pool_agent", "", "builder", "code_exec"),
+                # The default can bind every new chat to a Kiro Cloud profile.
+                ("session_environments.default_profile", "", "cloud", "code_exec"),
                 ("telemetry.enabled", False, True, "normal"),
             ],
         ),

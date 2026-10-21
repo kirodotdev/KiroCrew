@@ -51,6 +51,7 @@ def setup(tmp_path, monkeypatch):
         ("profiles", "bad"),
         ("sprites_profiles", "bad"),
         ("boxd_profiles", "bad"),
+        ("kiro_cloud_profiles", "bad"),
         ("coder_url", "ready"),
     ],
 )
