@@ -1008,6 +1008,8 @@ export interface SessionEnvironmentProfile {
   workdir: string
   /** Template name, what tells two profiles apart; older gateways omit it. */
   template?: string
+  /** Kiro Cloud profiles only: the repositories its cloud sandbox opens. */
+  repositories?: string[]
 }
 
 export interface RemoteDirListing {
@@ -1084,6 +1086,8 @@ export interface SessionEnvironmentWorkspace {
 export type SessionEnvironmentStartStage = 'checking' | 'provisioning' | 'connecting' | 'starting_agent'
 
 export interface SlotEnvironment {
+  /** Recorded placement survives a profile being removed or reused. */
+  provider?: string | null
   profile: string | null
   profiles: SessionEnvironmentProfile[]
   /** True once the session has a message: its environment can no longer change. */
