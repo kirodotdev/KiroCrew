@@ -7,11 +7,12 @@
 # "Notifications") slides the sheet in from the right, that the sheet reads
 # as an honest empty state, and that Escape (or the bell again) is the single
 # dismissal path that parks it back offscreen without leaving a scrim or a
-# shifted layout behind. The lane's target never produces a notification
-# (no notifications.jsonl in the seeded home, --no-crons, no chat channel, the
-# fixture's hook posts nothing), so "No notifications" / "Activity will appear
-# here" is deterministic whatever ran earlier in the session and a retry reads
-# the same. Only the newest three screenshots survive (harness.KEEP_IMAGES);
+# shifted layout behind. The booted target holds no notification (no
+# notifications.jsonl in the seeded home, --no-crons, no chat channel, the
+# fixture's hook posts nothing), but a crewmate DM reply posts one, so
+# `fresh_target` runs this before any scenario that chats with a crewmate;
+# "No notifications" / "Activity will appear here" then holds on every night
+# and a retry reads the same. Only the newest three screenshots survive (harness.KEEP_IMAGES);
 # with three actions they are the open sheet, the dismissed sheet and the
 # settled page, so the open evidence is read from the first of them.
 name: notifications-bell-sheet-open-close
@@ -26,6 +27,7 @@ preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /chat
+  fresh_target: true
 steps:
   - You are on the chat page. In the top bar, near the right edge, find the small bell icon button named "Notifications" (it carries no number badge) and click it once. A sheet slides in from the right edge with the heading "Notifications".
   - Read the sheet without clicking anything in it. It says "No notifications" with "Activity will appear here" beneath, and at its bottom right there is a link reading "Open inbox" -- do not click that link. Press the Escape key once.

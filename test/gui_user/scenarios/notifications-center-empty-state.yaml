@@ -1,12 +1,14 @@
 # Smoke: the notification centre when nothing has happened yet, reached the way
 # a person reaches it -- the bell in the top bar, then the popover's "Open
-# inbox" link to the full page. The lane's target never produces a
-# notification: the seeded home ships no notifications.jsonl, the gateway runs
-# with --no-crons, no chat channel is configured, the fixture's one hook runs a
-# command and posts nothing, and the fake backend never calls a notifying tool,
-# so the popover's empty state ("No notifications" / "Activity will appear
-# here") and the page's zero counters are deterministic whatever ran before in
-# the same session -- which is also why a retry reads the same. The backlog
+# inbox" link to the full page. The booted target holds no notification: the
+# seeded home ships no notifications.jsonl, the gateway runs with --no-crons, no
+# chat channel is configured, the fixture's one hook runs a command and posts
+# nothing, and the fake backend never calls a notifying tool. Other scenarios
+# DO write notifications -- every crewmate DM reply posts one -- so
+# `fresh_target` runs this before any of them, and the popover's empty state
+# ("No notifications" / "Activity will appear here") and the page's zero
+# counters hold on every night; reading writes nothing, so a retry reads the
+# same. The backlog
 # record names the `empty` seed; the lane boots `rich`, and on this surface the
 # two are the same because neither carries a note. Two clicks and a wait keep
 # the surviving screenshots to the popover, the page and the settled page, so
@@ -23,6 +25,7 @@ preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /chat
+  fresh_target: true
 steps:
   - You are on the chat page. In the top bar, near the right edge, find the small bell icon (it carries no number badge) and click it once. A panel slides in from the right with the heading "Notifications".
   - Read the panel. It says "No notifications" with "Activity will appear here" beneath. At the panel's bottom right click the link reading "Open inbox".

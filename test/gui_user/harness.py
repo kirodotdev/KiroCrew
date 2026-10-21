@@ -48,6 +48,7 @@ from gui_user.scenarios import (  # noqa: E402
     ATTEMPT_SUFFIX,
     Scenario,
     ScenarioError,
+    check_run_order,
     load_all,
     select,
 )
@@ -647,6 +648,7 @@ class Runner:
         return "Noted. Continue with the steps."
 
     def run(self, scenarios: list[Scenario], *, retries: int) -> list[ScenarioResult]:
+        check_run_order(scenarios)
         results: list[ScenarioResult] = []
         budget_hit = False
         for sc in scenarios:

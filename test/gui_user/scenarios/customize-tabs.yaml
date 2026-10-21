@@ -22,6 +22,7 @@ preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /chat
+  fresh_target: true
 steps:
   - You are on the chat page. In the left rail find the item labelled "Customize" (it is in the bottom group, above "Settings") and click it.
   - The page title reads "Customize". On its left is a rail of tabs grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Crewmates" (first under "Agent") is not already highlighted, click it.

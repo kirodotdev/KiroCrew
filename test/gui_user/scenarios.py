@@ -13,6 +13,7 @@
       seed: rich                         # KIROCREW_HOME fixture the target boots from
       members: []                        # crew member slugs boot.sh adds to config.agents
       start_url: /settings               # path the browser opens (token is appended)
+      fresh_target: false                # true: reads the target as boot left it (runs first)
     steps:                               # what a human tester would be told, in order
       - Open Settings and find the appearance / theme control.
     expectations:                        # what must be TRUE on screen at the end
@@ -165,6 +166,10 @@ class Scenario:
     seed: str = "rich"
     members: tuple[str, ...] = ()
     start_url: str = "/"
+    #: The scenario reads the target exactly as ``boot.sh`` left it, so it must run
+    #: before any scenario that may write (see :func:`select` and
+    #: :func:`check_run_order`). It must not write anything itself.
+    fresh_target: bool = False
     persona: str = DEFAULT_PERSONA
     path: Path | None = field(default=None, compare=False)
 
@@ -290,7 +295,7 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
     pre = doc.get("preconditions") or {}
     if not isinstance(pre, dict):
         raise ScenarioError(f"{path}: 'preconditions' must be a mapping")
-    unknown_pre = set(pre) - {"seed", "members", "start_url"}
+    unknown_pre = set(pre) - {"seed", "members", "start_url", "fresh_target"}
     if unknown_pre:
         raise ScenarioError(f"{path}: unknown preconditions {sorted(unknown_pre)}")
     seed = pre.get("seed", "rich")
@@ -309,6 +314,9 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
         raise ScenarioError(
             f"{path}: preconditions.start_url must be an absolute path without a query"
         )
+    fresh_target = pre.get("fresh_target", False)
+    if not isinstance(fresh_target, bool):
+        raise ScenarioError(f"{path}: preconditions.fresh_target must be true or false")
 
     return Scenario(
         name=name,
@@ -326,6 +334,7 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
         seed=seed,
         members=tuple(members),
         start_url=start_url,
+        fresh_target=fresh_target,
         persona=persona,
         path=path,
     )
@@ -353,6 +362,13 @@ def select(
 
     ``nightly`` includes the smoke tier (nightly is the full run); ``smoke`` is
     the PR subset. An explicit name list bypasses the tier filter.
+
+    The result is in RUN order: every ``fresh_target`` scenario first, then the
+    rest, each part keeping its input (file-name) order. The target boots once
+    per run and nothing resets it between scenarios, so a scenario that reads
+    the boot state must run before any scenario that may write -- by file name,
+    ``members-*`` crewmate chats (which post notifications and add crewmates)
+    would otherwise run before ``notifications-*``.
     """
     wanted = set(names)
     out: list[Scenario] = []
@@ -366,7 +382,25 @@ def select(
     missing = wanted - {s.name for s in out}
     if missing:
         raise ScenarioError(f"unknown scenario name(s): {sorted(missing)}")
-    return out
+    return [s for s in out if s.fresh_target] + [s for s in out if not s.fresh_target]
+
+
+def check_run_order(scenarios: Iterable[Scenario]) -> None:
+    """Refuse a run order that puts a ``fresh_target`` scenario after any other.
+
+    :func:`select` already orders a run this way; this is the runner's own check,
+    so a caller that builds or reorders the list itself cannot silently hand a
+    fresh-target scenario a target an earlier scenario has written to.
+    """
+    seen_other = ""
+    for s in scenarios:
+        if not s.fresh_target:
+            seen_other = seen_other or s.name
+        elif seen_other:
+            raise ScenarioError(
+                f"{s.name} needs a fresh target but runs after {seen_other}; "
+                "run every fresh_target scenario first (scenarios.select does)"
+            )
 
 
 def by_feature(scenarios: Iterable[Scenario]) -> dict[str, list[Scenario]]:

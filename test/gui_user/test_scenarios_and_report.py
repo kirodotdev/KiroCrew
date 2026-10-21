@@ -203,6 +203,32 @@ class TestShippedScenarios:
         )
         assert any(f'"v{version}"' in exp for exp in sc.expectations)
 
+    def test_fresh_target_scenarios_run_before_any_scenario_that_writes(self) -> None:
+        # The target boots once and nothing resets it. In file-name order the
+        # members-*/crewmate-* chats post crewmate notes and add crewmates
+        # before notifications-* and customize-tabs read an empty inbox and a
+        # one-card roster. The scenarios that read the boot state say so, and
+        # select() runs them first in every tier.
+        fresh = {
+            "capabilities-agents-list-and-open-editor",
+            "customize-tabs",
+            "notifications-bell-sheet-open-close",
+            "notifications-center-empty-state",
+        }
+        loaded = scenarios.load_all(SCENARIOS_DIR)
+        assert {s.name for s in loaded if s.fresh_target} == fresh
+        for tier in ("smoke", "nightly"):
+            run = scenarios.select(loaded, tier=tier)
+            flags = [s.fresh_target for s in run]
+            first_other = flags.index(False)
+            assert all(flags[:first_other]) and not any(flags[first_other:]), tier
+            scenarios.check_run_order(run)
+            # Each part keeps file-name order, so the rest of the run is unchanged.
+            rest = [s.name for s in run[first_other:]]
+            assert rest == sorted(rest), tier
+        picked = scenarios.select(loaded, names=["members-dm-hello", "customize-tabs"])
+        assert [s.name for s in picked] == ["customize-tabs", "members-dm-hello"]
+
     def test_explicit_name_selection(self) -> None:
         picked = scenarios.select(scenarios.load_all(SCENARIOS_DIR), names=["members-dm-hello"])
         assert [s.name for s in picked] == ["members-dm-hello"]
@@ -453,7 +479,23 @@ class TestScenarioValidation:
         sc = scenarios.load_scenario(_write(tmp_path, "demo", _valid()))
         assert sc.members == ("nova-sky",) and sc.start_url == "/settings" and sc.seed == "rich"
         assert sc.feature == "settings" and sc.user_story.startswith("As a user")
-        assert sc.docs_url == ""
+        assert sc.docs_url == "" and sc.fresh_target is False
+
+    def test_runner_refuses_a_fresh_target_scenario_after_any_other(self, tmp_path: Path) -> None:
+        doc = _valid("fresh")
+        doc["preconditions"]["fresh_target"] = True
+        fresh = scenarios.load_scenario(_write(tmp_path, "fresh", doc))
+        other = scenarios.load_scenario(_write(tmp_path, "other", _valid("other")))
+        assert fresh.fresh_target and not other.fresh_target
+        scenarios.check_run_order([fresh, other])
+        with pytest.raises(scenarios.ScenarioError, match="fresh needs a fresh target"):
+            scenarios.check_run_order([other, fresh])
+        assert scenarios.select([other, fresh]) == [fresh, other]
+        # The runner's own check fires before it touches the model or the display,
+        # so a bare instance is enough.
+        runner = harness.Runner.__new__(harness.Runner)
+        with pytest.raises(scenarios.ScenarioError, match="fresh needs a fresh target"):
+            harness.Runner.run(runner, [other, fresh], retries=0)
 
     def test_docs_url_accepts_https_and_repo_docs_paths(self, tmp_path: Path) -> None:
         for url in (
@@ -503,6 +545,7 @@ class TestScenarioValidation:
             (lambda d: d.update(max_seconds=scenarios.MAX_SECONDS_CEILING + 1), "max_seconds"),
             (lambda d: d.update(max_seconds=True), "max_seconds"),
             (lambda d: d.update(bonus=1), "unknown keys"),
+            (lambda d: d["preconditions"].update(fresh_target="yes"), "fresh_target"),
             (lambda d: d["preconditions"].update(start_url="settings"), "start_url"),
             (lambda d: d["preconditions"].update(start_url="/x?token=1"), "start_url"),
             (lambda d: d["preconditions"].update(members=["Nova Sky"]), "members"),

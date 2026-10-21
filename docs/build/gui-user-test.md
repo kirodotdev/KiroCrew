@@ -112,6 +112,7 @@ preconditions:
   seed: rich                # KIROCREW_HOME fixture (kirocrew gateway --seed NAME)
   members: []               # crew member slugs boot.sh adds to config.agents
   start_url: /settings      # path the harness navigates to first (no query string)
+  fresh_target: false       # optional; true = reads the target as boot left it (see Seeds)
 steps:
   - You are on the Settings page. Take note of the current background colour.
   - Find the theme control and pick a different theme than the one selected.
@@ -177,6 +178,13 @@ in the same PR as the UI and re-run it on demand (below) before merging.
 `boot.sh` seeds one home per run from `GUI_SEED` (default `rich`) with `GUI_MEMBERS`
 (default `nova-sky`); a scenario's `preconditions.seed` / `members` document what it
 needs and must agree with that boot, because the target is booted once per run.
+
+Nothing resets the target between scenarios, so a scenario sees whatever earlier
+ones wrote: a crewmate chat posts a notification and a create scenario adds a
+crewmate. A scenario that reads the boot state (an empty inbox, a one-card roster)
+sets `preconditions.fresh_target: true` and must not write anything itself.
+`scenarios.select` runs every such scenario first, before the rest in file-name
+order, and the harness refuses a run order that puts one after any other scenario.
 
 Because one seed serves every scenario, a surface that needs content gets it from the
 `rich` fixture itself rather than from a second seed: `rich` ships the three saved

@@ -24,6 +24,7 @@ preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /capabilities
+  fresh_target: true
 steps:
   - You are on the Customize page. It has a rail of tabs on the left, grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Crewmates" (people icon, first under "Agent") is not already highlighted, click it.
   - The pane shows one card named "nova-sky" whose description reads "Nova Sky -- seeded crew member for the GUI user test." and whose binding grid has small-capital labels with values, among them BUILT FROM "kirocrew" and WORKSPACE "default". Above the cards is a filter box ("Filter crewmates…"), a "Cards | List" switcher and an "Add crewmate" button. Do not click the card yet.
