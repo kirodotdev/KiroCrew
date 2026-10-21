@@ -85,7 +85,7 @@ export default function CrewAvatarButton({
         type="button"
         onClick={open}
         disabled={disabled}
-        className="group/avatar relative inline-flex shrink-0 cursor-pointer rounded-md focus-ring disabled:cursor-not-allowed disabled:opacity-60"
+        className="group/avatar relative inline-flex shrink-0 cursor-pointer rounded-full focus-ring disabled:cursor-not-allowed disabled:opacity-60"
         aria-label={label}
         title={label}
         data-testid={testId}
@@ -96,7 +96,7 @@ export default function CrewAvatarButton({
         <span
           aria-hidden="true"
           data-testid="avatar-edit-scrim"
-          className={`pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-bg/60 text-text-strong opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100 group-disabled/avatar:opacity-0 [@media(hover:none)]:hidden`}
+          className={`pointer-events-none absolute inset-0 flex items-center justify-center rounded-full bg-bg/60 text-text-strong opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100 group-disabled/avatar:opacity-0 [@media(hover:none)]:hidden`}
         >
           <Pencil size={glyph} className="lucide-inline" />
         </span>

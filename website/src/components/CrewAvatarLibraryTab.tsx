@@ -322,7 +322,7 @@ export default function CrewAvatarLibraryTab({
           {pack.id === BUILTIN_PACK_ID ? (
             // The built-in pack's art is this bundle's own ghost; the slot route
             // answers 404 for it on purpose.
-            <CrewAvatar seed={name} avatar={{ kind: 'ghost' }} size={72} className="rounded-lg" />
+            <CrewAvatar seed={name} avatar={{ kind: 'ghost' }} size={72} />
           ) : pack.format === 'svg' ? (
             // An SVG pack's thumbnail is ONE per-slot request and no pack read —
             // which is why the format is worth branching on here: the detail route
@@ -334,7 +334,7 @@ export default function CrewAvatarLibraryTab({
               aria-hidden="true"
               width={72}
               height={72}
-              className="h-[72px] w-[72px] rounded-lg border border-border bg-bg-elevated object-cover"
+              className="h-[72px] w-[72px] rounded-full border border-border bg-bg-elevated object-cover"
               data-testid={`avatar-pack-thumb-${pack.id}`}
             />
           ) : brokenArt.has(pack.id) ? (
@@ -372,7 +372,6 @@ export default function CrewAvatarLibraryTab({
               id={pack.id}
               state="idle"
               size={72}
-              className="rounded-lg"
               onError={() => markBroken(pack.id)}
             />
           )}

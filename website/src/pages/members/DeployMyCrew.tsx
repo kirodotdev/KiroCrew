@@ -280,7 +280,7 @@ function CrewFaces({ members }: { members: readonly CrewFace[] }) {
           seed={m.name}
           avatar={m.avatar}
           size={56}
-          className={`rounded-lg ${i > 0 ? '-ml-3' : ''}`}
+          className={i > 0 ? '-ml-3' : ''}
         />
       ))}
       {extra > 0 && (

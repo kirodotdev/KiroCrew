@@ -784,7 +784,6 @@ export default function CrewAvatarBuilder({
                 avatar={{ kind: 'ghost', traits: shown, motions }}
                 state={state}
                 size={72}
-                className="rounded-lg"
               />
             </div>
           )}
@@ -952,7 +951,7 @@ export default function CrewAvatarBuilder({
                   aria-hidden="true"
                   width={176}
                   height={176}
-                  className="rounded-xl border border-border"
+                  className="rounded-full border border-border"
                   data-testid={iconUntouched ? 'avatar-icon-preview-current' : 'avatar-icon-preview'}
                 />
                 {/* Background colour. Swatches first (a curated set that reads
@@ -1035,7 +1034,7 @@ export default function CrewAvatarBuilder({
                           aria-hidden="true"
                           width={72}
                           height={72}
-                          className="rounded-lg"
+                          className="rounded-full"
                         />
                       </button>
                     )
@@ -1096,11 +1095,11 @@ export default function CrewAvatarBuilder({
                   aria-hidden="true"
                   width={176}
                   height={176}
-                  className="rounded-xl border border-border object-cover"
+                  className="rounded-full border border-border object-cover"
                   data-testid="avatar-upload-preview"
                 />
               ) : value?.kind === 'image' ? (
-                <CrewAvatar seed={name} avatar={value} size={176} className="rounded-xl" />
+                <CrewAvatar seed={name} avatar={value} size={176} />
               ) : null}
               {/* Drop zone doubles as the click target; a plain button inside
                   keeps it keyboard-reachable without inventing a focusable div. */}
@@ -1189,7 +1188,7 @@ export default function CrewAvatarBuilder({
                 aria-hidden="true"
                 width={176}
                 height={176}
-                className="rounded-xl border border-border"
+                className="rounded-full border border-border"
                 data-testid="avatar-builder-preview"
               />
               <div className="flex w-full flex-col gap-2 text-[12px]">
@@ -1246,7 +1245,7 @@ export default function CrewAvatarBuilder({
                       }`}
                       data-testid={`avatar-opt-${key.replace('#', '')}`}
                     >
-                      <img src={uri} alt="" aria-hidden="true" width={72} height={72} className="rounded-lg" />
+                      <img src={uri} alt="" aria-hidden="true" width={72} height={72} className="rounded-full" />
                       <span className={`text-[10.5px] leading-tight ${selected ? 'text-text-strong' : 'text-muted'}`}>
                         {/* Tile options carry no text label: the swatch IS the
                             meaning, and a raw hex code is noise to a person

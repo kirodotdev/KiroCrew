@@ -422,7 +422,7 @@ export default function CrewAvatar({
       width={size}
       height={size}
       style={{ width: size, height: size }}
-      className={`shrink-0 rounded-md border border-border bg-bg-elevated ${className}`}
+      className={`shrink-0 rounded-full border border-border bg-bg-elevated ${className}`}
     />
   )
 
@@ -439,7 +439,7 @@ export default function CrewAvatar({
         width={size}
         height={size}
         style={{ width: size, height: size }}
-        className={`shrink-0 rounded-md border border-border bg-bg-elevated ${className}`}
+        className={`shrink-0 rounded-full border border-border bg-bg-elevated ${className}`}
       />
     )
   }
@@ -484,7 +484,7 @@ export default function CrewAvatar({
         }}
         // object-cover: the client crops square before upload, but an old or
         // hand-placed file may not be — cover keeps the tile's rhythm either way.
-        className={`shrink-0 rounded-md border border-border bg-bg-elevated object-cover ${className}`}
+        className={`shrink-0 rounded-full border border-border bg-bg-elevated object-cover ${className}`}
       />
     )
   }

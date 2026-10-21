@@ -210,10 +210,10 @@ function LookTile({ seed, avatar, onEdit, label, disabled }: {
         onPointerUp={onPointerUp}
         onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) onFocus(e) }}
         onBlur={onBlur}
-        className="group relative shrink-0 rounded-[24px] border-none bg-transparent p-0 cursor-pointer focus-ring disabled:cursor-default disabled:opacity-60"
+        className="group relative shrink-0 rounded-full border-none bg-transparent p-0 cursor-pointer focus-ring disabled:cursor-default disabled:opacity-60"
         data-testid="crewmate-create-look"
       >
-        <CrewAvatar seed={seed} avatar={avatar ?? undefined} size={96} className="!rounded-[24px]" />
+        <CrewAvatar seed={seed} avatar={avatar ?? undefined} size={96} />
         <span
           aria-hidden="true"
           onMouseEnter={onMouseEnter}

@@ -797,8 +797,13 @@ export function compose(
  * equivalent rect `rx` in the mark's 1200-unit space. Both spellings exist
  * because the seeded avatar path goes through DiceBear (which clips) while a
  * pinned face is composed directly and must clip itself identically.
+ *
+ * 50 is a circle: a crew face is round on every surface, so the "on watch"
+ * ring around it is concentric with the face instead of meeting its corners.
+ * Art near the tile's corners (a wand tip, a mug handle) is cut by the circle;
+ * that is accepted.
  */
-export const GHOST_RADIUS_PCT = 12
+export const GHOST_RADIUS_PCT = 50
 const GHOST_RADIUS_UNITS = (1200 * GHOST_RADIUS_PCT) / 100
 
 /**

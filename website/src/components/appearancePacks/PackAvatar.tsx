@@ -164,7 +164,7 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
     if (detail) setRefused({ id, detail })
   }, [id, detail])
 
-  const box = `shrink-0 overflow-hidden rounded-md border border-border bg-bg-elevated ${className}`
+  const box = `shrink-0 overflow-hidden rounded-full border border-border bg-bg-elevated ${className}`
 
   // In place and still mounted — see the header for why unmounting here would
   // make every read failure permanent.
