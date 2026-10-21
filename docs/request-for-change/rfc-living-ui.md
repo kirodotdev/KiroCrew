@@ -1,21 +1,36 @@
 ---
 title: Living UI — style-neutral motion, focus and readout rules plus a small toolkit for widgets and dashboards
-status: draft
+status: implemented
 author: iamwhatever
 created: 2026-10-18
-last-audited: 2026-10-18
-audited-at: 9d088c85ad
+last-audited: 2026-10-21
+audited-at: 0b89e0c6f7
 doc-pr: 21797
-implementation-prs: []
+implementation-prs: [21897, 21840, 22107, 22225, 22441, 22093, 22240, 21874, 22117, 22091, 22231]
 tracking-issues: [21796]
 supersedes: []
 superseded-by: []
 ---
 # RFC: Living UI
 
-- Status: draft. Nothing is built. This document proposes the design and the
-  sequence of small pull requests in §11; the status flips to `accepted` when a
-  maintainer records acceptance here.
+- Status: implemented. The maintainer iamwhatever accepted this RFC and asked
+  to mark it implemented on 2026-10-21. Every required §11 row has landed:
+  rows 1 and 2 in [#21897](https://github.com/kirodotdev/KiroCrew/pull/21897),
+  whose squash merge carried row 1, with review fixes to `SKILL.md` in
+  [#21840](https://github.com/kirodotdev/KiroCrew/pull/21840); row 3 in
+  [#22107](https://github.com/kirodotdev/KiroCrew/pull/22107); row 4 in
+  [#22225](https://github.com/kirodotdev/KiroCrew/pull/22225); row 5 in
+  [#22441](https://github.com/kirodotdev/KiroCrew/pull/22441); row 6 in
+  [#22093](https://github.com/kirodotdev/KiroCrew/pull/22093), plus
+  [#22240](https://github.com/kirodotdev/KiroCrew/pull/22240) (the harness's
+  Dashboard page mode, §7 step 1) and
+  [#22231](https://github.com/kirodotdev/KiroCrew/pull/22231) (the example fix
+  for [#22133](https://github.com/kirodotdev/KiroCrew/issues/22133)); row 7 in
+  [#21874](https://github.com/kirodotdev/KiroCrew/pull/21874); row 8 in
+  [#22117](https://github.com/kirodotdev/KiroCrew/pull/22117); row 10 in
+  [#22091](https://github.com/kirodotdev/KiroCrew/pull/22091). Row 9 (measure,
+  then decide on injection) is optional and not done, so §12 Q2 stays open.
+  Verified at `0b89e0c6f7`.
 - Author: iamwhatever
 - Created: 2026-10-18
 - Measured at: `9d088c85ad` (main).
@@ -50,7 +65,7 @@ and `explain-for` skills point to it. Theme packs keep owning the look.
 
 ## 2. Motivation
 
-### 2.1 What exists today
+### 2.1 What existed before this RFC
 
 Verified at `9d088c85ad`:
 
@@ -82,7 +97,7 @@ Verified at `9d088c85ad`:
 
 ### 2.2 The gap
 
-| Concern | `widgets` / `dashboard` / `explain-for` today | anatomy |
+| Concern | `widgets` / `dashboard` / `explain-for` before this RFC | anatomy |
 |---|---|---|
 | When to move | freeze-one-frame test | same idea: motion carries the model |
 | How motion feels | not covered | exponential follow, τ 0.1–0.3 s; springs that overshoot once; event envelopes, 40–120 ms attack, slow decay; `dt` clamped to 1/30 s |
