@@ -485,16 +485,22 @@ class TestPushTransportCorroboration:
                 "gh auth setup-git",
             ),
             ("git@github.com: Permission denied (publickey).", "run ssh-add"),
+            ("fatal: Authentication failed for 'https://github.com/octo/target.git/'", "ssh-add"),
+            ("remote: HTTP 401 Unauthorized", "ssh-add"),
+            ("remote: Permission to octo/target.git denied to octo.", "create or reuse a fork"),
+            ("remote: HTTP 403 Forbidden", "create or reuse a fork"),
         ],
     )
     def test_definitive_transport_shapes_block(self, feature_clone, tmp_path, shape, remedy):
         """Each definitive denial shape blocks with the remedy that fits it.
 
-        Repository-not-found is a repo-permission face, so the remedy is the
-        fork path. A missing non-interactive credential (`could not read
-        Username` under disabled prompts, `Permission denied (publickey)`
-        under batch mode) blocks with a credential-setup remedy instead - a
-        fork push would ride the same absent credential.
+        Repository-not-found and an HTTP 403 (a credential accepted but
+        without push rights) are repo-permission faces, so the remedy is the
+        fork path. A missing or rejected non-interactive credential (`could
+        not read Username` under disabled prompts, `Permission denied
+        (publickey)` under batch mode, `Authentication failed` / HTTP 401 from
+        a rejected credential) blocks with a credential-setup remedy instead -
+        a fork push would ride the same credential that was absent or refused.
         """
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
