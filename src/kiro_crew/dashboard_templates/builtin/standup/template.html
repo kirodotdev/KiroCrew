@@ -65,6 +65,7 @@
   <div class="sub">
     <span data-dashboard-field="items">-</span> <span data-i18n="items_on_board">item(s) on the board,</span>
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown_standup">not shown.</span>
+    <span data-dashboard-field="forgotten" hidden></span>
   </div>
 
   <script>
@@ -147,6 +148,16 @@
       function arr(name) {
         var v = fields()[name];
         return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      // The closed items the work fold no longer holds. The fold keeps only the open
+      // items and the newest closed ones, so "on the board" adds these to `items`.
+      // The columns do not: they answer "what changed since you last looked", and a
+      // forgotten item closed before the newest closed ones the fold still keeps.
+      // A missing or malformed value reads as zero, the way goal-board reads it.
+      function forgottenItems() {
+        var f = fields().forgotten;
+        var v = f && typeof f === 'object' ? f.items : null;
+        return typeof v === 'number' && isFinite(v) && v > 0 ? Math.floor(v) : 0;
       }
       function ago(ms) {
         if (ms === null || ms < 0) return null;
@@ -365,7 +376,7 @@
           wrote.textContent = marked ? i18n('wrote') : i18n('no_headline');
         }
 
-        var counts = { items: items.length, moments: moments.length };
+        var counts = { items: items.length + forgottenItems(), moments: moments.length };
         for (var key in counts) {
           if (!Object.prototype.hasOwnProperty.call(counts, key)) continue;
           var cell = document.querySelector('[data-dashboard-field="' + key + '"]');

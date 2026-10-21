@@ -69,6 +69,7 @@
   <div class="sub" style="margin-top: 7px;">
     <span data-dashboard-field="items">-</span> <span data-i18n="on_board">on the board,</span>
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown">not shown (list truncated)</span>
+    <span data-dashboard-field="forgotten" hidden></span>
   </div>
 
   <script>
@@ -177,6 +178,14 @@
       function arr(name) {
         var v = fields()[name];
         return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      // The closed items the work fold no longer holds. The fold keeps only the open
+      // items and the newest closed ones, so "on the board" adds these to `items`.
+      // A missing or malformed value reads as zero, the way goal-board reads it.
+      function forgottenItems() {
+        var f = fields().forgotten;
+        var v = f && typeof f === 'object' ? f.items : null;
+        return typeof v === 'number' && isFinite(v) && v > 0 ? Math.floor(v) : 0;
       }
       function laneRow(state) {
         for (var i = 0; i < LANE_STATES.length; i++) if (LANE_STATES[i][0] === state) return LANE_STATES[i];
@@ -434,7 +443,7 @@
 
         // Each array cell gets a count: the host binds by textContent, so left alone
         // it reads as dumped JSON.
-        var counts = { lanes: lanes.length, items: items.length, pending_requests: requests.length };
+        var counts = { lanes: lanes.length, items: items.length + forgottenItems(), pending_requests: requests.length };
         for (var key in counts) {
           if (!Object.prototype.hasOwnProperty.call(counts, key)) continue;
           var cell = document.querySelector('[data-dashboard-field="' + key + '"]');

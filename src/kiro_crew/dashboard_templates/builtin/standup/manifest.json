@@ -10,6 +10,7 @@
     "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
     "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
     "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "forgotten": { "type": "object", "source": { "fold": "work", "path": "forgotten" } },
     "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
     "moments": { "type": "array", "source": { "fold": "timeline", "path": "moments" } },
     "moments_dropped": { "type": "number", "source": { "fold": "timeline", "path": "dropped" } },
