@@ -1109,6 +1109,14 @@ A list-typed key (`agent.apps_trusted`, `slack.allowed_users`, ...) takes a JSON
 (`kirocrew config set agent.apps_trusted '["a","b"]'`); anything else is refused with nothing
 written. Details: [cli](cli.md) (`config set`).
 
+To change one key inside an overlay section, set the dotted leaf
+(`kirocrew config set --local slack.dm_activation mention`): the path walk keeps
+the section's other keys, so `slack.allowed_users` survives. Setting the whole
+section to an object (`... --local slack '{"dm_activation": "mention"}'`)
+**replaces** it, dropping every key the object omits — which is also how you
+remove a key the overlay pins, since there is no `config unset` and `config edit`
+opens only `config.json`.
+
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 

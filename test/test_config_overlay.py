@@ -353,6 +353,56 @@ class TestCliConfigSetLocal:
         data = json.loads(local_file.read_text(encoding="utf-8"))
         assert data["agent"]["yolo"] is True
 
+    def test_local_set_dotted_leaf_keeps_sibling_keys(self, tmp_path: Path) -> None:
+        """Setting a dotted leaf keeps the section's other overlay keys."""
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        local_file = config_dir / "config.local.json"
+        local_file.write_text(json.dumps({"slack": {"allowed_users": ["U1"]}}), encoding="utf-8")
+
+        args = argparse.Namespace(
+            config_action="set",
+            key="slack.dm_activation",
+            value="mention",
+            file=None,
+            local=True,
+        )
+        with patch("kiro_crew.cli_config.config_local_path", return_value=local_file):
+            with patch("kiro_crew.cli_config.sel"):
+                _config_cmd(args)
+
+        data = json.loads(local_file.read_text(encoding="utf-8"))
+        assert data["slack"] == {"allowed_users": ["U1"], "dm_activation": "mention"}
+
+    def test_local_set_whole_object_replaces_section(self, tmp_path: Path) -> None:
+        """Setting a whole section object replaces it, dropping omitted keys."""
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        local_file = config_dir / "config.local.json"
+        local_file.write_text(json.dumps({"slack": {"allowed_users": ["U1"]}}), encoding="utf-8")
+
+        args = argparse.Namespace(
+            config_action="set",
+            key="slack",
+            value='{"dm_activation": "mention"}',
+            file=None,
+            local=True,
+        )
+        with patch("kiro_crew.cli_config.config_local_path", return_value=local_file):
+            with patch("kiro_crew.cli_config.sel"):
+                _config_cmd(args)
+
+        data = json.loads(local_file.read_text(encoding="utf-8"))
+        assert data["slack"] == {"dm_activation": "mention"}
+
     def test_local_set_unknown_section_warns(self, tmp_path: Path, capsys) -> None:
         import argparse
 
