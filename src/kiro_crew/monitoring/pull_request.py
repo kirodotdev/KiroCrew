@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from kiro_crew.monitoring.models import (
@@ -55,6 +55,43 @@ def opaque_provider_check_identity(namespace: str, raw_identity: object) -> str:
     """Return a stable identity without retaining provider-controlled display text."""
     digest = hashlib.sha256(str(raw_identity).encode("utf-8")).hexdigest()[:16]
     return f"{namespace}:{digest}"
+
+
+def pr_comment_body_fingerprint(body: str) -> str:
+    """A FIXED-LENGTH stand-in for one externally-authored comment body.
+
+    This is where the per-comment bound lives. A comment body is unbounded
+    third-party text and a paged read accumulates one entry per comment across
+    every page, so retaining the body itself would let a single large comment, or
+    many of them, size the probe's own memory. Hashing at the moment of retention
+    makes what is kept 64 characters wide whatever arrives, and nothing downstream
+    ever sees the body again -- neither the aggregate digest nor the condition key.
+
+    Shared across pull-request adapters so every provider that digests PR-level
+    comment bodies reduces them the same way and funnels the resulting condition
+    through one definition rather than one per provider.
+    """
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def pr_comment_body_digest(fingerprints: Sequence[str]) -> str:
+    """A stable digest over a pull request's PR-level comment bodies.
+
+    Takes per-comment FINGERPRINTS, never bodies, so nothing on the path from read
+    to condition key scales with how much a reviewer wrote. Empty when no readable
+    non-empty body was seen, so a pull request with no comments emits no condition.
+    Fingerprints are SORTED before hashing so the page order they arrived in cannot
+    move the digest.
+
+    Shared by every pull-request adapter that reads PR-level comment bodies, so
+    the digest a wake condition keys on is computed one way whatever provider read
+    the comments.
+    """
+    kept = sorted(fingerprints)
+    if not kept:
+        return ""
+    encoded = json.dumps(kept, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class PullRequestProviderError(Exception):
@@ -163,11 +200,14 @@ class PullRequestFacts:
     unresolved_review_threads: int
     review_threads_complete: bool
     checks_complete: bool = True
-    #: A stable digest over the pull request's PR-level (issue) comment bodies,
-    #: or "" when there are none. Provider-specific: only the GitHub adapter reads
-    #: them today. This is the surface a review bot's verdict comment actually
-    #: lives on -- created_at frozen at PR open, body rewritten in place -- so it
-    #: is the digest that catches the four bot verdicts a thread digest cannot see.
+    #: A stable digest over the pull request's PR-level comment bodies, or "" when
+    #: there are none or the comment read was incomplete. Set by the adapters that
+    #: read these comments -- GitHub (PR-level issue comments) and Bitbucket
+    #: (``/pullrequests/{id}/comments``) today -- through the shared
+    #: ``pr_comment_body_fingerprint``/``pr_comment_body_digest`` helpers. This is
+    #: the surface a review bot's verdict comment actually lives on -- created_at
+    #: frozen at PR open, body rewritten in place -- so it is the digest that
+    #: catches the bot verdicts a thread digest cannot see.
     pr_comment_body_digest: str = ""
 
     def __post_init__(self) -> None:
