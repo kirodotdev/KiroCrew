@@ -52,6 +52,11 @@ interface BottomTerminalState {
   /** Whether THIS window shows the panel. Per window (sessionStorage), never
    *  adopted from another window; see the module note above. */
   open: boolean
+  /** Whether THIS window shows the panel at full dashboard size. Per window for
+   *  the same reason `open` is: a maximized terminal in one tab must not grow
+   *  the panel in another. It overrides the grip dimension at render time
+   *  without discarding it, so exiting fullscreen restores the dragged size. */
+  fullscreen: boolean
   /** Panel height in px (resizable via the top grip, used when position = 'bottom'). */
   height: number
   /** Panel width in px (resizable via the left grip, used when position = 'right'). */
@@ -74,6 +79,11 @@ const STORAGE_KEY = 'mc-bottom-terminal'
  *  too, the one residual of #7638 this slice does not remove (RFC #7649,
  *  "duplicated tabs"). */
 const OPEN_KEY = 'mc-bottom-terminal-open'
+/** sessionStorage key for this window's `fullscreen` flag. Per browsing context
+ *  for the same reason as `open`: a maximized terminal belongs to the window
+ *  that maximized it. It is cleared the moment the panel closes, so a reopen
+ *  never comes back maximized unasked. */
+const FULLSCREEN_KEY = 'mc-bottom-terminal-fullscreen'
 const NAME_KEY_PREFIX = 'mc-terminal-name:'
 /** Dropped writes stay local until a successful rename, a foreign label event,
  *  or removal. Keep the fallback separate so layout writes cannot persist them. */
@@ -193,13 +203,25 @@ function persistOpen(open: boolean): void {
   } catch { /* locked storage */ }
 }
 
+function loadFullscreen(): boolean {
+  return safeGetSessionItem(FULLSCREEN_KEY) === '1'
+}
+
+function persistFullscreen(fullscreen: boolean): void {
+  if (fullscreen) { safeSetSessionItem(FULLSCREEN_KEY, '1'); return }
+  try {
+    if (typeof sessionStorage === 'undefined') return
+    sessionStorage.removeItem(FULLSCREEN_KEY)
+  } catch { /* locked storage */ }
+}
+
 /** Read the shared layout from localStorage. `open` is this window's flag, not
  *  part of that layout: at boot it comes from sessionStorage, and on a foreign
  *  `storage` event the caller passes the current local value so another window
  *  opening its panel never opens this one. An `open` left in the layout by a
  *  build that still shared it is ignored. */
-function loadPersisted(open = loadOpen()): BottomTerminalState {
-  const base: BottomTerminalState = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
+function loadPersisted(open = loadOpen(), fullscreen = loadFullscreen()): BottomTerminalState {
+  const base: BottomTerminalState = { open: false, fullscreen: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
   if (typeof localStorage === 'undefined') return base
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -215,6 +237,10 @@ function loadPersisted(open = loadOpen()): BottomTerminalState {
       // Only keep "open" when there are tabs to show — an open flag with no
       // tabs would render an empty panel.
       open: open && tabs.length > 0,
+      // Fullscreen is meaningless unless the panel is actually shown, so it
+      // follows `open`: a maximized flag with the panel closed would snap the
+      // panel to full size the instant it reopened.
+      fullscreen: fullscreen && open && tabs.length > 0,
       height: typeof p.height === 'number' ? clampHeight(p.height) : DEFAULT_HEIGHT,
       width: typeof p.width === 'number' ? clampWidth(p.width) : DEFAULT_WIDTH,
       position: p.position === 'right' ? 'right' : 'bottom',
@@ -233,6 +259,7 @@ let state: BottomTerminalState = loadPersisted()
 // a later reload once another window adds tabs. Settle the flag to the state
 // that was actually loaded.
 persistOpen(state.open)
+persistFullscreen(state.fullscreen)
 const listeners = new Set<() => void>()
 
 function emit() { for (const cb of listeners) cb() }
@@ -310,8 +337,14 @@ if (typeof window !== 'undefined') {
     if (e.key === null || e.key === STORAGE_KEY) {
       if (e.key === null) volatileNames.clear()
       const wasOpen = state.open
-      state = loadPersisted(wasOpen)
+      const wasFullscreen = state.fullscreen
+      state = loadPersisted(wasOpen, wasFullscreen)
       if (state.open !== wasOpen) persistOpen(state.open)
+      // Fullscreen is this window's flag, like `open`, but it can only be
+      // settled down: the adopted layout emptying the panel (open→false) drops
+      // it, which loadPersisted has already applied, so re-settle the stored
+      // value to match.
+      if (state.fullscreen !== wasFullscreen) persistFullscreen(state.fullscreen)
       for (const id of volatileNames.keys()) {
         if (!state.tabs.some(tab => tab.id === id)) volatileNames.delete(id)
       }
@@ -348,16 +381,20 @@ function set(next: BottomTerminalState) {
   const removed = state.tabs.filter(tab => !next.tabs.some(t => t.id === tab.id)).map(tab => tab.id)
   for (const id of removed) volatileNames.delete(id)
   const wasOpen = state.open
-  state = { ...next, tabs: withLiveNames(next.tabs) }
+  const wasFullscreen = state.fullscreen
+  // A hidden panel cannot be fullscreen: closing it clears the flag so a later
+  // reopen is at the grip size, not maximized unasked.
+  state = { ...next, fullscreen: next.open ? next.fullscreen : false, tabs: withLiveNames(next.tabs) }
   emit()
   if (state.open !== wasOpen) persistOpen(state.open)
+  if (state.fullscreen !== wasFullscreen) persistFullscreen(state.fullscreen)
   const tabs = state.tabs.map(tab => {
     const local = volatileNames.get(tab.id)
     return local ? withStoredName({ ...tab, name: local.fallback }) : tab
   })
-  // The shared layout carries no `open`: that flag is this window's alone.
-  // JSON.stringify drops an undefined field.
-  try { safeSetItem(STORAGE_KEY, JSON.stringify({ ...state, open: undefined, tabs })) } catch { /* quota / locked storage */ }
+  // The shared layout carries neither `open` nor `fullscreen`: both are this
+  // window's alone. JSON.stringify drops an undefined field.
+  try { safeSetItem(STORAGE_KEY, JSON.stringify({ ...state, open: undefined, fullscreen: undefined, tabs })) } catch { /* quota / locked storage */ }
   cleanRemovedNames(removed)
 }
 
@@ -513,6 +550,28 @@ export function toggleTerminalPosition(): void {
   setTerminalPosition(state.position === 'bottom' ? 'right' : 'bottom')
 }
 
+/** Set the panel's fullscreen (maximized) flag. Opens the panel if it is
+ *  closed when maximizing, so the Cmd+Shift+F chord from a focused shell cannot
+ *  land on a hidden panel. Exiting restores the grip size, which was never
+ *  discarded. */
+export function setTerminalFullscreen(fullscreen: boolean): void {
+  if (!fullscreen) {
+    if (!state.fullscreen) return
+    set({ ...state, fullscreen: false })
+    return
+  }
+  if (state.open && state.fullscreen) return
+  // openBottomTerminal mints a first tab when there is none and flips `open`;
+  // read the post-open state so the fullscreen flip rides the same tab list.
+  if (!state.open) openBottomTerminal()
+  set({ ...state, open: true, fullscreen: true })
+}
+
+/** Toggle the panel's fullscreen flag (Cmd+Shift+F). */
+export function toggleTerminalFullscreen(): void {
+  setTerminalFullscreen(!state.fullscreen)
+}
+
 /* ── React binding ── */
 
 function subscribe(cb: () => void): () => void {
@@ -557,6 +616,13 @@ export function useBottomTerminalOpen(): boolean {
  *  which has to decide about focus BEFORE the panel unmounts. */
 export function isBottomTerminalOpen(): boolean { return state.open }
 
+/** Selector for just the `fullscreen` flag. A primitive so the Object.is check
+ *  skips re-renders on unrelated state changes, same as the open selector. */
+function getFullscreenSnapshot(): boolean { return state.fullscreen }
+export function useTerminalFullscreen(): boolean {
+  return useSyncExternalStore(subscribe, getFullscreenSnapshot, getFullscreenSnapshot)
+}
+
 /** Selector for just the `position` field. */
 function getPositionSnapshot(): TerminalPosition { return state.position }
 export function useTerminalPosition(): TerminalPosition {
@@ -574,12 +640,13 @@ export function useTerminalHydratePending(): boolean {
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetBottomTerminal(): void {
   volatileNames.clear()
-  state = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
+  state = { open: false, fullscreen: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
   restoredIds = new Set()
   ruling = newRuling(restoredIds)
   emit()
   setTerminalCloseFailed(false)
   persistOpen(false)
+  persistFullscreen(false)
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
     cleanOrphanNames()

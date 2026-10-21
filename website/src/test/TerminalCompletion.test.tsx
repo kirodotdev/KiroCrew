@@ -112,6 +112,16 @@ vi.mock('../utils/terminalRegistry', () => ({
   sendRawToTerminalSession: (_id: string, data: string) => { sent.push(data); return true },
 }))
 
+// The find/fullscreen chord is platform-gated (Cmd on macOS, Ctrl elsewhere).
+// isMac is a module-load const in utils/platform; mock it with a mutable flag
+// the chord tests flip per describe. Only isMac is consumed here.
+const platformMock = vi.hoisted(() => ({ isMac: false }))
+vi.mock('../utils/platform', () => ({
+  get isMac() { return platformMock.isMac },
+  isMacOSPlatform: () => platformMock.isMac,
+  platformShortcut: (s: string) => s,
+}))
+
 interface MockEntry {
   name: string
   dir?: boolean
@@ -1209,5 +1219,121 @@ describe('TerminalCompletion — command tier', () => {
     await trigger(h)
 
     expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+  })
+})
+
+/* Terminal find + fullscreen chords (#10176, #9906). Intercepted through the
+ * SAME single custom-key-handler slot the completion menu owns, and must fire
+ * whether or not a menu is open, so they are driven directly against the key
+ * handler. The command key is platform-gated — Cmd on macOS (bare Ctrl+F stays
+ * with the shell), Ctrl elsewhere — so `isMac` is mocked per describe. */
+function renderWithChords(term: Terminal, cb: { onOpenSearch?: () => void; onToggleFullscreen?: () => void }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <TerminalCompletion
+        term={term}
+        sessionId="s1"
+        active
+        onOpenSearch={cb.onOpenSearch}
+        onToggleFullscreen={cb.onToggleFullscreen}
+      />
+    </QueryClientProvider>,
+  )
+}
+
+describe('TerminalCompletion — find/fullscreen chords, macOS (#10176/#9906)', () => {
+  beforeEach(() => { platformMock.isMac = true })
+  afterEach(() => { platformMock.isMac = false })
+
+  it('Cmd+F opens find; bare Ctrl+F is LEFT to the shell (readline forward-char)', () => {
+    const onOpenSearch = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderWithChords(h.term, { onOpenSearch })
+
+    const cmd = h.key({ key: 'f', code: 'KeyF', metaKey: true })
+    expect(onOpenSearch).toHaveBeenCalledTimes(1)
+    expect(cmd.prevented).toBe(true)
+    expect(cmd.passedThrough).toBe(false)
+
+    // The crux of the review BLOCK: on macOS Ctrl+F must reach the shell.
+    const ctrl = h.key({ key: 'f', code: 'KeyF', ctrlKey: true })
+    expect(onOpenSearch).toHaveBeenCalledTimes(1)
+    expect(ctrl.passedThrough).toBe(true)
+  })
+
+  it('Cmd+Shift+F toggles fullscreen', () => {
+    const onToggleFullscreen = vi.fn()
+    const onOpenSearch = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderWithChords(h.term, { onOpenSearch, onToggleFullscreen })
+    const r = h.key({ key: 'f', code: 'KeyF', metaKey: true, shiftKey: true })
+    expect(onToggleFullscreen).toHaveBeenCalledTimes(1)
+    expect(onOpenSearch).not.toHaveBeenCalled()
+    expect(r.prevented).toBe(true)
+  })
+
+  it('matches the physical F key regardless of the typed glyph', () => {
+    const onOpenSearch = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderWithChords(h.term, { onOpenSearch })
+    h.key({ key: 'ƒ', code: 'KeyF', metaKey: true })
+    expect(onOpenSearch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('TerminalCompletion — find/fullscreen chords, non-macOS (#10176/#9906)', () => {
+  beforeEach(() => { platformMock.isMac = false })
+
+  it('Ctrl+F opens find (the issue ask); bare Cmd+F passes through', () => {
+    const onOpenSearch = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderWithChords(h.term, { onOpenSearch })
+
+    const ctrl = h.key({ key: 'f', code: 'KeyF', ctrlKey: true })
+    expect(onOpenSearch).toHaveBeenCalledTimes(1)
+    expect(ctrl.prevented).toBe(true)
+    expect(ctrl.passedThrough).toBe(false)
+
+    const meta = h.key({ key: 'f', code: 'KeyF', metaKey: true })
+    expect(onOpenSearch).toHaveBeenCalledTimes(1)
+    expect(meta.passedThrough).toBe(true)
+  })
+
+  it('Ctrl+Shift+F toggles fullscreen', () => {
+    const onToggleFullscreen = vi.fn()
+    const onOpenSearch = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderWithChords(h.term, { onOpenSearch, onToggleFullscreen })
+    const r = h.key({ key: 'f', code: 'KeyF', ctrlKey: true, shiftKey: true })
+    expect(onToggleFullscreen).toHaveBeenCalledTimes(1)
+    expect(onOpenSearch).not.toHaveBeenCalled()
+    expect(r.prevented).toBe(true)
+  })
+
+  it('a bare F, F with Alt, or Cmd+Ctrl+F together, is left to the shell', () => {
+    const onOpenSearch = vi.fn()
+    const onToggleFullscreen = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderWithChords(h.term, { onOpenSearch, onToggleFullscreen })
+
+    expect(h.key({ key: 'f', code: 'KeyF' }).passedThrough).toBe(true)
+    expect(h.key({ key: 'f', code: 'KeyF', ctrlKey: true, altKey: true }).passedThrough).toBe(true)
+    // Cmd+Ctrl together is a macOS system chord, never find here.
+    expect(h.key({ key: 'f', code: 'KeyF', metaKey: true, ctrlKey: true }).passedThrough).toBe(true)
+    expect(onOpenSearch).not.toHaveBeenCalled()
+    expect(onToggleFullscreen).not.toHaveBeenCalled()
+  })
+
+  it('the fullscreen chord is a no-op when no handler is supplied (side-panel terminal)', () => {
+    const onOpenSearch = vi.fn()
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    // onToggleFullscreen omitted — a chat side-panel terminal passes none.
+    renderWithChords(h.term, { onOpenSearch })
+    const r = h.key({ key: 'f', code: 'KeyF', ctrlKey: true, shiftKey: true })
+    // Still consumed (so it does not fall through to the shell), but nothing
+    // maximizes — the dock is not this pane's to maximize.
+    expect(r.prevented).toBe(true)
+    expect(onOpenSearch).not.toHaveBeenCalled()
   })
 })

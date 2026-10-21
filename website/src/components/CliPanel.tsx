@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useCallback, useRef, useState } from 'react
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
@@ -12,9 +13,11 @@ import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
+import TerminalFindBar from './TerminalFindBar'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
+import { useTerminalSearch } from '../hooks/useTerminalSearch'
 import { copyToClipboard } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
@@ -22,7 +25,7 @@ import { i18nT } from '../i18n/t'
  * Keyed by PTY session id. Instances persist across tab switches / chat
  * switches (so scrollback + cursor survive), and are only torn down when the
  * owning terminal TAB is closed (disposeTerminalSession). */
-const termCache = new Map<string, { term: Terminal; fit: FitAddon }>()
+const termCache = new Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }>()
 
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
@@ -165,7 +168,7 @@ function openTerminalLink(_event: MouseEvent, uri: string): void {
   window.open(uri, '_blank', 'noopener,noreferrer')
 }
 
-function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
+function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: SearchAddon } {
   let entry = termCache.get(id)
   if (!entry) {
     const font = getTerminalFont()
@@ -175,11 +178,16 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
       fontSize: font.fontSize,
       fontFamily: resolveTerminalFontFamily(font.fontFamily),
       theme: getTermTheme(),
+      // Required for the search addon's match-highlight decorations (#10176):
+      // xterm 5.5's registerDecoration throws without it.
+      allowProposedApi: true,
     })
     const fit = new FitAddon()
+    const search = new SearchAddon()
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon(openTerminalLink))
-    entry = { term, fit }
+    term.loadAddon(search)
+    entry = { term, fit, search }
     termCache.set(id, entry)
   }
   return entry
@@ -275,10 +283,10 @@ function touchSelectHint(status: TouchSelectStatus): string {
   }
 }
 
-function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void }) {
+function TerminalView({ sessionId, cwd, visible, onSendToChat, onToggleFullscreen }: { sessionId: string; cwd?: string; visible: boolean; onSendToChat?: (text: string) => void; onToggleFullscreen?: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
-  const entryRef = useRef<{ term: Terminal; fit: FitAddon } | null>(null)
+  const entryRef = useRef<{ term: Terminal; fit: FitAddon; search: SearchAddon } | null>(null)
   // Floating selection toolbar: anchored to where the drag ended (wrapper-
   // relative px), carrying the captured text so the actions stay valid even
   // after xterm clears its own selection.
@@ -314,7 +322,13 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   if (!entryRef.current) {
     entryRef.current = getOrCreateTerm(sessionId)
   }
-  const { term, fit } = entryRef.current
+  const { term, fit, search } = entryRef.current
+
+  // Scrollback find (#10176): Cmd/Ctrl+F opens the bar, the SearchAddon walks
+  // the full buffer (not just the rendered viewport the browser's find sees).
+  // The addon is cached with the term, so the bar's state is the only per-pane
+  // piece here.
+  const termSearch = useTerminalSearch(term, search, visible)
 
   // Touch range-selection (#6834): long-press a line to set the first endpoint,
   // then tap/long-press another to select the inclusive span. xterm's own
@@ -539,8 +553,19 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
             (it reserves Tab/arrows/Escape while its menu is open, and Enter only once
             a row has been arrowed onto). A later
             feature that attaches its own handler here would silently replace it —
-            extend the handler inside TerminalCompletion instead. */}
-        <TerminalCompletion term={term} sessionId={sessionId} active={visible} />
+            extend the handler inside TerminalCompletion instead. The find and
+            fullscreen chords (#10176) are intercepted through that same handler,
+            which is why they are passed down rather than bound on a new one. */}
+        <TerminalCompletion
+          term={term}
+          sessionId={sessionId}
+          active={visible}
+          onOpenSearch={termSearch.openSearch}
+          onToggleFullscreen={onToggleFullscreen}
+        />
+        {/* Scrollback find bar (#10176): over the grid, top-right, only while
+            open. Focus-scoped — the chord opens it only from a focused shell. */}
+        <TerminalFindBar search={termSearch} />
         {/* Touch range-selection discoverability (#6834). The gesture is
             invisible on a canvas — nothing tells the user an endpoint is set —
             so surface it two ways: a small transient hint chip anchored top-left
@@ -707,16 +732,20 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat }: {
+export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat, onToggleFullscreen }: {
   sessionId: string
   cwd?: string
   visible?: boolean
   onSendToChat?: (text: string) => void
+  /** Toggle the app-wide dock panel fullscreen (Cmd/Ctrl+Shift+F). Passed ONLY
+   *  by the dock's TerminalTabsView — a chat side-panel terminal leaves it
+   *  undefined so its chord does not maximize the unrelated dock panel. */
+  onToggleFullscreen?: () => void
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
-      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />
+      <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} onToggleFullscreen={onToggleFullscreen} />
     </div>
   )
 }
