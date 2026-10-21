@@ -728,6 +728,12 @@ def _url_payload_command(n: int) -> str:
 #: ``-`` is an operand, every word after the first operand is one, and a glob in
 #: any word prompts) and the ``git blame --output`` write flag. Nothing is
 #: relaxed. Re-measured.
+#: Raised by 34, from 35,040, for the ``pkill``/``killall`` by-name self-kill
+#: window: ``_bare_kill_raw_bodies`` takes an anchor-basename set so the by-name leg reuses
+#: the quote-aware raw re-derivation the bare-``kill`` leg already had, the shared body
+#: search is factored into ``_raw_body_names_self``, and ``_is_self_kill`` runs the raw
+#: window once per anchor family. New detection for the public decoy shape, as a UNION with
+#: the token walk; no rule, threshold or existing pass changed. Re-measured.
 _PACKAGE_LINE_BUDGET = 35_074
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
