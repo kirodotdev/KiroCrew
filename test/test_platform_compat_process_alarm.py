@@ -41,11 +41,16 @@ def test_process_alarm_reports_unavailable_without_setitimer(
 def _fake_itimer(monkeypatch: pytest.MonkeyPatch) -> dict[str, float]:
     """A stand-in ``ITIMER_REAL`` so the tests never touch the real one, which a
     test worker's own timeout may own."""
-    timer = {"value": 0.0}
+    timer = {"value": 0.0, "interval": 0.0}
     monkeypatch.setattr(
-        signal, "setitimer", lambda which, secs: timer.__setitem__("value", secs), raising=False
+        signal,
+        "setitimer",
+        lambda which, secs, interval=0.0: timer.update(value=secs, interval=interval),
+        raising=False,
     )
-    monkeypatch.setattr(signal, "getitimer", lambda which: (timer["value"], 0.0), raising=False)
+    monkeypatch.setattr(
+        signal, "getitimer", lambda which: (timer["value"], timer["interval"]), raising=False
+    )
     monkeypatch.setattr(signal, "ITIMER_REAL", 99, raising=False)
     return timer
 
@@ -71,3 +76,61 @@ def test_reexec_cancels_the_process_alarm_before_the_exec(
     else:
         pc.reexec_python_module("kiro_crew", ["gateway"], executable=str(tmp_path / "python"))
     assert seen == [(0.0, 0.0)]
+
+
+@pytest.mark.parametrize("seam", ["reexec_launcher", "reexec_python_module"])
+def test_a_failed_exec_restores_a_foreign_owners_alarm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, seam: str
+) -> None:
+    """Cancelling ``ITIMER_REAL`` before the exec is correct only when the exec
+    succeeds -- the successor it would end never armed it.  When ``os.execv``
+    raises and this process keeps running, a deadline a foreign owner (a test
+    worker's ``pytest-timeout``, an embedding host) had pending is theirs, so
+    the seam re-arms it and re-raises.  The stub itimer reads its pre-cancel
+    value after the raising exec returns."""
+    timer = _fake_itimer(monkeypatch)
+    monkeypatch.setattr(
+        pc.os,
+        "execv",
+        lambda path, argv: (_ for _ in ()).throw(OSError("exec format error")),
+    )
+    assert pc.arm_process_alarm(25.0) is True  # a foreign owner's pending deadline
+    with pytest.raises(OSError):
+        if seam == "reexec_launcher":
+            pc.reexec_launcher(str(tmp_path / "launcher"), ["gateway"])
+        else:
+            pc.reexec_python_module("kiro_crew", ["gateway"], executable=str(tmp_path / "python"))
+    assert timer["value"] == 25.0
+    assert signal.getitimer(signal.ITIMER_REAL) == (25.0, 0.0)
+
+
+@pytest.mark.parametrize("seam", ["reexec_launcher", "reexec_python_module"])
+def test_a_failed_exec_restores_a_repeating_alarms_interval(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, seam: str
+) -> None:
+    """A foreign owner's alarm may repeat.  The restore after a failed exec puts
+    back the interval as well as the remaining value, so the periodic alarm keeps
+    firing instead of becoming a one-shot."""
+    _fake_itimer(monkeypatch)
+    monkeypatch.setattr(
+        pc.os,
+        "execv",
+        lambda path, argv: (_ for _ in ()).throw(OSError("exec format error")),
+    )
+    signal.setitimer(signal.ITIMER_REAL, 25.0, 5.0)  # a repeating foreign alarm
+    with pytest.raises(OSError):
+        if seam == "reexec_launcher":
+            pc.reexec_launcher(str(tmp_path / "launcher"), ["gateway"])
+        else:
+            pc.reexec_python_module("kiro_crew", ["gateway"], executable=str(tmp_path / "python"))
+    assert signal.getitimer(signal.ITIMER_REAL) == (25.0, 5.0)
+
+
+def test_rearm_after_failed_exec_is_a_no_op_without_a_process_alarm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where the timer does not exist (Windows), the disarm returns ``None`` and
+    the re-arm restores nothing -- neither call reaches ``setitimer``."""
+    monkeypatch.delattr(signal, "setitimer", raising=False)
+    assert pc._disarm_process_alarm_before_exec() is None
+    pc._rearm_process_alarm_after_failed_exec(None)  # must not raise

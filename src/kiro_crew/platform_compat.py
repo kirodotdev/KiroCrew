@@ -663,6 +663,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _drain_event_log_for_exit,
         _ensure_utf8_process_environment,
         _is_windows_store_python_stub,
+        _rearm_process_alarm_after_failed_exec,
         arm_process_alarm,
         awake_now,
         boottime_now,

@@ -69,6 +69,7 @@ from kiro_crew.constants import (  # noqa: F401
     parse_node_version,
 )
 from kiro_crew.crash_guard import install as _install_crash_guard
+from kiro_crew.dashboard.loop_watchdog import disarm_inherited_alarm
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator  # noqa: F401
@@ -796,8 +797,6 @@ def main() -> None:
         # never armed -- before boot spends the seconds the watchdog is not yet
         # running. Only while SIGALRM is at its default disposition, the same
         # ownership rule the watchdog applies when it arms.
-        from kiro_crew.dashboard.loop_watchdog import disarm_inherited_alarm
-
         disarm_inherited_alarm()
         # Install crash breadcrumbs (atexit + excepthook) before asyncio.run
         # so any fatal exception writes to crash.log.
