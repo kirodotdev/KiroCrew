@@ -476,6 +476,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_sed_exec_replacement",
     "_self_cli_operands",
     "_self_floor_can_fire",
+    "_self_kill_span",
     "_self_module_flag_scan",
     "_self_module_name_index",
     "_self_program_index",
