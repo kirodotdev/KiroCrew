@@ -39,16 +39,16 @@ user looks (the work ledger, the Dashboard tab, milestone readings) and ends
 with ``nothing_to_do`` unless the user would lose something by not hearing now
 (:func:`heartbeat_prompt`). That quiet end is admitted because a hidden turn is
 opened by the gateway, not by a person (``session_directive_apply._nothing_to_do``
-refuses it only on a user-facing or channel turn), and the reply text of a
-heartbeat turn that ends that way is folded into its steps rather than shown
-as a chat message (``dispatch_hidden_turn``, settled by
-:mod:`kiro_crew.dashboard.heartbeat_quiet_end`). Long work goes to a worker
+refuses it only on a user-facing or channel turn). The turn's text is shown in
+the chat like any reply, so the prompt asks for ``nothing_to_do`` with no text
+before it whenever nothing can move forward. Long work goes to a worker
 session when the crewmate's member backend mounts the ``session_*`` tools
 (:func:`member_has_session_tools`); otherwise it is done in small steps across
-wakes. Either way the next wake is the patrol. Once every milestone is met the
-wake carries the gateway's own line asking for the next set first
-(:func:`milestones_line`). A heartbeat that fires while the gateway is stopping
-starts no turn (:func:`gateway_stopping`). Only the owner's route and an
+wakes. Either way the next wake is the patrol. A heartbeat that fires while the gateway is stopping
+starts no turn (:func:`gateway_stopping`), and so does one that fires while a
+monitor loop drives the thread (:func:`_monitor_loop_drives`). While a
+milestones card of the crewmate's waits on the user, the wake proposes no new
+milestones (:func:`milestones_card_waiting`). Only the owner's route and an
 applied card write the switch, so the crewmate cannot turn its own heartbeat on.
 
 A check-in that fires with the thread closed, a turn already running, its switch
@@ -351,85 +351,47 @@ _HEARTBEAT_PATROL = (
 )
 
 
-#: The gateway's line on a wake after every milestone is met. Principles, so the
-#: crewmate words what it does itself.
-MILESTONES_MET_LINE = (
-    "Kiro Crew notes: every milestone above is met, or this goal has none yet, so "
-    "the goal needs its next milestones. Met milestones are not a reason to wait, "
-    "and neither is a decision the user still owes: that one stays where it is. "
-    "This wake's first step is the next milestones for this goal, proposed on a "
-    "card with set_key_results, each with a target a later reading can be checked "
-    "against and the reason it is the next step. Work toward the goal can follow "
-    "in the same wake once the card is up."
-)
-
-#: The gateway's line when every milestone is met and the next set already waits
-#: on the user's button: the card is the user's step, the work is this wake's.
-MILESTONES_PENDING_LINE = (
-    "Kiro Crew notes: every milestone above is met, and the next milestones "
-    "already wait on the user on a card, so that card is the user's step, not "
-    "this wake's. This wake does a piece of work toward the goal that needs no "
-    "one, so the goal keeps moving while the card waits. A quiet end fits this "
-    "wake once that work is done."
+#: The next-step list's milestones clause, offered only while no milestones card
+#: of the crewmate's waits on the user (:func:`milestones_card_waiting`).
+_HEARTBEAT_NEW_MILESTONES = "new milestones proposed with set_key_results, "
+#: The line that replaces it while such a card waits: the card is the user's
+#: step, so a wake proposes no second one and spends no credits re-asking.
+_HEARTBEAT_MILESTONES_WAITING = (
+    "A milestones card you proposed already waits on the user, so this wake "
+    "proposes no new milestones. "
 )
 
 
-async def milestones_line(state: Any, slot_key: str, rec: dict[str, Any]) -> str:
-    """The gateway line this wake carries about the goal's milestones, or ``""``.
-
-    Empty while the goal record has an open milestone
-    (:func:`member_milestones.milestones_all_met`). Once none is open, the line
-    asks for the next milestones on a card first (:data:`MILESTONES_MET_LINE`);
-    when the thread already holds a milestones card waiting on the user's button,
-    doing work toward the goal is the fallback (:data:`MILESTONES_PENDING_LINE`).
-    A set the user applies has open milestones again, so both stay off until
-    they are met. A card store that cannot be read counts as no card.
-    """
-    from kiro_crew.member_milestones import milestones_all_met
-
-    if not milestones_all_met(rec):
-        return ""
-    from kiro_crew.change_card_catalog import KIND_CREWMATE_KEY_RESULTS
-    from kiro_crew.dashboard import change_cards
-
-    try:
-        store = change_cards.card_store_for(state)
-        await store.warm()
-        cards = store.pending(slot_key)
-    except Exception:
-        logger.debug("milestones line: card store unreadable for %s", slot_key, exc_info=True)
-        cards = []
-    open_status = (change_cards.STATUS_PENDING, change_cards.STATUS_APPLYING)
-    waiting = any(
-        c.get("kind") == KIND_CREWMATE_KEY_RESULTS and c.get("status") in open_status for c in cards
-    )
-    return MILESTONES_PENDING_LINE if waiting else MILESTONES_MET_LINE
-
-
-def heartbeat_prompt(rec: dict[str, Any], *, has_session_tools: bool, milestones: str = "") -> str:
+def heartbeat_prompt(
+    rec: dict[str, Any], *, has_session_tools: bool, milestones_waiting: bool = False
+) -> str:
     """The hidden turn of one heartbeat wake, built from the current goal record.
 
     Written as principles the crewmate phrases itself (RFC "Crewmate heartbeat"
     3.2-3.5): find what it can move forward, do it, record it where the user
     looks, and write in the chat only when the user would lose something by not
     knowing now. *has_session_tools* picks how long work is handed off
-    (:func:`member_has_session_tools`). *milestones* (:func:`milestones_line`)
-    goes under the progress block.
+    (:func:`member_has_session_tools`). *milestones_waiting* (a milestones card
+    of the crewmate's still waits on the user, :func:`milestones_card_waiting`)
+    drops new milestones from the next steps and says why.
     """
     every = member_goals.interval_label(heartbeat_interval(rec["schedules"]))
+    new_milestones = "" if milestones_waiting else _HEARTBEAT_NEW_MILESTONES
+    waiting = _HEARTBEAT_MILESTONES_WAITING if milestones_waiting else ""
     return (
         "[Heartbeat] "
         + _PREAMBLE
         + f"{member_goals.progress_block(rec)}\n\n"
-        + (f"{milestones}\n\n" if milestones else "")
+        + "When nothing above can move forward, call nothing_to_do at once, with no "
+        "text before it.\n\n"
         + f"This is your heartbeat, a wake every {every} that lets you keep your "
         "work moving while the user is away. Look at your goals and milestones "
         "above and at the open items in your work ledger, then move forward "
         "whatever you can without the user: one thing or several, as the work "
         "calls for. Milestones that are all met, or work that waits on the user, "
         "still leave a next step that needs no one: the next improvement the goal "
-        "calls for, new milestones proposed with set_key_results, or a draft the "
-        "user can review and undo. That is this wake's work. Only a step that "
+        f"calls for, {new_milestones}or a draft the "
+        "user can review and undo. " + waiting + "That is this wake's work. Only a step that "
         "cannot be undone or that reaches outside (a push, a merge, a release, a "
         "message to someone else) waits for the user, recorded on your Dashboard "
         "tab. "
@@ -545,11 +507,10 @@ async def fire(state: Any, job: Any) -> str:
         if again is not slot:
             return "skipped: the crewmate's thread is not open"
     if cadence == member_goals.CADENCE_HEARTBEAT:
-        if gateway_stopping():
-            return STOPPING_SKIP
         has_tools = await asyncio.to_thread(member_has_session_tools, member)
-        line = await milestones_line(state, slot_key, rec)
-        # The reads above await, so the thread and the gateway are checked again.
+        waiting = await milestones_card_waiting(state, slot_key)
+        # The cron timer stops firing once the gateway stops; this one check
+        # covers a stop that began during the reads above, as does the thread's.
         if gateway_stopping():
             return STOPPING_SKIP
         again, skip = _idle_thread(state, slot_key, member)
@@ -557,7 +518,9 @@ async def fire(state: Any, job: Any) -> str:
             return skip
         if again is not slot:
             return "skipped: the crewmate's thread is not open"
-        prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones=line)
+        if _monitor_loop_drives(slot_key):
+            return LOOP_SKIP
+        prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones_waiting=waiting)
     else:
         prompt = reminder_prompt(rec, cadence, finished=finished)
     dispatch_hidden_turn(state, slot, prompt, human_seen=False)
@@ -566,6 +529,48 @@ async def fire(state: Any, job: Any) -> str:
 
 #: The run-log line of a heartbeat that fired while the gateway was stopping.
 STOPPING_SKIP = "skipped: the gateway is stopping"
+
+#: The run-log line of a heartbeat that fired while a monitor loop drives the thread.
+LOOP_SKIP = "skipped: a monitor loop is running"
+
+
+def _monitor_loop_drives(slot_key: str) -> bool:
+    """Whether a monitor loop that will fire again is bound to *slot_key*'s thread.
+
+    Between two of its cycles the thread is idle, so the idle check alone would
+    let a heartbeat wake into work the loop already drives. The answer is the
+    work ledger's own (``ledger_wake.worker_looping``: the bare, ``dashboard_``
+    and channel keys, an active loop with budget left); anything unreadable
+    reads as no loop, so the wake runs as it would without one.
+    """
+    from kiro_crew import ledger_wake
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_looping(get_instance(), slot_key)
+
+
+async def milestones_card_waiting(state: Any, slot_key: str) -> bool:
+    """Whether a milestones card the crewmate proposed still waits on the user.
+
+    A ``crewmate.key_results`` card in the thread that is pending or applying.
+    While one waits, the wake's prompt drops new milestones from its next steps
+    (:func:`heartbeat_prompt`), so a wake does not propose a second card the
+    user has not answered. A card store that cannot be read counts as no card.
+    """
+    from kiro_crew.change_card_catalog import KIND_CREWMATE_KEY_RESULTS
+    from kiro_crew.dashboard import change_cards
+
+    try:
+        store = change_cards.card_store_for(state)
+        await store.warm()
+        cards = store.pending(slot_key)
+    except Exception:
+        logger.debug("milestones card check: store unreadable for %s", slot_key, exc_info=True)
+        return False
+    open_status = (change_cards.STATUS_PENDING, change_cards.STATUS_APPLYING)
+    return any(
+        c.get("kind") == KIND_CREWMATE_KEY_RESULTS and c.get("status") in open_status for c in cards
+    )
 
 
 def gateway_stopping() -> bool:

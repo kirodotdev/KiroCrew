@@ -476,7 +476,7 @@ KINDS: dict[str, KindDef] = {
             "all at `time` (HH:MM, 24-hour), and heartbeat (a wake every `interval` "
             f"minutes, {_goals.interval_minutes_text()}, read as "
             f"{_goals.interval_choices()}, in which the crewmate moves its "
-            "work forward on its own; each wake uses credits). Give only the fields "
+            "work forward on its own; each run uses credits). Give only the fields "
             "that change.",
             _obj(
                 {
@@ -1818,7 +1818,7 @@ def build_preview(
                 if row["field"] == _goals.CADENCE_HEARTBEAT:
                     row["after"] = (
                         f"On, every {_goals.interval_label(every)} "
-                        f"(up to {_goals.wakes_per_day(every)} wakes a day)"
+                        f"(up to {_goals.wakes_per_day(every)} runs a day)"
                     )
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         out["apply"] = [
@@ -2176,7 +2176,7 @@ CHECK_IN_LABELS = {
     "daily": "Daily Goal Reminder",
     "weekly": "Weekly report",
     "monthly": "Monthly review",
-    "heartbeat": "Heartbeat (each wake uses credits)",
+    "heartbeat": "Heartbeat (each run uses credits)",
     "weekday": "Day of the week",
     "month_day": "Day of the month",
     "time": "Check-in time",
@@ -2198,7 +2198,7 @@ def _check_in_value(key: str, value: Any) -> str | None:
     if key == "interval" and isinstance(value, int):
         return (
             f"Every {_goals.interval_label(value)} "
-            f"(up to {_goals.wakes_per_day(value)} wakes a day)"
+            f"(up to {_goals.wakes_per_day(value)} runs a day)"
         )
     return str(value)
 

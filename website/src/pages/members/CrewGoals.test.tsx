@@ -202,7 +202,7 @@ describe('CrewGoalsPane', () => {
     expect(row).toHaveTextContent('Heartbeat')
     expect(row).toHaveTextContent('Every 1 hr, finds work on its own')
     expect(row).toHaveTextContent('Off')
-    expect(row).not.toHaveTextContent('Each wake uses credits.')
+    expect(row).not.toHaveTextContent('Each run uses credits.')
     // A sibling of the three-tile grid, not a fourth tile inside it.
     const grid = screen.getByTestId('crew-goals-checkin-daily').parentElement
     expect(grid).not.toContainElement(row)
@@ -218,7 +218,7 @@ describe('CrewGoalsPane', () => {
     expect(row).toHaveTextContent('Every 2 hr, finds work on its own')
     expect(row).toHaveTextContent(/Turned on$/)
     // The row that shows it on also names the cost and its daily bound.
-    expect(row).toHaveTextContent('Each wake uses credits. · up to 12 wakes a day')
+    expect(row).toHaveTextContent('Each run uses credits. · up to 12 runs a day')
     expect(row).not.toHaveTextContent('Running')
   })
 
@@ -229,7 +229,7 @@ describe('CrewGoalsPane', () => {
     renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
     const page = await openCheckIns()
     const settings = within(page).getByTestId('crew-goals-heartbeat-settings')
-    expect(settings).toHaveTextContent('Each wake uses credits. · up to 24 wakes a day')
+    expect(settings).toHaveTextContent('Each run uses credits. · up to 24 runs a day')
     expect(within(settings).queryByRole('combobox', { name: 'How often' })).toBeNull()
     fireEvent.click(within(settings).getByRole('switch', { name: 'Heartbeat' }))
     await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { heartbeat: true }))
@@ -250,10 +250,10 @@ describe('CrewGoalsPane', () => {
       // Each option names its own daily bound, so the user can size the spend before choosing.
       // Intl puts a no-break space between number and unit; compare the words.
       expect(Array.from((picker as HTMLSelectElement).options).map(o => (o.textContent ?? '').replace(/\s/g, ' '))).toEqual([
-        'Every 30 min · up to 48 wakes a day',
-        'Every 1 hr · up to 24 wakes a day',
-        'Every 2 hr · up to 12 wakes a day',
-        'Every 4 hr · up to 6 wakes a day',
+        'Every 30 min · up to 48 runs a day',
+        'Every 1 hr · up to 24 runs a day',
+        'Every 2 hr · up to 12 runs a day',
+        'Every 4 hr · up to 6 runs a day',
       ])
       fireEvent.change(picker, { target: { value: '60' } })
       await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { interval: 60 }))

@@ -393,10 +393,10 @@ def test_a_heartbeat_card_turns_it_on_at_its_interval_and_undo_turns_it_off(
     before = asyncio.run(cards.read_state(kind, params, [], state=state, app=None))
     preview = catalog.build_preview(kind, params, before, {"label": "Scout"})
     rows = {c["field"]: c for c in preview["changes"]}
-    assert rows["heartbeat"]["after"] == "On, every 2 hr (up to 12 wakes a day)"
+    assert rows["heartbeat"]["after"] == "On, every 2 hr (up to 12 runs a day)"
     assert "credits" in rows["heartbeat"]["label"]
-    assert rows["interval"]["before"] == "Every 1 hr (up to 24 wakes a day)"
-    assert rows["interval"]["after"] == "Every 2 hr (up to 12 wakes a day)"
+    assert rows["interval"]["before"] == "Every 1 hr (up to 24 runs a day)"
+    assert rows["interval"]["after"] == "Every 2 hr (up to 12 runs a day)"
     ((status, body),) = _run_card(state, card["id"], catalog.OP_APPLY)
     assert status == 200, body
     sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
@@ -427,7 +427,7 @@ def test_a_heartbeat_card_at_the_default_interval_still_says_how_often(
         preview = catalog.build_preview(kind, p, before, {"label": "Scout"})
         rows = {c["field"]: c for c in preview["changes"]}
         assert rows["heartbeat"]["before"] == "Off"
-        assert rows["heartbeat"]["after"] == "On, every 1 hr (up to 24 wakes a day)"
+        assert rows["heartbeat"]["after"] == "On, every 1 hr (up to 24 runs a day)"
     # Turning it off names no interval.
     member_goals.set_schedules(slug, ORDINARY, {"heartbeat": True})
     p = catalog.validate_params(kind, {"member": ORDINARY, "heartbeat": False})
@@ -447,7 +447,7 @@ def test_every_surface_writes_the_interval_one_way() -> None:
         "2 hr",
         "4 hr",
     ]
-    assert catalog._check_in_value("interval", 60) == "Every 1 hr (up to 24 wakes a day)"
+    assert catalog._check_in_value("interval", 60) == "Every 1 hr (up to 24 runs a day)"
     # The bound the user consents to, the same numbers the Goals tab shows.
     assert [member_goals.wakes_per_day(m) for m in member_goals.HEARTBEAT_INTERVALS] == [
         48,
@@ -460,8 +460,9 @@ def test_every_surface_writes_the_interval_one_way() -> None:
         assert "30, 60, 120 or 240" in text
         assert "30 min, 1 hr (the default), 2 hr or 4 hr" in text
         assert "15" not in text
-    # The card has no timing control, so the tool points at where timing lives.
-    assert "Goals tab under Check-ins" in tool["description"]
+    # The card has no timing control, so the tool points at where timing lives,
+    # as a path the user can follow from the crewmate's profile.
+    assert "open my profile, then Goals, then Check-ins" in tool["description"]
 
 
 @pytest.mark.parametrize("interval", [0, 15, 45, True, "30"])

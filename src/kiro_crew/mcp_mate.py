@@ -317,8 +317,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "move your work forward on your own and "
                 "uses credits on each wake, so propose it only when the work suits "
                 "it. The card has no timing control: the user turns each check-in "
-                "off on its own, or changes its time or interval, on your Goals tab "
-                "under Check-ins, so point there rather than at the card. Give only "
+                "off on its own, or changes its time or interval, in your profile "
+                "under Goals, then Check-ins (to the user say: open my profile, "
+                "then Goals, then Check-ins), so point there rather than at the "
+                "card. Give only "
                 "what changes. Explain in one plain "
                 "sentence what each one you propose does for the user before you call "
                 "it; they need a goal first. " + _CARD_NOTE

@@ -336,8 +336,6 @@ def test_a_hidden_turn_carries_no_person_so_nothing_to_do_ends_it(_floor_monkeyp
 
     mate_welcome.dispatch_hidden_turn(State(), Slot(), "[Heartbeat] ...", human_seen=False)
     assert seen["_turn_actor"] == "gateway"
-    # Every hidden turn holds its pre-tool narration (test_heartbeat_quiet_end).
-    assert seen["_hidden_turn"] is True
     flags = {
         "producer_is_user_facing": bool(seen.get("_directive_user_origin")),
         "producer_is_self_wake": bool(seen.get("_directive_self_wake")),
@@ -373,8 +371,9 @@ def test_a_wake_while_the_gateway_is_stopping_starts_no_turn(_floor_monkeypatch)
     )
     _floor_monkeypatch.setattr(goal_reminder, "gateway_stopping", lambda: True)
     assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == goal_reminder.STOPPING_SKIP
-    # Checked before the wake's own reads, so a stopping gateway does none of them.
-    assert sent == [] and reads == []
+    # The cron timer already stops firing on shutdown, so the one check sits
+    # after the wake's reads: they run, and no turn starts.
+    assert sent == [] and reads == [ORDINARY]
 
 
 def test_a_stop_that_begins_during_the_wakes_reads_skips_it(_floor_monkeypatch) -> None:
@@ -396,6 +395,35 @@ def test_a_stop_that_begins_during_the_wakes_reads_skips_it(_floor_monkeypatch) 
     assert sent == []
 
 
+def test_a_wake_while_a_monitor_loop_drives_the_thread_starts_no_turn(_floor_monkeypatch) -> None:
+    import kiro_crew.autonudge as autonudge
+    from kiro_crew import ledger_wake
+
+    state = FakeState()
+    slug, slot = _armed(state)
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: False)
+    svc = object()
+    _floor_monkeypatch.setattr(autonudge, "get_instance", lambda: svc)
+    asked: list[tuple] = []
+    looping = [True]
+
+    def worker_looping(service: Any, key: str) -> bool:
+        asked.append((service, key))
+        return looping[0]
+
+    # The work ledger's own answer, asked about this thread with the live service.
+    _floor_monkeypatch.setattr(ledger_wake, "worker_looping", worker_looping)
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == goal_reminder.LOOP_SKIP
+    assert sent == [] and asked == [(svc, slot.key)]
+    looping[0] = False
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
+    assert len(sent) == 1
+
+
 def test_a_running_gateway_is_not_stopping() -> None:
     # The real process-wide event, read inside a loop as the cron callback reads it.
     async def read() -> bool:
@@ -404,7 +432,31 @@ def test_a_running_gateway_is_not_stopping() -> None:
     assert asyncio.run(read()) is False
 
 
-# ── milestones that are all met ──
+# ── the wake prompt ──
+
+
+def _wake_prompt(state: FakeState, slug: str, _floor_monkeypatch) -> str:
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: False)
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
+    ((args, _kwargs),) = sent
+    return args[2]
+
+
+def test_a_wake_prompt_leaves_met_milestones_a_next_step(_floor_monkeypatch) -> None:
+    state = FakeState()
+    slug, _slot = _armed(state)
+    prompt = _wake_prompt(state, slug, _floor_monkeypatch)
+    # Met milestones leave work that needs no one: proposing the next ones is
+    # the crewmate's own tool, not a reason to idle.
+    assert "set_key_results" in prompt
+    assert "a push, a merge, a release" in prompt
+    # On main the crewmate does its own work; nothing names a worker of its own.
+    assert "your worker" not in prompt and "[Worker report]" not in prompt
+    assert "a wake every 1 hr " in prompt
 
 
 class _Cards:
@@ -420,158 +472,48 @@ class _Cards:
         return self.cards
 
 
-def _wake_prompt(state: FakeState, slug: str, _floor_monkeypatch, cards: list) -> str:
-    from kiro_crew.dashboard import change_cards
-
-    sent: list[tuple] = []
-    _floor_monkeypatch.setattr(
-        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
-    )
-    _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: False)
-    _floor_monkeypatch.setattr(change_cards, "card_store_for", lambda _s: _Cards(cards))
-    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
-    ((args, _kwargs),) = sent
-    return args[2]
-
-
-def _read(slug: str, value: str) -> None:
-    (kr,) = member_goals.read_goals(slug, ORDINARY)["key_results"]
-    member_goals.record_key_result(slug, ORDINARY, kr["id"], value)
-
-
-def test_a_wake_prompt_leaves_met_milestones_a_next_step(_floor_monkeypatch) -> None:
-    state = FakeState()
-    slug, _slot = _armed(state)
-    prompt = _wake_prompt(state, slug, _floor_monkeypatch, [])
-    # Met milestones leave work that needs no one: proposing the next ones is
-    # the crewmate's own tool, not a reason to idle.
-    assert "set_key_results" in prompt
-    assert "a push, a merge, a release" in prompt
-    # On main the crewmate does its own work; nothing names a worker of its own.
-    assert "your worker" not in prompt and "[Worker report]" not in prompt
-    assert "a wake every 1 hr " in prompt
-
-
-def test_a_wake_after_every_milestone_is_met_carries_the_gateways_line(
+def test_a_waiting_milestones_card_keeps_the_wake_from_proposing_another(
     _floor_monkeypatch,
 ) -> None:
-    state = FakeState()
-    slug, _slot = _armed(state)
-    _read(slug, "12")
-    prompt = _wake_prompt(state, slug, _floor_monkeypatch, [])
-    assert goal_reminder.MILESTONES_MET_LINE not in prompt
-    assert goal_reminder.MILESTONES_PENDING_LINE not in prompt
-    _read(slug, "40")
-    prompt = _wake_prompt(state, slug, _floor_monkeypatch, [])
-    assert goal_reminder.MILESTONES_MET_LINE in prompt
-    # The line sits under the progress block, before the wake's own text.
-    assert prompt.index(goal_reminder.MILESTONES_MET_LINE) < prompt.index("This is your heartbeat")
-    for word in ("must", "never", "exactly", "do not"):
-        assert word not in goal_reminder.MILESTONES_MET_LINE.lower()
-
-
-def test_the_line_asks_for_the_next_milestones_card_before_any_work() -> None:
-    line = goal_reminder.MILESTONES_MET_LINE
-    assert "first step is the next milestones" in line
-    assert "set_key_results" in line
-    assert line.index("set_key_results") < line.index("Work toward the goal")
-
-
-def test_a_waiting_milestones_card_turns_the_line_into_doing_work(_floor_monkeypatch) -> None:
-    state = FakeState()
-    slug, _slot = _armed(state)
-    _read(slug, "done")
-    waiting = [{"kind": "crewmate.key_results", "status": "pending"}]
-    applying = [{"kind": "crewmate.key_results", "status": "applying"}]
-    finished = [{"kind": "crewmate.key_results", "status": "cancelled"}]
-    other = [{"kind": "crewmate.goal", "status": "pending"}]
-    for cards in (waiting, applying):
-        prompt = _wake_prompt(state, slug, _floor_monkeypatch, cards)
-        assert goal_reminder.MILESTONES_MET_LINE not in prompt
-        assert goal_reminder.MILESTONES_PENDING_LINE in prompt
-    for cards in (finished, other):
-        prompt = _wake_prompt(state, slug, _floor_monkeypatch, cards)
-        assert goal_reminder.MILESTONES_MET_LINE in prompt
-        assert goal_reminder.MILESTONES_PENDING_LINE not in prompt
-    for word in ("must", "never", "exactly", "do not"):
-        assert word not in goal_reminder.MILESTONES_PENDING_LINE.lower()
-
-
-def test_an_unreadable_card_store_counts_as_no_card(_floor_monkeypatch) -> None:
     from kiro_crew.dashboard import change_cards
 
     state = FakeState()
     slug, _slot = _armed(state)
-    _read(slug, "done")
+    waiting = [{"kind": "crewmate.key_results", "status": "pending"}]
+    applying = [{"kind": "crewmate.key_results", "status": "applying"}]
+    for cards in (waiting, applying):
+        _floor_monkeypatch.setattr(change_cards, "card_store_for", lambda _s, c=cards: _Cards(c))
+        prompt = _wake_prompt(state, slug, _floor_monkeypatch)
+        assert "set_key_results" not in prompt
+        assert goal_reminder._HEARTBEAT_MILESTONES_WAITING in prompt
+    # A finished card, another kind of card, or none: new milestones are a next step.
+    finished = [{"kind": "crewmate.key_results", "status": "cancelled"}]
+    other = [{"kind": "crewmate.goal", "status": "pending"}]
+    for cards in (finished, other, []):
+        _floor_monkeypatch.setattr(change_cards, "card_store_for", lambda _s, c=cards: _Cards(c))
+        prompt = _wake_prompt(state, slug, _floor_monkeypatch)
+        assert goal_reminder._HEARTBEAT_NEW_MILESTONES in prompt
+        assert goal_reminder._HEARTBEAT_MILESTONES_WAITING not in prompt
+
+
+def test_an_unreadable_card_store_counts_as_no_waiting_card(_floor_monkeypatch) -> None:
+    from kiro_crew.dashboard import change_cards
 
     def boom(_s: Any) -> Any:
         raise RuntimeError("no store")
 
-    sent: list[tuple] = []
-    _floor_monkeypatch.setattr(
-        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
-    )
-    _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: False)
     _floor_monkeypatch.setattr(change_cards, "card_store_for", boom)
-    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
-    ((args, _kwargs),) = sent
-    assert goal_reminder.MILESTONES_MET_LINE in args[2]
+    assert asyncio.run(goal_reminder.milestones_card_waiting(FakeState(), "member-dm:x")) is False
 
 
-@pytest.mark.parametrize(
-    ("text", "target", "readings", "met"),
-    [
-        ("Tests written", "40", ["12", "40"], True),
-        ("Tests written", "40", ["12", "39"], False),
-        ("Tests", "0 failing", ["3 failing", "0 failing"], True),
-        ("Tests", "0 failing", ["3 failing", "1 failing"], False),
-        ("Reduce open bugs", "below 5", ["9", "4"], True),
-        ("Reduce open bugs", "5 or fewer", ["9", "6"], False),
-        # Only the target sets the direction: a verb in the milestone's own text does not.
-        ("Open 5 pull requests", "5", ["1"], False),
-        ("Open 5 pull requests", "5", ["5"], True),
-        ("Cut a release", "1", ["0"], False),
-        ("Docs pages", "5", ["2", "6"], True),
-        ("Docs pages", "5", ["4"], False),
-        ("Flaky tests", "<= 2", ["4", "2"], True),
-        ("Coverage", "> 80%", ["85%"], True),
-        ("Coverage", "> 80%", ["80%"], False),
-        ("Docs", "all docs in sync", ["all docs in sync since the 4pm pass"], True),
-        ("Docs", "all docs in sync", ["two docs still behind"], False),
-        ("Merged", "yes", ["done: merged on main"], True),
-        ("Steps", "5 of 5", ["done 3 of 5"], False),
-        ("Tests written", "40", [], False),
-        ("Fixes proposed for triaged issues", "3", ["4 fixes proposed"], True),
-        ("Fixes proposed for triaged issues", "3", ["2 fixes proposed"], False),
-        ("Fixes proposed", "3 fixes", ["4 fixes proposed"], True),
-        ("Passing test count", ">= 5", ["5"], True),
-        ("Proposed fixes landed with a passing test", "1 or more", ["1 (ISSUE-1 fixed)"], True),
-        ("Known bugs found and logged into issues.md", "1 or more", ["0 so far"], False),
-        ("README commands match the real CLI (mismatch count)", "0", ["2 mismatches"], False),
-        ("CI runs the tests on every push", "yes", ["workflow added; not yet run"], False),
-        ("Bugs below", "at most 2", ["3"], False),
-        ("Open issues triaged this week", "2 or more", ["3 triaged"], True),
-        ("Pages written", "at most 4", ["5"], False),
-        ("Pages", "3 pages", ["4 failing"], False),
-    ],
-)
-def test_a_milestone_is_met_only_when_its_reading_settles_it(
-    text: str, target: str, readings: list[str], met: bool
-) -> None:
-    from kiro_crew.member_milestones import key_result_met
-
-    kr = {
-        "text": text,
-        "target": target,
-        "current": readings[-1] if readings else "",
-        "readings": [{"value": v, "at": float(i)} for i, v in enumerate(readings)],
-    }
-    assert key_result_met(kr) is met
-
-
-def test_a_goal_with_no_milestones_counts_as_met_and_no_goal_does_not() -> None:
-    from kiro_crew.member_milestones import milestones_all_met
-
-    goal = {"goals": [{"id": "g0000000a", "text": "Ship"}], "key_results": []}
-    assert milestones_all_met(goal) is True
-    assert milestones_all_met({"goals": [], "key_results": []}) is False
+def test_a_wake_that_cannot_move_anything_ends_at_once(_floor_monkeypatch) -> None:
+    state = FakeState()
+    slug, _slot = _armed(state)
+    prompt = _wake_prompt(state, slug, _floor_monkeypatch)
+    # The turn's text shows in the chat like any reply, so the first ask after
+    # the goals is the silent end, before the wake's own work.
+    line = (
+        "When nothing above can move forward, call nothing_to_do at once, with no text before it."
+    )
+    assert line in prompt
+    assert prompt.index(line) < prompt.index("This is your heartbeat")

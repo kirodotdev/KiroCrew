@@ -576,8 +576,6 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
-from kiro_crew.dashboard.heartbeat_quiet_end import HeldRows  # noqa: F401
-from kiro_crew.dashboard.heartbeat_quiet_end import release_held_rows, settle_held_rows
 from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
@@ -1516,10 +1514,6 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
-    # A hidden gateway turn (set only by ``mate_welcome.dispatch_hidden_turn``):
-    # its pre-tool narration is held and folded into its steps at the turn end
-    # (``heartbeat_quiet_end``), so the user reads only its final reply.
-    _hidden_turn: bool = False,
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -1555,7 +1549,6 @@ async def _run_chat(
         _directive_channel_origin=_directive_channel_origin,
         _commands_off=_commands_off,
         _turn_actor=_turn_actor,
-        _hidden_turn=_hidden_turn,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
         _on_irreversibly_consumed=_on_irreversibly_consumed,
@@ -3724,8 +3717,6 @@ async def _run_chat(
                 _activity_after_terminal,
                 turn._terminal_directive_kind,
             )
-
-        settle_held_rows(turn, final_reply=bool(_branch_answer_text))
 
         if _branch_answer_text:
             _flush_text_stream(turn)
@@ -6897,9 +6888,6 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
-        # A hidden turn that raised or was cancelled after a pre-tool cut never
-        # reached its settle; its held rows are delivered here, unfolded.
-        release_held_rows(turn)
         # An interrupted or unexecuted proposal must not survive into a turn
         # whose backend may reuse its call id. Executed walker work is separate.
         _acquired = turn._acquired

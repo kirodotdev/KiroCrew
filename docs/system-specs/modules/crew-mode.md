@@ -2136,7 +2136,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   update, Edit milestone and Remove milestone), the check-ins as three tiles
   saying on or off and when they run, with the **Heartbeat** as one full-width
   row under them (its name, the line "Every 1 hr, finds work on its own" with
-  its interval, a second line "Each wake uses credits. · up to 12 wakes a day" while it is on (the daily bound, `wakesPerDay`), and Off
+  its interval, a second line "Each run uses credits. · up to 12 runs a day" while it is on (the daily bound, `wakesPerDay`), and Off
   or Turned on -- a switch state, never "Running", which
   read as work in progress beside the crewmate's Idle; the card is a door to the switches and
   pickers), a full-width **Add something {name} should track** row, and the reports. The
@@ -2230,14 +2230,14 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   check-in on it offers them with `set_check_ins` (the Daily Goal Reminder, the
   Weekly report, the Monthly review, and the Heartbeat, which is off by default:
   a wake every so often that keeps the work moving while the user is away, the
-  chat quiet, the Dashboard tab showing what it did, each wake using credits),
+  chat quiet, the Dashboard tab showing what it did, each run using credits),
   otherwise it says what the crewmate works on first.
 - the **`crewmate.check_ins` card** (`set_check_ins`): turns the Daily Goal
   Reminder, Weekly report, Monthly review and Heartbeat on or off and sets
   `weekday`, `month_day`, `time` and the heartbeat's `interval` (its rows read
-  "Heartbeat (each wake uses credits)", whose value when it turns on always
+  "Heartbeat (each run uses credits)", whose value when it turns on always
   names how often and the daily bound, the default too ("On, every 1 hr (up to
-  24 wakes a day)"), and "Every 1 hr (up to 24 wakes a day)" for a changed
+  24 runs a day)"), and "Every 1 hr (up to 24 runs a day)" for a changed
   interval (`member_goals.wakes_per_day`: 48, 24, 12 or 6); the tool's description names each
   wake's credit cost too). One formatter writes the interval everywhere:
   `member_goals.interval_label` ("30 min", "1 hr", "2 hr", "4 hr") on the
@@ -2286,32 +2286,33 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   over the crewmate's whole context, and a provider's prompt cache lives
   minutes, so no interval on the list finds the previous wake's cache warm and
   credits scale with the number of wakes alone; 30 minutes caps it at 48 a day,
-  the hourly default at 24. A wake that fires while the gateway is stopping
-  (`kiro_crew.shutdown_event` set, read by `goal_reminder.gateway_stopping`
-  before and after the wake's reads) starts no turn and logs
-  `skipped: the gateway is stopping`.
+  the hourly default at 24. A wake that finds the gateway stopping after its
+  reads (`kiro_crew.shutdown_event` set, read by `goal_reminder.gateway_stopping`;
+  the cron timer itself stops firing once the event is set) starts no turn and
+  logs `skipped: the gateway is stopping`. A wake whose thread a monitor loop
+  drives (`goal_reminder._monitor_loop_drives`, the work ledger's own
+  `ledger_wake.worker_looping` over `autonudge.get_instance()`: the bare,
+  `dashboard_` and channel keys, an active bounded loop with budget left; any
+  failure reads as no loop) starts no turn either and logs
+  `skipped: a monitor loop is running`, since between two loop cycles the
+  thread is idle. While a `crewmate.key_results` card the crewmate proposed is
+  pending or applying in the thread (`goal_reminder.milestones_card_waiting`;
+  an unreadable card store counts as no card), the prompt drops new milestones
+  from its next steps and says the card already waits on the user, so a wake
+  does not propose a second card.
   Changing the interval replaces that schedule. On the check-ins page the switch
-  carries the line that each wake uses credits with that interval's daily bound,
+  carries the line that each run uses credits with that interval's daily bound,
   and the interval picker shows under it while it is on, each option naming its
-  own bound ("Every 1 hr · up to 24 wakes a day"). Only the owner's schedules route and an applied
+  own bound ("Every 1 hr · up to 24 runs a day"). Only the owner's schedules route and an applied
   `crewmate.check_ins` card write the switch, so the crewmate proposes it with
   `set_check_ins` and cannot turn it on itself. A wake goes through the same
   `goal_reminder.fire` path and the same skips (thread not open, a turn running
   or queued, switch off, no goal), checking the thread again after the
   off-loop tools check, and dispatches one hidden turn
   (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`)
-  built by `goal_reminder.heartbeat_prompt` from the current record. Once every
-  milestone is met (`member_milestones.milestones_all_met`: a goal with none,
-  or each latest reading settling its target by `key_result_met`, which reads
-  a leading done word, a repeated word target, or numbers compared by the
-  target's own comparison or by reduce words in the TARGET only -- a verb in
-  the milestone's own text, "Open 5 pull requests", sets no direction), the progress block is
-  followed by the gateway's own line (`goal_reminder.milestones_line`):
-  `MILESTONES_MET_LINE` makes the next milestones on a `set_key_results` card
-  the wake's first step, and `MILESTONES_PENDING_LINE`, while a
-  `crewmate.key_results` card in the thread is still pending or applying, makes
-  a piece of work toward the goal the step instead; an unreadable card store
-  counts as no card. The prompt
+  built by `goal_reminder.heartbeat_prompt` from the current record. Right
+  under the progress block, the prompt asks for `nothing_to_do` at once, with
+  no text before it, when nothing can move forward. The rest of the prompt
   is written as principles: look at the goals, milestones and open work-ledger
   items; move forward what it can, one thing or several (met milestones or
   work waiting on the user still leave a step that needs no one -- the next
@@ -2339,24 +2340,10 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   The quiet end is admitted on that turn because a hidden turn is opened by the
   gateway (`_turn_actor="gateway"`, no user, channel or self-wake origin), and
   `session_directive_apply._nothing_to_do` refuses it only on a turn a person or
-  a channel opened. A heartbeat's quiet end leaves no chat message even when
-  the model wrote text before the call: every hidden turn reaches the runner as
-  `_run_chat(_hidden_turn=True)`, `dispatch_hidden_turn` being the only
-  producer of that flag, and the turn's pre-tool text is cut with
-  `quiet_persist` and held (`dashboard/heartbeat_quiet_end.HeldRows`, the
-  turn's `_held_rows`) until the turn completes. An applied quiet end then
-  moves that text onto the `nothing_to_do` tool row (`meta.folded_reply`,
-  appended to `meta.output`, patched live) and turns each held row into the
-  say-nothing U+200B row, so the thread draws nothing, badges nothing and the
-  roster quotes nothing; a turn that ends with a final reply folds each held
-  row the same way onto the tool row after it, so the user reads the reply
-  without the narration; a fold only ever takes text it keeps whole, so held
-  text whose join runs past `MAX_FOLDED_CHARS` (16,000) on one tool row is not
-  folded and the rows are delivered as they are; any other ending (a person
-  steered in, no tool row after a held row, no final reply) delivers the held
-  rows as usual, and a turn that raises or is cancelled before it settles
-  delivers them from `_run_chat`'s `finally` (`release_held_rows`) (session.md,
-  "Who may end quietly"). The hidden turns this touches are exactly
+  a channel opened. A hidden turn's text is not folded or held: text the model
+  writes before a tool call is an ordinary reply row, shown in the chat like on
+  any other turn, so the prompt carries the silent end (session.md, "Who may
+  end quietly"). The hidden turns are exactly
   `dispatch_hidden_turn`'s callers: the first welcome
   (`mate_welcome._dispatch_greeting`), goal setup's kickoff and
   `[Milestones confirmed]` turns (`goal_setup`), and the four check-ins

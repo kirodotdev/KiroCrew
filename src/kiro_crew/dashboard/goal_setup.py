@@ -177,9 +177,9 @@ def _goal_prompt(goal_id: str) -> Build:
 #: The Heartbeat in the check-ins offer. It is off by default and only a check-ins
 #: card or the Goals tab turns it on, so the offer names it and what each wake costs.
 _HEARTBEAT_OFFER = (
-    "and what the Heartbeat does: a wake every so often that keeps the work moving "
+    "and what the Heartbeat does: a run every so often that keeps the work moving "
     "while they are away, with this chat staying quiet and your Dashboard tab "
-    "showing what it did, each wake using credits."
+    "showing what it did, each run using credits."
 )
 
 
