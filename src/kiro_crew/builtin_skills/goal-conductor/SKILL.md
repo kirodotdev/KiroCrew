@@ -501,9 +501,27 @@ total from its `conductor.goal_items_used`, not by counting `items`:
   items** in total — every round's items, re-plans included (`item_cap`, set
   with `action=goal` `item_cap=<N>`). Nothing is refused past it. Read
   `goal_items_used` and `cap_exceeded` off `work_ledger_read`'s `conductor`
-  block and put `items used: N of <item_cap>` in every round report; when
-  `cap_exceeded` is true, say so in that report so the user can decide whether
-  the goal is spending more than they meant, then carry on. Only a goal the
+  block. The count is yours to manage, not the user's: keep it out of round
+  reports, where a running "N of M" reads as a quota the user must watch. The
+  first report after `cap_exceeded` turns true, tell the user once, in plain
+  words, so they can stop the goal if it is spending more than they meant (for
+  example, "This goal has needed 23 work items so far, more than the 20 I
+  planned for. I'm carrying on; say stop if that's more than you want."). Make
+  it a statement, not a question, so it never holds up the round's reset. Your
+  chat is reset each round, so the marker records that you gave the notice:
+  in every round-close `session_ledger_record` (the one that carries `goal`,
+  `next` and `patrol_base`), re-record `item_cap_notice` in `artifacts` so it
+  never ages out. Record `none` if a fresh `work_ledger_read` shows
+  `cap_exceeded` false; `told the user at N` only if this turn's report gave
+  the notice; otherwise the stored value, carried forward unchanged. Items are
+  created at dispatch, after the report, so the cap is usually crossed after
+  the report that could have said so; carrying the value forward leaves the
+  notice to the next report. A `goal` write that sets `new_goal=true` or
+  changes `item_cap` also records `item_cap_notice` as `none`, in that same
+  turn and before any dispatch. Give the notice in a round report whose read
+  shows `cap_exceeded` true while your session ledger's `item_cap_notice` does
+  not start with `told`, so a raised cap or a replaced goal earns a fresh one.
+  Then carry on. Only a goal the
   user replaced starts a new count: record it with `action=goal`
   `new_goal=true`. Rewording the goal keeps the count.
 - **No progress.** When **two rounds in a row** land with no item accepted, do
