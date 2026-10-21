@@ -80,6 +80,7 @@ from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     rotate_dumps,
     sweep_stale_dumps,
 )
+from kiro_crew.dashboard.dist_file_response import DistFileResponse  # noqa: F401
 from kiro_crew.dashboard.handlers.artifacts import (  # noqa: F401
     api_artifact_asset,
     api_artifact_comments,
@@ -369,6 +370,7 @@ from kiro_crew.dashboard.token_auth import (  # noqa: F401
 )
 from kiro_crew.deploy import _register_core_skills as _register_deploy_skills
 from kiro_crew.deploy.handlers import register_routes as _register_deploy_routes
+from kiro_crew.executors import static_asset_executor  # noqa: F401
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401

@@ -17,9 +17,11 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _APP_WINDOWS_SUBDIR,
         APP_WINDOW_URL_PREFIX,
+        DistFileResponse,
         _vendor_preflight_handler,
         logger,
         register_app_window_paths,
+        static_asset_executor,
     )
 
 
@@ -153,7 +155,7 @@ def _dist_file_handler(
     """A GET/HEAD handler serving ``dist_dir/subdir`` through :func:`_resolve_dist_file`.
 
     The resolution is a handful of ``lstat`` calls per request, run off the event
-    loop as aiohttp's own static handler does (:func:`_serve_dist_file`).
+    loop on the static-asset pool (:func:`_serve_dist_file`).
     """
 
     async def _serve(request: web.Request) -> web.StreamResponse:
@@ -163,19 +165,21 @@ def _dist_file_handler(
 
 
 async def _serve_dist_file(dist_dir: Path, subdir: str, tail: str) -> web.StreamResponse:
-    """Resolve ``tail`` off the event loop and serve it, or a no-store 404.
+    """Resolve ``tail`` and serve it, or a no-store 404, never on the default executor.
 
-    ``web.FileResponse`` still picks a precompressed ``.br``/``.gz`` sibling and
-    answers ranges and conditional requests.
+    Resolution, open, reads and close all run on
+    :func:`~kiro_crew.executors.static_asset_executor`
+    (:mod:`~kiro_crew.dashboard.dist_file_response`), so other work
+    filling the default executor cannot leave the page shell without its scripts.
     """
     path = await asyncio.get_running_loop().run_in_executor(
-        None, _resolve_dist_file, dist_dir, subdir, tail
+        static_asset_executor(), _resolve_dist_file, dist_dir, subdir, tail
     )
     if path is None:
         # Returned, not raised, so the header middleware still marks it
         # no-store: a cached 404 for a hashed chunk outlives the gap.
         return web.Response(status=404, text="404: Not Found")
-    return web.FileResponse(path)
+    return DistFileResponse(path)
 
 
 def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:

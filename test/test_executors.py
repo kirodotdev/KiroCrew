@@ -95,6 +95,17 @@ def test_pools_are_bounded() -> None:
     assert ex.update_executor()._max_workers == ex._MAX_UPDATE_WORKERS == 1
 
 
+def test_static_asset_pool_is_isolated_bounded_named_and_reset() -> None:
+    static = ex.static_asset_executor()
+    assert static is ex.static_asset_executor()
+    assert static is not ex.discovery_executor()
+    assert static._max_workers == ex._MAX_STATIC_ASSET_WORKERS
+    assert static._thread_name_prefix == "mc-static"
+    assert _ran_on(static, lambda: 3 + 3) == 6
+    ex.shutdown_maintenance_executor()
+    assert ex.static_asset_executor() is not static
+
+
 def test_memory_preparation_pool_is_one_named_worker_and_fresh_per_pass() -> None:
     # Fresh per pass: a stopped pass's worker can still hold its thread, and the
     # next gateway's pass must not queue behind it.

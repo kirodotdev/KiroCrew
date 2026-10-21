@@ -40,6 +40,9 @@ Three pools, deliberately split:
   worker for the full scan.  This gets its OWN pool so those user-triggerable
   scans can never occupy the :func:`maintenance_executor` workers the orphan
   sweeps need to recover from a wedge.
+* :func:`static_asset_executor` -- the React build's files (open, chunked
+  reads, close).  Its own pool so a default executor that other work has
+  filled cannot stop the dashboard's scripts from loading.
 * :func:`image_executor` -- Pillow decode/resize/encode for the MCP gateway's
   tool-result image budget (:mod:`kiro_crew.mcp_gateway.image_budget`).  Paced
   by whatever a brokered MCP server returns, and a single oversized raster
@@ -173,6 +176,13 @@ _CRON_QUEUE_WAIT_SECS = 900
 # workers: concurrent scans queue among THEMSELVES here rather than occupying
 # the maintenance pool's orphan-sweep workers.
 _MAX_DISCOVERY_WORKERS = 4
+
+# The React build's files (``/assets``, ``/fonts``, the service worker, ...):
+# open, chunked reads and close. Each call is short, but a page load fetches
+# dozens of chunks at once and the routes answer unauthenticated GETs, so they
+# get a pool of their own: a busy default executor cannot leave the dashboard
+# blank, and a flood of asset requests queues among itself.
+_MAX_STATIC_ASSET_WORKERS = 4
 
 # Memory filesystem work and explicit embedding requests stay off the default
 # executor used by DNS. Prompt construction shares this pool but never embeds.
@@ -412,6 +422,7 @@ _kiro_spawn_pool: ThreadPoolExecutor | None = None
 _mcp_probe_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
+_static_asset_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
 _recall_pool: ThreadPoolExecutor | None = None
 _image_pool: ThreadPoolExecutor | None = None
@@ -570,6 +581,26 @@ def discovery_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _discovery_pool
+
+
+def static_asset_executor() -> ThreadPoolExecutor:
+    """Return the pool that serves the React build's files, creating it on first use.
+
+    Threads are named ``mc-static``. Kept off the default executor so the
+    dashboard's scripts and styles still load when other work holds every
+    default worker; ``/`` already resolves on :func:`discovery_executor`, and
+    without this the page would load its shell and stay blank.
+    """
+    global _static_asset_pool
+    if _static_asset_pool is None:
+        with _lock:
+            if _static_asset_pool is None:
+                _static_asset_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_STATIC_ASSET_WORKERS,
+                    thread_name_prefix="mc-static",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _static_asset_pool
 
 
 def image_executor() -> ThreadPoolExecutor:
@@ -1249,6 +1280,7 @@ def shutdown_maintenance_executor() -> None:
     loop and shut down by asyncio when the loop closes.
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
+    global _static_asset_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _tool_gate_pool, _stt_pool
     global _path_resolve_pool
     global _path_probe_pool, _path_transfer_pool
@@ -1260,6 +1292,7 @@ def shutdown_maintenance_executor() -> None:
         mcp_probe_pool, _mcp_probe_pool = _mcp_probe_pool, None
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
+        static_asset_pool, _static_asset_pool = _static_asset_pool, None
         embed_pool, _embed_pool = _embed_pool, None
         recall_pool, _recall_pool = _recall_pool, None
         governance_pool, _governance_pool = _governance_pool, None
@@ -1284,6 +1317,8 @@ def shutdown_maintenance_executor() -> None:
         cron_pool.shutdown(wait=False, cancel_futures=True)
     if discovery_pool is not None:
         discovery_pool.shutdown(wait=False, cancel_futures=True)
+    if static_asset_pool is not None:
+        static_asset_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
     if recall_pool is not None:
