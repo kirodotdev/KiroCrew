@@ -536,7 +536,8 @@ with `os.execv`, which skips the cleanup hook that runs `shutdown()`. The exec
 keeps the pid, so a forwarder left running would still name the gateway as its
 live parent: the orphan reclaim below refuses it and the allocator routes around
 its port for the life of the process. So the instances startup hook in
-`dashboard/server.py` registers `shutdown()` with the pre-exec seam
+`_register_instances_hooks` (`dashboard/server_runtime/instances_lifecycle.py`)
+registers `shutdown()` with the pre-exec seam
 (`pre_exec_stops.register_pre_exec_stop`) when it creates the manager, and its
 cleanup hook unregisters it. Both restarts call `run_pre_exec_stops()` once,
 after the sessions close and the MCP broker stops. The seam runs every

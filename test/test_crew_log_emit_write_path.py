@@ -593,8 +593,11 @@ def test_the_dashboard_cleanup_hook_actually_drains_off_the_loop():
     on an honest rewrite of the same behaviour.
     """
     import asyncio as _asyncio
+    from pathlib import Path
 
-    source = inspect.getsource(server_module)
+    source = inspect.getsource(server_module) + (
+        Path(server_module.__file__).parent / "server_runtime" / "instances_lifecycle.py"
+    ).read_text(encoding="utf-8")
     assert (
         "app.on_cleanup.append(_crew_log_drain)" in source
     ), "the server no longer registers a crew log drain on cleanup"

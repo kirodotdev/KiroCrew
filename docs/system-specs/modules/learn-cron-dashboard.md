@@ -1955,9 +1955,9 @@ specified compatibility change.
 - `server.py` + `server_runtime/` — the gateway bootstrap's composition.
   `dashboard/server.py` is the bootstrap's only import path and its only patch
   surface (`dashboard/__init__.py` resolves `start_dashboard` and
-  `start_api_server` from it lazily). It defines both entrypoints: `start_dashboard`,
-  the full dashboard, and `start_api_server`, the headless `--slack-only` API
-  server. Each builds the app, registers its routes, installs its middleware chain
+  `start_api_server` from it lazily). It binds both entrypoints: `start_dashboard`,
+  the full dashboard, which it defines, and `start_api_server`, the headless
+  `--slack-only` API server, which its `api_entrypoint` owner defines. Each builds the app, registers its routes, installs its middleware chain
   and lifecycle hooks, binds, publishes the bound port and its credentials, and then
   starts the post-bind work. `start_dashboard` also mounts the SPA fallback for
   React Router (the `/api/ws` WebSocket route is `routes/realtime.py`'s, registered
@@ -1967,6 +1967,7 @@ specified compatibility change.
   instruction, so its grant does not expire unless the `yolo_duration` governance
   scope forbids that, and it is refused when its SEL audit fails (fail-closed). The
   modules of `dashboard/server_runtime/` hold these responsibilities, one each:
+  - `api_entrypoint` — `start_api_server`, the headless server's boot sequence;
   - `listener` — the port reservation and bind (`_reserve_dashboard_port`,
     `_bind_once`, `_start_site`), the second loopback family
     (`_start_secondary_loopback_site`), the Unix-socket site (`_start_unix_site`)
@@ -1992,15 +1993,25 @@ specified compatibility change.
     readiness gate and its shutdown;
   - `crewmate_prune` — the crewmate prune migration, its request gate and settle
     wait, and the channel transcript convergence;
-  - `heartbeat` — the loop stall watchdog, the 5-second heartbeat that beats it, and
-    the prior crash dump's one report;
+  - `heartbeat` — the loop stall watchdog, the 5-second heartbeat that beats it, the
+    prior crash dump's one report, and the healthy-boot marker both entrypoints
+    dispatch once ready;
   - `diagnostics` — the boot telemetry event and the diagnostic recorder;
   - `stt_hooks` — speech-to-text prewarm and idle sweep, and the local decision
     model's release at cleanup;
   - `maintenance` — the other post-bind background work (connections warm scavenge,
     session search index, knowledge orphan reclaim, local decision model resume,
-    the own-address warm);
-  - `prevent_sleep` — the keep-awake decision and its poll;
+    the pinned-session order load, the own-address warm);
+  - `prevent_sleep` — the keep-awake decision, the TTL-cached tailnet publish probe
+    it reads, and its poll;
+  - `inherited_trust` — the safety override's inherited-trust teardown pair: the
+    clear an expiry or revocation runs, and the suspend (with its restore) a new
+    ceiling runs before it publishes;
+  - `instances_lifecycle` — the opt-in Instances startup and cleanup hooks (the hop
+    port re-take, the revive of the instances left connected, the tunnel stop, the
+    crew log drain);
+  - `browser_lifecycle` — the browser snapshot prune loop and the browser install
+    and view cleanup hooks;
   - `safety_grants` — the startup safety override, its expiry notices and the
     restart-dropped grant notice;
   - `owner_notices` — the owner DM over the configured channels, redacted at its one
@@ -2027,25 +2038,42 @@ specified compatibility change.
   `kiro_crew.dashboard.server` logger, and module state (the strict and mixed
   internal path sets, `_OWN_HOST_WARM_TASKS`, the tailnet awake cache, the
   constants) stays a facade global. Nothing but `server.py` imports an owner, and an
-  owner imports project modules only under `TYPE_CHECKING` or inside a function.
+  owner imports project modules only under `TYPE_CHECKING` or inside a function;
+  the one exception is `api_entrypoint`'s import of `_DEFAULT_PORT`, the `port`
+  default Python evaluates when the owner loads. Two pure-data modules beside
+  `server.py` define module values it re-binds:
+  `dashboard/server_internal_paths.py` (the strict and mixed internal path sets,
+  the deny-audit statuses, the via-proxy suffix and the CSRF-safe methods) and
+  `dashboard/server_response_headers.py` (the Permissions-Policy, the `/vendor`
+  CORS/PNA values and the asset cache policies). `server.py` imports every name
+  they bind and is the only module that imports either, so its binding is the one
+  every owner reads and a patch reaches.
   `test/test_dashboard_server_composition_contract.py` pins the surface and the
   composition, and `test/test_dashboard_server_composition_contract_reach.py` the patch
   reach, both middleware orders, the lifecycle hooks, the MCP route table and the boot
   call sequence.
 
-  What stays in `server.py`: both entrypoints, with the constructs repository guards
-  read in that file by path (the `_STRICT_INTERNAL_API_PATHS` literal, both runner
-  constructions, the heap-trim maintainer, the diag recorder's off switch, both
-  Kiro prerequisite seeds and skill-read observers, the migrated-builtin sweep, the
-  browser CLI environment override, the per-boot secret mint, the dashboard
-  contributor seam, both cron-folder loads, the channel manager's broadcast
-  hand-off); the inherited-trust teardown pair and the override-expiry wiring that
-  calls it; the browser install, view and snapshot-prune lifecycle; the instances
-  hooks with their revive policy; and the tailnet awake cache with its reader.
+  What stays in `server.py`: `start_dashboard`, whose body holds a baselined on-loop
+  filesystem call (`.github/sync-io-in-async-fs-baseline.txt`) that would be a new
+  offender in any other file, with the constructs repository guards read in it by
+  path (the dashboard's runner construction, the heap-trim maintainer, the diag
+  recorder's off switch, its Kiro prerequisite seed and skill-read observer, the
+  migrated-builtin sweep, the browser CLI environment override, its per-boot secret
+  mint, the dashboard contributor seam, its cron-folder load, the channel manager's
+  broadcast hand-off and the override-expiry wiring); the CSP and the frame-src
+  literals the frontend frame-src pins read by path; and the module state. The
+  headless server's half of each paired construct is in `api_entrypoint`, the
+  inherited-trust revoke in `inherited_trust`, the crew-log drain in
+  `instances_lifecycle`, the browser-view drain in `browser_lifecycle`, and the
+  `_STRICT_INTERNAL_API_PATHS` literal in `server_internal_paths.py`;
+  `test/test_dashboard_server_composition_contract_guards.py` names the file that
+  holds each.
 
   **Where new code goes**: new work for a responsibility an owner holds goes in that
   owner; a new boot step goes in the entrypoint, at its place in the sequence,
-  calling an owner when it is more than a few lines. Every name an owner function
+  calling an owner when it is more than a few lines. A new internal API path goes
+  in `server_internal_paths.py`'s strict or mixed set, and a new response header
+  value or cache policy in `server_response_headers.py`. Every name an owner function
   reads must be bound in `server.py`. A new owner module is imported in its import
   block (the module alias and its by-name re-exports), appended to the `compose(...)`
   call at the end of the file and to `_BASE_OWNERS` in
@@ -3197,7 +3225,7 @@ content. Answer drafts remain outside the frames.
 
 `ask_question` is **blocking**: the MCP tool opens a question card on the calling session's own dashboard slot and holds the tool call until the user responds, and the user's answers return as the tool's **result** — the agent continues in the same turn and never receives them as a user message. That is the point of the design: question text is agent-authored, and echoing it back inside a user-role turn (the former non-blocking directive of issue #755, whose applier `session_directive_apply.py::_ask_question` is gone) handed that text the user's authority. User-facing documentation lives in `src/kiro_crew/docs/agent-questions.md`; this section is the contract.
 
-The tool (`mcp_tools/control.py::ask_question`) resolves its session key through the strict sidecar resolver as a context guard — an empty key or a non-dashboard surface gets a plain-text result telling the agent to ask in text or end with an `[OPTIONS:]` tag — then validates its arguments (`ASK_QUESTION_SCHEMA` plus `validate_ask_user_question`) and drives three MACHINE routes under `/api/agent-ask` (`handlers/ask_question.py`). They are STRICT internal paths (X-Internal-Secret, no cookie fall-through; `server.py`), and the caller's identity is the **attested** `X-Session-Key` (`member_memory_auth.session_key_is_attested`), never a body field: the card goes to the slot of the session making the call, and a wait or withdraw for an ask another session opened is `404 question_not_found`. Every authorization denial — unattested caller, non-dashboard session origin, cross-session `ask_id` conflict, and cross-session wait or withdraw — is SEL-audited through one response helper (`log_api_access` with `source="agent_ask"`, `resources="/api/agent-ask"`, `outcome="denied"`); validation failures and a genuinely missing ask are not authorization events and emit no denial audit. During a gateway-side directive replay (`directive_capture_active()`) the tool returns `""` and opens nothing, because a loopback POST from the gateway's own event loop can never be serviced.
+The tool (`mcp_tools/control.py::ask_question`) resolves its session key through the strict sidecar resolver as a context guard — an empty key or a non-dashboard surface gets a plain-text result telling the agent to ask in text or end with an `[OPTIONS:]` tag — then validates its arguments (`ASK_QUESTION_SCHEMA` plus `validate_ask_user_question`) and drives three MACHINE routes under `/api/agent-ask` (`handlers/ask_question.py`). They are STRICT internal paths (X-Internal-Secret, no cookie fall-through; `dashboard/server_internal_paths.py`), and the caller's identity is the **attested** `X-Session-Key` (`member_memory_auth.session_key_is_attested`), never a body field: the card goes to the slot of the session making the call, and a wait or withdraw for an ask another session opened is `404 question_not_found`. Every authorization denial — unattested caller, non-dashboard session origin, cross-session `ask_id` conflict, and cross-session wait or withdraw — is SEL-audited through one response helper (`log_api_access` with `source="agent_ask"`, `resources="/api/agent-ask"`, `outcome="denied"`); validation failures and a genuinely missing ask are not authorization events and emit no denial audit. During a gateway-side directive replay (`directive_capture_active()`) the tool returns `""` and opens nothing, because a loopback POST from the gateway's own event loop can never be serviced.
 
 ##### `POST /api/agent-ask/open`
 

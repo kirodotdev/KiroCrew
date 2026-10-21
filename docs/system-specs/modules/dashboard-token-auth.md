@@ -635,7 +635,8 @@ compressed body is never inflated synchronously on the event loop; without the
 middleware such a body would reach a handler as raw bytes.
 
 The two internal-path sets passed to `token_auth_middleware` are the module-level
-`_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` in `server.py`, the
+`_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` that `server.py` binds
+from `dashboard/server_internal_paths.py`, the
 second read through `_mixed_internal_api_paths()` so an edition's mixed paths join
 it — so the headless server (below) binds to the **same** sets and the two
 entrypoints cannot drift.

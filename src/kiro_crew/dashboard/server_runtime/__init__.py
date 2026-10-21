@@ -17,9 +17,13 @@ namespace, as the one-module file was. Three consequences follow:
 
 * An owner's imports are inert for its functions. An owner imports the server
   module only under ``TYPE_CHECKING``, and stdlib and third-party names (such as
-  ``aiohttp.web``) plainly; both serve the type checker and the linter. Every name a
-  function reads must exist in ``kiro_crew.dashboard.server`` -- which is why that
-  module keeps imports only its owners read, marked ``# noqa: F401`` -- and
+  ``aiohttp.web``) plainly; both serve the type checker and the linter. The one
+  exception is ``api_entrypoint``'s runtime import of ``_DEFAULT_PORT``:
+  ``start_api_server`` reads it as its ``port`` parameter default, which Python
+  evaluates when the owner loads, before compose, as ``file_api``'s ``git_panel``
+  does for its stdout cap. Every name a function reads must exist in
+  ``kiro_crew.dashboard.server`` -- which is why that module keeps imports only its
+  owners read, marked ``# noqa: F401`` -- and
   ``test_dashboard_server_composition_contract.py`` sweeps each function's bytecode
   to prove it does.
 * A function's ``__module__`` reads ``kiro_crew.dashboard.server`` as it did before
@@ -32,10 +36,13 @@ namespace, as the one-module file was. Three consequences follow:
   sets, the CSP and cache policies, the timeouts and budgets, the tailnet awake
   cache, the own-address warm task set, ``logger``) is a server global that owner
   functions reach by name, so a test that rebinds it there is the binding every
-  function sees. No owner defines a module-level value.
+  function sees. No owner defines a module-level value; the internal-path sets and
+  the response-header values are defined in two pure-data modules beside the
+  server, ``server_internal_paths`` and ``server_response_headers``, which only the
+  server imports.
 
-Which responsibility each owner holds, and which constructs stay in the server
-module because repository guards read them there, is recorded in
+Which responsibility each owner holds, and which file holds each construct a
+repository guard reads by path, is recorded in
 ``docs/system-specs/modules/learn-cron-dashboard.md`` (the ``server.py`` bullet
 under "Dashboard").
 """

@@ -290,8 +290,9 @@ class DashboardState:
         # start behavior and leave this callback unset.
         self.resume_channel_agents: "Callable[[], None] | None" = None
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)
-        self.instances_manager: Any = None  # lazy-init in server.py (SshTunnelManager)
-        self.instances_registry: Any = None  # lazy-init in server.py (InstancesRegistry)
+        # Both lazy-init in server_runtime/instances_lifecycle.py.
+        self.instances_manager: Any = None  # SshTunnelManager
+        self.instances_registry: Any = None  # InstancesRegistry
         # Cloud provisioning launch jobs (lazy-init in handlers_cloud).
         self.cloud_launch_store: Any = None  # LaunchJobStore
         self.cloud_launch_cancels: Any = None  # dict[str, threading.Event]

@@ -1,7 +1,8 @@
 """The dashboard server's owner import edges, patch reach and boot order.
 
 This file pins that nothing but the server imports an owner and an owner imports
-project modules only for type checking, that a fresh import of the server loads every
+project modules only for type checking (bar one allowlisted parameter default), that
+a fresh import of the server loads every
 owner and a second import recomposes the owners onto it, the patch census (every
 test file that could patch the server, read in parts, with no owner capturing a name
 a test rebinds), the middleware chain, lifecycle hooks and server-call sequence of
@@ -19,6 +20,7 @@ import ast
 import asyncio
 import functools
 import hashlib
+import importlib
 import inspect
 import re
 import threading
@@ -78,17 +80,53 @@ def test_nothing_but_the_facade_imports_an_owner() -> None:
     assert importers == []
 
 
+#: The one runtime project import an owner keeps, as ``file_api``'s ``git_panel`` keeps
+#: ``_GIT_PANEL_STDOUT_CAP``: ``start_api_server`` reads ``_DEFAULT_PORT`` as its
+#: ``port`` parameter default, which Python evaluates when the owner loads, before
+#: compose.
+_RUNTIME_IMPORT_ALLOWLIST = {
+    "api_entrypoint": ("kiro_crew.dashboard.state", "_DEFAULT_PORT"),
+}
+
+
+def _allowed_runtime_import_lines(stem: str, source: str) -> set[int]:
+    """The line of the owner's one allowlisted import, spelled as exactly that name."""
+    if stem not in _RUNTIME_IMPORT_ALLOWLIST:
+        return set()
+    module, name = _RUNTIME_IMPORT_ALLOWLIST[stem]
+    return {
+        node.lineno
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == module
+        and [(alias.name, alias.asname) for alias in node.names] == [(name, None)]
+    }
+
+
 def test_an_owner_imports_project_modules_only_for_type_checking() -> None:
     """An owner's module-level imports are stdlib and third-party only, plus its
-    ``TYPE_CHECKING`` names from the server. Its project names come from the server's
-    globals, so an owner adds nothing to the gateway's boot import graph and cannot
-    close a cycle with the server."""
+    ``TYPE_CHECKING`` names from the server and the one allowlisted parameter default.
+    Its project names come from the server's globals, so an owner adds nothing to the
+    gateway's boot import graph and cannot close a cycle with the server."""
+    sources = _owner_sources()
     offenders = {
         stem: lines
-        for stem, source in _owner_sources().items()
-        if (lines := _owner_runtime_edges(source, _OWNER_PACKAGE))
+        for stem, source in sources.items()
+        if (
+            lines := sorted(
+                set(_owner_runtime_edges(source, _OWNER_PACKAGE))
+                - _allowed_runtime_import_lines(stem, source)
+            )
+        )
     }
     assert offenders == {}
+    for stem, (module, name) in _RUNTIME_IMPORT_ALLOWLIST.items():
+        assert len(_allowed_runtime_import_lines(stem, sources[stem])) == 1, stem
+        assert vars(_owner(stem))[name] is getattr(importlib.import_module(module), name)
+        assert vars(_owner(stem))[name] is getattr(server, name)
+    for name in ("start_dashboard", "start_api_server"):
+        default = inspect.signature(getattr(server, name)).parameters["port"].default
+        assert default is server._DEFAULT_PORT, name
     for source in _owner_sources().values():
         tree = ast.parse(source)
         guarded = [

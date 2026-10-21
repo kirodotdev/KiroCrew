@@ -406,7 +406,7 @@ upserts work-item state and appends one event together, so a phase cannot change
 without a logged reason. The allowlist entry must be the **full path**, never the
 `/api/apps/issue-radar` prefix: prefix-matching there would also admit the app's
 GitHub write routes to anything holding the internal secret
-(`_MIXED_INTERNAL_API_PATHS` in `dashboard/server.py`).
+(`_MIXED_INTERNAL_API_PATHS` in `dashboard/server_internal_paths.py`).
 
 ## 11. UI
 

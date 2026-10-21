@@ -744,7 +744,7 @@ than on every turn.
 
 The gate must stay a **full-path** allowlist entry, never the
 `/api/apps/issue-radar` prefix. That distinction is deliberate in
-`dashboard/server.py`: prefix-matching there would also admit the app's GitHub
+`dashboard/server_internal_paths.py`: prefix-matching there would also admit the app's GitHub
 write routes (label, close, comment) to anything holding the internal secret.
 
 ### `issue_radar_crew_read`

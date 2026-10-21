@@ -33,8 +33,8 @@ silently fails to act.
   world-readable.
 * **Trust reuses the session's own approval policy** rather than adding a
   second trust store. ``slack/handler.py`` keeps an in-memory
-  ``_trusted_sessions`` set that ``dashboard/server.py`` already reaches across
-  a circular-import boundary to clear; a third copy of "is this session
+  ``_trusted_sessions`` set that ``dashboard/server_runtime/inherited_trust.py`` already
+  reaches across a circular-import boundary to clear; a third copy of "is this session
   trusted" would be one more thing to keep in sync. ``SessionManager``'s
   approval policy is durable, already SEL-audited on write, and already what
   spawned subagents inherit.

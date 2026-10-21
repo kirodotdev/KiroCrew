@@ -21,7 +21,6 @@
 2058 src/kiro_crew/change_card_catalog.py
 3161 src/kiro_crew/cron_script.py
 18473 src/kiro_crew/dashboard/chat_runner.py
-2818 src/kiro_crew/dashboard/server.py
 2284 src/kiro_crew/sandbox_launcher_program.py
 3181 src/kiro_crew/security_posture.py
 2641 test/conftest.py

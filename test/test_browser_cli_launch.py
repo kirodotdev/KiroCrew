@@ -255,10 +255,16 @@ def test_gateway_startup_does_not_write_the_config_on_the_event_loop() -> None:
     functional test.
     """
     import inspect
+    from pathlib import Path
 
     from kiro_crew.dashboard import server
 
-    source = inspect.getsource(server)
+    # The server and every owner composed into it: the negative half covers both
+    # entrypoints and the helpers they call, wherever each is defined.
+    source = inspect.getsource(server) + "".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((Path(server.__file__).parent / "server_runtime").glob("[!_]*.py"))
+    )
 
     assert "asyncio.to_thread(browser_cli_launch.cli_env_overrides)" in source
     assert "os.environ.update(browser_cli_launch.cli_env_overrides())" not in source

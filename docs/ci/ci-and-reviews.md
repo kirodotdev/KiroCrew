@@ -2043,9 +2043,12 @@ unvetted dependency cannot ride in on a stale override.
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
-`dashboard/origin.py`, the probe Host-barrier exemption that both chains in
-`dashboard/server.py` build from `dashboard/server_runtime/security_middleware.py`
-(the filter takes `src/kiro_crew/dashboard/server_runtime/**` with `server.py`),
+`dashboard/origin.py`, the probe Host-barrier exemption that both chains build
+from `dashboard/server_runtime/security_middleware.py`, the dashboard's in
+`dashboard/server.py` and the headless one in
+`dashboard/server_runtime/api_entrypoint.py` (the filter takes
+`src/kiro_crew/dashboard/server_runtime/**` and `src/kiro_crew/dashboard/server_*.py`
+with `server.py`),
 and the liveness payload in `dashboard/handlers/core.py`). It builds the image from
 a locally-built wheel and proves, across a real container boundary, that
 `KIROCREW_BIND=0.0.0.0` makes the gateway reachable from the host, that token auth

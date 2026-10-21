@@ -1,8 +1,8 @@
 """The tracked background maintenance both entrypoints start once the listener serves.
 
 The warm-mint scavenge and its cleanup, the local decision model, the session search
-indexer, the knowledge orphan reclaim, the data home's owner-only mode repair, and the
-own-address read for the ssh self-target floor.
+indexer, the knowledge orphan reclaim, the data home's owner-only mode repair, the
+pinned-session order load, and the own-address read for the ssh self-target floor.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _OWN_HOST_WARM_TASKS,
         DashboardState,
+        chat,
         data_home,
         logger,
         shutdown_event,
@@ -454,3 +455,15 @@ def _own_host_warm_done(task: "asyncio.Future[None]") -> None:
     exc = task.exception()
     if exc is not None:
         logger.warning("own-address read failed at startup", exc_info=exc)
+
+
+def _kick_pinned_order_load(state: DashboardState) -> None:
+    """Read the pinned-session order after the bind, as a tracked background task.
+
+    Off the boot path (``no-new-work-on-gateway-boot-path``): the file is
+    read after the listener accepts requests, and every writer reads it first
+    if it has not landed (``chat_folders.ensure_pinned_order_loaded``).
+    """
+    task = asyncio.create_task(chat.load_pinned_order_after_listen(state))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)

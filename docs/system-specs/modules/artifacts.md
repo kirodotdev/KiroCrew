@@ -550,7 +550,7 @@ to the parent) vs cascade (permanently delete the whole subtree, incl.
 descendant artifacts) — never silent.
 
 **Auth note (fork adaptation):** `"/api/artifact-folders"` is registered in
-`token_auth`'s `mixed_internal_paths` in `server.py` — the 5 folder MCP tools
+`token_auth`'s `mixed_internal_paths` in `dashboard/server_internal_paths.py` — the 5 folder MCP tools
 authenticate via `X-Internal-Secret`, and the prefix matcher
 (`path == p or path.startswith(p + "/")`) does NOT cover the hyphenated path
 via the `"/api/artifacts"` entry. Guarded by a regression test in

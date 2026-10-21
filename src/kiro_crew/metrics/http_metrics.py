@@ -1,7 +1,8 @@
 """Gateway HTTP observability — boot-to-ready + bounded per-route latency.
 
 Two privacy-safe, BOUNDED-CARDINALITY signals for the aiohttp gateway
-(``dashboard/server.py`` — both the full dashboard and the headless ``--slack-only``
+(``dashboard/server.py`` for the full dashboard and
+``dashboard/server_runtime/api_entrypoint.py`` for the headless ``--slack-only``
 API server):
 
   * ``kirocrew.gateway.boot.duration`` — a histogram (ms) of how long

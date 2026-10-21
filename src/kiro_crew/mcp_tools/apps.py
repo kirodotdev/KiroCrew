@@ -715,7 +715,7 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
 # app reverse proxy (``/apps/{name}/api/{path}`` → the app's own backend
 # process; NOT ``/api/apps/...``, which carries only the gateway's own app
 # management routes). The gateway admits exactly this path to internal-secret
-# callers (``_MIXED_INTERNAL_API_PATHS`` in dashboard/server.py); every other
+# callers (``_MIXED_INTERNAL_API_PATHS`` in dashboard/server_internal_paths.py); every other
 # app route stays dashboard-only.
 _DESIGN_TWEAK_THREAD_URL = "/apps/design-tweak/api/thread"
 
