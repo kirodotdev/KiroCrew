@@ -776,6 +776,38 @@ def read_live_session_execution(session_key: str) -> ExecutionContext | None:
         return _LIVE_EXECUTIONS.get(_live_key(session_key))
 
 
+def repoint_live_session_template(
+    session_key: str, template_id: str, *, expected: ExecutionContext
+) -> bool:
+    """Move an existing live carrier's provider template, keeping everything else.
+
+    The live counterpart of a durable ``template_id`` re-point (the crew-binding
+    edit that :func:`kiro_crew.dashboard.handlers.members._bind_member_template`
+    makes): once the durable record names the new template, a live carrier left
+    behind would hand the next turn the stale one, since
+    :func:`read_session_execution` answers from the live map first. This brings
+    that map into step.
+
+    Deliberately narrow, so it cannot forge identity: it ONLY rewrites
+    ``template_id``, and only when a live carrier is present AND equal to
+    ``expected`` (the record the caller just replaced). The member id, the store,
+    the memory mode and the namespace are carried verbatim, so this can never move
+    a session onto another member's store. A missing or changed carrier is a no-op
+    returning False -- the durable record is already authoritative, and the next
+    turn's read folds it in. The vouched entry is untouched: the store did not
+    change, so the capability the owner established still stands.
+    """
+    key = _live_key(session_key)
+    with _EXECUTION_LOCK:
+        current = _LIVE_EXECUTIONS.get(key)
+        if current is None or current != expected:
+            return False
+        if current.template_id == template_id:
+            return True
+        _LIVE_EXECUTIONS[key] = replace(current, template_id=template_id)
+        return True
+
+
 def tighten_live_session_execution(
     session_key: str,
     memory_mode: str,

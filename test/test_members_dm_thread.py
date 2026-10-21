@@ -274,6 +274,116 @@ class TestRestrictedRestartMemberIdentity:
         assert _slot_member_slug("chat-1-abc") == ""
 
 
+class TestMemberTemplateRebind:
+    """A crew's ``kiro_agent`` edit must reach its EXISTING DM thread.
+
+    A member thread resolves its agent from the canonical execution record's
+    ``template_id``, captured when the thread was bound and never re-derived from
+    config per turn. Editing the crew binding updates config but left the live
+    thread dispatching the old template. ``_bind_member_template`` is the
+    template counterpart of ``_bind_member_workspace``: re-point the record on
+    every thread open and arm the deferred reset so the switch lands at the next
+    turn boundary. Each test asserts the mutation (removing the re-point leaves
+    the stale template, failing the first assert).
+    """
+
+    @staticmethod
+    def _member(cfg, tmp_path, alias, member_id, store, kiro_agent):
+        from kiro_crew.config.sections import KiroCrewAgentConfig, MemoryStoreConfig
+        from kiro_crew.vector_memory import create_member_database
+
+        path = tmp_path / "memory_stores" / store / "memory.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        create_member_database(path, member_id=member_id, store_id=store)
+        cfg.agents[alias] = KiroCrewAgentConfig(
+            member_id=member_id, memory_store=store, kiro_agent=kiro_agent
+        )
+        cfg.memory_stores[store] = MemoryStoreConfig(
+            owner_member=alias, owner_member_id=member_id, memory_version=2
+        )
+
+    @staticmethod
+    def _slot(session_key):
+        # Only the fields _bind_member_template and effective_session_key read.
+        return SimpleNamespace(
+            key=session_key.split(":", 1)[1] if ":" in session_key else session_key,
+            linked_session_key="",
+            _pending_reset_history_key=None,
+            _dirty=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_existing_thread_follows_a_rebound_template(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace as NS
+
+        from kiro_crew import execution_context as execution
+        from kiro_crew.config import loader
+        from kiro_crew.dashboard.handlers import members as members_handlers
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        loader._invalidate_config_cache()
+        cfg = NS(agents={}, memory_stores={}, default_agent="kirocrew")
+        # The member runs "old-template" and its DM thread was bound to it.
+        self._member(cfg, tmp_path, "code-reviewer", "id-cr", "member-cr", "old-template")
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        session_key = f"dashboard:{member_slot_key('id-cr')}"
+        prior = execution.resolve_member_execution(
+            cfg, "code-reviewer", validate_memory_files=False
+        )
+        assert prior.template_id == "old-template"
+        await asyncio.to_thread(
+            execution.bind_session_execution, session_key, prior, replace_existing=True
+        )
+
+        # The owner edits the crew's binding to a new template.
+        cfg.agents["code-reviewer"].kiro_agent = "new-template"
+        state = NS(push_slots_update=lambda: None)
+        slot = self._slot(session_key)
+
+        await members_handlers._bind_member_template(state, slot, cfg, "code-reviewer")
+
+        record = execution.read_session_execution(session_key)
+        # Re-pointed to the new template, with the member identity preserved.
+        assert record is not None
+        assert record.template_id == "new-template"
+        assert record.member_id == "id-cr"
+        assert record.store.store_id == "member-cr"
+        assert record.selection_kind == "member"
+        # The warm provider is respawned at the next turn boundary.
+        assert slot._pending_reset_history_key == session_key
+
+    @pytest.mark.asyncio
+    async def test_unchanged_binding_is_a_no_op(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace as NS
+
+        from kiro_crew import execution_context as execution
+        from kiro_crew.config import loader
+        from kiro_crew.dashboard.handlers import members as members_handlers
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        loader._invalidate_config_cache()
+        cfg = NS(agents={}, memory_stores={}, default_agent="kirocrew")
+        self._member(cfg, tmp_path, "code-reviewer", "id-cr", "member-cr", "same-template")
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        session_key = f"dashboard:{member_slot_key('id-cr')}"
+        prior = execution.resolve_member_execution(
+            cfg, "code-reviewer", validate_memory_files=False
+        )
+        await asyncio.to_thread(
+            execution.bind_session_execution, session_key, prior, replace_existing=True
+        )
+
+        state = NS(push_slots_update=lambda: None)
+        slot = self._slot(session_key)
+        await members_handlers._bind_member_template(state, slot, cfg, "code-reviewer")
+
+        # Nothing changed, so no reset is armed and the record is untouched.
+        assert slot._pending_reset_history_key is None
+        assert execution.read_session_execution(session_key).template_id == "same-template"
+
+
 class TestMemberRoutes:
     @pytest.mark.asyncio
     async def test_roster_reuses_config_loaded_off_loop(self, tmp_path, monkeypatch):

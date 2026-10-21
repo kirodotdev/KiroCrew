@@ -440,9 +440,17 @@ def test_every_binder_declares_whether_it_vouches():
     #
     # `rebind_cron_session_template` rebinds a `cron:` key, which is never the
     # caller slot of an own-store admission, so it publishes with `vouch=False`.
+    #
+    # `_repoint` (inside `members._bind_member_template`) re-points a live member
+    # DM thread's `template_id` to the crew's current `kiro_agent` binding when the
+    # owner edited it. It republishes the SAME store the owner already established
+    # for that member, so it must NOT vouch: the existing vouched entry already
+    # carries the capability, and re-vouching a store it read back from the
+    # session's own record would collapse the admission's two sources into one.
     expected = {
         ("cron_service/identity.py", "rebind_cron_session_template"): "False",
         ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
+        ("dashboard/handlers/members.py", "_repoint"): "False",
         (
             "dashboard/chat_persistence_parts/member_store.py",
             "_pin_private_agent_assignment",

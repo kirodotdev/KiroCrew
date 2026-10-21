@@ -1202,6 +1202,29 @@ binding (workspace directory missing or fenced) leaves the thread as it is
 rather than clearing a directory the user can see. A concurrent opener's
 existing slot is preserved; both openers derive the same binding.
 
+The crew's `kiro_agent` binding is re-pointed onto an existing DM thread the
+same way, and for the same reason: unlike the workspace, a member thread
+resolves its provider template from the canonical execution record's
+`template_id`, captured when the thread was bound and NOT re-derived from config
+each turn (`resolve_session_agent_bindings` republishes the stored id). So
+editing `agents.<name>.kiro_agent` -- the crew editor, a fork/publish, a change
+card -- updates config and drains the warm pool, yet a live thread kept
+dispatching the old template; the crewmate saved a template switch and still
+described itself as the old one. `_bind_member_template`, run beside
+`_bind_member_workspace` on the same (restored or rehydrated) threads, re-points
+the record's `template_id` to `member_template_id` of the crew's current row
+(a compare-and-set against the record it read, so a concurrent writer wins) and
+arms the same deferred provider reset `slot.project` writers arm, so the switch
+lands at the next turn boundary without tearing down an active turn. Only the
+template moves: the member id, its store and the memory mode are carried
+verbatim, the existing own-store vouch is kept (the store is unchanged), and the
+live carrier is brought into step so the next turn does not read a stale
+in-memory template. A record that is unreadable, carries no member identity (a
+template pick, which this must not rewrite) or already names the current
+template is left exactly as it is. A freshly minted thread reads the current
+binding through `resolve_member_execution`, so only an existing thread can hold
+a stale template; this is the open-time convergence the directory already has.
+
 A newly created V2 member starts a fresh conversation. Existing V1 conversation
 and native provider context cannot acquire member memory by changing a label.
 The session execution record binds its member ID and store ID across later opens
@@ -3252,7 +3275,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_open_slots_persistence.py` (`test_restore_carries_the_agent_selection_namespace`) | A template-picked slot restores as a template pick; an unknown persisted kind reads as name-only |
 | `test/test_select_crew.py` | Roster excludes the default crew (triggers or not) and every triggerless crew, carries `default_agent` plus guidance; an entry and a `route_crew` match or `unavailable` entry carry `display_name` only when it differs from the key; a named crew returns its bindings; an unknown name returns `error` plus `available`, each key followed by its differing label; the schema accepts spaces and dots in a crew name |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |
-| `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
+| `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint; an existing DM thread follows a rebound `kiro_agent` (template re-pointed on the record, member identity/store kept, deferred reset armed), and an unchanged binding is a no-op |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 | `website/src/components/chat/crewmateBubbles.test.ts` | What a crewmate's chat draws (machinery dropped, speech and user-facing rows kept, same array back when nothing is dropped) and the run rule (first/middle/last, single, breaks on a user row and a pending approval but not on a long silence, reads through a resolved approval and an untimestamped streaming row, corners on the left side only); a queued message drawn where it was sent, the requeued twin, undrawn queued rows and injected (cron / app) queued rows dropped; when a send is still awaiting a reply |
 | `website/src/test/ChatPane.crewSteerLandsNow.test.tsx` | A crewmate's responsive Send end to end, including one stable bubble through a queued receipt in either order with its push, a later reply drawn below a queued message and the drain keeping order and node, and the typing bubble from Send until a reply, a refusal or the answering turn's silent end |

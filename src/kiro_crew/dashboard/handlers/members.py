@@ -1022,6 +1022,97 @@ async def _bind_member_workspace(
     state.push_slots_update()
 
 
+async def _bind_member_template(
+    state: DashboardState, slot: Any, cfg: KiroCrewConfig, member: str
+) -> None:
+    """Point a member thread at its crew's CURRENT ``kiro_agent`` binding.
+
+    A member thread resolves its agent from the canonical execution record's
+    ``template_id``, captured when the thread was first bound -- not re-derived
+    from config each turn, the way the workspace is. So editing
+    ``agents.<name>.kiro_agent`` (the crew editor, a template fork/publish, a
+    change card) updates the config and drains the warm pool, yet the live DM
+    thread keeps dispatching the OLD template: the record still names it, and a
+    reset alone cold-starts the same stored agent. The user saves a template
+    switch and the crewmate keeps describing itself as the old one.
+
+    This is the template counterpart of :func:`_bind_member_workspace`, run on
+    every open of the same (restart-restored or rehydrated) threads: it re-points
+    the record's ``template_id`` to ``member_template_id`` of the crew's current
+    row and arms the same deferred provider reset, so the switch lands at the next
+    turn boundary without tearing down an in-flight turn. The member identity,
+    its store and the memory mode are untouched -- only the provider template
+    moves, which is exactly the "changes persona behavior without selecting a new
+    memory owner" rule the spec states for a provider-side switch.
+
+    Everything fails closed and never breaks the open: a thread whose record is
+    unreadable, carries no member identity (a template pick, which this must not
+    rewrite), or already names the current template is left exactly as it is, and
+    a concurrent writer that moved the record between the read and the compare-
+    and-set makes the re-point a no-op (its own write already carries the fresh
+    binding, or the next open converges it).
+    """
+    from kiro_crew.config.loader import member_template_id
+    from kiro_crew.execution_context import (
+        bind_session_execution,
+        read_session_execution,
+        repoint_live_session_template,
+    )
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    agent_cfg = cfg.agents.get(member)
+    if agent_cfg is None:
+        return
+    desired_template = member_template_id(agent_cfg)
+    session_key = effective_session_key(slot)
+    if not session_key:
+        return
+
+    def _repoint() -> bool:
+        from dataclasses import replace as dataclass_replace
+
+        prior = read_session_execution(session_key)
+        # Only a member record carries a pinned template that a config rebind
+        # cannot reach. A template pick (no member id) resolves its agent from
+        # config already, and rewriting it here would be a re-bind by another
+        # spelling -- exactly what the switch route refuses for a member slot.
+        if prior is None or prior.member_id is None or prior.selection_kind != "member":
+            return False
+        if prior.template_id == desired_template:
+            return False
+        repointed = dataclass_replace(prior, template_id=desired_template)
+        # Not vouched: this republishes the store the owner already established
+        # for this member, so the existing vouched entry (if any) stays and keeps
+        # own-store authority; see ``bind_session_execution``'s docstring. The CAS
+        # against ``prior`` makes a concurrent writer that moved the record win.
+        bind_session_execution(
+            session_key, repointed, replace_existing=True, expected=prior, vouch=False
+        )
+        # Keep the live carrier (the turn-start reader's first source) in step
+        # with the durable record just written, so the next turn does not read a
+        # stale in-memory template behind the new record. A no-op when no carrier
+        # is held; the CAS on ``prior`` ignores a carrier a concurrent writer
+        # already moved.
+        repoint_live_session_template(session_key, desired_template, expected=prior)
+        return True
+
+    try:
+        changed = await asyncio.to_thread(_repoint)
+    except (UnknownMemoryStore, OSError, ValueError):
+        # An unreadable or racing record must not fail the thread open: the next
+        # open re-attempts the re-point, exactly as the workspace bind does.
+        logger.debug("member template re-point skipped for %r", member, exc_info=True)
+        return
+    if changed:
+        # A warm kiro-cli process was spawned on the old template, so re-pointing
+        # the record is not enough on its own: arm the same deferred reset the
+        # project change uses, so the next message cold-starts on the new agent
+        # without tearing down an active turn.
+        slot._pending_reset_history_key = effective_session_key(slot)
+        slot._dirty = True
+        state.push_slots_update()
+
+
 async def _guard_and_pin_private_store(
     state: "DashboardState",
     slug_owners: list[str],
@@ -1327,6 +1418,9 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # Live (restart-restored) and rehydrated threads alike: the fresh mint
         # above already carries the binding, every other path converges here.
         await _bind_member_workspace(state, slot, cfg, member_name)
+        # Same convergence for the provider template: the fresh mint reads the
+        # current binding, so only an existing thread can hold a stale one.
+        await _bind_member_template(state, slot, cfg, member_name)
 
     member_store = getattr(cfg.agents[member_name], "memory_store", "")
     store_record = cfg.memory_stores.get(member_store) if member_store else None
