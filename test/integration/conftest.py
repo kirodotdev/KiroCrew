@@ -267,6 +267,7 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.apps.backend_runtime import backstop as app_backstop
 from kiro_crew.browser_cli import launch as browser_launch
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -780,6 +781,18 @@ def _reset_home_bound_globals() -> None:
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
     browser_launch._warned_lifecycle_losses.clear()
+    # The app-backend backstop daemon is armed once per boot and records its handle
+    # here. It is a daemon thread gated on the gateway shutdown signal. Nulling the
+    # handle alone would let a worker descheduled across the reboot survive and run
+    # sweeps against the NEXT boot's home, breaking test isolation. The gateway
+    # shutdown signal is set across this reset (the whole teardown runs inside it),
+    # so the worker's wait/poll returns promptly — JOIN it with a bounded deadline
+    # before forgetting the handle, and fail loudly if it does not die.
+    _backstop = app_backstop._backstop_thread
+    if _backstop is not None and _backstop.is_alive():
+        _backstop.join(timeout=5.0)
+        assert not _backstop.is_alive(), "app-backend backstop daemon survived teardown"
+    app_backstop._backstop_thread = None
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.
@@ -824,6 +837,7 @@ def home_bound_globals_are_clear() -> bool:
         and not config_loader._MATERIALIZED_COMPLETE
         and not config_loader._MATERIALIZED_AGENTS_READY
         and dashboard_updates._auto_effect is None
+        and app_backstop._backstop_thread is None
         and not browser_launch._warned_lifecycle_losses
     )
 

@@ -31,6 +31,7 @@ from kiro_crew.apps.backend_runtime.tracking import (
     _lock,
     _processes,
     _restart_attempts,
+    _seated_backends,
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_pid import group_vouching_available, signal_orphaned_spawn_group
@@ -328,6 +329,13 @@ def stop_app_backend(
             ap = _processes.pop(app_name, None)
             _allocated_ports.pop(app_name, None)
             _restart_attempts.pop(app_name, None)
+            # A deliberate stop is a keep-down signal: drop the app from the seated set so
+            # the level-triggered backstop will not revive it. This is the single
+            # chokepoint every keep-down path routes through — disable, uninstall, trust
+            # revoke, update, gateway shutdown, and the health watch's ceiling revocation
+            # — so clearing here covers them all. A legitimate concurrent start re-seats
+            # the name when it publishes its own record.
+            _seated_backends.discard(app_name)
         # Keep cleanup inside the lifecycle transition's serialization. A later explicit
         # start cannot record its successor between the pop and this identity check.
         if ap is not None and ap.proc is not None:

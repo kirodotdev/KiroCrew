@@ -45,6 +45,7 @@ import pytest
 
 from kiro_crew.apps import backend
 from kiro_crew.apps.backend_runtime import (
+    backstop,
     pidfile,
     ports,
     probe,
@@ -79,6 +80,7 @@ PARTS: tuple[ModuleType, ...] = (
     restart,
     supervision,
     startup,
+    backstop,
 )
 
 #: The backend's module-level surface: every name the one-module ``backend.py`` bound,
@@ -105,6 +107,8 @@ FROZEN_NAMES: tuple[str, ...] = (
     "RLIMIT_PROFILE_TOOL",
     "REQUIREMENTS_TXT_MAX_BYTES",
     "UTF8_TEXT",
+    "_BACKSTOP_INTERVAL",
+    "_BACKSTOP_WARN_AFTER",
     "_BOOT_SPAWN_MAX_WORKERS",
     "_BUILD_CAPABLE_APPS",
     "_BackendShutdownEvent",
@@ -151,6 +155,10 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_app_enabled_state",
     "_audit_provision_failure",
     "_await_inflight_spawn",
+    "_backstop_candidates",
+    "_backstop_loop",
+    "_backstop_thread",
+    "_backstop_thread_lock",
     "_capped_spill",
     "_capture_adopted_owners",
     "_claim_port",
@@ -203,13 +211,17 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_reap_stale_app_backends",
     "_rebind_adopted_owners",
     "_record_app_pid",
+    "_record_backstop_failure",
     "_requirements_volatile",
     "_reserve_free_port",
     "_resolve_nvm_path",
     "_restart_attempts",
+    "_seated_backends",
     "_restart_exited_backend",
     "_retry_mcp_reconcile",
     "_revoke_if_ceiling_closed",
+    "_revive_one_backend",
+    "_run_backstop_sweep",
     "_set_backend_health",
     "_settle_superseding_start",
     "_shebang_argv",
@@ -294,6 +306,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "spawned_backend_owner",
     "spawned_backend_owns_pid",
     "start_app_backend",
+    "start_app_backend_backstop",
     "start_deferred_app_backends",
     "start_enabled_app_backends",
     "stat",
@@ -319,6 +332,7 @@ FACADE_CALL_SITES: frozenset[tuple[str, str, str]] = frozenset(
         ("stale_reap", "_reap_stale_app_backends", "_pid_alive"),
         ("restart", "_restart_exited_backend", "_start_app_backend"),
         ("startup", "_start_backends_concurrently", "start_app_backend"),
+        ("backstop", "_revive_one_backend", "_start_app_backend"),
     }
 )
 
@@ -377,6 +391,7 @@ FORBIDDEN_BACKEND_TEXT: tuple[tuple[str, str], ...] = (
 GLOBAL_REBINDS: dict[str, ModuleType] = {
     "_warned_unconfined_cache": backend,
     "_DEV_FLEET_DEFERRED": startup,
+    "_backstop_thread": backstop,
 }
 
 _ABSENT = object()

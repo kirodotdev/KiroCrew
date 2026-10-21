@@ -33,6 +33,7 @@ from kiro_crew.apps.backend_runtime.tracking import (
     _lock,
     _processes,
     _restart_attempts,
+    _seated_backends,
 )
 from kiro_crew.apps.manager import _app_activation_denied, _read_installed, get_app_manifest
 from kiro_crew.platform.context import PlatformCompositionError
@@ -333,6 +334,13 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
                 )
             except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
                 logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
+            # This path keeps the app down on a policy refusal but does NOT route through
+            # stop_app_backend (no process is left to stop — the record was already
+            # popped), so it must clear the seated set itself. Otherwise the backstop,
+            # seeing an enabled app with no record, would revive the backend the
+            # activation ceiling just refused, every sweep.
+            with _lock:
+                _seated_backends.discard(app_name)
             return False
 
         backend_still_declared = True

@@ -155,6 +155,18 @@ _restart_attempts: dict[str, int] = {}
 _LIFECYCLE_START = "start"
 _LIFECYCLE_STOP = "stop"
 _lifecycle_generation: dict[str, tuple[int, str]] = {}
+# App names the gateway has SUCCESSFULLY seated a backend record for at least once in
+# this process (boot, enable, or a restart replacement). The level-triggered backstop
+# (``backend_runtime/backstop.py``) revives ONLY a name in this set: a record that was
+# seated and later lost is the "lost watch" case it exists for, and membership already
+# proves governance/admission/execution passed at the seat, so the backstop does not
+# re-vet as a poller. Every deliberate keep-down path clears the name: ``stop_app_backend``
+# discards it (covering disable, uninstall, trust revoke, update, gateway shutdown, and
+# the health watch's ceiling revocation, which all route through it), and the restart
+# loop's non-transient activation-policy refusal discards it directly (that path has
+# already popped the record, so there is no process for ``stop_app_backend`` to stop).
+# Protected by ``_lock`` together with ``_processes``.
+_seated_backends: set[str] = set()
 
 
 def _advance_lifecycle_locked(app_name: str, transition: str) -> tuple[int, str]:

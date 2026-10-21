@@ -24,6 +24,7 @@ from aiohttp import web
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.apps.backend import (  # noqa: F401
+    start_app_backend_backstop,
     start_deferred_app_backends,
     start_enabled_app_backends,
 )
