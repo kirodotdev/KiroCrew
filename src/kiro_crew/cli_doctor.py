@@ -471,8 +471,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         )
         if result.skipped:
             print(f"     skipped (not found): {', '.join(result.skipped)}")
-        print("\n  Open a GitHub issue (then drag the zip in):")
-        print(f"  {diagnostics.terminal_issue_url(result)}")
+        issue_url = diagnostics.terminal_issue_url(result)
+        if issue_url:
+            print("\n  Open a GitHub issue (then drag the zip in):")
+            print(f"  {issue_url}")
+        else:
+            print("\n  Issue link skipped: the platform companion does not compose.")
         return
 
     from kiro_crew.doctor_checks import (

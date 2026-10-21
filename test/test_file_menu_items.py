@@ -397,7 +397,7 @@ def test_both_documented_app_namespaces_are_admitted():
 def test_proxy_namespace_is_opt_in_per_caller():
     """This is the ONE shared endpoint check, so widening it for everyone is not free.
 
-    The publish-provider registry in ``routes.py`` states ``/api/apps/<app>/`` in its own
+    The publish-provider registry in ``routes_listing.py`` states ``/api/apps/<app>/`` in its own
     refusal message and must keep that narrower shape; the default therefore refuses the
     proxy prefix, and a caller that needs it says so.
     """
@@ -414,7 +414,9 @@ def test_proxy_namespace_is_opt_in_per_caller():
 
 def test_publish_provider_registry_does_not_admit_the_proxy_namespace():
     """Pinned at the CALL, because the default is what protects that surface."""
-    src = (Path(kiro_crew.__file__).parent / "apps" / "routes.py").read_text(encoding="utf-8")
+    src = (Path(kiro_crew.__file__).parent / "apps" / "routes_listing.py").read_text(
+        encoding="utf-8"
+    )
     call = src[src.index("if not app_endpoint_allowed(app_name, endpoint)") :][:120]
     assert "allow_proxy_namespace" not in call
 

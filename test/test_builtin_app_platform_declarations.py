@@ -3,7 +3,7 @@
 What `platform.os` IS, for a builtin, is a user-facing CLAIM: the sole non-test
 consumer of a builtin's value is `website/src/pages/AppDetailPage.tsx`, which
 renders it on the App Store detail page. What it is NOT is an enable gate.
-`apps/routes.py` reads it once, through `_client_install_manifest()`, which
+`apps/routes_enable.py` reads it once, through `_client_install_manifest()`, which
 returns None unless `platform.installMode == "client"` — and no builtin sets
 that. `handle_enable_app`'s own docstring says it outright: "nothing else on the
 enable path consults that field". A builtin whose block is absent is therefore

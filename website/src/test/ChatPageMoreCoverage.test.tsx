@@ -746,7 +746,7 @@ describe('ChatPage row callbacks — regenerate and speak', () => {
     apiSpy('voiceSynthesize').mockResolvedValue({})
     await renderTurn()
     act(() => { assistantProps!.onSpeak!('two files changed') })
-    await waitFor(() => expect(apiMocks.voiceSynthesize).toHaveBeenCalledWith('chat-1', 'two files changed'))
+    await waitFor(() => expect(apiMocks.voiceSynthesize).toHaveBeenCalledWith('chat-1', 'two files changed', { clientFallback: true }))
   })
 
   it('stops playback instead of synthesizing again while a clip is playing', async () => {

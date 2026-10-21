@@ -29,6 +29,7 @@ from kiro_crew.config.sections import (
     transcribe_language_options,
     transcribe_vocabulary_name,
 )
+from kiro_crew.cpu_affinity import affinity_cpu_count
 from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
@@ -50,6 +51,10 @@ from kiro_crew.stt.limits import (
     MIN_PARTIAL_INTERVAL_MS,
     MIN_SILENCE_MS,
 )
+from kiro_crew.stt.limits import THREADS_AUTO as STT_THREADS_AUTO
+from kiro_crew.stt.limits import THREADS_ENV as STT_THREADS_ENV
+from kiro_crew.stt.limits import parse_threads as parse_stt_threads
+from kiro_crew.stt.limits import resolve_thread_count as resolve_stt_thread_count
 from kiro_crew.transcribe import _find_ffmpeg, availability_detail, ensure_ffmpeg_in_path
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
@@ -120,6 +125,53 @@ def _stt_language_codes(stt_cfg: SttConfig) -> list[str]:
         if stored not in codes:
             codes.append(stored)
     return codes
+
+
+#: Thread counts the Settings picker offers, before trimming to the host's cores.
+#: Powers of two plus the in-between widths that were benchmarked on a 128-core
+#: host, where decode time kept falling to 64 threads and flattened after it.
+_STT_THREAD_LADDER = (1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256)
+
+
+def _stt_thread_options(current: int) -> list[int]:
+    """Choices for the ``stt.threads`` picker: 0 (auto), then counts this host can run.
+
+    The host's own core count closes the list so the widest choice is always
+    reachable, and *current* is kept even when it exceeds the cores here (a config
+    carried over from a larger machine), so the picker shows the stored value
+    rather than silently reading as a different one.
+    """
+    cpus = affinity_cpu_count() or 1
+    counts = {n for n in _STT_THREAD_LADDER if n <= cpus}
+    counts.add(cpus)
+    if current > 0:
+        counts.add(current)
+    return [STT_THREADS_AUTO, *sorted(counts)]
+
+
+def _stt_threads_env() -> str | None:
+    """The thread count ``KIROCREW_STT_THREADS`` makes the engine use, or ``None``.
+
+    ``None`` both when the variable is unset and when it does not parse: the engine
+    ignores an unusable value, so reporting it would tell the panel an override is
+    in force when ``stt.threads`` is what actually runs. A value that parses is
+    reported as the count the engine resolves it to, not as typed, so ``auto``,
+    ``0048`` or a count above this host's cores reads as the number that runs.
+
+    Resolved through :func:`kiro_crew.stt.limits.resolve_thread_count` and
+    :func:`kiro_crew.cpu_affinity.affinity_cpu_count`, both leaf modules that import
+    nothing heavy, rather than :func:`kiro_crew.stt.engine.thread_count`. The engine
+    module imports numpy at module scope, and this runs synchronously on the GET
+    ``/api/config/stt`` path while the response dict is built; importing it here
+    would pay a cold multi-hundred-millisecond import on the event loop the first
+    time any gateway served that page. The resolution is pure arithmetic, so no
+    import of it is needed, and no path through this function can block the loop.
+    """
+    raw = os.environ.get(STT_THREADS_ENV, "").strip()
+    parsed = parse_stt_threads(raw) if raw else None
+    if parsed is None:
+        return None
+    return str(resolve_stt_thread_count(parsed, affinity_cpu_count() or 1))
 
 
 async def api_stt_config(request: web.Request) -> web.Response:
@@ -276,6 +328,15 @@ async def api_stt_config(request: web.Request) -> web.Response:
             )
             if idle_evict is not None:
                 stt_section["idle_evict_secs"] = idle_evict
+            # Through the loader's own parser, so the endpoint stores exactly what a
+            # load keeps: 0 for auto (``"auto"`` is accepted as its spelling) or a
+            # count up to MAX_THREADS. Junk is skipped like any other malformed
+            # field. A count above this host's cores is stored as given and lowered
+            # when the model loads, so moving the config to a bigger host keeps it.
+            if "threads" in body:
+                threads = parse_stt_threads(body["threads"])
+                if threads is not None:
+                    stt_section["threads"] = threads
             return fresh
 
         async with _get_config_lock():
@@ -378,6 +439,21 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "silence_ms": cfg.stt.silence_ms,
             "partial_interval_ms": cfg.stt.partial_interval_ms,
             "idle_evict_secs": cfg.stt.idle_evict_secs,
+            "threads": cfg.stt.threads,
+            # The picker's choices for `threads`, sized to this host so it offers
+            # no new count the engine would lower. The one exception is a stored
+            # count above this host's cores (a config from a larger machine): it
+            # stays listed so the picker shows it, and the engine clamps it to the
+            # cores at load. `threads_env` is set only when
+            # KIROCREW_STT_THREADS parses, because only then does it override the
+            # stored value in the gateway: the engine logs an unusable one and keeps
+            # `threads`. The panel uses it to say why a change there has no effect.
+            "thread_options": _stt_thread_options(cfg.stt.threads),
+            # The count Auto resolves to on this host, so the picker can label
+            # Auto with the number it stands for. Pure arithmetic over the
+            # affinity count, like `_stt_threads_env`, so it never imports the engine.
+            "threads_auto": resolve_stt_thread_count(STT_THREADS_AUTO, affinity_cpu_count() or 1),
+            "threads_env": _stt_threads_env(),
             # The PUT allowlist, so a picker built from it cannot offer a value
             # this endpoint would reject. Which of them are already on disk is
             # runtime state and belongs to GET /api/stt/status, which is also what

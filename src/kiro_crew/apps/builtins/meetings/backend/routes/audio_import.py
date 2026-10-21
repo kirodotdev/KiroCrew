@@ -249,7 +249,7 @@ def _snapshot_recording(
             # that — one ``openat`` per component, each ``O_NOFOLLOW`` — and
             # ``canonical`` is already resolved once by the shared file gate,
             # which is the resolution ``pin_parent`` requires its caller to have
-            # done. Same shape as the app-art reader in ``apps/routes.py``.
+            # done. Same shape as the app-art reader in ``apps/routes_art.py``.
             try:
                 dir_fd = pin_parent(os.path.dirname(canonical), what="import recording parent")
             except PinnedPathRefusal as exc:

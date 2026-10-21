@@ -90,7 +90,22 @@ def _ineligible_ids(self: VectorMemoryStore, record_ids: list[str] | None = None
 
 
 def _eligible_rows(self: VectorMemoryStore, rows, kind: str) -> list:
-    blocked = self._ineligible_ids()
+    # Only these candidate rows are ever tested against ``blocked``, so scope
+    # the ineligibility lookup to their ids: it then goes through the
+    # record_id PRIMARY KEY instead of scanning all of memory_record_meta
+    # (which only grows). ``identity in blocked`` is unchanged because
+    # ``blocked`` is restricted to ids drawn from these same candidates.
+    identities = [
+        identity
+        for identity in (
+            record_meta.record_identity_or_none(
+                kind, row["id"] if kind == "episode" else row["key"]
+            )
+            for row in rows
+        )
+        if identity is not None
+    ]
+    blocked = self._ineligible_ids(identities)
     kept = []
     for row in rows:
         identity = record_meta.record_identity_or_none(

@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.skills as skills_mod
+import kiro_crew.skills_discovery as skills_disc
 from kiro_crew.skills import _iter_skill_files, _within_any
+from kiro_crew.skills_builtin_provenance import _skill_script_index
 
 # Creating a symlink on Windows needs elevation or Developer Mode, which CI
 # runners do not have. The repo's established idiom is to skip such a test there
@@ -47,12 +49,7 @@ def _packaged_app_skill() -> Path:
     instead of a bare ``FileNotFoundError`` from ``os.symlink``.
     """
     skill = (
-        Path(skills_mod.__file__).parent
-        / "apps"
-        / "builtins"
-        / "dev_fleet"
-        / "skills"
-        / "pod-e2e"
+        Path(skills_mod.__file__).parent / "apps" / "builtins" / "dev_fleet" / "skills" / "pod-e2e"
     )
     assert skill.is_dir(), f"fixture drift: expected a built-in app skill at {skill}"
     return skill
@@ -84,9 +81,9 @@ class TestBuiltinAppSkillsAreVisible:
         os.symlink(str(packaged), str(base / "pod-e2e"))
 
         names = [name for name, _ in _iter_skill_files(base)]
-        assert names.count("dev-fleet/pod-e2e") + names.count("pod-e2e") == 1, (
-            f"one skill must yield one key, got {names}"
-        )
+        assert (
+            names.count("dev-fleet/pod-e2e") + names.count("pod-e2e") == 1
+        ), f"one skill must yield one key, got {names}"
 
     def test_surviving_key_is_a_function_of_the_names_not_the_filesystem(
         self, tmp_path: Path
@@ -114,9 +111,7 @@ class TestBuiltinAppSkillsAreVisible:
         assert "pod-e2e" in [n for n, _ in _iter_skill_files(late)]
 
         # Repeating a walk must give the identical key both times.
-        assert [n for n, _ in _iter_skill_files(early)] == [
-            n for n, _ in _iter_skill_files(early)
-        ]
+        assert [n for n, _ in _iter_skill_files(early)] == [n for n, _ in _iter_skill_files(early)]
 
     def test_symlink_into_the_installed_apps_dir_is_enumerated(
         self, tmp_path: Path, monkeypatch
@@ -168,6 +163,160 @@ class TestUntrustedTargetsStillRefused:
 
         names = {name for name, _ in _iter_skill_files(base)}
         assert "secretish" not in names
+
+
+@requires_symlinks
+class TestOutsideRootLinkIsReported:
+    """A refused out-of-root link in the skills base is reported, not silent.
+
+    A user who links a skill folder into the skills directory from an outside
+    repository has the folder dropped from the catalog by the containment gate.
+    That refusal is a security boundary and stays. These tests lock in that the
+    refused direct-child link emits one warning naming the target and
+    ``skills.extra_paths`` as the supported fix.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_dedup(self):
+        # The warning dedups through the module's shared warn-once registry.
+        # Tolerant of the attribute being absent so the red-first run on an
+        # unfixed tree fails on the missing-warning assertion, not here.
+        getattr(skills_disc, "_CHAIN_REFUSALS_WARNED", set()).clear()
+        yield
+        getattr(skills_disc, "_CHAIN_REFUSALS_WARNED", set()).clear()
+
+    def test_outside_link_is_refused_and_warned(self, tmp_path: Path, caplog) -> None:
+        outsider = tmp_path / "elsewhere" / "my-skill"
+        _write_skill(outsider, "# Injected\n")
+        base = tmp_path / "skills"
+        base.mkdir()
+        os.symlink(str(outsider), str(base / "my-skill"))
+
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            names = {name for name, _ in _iter_skill_files(base, warn_outside_links=True)}
+
+        assert "my-skill" not in names, "the containment boundary must still refuse it"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        hits = [
+            m
+            for m in warnings
+            if os.path.realpath(str(outsider)) in m and "skills.extra_paths" in m
+        ]
+        assert (
+            len(hits) == 1
+        ), f"expected one warning naming the target and skills.extra_paths, got {warnings}"
+
+    def test_repeat_scans_warn_only_once(self, tmp_path: Path, caplog) -> None:
+        outsider = tmp_path / "elsewhere" / "my-skill"
+        _write_skill(outsider, "# Injected\n")
+        base = tmp_path / "skills"
+        base.mkdir()
+        os.symlink(str(outsider), str(base / "my-skill"))
+
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            _iter_skill_files(base, warn_outside_links=True)
+            _iter_skill_files(base, warn_outside_links=True)
+            _iter_skill_files(base, warn_outside_links=True)
+
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelname == "WARNING" and "skills.extra_paths" in r.getMessage()
+        ]
+        assert len(warnings) == 1, f"the warning must be deduped per process, got {warnings}"
+
+    def test_a_non_catalog_walk_never_warns(self, tmp_path: Path, caplog) -> None:
+        """The warning is opt-in: a walk that does not request it stays silent.
+
+        Every caller but the catalog base walk (``kirocrew doctor``'s script
+        index, provenance, selection, sync) walks with ``warn_outside_links``
+        off, so a refused direct-child link is dropped silently there, matching
+        the behaviour before this warning existed. Only the catalog can say a
+        skill was dropped from the whole catalog, so only it warns.
+        """
+        outsider = tmp_path / "elsewhere" / "my-skill"
+        _write_skill(outsider, "# Injected\n")
+        base = tmp_path / "skills"
+        base.mkdir()
+        os.symlink(str(outsider), str(base / "my-skill"))
+
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            names = {name for name, _ in _iter_skill_files(base)}
+
+        assert "my-skill" not in names, "the containment boundary must still refuse it"
+        assert not [
+            r for r in caplog.records if "skills.extra_paths" in r.getMessage()
+        ], "a walk that did not opt in must not emit the outside-root warning"
+
+    def test_skill_script_index_walk_never_warns(self, tmp_path: Path, caplog) -> None:
+        """The ``kirocrew doctor`` script-index walk is a non-catalog walk: silent.
+
+        ``_skill_script_index`` walks the skills dir to map script assets and
+        does not opt into the warning, so an out-of-root link in that dir is
+        dropped without the "add it to skills.extra_paths" advice that only the
+        catalog base walk emits.
+        """
+        outsider = tmp_path / "elsewhere" / "my-skill"
+        _write_skill(outsider, "# Injected\n")
+        base = tmp_path / "skills"
+        base.mkdir()
+        os.symlink(str(outsider), str(base / "my-skill"))
+
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            _skill_script_index(base)
+
+        assert not [
+            r for r in caplog.records if "skills.extra_paths" in r.getMessage()
+        ], "the doctor script-index walk must not emit the outside-root warning"
+
+    def test_link_inside_an_allowed_root_is_admitted_without_warning(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A link whose target IS inside an allowed root loads and must not warn."""
+        data_home = tmp_path / "home"
+        _write_skill(data_home / "apps" / "my-app" / "skills" / "thing")
+        monkeypatch.setattr(skills_mod, "config_dir", lambda: data_home)
+
+        base = tmp_path / "skills"
+        base.mkdir()
+        os.symlink(str(data_home / "apps" / "my-app" / "skills" / "thing"), str(base / "thing"))
+
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            names = {name for name, _ in _iter_skill_files(base, warn_outside_links=True)}
+
+        assert "thing" in names
+        assert not [
+            r for r in caplog.records if "skills.extra_paths" in r.getMessage()
+        ], "an admitted link must not emit the outside-root warning"
+
+    def test_following_the_advice_stops_the_warning(self, tmp_path: Path, caplog) -> None:
+        """A link whose target is under a configured extra-path root stops warning.
+
+        The operator who adds the target's parent to ``skills.extra_paths`` (the
+        fix the warning names) loads the skill through the separate extra-path
+        walk, which the catalog passes to the base walk as ``extra_path_roots``.
+        The base walk still refuses the link locally (containment is unchanged)
+        and stays silent, so the advice actually silences the message.
+        """
+        outsider = tmp_path / "repo" / "my-skill"
+        _write_skill(outsider, "# Injected\n")
+        base = tmp_path / "skills"
+        base.mkdir()
+        os.symlink(str(outsider), str(base / "my-skill"))
+        extra_root = os.path.realpath(str(tmp_path / "repo"))
+
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            names = {
+                name
+                for name, _ in _iter_skill_files(
+                    base, warn_outside_links=True, extra_path_roots=(extra_root,)
+                )
+            }
+
+        assert "my-skill" not in names, "the base walk still refuses the link"
+        assert not [
+            r for r in caplog.records if "skills.extra_paths" in r.getMessage()
+        ], "a link whose target is under an extra-path root must not warn"
 
 
 class TestPreExistingBehaviourPreserved:

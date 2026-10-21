@@ -383,9 +383,26 @@ export function useFolderMutations({ queryClient, setFolderActionError, setFolde
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
         steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
       }),
-    // Through the idle gate, not a direct invalidate: a refetch here would
-    // land inside a still-pending update's optimistic window.
-    onSuccess: () => invalidateFoldersWhenIdle(queryClient),
+    // Add the server's own record to the cache before the refetch, so the new
+    // folder is in the tree on the next render. The create modal reveals it right
+    // after this resolves, and the reveal looks the folder up in this list: without
+    // the seed it would find nothing and give up before the refetch landed. The
+    // refetch still runs and replaces the seed with the authoritative list.
+    //
+    // Only into a list that already loaded. When the first load failed the cache
+    // holds no data, and seeding one folder into it would read as a successful
+    // load: the error notice and its Retry would vanish and the tree would show
+    // that one folder alone.
+    onSuccess: (created: unknown) => {
+      const row = created as ChatFolder | null
+      if (row && typeof row.id === 'string' && row.id) {
+        queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
+          old && !old.some(f => f.id === row.id) ? [...old, row] : old)
+      }
+      // Through the idle gate, not a direct invalidate: a refetch here would
+      // land inside a still-pending update's optimistic window.
+      invalidateFoldersWhenIdle(queryClient)
+    },
     onError: (e) => { setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))); setFolderOfflineNotice('') },
   })
   const deleteFolderMutation = useMutation({

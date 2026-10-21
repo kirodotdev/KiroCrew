@@ -13,6 +13,9 @@ from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EVICT_SECS
 from kiro_crew.stt.limits import DEFAULT_PARTIAL_INTERVAL_MS as _STT_DEFAULT_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import DEFAULT_SILENCE_MS as _STT_DEFAULT_SILENCE_MS
+from kiro_crew.stt.limits import MAX_THREADS as _STT_MAX_THREADS
+from kiro_crew.stt.limits import THREADS_AUTO as _STT_THREADS_AUTO
+from kiro_crew.stt.limits import parse_threads as _parse_stt_threads
 from kiro_crew.stt.models import CATALOG as _STT_CATALOG
 from kiro_crew.stt.models import CUSTOM_MODEL as _STT_CUSTOM_MODEL
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
@@ -193,6 +196,27 @@ def _validated_stt_model(
         )
         return field_default(SttConfig, "model")
     return _resolve_stt_model(value).name
+
+
+def _validated_stt_threads(value: object) -> int:
+    """``stt.threads`` as stored: ``0`` for auto, or a count up to ``MAX_THREADS``.
+
+    ``"auto"`` and a digit string are accepted spellings and come back as the int,
+    so the field stays an integer on the next save. Anything else (a negative
+    number, a count above ``MAX_THREADS``, a float, a word) is logged and replaced
+    by auto. Auto is the safe fallback because it is what the setting did before it
+    existed. Used by both the schema validator and the section builder, so the
+    resolved value is the same with or without ``jsonschema``.
+    """
+    parsed = _parse_stt_threads(value)
+    if parsed is None:
+        logger.warning(
+            "Unusable stt.threads %r (expected 'auto', 0, or 1-%d); using auto",
+            value,
+            _STT_MAX_THREADS,
+        )
+        return _STT_THREADS_AUTO
+    return parsed
 
 
 #: Amazon Transcribe's own limit on a custom vocabulary name
@@ -495,6 +519,19 @@ class SttConfig:
             "recording, in seconds. It holds roughly 150 MB at the default model, "
             "and reloading it takes a fraction of a second, so lower this on a "
             "machine short of memory. 0 releases it as soon as you stop speaking.",
+        ),
+    )
+    threads: int = field(
+        default=_STT_THREADS_AUTO,
+        metadata=_meta(
+            "Decode threads",
+            "How many CPU threads the local model uses to recognise speech. 0 (or "
+            "`auto`) uses half this machine's cores, at most 16, which stays steady "
+            "on a busy host. A larger machine can set more: on a 128-core host the "
+            "largest model took 4 s on an 11-second clip at 16 threads and 1.25 s at "
+            "64. A number above the cores this process may use is lowered to that "
+            "count. The KIROCREW_STT_THREADS environment variable overrides this. A "
+            "change applies at the next dictation, which reloads the model once.",
         ),
     )
     endpointing: bool = field(

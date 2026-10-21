@@ -7254,6 +7254,10 @@
       "install_kiro_cli_run_for_platform": "ゲートウェイホストのプラットフォームに合ったコマンドを実行してインストールします。",
       "install_command_macos_linux": "macOS と Linux（およびその他の Unix 系システム）",
       "install_command_windows": "Windows (PowerShell で実行)",
+      "unzip_missing_install_first": "最初に unzip をインストールしてください。インストーラーに必要ですが、ゲートウェイホストにはありません。次のいずれかのコマンドか、システムのパッケージマネージャーを使ってください。",
+      "unzip_command_debian_ubuntu": "Debian または Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora または RHEL",
+      "install_kiro_cli_then_run_on_host": "続いて {{platform}} のゲートウェイホストで次のコマンドを実行し、Kiro CLI をインストールします。",
       "setup_intro": "<0>{{platform}} ゲートウェイホスト</0>でコーディングエージェントを起動すると、ダッシュボードが自動的に開きます。",
       "setup_intro_unknown_platform": "<0>ゲートウェイホスト</0>でコーディングエージェントを起動すると、ダッシュボードが自動的に開きます。",
       "gateway_host": "ゲートウェイホスト",
@@ -7775,7 +7779,8 @@
       "hide_paste_preview": "貼り付けのプレビューを非表示",
       "show_paste_preview": "貼り付けのプレビューを表示",
       "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
-      "preview_more_lines_other": "… 他{{count}}行"
+      "preview_more_lines_other": "… 他{{count}}行",
+      "preview_gesture_hint": "ダブルクリックで全文を挿入 · Backspace で貼り付けを削除"
     },
     "privacyChapter": {
       "continue": "続行",
@@ -17259,7 +17264,12 @@
         "backend_cpu_only": "CPU で実行 — このビルドに GPU はありません",
         "last_recognition_value": "確定テキストまで {{duration}}、音声長の {{rtf}} 倍",
         "decode_threads_value": "デコードスレッド {{n}}",
-        "ptt_save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。"
+        "ptt_save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。",
+        "decode_threads": "デコードスレッド数",
+        "decode_threads_desc": "ローカルモデルが音声認識に使う CPU スレッド数です。自動ではこのマシンのコアの半分（最大 16）を使います。空きコアのある大きなマシンでは、スレッドを増やすと各ディクテーションが早く終わります。 変更は次のディクテーションから反映され、その際にモデルを一度読み込み直します。",
+        "decode_threads_auto": "自動",
+        "decode_threads_auto_count": "自動（{{n}}）",
+        "decode_threads_env_override": "このゲートウェイは KIROCREW_STT_THREADS の指定により {{value}} スレッドを使います。この選択を使うには変数を削除してください。"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",

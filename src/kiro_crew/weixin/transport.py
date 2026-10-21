@@ -257,6 +257,7 @@ class WeixinTransport(MessagingTransport):
         await asyncio.to_thread(self._ctx.restore, self._account_id)
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
+        self._client._poll_task = self._poll_task
 
     async def disconnect(self) -> None:
         self._running = False

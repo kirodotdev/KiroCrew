@@ -110,7 +110,7 @@ definitions — returns eleven, at `e6b06685e`:
 |---|---|---|
 | `jobFamilies` | `src/kiro_crew/apps/manifest.py:1010` | Parsed, serialized, echoed to the client. No consumer. |
 | `sops` | `manifest.py:976` | `bridges.register_app` (`apps/bridges_register.py`) registers MCP servers, agents, skills, crons. There is no `_register_sops`. Declaring `sops` copies nothing. |
-| `backend.routes` | `manifest.py:386` | No reader. `apps/routes.py:2336` still carries a comment describing it. The prefix is hardcoded at `apps/route_registry.py:122`. |
+| `backend.routes` | `manifest.py:386` | No reader. `_resolve_app_backend_url` (`apps/routes_proxy.py`) still carries a comment describing it. The prefix is hardcoded at `apps/route_registry.py:122`. |
 | `permissions.mcpTools` | `manifest.py:442` | Declarative only. `check_tool_permission` (`apps/permissions.py:71`) has no non-test caller. |
 | `permissions.network` | `manifest.py:444` | Not enforced. An app makes outbound calls regardless. |
 | `permissions.memory` | `manifest.py:445` | Not enforced. There is no `ctx.memory` on `AppContext` (`apps/context.py:51-67`). |
@@ -417,7 +417,7 @@ than a failed install. Phase 2 changes where the overview renders and must keep
 One gap is worth naming because this RFC makes it load-bearing: the compatibility
 contract is one-directional. `minKiroCrewVersion` is a floor an app declares about
 the gateway, checked only at install and update (`_check_min_version` in `apps/manager_tree.py`,
-`apps/routes.py:503`, `install_from_registry` (`apps/registry_pipeline/install.py`)) and never at enable or boot, and it
+`handle_install_app` (`apps/routes.py`), `install_from_registry` (`apps/registry_pipeline/install.py`)) and never at enable or boot, and it
 fails **open** on a malformed value (`apps/version.py:32-33`). The platform
 declares no version for its own app-facing surface, so withdrawing a seam carries
 no signal in the other direction. Phase 1 removes seams. If that ordering feels

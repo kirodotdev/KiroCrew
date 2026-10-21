@@ -1130,7 +1130,7 @@ Control how Kiro Crew manages the app:
 For a **server-mode** app (every builtin), `platform.os` is a user-facing CLAIM,
 not an access control. It is rendered on the App Store detail page
 (`website/src/pages/AppDetailPage.tsx`), and that is its only non-test consumer.
-`apps/routes.py` reads it once, via `_client_install_manifest()`, which returns
+`apps/routes_enable.py` reads it once, via `_client_install_manifest()`, which returns
 `None` unless `platform.installMode == "client"`; `handle_enable_app`'s docstring
 states the rest outright — "nothing else on the enable path consults that field".
 So omitting the block does **not** stop the app being enabled anywhere.

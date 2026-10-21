@@ -1,6 +1,6 @@
 """The ``openCommand`` spawn adds no bus-locator shim, and its docs match the code.
 
-The rationale comment on ``apps/routes._OPEN_COMMAND_DESKTOP_ENV_KEYS`` describes
+The rationale comment on ``apps/routes_enable._OPEN_COMMAND_DESKTOP_ENV_KEYS`` describes
 how ``DBUS_SESSION_BUS_ADDRESS`` and ``XDG_RUNTIME_DIR`` fare on the
 ``openCommand`` spawn. The sandbox has a restore-then-drop for exactly these two
 variables -- put back after the credential scrub for ``systemd-run``'s own use,

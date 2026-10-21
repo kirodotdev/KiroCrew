@@ -142,7 +142,7 @@ class TestWindowsSpawnLeavesTheGatewayLoop:
             nonlocal ticks
             while not stop:
                 ticks += 1
-                await asyncio.sleep(_TICK_SECS)
+                await asyncio.sleep(_TICK_SECS)  # flake-ok: heartbeat rate measurement, not a wait
 
         beat = asyncio.create_task(_heartbeat())
         try:

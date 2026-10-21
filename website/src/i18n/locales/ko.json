@@ -7254,6 +7254,10 @@
       "install_kiro_cli_run_for_platform": "설치하려면 게이트웨이 호스트의 플랫폼에 맞는 명령을 실행하세요.",
       "install_command_macos_linux": "macOS 및 Linux(및 기타 Unix 계열 시스템)",
       "install_command_windows": "Windows (PowerShell에서 실행)",
+      "unzip_missing_install_first": "먼저 unzip을 설치하세요. 설치 프로그램에 필요하지만 게이트웨이 호스트에는 없습니다. 다음 명령 중 하나나 시스템의 패키지 관리자를 사용하세요.",
+      "unzip_command_debian_ubuntu": "Debian 또는 Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora 또는 RHEL",
+      "install_kiro_cli_then_run_on_host": "그런 다음 {{platform}} 게이트웨이 호스트에서 다음을 실행해 Kiro CLI를 설치하세요.",
       "setup_intro": "<0>{{platform}} 게이트웨이 호스트</0>에서 코딩 에이전트를 실행하면 대시보드가 자동으로 열립니다.",
       "setup_intro_unknown_platform": "<0>게이트웨이 호스트</0>에서 코딩 에이전트를 실행하면 대시보드가 자동으로 열립니다.",
       "gateway_host": "게이트웨이 호스트",
@@ -7775,7 +7779,8 @@
       "hide_paste_preview": "붙여넣기 미리보기 숨기기",
       "show_paste_preview": "붙여넣기 미리보기 표시",
       "paste_lines_other": "[ 붙여넣기 #{{seq}} · {{count}}줄 ]",
-      "preview_more_lines_other": "… {{count}}줄 더"
+      "preview_more_lines_other": "… {{count}}줄 더",
+      "preview_gesture_hint": "두 번 클릭하여 전체 텍스트 삽입 · Backspace로 붙여넣기 제거"
     },
     "privacyChapter": {
       "continue": "계속",
@@ -17259,7 +17264,12 @@
         "backend_cpu_only": "CPU에서 실행 — 이 빌드에는 GPU가 없습니다",
         "last_recognition_value": "완성된 텍스트까지 {{duration}}, 오디오 길이의 {{rtf}}밍",
         "decode_threads_value": "디셈드 수 {{n}}",
-        "ptt_save_refused": "저장되지 않았습니다. 브라우저 저장 공간이 가득 찼습니다. 공간을 확보한 후 다시 시도하세요."
+        "ptt_save_refused": "저장되지 않았습니다. 브라우저 저장 공간이 가득 찼습니다. 공간을 확보한 후 다시 시도하세요.",
+        "decode_threads": "디코딩 스레드",
+        "decode_threads_desc": "로컬 모델이 음성 인식에 사용하는 CPU 스레드 수입니다. 자동은 이 컴퓨터 코어의 절반을 사용하며 최대 16개입니다. 남는 코어가 있는 큰 컴퓨터에서는 스레드를 늘리면 받아쓰기가 더 빨리 끝납니다. 변경 사항은 다음 받아쓰기부터 적용되며, 이때 모델을 한 번 다시 불러옵니다.",
+        "decode_threads_auto": "자동",
+        "decode_threads_auto_count": "자동({{n}})",
+        "decode_threads_env_override": "이 게이트웨이는 KIROCREW_STT_THREADS에 따라 스레드 {{value}}개를 사용합니다. 이 선택을 사용하려면 해당 변수를 제거하세요."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "위. Slack과 달리 Bot Framework에는\n 발신 전용 모드가 없습니다.",

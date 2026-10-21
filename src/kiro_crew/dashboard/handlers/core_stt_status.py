@@ -122,7 +122,7 @@ async def api_stt_status(request: web.Request) -> web.Response:
         # that governs a provider they are not using.
         local = cfg.stt.enabled and cfg.stt.provider == PROVIDER_LOCAL
         backend = stt_engine.WhisperEngine.capabilities() if local else None
-        threads = stt_engine.thread_count() if local else 0
+        threads = stt_engine.thread_count(cfg.stt.threads) if local else 0
         # Resolved on the same thread as the rest: it lists a store directory and,
         # when a candidate is there, hashes up to 80 MB to authenticate it.
         return (
@@ -409,6 +409,7 @@ async def api_stt_prewarm(request: web.Request) -> web.Response:
         stt.prewarm(
             model_name=cfg.stt.model,
             language=_whisper_language(cfg.stt.language_code),
+            threads=cfg.stt.threads,
         )
     )
     return web.json_response({"ok": True}, status=202)

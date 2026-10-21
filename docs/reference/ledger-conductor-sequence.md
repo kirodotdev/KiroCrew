@@ -2,7 +2,7 @@
 
 **Local page, not a mirror.** This file is Kiro Crew's own documentation and has no upstream source, so a re-fetch of the `kiro-cli/` mirror must leave it alone. It is marked as a named exception in [the Reference index](README.md).
 
-This page traces one work item from the moment a conductor mints it to the moment it is closed, end to end. It extends the shorter "Binding lifecycle" diagram in [the work-ledger RFC](../request-for-change/rfc-conductor-work-ledger.md) past the first report, through acceptance promotion, evaluation, and the terminal write. Every action name and every status value below is taken from the tool surface in `src/kiro_crew/mcp_work.py` and the routes in `src/kiro_crew/dashboard/handlers/work_ledger.py`.
+This page traces one work item from the moment a conductor mints it to the moment it is closed, end to end. It extends the shorter "Binding lifecycle" diagram in [the work-ledger RFC](../request-for-change/rfc-conductor-work-ledger.md) past the first report, through acceptance promotion, evaluation, and the terminal write. Every action name and every status value below is taken from the tool surface in `src/kiro_crew/mcp_work.py` and the routes in `src/kiro_crew/dashboard/handlers/work_ledger.py` and its `work_ledger_<role>.py` owners.
 
 The two halves of the surface never overlap. A conductor writes with `work_ledger_record`, reads with `work_ledger_read`, and rebuilds a damaged ledger from the crew log with `work_ledger_rebuild`; a worker reads with `work_brief` and writes with `work_report`. Which half answers a call is resolved from the caller's own session identity, so a worker has no parameter naming its item, its conductor, or itself.
 

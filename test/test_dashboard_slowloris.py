@@ -29,6 +29,7 @@ from kiro_crew.dashboard.slowloris import (
     build_hardened_runner,
     reject_compressed_body_middleware,
 )
+from kiro_crew.testing.wait import finished
 
 
 async def _make_app() -> web.Application:
@@ -57,7 +58,7 @@ async def test_slow_header_read_is_force_closed() -> None:
         writer.write(b"GET / HTTP/1.1\r\n")
         await writer.drain()
         # The guard force-closes the connection; the peer read then sees EOF.
-        data = await asyncio.wait_for(reader.read(), timeout=3.0)
+        data = await finished(reader.read(), "EOF from the guard's force-close")
         assert data == b""
         writer.close()
     finally:

@@ -2,13 +2,14 @@
  *  write and closes only on success, and an edit sends only the fields the
  *  person touched. */
 import FolderConfigModal from '../../components/FolderConfigModal'
+import { requestFolderReveal } from '../../store/chatSlice'
 import { safeSetItem } from '../../utils/safeStorage'
 import { FLAT_VIEW_LS_KEY } from './persistence'
 import type { FolderModalTarget, SidebarScope } from './scope'
 
 /** The modal for the folder the sidebar targets. */
 export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalTarget): React.ReactNode {
-  const { createFolderMutation, defaultAgent, flatView, folders, installedAgents, refetchTags, setFlatView,
+  const { createFolderMutation, defaultAgent, dispatch, flatView, folders, installedAgents, refetchTags, setFlatView,
     setFolderModal, tagsData, tagsQueryFailed, updateFolderMutation } = shell
   return (
         <FolderConfigModal
@@ -30,7 +31,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
             // discarded the whole draft with no feedback. Rethrowing lets the modal
             // stay open and render the reason.
             if (folderModal.mode === 'create') {
-              await createFolderMutation.mutateAsync({
+              const created = await createFolderMutation.mutateAsync({
                 name: draft.name,
                 parentId: folderModal.parentId || undefined,
                 projectDir: draft.projectDir,
@@ -47,6 +48,14 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               if (flatView) {
                 setFlatView(false)
                 safeSetItem(FLAT_VIEW_LS_KEY, '0')
+              }
+              // A subfolder lands inside its parent, and a collapsed parent would
+              // hide it, so the create looked like it had done nothing. The folder
+              // reveal opens the parent and every collapsed ancestor, scrolls the
+              // new row into view and flashes it.
+              const createdId = (created as { id?: unknown } | null)?.id
+              if (folderModal.parentId && typeof createdId === 'string' && createdId) {
+                dispatch(requestFolderReveal(createdId))
               }
             } else {
               // Build the PATCH from what the USER edited (draft.touched, measured

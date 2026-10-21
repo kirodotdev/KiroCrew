@@ -378,6 +378,19 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       }
       enterActiveSlot(state, action.payload.key)
       state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId }
+      // A default-folder create learns its folder only from this response, so
+      // no caller can open a collapsed default folder (or a collapsed
+      // ancestor) before the create, the way a folder "+" create does. The
+      // chat would then be active with its row hidden. Ask the sidebar to open
+      // the row's folder path. `openFoldersOnly`: the user asked for a chat,
+      // not a reveal, so their search and filters stay as they set them.
+      // Placed after the activation guards above, so a background or
+      // switched-away create never moves the sidebar.
+      const arg = action.meta.arg
+      if (typeof arg === 'object' && arg?.defaultFolder === true && action.payload.folder_id) {
+        state.revealNonce += 1
+        state.revealRequest = { kind: 'session', target: action.payload.key, nonce: state.revealNonce, openFoldersOnly: true }
+      }
       // The replay floor belongs to the slot that was streaming, not to this
       // one. `state.lastChunkSeq` is the ACTIVE slot's floor, and a brand-new
       // chat has no replay history at all — carrying the outgoing slot's floor

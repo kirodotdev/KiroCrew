@@ -657,6 +657,7 @@ async def _run_local_session(
             partial_interval_ms=cfg.stt.partial_interval_ms,
             idle_evict_secs=cfg.stt.idle_evict_secs,
             timeout_secs=cfg.stt.timeout_secs,
+            threads=cfg.stt.threads,
         )
 
     # The FIRST fatal cause wins. Both the duration cap and a failed send can end

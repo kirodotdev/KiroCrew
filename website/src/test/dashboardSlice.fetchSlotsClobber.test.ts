@@ -339,20 +339,21 @@ describe('a fetchSlots reply cannot drop a slot whose creation raced it', () => 
     expect(stampOfMember(created, 'b')).toBeGreaterThan(0)
   })
 
-  it('does not re-add a slot an authoritative live frame removed', () => {
+  it('does not re-add a slot a list read newer than the create removed', () => {
     // Only a reply that OUTRAN the create resurrects it. A live `slots` frame
-    // dispatched after the create is authoritative on membership: if it drops
-    // the key, the key is gone, and its stamp is pruned so no later reply
-    // revives it.
+    // that omits the key may itself predate the create, so it keeps the row
+    // and asks for a read (see dashboardSlice.staleSlotsFrame.test.ts). That
+    // read leaves after the create: if it drops the key, the key is gone, and
+    // its stamp is pruned so the older reply still in flight cannot revive it.
     const inFlight = reducer(loaded(mk('a')), started('r1'))
     const created = reducer(inFlight, createdSlot(mk('b')))
     const live = reducer(created, sseSlots(wire(mk('a'))))
-    expect(rowOf(live, 'b')).toBeUndefined()
-    expect(stampOfMember(live, 'b')).toBeUndefined()
-    // A later reply that also omits `b` leaves it gone — the create no longer
-    // outranks anything.
+    expect(rowOf(live, 'b')).toBeDefined()
     const settled = reducer(reducer(live, started('r2')), reply([mk('a')], 'r2'))
     expect(rowOf(settled, 'b')).toBeUndefined()
+    expect(stampOfMember(settled, 'b')).toBeUndefined()
+    const late = reducer(settled, reply([mk('a')], 'r1'))
+    expect(rowOf(late, 'b')).toBeUndefined()
   })
 
   it('lets a reply dispatched after the create omit it authoritatively', () => {

@@ -75,6 +75,12 @@ export interface KiroPrerequisiteStatus {
    * that the check failed.
    */
   probe_error?: string
+  /**
+   * True when the gateway is a Linux host without `unzip`, which the one-line
+   * Kiro CLI installer refuses to run without. Reported only while the CLI is
+   * not installed; absent on older gateways.
+   */
+  unzip_missing?: boolean
   /** The failed probe's exit status; absent when it did not exit. */
   probe_status?: number | null
   /**

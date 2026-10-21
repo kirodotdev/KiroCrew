@@ -16,11 +16,12 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import os
-import time
 import urllib.error
 import urllib.request
 
 import pytest
+
+from kiro_crew.testing.wait import wait_until
 
 # Gate all tests behind KIROCREW_E2E so they don't slow down local pytest runs.
 pytestmark = pytest.mark.skipif(
@@ -287,14 +288,20 @@ def acp_gateway(monkeypatch):
 
 def _await_assistant_reply(gateway, slot: str, timeout: float = 60.0) -> dict:
     """Poll a slot's history until a non-empty assistant reply appears."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+
+    def _reply() -> dict | None:
         detail = _api_get(gateway, f"/api/chat/slots/{slot}")
         for msg in detail.get("messages", []):
             if msg.get("role") == "assistant" and str(msg.get("content", "")).strip():
                 return msg
-        time.sleep(0.5)
-    raise AssertionError(f"no non-empty assistant reply within {timeout:.0f}s")
+        return None
+
+    return wait_until(
+        _reply,
+        timeout=timeout,
+        interval=0.5,
+        describe=lambda: f"no non-empty assistant reply within {timeout:.0f}s",
+    )
 
 
 def test_chat_send_receives_reply(acp_gateway):

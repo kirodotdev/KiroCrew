@@ -930,7 +930,7 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # agent only needs to append thread progress, so only ``/thread`` is admitted.
         #
         # The path is the gateway's reverse-proxy route ``/apps/{name}/api/{path}``
-        # (``apps/routes.py`` ``handle_app_api_proxy``), NOT ``/api/apps/...``:
+        # (``apps/routes_proxy.py`` ``handle_app_api_proxy``), NOT ``/api/apps/...``:
         # Design Tweak runs its ``_h_thread`` in its own backend process reached
         # only through that proxy, unlike Issue Radar / Ops Mission Control which
         # register aiohttp routes directly under ``/api/apps/<name>``.

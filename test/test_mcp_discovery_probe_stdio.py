@@ -27,6 +27,7 @@ from stray_line_helpers import too_deep_line
 from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import McpServerInfo, _read_stdio_jsonrpc_response, probe_server
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestProbeServerProcessCleanup:
@@ -825,8 +826,6 @@ class TestProbeGroupReap:
     async def test_real_grandchild_is_reaped(self, monkeypatch, tmp_path) -> None:
         """End-to-end: a probed 'server' that forks a grandchild and never
         answers must leave NO survivors after the probe returns."""
-        import time as _time
-
         from kiro_crew import platform_compat
 
         if not platform_compat.IS_POSIX:
@@ -853,18 +852,15 @@ class TestProbeGroupReap:
         result = await probe_server(server)
         assert result.status == "error"  # timed out, as designed
 
-        # flake-ok: pre-existing 5 s bounded poll for the reaped grandchild; moved verbatim
-        deadline = _time.monotonic() + 5
         gc_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
-        while _time.monotonic() < deadline:
+        try:
             # Windows-safe liveness probe (a raw os.kill(pid, 0) TERMINATES the
             # target on Windows — the platform_compat rule); this test is
             # POSIX-gated, but route through the shim to stay consistent.
-            if platform_compat.pid_liveness(gc_pid) == platform_compat.PID_DEAD:
-                break  # grandchild reaped — pass
-            # flake-ok: pre-existing 100 ms poll step inside that bounded wait; moved verbatim
-            _time.sleep(0.1)
-        else:
+            await async_wait_until(
+                lambda: platform_compat.pid_liveness(gc_pid) == platform_compat.PID_DEAD
+            )
+        except AssertionError:
             platform_compat.kill_pid(gc_pid, platform_compat.SIGKILL)  # cleanup
             pytest.fail("grandchild survived probe teardown — process-group reap regressed")
 

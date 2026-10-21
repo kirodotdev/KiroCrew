@@ -53,6 +53,7 @@ from kiro_crew.voice_reply import (
     stitch_mp3s,
     streaming_piper_reply,
     streaming_voice_reply,
+    strip_markdown,
     synthesize_speech,
     validate_length_scale,
     validated_config_bool,
@@ -430,6 +431,15 @@ async def _synthesize_request(
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     identity = {"slot": slot_key, "request_id": request_id}
+    # The speakable form of the reply, for the client-speech fallback a headless
+    # gateway triggers (voice_unavailable): the dashboard speaks this on the
+    # client with its own engine, and it must match what the gateway path would
+    # have voiced — strip_markdown turns code blocks, tables, widget markup,
+    # control comments and inline paths into spoken placeholders rather than
+    # reading them verbatim. Computed here from the canonical stripper so the
+    # client never has to re-implement it (and drift from it). Attached to the
+    # voice_unavailable error payloads below; harmless on any other code.
+    speakable = strip_markdown(text)
 
     # Voice config — use defaults from handler config or body overrides
     voice_id = body.get("voice", _vc.default_voice)
@@ -445,7 +455,7 @@ async def _synthesize_request(
         # Only explicitly selected Polly may reach the paid sentence stream.
         # The built-in engine retains its provider-aware single-WAV path.
         if _vc.provider != PROVIDER_POLLY:
-            return await _synthesize_nonstreaming(state, text, identity)
+            return await _synthesize_nonstreaming(state, text, identity, speakable)
         async for idx, sentence, mp3_bytes in streaming_voice_reply(
             text,
             voice_id=voice_id,
@@ -503,16 +513,25 @@ async def _synthesize_request(
         logger.exception("Voice synthesis failed")
         err_msg, _ = redact_exfiltration_urls(str(exc))
         err_msg, _ = redact_credentials(err_msg)
+        code = getattr(exc, "code", "voice_synthesis_failed")
+        # Carry the speakable text on the one code the client speaks locally, so
+        # the fallback voices placeholders (not raw code/markup) without
+        # re-implementing strip_markdown.
+        extra = {"speakable": speakable} if code == "voice_unavailable" else {}
         state.broadcast_ws(
             "voice_error",
-            {**identity, "error": err_msg, "code": getattr(exc, "code", "voice_synthesis_failed")},
+            {**identity, "error": err_msg, "code": code, **extra},
         )
+        # The body is a literal dict with a literal `code` on purpose: the
+        # error-code ratchet treats a `**spread` body as opaque. `speakable` is
+        # only read by the client on voice_unavailable; None elsewhere is inert.
         return web.json_response(
             {
                 "ok": False,
                 "error": err_msg,
-                "code": getattr(exc, "code", "voice_synthesis_failed"),
+                "code": code,
                 "request_id": request_id,
+                "speakable": speakable if code == "voice_unavailable" else None,
             },
             status=502,
         )
@@ -572,7 +591,7 @@ async def _synthesize_piper_stream(
 
 
 async def _synthesize_nonstreaming(
-    state: DashboardState, text: str, identity: dict[str, str]
+    state: DashboardState, text: str, identity: dict[str, str], speakable: str
 ) -> web.Response:
     """Keep the built-in engine's single-file synthesis and failure remedies.
 
@@ -622,9 +641,22 @@ async def _synthesize_nonstreaming(
             code = "voice_synthesis_failed"
             if provider == PROVIDER_SYSTEM and resolved is None:
                 code = "voice_unavailable"
-            state.broadcast_ws("voice_error", {**identity, "error": msg, "code": code})
+            # On voice_unavailable the client speaks locally, so hand it the
+            # cleaned (strip_markdown) text rather than letting it read raw
+            # markdown/code/widget markup.
+            extra = {"speakable": speakable} if code == "voice_unavailable" else {}
+            state.broadcast_ws("voice_error", {**identity, "error": msg, "code": code, **extra})
+            # Literal body + literal `code` (the error-code ratchet treats a
+            # `**spread` body as opaque). `speakable` is read only on
+            # voice_unavailable; None otherwise is inert.
             return web.json_response(
-                {"ok": False, "error": msg, "code": code, "request_id": identity["request_id"]},
+                {
+                    "ok": False,
+                    "error": msg,
+                    "code": code,
+                    "request_id": identity["request_id"],
+                    "speakable": speakable if code == "voice_unavailable" else None,
+                },
                 status=502,
             )
         audio_bytes = await asyncio.to_thread(_read_audio, audio_path)

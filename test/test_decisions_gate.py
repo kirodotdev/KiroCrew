@@ -1214,7 +1214,7 @@ class TestLoggingCannotCostTheResult:
             try:
                 answers = await asyncio.wait_for(
                     decide(POINT, "hi", QUESTIONS, config=config), _STALLED_APPEND_CEILING_SECS
-                )
+                )  # flake-ok: the ceiling IS the assertion: decide must return before the stalled append releases
                 assert not returned.is_set(), "decide held the append it should have handed off"
                 # Nothing has released the append yet: the ``finally`` is the only release.
                 return answers, await asyncio.to_thread(entered.wait, _STALLED_APPEND_CEILING_SECS)

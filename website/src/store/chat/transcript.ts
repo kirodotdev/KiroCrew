@@ -190,6 +190,156 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
   return changed ? result : merged
 }
 
+/** Carry a settled `card` or `steer` row forward over a stale snapshot copy
+ *  that would REGRESS it to an earlier lifecycle state (#20833).
+ *
+ *  Besides `stop_event` (#20818) and `mcp_oauth` (#20904), two more durable
+ *  row types are upserted IN PLACE by the backend keeping the same
+ *  `(mid, role, ts)`, so the same stale-snapshot merge can revert them:
+ *
+ *   - a `card` row (`chat_cards._patch_row` -> `slot.update_message`): its
+ *     `meta.card.status` advances a LIVE status to a terminal one. A snapshot
+ *     captured while it was still live reverts a finished card to "running".
+ *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
+ *     `_mark_steer_row_state` -> `slot.update_message` advances
+ *     `meta.steerState` `written` -> `consumed`/`requeued`. A snapshot captured
+ *     while it was still `written` revives the "pending steer" badge on a steer
+ *     the turn already took.
+ *
+ *  Both carry a server-minted `meta.mid` that the slot-detail snapshot keeps
+ *  (its meta is rebuilt from the JSON `cls`, which holds `mid` for every role),
+ *  so the live settled copy and the stale page copy share `(mid, role, ts)` and
+ *  `deduplicateByMid` keeps the LAST (positionally newest) occurrence — the
+ *  stale page copy, since the merge seats `[...olderHead(live), ...page]`.
+ *
+ *  Like `preserveSettledMcpOauth` (and unlike the stop rule), this runs BEFORE
+ *  `deduplicateByMid`: it carries the settled prior row's `content`/`cls`/`meta`
+ *  onto any still-earlier merged copy of the same `(role, mid, ts)`, so the
+ *  surviving dedup row keeps the terminal state the user already saw. Keyed by
+ *  `(role, mid, ts)` — the full row identity `deduplicateByMid` uses, so only
+ *  true copies of one row overwrite each other (not two distinct rows that
+ *  happen to reuse a `mid`). A row with no settled prior
+ *  copy, and every other role, pass through untouched; returns `merged`
+ *  unchanged (same reference) when nothing is carried, so a caller can skip the
+ *  write.
+ *
+ *  FAIL-SAFE on which statuses anchor a carry-forward: a card status is only a
+ *  carry-forward anchor if it is terminal AND cannot legally move back to a
+ *  live status. TWO finished statuses can, so both are EXCLUDED, or the fix
+ *  would hide the re-opened row behind the cached terminal copy:
+ *    - `failed` — `change_cards.py` documents `failed --retry--> pending`.
+ *    - `completed` — `guide_runs.py replay()` ("Show again") takes a completed
+ *      guide back to `offered`, patching the same transcript row in place.
+ *  Every remaining finished status (`applied`/`partial` -> only `undone`, which
+ *  is not live; `cancelled`; `expired`; `undone`) has no edge back to a live
+ *  status and anchors safely. A status in neither the live nor the anchor set
+ *  (an unknown/future surface) is only ever carried OVER, never carried
+ *  forward — we never fabricate a settle we cannot name. The sets below are the
+ *  backend's own `_CHANGE_*`/`_GUIDE_*` sets (`chat_cards.py`), minus the two
+ *  reversible statuses.
+ *
+ *  Deliberately scoped to these two in-place-upsert types; it is the sibling of
+ *  the stop/mcp_oauth rules, not a general merge rewrite. */
+export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatMessage[]): ChatMessage[] {
+  // LIVE statuses a card row may hold — the backend's `_CHANGE_LIVE` +
+  // `_GUIDE_LIVE` (`chat_cards.py`). A merged row in this set is "earlier" and
+  // may be carried over by a settled prior copy of the same id.
+  const CARD_LIVE = new Set(['pending', 'applying', 'offered', 'active', 'target_missing'])
+  // Carry-forward ANCHORS: terminal statuses with NO legal edge back to a live
+  // status. This is `_CHANGE_FINISHED` + `_GUIDE_FINISHED` minus the two that
+  // can legally return to live, which must NOT be carried forward (a fresh
+  // snapshot showing the re-opened row would otherwise be reverted):
+  //   - `failed`: `change_cards.py` documents `failed --retry--> pending`.
+  //   - `completed`: `guide_runs.py replay()` ("Show again") takes a completed
+  //     guide back to `offered`, patching the same transcript row in place.
+  // The remaining finished statuses (`applied`/`partial` -> only `undone`,
+  // which is not a live status; `cancelled`/`expired`; `undone`) have no edge
+  // back to a live status, so they anchor safely.
+  const CARD_ANCHOR = new Set(['applied', 'partial', 'cancelled', 'expired', 'undone'])
+  // A steer row advances `written` -> `consumed`/`requeued` and never back
+  // (`steer_queue.py`: the only two transitions; a requeued steer runs later as
+  // its own NEW row, not a rewrite of this one), so both are safe anchors.
+  const STEER_SETTLED = new Set(['consumed', 'requeued'])
+
+  // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
+  // is not one this pass guards. Steer rows ride the `user` role, so they are
+  // distinguished by `meta.steer` rather than role alone.
+  //
+  // `ts` is part of the key on purpose, matching `deduplicateByMid`'s own
+  // `(mid, role, ts)`: the backend's in-place upsert keeps `ts` constant, so the
+  // settled prior and the stale copy of ONE row share it, while two DISTINCT
+  // rows that reuse a `mid` (a crafted `meta.mid` in a POST /api/chat body, which
+  // `_ChatSlot.append` preserves rather than re-minting) are appended at
+  // different times and so get different `ts`. Keying on `(role, mid)` alone
+  // would let such a distinct row's content be overwritten by an unrelated
+  // same-mid row that `deduplicateByMid` then keeps — hiding the second row's
+  // text. Keyed to the full row identity, only true copies of one row can
+  // overwrite each other.
+  const upsertKey = (m: ChatMessage): string | undefined => {
+    const mid = m.meta?.mid
+    if (typeof mid !== 'string' || !mid) return undefined
+    // JSON-array key rather than a delimiter-joined string template, for the
+    // same two reasons `deduplicateByMid` uses one: no delimiter can collide
+    // with field content, and no string literal trips the zero-tolerance i18n
+    // added-lines gate on this internal identity key.
+    if (m.role === 'card') return JSON.stringify(['card', mid, m.ts ?? null])
+    if (m.role === 'user' && (m.meta as { steer?: unknown } | undefined)?.steer) return JSON.stringify(['steer', mid, m.ts ?? null])
+    return undefined
+  }
+
+  // Whether a covered row is a carry-forward ANCHOR: a terminal status that
+  // cannot legally move back to a live one. For a card that is the CARD_ANCHOR
+  // set (finished minus the retryable `failed`); a live, `failed`, or unknown
+  // status does not anchor a carry-forward.
+  const isSettled = (m: ChatMessage): boolean => {
+    if (m.role === 'card') {
+      const status = (m.meta as { card?: { status?: unknown } } | undefined)?.card?.status
+      return typeof status === 'string' && CARD_ANCHOR.has(status)
+    }
+    const steerState = (m.meta as { steerState?: unknown } | undefined)?.steerState
+    return typeof steerState === 'string' && STEER_SETTLED.has(steerState)
+  }
+
+  // A merged row is a carry-OVER candidate only when it is genuinely EARLIER in
+  // the lifecycle, not merely "not an anchor": a card whose status is unknown
+  // to us (neither live nor anchor), or a retryable `failed`, is left exactly
+  // as the page sent it rather than overwritten from a prior anchored row.
+  const isEarlier = (m: ChatMessage): boolean => {
+    if (m.role === 'card') {
+      const status = (m.meta as { card?: { status?: unknown } } | undefined)?.card?.status
+      return typeof status === 'string' && CARD_LIVE.has(status)
+    }
+    const steerState = (m.meta as { steerState?: unknown } | undefined)?.steerState
+    return steerState === 'written'
+  }
+
+  const settledPrior = new Map<string, ChatMessage>()
+  for (const m of existing) {
+    const key = upsertKey(m)
+    if (key && isSettled(m)) settledPrior.set(key, m)
+  }
+  if (!settledPrior.size) return merged
+
+  let changed = false
+  const result: ChatMessage[] = []
+  for (const m of merged) {
+    const key = upsertKey(m)
+    if (key !== undefined && isEarlier(m) && settledPrior.has(key)) {
+      // Carry the settled prior row's rendered state forward in place. Identity
+      // (`role`, `mid`, `ts`) already matches, so replacing content/cls/meta
+      // wholesale keeps the row the same row for `deduplicateByMid`. The prior
+      // meta is authoritative: a partial merge could leave a hybrid row still
+      // advertising the earlier state.
+      const prior = settledPrior.get(key)!
+      result.push({ ...m, content: prior.content, cls: prior.cls, meta: { ...(prior.meta || {}) } })
+      changed = true
+      continue
+    }
+    result.push(m)
+  }
+  return changed ? result : merged
+}
+
 /** Keep a merged transcript's stop_event cards from REGRESSING to `stopping`.
  *
  *  The backend upserts a stop card BY `meta.id`: the press opens it at

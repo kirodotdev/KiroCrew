@@ -322,6 +322,9 @@ class _LocalEndpointStream:
 
         monkeypatch.setattr(stt_stream, "_Endpointer", endpointer)
 
+    def thread_count(self):
+        return engine_mod.thread_count()
+
     async def ensure_loaded(self, *_args):
         return engine_mod.Availability(True)
 

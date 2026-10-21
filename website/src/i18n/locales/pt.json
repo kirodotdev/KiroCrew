@@ -7502,6 +7502,10 @@
       "install_kiro_cli_run_for_platform": "Execute o comando da plataforma do host do gateway para instalá-lo.",
       "install_command_macos_linux": "macOS e Linux (e outros sistemas do tipo Unix)",
       "install_command_windows": "Windows (PowerShell)",
+      "unzip_missing_install_first": "Primeiro, instale o unzip. O instalador precisa dele, e o host do gateway não o tem. Use um destes comandos ou o gerenciador de pacotes do seu sistema.",
+      "unzip_command_debian_ubuntu": "Debian ou Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora ou RHEL",
+      "install_kiro_cli_then_run_on_host": "Depois, execute isto no host do gateway {{platform}} para instalar o Kiro CLI.",
       "setup_intro": "Coloque um agente de programação para rodar no <0>host do gateway {{platform}}</0> e o painel abrirá automaticamente.",
       "setup_intro_unknown_platform": "Coloque um agente de programação para rodar no <0>host do gateway</0> e o painel abrirá automaticamente.",
       "gateway_host": "Host do gateway",
@@ -8029,7 +8033,8 @@
       "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]",
       "preview_more_lines_many": "… mais {{count}} linhas",
       "preview_more_lines_one": "… mais {{count}} linha",
-      "preview_more_lines_other": "… mais {{count}} linhas"
+      "preview_more_lines_other": "… mais {{count}} linhas",
+      "preview_gesture_hint": "Clique duas vezes para inserir o texto completo · Backspace remove o conteúdo colado"
     },
     "privacyChapter": {
       "continue": "Continuar",
@@ -17801,7 +17806,12 @@
         "backend_cpu_only": "Executa na CPU — sem GPU nesta build",
         "last_recognition_value": "{{duration}} para o texto final, {{rtf}}× a duração do áudio",
         "decode_threads_value": "{{n}} threads de decodificação",
-        "ptt_save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente."
+        "ptt_save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente.",
+        "decode_threads": "Threads de decodificação",
+        "decode_threads_desc": "Threads de CPU que o modelo local usa para reconhecer a fala. Automático usa metade dos núcleos desta máquina, no máximo 16. Em uma máquina grande com núcleos livres, mais threads terminam cada ditado mais cedo. Uma alteração vale a partir do próximo ditado, que recarrega o modelo uma vez.",
+        "decode_threads_auto": "Automático",
+        "decode_threads_auto_count": "Automático ({{n}})",
+        "decode_threads_env_override": "Este gateway usa {{value}} threads, definidos por KIROCREW_STT_THREADS. Remova essa variável para usar esta escolha."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "acima. Diferente do Slack, o Bot Framework não tem\n              modo somente de saída.",

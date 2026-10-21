@@ -7,7 +7,7 @@ import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import {
@@ -453,7 +453,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
        * Same value as the `reinsertThinkingOrphans` call below and as
        * `switchSlot.fulfilled` -- the retained head is part of the loaded window,
        * so raw `hasMore` would park reasoning whose anchor is already on screen. */
-      state.messages = preserveSettledStopState(state.messages, deduplicateByMid(preserveSettledMcpOauth(state.messages, mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted), messages, !keptCursor.hasMore))))
+      state.messages = preserveSettledStopState(state.messages, deduplicateByMid(preserveSettledUpsertRows(state.messages, preserveSettledMcpOauth(state.messages, mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted), messages, !keptCursor.hasMore)))))
       // A refresh rebuilds `messages` wholesale, so parked reasoning has to be re-seated
       // here too — otherwise it stays invisible until the next slot switch.
       // (Re-seating only ADDS client-only thinking rows, which by contract

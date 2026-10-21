@@ -1562,10 +1562,22 @@ class TestSynthesizeProviderRouting:
             assert body["code"] == (
                 "voice_unavailable" if resolved is None else "voice_synthesis_failed"
             )
-        state.broadcast_ws.assert_called_once_with(
-            "voice_error",
-            {"slot": "s1", "request_id": "native-failed", "error": err, "code": body["code"]},
-        )
+            # On voice_unavailable the client speaks the reply itself, so the
+            # gateway hands it the cleaned (strip_markdown) text; a present-engine
+            # failure keeps the user on the gateway path and carries none.
+            if resolved is None:
+                assert body["speakable"] == "Hello"
+            else:
+                assert body["speakable"] is None
+        expected_frame = {
+            "slot": "s1",
+            "request_id": "native-failed",
+            "error": err,
+            "code": body["code"],
+        }
+        if resolved is None:
+            expected_frame["speakable"] = "Hello"
+        state.broadcast_ws.assert_called_once_with("voice_error", expected_frame)
         assert expect_in in err
         assert expect_not_in not in err
         # A remedy naming the wrong provider costs the user the whole debugging

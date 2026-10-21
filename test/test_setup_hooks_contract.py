@@ -31,7 +31,7 @@ _SPEC_MD = _REPO / "docs" / "system-specs" / "modules" / "app-kit-platform.md"
 #: Every ``setup.on*`` hook some code path actually executes. ``onInstall`` is
 #: read by ``registry_pipeline/install.py`` (the install transaction, which a
 #: registry update re-enters); the other three are the ``run_lifecycle_script``
-#: callers in ``routes.py`` and ``teardown.py``.
+#: callers in ``routes.py``, ``routes_enable.py`` and ``teardown.py``.
 DISPATCHED_HOOKS = frozenset({"onInstall", "onUninstall", "onEnable", "onDisable"})
 
 #: Declared on ``SetupConfig`` and round-tripped, but executed by nothing.

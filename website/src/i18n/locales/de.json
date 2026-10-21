@@ -7378,6 +7378,10 @@
       "install_kiro_cli_run_for_platform": "Führe den Befehl für die Plattform des Gateway-Hosts aus, um es zu installieren.",
       "install_command_macos_linux": "macOS und Linux (und andere Unix-ähnliche Systeme)",
       "install_command_windows": "Windows (PowerShell)",
+      "unzip_missing_install_first": "Installiere zuerst unzip. Der Installer braucht es, und auf dem Gateway-Host fehlt es. Nutze einen dieser Befehle oder den Paketmanager deines Systems.",
+      "unzip_command_debian_ubuntu": "Debian oder Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora oder RHEL",
+      "install_kiro_cli_then_run_on_host": "Führe dann dies auf dem {{platform}}-Gateway-Host aus, um Kiro CLI zu installieren.",
       "setup_intro": "Bring einen Coding-Agenten auf dem <0>{{platform}}-Gateway-Host</0> zum Laufen, dann öffnet sich das Dashboard automatisch.",
       "setup_intro_unknown_platform": "Bring einen Coding-Agenten auf dem <0>Gateway-Host</0> zum Laufen, dann öffnet sich das Dashboard automatisch.",
       "gateway_host": "Gateway-Host",
@@ -7902,7 +7906,8 @@
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
       "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]",
       "preview_more_lines_one": "… {{count}} weitere Zeile",
-      "preview_more_lines_other": "… {{count}} weitere Zeilen"
+      "preview_more_lines_other": "… {{count}} weitere Zeilen",
+      "preview_gesture_hint": "Doppelklick fügt den ganzen Text ein · Rücktaste entfernt die Einfügung"
     },
     "privacyChapter": {
       "continue": "Weiter",
@@ -17530,7 +17535,12 @@
         "backend_cpu_only": "Läuft auf CPU — kein GPU in diesem Build",
         "last_recognition_value": "{{duration}} für den fertigen Text, {{rtf}}× der Audiolänge",
         "decode_threads_value": "{{n}} Dekodier-Threads",
-        "ptt_save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut."
+        "ptt_save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut.",
+        "decode_threads": "Dekodier-Threads",
+        "decode_threads_desc": "CPU-Threads, die das lokale Modell zur Spracherkennung nutzt. Automatisch verwendet die Hälfte der Kerne dieses Rechners, höchstens 16. Auf einem großen Rechner mit freien Kernen schließen mehr Threads jedes Diktat schneller ab. Eine Änderung gilt ab dem nächsten Diktat, das das Modell einmal neu lädt.",
+        "decode_threads_auto": "Automatisch",
+        "decode_threads_auto_count": "Automatisch ({{n}})",
+        "decode_threads_env_override": "Dieses Gateway nutzt {{value}} Threads, festgelegt durch KIROCREW_STT_THREADS. Entferne die Variable, um diese Auswahl zu verwenden."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "oben. Im Gegensatz zu Slack hat das Bot Framework keinen\n              rein ausgehenden Modus.",

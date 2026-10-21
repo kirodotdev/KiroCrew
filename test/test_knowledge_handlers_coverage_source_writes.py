@@ -23,6 +23,7 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.testing.wait import await_until
 
 # ------------------------------------------------------------ agent document
 
@@ -314,8 +315,7 @@ class TestSyncSourceAgentBranch:
         async with _client(app) as client:
             resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
             data = await resp.json()
-            # flake-ok: the 5 s cap only names a lost event; the test waits on ran, not on time
-            await asyncio.wait_for(ran.wait(), timeout=5)
+            await await_until(ran, what="the background sync running")
         assert data == {"synced": False, "status": "syncing", "source_id": sid}
         # The task is parked in _bg_tasks so it cannot be garbage-collected
         # mid-flight, and is discarded once it finishes.

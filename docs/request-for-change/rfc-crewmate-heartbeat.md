@@ -3,8 +3,8 @@ title: Crewmate heartbeat -- an opt-in wake that keeps the crewmate working on i
 status: accepted
 author: buluoray
 created: 2026-10-15
-last-audited: 2026-10-20
-audited-at: a5c1e85b37
+last-audited: 2026-10-21
+audited-at: 85a081707c
 doc-pr: 20934
 implementation-prs: [21172]
 tracking-issues: []
@@ -14,15 +14,19 @@ superseded-by: []
 
 # RFC: Crewmate heartbeat
 
-- Status: accepted. This is the product owner's decision, given 2026-10-15 by
-  rayrayxu. Revised 2026-10-16: a quiet wake folds any text it wrote before
-  `nothing_to_do` (§ 3.2). Revised 2026-10-20 to what ships first on its own:
-  the crewmate does its own work, handing long work to a worker session only
-  when its thread holds the session tools (§ 3.7); the interval floor is 30
-  minutes and the default an hour, for cost (§ 3.6); a wake after every
-  milestone is met asks for the next set first (§ 3.2); and every hidden turn,
-  not only a heartbeat, keeps its narration out of the chat (§ 3.2). Claims
-  about today's code were checked at `a5c1e85b37` (main).
+- Status: accepted. See the history below for what was accepted when.
+- Audit: every claim about code was checked on 2026-10-21. Claims about main
+  were checked at `85a081707c`. Claims about the implementation were checked at
+  [#21172](https://github.com/kirodotdev/KiroCrew/pull/21172)'s head
+  `d433ae0f39`, which is not merged. § 7 lists each claim under the one it
+  holds for.
+- History:
+
+  | Date | What happened |
+  |---|---|
+  | 2026-10-15 | The product owner (rayrayxu) accepted the first text (`6249176ee1`): intervals 15, 30 (default), 60, 120 and 240 minutes, and every crewmate given the conductor's session tools through its private agent copy. |
+  | 2026-10-20 | The text was revised (`e9afde0fa9`) and merged in [#20934](https://github.com/kirodotdev/KiroCrew/pull/20934) on 2026-10-21. The revision moved the intervals to 30, 60 (default), 120 and 240 minutes (§ 3.1, § 3.6). It dropped the promise that every crewmate gets the session tools: a wake uses them only when the thread already holds them (§ 3.7, new). It rewrote § 3.2 (a stopping skip, folding pre-tool text, a gateway line once every milestone is met) and § 3.6 (cost as a ceiling on wakes a day). No review or comment on #20934 recorded acceptance of this revision before the merge. |
+  | 2026-10-21 | After bolichen97's post-merge review ([comment](https://github.com/kirodotdev/KiroCrew/pull/20934#issuecomment-6308582968)), the product owner (rayrayxu) kept the status `accepted` for the revised text, with this change. This change also matches § 3.2 to #21172 as it stands: the gateway folds no text and adds no milestones line, and a wake skips while a monitor loop drives the thread. It defines what follows a declined or expired milestones card (§ 3.2), splits the facts (§ 7) and moves every audit to the two commits named above. |
 - Author: buluoray
 - Related: [rfc-crewmate-goals.md](rfc-crewmate-goals.md) § 3.5 (check-ins, and
   which turns may raise a card), [rfc-crewmate-dynamic-dashboard.md](rfc-crewmate-dynamic-dashboard.md)
@@ -84,14 +88,17 @@ The wake goes through the check-ins' existing `fire` path and dispatches one
 hidden turn in the crewmate's pinned thread (`mate_welcome.dispatch_hidden_turn`,
 `human_seen=False`). It inherits that path's skips, so a heartbeat does nothing
 that time when the thread is not open, a turn is running or queued, the switch
-is off, or no goal is left. It adds one skip of its own: a wake that fires
+is off, or no goal is left. It adds two skips of its own. A wake that fires
 while the gateway is stopping (`kiro_crew.shutdown_event` set, read before and
 after the wake's own reads) starts no turn, since the stop would cancel a turn
-that had already been paid for. A wake never interrupts the user or the
-crewmate.
+that had already been paid for. A wake that fires while an active monitor loop
+is bound to the thread starts no turn either: between two loop cycles the
+thread is idle, and the loop already drives that work. A wake never interrupts
+the user or the crewmate.
 
-The prompt carries the goal block (`member_goals.progress_block`) and tells the
-crewmate to:
+The prompt carries the goal block (`member_goals.progress_block`). Right under
+it, the prompt asks for `nothing_to_do` at once, with no text before it, when
+nothing can move forward. It then tells the crewmate to:
 
 1. Look at its goals, milestones and the open items in its work ledger.
 2. Do whatever it can move forward without the user: one thing or many, as the
@@ -106,23 +113,34 @@ crewmate to:
    `nothing_to_do`.
 
 When there is nothing to move forward, the wake ends with `nothing_to_do` and
-posts nothing. The gateway folds any text written before `nothing_to_do` into
-that step, so a quiet wake adds no chat message and no notification. The same
-holds for every hidden gateway turn (the welcome, goal setup, the check-ins):
-its pre-tool narration ("Let me record that.") folds onto the tool step after
-it when the turn ends with a final reply, so the user reads the reply alone.
-Text that was the turn's only words, or a turn a person steered into, is
-delivered as before. Turns a person or a channel opened keep their current
-behaviour.
+posts nothing. The gateway does not fold or hide what a wake writes: text the
+crewmate writes before a tool call or before `nothing_to_do` shows in the chat
+like any reply. That is why the prompt asks for the silent end first. Hiding a
+wake's narration is left for later, if wakes turn out to be noisy. It would
+hide rows when the chat draws them, the way the chat already hides tool rows,
+not rewrite stored rows.
 
-Once every milestone is met (a goal with none counts too), the wake carries
-one more line from the gateway under the goal block: its first step is the
-next milestones on a `set_key_results` card. While such a card already waits
-on the user, the line says the card is the user's step and the wake does a
-piece of work toward the goal instead. "Met" is read from the record alone
-(`member_milestones.key_result_met`): a reading that leads with a done word,
-a word target the reading repeats, or numbers compared the way the target
-asks.
+Met milestones are one case of step 2: the next milestones on a
+`set_key_results` card are a step that needs no one. The gateway does not judge
+whether a milestone is met, and adds no line of its own about it.
+
+#### After a milestones card
+
+A `set_key_results` card ends like any change card. The heartbeat adds no rule
+of its own to either ending:
+
+| The card | What happens |
+|---|---|
+| Declined (the user presses Cancel) | The card becomes `cancelled`. The milestones stay as they were. |
+| Not pressed for 24 hours (`CARD_TTL_SECONDS`) | The card becomes `expired` the next time the card store reads or sweeps it. The milestones stay as they were. |
+
+In both cases the crewmate hears the ending once, at the start of its next turn
+in that thread (a heartbeat wake counts): the `[CHANGE CARD RESULTS]` block
+names the card and its status (`take_unreported`, `render_change_card_results`).
+The next wake's prompt is built from the unchanged record, so it may propose
+milestones again. Nothing in the gateway delays or blocks that, and the prompt
+says nothing about a declined card. The "ask once" rule in § 3.5 is about
+`[OPTIONS:]` questions, not cards.
 
 The next wake is itself the patrol over the work the heartbeat started, so a
 heartbeat turn arms no monitor loop.
@@ -186,12 +204,12 @@ interval sets a ceiling on wakes a day, and the user picks the ceiling.
 | | |
 |---|---|
 | Default | off, for every crewmate, new and existing |
-| Fewer wakes than the ceiling | a wake is skipped when the thread is busy or closed, the switch is off, there is no goal, or the gateway is stopping |
+| Fewer wakes than the ceiling | a wake is skipped when the thread is busy or closed, the switch is off, there is no goal, an active monitor loop is bound to the thread, or the gateway is stopping |
 | Cheapest wake | one that finds nothing ends at once with `nothing_to_do` |
 | Where it is said | the check-ins page under the switch ("Each wake uses credits."), the `crewmate.check_ins` card's row ("Heartbeat (each wake uses credits)"), the `set_check_ins` tool description, and the offer after the milestones are confirmed |
 
-Quiet wakes keep the thread short too. A quiet end writes one folded tool row
-and no chat message, so a day of quiet wakes adds little to the history the
+Quiet wakes keep the thread short too. A quiet end with no text before it
+writes one tool row and no chat message, so a day of quiet wakes adds little to the history the
 next wake reads.
 
 ### 3.7 Who does the work
@@ -251,3 +269,38 @@ second page, where each switch, the times and the heartbeat interval are set.
 
 The switch is off for every crewmate, new and existing. A goal record written
 before this change reads with `heartbeat` off and the default interval.
+
+## 7. Facts and where they hold
+
+### On main at `85a081707c`
+
+| Fact | Where |
+|---|---|
+| Three check-in cadences: daily, weekly, monthly. No heartbeat cadence | `member_goals.CADENCES` |
+| One gateway-owned cron job per cadence, keyed `goal-<cadence>:<slug>` | `dashboard/goal_reminder.py` `MANAGED_PREFIXES` |
+| `GET /api/crons` (the Schedule page) hides these jobs | `dashboard/goal_reminder.py` |
+| A check-in fires through `fire`, and skips when the thread is not open or a turn is running or queued | `goal_reminder.fire`, `_idle_thread` |
+| A check-in is one hidden gateway turn in the crewmate's pinned thread | `mate_welcome.dispatch_hidden_turn` |
+| The goal block in the prompt | `member_goals.progress_block` |
+| `nothing_to_do` is refused only on a turn a person or a channel opened | `session_directive_apply_slot._nothing_to_do` |
+| A crewmate's own goal, milestones and check-ins cards are allowed on any turn in its own thread | `handlers.guide.REQ_OWN_GOAL_TURN` |
+| The crewmate tools the wake uses: `set_check_ins`, `set_key_results`, `key_result_progress`, `dashboard_write` | `mcp_mate.py`, `mcp_panel.py` |
+| Whether a member turn may be taught the session tools | `context_assembly.member_gates._member_dispatch_held` |
+| A card not pressed for 24 hours expires; a cancelled or expired card is reported once on the thread's next turn | `change_cards_records.CARD_TTL_SECONDS`, `REPORTED_STATUSES`; `change_cards.CardStore.take_unreported`; `chat_turn/turn_dispatch_gates.py` |
+| A monitor loop can be looked up by its thread | `autonudge.AutoNudgeService.get_by_slot` |
+| Crew removal removes a crewmate's check-in jobs | `agent_admin/crew_removal._remove_goal_check_ins` |
+| The gateway's stop signal | `kiro_crew.shutdown_event` |
+
+### Added by #21172 only (not on main)
+
+| Fact | Where |
+|---|---|
+| The `heartbeat` cadence and its `interval`: 30, 60 (default), 120 or 240 minutes | `member_goals.CADENCES`, `HEARTBEAT_INTERVALS`, `DEFAULT_HEARTBEAT_INTERVAL` |
+| The job `goal-heartbeat:<slug>`, named `Heartbeat: <name>`, on `*/30 * * * *`, `0 * * * *`, `0 */2 * * *` or `0 */4 * * *` | `goal_reminder.cron_expr_for` |
+| The wake prompt, with the silent-end line under the goal block | `goal_reminder.heartbeat_prompt` |
+| The stopping skip | `goal_reminder.gateway_stopping` |
+| The monitor-loop skip | `goal_reminder.monitor_loop_active` |
+| Worker session or small steps | `goal_reminder.member_has_session_tools`, through `agent_sdk.agent_specs.session_mcp_server_is_disabled` |
+| The credits wording: "Each wake uses credits." on the check-ins page; "Heartbeat (each wake uses credits)" on the card | `en.json` `goals_heartbeat_credits`; `change_card_catalog.py` |
+| The Heartbeat in the offer after milestones are confirmed | `goal_setup.py` |
+| The Goals-tab Heartbeat row and interval picker | `website/src/pages/members/CrewGoals.tsx` |

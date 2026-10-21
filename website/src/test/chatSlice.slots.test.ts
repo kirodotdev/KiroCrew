@@ -561,6 +561,27 @@ describe('create activation tracking — which create activated which slot', () 
     expect(state.foregroundCreateId).toBe('r2')
   })
 
+  describe('default-folder reveal', () => {
+    const filed = (origin: string | null, opts: { defaultFolder?: boolean; activate?: boolean; folder_id?: string } = {}) => ({
+      type: 'chat/createSlot/fulfilled',
+      meta: { arg: { defaultFolder: opts.defaultFolder ?? true }, requestId: 'r1', requestStatus: 'fulfilled' as const, originActiveSlot: origin, activate: opts.activate ?? true },
+      payload: { key: 'new-slot', folder_id: 'folder_id' in opts ? opts.folder_id : 'f-default' },
+    })
+
+    it('asks the sidebar to reveal an activated create filed into the default folder', () => {
+      const state = reducer({ ...initial, activeSlot: 'A' }, filed('A'))
+      expect(state.revealRequest).toEqual({ kind: 'session', target: 'new-slot', nonce: initial.revealNonce + 1, openFoldersOnly: true })
+      expect(state.revealNonce).toBe(initial.revealNonce + 1)
+    })
+
+    it('asks for no reveal when the user switched away, the create ran in the background, or no folder was applied', () => {
+      expect(reducer({ ...initial, activeSlot: 'B' }, filed('A')).revealRequest).toBeNull()
+      expect(reducer({ ...initial, activeSlot: 'A' }, filed('A', { activate: false })).revealRequest).toBeNull()
+      expect(reducer({ ...initial, activeSlot: 'A' }, filed('A', { folder_id: undefined })).revealRequest).toBeNull()
+      expect(reducer({ ...initial, activeSlot: 'A' }, filed('A', { defaultFolder: false })).revealRequest).toBeNull()
+    })
+  })
+
   it('the next foreground create clears the previous activation', () => {
     const state = reducer({ ...initial, activeSlot: 'A', lastCreatedActivation: { slot: 'old', requestId: 'r0' } }, pending('r1'))
     expect(state.lastCreatedActivation).toBeNull()

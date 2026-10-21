@@ -323,6 +323,12 @@ class PrerequisiteStatus:
     # The failed probe's exit status, ``None`` when it did not exit (never ran,
     # timed out, sandbox refused) or when it passed.
     probe_status: int | None = None
+    # The Linux installer (``curl -fsSL https://cli.kiro.dev/install | bash``)
+    # stops at once with "Missing required dependencies: unzip" on a host without
+    # ``unzip``, and a stock Ubuntu image has none. Checked only on the not-found
+    # path of a Linux probe, so the gate names the prerequisite beside the command
+    # instead of letting the user's first paste fail. False everywhere else.
+    unzip_missing: bool = False
     # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
     # requires these on disk, not merely a viable binary and a good ``whoami``:
     # without them kiro-cli answers every ``session/set_mode`` with

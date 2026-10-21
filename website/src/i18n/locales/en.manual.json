@@ -2743,6 +2743,10 @@
       "install_kiro_cli_run_for_platform": "Run the command for the gateway host's platform to install it.",
       "install_command_macos_linux": "macOS and Linux (and other Unix-like systems)",
       "install_command_windows": "Windows (PowerShell)",
+      "unzip_missing_install_first": "First, install unzip. The installer needs it, and the gateway host does not have it. Use one of these commands or your system's package manager.",
+      "unzip_command_debian_ubuntu": "Debian or Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora or RHEL",
+      "install_kiro_cli_then_run_on_host": "Then run this on the {{platform}} gateway host to install Kiro CLI.",
       "setup_intro": "Get a coding agent running on the <0>{{platform}} gateway host</0>, then the dashboard will open automatically.",
       "setup_intro_unknown_platform": "Get a coding agent running on the <0>gateway host</0>, then the dashboard will open automatically.",
       "gateway_host": "Gateway host",
@@ -3022,7 +3026,8 @@
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
       "preview_more_lines_one": "… {{count}} more line",
-      "preview_more_lines_other": "… {{count}} more lines"
+      "preview_more_lines_other": "… {{count}} more lines",
+      "preview_gesture_hint": "Double-click to insert the full text · Backspace removes the paste"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "I understand, publish publicly",
@@ -8371,7 +8376,12 @@
         "backend_encoder_only": "{{name}} — partly accelerated, text step on CPU",
         "backend_cpu_only": "Runs on CPU — no GPU in this build",
         "last_recognition_value": "{{duration}} for the finished text, {{rtf}}× the audio length",
-        "decode_threads_value": "{{n}} decode threads"
+        "decode_threads_value": "{{n}} decode threads",
+        "decode_threads": "Decode threads",
+        "decode_threads_desc": "CPU threads the local model uses to recognise speech. Auto uses half of this machine's cores, at most 16. On a large machine with cores to spare, more threads finish each dictation sooner. A change applies at the next dictation, which reloads the model once.",
+        "decode_threads_auto": "Auto",
+        "decode_threads_auto_count": "Auto ({{n}})",
+        "decode_threads_env_override": "This gateway uses {{value}} threads, set by KIROCREW_STT_THREADS. Remove that variable to use this choice."
       },
       "teamsPanel": {
         "active": "Active",

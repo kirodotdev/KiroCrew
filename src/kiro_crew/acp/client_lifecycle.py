@@ -8,7 +8,7 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_background_launches``, ``_bound_workspace_fd``, ``_buffer``,
+Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``_bound_workspace_fd``, ``_buffer``,
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_capability_projection_gaps``,
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
@@ -178,6 +178,9 @@ def rekey(
     # previous session's context_pct to the new chat and the first
     # check_context_usage() compacts an empty conversation.
     self.last_prompt_stats.reset_context_state()
+    # Credits held between turns belong to the session served before the
+    # claim; the claiming session's first turn must not bill them.
+    self._between_turn_credits = 0.0
     # Claim-push: tell gatewayd this runtime PID now belongs to
     # ``session_key`` so every MCP stub connection under it carries the
     # right ``_meta.caller`` immediately — event-driven replacement for

@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.testing.wait import await_until
 from kiro_crew.weixin.client import (
     ILINK_APP_ID,
     ITEM_TEXT,
@@ -568,6 +569,98 @@ def test_poll_loop_backs_off_on_an_unknown_error_code(tmp_path, monkeypatch):
     t._running = True
     asyncio.run(t._poll_loop())
     assert sleeps and sleeps[0] > 0
+
+
+def test_closing_the_client_handle_stops_the_transport_poll_loop(tmp_path):
+    """The gateway's channel handle is the ``WeixinClient``, and a channel restart
+    or shutdown closes only that. The long-poll belongs to the transport, so a
+    close that shut just the HTTP session left the loop re-polling a closed
+    session forever beside the replacement channel."""
+
+    async def scenario() -> None:
+        client = WeixinClient(token="t", base_url="https://example.invalid")
+        polling = asyncio.Event()
+
+        async def hold_the_poll(_buf):
+            polling.set()
+            await asyncio.Event().wait()
+
+        client.get_updates = hold_the_poll  # type: ignore[method-assign]
+        t = WeixinTransport(
+            client,
+            account_id="acct1",
+            ctx_store=ContextTokenStore(str(tmp_path)),
+            dm_policy="open",
+        )
+        await t.connect()
+        poll_task = t._poll_task
+        assert poll_task is not None
+        try:
+            await await_until(polling, what="the poll to start")
+            await await_until(asyncio.ensure_future(client.close()), what="client.close()")
+            assert poll_task.done()
+            assert client._session.closed
+            await await_until(asyncio.ensure_future(client.close()), what="a second close")
+        finally:
+            poll_task.cancel()
+            await asyncio.gather(poll_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_a_bounded_close_does_not_cut_the_poll_cleanup_short(tmp_path):
+    """A channel restart bounds ``close()`` and cancels it at the bound. The poll
+    may still be finishing an inline turn by then, and that turn's cleanup is what
+    hands the session permit back: a second cancellation reaching it skips the
+    release and leaves the conversation busy until the gateway restarts."""
+
+    async def scenario() -> None:
+        client = WeixinClient(token="t", base_url="https://example.invalid")
+        polling = asyncio.Event()
+        cleaning = asyncio.Event()
+        may_finish = asyncio.Event()
+        released = asyncio.Event()
+
+        async def poll_then_clean_up(_buf):
+            polling.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await may_finish.wait()
+                released.set()
+                raise
+
+        client.get_updates = poll_then_clean_up  # type: ignore[method-assign]
+        t = WeixinTransport(
+            client,
+            account_id="acct1",
+            ctx_store=ContextTokenStore(str(tmp_path)),
+            dm_policy="open",
+        )
+        await t.connect()
+        poll_task = t._poll_task
+        assert poll_task is not None
+        try:
+            await await_until(polling, what="the poll to start")
+            closing = asyncio.ensure_future(client.close())
+            await await_until(cleaning, what="the poll cleanup to start")
+            closing.cancel()  # the restart's bound on close() expires
+            await await_until(
+                asyncio.ensure_future(asyncio.gather(closing, return_exceptions=True)),
+                what="the cancelled close() to return",
+            )
+            may_finish.set()
+            await await_until(released, what="the poll cleanup to finish")
+        finally:
+            may_finish.set()
+            poll_task.cancel()
+            await await_until(
+                asyncio.ensure_future(asyncio.gather(poll_task, return_exceptions=True)),
+                what="the poll to stop",
+            )
+
+    asyncio.run(scenario())
 
 
 def test_outbound_message_shape_marks_bot_and_finished():

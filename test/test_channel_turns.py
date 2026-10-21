@@ -98,6 +98,7 @@ from kiro_crew.messaging.turn_ceiling import ConversationTurnCeiling
 from kiro_crew.monitoring.models import MonitorDispatchResult
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import await_until
 
 DRIFTS = [
     pytest.param(frozenset(), id="default"),
@@ -190,6 +191,44 @@ class TestAnAnsweredTurn:
         assert renderer.closed == 1, "close should still be attempted"
         assert sessions.count("release") == 1
         assert outcome.verdict is Verdict.ANSWERED, "the failed close does not escape"
+
+    @pytest.mark.parametrize("drift", DRIFTS)
+    def test_release_still_runs_when_the_turn_is_cancelled_inside_renderer_close(
+        self, drift
+    ) -> None:
+        """Weixin answers on its poll task, and closing the channel cancels that task,
+        so the cancel can land while the turn is already closing its renderer. A
+        ``CancelledError`` is not an ``Exception``: it passes the close's guard, and
+        it must not take the release with it."""
+        sessions = FakeSessions()
+
+        async def scenario() -> tuple[asyncio.Future[Any], RecordingRenderer]:
+            closing = asyncio.Event()
+
+            class _MidCloseRenderer(RecordingRenderer):
+                async def close(self) -> None:
+                    await super().close()
+                    closing.set()
+                    await asyncio.Event().wait()  # its teardown request, still in flight
+
+            renderer = _MidCloseRenderer()
+            turn = asyncio.ensure_future(
+                _turns(sessions, drift=drift).answer(_asker(), "hi", renderer)
+            )
+            await await_until(closing, what="the renderer close")
+            turn.cancel()
+            await await_until(
+                asyncio.ensure_future(asyncio.gather(turn, return_exceptions=True)),
+                what="the cancelled turn to end",
+            )
+            return turn, renderer
+
+        turn, renderer = asyncio.run(scenario())
+
+        assert renderer.closed == 1
+        assert turn.cancelled(), "the cancellation still reaches whoever cancelled the turn"
+        assert sessions.count("release") == 1, "the conversation is left permanently busy"
+        assert sessions.held == 0
 
     @pytest.mark.parametrize("drift", DRIFTS)
     def test_nothing_is_released_when_nothing_was_acquired(self, drift) -> None:

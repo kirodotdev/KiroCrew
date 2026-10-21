@@ -107,100 +107,50 @@
  1 test_cron_gateway_integration_llm.py
  2 test_cron_jitter.py
  3 test_cron_locking_regression.py
- 1 test_cron_loop_stall_breaker.py
- 1 test_cron_merge_result_busy_store.py
  2 test_cron_reaper_ending_fence.py
  2 test_cron_reaper_failed_kill.py
  2 test_cron_refused_one_shot_retry_floor.py
- 1 test_cron_thread_routing.py
  2 test_cron_undispatched_one_shot.py
- 1 test_cron_wake_budget.py
  7 test_cross_surface_stop_gate.py
- 1 test_dashboard_approval_denials.py
  2 test_dashboard_approval_modes.py
- 1 test_dashboard_cron_run_guard.py
- 1 test_dashboard_execution_retention.py
  2 test_dashboard_files_coverage.py
- 1 test_dashboard_files_onloop_fs.py
  2 test_dashboard_member_assignment.py
- 1 test_dashboard_slowloris.py
  2 test_dashboard_status_snapshot.py
- 1 test_decisions_compaction_hook.py
- 1 test_decisions_gate.py
- 1 test_decisions_integration.py
  2 test_decisions_local_provider.py
  5 test_decisions_local_runtime_real_spawn.py
- 1 test_decisions_points.py
  2 test_denied_commands_security_own_host.py
- 1 test_dependency_coordinator.py
  3 test_dev_fleet_app_guards.py
- 1 test_dev_fleet_app_sync.py
  2 test_dev_fleet_app_teardown.py
- 1 test_diag_threads.py
  3 test_discord_approval_press_race_13539.py
  2 test_discord_dispatcher.py
  2 test_discord_sessions_binding_state.py
  2 test_e2e_ci_scheduling.py
- 1 test_e2e_smoke.py
  3 test_embedding_rebuild_generation.py
- 1 test_embedding_rebuild_process.py
- 1 test_embeddings.py
- 1 test_embeddings_threads.py
  5 test_executors.py
- 1 test_explain_for_skill.py
- 1 test_fairness_lanes.py
  2 test_fargate_closed_forward_remedy.py
  2 test_feishu_client.py
- 1 test_gateway_lock_diagnosis.py
  2 test_handlers_memory_coverage.py
- 1 test_handlers_taskrunner_coverage.py
- 1 test_hang_resilience_metrics.py
  2 test_headless_memory_recognition.py
  3 test_heartbeat_cov80.py
  3 test_history_coverage.py
  3 test_history_index_worker.py
- 1 test_history_pagination_projection.py
- 1 test_hook_gate_off_loop.py
  3 test_hop_port_guard.py
- 1 test_inbound_spool.py
  3 test_inbound_unbind_notice.py
- 1 test_installer_binary_only.py
- 1 test_issue_radar_crew_runtime_trust.py
- 1 test_issue_radar_http_routes_seams.py
  2 test_issue_radar_list_probe.py
  2 test_job_routes.py
- 1 test_kas_hooks_acp.py
- 1 test_kas_login_loopback.py
  3 test_kas_manual_compact.py
  2 test_kas_mcp_sign_in.py
  3 test_kiro_prerequisite_handlers.py
- 1 test_kiro_prerequisite_readiness_state.py
  2 test_kiro_prerequisite_supervisor.py
- 1 test_kiro_probe_spawn_off_loop.py
- 1 test_knowledge_add_source.py
  2 test_knowledge_agent_sync_off_loop.py
  2 test_knowledge_cross_thread.py
- 1 test_knowledge_handlers_coverage.py
- 1 test_knowledge_handlers_coverage_module_wide.py
- 1 test_knowledge_handlers_coverage_source_writes.py
- 1 test_knowledge_ingest_magic_byte.py
  2 test_knowledge_store_sources.py
- 1 test_knowledge_sync_local_file.py
  3 test_lessons_context_embedding_deadline.py
- 1 test_listener_guard.py
- 1 test_llm_helpers_tool_input_offload.py
  3 test_llm_pool_ccworker.py
  2 test_local_turn_restart_marker.py
  3 test_mcp_apps_call_endpoint.py
- 1 test_mcp_apps_e2e.py
  3 test_mcp_apps_render.py
- 1 test_mcp_caller.py
- 1 test_mcp_cron_security_wiring.py
- 1 test_mcp_discovery_probe_stdio.py
  3 test_mcp_gateway_bluegreen.py
- 1 test_mcp_gateway_daemon_control.py
- 1 test_mcp_gateway_exclusive_backend.py
- 1 test_mcp_gateway_liveness_verdict.py
  1 test_mcp_gateway_recaller.py
  1 test_mcp_gateway_session_inject.py
  3 test_mcp_gateway_stub_recaller.py

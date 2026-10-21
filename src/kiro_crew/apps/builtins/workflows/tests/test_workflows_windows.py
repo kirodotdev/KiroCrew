@@ -6,7 +6,7 @@ Two things are pinned here.
    manifest inherits ``PlatformConfig``'s default ``["macos", "linux"]``, which is
    published on the App Store detail page — so the app told every Windows user it
    does not run there, without anyone having decided that. It is a claim, not a
-   gate: ``apps/routes.py`` consults the field only for a
+   gate: ``apps/routes_enable.py`` consults the field only for a
    ``platform.installMode: "client"`` app, and no builtin is one. Nothing in this
    app is POSIX-specific either: the backend is stdlib-only, binds loopback
    explicitly, spawns no external process, and builds every path through

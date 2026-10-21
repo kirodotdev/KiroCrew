@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import importlib
 import inspect
 from itertools import product
 
@@ -346,7 +347,11 @@ class TestChokepointWiring:
         ``dashboard:`` constant is flagged, whatever it interpolates."""
         from kiro_crew.dashboard.handlers import members as members_handler_mod
 
-        tree = ast.parse(inspect.getsource(members_handler_mod))
+        source = inspect.getsource(members_handler_mod)
+        source += "".join(
+            inspect.getsource(importlib.import_module(o)) for o in members_handler_mod._OWNERS
+        )
+        tree = ast.parse(source)
         hand_built = [
             node.lineno
             for node in ast.walk(tree)

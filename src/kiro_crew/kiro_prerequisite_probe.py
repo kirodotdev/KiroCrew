@@ -23,6 +23,7 @@ from kiro_crew.kiro_prerequisite_candidate import (
     _IDENTITY_PROXY_ENV_KEYS,
     _allowlisted_env,
     _identity_probe_env,
+    _installer_lacks_unzip,
     _is_runnable_executable,
     _probe_filesystem_state,
 )
@@ -451,6 +452,9 @@ async def _probe(self: KiroPrerequisiteService, *, force: bool = False) -> Prere
                 initial_setup_complete=self._initial_setup_complete,
                 probe_error=_probe_failure_text(version_probe),
                 probe_status=version_probe.returncode if version_probe else None,
+                unzip_missing=await asyncio.to_thread(
+                    _installer_lacks_unzip, self._platform, self._environ
+                ),
             )
             self._stamp_probe(probe_identity)
             return self._status

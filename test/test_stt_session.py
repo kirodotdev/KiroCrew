@@ -74,6 +74,10 @@ class _FakeEngine:
         #: a session that keeps working after a failed partial, and one that recovers.
         self.fail_with: Exception | None = None
 
+    def thread_count(self) -> int:
+        """The count the real engine would key its next load with."""
+        return engine_mod.thread_count()
+
     async def ensure_loaded(self, model_name: str, language: str):
         self.loaded_with.append((model_name, language))
         if self._available:

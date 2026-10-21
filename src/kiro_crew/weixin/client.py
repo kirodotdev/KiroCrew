@@ -247,14 +247,26 @@ class WeixinClient:
         self.account_id = account_id
         self._session: Any = None  # aiohttp.ClientSession, created in connect()
         self._handler_tasks: set[asyncio.Task[Any]] = set()
+        # The transport's long-poll task. This client is the gateway's channel
+        # handle and the only thing a restart or shutdown closes, so close()
+        # must stop the poll too, or it outlives the session it polls.
+        self._poll_task: asyncio.Task[Any] | None = None
 
     async def connect(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
 
     async def close(self) -> None:
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
+        task, self._poll_task = self._poll_task, None
+        try:
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+                # Shielded: a caller's bound on close() must not cancel the poll a
+                # second time while its inline turn is still releasing the session.
+                await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+        finally:
+            if self._session is not None and not self._session.closed:
+                await self._session.close()
 
     # -- core request helpers --------------------------------------------------
     async def _post(self, endpoint: str, payload: Dict[str, Any], *, timeout_ms: int) -> Dict[str, Any]:

@@ -14,11 +14,15 @@ An explicit KAS choice waits only for the declaration read, never for the probe.
 The wait is bounded by the probe's own timeout, counted from when the gate was
 armed, so a hung check costs at most one probe's worth of delay in total. After
 the deadline, or when the spawn's role is not armed, the spawn goes ahead at once.
+
+A caller that builds its provider on its own thread and event loop calls
+:func:`wait_kas_floor_verdict_blocking` instead, off the gateway loop.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from typing import Any
 
 from kiro_crew.kiro_cli import _KAS_HELP_PROBE_TIMEOUT_SECS
@@ -88,3 +92,34 @@ async def await_kas_floor_verdict(*, member: bool = False) -> None:
     # ``asyncio.wait`` neither cancels the verdict on timeout nor raises its
     # exception, so one waiter giving up never touches the floor's own task.
     await asyncio.wait({verdict, released}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+
+
+def wait_kas_floor_verdict_blocking() -> None:
+    """:func:`await_kas_floor_verdict` for a caller off the gateway loop. Blocks.
+
+    For code that builds a provider on its own thread or event loop, which the
+    gateway-bound gate cannot hold. Runs the same bounded wait on the loop that
+    armed the gate and blocks this thread until it returns. Returns at once when
+    nothing is armed, that loop is not running, or the caller is ON that loop
+    (blocking there would stall the verdict it waits for). Waits for the main
+    role: no off-loop caller runs a crew-member DM.
+    """
+    armed = _armed
+    if armed is None:
+        return
+    loop = armed[0].get_loop()
+    try:
+        running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop or loop.is_closed() or not loop.is_running():
+        return
+    try:
+        waiter = asyncio.run_coroutine_threadsafe(await_kas_floor_verdict(), loop)
+    except RuntimeError:
+        return  # the loop closed between the check and the submit
+    try:
+        # The coroutine ends at the gate's own deadline; this bound is a backstop.
+        waiter.result(timeout=KAS_FLOOR_WAIT_SECS)
+    except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+        waiter.cancel()

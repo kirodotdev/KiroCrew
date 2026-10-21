@@ -1577,7 +1577,7 @@ class TestReadEffectiveAgent:
 
     def test_reads_agent_off_the_runtime(self):
         # The session-provider shape: the agent is held only by the spawned CLI
-        # runtime (runtime.py:273), reached via provider -> _handle -> _runtime.
+        # runtime (AcpRuntime._agent), reached via provider -> _handle -> _runtime.
         runtime = type("Runtime", (), {"_agent": "kirocrew"})()
         handle = type("Handle", (), {"_runtime": runtime})()
         provider = type("SessionProvider", (), {"_handle": handle})()

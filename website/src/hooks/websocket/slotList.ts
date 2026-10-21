@@ -4,7 +4,7 @@
 import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
-import { sseSlots, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, type SlotPatchFrame } from '../../store/dashboardSlice'
+import { sseSlots, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, readUnlistedMembers, omitsUnlistedMember, type SlotPatchFrame } from '../../store/dashboardSlice'
 import { reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
@@ -74,9 +74,13 @@ export function useSlotListSync(
       const mustResettleActiveSlot = activeSlotEnded
         && (chat.slotState !== 'idle' || chat.slotRunning)
         && chat.pendingTurnSlot !== activeKey
+      // A repeat that still omits a kept session must reach `sseSlots`, which
+      // enforces its time cap and re-asks for a read a failed GET left open.
+      const dashboard = store.getState().dashboard
       if (raw === lastSlotsRawRef.current
-          && store.getState().dashboard.slots === lastSlotsArrayRef.current
-          && !mustResettleActiveSlot) return
+          && dashboard.slots === lastSlotsArrayRef.current
+          && !mustResettleActiveSlot
+          && !omitsUnlistedMember(dashboard, data)) return
       lastSlotsRawRef.current = raw
       // The common server path clears a task and pushes its idle slots row
       // before broadcasting chat_done; leading/trailing coalescing can also
@@ -93,6 +97,9 @@ export function useSlotListSync(
       const beforeSettle = store.getState().chat
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      // The frame may predate a create or fork this tab just made; if the
+      // reducer kept that session, one list read settles it.
+      dispatch(readUnlistedMembers())
       // When this frame idled the active pane (`settleEndedActiveTurn`), it
       // ended the turn without a `_done`. `_done` leaves the pane idle AND
       // re-hydrated: its refresh recovers frames the socket lost. So this end

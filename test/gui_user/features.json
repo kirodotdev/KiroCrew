@@ -3,16 +3,16 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 166,
+    "nightly": 167,
     "native-only": 12,
     "needs-secret": 27,
     "excluded": 23,
-    "total": 270
+    "total": 271
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
-    "P2": 161,
+    "P2": 162,
     "P3": 62
   },
   "per_feature": {
@@ -235,7 +235,7 @@
     },
     "settings": {
       "smoke": 12,
-      "nightly": 28,
+      "nightly": 29,
       "native-only": 3,
       "needs-secret": 0,
       "excluded": 4
@@ -6797,6 +6797,32 @@
       "priority": "P2",
       "merged_from": [
         "settings-voice-ptt-shortcut"
+      ],
+      "component": "website/src/pages/settings/SttSettings.tsx"
+    },
+    {
+      "id": "settings-voice-stt-decode-threads",
+      "feature": "settings",
+      "title": "Set local speech-to-text decode threads",
+      "user_story": "As a dashboard user on a machine with many cores, I want to pick how many CPU threads the local speech model uses, so that dictation finishes sooner.",
+      "start_url": "/settings/voice",
+      "entry_path": "Settings > Voice > Fine-tuning > Decode threads select",
+      "preconditions": {
+        "seed": "minimal",
+        "members": [],
+        "feature_flags": [],
+        "notes": "Local provider only. Choices are sized to the gateway's cores; KIROCREW_STT_THREADS overrides the stored value and the panel says so."
+      },
+      "runnable": "nightly",
+      "estimated_steps": 3,
+      "rationale": "Control rendering and persistence are web-testable; decode speed is not asserted.",
+      "source": [
+        "website/src/pages/settings/SttSettings.tsx",
+        "website/src/components/commandPalette/settingsRegistry.gen.ts"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "settings-voice-stt-decode-threads"
       ],
       "component": "website/src/pages/settings/SttSettings.tsx"
     },

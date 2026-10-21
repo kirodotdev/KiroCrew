@@ -1,7 +1,7 @@
 """Ratchet: app backends must not rebuild the signed proxy target DECODED.
 
 The gateway signs the WIRE form of the forwarded request-target
-(``apps/routes.py`` signs ``yarl.URL(..., encoded=True).raw_path_qs``), so
+(``apps/routes_proxy.py`` signs ``yarl.URL(..., encoded=True).raw_path_qs``), so
 percent-escapes reach the backend still escaped. aiohttp's ``request.path``
 and ``request.query_string`` are DECODED, so a backend that reconstructs the
 target from them hashes a different string for any target carrying a space,

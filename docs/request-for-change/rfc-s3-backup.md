@@ -103,7 +103,7 @@ scheduled.
 chokepoint), `create_private_bucket`:268 and `_harden_bucket`:215 (idempotent Block
 Public Access + `BucketOwnerEnforced` + SSE-AES256 + tags),
 `map_access_denied`:123, and `profiles.py` — a profile-*name* registry already
-consumed outside deploy (`apps/routes.py:310`), documented at `profiles.py:1` as
+consumed outside deploy (`handle_publish_providers`, `apps/routes_listing.py`), documented at `profiles.py:1` as
 names only, never keys. `boto3` is optional (`setup.cfg:110`, `voice` extra) and
 neither deploy nor cloud uses it. Follow that: shell out, add no hard dependency.
 

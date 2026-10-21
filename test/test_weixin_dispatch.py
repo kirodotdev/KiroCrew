@@ -15,7 +15,8 @@ import pytest
 from kiro_crew.messaging.driver import APPROVAL_AUTO
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_allocation import SessionClosingError
-from kiro_crew.weixin.client import ContextTokenStore, TypingTicketCache
+from kiro_crew.testing.wait import await_until
+from kiro_crew.weixin.client import TYPING_START, ContextTokenStore, TypingTicketCache
 from kiro_crew.weixin.commands import parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 from kiro_crew.weixin.transport_dispatch import WeixinDispatcher
@@ -286,6 +287,52 @@ def test_renderer_close_without_done_emits_error_text(tmp_path):
     asyncio.run(r.close())
     assert len(client.sent) == 1
     assert "出错" in client.sent[0]["text"]
+
+
+def test_a_cancel_landing_while_the_typing_indicator_stops_still_ends_the_turn(tmp_path):
+    """The turn runs on the poll task, which closing the channel cancels. That cancel
+    can land while the renderer waits for its typing task to unwind. The typing
+    task's own cancellation is absorbed there; the turn's must go on up, or the poll
+    loop survives the close and keeps polling the session it shuts."""
+    client = FakeClient()
+
+    async def scenario() -> asyncio.Future[Any]:
+        typing_on = asyncio.Event()
+        unwinding = asyncio.Event()
+
+        async def send_typing(*, to_user_id, typing_ticket, status):
+            client.typing.append(status)
+            if status != TYPING_START:
+                return
+            typing_on.set()
+            try:
+                await asyncio.Event().wait()  # the indicator request, in flight
+            except asyncio.CancelledError:
+                unwinding.set()
+                await asyncio.Event().wait()  # and still unwinding when the turn's cancel lands
+                raise
+
+        client.send_typing = send_typing  # type: ignore[method-assign]
+        r = WeixinRenderer(
+            client,
+            "userA",
+            WEIXIN_CAPABILITIES,
+            ctx_store=ContextTokenStore(str(tmp_path)),
+            account_id="acct1",
+        )
+        await r.on_turn_start()
+        await await_until(typing_on, what="the typing indicator to start")
+        finishing = asyncio.ensure_future(r.on_done())
+        await await_until(unwinding, what="the typing task to start unwinding")
+        finishing.cancel()
+        await await_until(
+            asyncio.ensure_future(asyncio.gather(finishing, return_exceptions=True)),
+            what="the cancelled finish to return",
+        )
+        return finishing
+
+    finishing = asyncio.run(scenario())
+    assert finishing.cancelled(), "the turn's cancellation was absorbed with the typing task's"
 
 
 def test_renderer_renders_options_as_numbered_text_in_the_reply(tmp_path):

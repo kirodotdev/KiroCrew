@@ -111,7 +111,7 @@ are **deny-by-default** confined by the dashboard auth middleware
 `_app_api_allowlist`) to the app's own namespace (`/apps/<name>/*` and
 `/api/apps/<name>/*`) plus the API path prefixes the app declares in its manifest
 `permissions.api` allowlist. Every other path returns `403`, and the
-`/apps/<name>/api` reverse proxy (`apps/routes.py` `handle_app_api_proxy`)
+`/apps/<name>/api` reverse proxy (`apps/routes_proxy.py` `handle_app_api_proxy`)
 independently re-checks that the caller's token app matches the target app, since
 the proxy signs requests with the target app's secret.
 

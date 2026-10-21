@@ -174,7 +174,7 @@ def judge_owner_dm(state: "DashboardState", slot: "_ChatSlot") -> OwnerDmVerdict
     """Judge *slot* against the owner-DM exemption on ONE read of its binding.
 
     The ONE predicate the three channel-containment gates consult -- the creator
-    gate and the target gate here, the ledger gate in ``handlers/work_ledger.py``
+    gate and the target gate here, the ledger gate in ``handlers/work_ledger_caller.py``
     (through :func:`session_owner_dm_refusal`) -- so they cannot drift: a gate
     keying on the live link, one on the key prefix and one on the mirror store
     would each admit and refuse different slots, and a key prefix can never be

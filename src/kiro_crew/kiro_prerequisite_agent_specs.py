@@ -192,7 +192,7 @@ async def _agent_spec_overlay(
     :meth:`session_ready`. That predicate gates poll-driven spawn sites, and
     turn-starting paths intentionally do not block on it — they let the turn
     carry the failure, which now arrives as an actionable missing-spec message
-    from ``acp/runtime.py`` instead of a raw JSON-RPC dict. Narrowing it here
+    from ``acp/runtime_reader_loop.py`` instead of a raw JSON-RPC dict. Narrowing it here
     would re-introduce the stale-latch lockout that design removed.
     """
 

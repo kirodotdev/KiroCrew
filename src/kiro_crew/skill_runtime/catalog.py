@@ -949,8 +949,20 @@ def _iter_uncached(
 
     # Unconfined (None): the global tree may legitimately hold app-registered
     # symlinks resolving into a provider root outside it.
+    #
+    # warn_outside_links: this is the catalog base walk, the one surface that
+    # can say a direct-child link in the skills dir was dropped from the whole
+    # catalog, so it is the only caller that turns the outside-root warning on.
+    # It passes the resolved ``skills.extra_paths`` as extra_path_roots: a link
+    # whose target is under one of those loads through the extra-path walk
+    # below, so it must not warn — the operator already followed the advice.
+    # Admission and containment are unchanged; only the warning is affected.
+    _extra_real = tuple(os.path.realpath(path) for path in loader._extra_paths)
     results: list[tuple[str, Path, str | None]] = [
-        (name, path, None) for name, path in sk._iter_skill_files(loader._dir)
+        (name, path, None)
+        for name, path in sk._iter_skill_files(
+            loader._dir, warn_outside_links=True, extra_path_roots=_extra_real
+        )
     ]
     seen = {name for name, _, _ in results}
     # (root, confine_to): only the project root is confined — see

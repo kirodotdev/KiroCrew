@@ -50,54 +50,65 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_runtime_bindings")
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "_DESCENDANT_RESCAN_DELAY": ("data", False, "", "runtime"),
-    "_EXIT_DRAIN_GRACE": ("data", False, "", "runtime"),
-    "_EXIT_DRAIN_MAX": ("data", False, "", "runtime"),
-    "_EXIT_WATCH_POLL_INTERVAL": ("data", False, "", "runtime"),
-    "_FAILED_START_REAP_WAIT": ("data", False, "", "runtime"),
-    "_KILL_REAP_TIMEOUT": ("data", False, "", "runtime"),
-    "_KILL_TERM_TIMEOUT": ("data", False, "", "runtime"),
-    "_RC_NOT_REAPED": ("data", False, "", "runtime"),
-    "_RC_NO_PROCESS": ("data", False, "", "runtime"),
-    "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime"),
-    "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime"),
-    "__init__": ("function", False, "0b8b7f426389", "runtime"),
-    "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime"),
-    "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime"),
-    "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime"),
-    "_adopted_skill_projection_generation": ("function", False, "fa6cfecd5574", "runtime"),
-    "_answer_get_access_token": ("function", True, "8cfd1a859983", "runtime"),
-    "_answer_host_request": ("function", True, "a18377df09da", "runtime"),
-    "_answer_open_external_url": ("function", True, "1440835ff53b", "runtime"),
-    "_answer_ownerless_request": ("function", True, "a18377df09da", "runtime"),
-    "_answer_unroutable_permission": ("function", True, "3c88fb3b5f4d", "runtime"),
-    "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime"),
+    "_DESCENDANT_RESCAN_DELAY": ("data", False, "", "runtime_class"),
+    "_EXIT_DRAIN_GRACE": ("data", False, "", "runtime_class"),
+    "_EXIT_DRAIN_MAX": ("data", False, "", "runtime_class"),
+    "_EXIT_WATCH_POLL_INTERVAL": ("data", False, "", "runtime_class"),
+    "_FAILED_START_REAP_WAIT": ("data", False, "", "runtime_class"),
+    "_KILL_REAP_TIMEOUT": ("data", False, "", "runtime_class"),
+    "_KILL_TERM_TIMEOUT": ("data", False, "", "runtime_class"),
+    "_RC_NOT_REAPED": ("data", False, "", "runtime_class"),
+    "_RC_NO_PROCESS": ("data", False, "", "runtime_class"),
+    "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime_class"),
+    "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
+    "__init__": ("function", False, "0b8b7f426389", "runtime_class"),
+    "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
+    "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
+    "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
+    "_adopted_skill_projection_generation": (
+        "function",
+        False,
+        "fa6cfecd5574",
+        "runtime_mode_activation",
+    ),
+    "_answer_get_access_token": ("function", True, "8cfd1a859983", "runtime_host_requests"),
+    "_answer_host_request": ("function", True, "a18377df09da", "runtime_host_requests"),
+    "_answer_open_external_url": ("function", True, "1440835ff53b", "runtime_host_requests"),
+    "_answer_ownerless_request": ("function", True, "a18377df09da", "runtime_host_requests"),
+    "_answer_secret_request": ("function", True, "40866b9ae753", "runtime_host_requests"),
+    "_answer_unroutable_permission": ("function", True, "3c88fb3b5f4d", "runtime_host_requests"),
+    "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
     "_collect_late_start": ("function", False, "df0576b2759e", "runtime_session_create"),
-    "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime"),
+    "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
     "_discard_bound_workspace": ("function", True, "b60c5fea256e", "runtime_tree_kill"),
     "_discard_sandbox_cleanup": ("function", False, "b60c5fea256e", "runtime_spawn_launch"),
-    "_drain_stderr": ("function", True, "b60c5fea256e", "runtime"),
-    "_end_roster_overflow_episode": ("function", False, "b60c5fea256e", "runtime"),
-    "_exit_reason": ("function", False, "5ea8f751c789", "runtime"),
-    "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime"),
+    "_drain_stderr": ("function", True, "b60c5fea256e", "runtime_liveness"),
+    "_end_roster_overflow_episode": ("function", False, "b60c5fea256e", "runtime_frame_accounting"),
+    "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
+    "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
     "_finish_create_session": ("function", True, "70f51c6f9496", "runtime_session_create"),
-    "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime"),
-    "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime"),
-    "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime"),
+    "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
+    "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
+    "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_guard_unresolved_mcp_refs": ("function", False, "124371616ca9", "runtime_session_setup"),
     "_handshake_client_capabilities": ("function", True, "16d9fe32838b", "runtime_spawn_launch"),
-    "_harness": ("property", False, "482ead03a978", "runtime"),
+    "_harness": ("property", False, "482ead03a978", "runtime_class"),
     "_initialize_handshake": ("function", True, "9a2155299a08", "runtime_spawn_launch"),
-    "_is_stale": ("function", True, "f21e39ec5ffb", "runtime"),
-    "_issue_skill_projection_generation": ("function", False, "fa6cfecd5574", "runtime"),
+    "_is_stale": ("function", True, "f21e39ec5ffb", "runtime_liveness"),
+    "_issue_skill_projection_generation": (
+        "function",
+        False,
+        "fa6cfecd5574",
+        "runtime_mode_activation",
+    ),
     "_kas_custom_agents": ("function", True, "997f5903aa65", "runtime_session_setup"),
     "_kill_failed_start_escapees": ("function", True, "ccaec8d76f05", "runtime_spawn_launch"),
     "_kill_inner": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
-    "_mark_dead": ("function", False, "e8c36427bffd", "runtime"),
-    "_mcp_init_progress": ("function", False, "67daef5be2a5", "runtime"),
+    "_mark_dead": ("function", False, "e8c36427bffd", "runtime_liveness"),
+    "_mcp_init_progress": ("function", False, "67daef5be2a5", "runtime_session_registry"),
     "_member_projection_needs_confirmation": (
         "function",
         False,
@@ -106,21 +117,26 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "_mirrored_session_mcp": ("function", True, "2db14e85d828", "runtime_session_setup"),
     "_mirrored_spec_check_needed": ("function", False, "3cd7cb3cf81a", "runtime_session_setup"),
-    "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime"),
+    "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),
-    "_note_dropped_frame": ("function", False, "65da3cb3ad9e", "runtime"),
-    "_note_reaped": ("function", False, "65a401984277", "runtime"),
-    "_note_reaped_after_kill": ("function", False, "0d4bde9dbb0a", "runtime"),
-    "_note_roster_overflow": ("function", False, "72f2430f414f", "runtime"),
-    "_note_switched_model": ("function", False, "f5f767aea752", "runtime"),
-    "_note_unadopted_skill_projection": ("function", False, "7e7f79a5fa13", "runtime"),
-    "_notification_aliases": ("function", False, "513465b2035b", "runtime"),
-    "_one_at_a_time_ahead": ("function", False, "1250d8670681", "runtime"),
+    "_note_dropped_frame": ("function", False, "65da3cb3ad9e", "runtime_frame_accounting"),
+    "_note_reaped": ("function", False, "65a401984277", "runtime_liveness"),
+    "_note_reaped_after_kill": ("function", False, "0d4bde9dbb0a", "runtime_liveness"),
+    "_note_roster_overflow": ("function", False, "72f2430f414f", "runtime_frame_accounting"),
+    "_note_switched_model": ("function", False, "f5f767aea752", "runtime_mode_activation"),
+    "_note_unadopted_skill_projection": (
+        "function",
+        False,
+        "7e7f79a5fa13",
+        "runtime_mode_activation",
+    ),
+    "_notification_aliases": ("function", False, "513465b2035b", "runtime_reader_loop"),
+    "_one_at_a_time_ahead": ("function", False, "1250d8670681", "runtime_wire"),
     "_own_stub_session": ("function", True, "a5917f2a34a7", "runtime_session_setup"),
     "_projected_spawn_spec": ("function", False, "e7ed4605a35e", "runtime_spawn_launch"),
-    "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime"),
-    "_reader_loop": ("function", True, "b60c5fea256e", "runtime"),
-    "_reap_after_cancelled_tracking": ("function", True, "ae883e772e9f", "runtime"),
+    "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "_reader_loop": ("function", True, "b60c5fea256e", "runtime_reader_loop"),
+    "_reap_after_cancelled_tracking": ("function", True, "ae883e772e9f", "runtime_liveness"),
     "_record_tree_before_failed_start_kill": (
         "function",
         True,
@@ -128,94 +144,99 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "runtime_spawn_launch",
     ),
     "_refuse_if_loader_unreachable": ("function", False, "246551d1efff", "runtime_session_setup"),
-    "_refuse_if_view_superseded": ("function", False, "eabe9032415b", "runtime"),
-    "_refuse_if_view_unverified": ("function", False, "e68a5cae7047", "runtime"),
-    "_refuse_write_if_dead": ("function", False, "b60c5fea256e", "runtime"),
+    "_refuse_if_view_superseded": ("function", False, "eabe9032415b", "runtime_mode_activation"),
+    "_refuse_if_view_unverified": ("function", False, "e68a5cae7047", "runtime_mode_activation"),
+    "_refuse_write_if_dead": ("function", False, "b60c5fea256e", "runtime_wire"),
     "_require_unchanged_mirrored_spec": ("function", True, "e0977b234f08", "runtime_session_setup"),
     "_resolve_spawn_plan": ("function", True, "a6093c8b82cf", "runtime_spawn_launch"),
-    "_resolve_start_alias": ("function", False, "12ab76a15b9b", "runtime"),
-    "_retire_tracking_after_exit": ("function", True, "b60c5fea256e", "runtime"),
-    "_returncode_label": ("function", False, "bb418bb7ece8", "runtime"),
+    "_resolve_start_alias": ("function", False, "12ab76a15b9b", "runtime_mode_activation"),
+    "_retire_tracking_after_exit": ("function", True, "b60c5fea256e", "runtime_liveness"),
+    "_returncode_label": ("function", False, "bb418bb7ece8", "runtime_liveness"),
     "_revive_after_failed_start": ("function", True, "a6632a57e602", "runtime_spawn_entry"),
     "_root_identity": ("function", False, "bb418bb7ece8", "runtime_tree_kill"),
     "_root_identity_holds": ("function", False, "a6632a57e602", "runtime_tree_kill"),
-    "_run_mcp_reattempt": ("function", True, "2547915d03d1", "runtime"),
-    "_run_mcp_sign_in": ("function", True, "2547915d03d1", "runtime"),
-    "_send_and_await": ("function", True, "150855d82a3e", "runtime"),
-    "_served_default_after_mode": ("function", True, "60c03c7acdea", "runtime"),
+    "_run_mcp_reattempt": ("function", True, "2547915d03d1", "runtime_host_requests"),
+    "_run_mcp_sign_in": ("function", True, "2547915d03d1", "runtime_host_requests"),
+    "_send_and_await": ("function", True, "150855d82a3e", "runtime_wire"),
+    "_served_default_after_mode": ("function", True, "60c03c7acdea", "runtime_mode_activation"),
     "_session_start_budget": ("function", True, "59162e39f6f1", "runtime_session_setup"),
-    "_session_start_stalled": ("function", False, "e49f31db985c", "runtime"),
-    "_session_teardown_method": ("function", False, "bb418bb7ece8", "runtime"),
+    "_session_start_stalled": ("function", False, "e49f31db985c", "runtime_session_registry"),
+    "_session_teardown_method": ("function", False, "bb418bb7ece8", "runtime_session_registry"),
     "_session_work_dir": ("function", True, "921e81b9866d", "runtime_session_setup"),
     "_signal_tree": ("function", True, "16bbef62a9e3", "runtime_tree_kill"),
-    "_skill_projection_lock": ("function", False, "fd738ff11600", "runtime"),
+    "_skill_projection_lock": ("function", False, "fd738ff11600", "runtime_mode_activation"),
     "_snapshot_descendants": ("function", True, "82c2010f8649", "runtime_tree_kill"),
-    "_snapshot_subagent_sessions": ("function", False, "b5c612257fd5", "runtime"),
+    "_snapshot_subagent_sessions": ("function", False, "b5c612257fd5", "runtime_frame_accounting"),
     "_source_agent": ("staticmethod", True, "a50b19e96682", "runtime_spawn_launch"),
     "_spawn_admitted": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
     "_spawn_admitted_rederiving_once": ("function", True, "b60c5fea256e", "runtime_spawn_entry"),
-    "_spawn_agent_not_loaded_reason": ("function", True, "46026981236a", "runtime"),
-    "_spawn_answer_task": ("function", True, "3c88fb3b5f4d", "runtime"),
-    "_stage_init_frame": ("function", False, "87459833bc5c", "runtime"),
-    "_stale_by_age": ("function", False, "a6632a57e602", "runtime"),
+    "_spawn_agent_not_loaded_reason": ("function", True, "46026981236a", "runtime_mode_activation"),
+    "_spawn_answer_task": ("function", True, "3c88fb3b5f4d", "runtime_host_requests"),
+    "_stage_init_frame": ("function", False, "87459833bc5c", "runtime_session_registry"),
+    "_stale_by_age": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_start_mount_check": ("function", False, "3e413c5306a5", "runtime_session_setup"),
-    "_stdin_write_lock": ("function", False, "fd738ff11600", "runtime"),
-    "_superseding_alias": ("function", False, "12ab76a15b9b", "runtime"),
-    "_switched_model_record": ("function", False, "8cab7a4db01b", "runtime"),
+    "_stdin_write_lock": ("function", False, "fd738ff11600", "runtime_wire"),
+    "_superseding_alias": ("function", False, "12ab76a15b9b", "runtime_mode_activation"),
+    "_switched_model_record": ("function", False, "8cab7a4db01b", "runtime_mode_activation"),
     "_teardown_late_session": ("function", True, "c284282f8a1d", "runtime_session_create"),
     "_to_thread_guarding_sandbox": ("function", True, "8dbe076fd22d", "runtime_spawn_launch"),
-    "_unadopted_skill_projection_generation": ("function", False, "fa6cfecd5574", "runtime"),
+    "_unadopted_skill_projection_generation": (
+        "function",
+        False,
+        "fa6cfecd5574",
+        "runtime_mode_activation",
+    ),
     "_unpooled_control_planes": ("function", True, "5255b093c0d2", "runtime_session_setup"),
-    "_verify_spawn_agent_active": ("function", True, "3d143e45e940", "runtime"),
-    "_wait_for_answer_capacity": ("function", True, "609119a8d63a", "runtime"),
+    "_verify_spawn_agent_active": ("function", True, "3d143e45e940", "runtime_mode_activation"),
+    "_wait_for_answer_capacity": ("function", True, "609119a8d63a", "runtime_host_requests"),
     "_wait_managed_mcp": ("function", True, "318828f7ab77", "runtime_session_load"),
-    "_write_request_bounded": ("function", True, "4ea88874f686", "runtime"),
-    "_write_response_bounded": ("function", True, "325c14124282", "runtime"),
-    "acp_backend": ("property", False, "bb418bb7ece8", "runtime"),
-    "agent_version": ("property", False, "bb418bb7ece8", "runtime"),
-    "begin_mcp_reattempt": ("function", False, "dc7c165669b1", "runtime"),
-    "begin_mcp_sign_in": ("function", False, "dc7c165669b1", "runtime"),
+    "_write_request_bounded": ("function", True, "4ea88874f686", "runtime_wire"),
+    "_write_response_bounded": ("function", True, "325c14124282", "runtime_wire"),
+    "acp_backend": ("property", False, "bb418bb7ece8", "runtime_class"),
+    "agent_version": ("property", False, "bb418bb7ece8", "runtime_class"),
+    "begin_mcp_reattempt": ("function", False, "dc7c165669b1", "runtime_host_requests"),
+    "begin_mcp_sign_in": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "create_session": ("function", True, "155a6120083d", "runtime_session_create"),
-    "death_summary": ("function", False, "f21e39ec5ffb", "runtime"),
-    "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime"),
-    "forget_request": ("function", False, "a0b46301fd2c", "runtime"),
-    "has_active_or_initializing_sessions": ("function", False, "a6632a57e602", "runtime"),
-    "has_active_sessions": ("function", False, "a6632a57e602", "runtime"),
-    "is_alive": ("function", False, "a6632a57e602", "runtime"),
+    "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
+    "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
+    "forget_request": ("function", False, "a0b46301fd2c", "runtime_wire"),
+    "has_active_or_initializing_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "has_active_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "is_alive": ("function", False, "a6632a57e602", "runtime_liveness"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "load_session": ("function", True, "abdb4c5767fc", "runtime_session_load"),
-    "mark_turn_active": ("function", False, "a3b3a732c817", "runtime"),
-    "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime"),
-    "pid": ("property", False, "8dc15be1dfda", "runtime"),
+    "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
+    "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
+    "pid": ("property", False, "8dc15be1dfda", "runtime_class"),
     "probe_advertised_models": ("function", True, "d21329fd3356", "runtime_session_create"),
-    "process_instance": ("property", False, "bb418bb7ece8", "runtime"),
-    "process_tree_confirmed_dead": ("property", False, "a6632a57e602", "runtime"),
-    "reattempts_mcp_servers": ("property", False, "a6632a57e602", "runtime"),
-    "redacted_stderr_tail": ("function", False, "bb418bb7ece8", "runtime"),
+    "process_instance": ("property", False, "bb418bb7ece8", "runtime_class"),
+    "process_tree_confirmed_dead": ("property", False, "a6632a57e602", "runtime_class"),
+    "reattempts_mcp_servers": ("property", False, "a6632a57e602", "runtime_class"),
+    "redacted_stderr_tail": ("function", False, "bb418bb7ece8", "runtime_liveness"),
     "refresh_process_tree": ("function", True, "b60c5fea256e", "runtime_tree_kill"),
-    "sandbox_hidden_dirs": ("property", False, "9d5ab4ea1828", "runtime"),
-    "sandbox_mode": ("property", False, "bb418bb7ece8", "runtime"),
-    "sandbox_wrapped_by_crew": ("property", False, "a6632a57e602", "runtime"),
-    "saw_not_logged_in": ("function", False, "a6632a57e602", "runtime"),
-    "saw_sandbox_init_failure": ("function", False, "a6632a57e602", "runtime"),
-    "send_error": ("function", True, "f8eeeb44db9e", "runtime"),
-    "send_notification": ("function", True, "78b195a50312", "runtime"),
-    "send_request": ("function", True, "60d06c03f35b", "runtime"),
-    "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime"),
-    "send_response": ("function", True, "74f287d889d6", "runtime"),
-    "settle_stderr": ("function", True, "8fe4e298f96b", "runtime"),
+    "sandbox_hidden_dirs": ("property", False, "9d5ab4ea1828", "runtime_class"),
+    "sandbox_mode": ("property", False, "bb418bb7ece8", "runtime_class"),
+    "sandbox_wrapped_by_crew": ("property", False, "a6632a57e602", "runtime_class"),
+    "saw_not_logged_in": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "saw_sandbox_init_failure": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "send_error": ("function", True, "f8eeeb44db9e", "runtime_wire"),
+    "send_notification": ("function", True, "78b195a50312", "runtime_wire"),
+    "send_request": ("function", True, "60d06c03f35b", "runtime_wire"),
+    "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime_wire"),
+    "send_response": ("function", True, "74f287d889d6", "runtime_wire"),
+    "settle_stderr": ("function", True, "8fe4e298f96b", "runtime_liveness"),
     "spawn": ("function", True, "dbecd2a33a23", "runtime_spawn_entry"),
-    "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime"),
+    "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime_class"),
     "start_collectors": ("function", False, "d0635fa60364", "runtime_session_create"),
-    "stdin_reader_may_live": ("function", False, "a6632a57e602", "runtime"),
-    "stdin_stall_death": ("property", False, "a6632a57e602", "runtime"),
-    "supports_image_prompt": ("property", False, "a6632a57e602", "runtime"),
-    "take_switched_model": ("function", False, "99d948c35ed6", "runtime"),
-    "terminate_session": ("function", True, "c284282f8a1d", "runtime"),
-    "turn_active_at_stall": ("function", False, "762cb291397b", "runtime"),
-    "unregister_session": ("function", False, "c284282f8a1d", "runtime"),
-    "uses_kiro_identity_store": ("property", False, "a6632a57e602", "runtime"),
-    "work_scratch_dir": ("property", False, "d921fd8d443d", "runtime"),
+    "stdin_reader_may_live": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "stdin_stall_death": ("property", False, "a6632a57e602", "runtime_class"),
+    "supports_image_prompt": ("property", False, "a6632a57e602", "runtime_class"),
+    "take_switched_model": ("function", False, "99d948c35ed6", "runtime_mode_activation"),
+    "terminate_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
+    "turn_active_at_stall": ("function", False, "762cb291397b", "runtime_liveness"),
+    "unregister_session": ("function", False, "c284282f8a1d", "runtime_session_registry"),
+    "uses_kiro_identity_store": ("property", False, "a6632a57e602", "runtime_class"),
+    "work_scratch_dir": ("property", False, "d921fd8d443d", "runtime_class"),
 }
 
 
@@ -227,6 +248,14 @@ _OWNERS = (
     "kiro_crew.acp.runtime_session_setup",
     "kiro_crew.acp.runtime_session_create",
     "kiro_crew.acp.runtime_session_load",
+    "kiro_crew.acp.runtime_session_registry",
+    "kiro_crew.acp.runtime_mode_activation",
+    "kiro_crew.acp.runtime_wire",
+    "kiro_crew.acp.runtime_liveness",
+    "kiro_crew.acp.runtime_host_requests",
+    "kiro_crew.acp.runtime_frame_accounting",
+    "kiro_crew.acp.runtime_reader_loop",
+    "kiro_crew.acp.runtime_class",
 )
 
 #: Sibling modules named ``runtime_*`` that are not owners of the class: module-level code
@@ -240,7 +269,7 @@ _NOT_OWNERS = frozenset(
 )
 
 #: The module that holds the class statement and its class-resident members.
-_CLASS_HOME = "runtime"
+_CLASS_HOME = "runtime_class"
 
 _PACKAGE = "kiro_crew.acp"
 _FACADE = runtime.__name__
@@ -285,12 +314,12 @@ _BASE_IMPORTS = frozenset("""
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
     group_vouching_available harness_for has_mirror hoist_managed_servers importlib
     inject_xdist_auto_cap injection_server_names is_auth_failure_output
-    is_sandbox_init_failure_output kas_client_meta_settings kas_wire_agent_id
-    kiro_agents_dir launch live logging markdown_spec_for_agent member_essential_context
-    mint_stub_session_token mirror_for name_scope_unit notify_start_queue os
-    outstanding_leases overlay_project_scope parse_json_object_line parse_session_modes
-    platform_compat pooled_session_servers publish_session_token re record_frame
-    redact_backend_text redact_credentials redact_exfiltration_urls redact_text
+    is_sandbox_init_failure_output kas_client_meta_settings kas_secret_storage
+    kas_wire_agent_id kiro_agents_dir launch live logging markdown_spec_for_agent
+    member_essential_context mint_stub_session_token mirror_for name_scope_unit
+    notify_start_queue os outstanding_leases overlay_project_scope parse_json_object_line
+    parse_session_modes platform_compat pooled_session_servers publish_session_token re
+    record_frame redact_backend_text redact_credentials redact_exfiltration_urls redact_text
     register_protected_pid registration_throttle_line release_bound_agent_workspace
     required_managed_servers resolve_bound_session_workspace resolve_krb5_ccname
     response_write_window_secs roster_names runtime_death runtime_process_tree runtime_start
@@ -374,7 +403,15 @@ def test_every_inventory_member_is_still_on_the_class() -> None:
 
 #: Fields a bound member assigns first, declared for type checkers in the class body.
 _TYPE_CHECKING_DECLARED = frozenset(
-    {"_native_skill_projection", "_skill_projection_generation", "_spawn_skill_projection"}
+    {
+        "_native_skill_projection",
+        "_skill_projection_generation",
+        "_skill_projection_issued",
+        "_skill_projection_lock_obj",
+        "_skill_projection_unadopted",
+        "_spawn_skill_projection",
+        "_stdin_lock",
+    }
 )
 
 
@@ -715,6 +752,7 @@ def test_each_owner_imports_only_owners_listed_before_it() -> None:
 #: Exceptions an error chain renders as ``module.qualname``: the path callers import them
 #: from is the one it names.
 _FACADE_MODULE_CLASSES = (
+    "AcpRuntimeStdinStalled",
     "AcpSessionStartTimeout",
     "AcpToolSurfaceBindingError",
     "AcpWorkspaceBindingError",
@@ -723,6 +761,7 @@ _FACADE_MODULE_CLASSES = (
 #: Moved classes no reader names by module: they keep the module that defines them.
 _OWNER_MODULE_CLASSES = {
     "_MirroredSessionMcp": "kiro_crew.acp.runtime_session_setup",
+    "_PendingRequests": "kiro_crew.acp.runtime_wire",
 }
 
 
@@ -965,3 +1004,59 @@ def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
     leaf_test_scope = importlib.import_module("leaf_test_scope")
     this_file = Path(__file__).resolve()
     assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
+
+
+#: ``typing.get_type_hints(AcpRuntime.__init__)`` before the class left ``runtime.py``.
+_INIT_HINTS = {
+    "acp_backend": "<class 'str'>",
+    "agent": "<class 'str'>",
+    "crew_agent": "<class 'str'>",
+    "expect_mcp_reports": "<class 'bool'>",
+    "extra_env": "dict[str, str] | None",
+    "max_age_secs": "<class 'float'>",
+    "max_rss_mb": "<class 'float'>",
+    "mcp_gateway_overlay": "str | pathlib.Path | None",
+    "mcp_gateway_socket": "str | pathlib.Path | None",
+    "member_context": "<class 'bool'>",
+    "memory_mode": "<class 'str'>",
+    "model": "str | None",
+    "sandbox_mode": "<class 'str'>",
+    "shared_scratch": "pathlib.Path | None",
+    "tool_search": "kiro_crew.agent_sdk.tool_search.ToolSearchSettings | None",
+    "work_dir": "str | pathlib.Path | None",
+}
+
+
+def test_the_class_home_keeps_the_facade_as_the_class_module() -> None:
+    """The class statement lives in its class home, and the facade is its import path: the
+    class names the facade as its ``__module__`` (what reprs and error chains print), and the
+    facade binds the class home's very object, never a copy or a subclass."""
+    home = sys.modules[AcpRuntime.__init__.__module__]
+    assert home.__name__ == f"{_PACKAGE}.{_CLASS_HOME}"
+    assert (AcpRuntime.__module__, AcpRuntime.__qualname__) == (_FACADE, "AcpRuntime")
+    assert vars(runtime)["AcpRuntime"] is vars(home)["AcpRuntime"]
+    assert _FACADE + ".AcpRuntime object at" in repr(object.__new__(AcpRuntime))
+    # A pickle stores a class as module + qualname and loads it back by that lookup.
+    assert (
+        getattr(importlib.import_module(AcpRuntime.__module__), AcpRuntime.__qualname__)
+        is AcpRuntime
+    )
+
+
+def test_the_constructor_keeps_its_type_hints() -> None:
+    hints = typing.get_type_hints(AcpRuntime.__init__)
+    assert {name: repr(hint) for name, hint in hints.items()} == _INIT_HINTS
+
+
+def test_a_facade_patch_reaches_the_class_resident_constructor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``__init__`` reads its globals in the class home; a patch through the facade still
+    reaches it there, because the mirror writes every module binding the same object."""
+
+    class StandIn(runtime._PendingRequests):
+        pass
+
+    monkeypatch.setattr(runtime, "_PendingRequests", StandIn)
+    rt = AcpRuntime(work_dir=str(tmp_path))
+    assert type(rt._pending_requests) is StandIn

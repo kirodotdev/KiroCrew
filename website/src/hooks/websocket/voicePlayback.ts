@@ -10,6 +10,7 @@ import { setVoicePlaying, setVoicePreparing, setVoiceAudio } from '../../store/c
 import { api } from '../../api/client'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../../lib/voicePlayback'
 import { reportVoiceFailure } from '../../lib/voiceFailure'
+import { speakOnClient, stopClientSpeech, clientSpeechAvailable } from '../../lib/clientSpeech'
 import type { ChatMessage } from '../../types'
 import type { FrameData } from './frames'
 
@@ -59,6 +60,17 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const pcmPlayerRef = useRef<VoicePcmPlayer | null>(null)
   const voiceEpochRef = useRef(0)
   const voiceRequestsRef = useRef(new Map<string, string>())
+  // Requests started by the manual Read aloud with a client-speech fallback
+  // allowed. Keyed by request id, each entry pins the playback epoch at start
+  // and the text to speak. The playback owner consults this to decide a
+  // `voice_unavailable` outcome — speak on the client vs show the failure
+  // notice — from whichever signal arrives first (the WS `voice_error` frame or
+  // the HTTP failure), and a stale epoch (Stop / new turn bumped it) is rejected.
+  const fallbackRef = useRef(new Map<string, { epoch: number; slot: string; text: string }>())
+  // True while client-side fallback speech is the thing playing. It does NOT
+  // depend on the socket, so a socket drop must not report it as a failure or
+  // stop it — unlike gateway audio, which a lost socket genuinely ends.
+  const clientSpeakingRef = useRef(false)
   // Active-slot requests that have not delivered audio yet, behind `voicePreparing`.
   const awaitingAudioRef = useRef(new Set<string>())
   const pendingVoiceRef = useRef<{ slot: string; text: string; request_id: string } | null>(null)
@@ -83,13 +95,54 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       }
     }
 
+    // When the gateway reports it cannot synthesize at all (`voice_unavailable`)
+    // for a manual Read aloud that allowed a fallback, speak the reply on the
+    // client with the webview's own engine instead of showing the failure
+    // notice. Returns whether it OWNED this outcome, so the caller skips
+    // `reportVoiceFailure`. Rejects a stale request — Stop or a new turn bumped
+    // the epoch — so a cancelled reply never starts speaking late, and only
+    // fires when client speech is actually available (else the notice stands).
+    const tryClientFallback = (requestId: string, slot: string, code: string | undefined, speakable?: string): boolean => {
+      if (code !== 'voice_unavailable') return false
+      const entry = fallbackRef.current.get(requestId)
+      fallbackRef.current.delete(requestId)
+      if (!entry) return false
+      if (
+        entry.epoch !== voiceEpochRef.current ||
+        voiceMutedRef.current ||
+        slot !== store.getState().chat.activeSlot ||
+        !clientSpeechAvailable()
+      ) {
+        return false
+      }
+      // Prefer the gateway's own strip_markdown output (`speakable`) so code
+      // blocks, tables, widget markup and inline paths are voiced as
+      // placeholders, exactly as the gateway path would — falling back to the
+      // raw text only if the gateway sent none.
+      const spoken = (typeof speakable === 'string' && speakable.trim()) ? speakable : entry.text
+      const started = speakOnClient(spoken, {
+        onPlaying: playing => {
+          clientSpeakingRef.current = playing
+          dispatch(setVoicePlaying(playing))
+        },
+        onError: failCode => reportVoiceFailure({ slot, code: failCode }),
+      })
+      if (started) clientSpeakingRef.current = true
+      return started
+    }
+
     const stopVoice = () => {
       voiceMutedRef.current = true
       voiceEpochRef.current++
+      // Any client-side fallback speech shares the one output channel, so Stop,
+      // a new manual request, and a new turn must silence it too.
+      stopClientSpeech()
+      clientSpeakingRef.current = false
       for (const [requestId, slot] of voiceRequestsRef.current) {
         void api.voiceCancel?.(slot, requestId).catch(() => {})
       }
       voiceRequestsRef.current.clear()
+      fallbackRef.current.clear()
       if (awaitingAudioRef.current.size) {
         awaitingAudioRef.current.clear()
         dispatch(setVoicePreparing(false))
@@ -111,6 +164,11 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
     }
 
     const releaseVoiceOnSocketLoss = () => {
+      // Client-side fallback speech does not use the socket — a dropped socket
+      // (common on the remote SSH gateways this fallback targets) must not cut
+      // it off or raise a false "Read aloud failed". When it is the only thing
+      // playing, leave it running and report nothing.
+      if (clientSpeakingRef.current && !voiceRequestsRef.current.size && !voicePlayingRef.current) return
       if (!voiceRequestsRef.current.size && !voicePlayingRef.current && !store.getState().chat.voicePlaying) return
       reportVoiceFailure({
         slot: store.getState().chat.activeSlot, code: 'voice_playback_failed',
@@ -299,10 +357,16 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         if (b64) dispatch(setVoiceAudio(b64))
       },
       onVoiceError(data) {
-        const { request_id, code } = data as { request_id?: string; code?: string }
+        const { request_id, code, speakable } = data as { request_id?: string; code?: string; speakable?: string }
         if (!request_id || !voiceRequestsRef.current.delete(request_id)) return
         audioSettled(request_id)
         if (voiceMutedRef.current || data.slot !== store.getState().chat.activeSlot || code === 'voice_cancelled') return
+        // A gateway that cannot synthesize at all: speak on the client instead
+        // of surfacing the notice, when this request allowed it. This frame is
+        // broadcast BEFORE the HTTP 502 reaches the client, so owning the
+        // outcome here is what stops a "Read aloud failed" notice showing while
+        // the reply plays locally. `speakable` is the gateway's cleaned text.
+        if (tryClientFallback(request_id, data.slot, code, speakable)) return
         reportVoiceFailure({ slot: data.slot, request_id, code: code || 'voice_synthesis_failed' })
       },
       attachWindowEvents() {
@@ -311,19 +375,30 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           if (autoSpeakRef.current && typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
         }
         const onVoiceStart = (event: Event) => {
-          const { slot, request_id } = (event as CustomEvent<{ slot: string; request_id: string }>).detail
+          const { slot, request_id, clientFallback, text } = (event as CustomEvent<{ slot: string; request_id: string; clientFallback?: boolean; text?: string }>).detail
           voiceRequestsRef.current.set(request_id, slot)
           if (slot === store.getState().chat.activeSlot) {
             voiceMutedRef.current = false
+            // Pin the fallback eligibility and the current epoch now, so a later
+            // Stop / new turn (which bumps the epoch) invalidates it and a
+            // cancelled reply cannot start speaking on the client afterwards.
+            if (clientFallback && typeof text === 'string') {
+              fallbackRef.current.set(request_id, { epoch: voiceEpochRef.current, slot, text })
+            }
             awaitAudio(request_id)
             if (typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
           }
         }
         const onVoiceFailed = (event: Event) => {
-          const detail = (event as CustomEvent<{ slot: string; request_id: string; code: string }>).detail
+          const detail = (event as CustomEvent<{ slot: string; request_id: string; code: string; speakable?: string }>).detail
           if (!voiceRequestsRef.current.delete(detail.request_id)) return
           audioSettled(detail.request_id)
           if (!voiceMutedRef.current && detail.slot === store.getState().chat.activeSlot) {
+            // The HTTP failure can be the first (or only) signal for a path that
+            // does not broadcast a WS voice_error frame, so the same fallback
+            // decision is made here. tryClientFallback deletes the entry, so the
+            // two signals never both speak.
+            if (tryClientFallback(detail.request_id, detail.slot, detail.code, detail.speakable)) return
             reportVoiceFailure(detail)
           }
         }

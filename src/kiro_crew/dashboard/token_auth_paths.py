@@ -215,7 +215,7 @@ def is_csrf_exempt(path: str, method: str) -> bool:
 # design). Matches /apps/{name}/ui/<anything>, where {name} is the
 # canonical app-name pattern. Must NOT match /apps/{name}/api/... — that
 # path is the gateway-authenticated reverse proxy to the app backend
-# (handle_app_api_proxy in kiro_crew/apps/routes.py) and continues to
+# (handle_app_api_proxy in kiro_crew/apps/routes_proxy.py) and continues to
 # require a valid token. The bounded character class prevents ReDoS.
 _APPS_UI_BYPASS_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/ui/")
 

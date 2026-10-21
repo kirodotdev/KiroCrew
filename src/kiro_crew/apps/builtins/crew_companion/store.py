@@ -14,7 +14,7 @@ rules are presentation and stay in TypeScript (``notificationPolicy.ts``) next t
 the renderer that obeys them. This side only decides WHAT fired and WHEN.
 
 The gateway offers no server-push channel to an app's own windows — the one SSE
-endpoint in ``apps/routes.py`` is for streaming registry installs — so delivery
+endpoint in ``apps/routes_registry.py`` is for streaming registry installs — so delivery
 is a **queue the overlay drains**, which is also how the reference builtin's
 overlay works. Each fire gets a monotonic sequence number and the overlay asks
 for everything after the last number it saw. That shape is chosen over "return

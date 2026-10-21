@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import stat
 import sys
 from collections.abc import MutableMapping
@@ -395,3 +396,30 @@ def _probe_filesystem_state(
         include_inherited_path=True,
     )
     return probe_environment, candidates
+
+
+# The system bin directories a login shell's PATH carries on Linux (Debian and
+# Ubuntu's /etc/environment, Fedora's /etc/profile), where every distro package
+# installs ``unzip``.
+_SYSTEM_BIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+
+
+def _installer_lacks_unzip(platform_name: str, environ: MutableMapping[str, str]) -> bool:
+    """Whether the Linux Kiro CLI installer would refuse this host for lacking ``unzip``.
+
+    The same question the installer asks (``command -v unzip``), on the gateway's
+    own PATH plus the system bin directories. The installer runs in the user's
+    login shell, which always has those directories, while a gateway started by
+    systemd or a desktop launcher can inherit a narrower PATH; searching only the
+    gateway's PATH would report a host that has ``unzip`` as lacking it.
+
+    Off-loop like the candidate scan: ``shutil.which`` stats every directory, and
+    a stalled mount there must not freeze the event loop. Other platforms answer
+    False, because the installer asks for ``unzip`` only on Linux.
+    """
+
+    if not platform_name.startswith("linux"):
+        return False
+    search = [part for part in environ.get("PATH", "").split(os.pathsep) if part]
+    search.extend(_SYSTEM_BIN_DIRS)
+    return shutil.which("unzip", path=os.pathsep.join(search)) is None

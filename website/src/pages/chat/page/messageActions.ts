@@ -282,7 +282,11 @@ export function useMessageActions({
     // A synthesis still loading its model has no playing audio yet, but owns
     // the same output channel. Replace it before starting a manual request.
     window.dispatchEvent(new Event('voice-stop'))
-    api.voiceSynthesize(activeSlotRef.current || '', content).catch(() => {})
+    // clientFallback: on a headless remote gateway that cannot synthesize
+    // (voice_unavailable), speak the reply with the webview's own engine instead
+    // of only showing an error notice. A working gateway never emits that code,
+    // so this leaves the normal path untouched.
+    api.voiceSynthesize(activeSlotRef.current || '', content, { clientFallback: true }).catch(() => {})
   }, [dispatch, activeSlotRef])
 
   const handleApplyPlan = useCallback(async (steps: PlanStepInput[]) => {

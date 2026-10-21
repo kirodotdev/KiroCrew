@@ -244,10 +244,10 @@ class WeixinRenderer(Renderer):
         self._typing_task = None
         if task is not None:
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+            # Gathered, not awaited: the typing task's own cancellation comes back
+            # as a result, while one aimed at this turn (closing the channel cancels
+            # the poll task the turn runs on) still propagates.
+            await asyncio.gather(task, return_exceptions=True)
         await self._typing_signal(TYPING_STOP)
 
     async def _typing_signal(self, status: int) -> None:

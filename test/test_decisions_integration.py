@@ -35,6 +35,7 @@ import pytest
 from kiro_crew import decisions as core
 from kiro_crew.decisions.points import skills_select as sel
 from kiro_crew.decisions.types import Answer
+from kiro_crew.testing.wait import async_wait_until
 
 BASELINE = "matcher"
 WIDENED = "unrelated"
@@ -315,9 +316,7 @@ async def test_an_expired_budget_keeps_the_baseline_and_leaves_no_task(
 
     assert _bodies(message) == [BASELINE]
     assert waited < 10, "the message must not wait past the point's own budget"
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not observed.get("cancelled"):
-        await asyncio.sleep(0.02)
+    await async_wait_until(lambda: observed.get("cancelled"), describe=lambda: observed)
     assert observed == {"started": True, "cancelled": True}
     ours = [
         task

@@ -28,7 +28,6 @@ import importlib.util
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -36,6 +35,7 @@ import pytest
 import kiro_crew.skills as skills_module
 from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import wait_until
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "explain-for"
@@ -131,17 +131,19 @@ def _settle_catalog(loader: SkillsLoader) -> None:
     sleep decides the outcome; the deadline only bounds a runner that is truly
     stuck.
     """
-    deadline = time.monotonic() + _CATALOG_WAIT_SECS
-    while True:
+
+    def _published() -> bool:
         loader.list_skills()
-        if loader.catalog_status() == "complete":
-            return
-        if time.monotonic() >= deadline:
-            raise AssertionError(
-                f"skill catalog still building after {_CATALOG_WAIT_SECS:.0f}s; "
-                "the fixture cannot vouch for a complete catalog"
-            )
-        time.sleep(0.01)
+        return loader.catalog_status() == "complete"
+
+    wait_until(
+        _published,
+        timeout=_CATALOG_WAIT_SECS,
+        describe=lambda: (
+            f"skill catalog still building after {_CATALOG_WAIT_SECS:.0f}s; "
+            "the fixture cannot vouch for a complete catalog"
+        ),
+    )
 
 
 @pytest.fixture

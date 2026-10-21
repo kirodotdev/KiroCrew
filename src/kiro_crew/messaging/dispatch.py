@@ -1369,14 +1369,19 @@ class ChannelTurns:
                     session_key,
                     exc_info=True,
                 )
-            if _acquired:
-                sessions.release(session_key)
-            if recovery:
-                # Closed LAST, after the permit is back: a message that waited behind
-                # the gap then finds an idle successor instead of a semaphore a later
-                # reset could pop from under it. Idempotent, so a turn that never
-                # opened one (or whose reset raised) costs a dictionary lookup.
-                _set_replay_gap(sessions, session_key, opened=False)
+            finally:
+                # A cancellation landing inside the close is not an ``Exception``
+                # (a channel whose turns run on its poll task cancels that task when
+                # it closes), so the release cannot wait on the guard above.
+                if _acquired:
+                    sessions.release(session_key)
+                if recovery:
+                    # Closed LAST, after the permit is back: a message that waited
+                    # behind the gap then finds an idle successor instead of a
+                    # semaphore a later reset could pop from under it. Idempotent, so
+                    # a turn that never opened one (or whose reset raised) costs a
+                    # dictionary lookup.
+                    _set_replay_gap(sessions, session_key, opened=False)
         return self._outcome(verdict, monitor, acquired=_acquired)
 
 

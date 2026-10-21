@@ -15,7 +15,7 @@ SECRET = "s3cret-app-key"
 
 
 def _sign(method: str, target: str, body: bytes, *, ts: int | None = None) -> str:
-    """Reproduce the gateway's signing (apps/routes.py::handle_app_api_proxy)."""
+    """Reproduce the gateway's signing (apps/routes_proxy.py::handle_app_api_proxy)."""
     ts = int(time.time()) if ts is None else ts
     body_hash = hashlib.sha256(body or b"").hexdigest()
     msg = f"{ts}:{method}:{target}:{body_hash}"
@@ -161,7 +161,7 @@ def test_wrong_secret_fails():
 )
 def test_raw_request_target_preserves_wire_encoding(wire_target: str):
     """The aiohttp reconstruction helper must return the raw request-target
-    byte-for-byte — the exact string routes.py signs — never a decoded form."""
+    byte-for-byte — the exact string routes_proxy.py signs — never a decoded form."""
     req = make_mocked_request("GET", wire_target)
     assert raw_request_target(req) == wire_target
 

@@ -25,7 +25,6 @@ import mmap
 import os
 import struct
 import threading
-import time
 import urllib.error
 from collections.abc import Callable
 from pathlib import Path
@@ -59,6 +58,7 @@ from kiro_crew.embeddings import (
     reset_shared_embedder,
     start_background_model_download,
 )
+from kiro_crew.testing.wait import wait_until
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _reset_embedding_singletons = embeddings_helpers._reset_embedding_singletons
@@ -836,12 +836,15 @@ class TestLlamaCppEmbedder:
         # Both claims are read WHILE the worker is held, which is the only window in
         # which a refusal is distinguishable from a completed embed: after release
         # every admitted job succeeds and returns a vector too.
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
+
+        def _a_refusal_landed() -> bool:
             with lock:
-                if any(r is None for r in outcomes.values()):
-                    break
-            time.sleep(0.02)
+                return any(r is None for r in outcomes.values())
+
+        wait_until(
+            _a_refusal_landed,
+            describe=lambda: f"no refusal while the worker was held; outcomes so far: {outcomes}",
+        )
         with lock:
             refused_while_held = sorted(i for i, r in outcomes.items() if r is None)
         depth = emb._jobs.qsize()

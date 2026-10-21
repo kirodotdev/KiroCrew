@@ -1,6 +1,6 @@
 """Shared HMAC verification for the gateway → app-backend reverse proxy.
 
-The gateway (``apps/routes.py::handle_app_api_proxy``) signs every forwarded
+The gateway (``apps/routes_proxy.py::handle_app_api_proxy``) signs every forwarded
 request with the per-app secret::
 
     X-KiroCrew-Proxy: <ts>:<hmac_sha256(secret, "<ts>:<method>:<target>:<sha256(body)>")>

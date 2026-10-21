@@ -287,7 +287,7 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # ``_deny_zero_tools`` never runs to close the mirror's allowlist-only translation.
 #
 # codex is NOT a member: its sessions are served by ``AcpRuntime`` /
-# ``AcpSessionHandle`` (``acp/runtime.py``, ``acp/session_handle_class.py``), which carry
+# ``AcpSessionHandle`` (``acp/runtime_class.py``, ``acp/session_handle_class.py``), which carry
 # ``spec_denied_tools`` but no ``zero_tools`` and no ``_deny_zero_tools`` equivalent
 # -- the refusal exists only on ``AcpClient``, so nothing refuses on a codex session
 # even though its ``Routing.SESSION_CONFIG`` is itself enforced.

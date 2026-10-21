@@ -20,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.cron import CronJob, CronSchedule, CronService, _RunClaim
 from kiro_crew.dashboard.handlers.cron import api_cron_run
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _make_job(job_id: str = "j1", name: str = "etl job") -> CronJob:
@@ -157,11 +158,7 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) ->
     """Poll the loop until *predicate* holds; the handler starts its run as a
     background task, so the test has to let that task get through its
     off-loop store read before inspecting the service."""
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("condition not met before the poll deadline")
-        await asyncio.sleep(0.01)
+    await async_wait_until(predicate, timeout=timeout)
 
 
 class TestApiCronRunStaleFinishedTask:

@@ -36,7 +36,10 @@ from kiro_crew.stt import engine as engine_mod
 from kiro_crew.stt import models, telemetry
 from kiro_crew.stt.engine import LoadedKey
 from kiro_crew.stt.hallucinations import filter_hallucinations
-from kiro_crew.stt.limits import DEFAULT_PARTIAL_INTERVAL_MS, MIN_PARTIAL_INTERVAL_MS
+from kiro_crew.stt.limits import (
+    DEFAULT_PARTIAL_INTERVAL_MS,
+    MIN_PARTIAL_INTERVAL_MS,
+)
 from kiro_crew.stt.vad import (
     ABSOLUTE_SILENCE_DB,
     DEFAULT_SILENCE_MS,
@@ -209,12 +212,13 @@ class LocalSession:
         partial_interval_ms: int = DEFAULT_PARTIAL_INTERVAL_MS,
         idle_evict_secs: int = engine_mod.DEFAULT_IDLE_EVICT_SECS,
         timeout_secs: int = engine_mod.DEFAULT_TIMEOUT_SECS,
+        threads: int | None = None,
     ) -> None:
         self._model_name = model_name
         self._language = language
         self._partial_interval = max(MIN_PARTIAL_INTERVAL_MS / 1000.0, partial_interval_ms / 1000.0)
         self._engine = engine_mod.shared_engine(
-            idle_evict_secs=idle_evict_secs, timeout_secs=timeout_secs
+            idle_evict_secs=idle_evict_secs, timeout_secs=timeout_secs, threads=threads
         )
         # Kept so each utterance gets a FRESH detector: `Endpointer`'s ENDED state is
         # terminal by design (it must not re-arm under a client that keeps sending
@@ -300,7 +304,7 @@ class LocalSession:
         key = engine_mod.LoadedKey(
             str(models.model_path(model)),
             self._language,
-            engine_mod.thread_count(),
+            self._engine.thread_count(),
         )
         return self._engine.loaded_key != key
 
@@ -580,6 +584,7 @@ async def transcribe_pcm(
     language: str = "",
     idle_evict_secs: int = engine_mod.DEFAULT_IDLE_EVICT_SECS,
     timeout_secs: int = engine_mod.DEFAULT_TIMEOUT_SECS,
+    threads: int | None = None,
 ) -> tuple[str, engine_mod.Availability]:
     """One-shot decode of complete audio, for the batch path.
 
@@ -589,7 +594,9 @@ async def transcribe_pcm(
     """
     if not _is_audible(pcm):
         return "", engine_mod.Availability(True)
-    eng = engine_mod.shared_engine(idle_evict_secs=idle_evict_secs, timeout_secs=timeout_secs)
+    eng = engine_mod.shared_engine(
+        idle_evict_secs=idle_evict_secs, timeout_secs=timeout_secs, threads=threads
+    )
     result = await eng.ensure_loaded(model_name, language)
     if not result.ok:
         return "", result
@@ -644,9 +651,14 @@ async def prewarm(
     *,
     model_name: str = models.DEFAULT_MODEL,
     language: str = "",
+    threads: int | None = None,
 ) -> engine_mod.Availability:
-    """Load and warm the recogniser ahead of a user actually speaking."""
-    return await engine_mod.shared_engine().prewarm(model_name, language)
+    """Load and warm the recogniser ahead of a user actually speaking.
+
+    *threads* is ``stt.threads``; ``None`` keeps the engine's current setting, so a
+    caller without config cannot reset an operator's count.
+    """
+    return await engine_mod.shared_engine(threads=threads).prewarm(model_name, language)
 
 
 async def close() -> None:

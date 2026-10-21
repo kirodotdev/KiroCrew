@@ -3176,7 +3176,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Extra Skill Paths",
-      "help": "Additional directories to scan for skills. Supports ~ expansion. Skills from extra_paths are read-only (trigger matching + loading). Local ~/.kiro/crew/skills/ takes precedence for duplicate names.",
+      "help": "Additional directories to scan for skills. Supports ~ expansion. Skills from extra_paths are read-only (trigger matching + loading). Local ~/.kiro/crew/skills/ takes precedence for duplicate names. A skill folder linked into the skills directory from an outside location is not followed through the link; to load it, add the target's parent directory here. Otherwise it is skipped and a warning naming the target is logged.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -3473,6 +3473,7 @@
         "silence_ms": 700,
         "partial_interval_ms": 400,
         "idle_evict_secs": 600,
+        "threads": 0,
         "endpointing": false,
         "submit_on_release": false,
         "dictation_panel": true,
@@ -3647,6 +3648,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 600
+    },
+    {
+      "path": "stt.threads",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Decode threads",
+      "help": "How many CPU threads the local model uses to recognise speech. 0 (or `auto`) uses half this machine's cores, at most 16, which stays steady on a busy host. A larger machine can set more: on a 128-core host the largest model took 4 s on an 11-second clip at 16 threads and 1.25 s at 64. A number above the cores this process may use is lowered to that count. The KIROCREW_STT_THREADS environment variable overrides this. A change applies at the next dictation, which reloads the model once.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "stt.endpointing",

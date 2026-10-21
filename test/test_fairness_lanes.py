@@ -35,6 +35,7 @@ from kiro_crew.subagent_manager.admission import (
 from kiro_crew.taskq import lanes, model
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskq.waits import WaitRecord
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -844,7 +845,7 @@ async def test_api_spawn_resume_reports_and_holds(h) -> None:
     pending = asyncio.ensure_future(spawn_resume.api_spawn_resume(req(s.id, "5")))
     await hz.settle()
     await hz.end(a)
-    granted = json.loads((await asyncio.wait_for(pending, timeout=0.5)).text)
+    granted = json.loads((await await_until(pending, what="the held resume request")).text)
     assert granted["granted"] is True and granted["slot_released"] is False
     lanes_body = json.loads((await spawn_resume.api_spawn_lanes(req("x"))).text)
     assert "dash:1" in lanes_body["lanes"] and "capacity" in lanes_body

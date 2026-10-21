@@ -34,6 +34,7 @@ import asyncio
 import pytest
 
 from kiro_crew.mcp_gateway import manager as mgr
+from kiro_crew.testing.wait import finished
 
 
 def _manager(tmp_path) -> mgr.GatewayManager:
@@ -109,7 +110,7 @@ async def test_a_silent_daemon_still_trips_at_the_existing_threshold(tmp_path, m
     payload, calls = _fast_miss_then(None)
     monkeypatch.setattr(m, "_ping_payload", payload)
 
-    reason = await asyncio.wait_for(m._liveness_probe_loop(), timeout=1.0)
+    reason = await finished(m._liveness_probe_loop(), "the liveness verdict on a silent daemon")
 
     assert "zombie detected" in reason
     assert calls["fast"] == mgr._LIVENESS_MAX_CONSECUTIVE_FAILURES

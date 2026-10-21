@@ -35,6 +35,7 @@ from kiro_crew.mcp_gateway.backend import (
     Backend,
 )
 from kiro_crew.mcp_gateway.pool import PoolKey
+from kiro_crew.testing.wait import finished
 
 SERVER_PATH = Path(__file__).parent / "fake_mcp_app_server.py"
 
@@ -83,8 +84,8 @@ class _LiveServer:
         if self.process.returncode is None:
             self.process.terminate()
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+                await finished(self.process.wait(), "the server exiting on SIGTERM", timeout=5)
+            except AssertionError:
                 self.process.kill()
                 await self.process.wait()
 

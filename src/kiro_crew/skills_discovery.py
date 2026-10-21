@@ -32,6 +32,7 @@ from kiro_crew import skill_trust
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
+from kiro_crew.platform_compat_links import is_link_or_junction
 from kiro_crew.release_channel import _DISTRIBUTION_NAME
 from kiro_crew.security import is_sensitive_path, is_sensitive_resolved_path
 
@@ -345,7 +346,10 @@ _PROJECT_DIR_OPEN_FLAGS = (
 #: that the walk skips) shares this one set under a distinct marker
 #: ``(project_root, _LINKED_ENTRIES_MARKER, 0)`` -- keyed on the project root
 #: alone, so a project whose skills are a tree of links is named once rather than
-#: once per link. Bounded: past the cap the warning is still emitted, just not
+#: once per link. The outside-root skill-link warning (a direct-child link in the
+#: skills base whose target is outside every allowed root) shares it too under
+#: ``(str(link), _OUTSIDE_ROOT_MARKER, 0)``, so that drop is named once per link.
+#: Bounded: past the cap the warning is still emitted, just not
 #: recorded.
 _CHAIN_REFUSALS_WARNED: set[tuple[str, str, int]] = set()
 _CHAIN_REFUSALS_WARNED_CAP = 256
@@ -555,11 +559,47 @@ def _walk_confined_skill_tree(base: Path) -> Iterator[tuple[str, list[str], list
         os.close(fd)
 
 
+#: Sentinel "component" that marks an outside-root skill-link warning in the
+#: shared ``_CHAIN_REFUSALS_WARNED`` set, distinct from any real path component
+#: and from ``_LINKED_ENTRIES_MARKER`` (a NUL cannot appear in a filename).
+_OUTSIDE_ROOT_MARKER = "\x00outside-root-link"
+
+
+def _warn_skill_link_outside_roots(link: Path, target: str) -> None:
+    """Warn that a link placed in the skills tree was skipped as out of bounds.
+
+    The containment gate is a security boundary — a link to an arbitrary target
+    would admit unvetted ``SKILL.md`` prose into the agent's context — so the
+    link is refused. A silent refusal gives a user who linked a skill folder in
+    from a git repository no hint that the catalog dropped it, so name the link,
+    its resolved target, and ``skills.extra_paths`` (the supported way to admit
+    an outside location). Deduped through the module's shared
+    ``_CHAIN_REFUSALS_WARNED`` registry under ``_OUTSIDE_ROOT_MARKER`` so the
+    warning fires once per link per process rather than on every catalog scan;
+    past the shared cap it still fires, just unrecorded, the same fail-safe
+    direction the other warnings in that set take.
+    """
+    marker = (str(link), _OUTSIDE_ROOT_MARKER, 0)
+    if marker in _CHAIN_REFUSALS_WARNED:
+        return
+    if len(_CHAIN_REFUSALS_WARNED) < _CHAIN_REFUSALS_WARNED_CAP:
+        _CHAIN_REFUSALS_WARNED.add(marker)
+    logger.warning(
+        "Skill link %s is not followed: its target %s is outside the skills "
+        "directory and every allowed root. To load the skill, add the target's "
+        "parent directory to skills.extra_paths.",
+        link,
+        target,
+    )
+
+
 def _iter_skill_files(
     base: Path,
     *,
     confine_to: tuple[str, ...] | None = None,
     exclude_roots: tuple[str, ...] = (),
+    warn_outside_links: bool = False,
+    extra_path_roots: tuple[str, ...] = (),
 ) -> list[tuple[str, Path]]:
     """Recursively find all SKILL.md files under *base*.
 
@@ -569,6 +609,17 @@ def _iter_skill_files(
     Unconfined provider trees follow links because apps register skills through
     them. Confined project trees never follow directory links or junctions: a
     link target can be a Windows UNC path, where descent would leak credentials.
+
+    ``warn_outside_links`` is opt-in and off by default: only the catalog base
+    walk sets it, because only the full skill catalog can say a link was dropped
+    from it, and only that caller knows ``skills.extra_paths``. Every other
+    walker (``kirocrew doctor``'s script index, provenance, selection, sync) does
+    a narrower internal walk and stays silent. When it is on, a refused
+    direct-child link whose resolved target is under one of ``extra_path_roots``
+    (the configured ``skills.extra_paths``) does NOT warn, because that target
+    loads through a separate extra-path walk and the operator already followed
+    the advice. This gates only the warning; the containment decision that
+    refuses the link in THIS walk is unchanged.
     """
     if confine_to is not None:
         if len(confine_to) != 1:
@@ -589,7 +640,8 @@ def _iter_skill_files(
 
     if not base.exists():
         return []
-    allowed_roots = (os.path.realpath(base),) + _trusted_skill_roots()
+    base_real = os.path.realpath(base)
+    allowed_roots = (base_real,) + _trusted_skill_roots()
 
     def probe(directory: Path) -> tuple[str | None, list[Path], Path | None]:
         lexical = os.path.abspath(directory)
@@ -599,12 +651,36 @@ def _iter_skill_files(
         if exclude_roots and _within_any(real, exclude_roots):
             return real, [], None
         if not _within_any(real, allowed_roots):
-            # On Windows, record the resolved child and the roots it is judged
-            # against whenever the containment gate turns a child of the skills
-            # base away, so a CI run surfaces the exact (candidate, roots) pair
-            # the gate rejects. Windows-only and logging-only: the return is
-            # unchanged, so no platform's behaviour is affected.
-            if os.name == "nt":
+            # The containment gate is a security boundary, so the link is
+            # refused. When this walk is the catalog base walk
+            # (``warn_outside_links``), a link the user placed directly in the
+            # skills base and pointing at a folder outside every allowed root
+            # (the "link my skills in from a repo" case) is reported once so the
+            # drop is not silent: name the target and the supported fix.
+            # is_link_or_junction covers both a POSIX symlink and a Windows
+            # junction, and the parent-realpath check limits the warning to a
+            # direct child of the base the user themselves created. A target
+            # under a configured ``skills.extra_paths`` root
+            # (``extra_path_roots``) stays silent, since it loads through the
+            # extra-path walk and the operator already followed the advice.
+            warned = False
+            if warn_outside_links:
+                try:
+                    is_direct_child_link = os.path.realpath(
+                        directory.parent
+                    ) == base_real and is_link_or_junction(directory)
+                except OSError:
+                    is_direct_child_link = False
+                if is_direct_child_link and not _within_any(real, extra_path_roots):
+                    _warn_skill_link_outside_roots(directory, real)
+                    warned = True
+            if not warned and os.name == "nt":
+                # On Windows, record the resolved child and the roots it is
+                # judged against whenever the containment gate turns a child of
+                # the skills base away, so a CI run surfaces the exact
+                # (candidate, roots) pair the gate rejects. Windows-only and
+                # logging-only: the return is unchanged, so no platform's
+                # behaviour is affected.
                 logger.warning(
                     "skill discovery: _within_any rejected a child of base "
                     "(candidate=%r, roots=%r)",

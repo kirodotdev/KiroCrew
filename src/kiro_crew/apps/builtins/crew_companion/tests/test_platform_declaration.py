@@ -13,7 +13,7 @@ POSIX-only.
 Omitting the block is not a neutral choice: the manifest then falls back to the
 implicit ``["macos", "linux"]`` default, which misreports Windows support on the
 App Store detail page a user reads before enabling the app -- ``platform.os`` is
-a published capability label, not an enable gate (``apps/routes.py`` only calls
+a published capability label, not an enable gate (``apps/routes_enable.py`` only calls
 ``supports_platform`` for a ``platform.installMode == "client"`` app, which no
 builtin sets).
 

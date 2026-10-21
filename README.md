@@ -1064,6 +1064,7 @@ make this tool possible:
 <a href="https://github.com/shortbloke" title="Martin Rowan"><img src="https://github.com/shortbloke.png?size=64" width="64" height="64" alt="Martin Rowan" /></a>
 <a href="https://github.com/ShortEmperor" title="Fabricio Escalante"><img src="https://github.com/ShortEmperor.png?size=64" width="64" height="64" alt="Fabricio Escalante" /></a>
 <a href="https://github.com/ShotaroKataoka" title="Shotaro Kataoka"><img src="https://github.com/ShotaroKataoka.png?size=64" width="64" height="64" alt="Shotaro Kataoka" /></a>
+<a href="https://github.com/ShreyPurohit" title="Shrey Purohit"><img src="https://github.com/ShreyPurohit.png?size=64" width="64" height="64" alt="Shrey Purohit" /></a>
 <a href="https://github.com/shrihan-vijay" title="Shrihan Vijay"><img src="https://github.com/shrihan-vijay.png?size=64" width="64" height="64" alt="Shrihan Vijay" /></a>
 <a href="https://github.com/shubag" title="shubag"><img src="https://github.com/shubag.png?size=64" width="64" height="64" alt="shubag" /></a>
 <a href="https://github.com/singledigit" title="Eric Johnson"><img src="https://github.com/singledigit.png?size=64" width="64" height="64" alt="Eric Johnson" /></a>

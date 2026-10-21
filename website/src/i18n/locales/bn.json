@@ -7378,6 +7378,10 @@
       "install_kiro_cli_run_for_platform": "ইনস্টল করতে গেটওয়ে হোস্টের প্ল্যাটফর্মের জন্য কমান্ডটি চালাও।",
       "install_command_macos_linux": "macOS ও Linux (এবং অন্য Unix-সদৃশ সিস্টেম)",
       "install_command_windows": "Windows (PowerShell-এ)",
+      "unzip_missing_install_first": "প্রথমে unzip ইনস্টল করো। ইনস্টলারের এটি দরকার, আর গেটওয়ে হোস্টে এটি নেই। এই কমান্ডগুলোর একটি বা তোমার সিস্টেমের প্যাকেজ ম্যানেজার ব্যবহার করো।",
+      "unzip_command_debian_ubuntu": "Debian বা Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora বা RHEL",
+      "install_kiro_cli_then_run_on_host": "তারপর Kiro CLI ইনস্টল করতে {{platform}} গেটওয়ে হোস্টে এই কমান্ডটি চালাও।",
       "setup_intro": "<0>{{platform}} গেটওয়ে হোস্টে</0> একটি কোডিং এজেন্ট চালু করো, তারপর ড্যাশবোর্ড নিজে থেকেই খুলে যাবে।",
       "setup_intro_unknown_platform": "<0>গেটওয়ে হোস্টে</0> একটি কোডিং এজেন্ট চালু করো, তারপর ড্যাশবোর্ড নিজে থেকেই খুলে যাবে।",
       "gateway_host": "গেটওয়ে হোস্ট",
@@ -7902,7 +7906,8 @@
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "preview_more_lines_one": "… আরও {{count}} লাইন",
-      "preview_more_lines_other": "… আরও {{count}} লাইন"
+      "preview_more_lines_other": "… আরও {{count}} লাইন",
+      "preview_gesture_hint": "পুরো লেখা বসাতে ডাবল-ক্লিক করো · Backspace পেস্টটি সরায়"
     },
     "privacyChapter": {
       "continue": "চালিয়ে যান",
@@ -17530,7 +17535,12 @@
         "backend_cpu_only": "CPU-তে চলে — এই বিল্ডে GPU নেই",
         "last_recognition_value": "সম্পূর্ণ লেখা পর্যন্ত {{duration}}, অদিও দৈর্ঘ্যের {{rtf}}×",
         "decode_threads_value": "{{n}} ডিকোড থ্রেড",
-        "ptt_save_refused": "সংরক্ষিত হয়নি: ব্রাউজারের স্টোরেজ পূর্ণ। কিছু জায়গা খালি করে আবার চেষ্টা করো।"
+        "ptt_save_refused": "সংরক্ষিত হয়নি: ব্রাউজারের স্টোরেজ পূর্ণ। কিছু জায়গা খালি করে আবার চেষ্টা করো।",
+        "decode_threads": "ডিকোড থ্রেড",
+        "decode_threads_desc": "স্থানীয় মডেল কথা চিনতে যতগুলো CPU থ্রেড ব্যবহার করে। অটো এই মেশিনের অর্ধেক কোর ব্যবহার করে, সর্বোচ্চ 16টি। খালি কোর থাকা বড় মেশিনে বেশি থ্রেড প্রতিটি ডিক্টেশন দ্রুত শেষ করে। পরিবর্তন পরের ডিক্টেশনে কার্যকর হয়, তখন মডেল একবার আবার লোড হয়।",
+        "decode_threads_auto": "অটো",
+        "decode_threads_auto_count": "অটো ({{n}})",
+        "decode_threads_env_override": "এই গেটওয়ে {{value}}টি থ্রেড ব্যবহার করে, যা KIROCREW_STT_THREADS নির্ধারণ করে। এই পছন্দটি ব্যবহার করতে ভেরিয়েবলটি সরান।"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "উপরে। Slack-এর বিপরীতে, Bot Framework-এ কোনো\n              শুধু-আউটবাউন্ড মোড নেই।",

@@ -157,11 +157,11 @@ class TestRegistryInstallDenialCarriesCode:
 def test_denial_code_matches_the_open_command_route():
     """One code for one condition, across every path that reports it.
 
-    ``routes.py`` already shipped this code on the ``openCommand`` denial; the
+    ``routes_enable.py`` already shipped this code on the ``openCommand`` denial; the
     install and enable paths joining it is what lets the frontend handle the
     condition once instead of per-endpoint. If someone renames the code in one
     place, this fails rather than leaving the affordance silently dead on the
     other paths.
     """
-    src = (_REPO_ROOT / "src/kiro_crew/apps/routes.py").read_text(encoding="utf-8")
+    src = (_REPO_ROOT / "src/kiro_crew/apps/routes_enable.py").read_text(encoding="utf-8")
     assert f'"code": "{DENIAL_CODE}"' in src

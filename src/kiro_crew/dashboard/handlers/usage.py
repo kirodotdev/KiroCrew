@@ -123,8 +123,8 @@ def _wrapper_chain(source: object) -> list[object]:
     attribute-synthesizing sources, not a depth limit.
 
     ``_runtime`` is traversed **last** deliberately. It is the only holder of
-    ``_agent`` for the session-provider shape (``runtime.py:273``), but it also
-    carries the process-level ``--model`` argument (``runtime.py:280``); visiting
+    ``_agent`` for the session-provider shape (``AcpRuntime._agent``), but it also
+    carries the process-level ``--model`` argument (``AcpRuntime._model``); visiting
     it after the whole ``_handle`` subtree keeps session-level model state ahead
     of process-level state when :func:`read_effective_model` falls through to
     ``_model``.

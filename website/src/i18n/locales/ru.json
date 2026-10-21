@@ -7626,6 +7626,10 @@
       "install_kiro_cli_run_for_platform": "Выполни команду для платформы хоста шлюза, чтобы установить его.",
       "install_command_macos_linux": "macOS и Linux (и другие Unix-подобные системы)",
       "install_command_windows": "Windows (в PowerShell)",
+      "unzip_missing_install_first": "Сначала установи unzip. Он нужен установщику, а на хосте шлюза его нет. Используй одну из этих команд или менеджер пакетов своей системы.",
+      "unzip_command_debian_ubuntu": "Debian или Ubuntu",
+      "unzip_command_fedora_rhel": "Fedora или RHEL",
+      "install_kiro_cli_then_run_on_host": "Затем выполни эту команду на хосте шлюза {{platform}}, чтобы установить Kiro CLI.",
       "setup_intro": "Запусти агента для программирования на <0>хосте шлюза {{platform}}</0>, и панель откроется автоматически.",
       "setup_intro_unknown_platform": "Запусти агента для программирования на <0>хосте шлюза</0>, и панель откроется автоматически.",
       "gateway_host": "Хост шлюза",
@@ -8156,7 +8160,8 @@
       "preview_more_lines_few": "… ещё {{count}} строки",
       "preview_more_lines_many": "… ещё {{count}} строк",
       "preview_more_lines_one": "… ещё {{count}} строка",
-      "preview_more_lines_other": "… ещё {{count}} строки"
+      "preview_more_lines_other": "… ещё {{count}} строки",
+      "preview_gesture_hint": "Двойной щелчок вставляет весь текст · Backspace удаляет вставку"
     },
     "privacyChapter": {
       "continue": "Продолжить",
@@ -18072,7 +18077,12 @@
         "backend_cpu_only": "Работает на CPU — в этой сборке нет GPU",
         "last_recognition_value": "{{duration}} до готового текста, {{rtf}}× длительности звука",
         "decode_threads_value": "потоков декодирования: {{n}}",
-        "ptt_save_refused": "Не сохранено: хранилище браузера заполнено. Освободи место и попробуй ещё раз."
+        "ptt_save_refused": "Не сохранено: хранилище браузера заполнено. Освободи место и попробуй ещё раз.",
+        "decode_threads": "Потоки декодирования",
+        "decode_threads_desc": "Сколько потоков ЦП локальная модель использует для распознавания речи. «Авто» берёт половину ядер этого компьютера, но не больше 16. На большом компьютере со свободными ядрами больше потоков быстрее завершают каждую диктовку. Изменение вступает в силу со следующей диктовки, при которой модель один раз перезагружается.",
+        "decode_threads_auto": "Авто",
+        "decode_threads_auto_count": "Авто ({{n}})",
+        "decode_threads_env_override": "Этот шлюз использует {{value}} потоков, заданных KIROCREW_STT_THREADS. Удали эту переменную, чтобы применить этот выбор."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "выше. В отличие от Slack, у Bot Framework нет\n              режима только для исходящих сообщений.",

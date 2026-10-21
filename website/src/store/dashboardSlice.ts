@@ -125,6 +125,18 @@ interface DashboardState {
    *  re-adds — no consumption step is needed. Pruned with the rest of the
    *  per-slot state when an authoritative frame drops the key. */
   slotMemberAt: Record<string, number>
+  /** Recent membership adds, by stamped key. A full `slots` frame carries no
+   *  ordering mark, so one the gateway serialized before the add can arrive
+   *  after it and omit the key; `sseSlots` keeps the row through such a frame
+   *  and asks for one `fetchSlots` to settle it (see `retainUnlistedMembers`).
+   *  An entry leaves when a `fetchSlots` dispatched after the add omits the
+   *  key, when the key is closed or removed, or after `UNLISTED_MEMBER_MAX_MS`. */
+  slotMemberUnlisted?: Record<string, UnlistedMember>
+  /** Set by `sseSlots` when it kept an unlisted member that still needs a
+   *  `fetchSlots` answer, cleared when any `fetchSlots` starts. A reducer
+   *  cannot dispatch, so the frame handler sends the read through
+   *  `readUnlistedMembers`. */
+  slotMemberReadWanted?: boolean
   /** Per in-flight `fetchSlots` requestId, the value of `slotWriteSeq` when the
    *  request was dispatched. The server serialized its reply after that instant,
    *  so any key whose `slotWrittenAt` is HIGHER was written locally while the
@@ -698,7 +710,108 @@ const stampSlotMember = (state: DashboardState, key: string): void => {
   state.slotWriteSeq = (state.slotWriteSeq ?? 0) + 1
   if (!state.slotMemberAt) state.slotMemberAt = {}
   state.slotMemberAt[stampKey(key)] = state.slotWriteSeq
+  if (!state.slotMemberUnlisted) state.slotMemberUnlisted = {}
+  state.slotMemberUnlisted[stampKey(key)] = { seq: state.slotWriteSeq, at: Date.now(), verifying: false }
 }
+
+/** An entry of `slotMemberUnlisted`. `verifying` is set once a `fetchSlots`
+ *  has been asked for, so a run of stale frames sends one request, not one
+ *  per frame. */
+export interface UnlistedMember { seq: number; at: number; verifying: boolean }
+
+/** How long a membership add may outlive full frames that omit it while no
+ *  `fetchSlots` answer arrives (the request failed or never settled). Past it,
+ *  the frame wins, as it did before the add was tracked. */
+const UNLISTED_MEMBER_MAX_MS = 15_000
+
+/** The rows a full `slots` frame should be applied as, given the membership
+ *  adds no frame has listed yet.
+ *
+ *  A frame the gateway serialized before a create or fork can reach the tab
+ *  after the op's HTTP response. It omits the new key, and applying it as a
+ *  whole-list replace would drop the row the tab just opened; the chat page
+ *  then clears the active session and reopens the remembered one. So a key
+ *  still in `slotMemberUnlisted` is kept, with its live row appended after the
+ *  frame's rows, and a `fetchSlots` is requested. That fetch is dispatched
+ *  after the add, so its reply is serialized after the server registered the
+ *  key: a reply that omits it means the chat was deleted elsewhere, and ends
+ *  the entry (`settleUnlistedMembers`). Such a chat is shown for at most one
+ *  GET round trip after the frame that omitted it.
+ *
+ *  A frame or reply that lists the key does not end the entry: an older
+ *  frame can still be in flight behind it, on the socket or against the HTTP
+ *  reply. The entry runs out on its time cap instead. */
+const retainUnlistedMembers = (state: DashboardState, rows: ChatSlot[]): ChatSlot[] => {
+  const unlisted = state.slotMemberUnlisted
+  if (!unlisted) return rows
+  const stampedKeys = Object.keys(unlisted)
+  if (!stampedKeys.length) return rows
+  const listed = new Set(rows.map(s => s.key))
+  const now = Date.now()
+  let kept: ChatSlot[] | null = null
+  for (const stamped of stampedKeys) {
+    const key = slotKeyOfStamp(stamped)
+    const entry = unlisted[stamped]
+    const live = (state.slots ?? []).find(s => s.key === key) // row-read: membership carry-over, the live row is kept unchanged
+    if (!live || state.closingSlots?.[key] || now - entry.at > UNLISTED_MEMBER_MAX_MS) {
+      delete unlisted[stamped]
+      continue
+    }
+    if (listed.has(key)) continue
+    if (!kept) kept = [...rows]
+    kept.push(live)
+    if (!entry.verifying) {
+      entry.verifying = true
+      state.slotMemberReadWanted = true
+    }
+  }
+  return kept ?? rows
+}
+
+/** A `fetchSlots` request settled. Its reply was serialized after every add
+ *  stamped at or below its mark, so for those keys it is the answer
+ *  `retainUnlistedMembers` waited for: their entries end, and the reply's own
+ *  list decides whether the row stays. A failed request (`listed` null)
+ *  answers nothing, so it only re-arms the request for the next omitting
+ *  frame. Runs before `settleSlotFetch`, which drops the mark. */
+const settleUnlistedMembers = (state: DashboardState, requestId: string | undefined, listed: Set<string> | null): void => {
+  const unlisted = state.slotMemberUnlisted
+  const mark = requestId === undefined ? undefined : state.slotFetchWriteMark?.[requestId]
+  if (!unlisted || mark === undefined) return
+  for (const stamped of Object.keys(unlisted)) {
+    if (unlisted[stamped].seq > mark) continue
+    // A failed read, or one that lists the key, settles nothing about frames
+    // still in flight on the socket: the entry stays, and the next frame that
+    // omits the key asks again.
+    if (!listed || listed.has(slotKeyOfStamp(stamped))) { unlisted[stamped].verifying = false; continue }
+    delete unlisted[stamped]
+    // A reply newer than the add that omits the key is the server saying it
+    // is gone. Drop the membership stamp too, so a reply sent before the add
+    // and still in flight cannot re-add it through `membersOutranking`.
+    delete state.slotMemberAt?.[stamped]
+  }
+}
+
+/** Whether a full frame omits a key `slotMemberUnlisted` still tracks. The
+ *  frame handler must then run `sseSlots` even for a byte-identical repeat:
+ *  that run is what applies the time cap and, after a failed read, asks for
+ *  the read again. Skipping it would keep the row with no end. */
+export const omitsUnlistedMember = (dashboard: DashboardState, rows: unknown): boolean => {
+  const unlisted = dashboard.slotMemberUnlisted
+  if (!unlisted || !Array.isArray(rows)) return false
+  const stamped = Object.keys(unlisted)
+  if (!stamped.length) return false
+  const listed = new Set((rows as ChatSlot[]).map(s => s.key))
+  return stamped.some(k => !listed.has(slotKeyOfStamp(k)))
+}
+
+/** Send the `fetchSlots` that `sseSlots` asked for when it kept a session a
+ *  stale frame omitted (see `retainUnlistedMembers`). Dispatched by the frame
+ *  handler right after `sseSlots`. */
+export const readUnlistedMembers = () =>
+  (dispatch: (action: ReturnType<typeof fetchSlots>) => unknown, getState: () => { dashboard: DashboardState }): void => {
+    if (getState().dashboard.slotMemberReadWanted) dispatch(fetchSlots())
+  }
 
 /** A single-slot mutation. Returning `false` means the writer's own guard
  *  declined and the row was left alone, so no write is stamped. */
@@ -1018,10 +1131,11 @@ const dashboardSlice = createSlice({
       // the sidebar until restoration finishes, and marking it loaded would
       // claim a snapshot arrived when none has.
       if (action.payload.length === 0 && !state.slotsLoaded) return
-      applySlots(state, action.payload)
+      const rows = retainUnlistedMembers(state, action.payload)
+      applySlots(state, rows)
       state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
-      reconcileSlots(state, new Set(action.payload.map(s => s.key)))
+      reconcileSlots(state, new Set(rows.map(s => s.key)))
     },
     // Sidebar → shortcut and close-landing order feed (see
     // DashboardState.sidebarOrder). The dispatch site diff-guards, so every
@@ -1141,6 +1255,8 @@ const dashboardSlice = createSlice({
       // snapshot and confirm any awaiting hold. History may trust this at once;
       // the hold still spends its list budget before the row can reappear.
       for (const key of removed ?? []) {
+        // A server-confirmed removal ends any retention of the key.
+        delete state.slotMemberUnlisted?.[stampKey(key)]
         if (isUnsafeKey(key)) continue
         if (!state.durablyRemoved) state.durablyRemoved = {}
         state.durablyRemoved[key] = true
@@ -1221,6 +1337,7 @@ const dashboardSlice = createSlice({
     },
     removeSlotOptimistic(state, action: PayloadAction<string>) {
       state.slots = state.slots.filter(s => s.key !== action.payload)
+      delete state.slotMemberUnlisted?.[stampKey(action.payload)]
       state.unreadSlots = state.unreadSlots.filter(k => k !== action.payload)
       if (state.unreadSince?.[action.payload] !== undefined) {
         const wasManual = state.unreadSince[action.payload] === MANUAL_UNREAD
@@ -1569,6 +1686,9 @@ const dashboardSlice = createSlice({
         // is the instant every later single-slot write outranks it from.
         if (!state.slotFetchWriteMark) state.slotFetchWriteMark = {}
         state.slotFetchWriteMark[action.meta.requestId] = state.slotWriteSeq ?? 0
+        // This request is newer than every add tracked so far, so it is the
+        // read a kept session was waiting for.
+        state.slotMemberReadWanted = false
       })
       .addCase(fetchSlots.fulfilled, (state, action) => {
         // A reply a confirmed close waited on past its cap is known to predate
@@ -1670,9 +1790,11 @@ const dashboardSlice = createSlice({
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
         reconcileSlots(state, new Set(rows.map((s: { key: string }) => s.key)), fresh)
+        settleUnlistedMembers(state, requestId, replyKeys)
         settleSlotFetch(state, requestId)
       })
       .addCase(fetchSlots.rejected, (state, action) => {
+        settleUnlistedMembers(state, action.meta?.requestId, null)
         settleSlotFetch(state, action.meta?.requestId)
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })

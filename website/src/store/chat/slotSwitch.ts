@@ -16,7 +16,7 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import {
@@ -726,6 +726,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       parked[safeKey(key)] = [...reseated.remaining, ...orphaned]
       next = hydrateQueuedBubbles(next, queue)
       next = preserveSettledMcpOauth(existing, next)
+      next = preserveSettledUpsertRows(existing, next)
       next = deduplicateByMid(next)
       next = preserveSettledStopState(existing, next)
       // Switching back to an already-loaded slot re-fetches a history that is

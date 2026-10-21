@@ -766,7 +766,11 @@ class SkillsConfig:
             "Extra Skill Paths",
             "Additional directories to scan for skills. Supports ~ expansion. "
             "Skills from extra_paths are read-only (trigger matching + loading). "
-            "Local ~/.kiro/crew/skills/ takes precedence for duplicate names.",
+            "Local ~/.kiro/crew/skills/ takes precedence for duplicate names. "
+            "A skill folder linked into the skills directory from an outside "
+            "location is not followed through the link; to load it, add the "
+            "target's parent directory here. Otherwise it is skipped and a "
+            "warning naming the target is logged.",
         ),
     )
     project_skills_enabled: bool = field(

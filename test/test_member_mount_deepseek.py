@@ -211,10 +211,13 @@ class TestDeepseekSessionArray:
         with pytest.raises(agent_mod.DerivedSpecStale):
             client._resolve_session_mcp_servers()
 
-    def test_pi_takes_session_control_and_not_the_panel(self, agents_dir, tmp_path):
-        """The mirror-less branch is gated per membership: pi holds dispatch, not panel."""
+    def test_pi_takes_session_control_and_the_panel(self, agents_dir, tmp_path):
+        """The mirror-less branch is gated per membership: pi holds dispatch and panel."""
         client = _client(tmp_path, MEMBER_KEY, backend=ACP_BACKEND_PI)
-        assert _names(client._resolve_session_mcp_servers()) == [MEMBER_DISPATCH_SERVER]
+        assert _names(client._resolve_session_mcp_servers()) == [
+            MEMBER_DISPATCH_SERVER,
+            MEMBER_PANEL_SERVER,
+        ]
 
 
 class TestPooledStubsBesideTheMount:

@@ -60,6 +60,16 @@ interface SttConfig {
   streaming?: boolean
   silence_ms?: number
   partial_interval_ms?: number
+  /** Decode threads for the local model; 0 derives the count from the host. */
+  threads?: number
+  /** Picker choices served by the gateway: 0 (the Auto option, which resolves to a
+   *  count derived from this host and is never run as a literal 0), then counts this
+   *  host can run. */
+  thread_options?: number[]
+  /** The count Auto resolves to on this host, shown in the Auto option's label. */
+  threads_auto?: number
+  /** `KIROCREW_STT_THREADS` as the gateway sees it, or null when unset. It wins over `threads`. */
+  threads_env?: string | null
   endpointing?: boolean
   submit_on_release?: boolean
   dictation_panel?: boolean
@@ -1551,6 +1561,39 @@ export default function SttSettings({ cardIndex }: {
           <SettingsToggle label={i18nT('pages.settings.sttSettings.submit_on_release')} hint={i18nT('pages.settings.sttSettings.submit_on_release_desc')} checked={!!stt.submit_on_release} onChange={v => set({ submit_on_release: v })} disabled={saving} configKey="stt.submit_on_release" />
 
           <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+          {/* The thread picker is the local provider's alone: the others run their
+              recogniser somewhere this setting cannot reach. Its options come from
+              the gateway, sized to the host's cores, so it offers no new count the
+              engine would lower. A stored count above the cores (a config from a
+              larger machine) stays listed so the picker shows it, and the engine
+              clamps it at load. */}
+          {isLocal && (stt.thread_options?.length ?? 0) > 1 && (
+            <>
+              <SettingsSelect
+                label={i18nT('pages.settings.sttSettings.decode_threads')}
+                hint={i18nT('pages.settings.sttSettings.decode_threads_desc')}
+                value={String(stt.threads ?? 0)}
+                options={(stt.thread_options ?? []).map(String)}
+                optionLabels={(stt.thread_options ?? []).map(n => (n !== 0
+                  ? fmtNumber(n)
+                  : stt.threads_auto
+                    ? i18nT('pages.settings.sttSettings.decode_threads_auto_count', { n: fmtNumber(stt.threads_auto) })
+                    : i18nT('pages.settings.sttSettings.decode_threads_auto')))}
+                onChange={v => set({ threads: Number(v) })}
+                // While KIROCREW_STT_THREADS overrides the stored value, a choice
+                // here has no effect, so the picker is disabled and the note below
+                // says why.
+                disabled={saving || Boolean(stt.threads_env)}
+                configKey="stt.threads"
+              />
+              {stt.threads_env && (
+                <p className="text-[12px] text-warn -mt-1 mb-1">
+                  {i18nT('pages.settings.sttSettings.decode_threads_env_override', { value: fmtNumber(Number(stt.threads_env)) })}
+                </p>
+              )}
+            </>
+          )}
 
           {stt.enabled && <PushToTalkConfig />}
         </SettingsSection>

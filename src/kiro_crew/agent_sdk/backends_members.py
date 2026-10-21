@@ -37,6 +37,33 @@ from kiro_crew.agent_sdk.backends import (
 # (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``): the
 # server the mirror projected out of a saved spec ran in the session. Codex and
 # DeepSeek rest on unit tests only.
+#
+# pi is NOT a member, though it holds a member session key
+# (``ACP_BACKENDS_MEMBER_DISPATCH``) and a panel (``ACP_BACKENDS_MEMBER_PANEL``).
+# Membership here means a saved spec is confirmed against what the session consumed,
+# and on pi there is no consumed spec to confirm:
+#
+#   * pi has no mirror (``providers/mirrors/registry.py`` ``MIRRORS``), so
+#     ``AcpClient._resolve_session_mcp_servers`` takes the mirror-less branch, which
+#     never records ``_session_agent_spec``. ``confirm_member_projection`` would hand
+#     ``None`` to ``consumed_spec_matches`` and refuse EVERY saved-spec member on pi
+#     with ``capability_runtime_unverified`` -- fail-closed, and useless;
+#   * recording that parse would not make the confirmation true. pi's projection is
+#     ``BROKER_ONLY``: the handoff carries the member mounts and the pooled broker
+#     stubs and nothing else, so of the servers a saved spec declares only the ones
+#     the shared gateway pools reach pi (all of them are absent with pooling off),
+#     and a pane reporting the template loaded would overstate what runs;
+#   * pi is not in ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``, so a saved ``"tools": []``
+#     would run with pi's native tools on -- wider than saved, which this set exists
+#     to refuse.
+#
+# So a saved-spec member on pi is refused before spawn with
+# ``capability_harness_unsupported`` (``session_allocation_parts.get_or_create`` reads
+# ``member_capabilities_supported`` off this set; ``agent_capabilities.member_backend_gap``
+# warns on the Capabilities page in the same words) rather than run either narrower or
+# wider than it was saved. Joining needs the spec's servers projected into the handoff
+# and the zero-tool ban enforced first, then a live capture of a saved spec's server
+# reaching pi under ``acp_frames/pi/``.
 ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -292,8 +319,28 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 # routing (``Routing.VERIFIED_GATE_EXTENSION``) is enforced. The decision is that a
 # member session on deepseek gets a panel.
 #
-# pi is not a member. It holds a member session key (``ACP_BACKENDS_MEMBER_DISPATCH``),
-# and H6 asks for the panel on its own evidence: no panel mount has been driven on it.
+# pi is a member on the same two preconditions, held for THIS harness and on its own
+# evidence (H6), not on its session-control membership:
+#
+# * the array is one this core composes: pi has no mirror, so
+#   ``AcpClient._mirrorless_member_mounts`` builds it, and the panel entry rides the
+#   gate extension's handoff file (``acp.harness.pi.pi_mcp_handoff_payload``) with its
+#   identity env intact, because pi-acp drops the wire array;
+# * its routing (``Routing.VERIFIED_GATE_EXTENSION``) is enforced: every call, MCP
+#   included, raises the extension's confirm dialog, and the read-back refuses a
+#   session that cannot load it.
+#
+# The mount is driven, not inferred:
+# ``test/fixtures/acp_frames/pi/member-panel-mount-live.jsonl`` is a member DM session
+# key on pi-acp 0.0.34 over pi 1.2.0, in which the client's own resolver composed the
+# panel element, pi registered ``kirocrew-panel`` from the handoff and listed its
+# tools, the model's ``panel_publish`` call asked ``session/request_permission``
+# through the gate first, and the panel server's own answer reached the turn: the
+# identity the handoff carried reached the gateway, which refused to vouch for a
+# session it had not created (that host can run no gateway pi session, having no
+# sandbox backend). Like deepseek, a narrowed panel tool withholds the whole mount (no
+# mirror, so no per-tool deny channel), and ``agent.crew_panel: false`` withholds it
+# outright.
 #
 # kiro is excluded and cannot be added by this set alone: a member session's key is
 # what every mount reads, and ``providers/acp_runtime_start.py`` ``_member_session_key`` gates
@@ -308,5 +355,6 @@ ACP_BACKENDS_MEMBER_PANEL = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_PI,
     }
 )

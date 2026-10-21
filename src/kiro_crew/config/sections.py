@@ -363,6 +363,7 @@ from kiro_crew.config.sections_stt import (  # noqa: F401
     _validated_stt_custom_sha256,
     _validated_stt_model,
     _validated_stt_provider,
+    _validated_stt_threads,
     _validated_transcribe_languages,
     _validated_transcribe_vocabulary,
     stt_provider_is_coerced,
@@ -412,6 +413,9 @@ from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
 from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EVICT_SECS
 from kiro_crew.stt.limits import DEFAULT_PARTIAL_INTERVAL_MS as _STT_DEFAULT_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import DEFAULT_SILENCE_MS as _STT_DEFAULT_SILENCE_MS
+from kiro_crew.stt.limits import MAX_THREADS as _STT_MAX_THREADS
+from kiro_crew.stt.limits import THREADS_AUTO as _STT_THREADS_AUTO
+from kiro_crew.stt.limits import parse_threads as _parse_stt_threads
 from kiro_crew.stt.models import CATALOG as _STT_CATALOG
 from kiro_crew.stt.models import CUSTOM_MODEL as _STT_CUSTOM_MODEL
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL

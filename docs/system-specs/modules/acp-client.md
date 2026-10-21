@@ -72,7 +72,7 @@ The class statement sets `__module__ = "kiro_crew.acp.client"`, so reprs, pickle
 the class's own code. The class keeps the three seed static methods that read the
 `AcpClient` global (`_settings_path_holds`, `_claim_pathname_if_ours`,
 `_restore_aside_without_clobber`) and `is_process_alive` (the pid-reader ratchet counts
-its name). `AcpRuntime` stays in its module; `AcpSessionHandle`'s class home is below. `acp/client.py`
+its name). The class homes of `AcpRuntime` and `AcpSessionHandle` are below. `acp/client.py`
 keeps `_mise_which`, `_resolve_ssh_auth_sock` and `_resolve_spawn_env` (the spawn audit,
 the subprocess-encoding baseline and the cross-platform gate key them on this path) and
 the compatibility facade. The session start reads `_resolve_spawn_env` as a global of
@@ -155,16 +155,21 @@ the instance fields its members write and read. `_own_methods` names each bound 
 its class attribute, so its `__qualname__` (what a coroutine's and a task's repr print) and
 `inspect.signature` read as before the move, and only its `__module__` names the owner. An
 exception class an owner defines keeps `kiro_crew.acp.runtime` as its `__module__`, so error
-chains name the path callers import it from; `_MirroredSessionMcp` keeps its owner's, which
-nothing reads. `_RUNTIME_OWNERS` lists the owners lowest layer first: an owner imports only
-owners listed before it. Owners log under the `kiro_crew.acp.runtime` logger and never import
+chains name the path callers import it from; `_MirroredSessionMcp` and `_PendingRequests` keep
+their owner's, which nothing reads. The class statement is `acp/runtime_class.py`, which
+`acp/runtime.py` re-exports with `kiro_crew.acp.runtime` as its `__module__`, so
+`inspect.getsource(AcpRuntime)` does not find the class through that module name: read a
+member's source, or `acp/runtime_class.py`. `_RUNTIME_OWNERS` lists the owners lowest layer
+first: an owner imports only owners listed before it. Owners log under the
+`kiro_crew.acp.runtime` logger and never import
 `acp/runtime.py` at run time. The facade keeps binding every name it bound before -- its own
 unused imports are exempt from flake8's F401, and an import check stands in for it: each
 import is a name the facade bound before, its mirror glue, a name an owner defines, or a name
 the facade's or an owner's code reads -- keeps forwarding the names in `_EXPORTS_BY_OWNER` to
 their owners, and a write through it reaches every owner binding the same object
 (`kiro_crew._facade_mirror`). `test/test_runtime_bindings.py` pins the member inventory, the
-binding, the reach and the import check.
+binding, the reach and the import check. New `AcpRuntime` behaviour goes to the owner whose row
+names its responsibility, bound in the class under that owner's header.
 
 | Runtime owner | Owns |
 |---|---|
@@ -174,10 +179,14 @@ binding, the reach and the import check.
 | `acp/runtime_session_setup.py` | what `session/new` and `session/load` are built from and checked against: the working directory, the MCP server array (the mirrored projection, the stub session, the pooled and unpooled control planes, the member panel), KAS custom agents, the derived-spec and member-projection checks, the unresolved-reference guard, the session-open mount check, the start budget and the copy of the native launch sources |
 | `acp/runtime_session_create.py` | `session/new` end to end: `create_session`, the collector hand-off of a start that outlives its budget and the late-session teardown, the finish every answered start shares, and the entitlement probe session |
 | `acp/runtime_session_load.py` | `session/load` end to end: resuming a prior session and waiting for its managed MCP servers |
-
-The members no row above names, and the module-level code they read, are still defined in
-`acp/runtime.py`. New `AcpRuntime` behaviour goes to the owner whose row names its
-responsibility, bound in the class under that owner's header.
+| `acp/runtime_session_registry.py` | the sessions this runtime holds and how each one leaves: init frames staged before a session id is known, the start-stall MCP diagnostics, turn-active marks, and terminate and unregister |
+| `acp/runtime_mode_activation.py` | putting a started session on its agent: the bracketed `session/set_mode` with its skill-view aliases and the one-at-a-time projection generation, the spawn-agent checks, and the model an agent switch selected |
+| `acp/runtime_wire.py` | JSON-RPC over the child's stdin: requests, notifications, responses and errors under the one write lock and the no-progress bound, the answer futures, and the awaited control-plane request (`_send_and_await`) |
+| `acp/runtime_liveness.py` | whether the runtime is alive, busy, dead or due to recycle: the exit watch, the stderr drain and its latches, death attribution and its summary, reap tracking, session occupancy and the age and RSS staleness checks |
+| `acp/runtime_host_requests.py` | requests the agent sends this host that no session turn answers: permission requests for unregistered sessions (bounded off-loop answers and their audit), the host credential callback, MCP sign-in and re-attempt, the consent URL, the engine's MCP secret store (`_kiro/secret/*`), and ownerless requests |
+| `acp/runtime_frame_accounting.py` | what the reader drops or truncates, counted instead of logged per frame: the backend subagent roster and its overflow episodes, and the unroutable-frame drop summaries |
+| `acp/runtime_reader_loop.py` | the single stdout reader: routing every frame by id and sessionId, the host's notification aliases, oversize-frame recovery, and the error an awaited request fails with |
+| `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and `_own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
 
 `acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
 the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
@@ -2450,7 +2459,7 @@ kiro can return a `-32603` error that is an *advisory* that it substituted a dif
 
 **Context-window backfill.** kiro 2.10+ metadata may carry only a context-usage *percentage* (no absolute token counts). `_backfill_context_window(pct)` derives the window and used-token counts from the central `model_registry.model_window(self._resolved_model_id or self._model)` authority (gated on `has_known_window` so an unknown model is never backfilled with a guessed window) and the percentage, so the dashboard token text still renders when only a percentage arrives. `_resolved_model_id` begins as `models.currentModelId`, then becomes a successfully dispatched non-default startup override or explicit switch, whether it uses `session/set_model` or `session/set_config_option`; a policy-substitution advisory on the latter records the model actually served for that request only. Automatic and unusable routes retain the backend-reported default.
 
-**Per-turn kiro billing credits.** `_track_metadata()` parses each `_kiro.dev/metadata` notification via the shared `parse_metadata()`, capturing `meteringUsage` entries with `unit=="credit"` (kiro bills in credits; token fields are 0 for the acp provider) into `AcpPromptStats.credits`, accumulated across the turn and surfaced on `EVENT_COMPLETE`.
+**Per-turn kiro billing credits.** `_track_metadata()` parses each `_kiro.dev/metadata` notification via the shared `parse_metadata()`, capturing `meteringUsage` entries with `unit=="credit"` (kiro bills in credits; token fields are 0 for the acp provider) into `AcpPromptStats.credits`, accumulated across the turn and surfaced on `EVENT_COMPLETE`. Credits read between turns by `wait_for_compaction()` and `_drain_post_compaction_metadata()` (`between_turns=True`) are held in `_between_turn_credits` and added once to the next turn's stats right after `carry_over()` in `send_message_stream()`, `_dispatch_events()` and `_read_prompt_response()`. `rekey()` drops the held amount.
 
 **Per-turn cost and token counts (claude seam).** The `claude-agent-acp` adapter bills in cost/tokens instead of credits: a session-cumulative `cost: {amount, currency}` rides `usage_update`, and turn-scoped token counts (`inputTokens`/`outputTokens`/`cachedReadTokens`/`cachedWriteTokens`) ride the PromptResponse. Both are validated at the shared `_dispatch.py` chokepoints (`parse_usage_cost`, `parse_prompt_token_usage` — same defensive posture as `parse_usage_update`). `parse_usage_cost` additionally drops the whole cost when a `currency` is present and not exactly `"USD"`, since every consumer stores the result in USD-denominated fields; an absent currency stays accepted for adapters that omit it. Validated readings are folded into `AcpPromptStats`: the cumulative cost is converted to a per-turn delta by `apply_cost_cumulative`, and the baseline belongs to one ACP session. `session/new` starts it at a known zero (`begin_cost_session`). A restore (`session/load` or `session/resume`, on both `AcpClient` and `AcpRuntime.load_session`) calls `restore_cost_session`, because the claude harness brings a resumed session's cost ledger back from its own transcript: the counter carries the session's whole lifetime spend, not zero. A baseline measured on that same session survives the adapter-process restart (`_reset_state` leaves it alone) and keeps billing deltas; any other baseline is marked unknown, and the next reading is adopted as the baseline and bills $0. A reading below a known baseline also rebases and bills $0 rather than being taken whole, which would re-bill a restored lifetime. Both rebases log a WARNING naming the session and the readings, so a gap in the usage rows explains itself: Crew under-counts at most one turn after a restore and never re-bills earlier spend. The baseline survives `carry_over()` like the context fields and is zeroed by `reset_context_state()`. The token counts accumulate via `apply_prompt_token_usage` (`_track_prompt_usage` on both `AcpClient` and `AcpSessionHandle`). Every `EVENT_COMPLETE` construction site builds its `TurnUsage` through the single `AcpPromptStats.to_turn_usage()` helper, so `cost_usd` and the token dimensions populate uniformly and the per-turn persist gate fires on the claude seam. kiro-cli sends neither signal, so on the kiro path the new dimensions stay 0 and `credits` flows exactly as before (harness parity — no `_is_claude` branch anywhere on this wiring).
 

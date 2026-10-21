@@ -831,6 +831,29 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     assert host.calls == []
 
 
+def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
+    host, capsys, monkeypatch
+) -> None:
+    result = cli_doctor.diagnostics.BundleResult(
+        zip_path=host.tmp / "diag.zip", filename="diag.zip"
+    )
+    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+
+    def refuse_context():
+        raise PlatformCompositionError("companion did not compose")
+
+    monkeypatch.setattr(cli_doctor.diagnostics, "current_context", refuse_context)
+
+    out, code = host.run(capsys, bundle=True)
+
+    assert "  ✅ bundle: <TMP>/diag.zip\n" in out
+    assert out.endswith("\n  Issue link skipped: the platform companion does not compose.\n")
+    assert "Open a GitHub issue" not in out
+    assert "github.com" not in out
+    assert code is None
+    assert host.calls == []
+
+
 def test_bundle_mode_exits_one_when_the_bundle_cannot_be_written(host, capsys, monkeypatch) -> None:
     def refuse():
         raise OSError("disk full")

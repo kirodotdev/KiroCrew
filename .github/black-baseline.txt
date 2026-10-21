@@ -480,7 +480,6 @@ test/test_design_tweak_queue_routes.py
 test/test_design_tweak_relay_paths.py
 test/test_dev_fleet_node_toolchain.py
 test/test_dev_fleet_server_more_coverage.py
-test/test_diagnostics.py
 test/test_display_time_redaction.py
 test/test_doc_parser.py
 test/test_docker_entrypoint.py
@@ -737,7 +736,6 @@ test/test_skill_browser.py
 test/test_skill_dedupe.py
 test/test_skill_discover.py
 test/test_skill_home_paths.py
-test/test_skill_index_app_symlinks.py
 test/test_skill_paths_and_mcp_sync.py
 test/test_skill_pending.py
 test/test_skill_pending_notify.py

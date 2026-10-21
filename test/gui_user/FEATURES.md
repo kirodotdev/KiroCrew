@@ -26,7 +26,7 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 270 | 42 | 166 | 12 | 27 | 23 |
+| **All features** | 271 | 42 | 167 | 12 | 27 | 23 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
@@ -58,12 +58,12 @@ under `scenarios/` says how the lane checks it.
 | Popouts & embeds (`popout`) | 6 | 0 | 4 | 2 | 0 | 0 |
 | Authentication & sign-in (`auth`) | 3 | 2 | 0 | 0 | 0 | 1 |
 | Onboarding (`onboarding`) | 4 | 0 | 4 | 0 | 0 | 0 |
-| Settings (`settings`) | 47 | 12 | 28 | 3 | 0 | 4 |
+| Settings (`settings`) | 48 | 12 | 29 | 3 | 0 | 4 |
 | Themes (`themes`) | 3 | 0 | 2 | 0 | 1 | 0 |
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 12 | 0 | 12 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 161 · P3 62. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -401,6 +401,7 @@ Priorities: P0 10 · P1 37 · P2 161 · P3 62. Deduped from 387 raw records.
 | P2 | `settings-voice-auto-speak-toggle` | As a dashboard user, I want to enable Auto-speak Responses, so that every assistant reply is read aloud. | `/settings/voice` | minimal | nightly | 3 |
 | P2 | `settings-voice-panel` | As a dashboard user, I want to open Settings > Voice, so that I can configure spoken replies and dictation. | `/settings/voice` | minimal | nightly | 2 |
 | P2 | `settings-voice-ptt-shortcut` | As a dashboard user, I want to set the dictation Shortcut key and how it works (hold/tap/both), so that I can start recording from the keyboard. | `/settings/voice` | minimal | nightly | 4 |
+| P2 | `settings-voice-stt-decode-threads` | As a dashboard user on a machine with many cores, I want to pick how many CPU threads the local speech model uses, so that dictation finishes sooner. | `/settings/voice` | minimal | nightly | 3 |
 | P2 | `settings-voice-stt-enable-and-provider` | As a dashboard user, I want to enable dictation and choose Local or Transcribe in Settings > Voice, so that I can speak into the message box. | `/settings/voice` | minimal | nightly | 4 |
 | P2 | `settings-voice-tts-provider-select` | As a dashboard user, I want to switch the TTS Provider in Settings > Voice, so that spoken replies use the engine I choose. | `/settings/voice` | minimal | nightly | 4 |
 

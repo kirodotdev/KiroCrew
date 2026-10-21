@@ -59,6 +59,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (
 )
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun
+from kiro_crew.testing.wait import await_until
 
 # ── GET /api/taskrunner ──
 
@@ -1126,7 +1127,7 @@ class TestFromChat:
                 _request(_state(runner), json_body={"steps": [{"title": "first"}]})
             )
         )
-        await asyncio.wait_for(update_started.wait(), timeout=1)
+        await await_until(update_started, what="update_plan being entered")
         created = next(iter(runner._runs.values()))
         created.workflow_run_id = "workflow-orphan-candidate"
         request_task.cancel()

@@ -5,7 +5,7 @@
  */
 
 import { createVoiceRequestId } from '../../lib/voicePlayback'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { ApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -84,12 +84,23 @@ export function createVoiceEndpoints({ post, put, j, jfetch: fetch }: ClientTran
   }
 
   const synthesis = {
-    voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string; request_id?: string }) => {
-      const request_id = opts?.request_id || createVoiceRequestId()
-      window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot, request_id } }))
-      return post('/api/voice/synthesize', { slot, text, ...opts, request_id }).then(j).catch(error => {
+    voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string; request_id?: string; clientFallback?: boolean }) => {
+      const { clientFallback = false, ...synthOpts } = opts ?? {}
+      const request_id = synthOpts.request_id || createVoiceRequestId()
+      // `clientFallback` + `text` ride the start event so the playback owner can
+      // own the voice_unavailable outcome: on a headless gateway the WS
+      // `voice_error` frame arrives BEFORE this HTTP 502, so the owner — not this
+      // catch — is the single place that decides between speaking on the client
+      // and showing the failure notice. `clientSpeechAvailable()` is re-checked
+      // there, at the moment of the decision.
+      window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot, request_id, clientFallback, text } }))
+      return post('/api/voice/synthesize', { slot, text, ...synthOpts, request_id }).then(j).catch(error => {
         const code = error instanceof ApiError ? parseErrorCode(error.body) : undefined
-        window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot, request_id, code: code || 'voice_synthesis_failed' } }))
+        // The gateway's cleaned (strip_markdown) text, carried on voice_unavailable
+        // so the client fallback voices placeholders rather than raw markup. Only
+        // consulted when a WS voice_error frame did not already own the outcome.
+        const speakable = error instanceof ApiError ? parseErrorField(error.body, 'speakable') : undefined
+        window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot, request_id, code: code || 'voice_synthesis_failed', speakable } }))
         throw error
       })
     },

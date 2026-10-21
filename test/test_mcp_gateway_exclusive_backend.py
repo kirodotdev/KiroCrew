@@ -23,6 +23,7 @@ import pytest
 
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolAtCapacity, PoolKey
+from kiro_crew.testing.wait import finished
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -540,7 +541,7 @@ async def _drive_handler(monkeypatch: pytest.MonkeyPatch, *, poolable: bool) -> 
     monkeypatch.setattr(gw, "_acquire_backend", _fake_acquire)
     monkeypatch.setattr(gw, "_drain_inbox_to_stub", _fake_drain)
 
-    await asyncio.wait_for(
+    await finished(
         gw._handle_connection(
             _FrameReader([_register_frame(poolable=poolable), _TOOL_CALL]),
             _NullWriter(),
@@ -549,7 +550,7 @@ async def _drive_handler(monkeypatch: pytest.MonkeyPatch, *, poolable: bool) -> 
             socket_path=Path("/tmp/ex.sock"),
             hot_keys=None,
         ),
-        timeout=5.0,
+        "the connection handler draining its frames",
     )
     return pool
 

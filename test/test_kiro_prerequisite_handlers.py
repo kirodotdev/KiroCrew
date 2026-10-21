@@ -692,6 +692,8 @@ class TestKiroPrerequisiteHandlers:
             # because the hazard the comment above names is not hypothetical -- this
             # branch is hand-built, so the key has to be added by hand with it.
             assert body["probe_timed_out"] is False
+            # Whether the host has unzip is host state too, redacted the same way.
+            assert body["unzip_missing"] is False
             # The pre-upgrade-tab shim is served to every caller, so the payload
             # shape does not vary by who asks.
             assert body["operation"]["status"] == "idle"

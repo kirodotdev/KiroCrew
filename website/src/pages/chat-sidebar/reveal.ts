@@ -8,6 +8,7 @@ import type { ChatFolder } from '../../types'
 import { safeSetItem } from '../../utils/safeStorage'
 import { sessionRowIdentity } from './rowIdentity'
 import { HIDDEN_FOLDERS_LS_KEY } from './persistence'
+import { FOLDER_BODY_COLLAPSE_MS } from '../../components/FolderBody'
 import type { SortKey } from '../chat/sessionOrder'
 import type { Slot, RevealBlockingFilter } from './types'
 
@@ -50,6 +51,8 @@ const REVEAL_FLASH_HOLD_MS = 1600
  *  the classes are removed at HOLD + FADE + slack, so shortening this below
  *  the CSS duration snaps the outline off mid-fade. */
 const REVEAL_FLASH_FADE_MS = 500
+/** Margin past the folder-body open animation before a retried reveal scrolls. */
+const REVEAL_SETTLE_SLACK_MS = 50
 
 /** Consumes session and folder reveal requests and flashes the target row. */
 export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView }: {
@@ -130,6 +133,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     const seq = run.seq
     if (run.timer != null) { clearTimeout(run.timer); run.timer = null }
     let attempt = 0
+    let settled = false
     const tryScroll = () => {
       if (revealRunRef.current.seq !== seq) return
       let el: HTMLElement | null = null
@@ -159,6 +163,17 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
         // bug reports instead of vanishing.
         // eslint-disable-next-line no-console -- records that the bounded retry loop exhausted REVEAL_MAX_ATTEMPTS; without it an unrendered row is indistinguishable from a reveal that worked
         else console.debug('reveal-in-sidebar: row never became visible for', kind, key)
+        return
+      }
+      // A row found on a RETRY was waiting for something to open, usually a
+      // collapsed ancestor whose FolderBody is still animating its track open.
+      // Measured now, the row sits about where the closed body was, and the
+      // opening body then pushes it past a short sidebar's edge. Scroll once the
+      // open has finished. Same serial check as the retry, so a newer reveal
+      // still cancels this one.
+      if (attempt > 0 && !settled) {
+        settled = true
+        run.timer = window.setTimeout(tryScroll, FOLDER_BODY_COLLAPSE_MS + REVEAL_SETTLE_SLACK_MS)
         return
       }
       const reduce = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -196,6 +211,16 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
       // (there is nothing to highlight), so leave a trace for bug reports.
       // eslint-disable-next-line no-console -- a reveal's only success signal is the scroll+flash, so this early return is the one path where the user's click provably did nothing and nothing else records it
       console.debug('reveal-in-sidebar: no session for key', key)
+      return
+    }
+    // A default-folder create's request (see `revealRequest.openFoldersOnly`):
+    // open the folder path and stop. The user created a chat; they did not ask
+    // to drop their search or filters, so a row a filter hides stays hidden
+    // until they clear it, exactly as after a folder "+" create. A new chat is
+    // never stale-collapsed and has no conductor, and the row needs no flash
+    // to be found, so the steps below do not apply.
+    if (revealRequest.openFoldersOnly) {
+      if (slot.folder_id) expandFolderAncestors(slot.folder_id)
       return
     }
     // Reveal means "show me this row", so drop every filter hiding the target

@@ -32,6 +32,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Badge, Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -1062,14 +1063,20 @@ export function knownPlatform(platform: string | undefined): string {
  * other install route (RPM, AppImage, musl). The commands are `<code>` children,
  * never catalog values — a translated command cannot be typed.
  */
-function KiroInstallCommands({ platform }: { platform: string }) {
+function KiroInstallCommands({ platform, unzipMissing }: { platform: string; unzipMissing: boolean }) {
   const windows = platform === 'Windows'
   const unix = platform === 'macOS' || platform === 'Linux'
   const known = knownPlatform(platform) !== ''
+  // The prerequisite and the installer read as two ordered steps: "First, install
+  // unzip", then this line.
+  const unzipFirst = platform === 'Linux' && unzipMissing
   return (
     <div className="space-y-3">
+      {unzipFirst && <KiroUnzipPrerequisite />}
       <p className="text-[13px] leading-relaxed text-text">
-        {known
+        {unzipFirst
+          ? i18nT('components.kiroPrerequisiteGate.install_kiro_cli_then_run_on_host', { platform })
+          : known
           ? i18nT('components.kiroPrerequisiteGate.install_kiro_cli_run_on_host', { platform })
           : i18nT('components.kiroPrerequisiteGate.install_kiro_cli_run_for_platform')}
       </p>
@@ -1874,7 +1881,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 those change. */}
             {!status.installed && (
               <div className="mt-4">
-                <KiroInstallCommands platform={platform} />
+                <KiroInstallCommands platform={platform} unzipMissing={status.unzip_missing === true} />
                 <a
                   className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline focus-ring"
                   href={status.docs_url}

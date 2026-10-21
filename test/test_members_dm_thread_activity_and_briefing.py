@@ -912,11 +912,16 @@ class TestDenialAuditOffload:
         AND adjust this guard with that reasoning.
         """
         import ast
+        import importlib
         import inspect
 
         from kiro_crew.dashboard.handlers import members as members_mod_py
 
-        tree = ast.parse(inspect.getsource(members_mod_py))
+        source = inspect.getsource(members_mod_py)
+        source += "".join(
+            inspect.getsource(importlib.import_module(o)) for o in members_mod_py._OWNERS
+        )
+        tree = ast.parse(source)
         offloaded: set[int] = set()
         for node in ast.walk(tree):
             if (

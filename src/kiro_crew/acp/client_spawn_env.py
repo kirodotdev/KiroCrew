@@ -833,7 +833,7 @@ def _apply_session_identity_env(self: AcpClient, env: dict[str, str]) -> None:
     ``AcpClient`` drives one child serving one session, so the process names
     exactly one session. On the shared runtime the same env would name whichever
     session claimed the process, which is why identity travels per-element there
-    (``acp.runtime._own_stub_session`` and the mirror projections).
+    (``AcpRuntime._own_stub_session`` and the mirror projections).
 
     Mutates *env* in place, matching the surrounding block in :meth:`_spawn`.
     """

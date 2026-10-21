@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from kiro_crew.config.loader import TelemetryConfig
+    from kiro_crew.diagnostics import BundleResult
 
 
 # ── runtime-service / frontend extension points ──
@@ -294,6 +295,57 @@ class OtlpDestination:
     endpoint: str
     signals: "frozenset[str]"
     session: Optional[Any] = None
+
+
+class FeedbackTrackerProvider(Protocol):
+    """Where the gateway sends a user to file a problem report.
+
+    The dashboard's **Report a Problem** flow (and ``kirocrew doctor``) collects
+    a redacted diagnostics bundle and offers a new-issue link the user opens with
+    the bundle attached. The public build points that link at the public GitHub
+    repository's bug-report form, pre-filled from the bundle. An edition may run
+    where that repository is unreachable, and then the one button a user is given
+    after hitting a wall dead-ends. This seam retargets it. It is the backend
+    half of the dashboard's ``setFeedbackTracker`` seam (the frontend-built links
+    live there; this one is built by the gateway because it carries facts only
+    the gateway knows).
+
+    REPLACE-capable, like ``TipsProvider``: a supplied URL takes over from the
+    public pre-filled link rather than being merged into it, because the public
+    link's query string (``template=bug_report.yml``, ``labels=``, the form's
+    field ids) is GitHub's and would be meaningless appended to another tracker.
+    """
+
+    def report_issue_url(
+        self, bundle: "BundleResult", note: str, *, prefill: bool
+    ) -> Optional[str]:
+        """The new-issue URL for *bundle*, or ``None`` to keep the public one.
+
+        WIRED: ``diagnostics._tracker_issue_url``, called once per bundle for
+        the dashboard's link (``BundleResult.github_issue_url``) and once per
+        ``kirocrew doctor`` print (``terminal_issue_url``). ``None`` (the public
+        Default) leaves today's behaviour byte-for-byte.
+
+        *bundle* carries the facts a report wants: ``filename``,
+        ``total_redactions``, ``path_collapses`` and ``provenance`` (release,
+        channel). Never put ``bundle.zip_path`` in the URL: it sits under the
+        data home and leaks the OS login. *note* is the user's free text,
+        untrusted; percent-encode it or leave it out.
+
+        *prefill* says which surface the link is for. ``True`` is the dashboard,
+        which renders the URL from a JSON field no redactor scans, so a long
+        pre-filled query is fine. ``False`` is a terminal print: that text gets
+        selected into chat and relayed by agents, and ``redact_exfiltration_urls``
+        replaces any URL whose query is 200 characters or longer, so keep the
+        query short or empty there.
+
+        Read through ``safe_context_call`` at the call site. Diagnostics catches
+        ``PlatformCompositionError``, logs a warning and omits the issue link
+        while keeping the bundle usable, without a standalone fallback. Any other
+        error, a non-string or an empty string degrades to the public link.
+        v1 addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
 
 
 class TelemetryProvider(Protocol):

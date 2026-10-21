@@ -52,6 +52,7 @@ from kiro_crew.messaging.inbound_spool import (
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.testing.wait import async_wait_until
 
 # ── Pipeline stand-ins, mirroring test_messaging_dispatch.py ──────────────────
 
@@ -1211,10 +1212,10 @@ def test_a_cancelled_refusal_handler_still_lands_the_write(spool_home: Path) -> 
             assert not spool_home.exists(), "the write had not been released yet"
             release.set()
             # Let the shielded inner task finish before the loop closes.
-            for _ in range(50):
-                if spool_home.exists() and S.pending_refusal_write_count() == 0:
-                    break
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: spool_home.exists() and S.pending_refusal_write_count() == 0,
+                describe=lambda: f"{S.pending_refusal_write_count()} write(s) still pending",
+            )
             assert S.pending_refusal_write_count() == 0
         finally:
             S.record_refusal_sync = real_sync  # type: ignore[assignment]

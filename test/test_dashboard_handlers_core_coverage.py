@@ -35,7 +35,8 @@ from dashboard_handlers_core_coverage_helpers import _json_req, _req, _seed_stt
 from kiro_crew import extras
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.stt import models as stt_models
-from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS, MIN_SILENCE_MS
+from kiro_crew.stt.limits import MAX_THREADS, MIN_PARTIAL_INTERVAL_MS, MIN_SILENCE_MS
+from kiro_crew.stt.limits import THREADS_ENV as STT_THREADS_ENV
 
 # ── Page + static assets ─────────────────────────────────────────────────
 
@@ -888,6 +889,100 @@ class TestSttConfigEndpoint:
         assert body["silence_ms"] >= MIN_SILENCE_MS
         assert isinstance(body["partial_interval_ms"], int)
         assert isinstance(body["idle_evict_secs"], int)
+
+    @pytest.mark.asyncio
+    async def test_threads_round_trip_and_auto_spelling(self, seeded_config, monkeypatch) -> None:
+        """A count is stored as an int, ``"auto"`` is stored as 0, and the response
+        reads back exactly what is on disk."""
+        monkeypatch.setattr(core_mod, "affinity_cpu_count", lambda: 128)
+        async with TestClient(TestServer(_stt_app())) as client:
+            assert (await (await client.get("/api/config/stt")).json())["threads"] == 0
+            resp = await client.put("/api/config/stt", json={"threads": 64})
+            assert resp.status == 200
+            assert (await resp.json())["threads"] == 64
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["threads"] == 64
+            resp = await client.put("/api/config/stt", json={"threads": "auto"})
+            assert (await resp.json())["threads"] == 0
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["threads"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("junk", [-1, MAX_THREADS + 1, 1.5, True, "lots", [8]])
+    async def test_threads_put_skips_junk(self, seeded_config, junk) -> None:
+        async with TestClient(TestServer(_stt_app())) as client:
+            assert (await client.put("/api/config/stt", json={"threads": 24})).status == 200
+            resp = await client.put("/api/config/stt", json={"threads": junk})
+            assert resp.status == 200
+            assert (await resp.json())["threads"] == 24
+
+    @pytest.mark.asyncio
+    async def test_thread_options_fit_the_host_and_keep_the_stored_value(
+        self, seeded_config, monkeypatch
+    ) -> None:
+        """Auto first, then counts this host can run ending at its core count. A
+        stored count above that (a config from a bigger machine) stays listed, so
+        the picker shows it instead of reading as a different value."""
+        monkeypatch.setattr(core_mod, "affinity_cpu_count", lambda: 20)
+        _seed_stt(seeded_config, threads=64)
+        async with TestClient(TestServer(_stt_app())) as client:
+            body = await (await client.get("/api/config/stt")).json()
+        assert body["thread_options"] == [0, 1, 2, 4, 8, 12, 16, 20, 64]
+
+    @pytest.mark.asyncio
+    async def test_threads_auto_is_the_count_auto_resolves_to(
+        self, seeded_config, monkeypatch
+    ) -> None:
+        """Half the host's cores, capped at the ceiling, so the picker can label
+        Auto with the count it stands for."""
+        _seed_stt(seeded_config, threads=0)
+        async with TestClient(TestServer(_stt_app())) as client:
+            for cpus, shown in ((20, 10), (128, 16), (1, 1)):
+                monkeypatch.setattr(core_mod, "affinity_cpu_count", lambda c=cpus: c)
+                body = await (await client.get("/api/config/stt")).json()
+                assert body["threads_auto"] == shown, cpus
+
+    @pytest.mark.asyncio
+    async def test_threads_env_is_reported(self, seeded_config, monkeypatch) -> None:
+        monkeypatch.setattr(core_mod, "affinity_cpu_count", lambda: 20)
+        async with TestClient(TestServer(_stt_app())) as client:
+            monkeypatch.delenv(STT_THREADS_ENV, raising=False)
+            assert (await (await client.get("/api/config/stt")).json())["threads_env"] is None
+            # Reported as the count the engine runs, not as typed: padding and
+            # leading zeros drop, auto resolves to half the cores, and a count
+            # above the host's cores is clamped.
+            for raw, shown in ((" 0012 ", "12"), ("auto", "10"), ("96", "20")):
+                monkeypatch.setenv(STT_THREADS_ENV, raw)
+                body = await (await client.get("/api/config/stt")).json()
+                assert body["threads_env"] == shown, raw
+            # An unusable value is ignored by the engine, so it is not reported as
+            # an override either.
+            monkeypatch.setenv(STT_THREADS_ENV, "lots")
+            assert (await (await client.get("/api/config/stt")).json())["threads_env"] is None
+
+    def test_threads_env_does_not_import_the_engine(self, monkeypatch) -> None:
+        """The override count resolves without pulling in ``stt.engine``.
+
+        ``_stt_threads_env`` runs synchronously while the GET ``/api/config/stt``
+        response dict is built, so an import on its path would land on the event
+        loop. ``stt.engine`` imports numpy at module scope and costs a cold
+        multi-hundred-millisecond import the first time. Resolving through the
+        leaf ``stt.limits`` and ``cpu_affinity`` modules instead keeps the engine
+        off that path entirely: with the module evicted, calling the function must
+        not load it back.
+        """
+        monkeypatch.setattr(core_mod, "affinity_cpu_count", lambda: 20)
+        monkeypatch.setenv(STT_THREADS_ENV, "64")
+        import kiro_crew.stt as stt_pkg
+
+        # Evict the module AND the package attribute bound to it. A regression
+        # that re-imports the engine then binds a fresh module to both, and
+        # teardown restores both, so later tests patch the same engine object the
+        # code under test reads.
+        monkeypatch.delattr(stt_pkg, "engine", raising=False)
+        for name in list(sys.modules):
+            if name == "kiro_crew.stt.engine" or name.startswith("kiro_crew.stt.engine."):
+                monkeypatch.delitem(sys.modules, name)
+        assert core_mod._stt_threads_env() == "20"
+        assert "kiro_crew.stt.engine" not in sys.modules
 
 
 class TestSttConfigCustomModelBoundary:

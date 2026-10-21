@@ -1576,6 +1576,14 @@
       "configKey": "stt.transcribe_vocabulary"
     },
     {
+      "id": "voice.decode-threads",
+      "label": "Decode threads",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.threads",
+      "hint": "CPU threads the local model uses to recognise speech. Auto uses half of this machine's cores, at most 16. On a large machine with cores to spare, more threads finish each dictation sooner. A change applies at the next dictation, which reloads the model once.",
+      "configKey": "stt.threads"
+    },
+    {
       "id": "voice.dictation-panel",
       "label": "Dictation panel",
       "tab": "voice",

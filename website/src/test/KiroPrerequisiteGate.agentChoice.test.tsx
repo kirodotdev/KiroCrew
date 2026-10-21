@@ -75,6 +75,43 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(codeBlock(IRM)).not.toBeInTheDocument()
     // Shown to copy, never run: there is still no install button.
     expect(screen.queryByRole('button', { name: /Install Kiro CLI/ })).not.toBeInTheDocument()
+    // A host that has unzip gets no prerequisite line, and the installer line
+    // is not phrased as a second step.
+    expect(screen.queryByTestId('kiro-gate-unzip-missing')).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Then run this/)).not.toBeInTheDocument()
+  })
+
+  it('names the unzip the Linux installer needs, above its command, when the host lacks it', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ platform: 'Linux', unzip_missing: true }))
+    render()
+
+    const notice = await screen.findByTestId('kiro-gate-unzip-missing')
+    expect(notice).toHaveTextContent(/First, install unzip\. The installer needs it/)
+    expect(notice).toHaveTextContent(/or your system's package manager/)
+    // The installer line reads as the second step.
+    expect(screen.getByText('Then run this on the Linux gateway host to install Kiro CLI.')).toBeInTheDocument()
+    expect(screen.queryByText(/^Run this on the Linux gateway host/)).not.toBeInTheDocument()
+    expect(within(notice).getByText('Debian or Ubuntu')).toBeInTheDocument()
+    expect(codeBlock('sudo apt install unzip')).toBeInTheDocument()
+    expect(within(notice).getByText('Fedora or RHEL')).toBeInTheDocument()
+    expect(codeBlock('sudo dnf install unzip')).toBeInTheDocument()
+    // Read before the command it unblocks.
+    const curl = codeBlock(CURL)
+    expect(curl).toBeInTheDocument()
+    expect(notice.compareDocumentPosition(curl as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('shows no unzip line on a non-Linux host or once Kiro CLI is installed', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ platform: 'macOS', unzip_missing: true }))
+    const first = render()
+    await screen.findByText(/Run this on the macOS gateway host/)
+    expect(screen.queryByTestId('kiro-gate-unzip-missing')).not.toBeInTheDocument()
+    first.unmount()
+
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true, unzip_missing: true }))
+    render()
+    await screen.findByRole('heading', { name: 'Get Kiro CLI' })
+    expect(screen.queryByTestId('kiro-gate-unzip-missing')).not.toBeInTheDocument()
   })
 
   it('has no separate sign-in step: the Kiro CLI card carries sign-in once installed', async () => {

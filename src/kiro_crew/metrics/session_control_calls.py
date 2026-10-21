@@ -125,7 +125,7 @@ CALLER_OTHER: Final[str] = "other"
 CALLER_DEFAULT: Final[str] = "default"
 
 #: ``caller`` for a crewmate's pinned DM session. Identified by the SLOT KEY's
-#: shape, never by an agent name: ``handlers/members.py`` mints a DM slot with
+#: shape, never by an agent name: ``handlers/members_thread.py`` mints a DM slot with
 #: ``agent=<the crewmate's crew name>``, so the agent field of such a session
 #: carries a user-chosen name and can only answer ``other``.
 CALLER_CREWMATE: Final[str] = "crewmate"

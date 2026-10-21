@@ -191,6 +191,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # it. Present rather than omitted because a consumer that reads
             # ``undefined`` branches on it as though the absence meant something.
             "probe_timed_out": False,
+            # Same redaction, same shape-stability reason: whether the gateway host
+            # has ``unzip`` is host state, and only the owner installs it.
+            "unzip_missing": False,
             # Redacted for the same reason as the block above, and kept present
             # for the same shape-stability reason: only the owner can act on a
             # missing spec (the repair is an owner-gated POST). A non-owner on an

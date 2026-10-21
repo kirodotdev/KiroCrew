@@ -7,7 +7,7 @@ removed and the feature was folded into core at `src/kiro_crew/deploy/`. The das
 [Artifact Deploy](../docs/deploy-web.md).
 
 The current implementation also differs from the proposal below in three important ways: the
-`deploy-web-aws` row is a core provider emitted by `src/kiro_crew/apps/routes.py`; profiles live in
+`deploy-web-aws` row is a core provider emitted by `src/kiro_crew/apps/routes_listing.py`; profiles live in
 the multi-profile registry at `~/.kiro/crew/deploy/profiles.json`; and the MCP `deploy_artifact`
 tool is preview-only, with execution confirmed by a human in the dashboard. Static artifact
 publishing uses per-site infrastructure, while the operator scripts for app artifacts use the

@@ -195,7 +195,7 @@ def member_store_ownership_holds(config: KiroCrewConfig, member: str, entry_stor
     """Whether *member* still privately owns *entry_store* according to *config*.
 
     The one spelling of that question, shared by the reopen path in
-    ``handlers/members.py`` and the grant below, so the check that returns a
+    ``handlers/members_thread.py`` and the grant below, so the check that returns a
     thread and the check that publishes authority over it cannot drift apart.
 
     :func:`require_member_memory_store` answers identity -- the member exists,

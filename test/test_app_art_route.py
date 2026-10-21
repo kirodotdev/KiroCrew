@@ -24,6 +24,7 @@ value is not evidence the file lands inside the install directory.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import re
@@ -537,10 +538,14 @@ def test_both_art_paths_screen_on_the_SAME_extension_set() -> None:
     """
     source = Path(app_routes.__file__).read_text(encoding="utf-8")
     art = app_routes._ART_IMAGE_EXTENSIONS
+    family = "".join(
+        Path(importlib.import_module(module).__file__).read_text(encoding="utf-8")
+        for module in (app_routes.__name__, *app_routes._OWNERS)
+    )
     duplicates = [
         name
         for name, body in re.findall(
-            r"^(_[A-Za-z_]+)\s*=\s*frozenset\(\{([^}]*)\}\)", source, re.MULTILINE
+            r"^(_[A-Za-z_]+)\s*=\s*frozenset\(\{([^}]*)\}\)", family, re.MULTILINE
         )
         if name != "_ART_IMAGE_EXTENSIONS"
         and {p.strip().strip("\"'") for p in body.split(",") if p.strip()} == set(art)

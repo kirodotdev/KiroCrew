@@ -478,6 +478,9 @@ class AcpClient:
         self.model_pin_partial: str = ""
         self._child_pids: dict[int, ChildRecord] = {}  # pid → (start_time, basename)
         self.last_prompt_stats = AcpPromptStats()
+        # Credits kiro reported while no turn was running (a compaction waited
+        # on between turns), held for the next turn's bill; see _track_metadata.
+        self._between_turn_credits = 0.0
         self._tool_call_inputs: dict[str, str] = {}
         # Same-key provenance for the redacted display cache.  No removed bytes
         # are retained here; approval surfaces only need to know that the value

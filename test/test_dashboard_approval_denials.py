@@ -32,8 +32,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
 from kiro_crew.providers.base import EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, LLMEvent
-
-_ANSWER_POLL_SECS = 0.01
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestBatchRejection:
@@ -633,15 +632,13 @@ class TestExpiredApprovalRetiresTheCard:
         task = asyncio.get_running_loop().create_task(
             state.request_approval(request_id, "dashboard", "fs_write", slot=slot_key)
         )
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _ANSWER_WAIT_SECS
-        while request_id not in state._pending_approvals:
-            assert loop.time() < deadline, (
+        await async_wait_until(
+            lambda: request_id in state._pending_approvals,
+            describe=lambda: (
                 f"approval {request_id!r} was never registered — the wait "
                 f"never started, so there is nothing to expire or resolve"
-            )
-            # flake-ok: pre-existing 10 ms poll inside a deadline-bounded wait for a registration -- moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(_ANSWER_POLL_SECS)
+            ),
+        )
         return task
 
     @pytest.mark.asyncio

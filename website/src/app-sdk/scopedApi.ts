@@ -144,7 +144,10 @@ function matchesDeclared(allowedPaths: readonly string[], normalized: string): b
  *  component uses it to hide a control whose request would be refused (the
  *  ChatEmbed attach control reads it for `/api/upload/file`). */
 export function apiPathAllowed(allowedPaths: readonly string[], path: string): boolean {
-  if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.includes('\\')) return false
+  // Backslashes are inspected only before `?`/`#`: the URL parser treats `\`
+  // like `/` in the authority/path portion, while a `\` inside a query or
+  // fragment value is inert data (e.g. a regex parameter).
+  if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.split(/[?#]/, 1)[0].includes('\\')) return false
   return matchesDeclared(allowedPaths, new URL(path, 'http://localhost').pathname)
 }
 
@@ -153,7 +156,8 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
     // are rejected too: the URL parser treats `\` like `/`, so `/\evil.com` or
     // `\\evil.com` would otherwise be parsed as a protocol-relative authority.
-    if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.includes('\\')) {
+    // Only the portion before `?`/`#` is inspected: a `\` in a query value is data.
+    if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.split(/[?#]/, 1)[0].includes('\\')) {
       throw new Error(`[app-sdk] Absolute URLs are not allowed: ${path}`)
     }
     // Normalize BEFORE the allowlist check so `..` traversal cannot escape the

@@ -27,6 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.dashboard.handlers.knowledge import ingest_file
 from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.wait import async_wait_until
 
 
 class _FakeStore:
@@ -70,13 +71,10 @@ async def _await_background_ingest(ingest_spy) -> None:
 
     A single ``asyncio.sleep(0)`` is not enough: the task stamps the row 'syncing'
     off the loop first, so reaching ``ingest_file`` costs a worker-thread hop, not
-    one event-loop tick. Polling asserts what these tests are about -- what the
-    ingest was called WITH -- instead of which await happens to come first.
+    one event-loop tick. Waiting on the call asserts what these tests are about --
+    what the ingest was called WITH -- instead of which await happens to come first.
     """
-    for _ in range(200):
-        if ingest_spy.await_args is not None:
-            return
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: ingest_spy.await_args is not None)
 
 
 def _minimal_zip_bytes() -> bytes:

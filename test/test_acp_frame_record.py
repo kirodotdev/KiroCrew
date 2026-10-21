@@ -1841,7 +1841,8 @@ def test_both_transports_record_their_inbound_frames() -> None:
     refresh their corpus.
     """
     client_family = (client_module, *(sys.modules[n] for n in client_module._CLIENT_OWNERS))
-    for modules in ((runtime_module,), client_family):
+    runtime_family = (runtime_module, *(sys.modules[n] for n in runtime_module._RUNTIME_OWNERS))
+    for modules in (runtime_family, client_family):
         path = Path(modules[0].__file__ or "")
         source = "".join(Path(m.__file__ or "").read_text(encoding="utf-8") for m in modules)
         assert "await record_frame(" in source, (

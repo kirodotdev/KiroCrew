@@ -28,7 +28,7 @@ Four parts, in the order you will need them:
   declares `"node": ">=22.12.0"`; `kirocrew doctor` fails below Node 22.12.0, and startup logs a warning.
 - **RAM**: there is no single published floor, because the footprint scales with
   concurrent sessions, spawned subagents, and MCP servers. Two figures from the
-  code give you the shape of it: `acp/runtime.py` recycles a long-lived
+  code give you the shape of it: `acp/runtime_liveness.py` recycles a long-lived
   multiplexed backend once it passes 500 MiB RSS
   (`_DEFAULT_MAX_RSS_MB = 500.0`), and the embedding model is loaded in-process
   from a ~610MB GGUF file. Measure your own steady state, then leave headroom:

@@ -330,6 +330,72 @@ class TestBoundedFaissRecall:
         assert [row["id"] for row in result] == [row_id]
 
 
+def test_eligible_rows_scopes_ineligibility_to_candidate_ids_no_full_scan(
+    tmp_path: Path, opened
+) -> None:
+    """_eligible_rows looks up ineligibility by the candidate rows' own ids
+    (through the record_id PRIMARY KEY) rather than scanning all of
+    memory_record_meta -- a table that only grows as records are revised.
+    """
+    store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+    store.init()
+
+    # A few live preference facts: these are the candidate rows a session-start
+    # render passes to _eligible_rows.
+    for i in range(3):
+        assert store.set_semantic(f"pref.topic.k{i}", f"v{i}", 0.9, "user_explicit") is None
+
+    # The meta table grows with non-active revisions over time. Seed many so a
+    # full scan of the unfiltered predicate would touch far more rows than the
+    # handful of candidates.
+    with store._db_lock:
+        for i in range(2000):
+            store.db.execute(
+                "INSERT INTO memory_record_meta (record_id, kind, revision, status, "
+                "content_hash, updated_at) VALUES (?,?,?,?,?,?)",
+                (f"key:dead-{i}", "fact", 1, "superseded", "h", "2026-01-01"),
+            )
+        store.db.commit()
+
+    rows = store._fetch_all_locked(
+        "SELECT key, value_json FROM semantic_memory "
+        "WHERE is_deleted = 0 AND key LIKE 'pref.%' ORDER BY key"
+    )
+    assert len(rows) == 3
+
+    # The ineligibility lookup is scoped to the candidate ids, never issued
+    # unfiltered (record_ids=None), so it rides the primary key.
+    with mock.patch.object(store, "_ineligible_ids", wraps=store._ineligible_ids) as eligibility:
+        kept = store._eligible_rows(rows, "fact")
+
+    assert eligibility.call_count == 1
+    passed_ids = eligibility.call_args_list[0].args[0]
+    assert passed_ids is not None
+    assert sorted(passed_ids) == [f"key:pref.topic.k{i}" for i in range(3)]
+    assert all(key.startswith("key:pref.topic.k") for key in passed_ids)
+
+    # All three live facts survive; the 2000 dead rows never enter the lookup.
+    assert [row["key"] for row in kept] == [f"pref.topic.k{i}" for i in range(3)]
+
+    # The query the fix issues uses the record_id PRIMARY KEY, not a full scan.
+    predicate = "status != 'active' OR valid_from != '' OR valid_until != ''"
+    placeholders = ",".join("?" * len(passed_ids))
+    plan = store.db.execute(
+        "EXPLAIN QUERY PLAN SELECT record_id, status, valid_from, valid_until "
+        f"FROM memory_record_meta WHERE record_id IN ({placeholders}) AND ({predicate})",
+        tuple(passed_ids),
+    ).fetchall()
+    detail = " ".join(str(step[-1]) for step in plan)
+    assert "SEARCH" in detail and "record_id" in detail
+    assert "SCAN memory_record_meta" not in detail
+
+    # Scoping does not change the eligibility verdict: the restricted lookup
+    # agrees byte-for-byte with the unfiltered one over these candidate ids.
+    scoped = store._ineligible_ids(list(passed_ids))
+    unfiltered = store._ineligible_ids()
+    assert scoped == {rid for rid in unfiltered if rid in set(passed_ids)}
+
+
 class TestSanitizeDecayRates:
     """_sanitize_decay_rates: user-edited JSON is screened, not trusted."""
 
