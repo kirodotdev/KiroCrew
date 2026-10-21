@@ -313,7 +313,7 @@ def test_every_spawn_path_goes_through_the_freshness_gate():
     for path, _source, tree in parsed_candidates(
         require_any=("ensure_agent_materialized", "require_fresh_derived_spec")
     ):
-        if path.name == "agent.py":  # the definitions themselves, not a spawn path
+        if path.name == "agent.py":  # the facade binding these names, not a spawn path
             continue
         materialize[path] = _refs(tree, "ensure_agent_materialized")
         fresh[path] = _refs(tree, "require_fresh_derived_spec")
@@ -393,7 +393,7 @@ def test_the_gate_is_not_inside_a_try_at_any_spawn_site():
     # the gates can hold a `try` around a call to it, and the tree is dropped after each
     # file instead of being retained per path.
     for path, _source, tree in parsed_candidates(require_any=gates):
-        if path.name == "agent.py":  # the definitions themselves, not a spawn site
+        if path.name == "agent.py":  # the facade binding these names, not a spawn site
             continue
         for node in ast.walk(tree):
             if not isinstance(node, ast.Try):

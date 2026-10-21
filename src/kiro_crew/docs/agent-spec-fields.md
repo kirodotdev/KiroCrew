@@ -843,8 +843,8 @@ own private memory store; the reserved `default` member is never changed. The
 crewmate you delete is not created again. It is an ordinary crewmate you may
 rename, rebind and delete. The first-crewmate creation lives in
 `src/kiro_crew/agent_materialization/first_crewmate.py`. The one-time guide grant
-lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple stays in
-`src/kiro_crew/agent.py`.
+lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple lives in
+`src/kiro_crew/agent_parts/spec_grants.py`.
 
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's
@@ -884,14 +884,14 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | `name`, `description`, `model`, `welcomeMessage`, the roster | `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`AgentInfo`, `spec_str`, `spec_model`, `spec_welcome_message`), `src/kiro_crew/agent_discovery_parts/agent_roster.py` (`list_agents`, `agent_model_map`, `agent_welcome_message`) |
 | `resources` `skill://` | `src/kiro_crew/agent_discovery_parts/spec_fields.py` (`skill_resource_uris`, `expand_skill_uri`, `skill_uri_for_path`), `src/kiro_crew/agent_discovery_parts/skill_scope.py` (`agent_skill_globs`); a generated spec's own mapping: `src/kiro_crew/agent_materialization/skill_resources.py` |
 | `resources` `file://`, the injection decision | `src/kiro_crew/context_assembly/agent_spec.py` (`_load_steering_resources`), `src/kiro_crew/context.py` (`_skills_injection_plan`) |
-| `tools`, `allowedTools`, `excludedTools`, `mcpServers`, `hooks`, `toolsSettings` — the default spec's composition and the rebuild order | `src/kiro_crew/agent.py` (`_refresh_dynamic_fields`, `rebuild_agent_config`), the facade every writer below is reached through, and `src/kiro_crew/agent_parts/spec_build.py` (`build_agent_config`) |
+| `tools`, `allowedTools`, `excludedTools`, `mcpServers`, `hooks`, `toolsSettings` — the default spec's composition and the rebuild order | `src/kiro_crew/agent.py` (`_refresh_dynamic_fields`), the facade every writer below is reached through, `src/kiro_crew/agent_parts/spec_build.py` (`build_agent_config`) and `src/kiro_crew/agent_parts/spec_rebuild.py` (`rebuild_agent_config`) |
 | `hooks` — normalization and the kiro-cli object form | `src/kiro_crew/agent_materialization/kiro_hooks.py` |
 | `mcpServers` — Crew's own managed servers | `src/kiro_crew/agent_materialization/managed_mcp.py` |
 | `mcpServers`, `tools`, `allowedTools` — app, global and store servers, and the shared-server sync | `src/kiro_crew/agent_materialization/mcp_sources.py` |
 | `mcpServers` keys, `toolAliases` | `src/kiro_crew/agent_materialization/mcp_aliases.py` |
 | `allowedTools`, `autoApprove`, `permissions` — the governance ceiling | `src/kiro_crew/agent_materialization/auto_approve.py` |
 | the default spec's locked write | `src/kiro_crew/agent_materialization/default_spec_commit.py` |
-| derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples, and the heartbeat installer, stay in `src/kiro_crew/agent.py` |
+| derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples live in `src/kiro_crew/agent_parts/spec_prompts.py` and `spec_grants.py` (the knowledge and research prompts stay in `src/kiro_crew/agent.py`), and the heartbeat installer in `src/kiro_crew/agent_parts/spec_rebuild.py` |
 | the one-time guide grant on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
 | the first crewmate, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
 | the fork refresh | `src/kiro_crew/agent_materialization/fork_refresh.py` |
@@ -900,6 +900,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | upgrading a spec already on disk: migrations, model pins, the startup hook repair | `src/kiro_crew/agent_parts/spec_upgrades.py` |
 | locating a spec file, and the checkout's own spec that shadows an installed one | `src/kiro_crew/agent_parts/spec_lookup.py` |
 | who may write a shared agents home | `src/kiro_crew/agent_parts/shared_home.py` |
+| the rebuild's order, the governance-ceiling projection, the fork-governance check and the heartbeat agent | `src/kiro_crew/agent_parts/spec_rebuild.py` |
 | owned filenames | `src/kiro_crew/agent_files.py` |
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |
 | the KAS wire projection | `src/kiro_crew/acp/kas_agents.py` |

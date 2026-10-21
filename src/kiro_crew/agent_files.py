@@ -117,7 +117,7 @@ OWNED_KIRO_AGENT_FILES = (
 # The remaining OWNED_KIRO_AGENT_FILES entries are deliberately excluded because
 # each one only disables its own feature (guest replies, goal conducting,
 # Knowledge extraction, Research Lab, unattended heartbeat polling). Their
-# installer calls in ``agent.py`` degrade to ``logger.debug`` on failure, except
+# installer calls in ``agent_parts/spec_rebuild.py`` degrade to ``logger.debug`` on failure, except
 # ``kirocrew-guest.json``, which ``_install_aim_capabilities`` writes unguarded
 # after the lite fallback.
 REQUIRED_KIRO_AGENT_FILES = (

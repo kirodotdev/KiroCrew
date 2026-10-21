@@ -1,7 +1,7 @@
 """The goal-conductor skill names every verb the conductor spec auto-approves.
 
 The skill's "Reads and creates do not prompt" list is what a conductor reads to
-know which calls run unattended. A verb granted in ``agent.py`` but missing from
+know which calls run unattended. A verb granted in ``agent_parts/spec_grants.py`` but missing from
 that list (``work_ledger_rebuild``, ``session_status``) reads as one that prompts.
 """
 

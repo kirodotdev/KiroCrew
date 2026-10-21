@@ -178,7 +178,7 @@ class TestConductorInstaller:
         Pinned as literal names rather than by importing the tuple: the point is
         that WIDENING the tuple fails a test, which a tautological assertion
         against the tuple itself could never catch. Each withheld verb below is
-        withheld for a reason recorded next to it in ``agent.py``:
+        withheld for a reason recorded next to it in ``agent_parts/spec_grants.py``:
         ``chat_folder_move_session`` PATCHes another session's ``folder_id``
         (target comes from the arguments, not the caller), ``session_send`` runs
         text as a peer's turn, ``session_stop`` discards a peer's in-flight work,

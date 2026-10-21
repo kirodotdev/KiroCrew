@@ -190,7 +190,7 @@ def _resolve_target_command(
     server that probes healthy on the dashboard can never ENOENT in gatewayd.
 
     An absolute command is accepted only when it exists and is executable
-    (the same predicate ``agent.py``'s config resolver applies). Any command
+    (the same predicate ``agent_parts/spec_rebuild.py``'s config resolver applies). Any command
     that resolves nowhere returns ``""`` — the caller must NOT emit a
     stub for it: kiro-cli's own spawn environment may still resolve it, so the
     entry is left for the session to launch directly instead of degrading
@@ -203,7 +203,7 @@ def _resolve_target_command(
     if not target_command:
         return ""
     if os.path.isabs(target_command):
-        # Same predicate as ``agent.py::_resolve_command``: an absolute path
+        # Same predicate as ``agent_parts/spec_rebuild.py::_resolve_command``: an absolute path
         # must exist and be executable, or the entry is left unwrapped — a
         # dead absolute path would ENOENT identically in gatewayd and in the
         # session, so failing it in the session (visible) beats a per-session

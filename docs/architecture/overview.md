@@ -26,7 +26,7 @@ Three layers sit beneath Kiro Crew, and the distinction matters:
    `<project>/.kiro/agents/`) tell the default harness *how* to behave: system
    prompt, enabled tools, MCP servers. With the default backend Kiro Crew runs
    `kiro-cli acp --agent <name>` and generates its own `kirocrew.json` there
-   (`agent.py`); other harnesses receive the equivalent projection through the
+   (`agent_parts/spec_rebuild.py`); other harnesses receive the equivalent projection through the
    ACP provider seam.
 3. **Kiro Crew** is the gateway: a single asyncio process that multiplexes
    surfaces onto the selected harness and adds everything a runtime deliberately

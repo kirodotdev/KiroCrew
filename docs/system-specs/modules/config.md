@@ -3970,7 +3970,7 @@ dashboard chat runner does, so a channel session's compaction re-injects the
 skills index and this block.
 
 There is no `{{VERBOSITY_BLOCK}}` prompt token. No shipped prompt (`config/prompt.md`, the
-conductor/worker prompt constants in `agent.py`) carries the token, and `test/test_verbosity_config.py` pins that;
+conductor/worker prompt constants in `agent_parts/spec_prompts.py`) carries the token, and `test/test_verbosity_config.py` pins that;
 `_resolve_prompt_templates` still strips a stale token from a spec copied before
 the move so the literal never reaches the model. `context_blocks._MARKERS` knows
 the frame as `response_preferences`, so the context-breakdown panel attributes

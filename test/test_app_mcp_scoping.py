@@ -1183,9 +1183,9 @@ class TestEveryWriterRevokesAStaleGrant:
         from kiro_crew.apps import bridges
         from kiro_crew.dashboard.handlers import mcp as mcp_handler
 
-        # agent.py's writers are composed from the agent_materialization modules,
-        # so the agent side is judged on the whole composition; the predicate it
-        # consults is the one ``_may_auto_approve`` wraps.
+        # agent.py's writers are composed from its agent_parts owners and the
+        # agent_materialization modules; the agent side is judged on agent.py and those
+        # modules; the predicate it consults is the one ``_may_auto_approve`` wraps.
         agent_src = "\n".join(
             inspect.getsource(mod)
             for mod in [agent]
@@ -1339,8 +1339,8 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
     def test_every_crew_spec_writer_filters_or_inherits(self) -> None:
         """Writer parity: the NEXT installer cannot reintroduce the gap.
 
-        Every Crew-authored agent-spec writer in ``agent.py``, or in the
-        ``agent_materialization`` modules it is composed from, must either
+        Every Crew-authored agent-spec writer in ``agent.py`` and its ``agent_parts``
+        owners, or in the ``agent_materialization`` modules it is composed from, must either
         derive from ``build_agent_config`` (which filters), hand its own
         assembled spec to ``_apply_allowed_tools_ceiling`` (the same filter the
         constructor runs, pinned by the case above) or to the shared

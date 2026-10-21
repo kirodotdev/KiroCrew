@@ -1889,7 +1889,7 @@ one session key, so neither can be aimed at), gets `ok: true, ended: false` with
 an `info` string and nothing is parked. The SEL audit detail records
 `requested`, `not_waiting` or `contested`. Channel agents are blocked from the
 verb, and it is withheld from the conductor and member auto-approve grants; see
-the comment on `_CONDUCTOR_DASHBOARD_GRANTS` in `agent.py`.
+the comment on `_CONDUCTOR_DASHBOARD_GRANTS` in `agent_parts/spec_grants.py`.
 
 ## Stopping is safe to re-send
 
@@ -2145,7 +2145,7 @@ that agent's `allowedTools` — naming individual tools leaves the session verbs
 `_mcp_pattern` maps a bare `@server` entry to a one-level glob and
 `is_tool_in_allowlist` checks `@server` before `@server/<tool>`. The shipped
 conductor is in the second class for the verbs in `_CONDUCTOR_DASHBOARD_GRANTS`
-(`agent.py`: the folder tools, `session_create`, `session_read_message` and
+(`agent_parts/spec_grants.py`: the folder tools, `session_create`, `session_read_message` and
 `session_status`), which is its stated operating model: its patrol
 loop runs with nobody at the keyboard and must not block on an approval no one is
 there to give. An operator who wants folder tools without session control names the

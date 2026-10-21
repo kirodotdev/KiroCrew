@@ -2252,7 +2252,7 @@ organization has the session verbs too. Whether they prompt depends on how the g
 is spelled — `_mcp_pattern` maps a bare `@kirocrew-dashboard` entry to a one-level
 glob, so it auto-approves every tool the server advertises, while naming tools individually leaves the rest
 to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
-`_MEMBER_DASHBOARD_GRANTS` (`agent.py`) are the shipped examples of the individual
+`_MEMBER_DASHBOARD_GRANTS` (`agent_parts/spec_grants.py`) are the shipped examples of the individual
 form, and they differ from each other on exactly this axis: the member's list
 includes `session_send`, `session_broadcast`, `session_stop` and `session_retry` because `authorize_target` refuses a
 member caller on any session it did not create, and the conductor's withholds them

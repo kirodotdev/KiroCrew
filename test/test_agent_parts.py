@@ -1,19 +1,19 @@
 """``kiro_crew.agent`` composes its split-out spec code onto one namespace.
 
 The spec-file writes, the fresh-spec build, the launcher, the spec upgrades and lookups,
-and the shared-home guard moved out of ``agent.py`` into the ``kiro_crew.agent_parts``
-owners.
+the shared-home guard, the rebuild with its ceiling projection, and most prompt and grant
+text moved out of ``agent.py`` into the ``kiro_crew.agent_parts`` owners.
 :func:`kiro_crew._facade_compose.compose` runs every function they define on
 ``kiro_crew.agent``'s module globals. The facade's own contract
 (``test/test_agent_refactor_facade.py``) passes unchanged because of that; these tests pin
 what the composition itself promises:
 
 * every owner function runs on the facade's globals, names the facade as its module, and is
-  the object the facade binds, except a function wrapped where it is defined, which the
-  facade wraps again around a rebound copy; every global an owner function reads, nested
-  code included, is bound there;
-* a ``global`` rebind in moved code lands on the facade, and the re-wrapped spec lock reads
-  the facade's names;
+  the object the facade binds, except the two functions wrapped where they are defined,
+  which the facade wraps again around a rebound copy; every global an owner function reads,
+  nested code included, is bound there;
+* a ``global`` rebind in moved code lands on the facade, and the re-wrapped rebuild and spec
+  lock read the facade's names;
 * every name the test trees patch on the facade reaches every owner function that reads it,
   and one patch per function owner is exercised for real;
 * an owner imports standard-library modules plainly and the facade only for type checking,
@@ -66,16 +66,19 @@ _OWNER_STEMS = (
     "shared_home",
     "spec_build",
     "spec_files",
+    "spec_grants",
     "spec_lookup",
+    "spec_prompts",
+    "spec_rebuild",
     "spec_upgrades",
 )
 
-#: Owners that define functions.
-_FUNCTION_OWNERS = frozenset(_OWNER_STEMS)
+#: Owners that define functions (the other two hold prompt and grant text only).
+_FUNCTION_OWNERS = frozenset(_OWNER_STEMS) - {"spec_grants", "spec_prompts"}
 
 #: Names an owner binds to a function the facade wraps again around a rebound copy: a
 #: rebind reaches a wrapper, never the function its closure holds.
-_REWRAPPED = frozenset({"agents_spec_lock"})
+_REWRAPPED = frozenset({"agents_spec_lock", "install_agent", "rebuild_agent_config"})
 
 #: Names the test trees are known to patch on the facade, at least one per function owner
 #: and per kind of seam: an owner function, a name the facade only imports, a rebound
@@ -223,6 +226,8 @@ def test_each_rewrapped_function_wraps_a_rebound_copy_of_the_owner_code() -> Non
         assert inner.__globals__ is vars(agent), name
         assert inner.__module__ == FACADE, name
         assert inner.__code__ is inspect.unwrap(vars(homes[0])[name]).__code__, name
+    assert agent.install_agent is agent.rebuild_agent_config
+    assert agent.rebuild_agent_config.__globals__ is vars(agent)  # the outcome tracker
 
 
 def test_the_managed_server_table_holds_the_composed_spec_gate() -> None:
@@ -264,6 +269,22 @@ def test_a_global_rebind_in_moved_code_lands_on_the_facade(
     monkeypatch.setattr(shutil, "which", lambda name: str(planted))
     assert agent._resolve_kirocrew_bin() == str(planted)
     assert agent._KIROCREW_BIN == str(planted)
+
+
+def test_the_rebuild_tracker_rebinds_its_globals_on_the_facade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outcome tracker around the rebuild rebinds two globals when the rebuild raises;
+    both land on the facade, which the projection code and ``fork_refresh`` read, and the
+    re-wrapped rebuild body reads the facade's names."""
+    monkeypatch.setattr(agent, "_rebuild_incomplete", False)
+    monkeypatch.setattr(agent, "_projected_ceiling_generation", 7)
+    monkeypatch.setattr(agent, "_decline_shared_agent_home", _raiser("decline"))
+    with pytest.raises(_Reached) as reached:
+        agent.rebuild_agent_config()
+    assert reached.value.args == ("decline",)
+    assert agent._rebuild_incomplete is True
+    assert agent._projected_ceiling_generation is None
 
 
 def test_the_rewrapped_spec_lock_reads_the_facade_logger(
@@ -440,6 +461,11 @@ def test_a_facade_patch_reaches_the_shared_home(monkeypatch: pytest.MonkeyPatch)
     stub.warning.assert_called_once_with("declined %s", "home")
 
 
+def test_a_facade_patch_reaches_the_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent, "_decline_shared_agent_home", lambda **_kw: "declined")
+    assert agent.rebuild_agent_config() == "declined"
+
+
 # ── 3. what an owner may hold and import ────────────────────────────────────
 
 
@@ -556,7 +582,7 @@ def test_every_module_level_value_an_owner_defines_is_the_object_the_facade_bind
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip().splitlines()[-1] == "[]"
-    assert sum(len(names) for names in values.values()) >= 10
+    assert sum(len(names) for names in values.values()) >= 40
 
 
 def test_the_package_init_defines_nothing() -> None:
