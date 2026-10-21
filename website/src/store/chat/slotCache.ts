@@ -5,6 +5,9 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
+import { OLDER_PAGE_LIMIT } from './paging'
+import { isDurableRow } from './transcript'
+import { type ParkedThinking, mergePreservedThinking } from './thinking'
 
 /**
  * Replaces the paging cursor as ONE unit: how far back history goes, the offset
@@ -34,8 +37,9 @@ export function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: 
  *
  *  `hasMore` of `undefined` means "this write does not describe the marker" —
  *  the array is a merge of a bounded page onto retained older rows, so the
- *  page's own flag is not true of the result. The existing marker is left alone
- *  rather than guessed at.
+ *  page's own flag is not true of the result, or it is `boundSlotWindow`
+ *  trimming a live-only array whose head no page ever described. The existing
+ *  marker and cursor are left alone rather than guessed at.
  *
  *  Both maps are keyed through `safeKey`, so a poisoned key cannot land the
  *  array and the flag on different entries.
@@ -67,6 +71,142 @@ export function writeSlotPage(
   if (!state.slotPaneNextBefore) state.slotPaneNextBefore = {}
   if (hasMore && nextBefore !== undefined && nextBefore > 0) state.slotPaneNextBefore[k] = nextBefore
   else delete state.slotPaneNextBefore[k]
+}
+
+/** How many transcript rows a NON-active slot keeps in `slotMessages`.
+ *
+ *  `slotMessages` is the one lo-space retention site PR #10985 left unbounded:
+ *  every non-active slot held its full transcript array for as long as the
+ *  session existed, freed only by `evictSlotState` when the slot was closed
+ *  (#11139). A background slot that completes a turn appends one assistant row
+ *  per cycle (`applyNonActiveFrame` -> `settleEndedBackgroundTurn`), and a reader
+ *  who pages back then parks all of it on switch-away, so a monitor loop or a
+ *  scrolled-back pane grew its array without bound.
+ *
+ *  The value is `OLDER_PAGE_LIMIT` -- exactly page one, the size the slot
+ *  re-hydrates with -- so a trimmed slot switched back into reads as a fresh
+ *  bounded page with the walk available, not as a short transcript. The active
+ *  pane (`state.messages`) is left unbounded: the virtualizer renders it lazily
+ *  and the reader is looking at it. */
+export const SLOT_RETAIN_LIMIT = OLDER_PAGE_LIMIT
+
+/** Clamp a NON-active slot's live-appended growth so a background slot cannot
+ *  retain history without bound. A no-op when the array already fits.
+ *
+ *  It bounds only a slot no pane has HYDRATED (`slotHydrated[k]` unset): a slot
+ *  fed by background turns, the switch-away park, and the warm that follows each
+ *  background `chat_done`. That is the monitor-loop leak -- a pane streaming turn
+ *  after turn in the background, one assistant row per cycle, forever. A slot a
+ *  pane hydrated is one the reader opened, so it is left whole: trimming it would
+ *  shrink a transcript the reader holds, and which end to shed there is a
+ *  retention policy this bound does not decide.
+ *
+ *  The flag means "a pane shows this slot now". `ChatPane` sets it at mount
+ *  (`holdHydratedSlotPane`) or through its hydrate, and clears it once the last
+ *  pane showing the slot unmounts (`clearSlotHydrated`), so a monitor pane
+ *  opened once and then left in the background is bounded again. Split-view
+ *  panes never route through `activeSlot`, which is why the gate reads this
+ *  pane signal rather than the active slot.
+ *
+ *  Dropping leading rows changes the array's head, and the markers that index
+ *  the head must move with it:
+ *
+ *   - `slotPaneBounded[k]` is CLEARED (passed as `undefined`): it counts LEADING
+ *     rows that came from a bounded page, and the leading rows just changed.
+ *   - An UNDESCRIBED head (`slotPaneHasMore[k]` undefined: rows only ever
+ *     live-appended) stays undescribed. The trim writes no marker and no cursor,
+ *     because the server's `before` cursor is an absolute row index and nothing
+ *     here knows where in the session these rows start. A later
+ *     `hydrateSlotMessages` therefore still runs and prepends the server's page
+ *     onto the kept tail, which brings the dropped rows back with no gap.
+ *   - A DESCRIBED head (a park or a warm wrote the marker) keeps a valid
+ *     absolute cursor: the dropped head started at `slotPaneNextBefore[k]` (0
+ *     when the marker says the array held the whole history), so the new head
+ *     starts that many DURABLE rows later. The marker goes `true`, and
+ *     `loadOlderSlotMessages` re-fetches exactly the dropped rows. Client-only
+ *     rows (`thinking`, `permission`, `queued`, `streaming`) never reach disk,
+ *     so they do not count toward the offset.
+ *
+ *  A dropped `thinking` row is client-only, so dropping it would lose its
+ *  reasoning for good. Where it goes depends on where its anchor went:
+ *
+ *   - Anchor KEPT: the block stays INLINE, ahead of the kept rows. Every row
+ *     between it and the cut is one its anchor scan steps over, so ahead of
+ *     `kept` is exactly its original position relative to every retained row.
+ *     Parking it instead hid the reasoning from a grid pane that mounts the
+ *     slot later: that pane's hydrate returns early on the defined marker, and
+ *     `reinsertThinkingOrphans` runs only when the slot is made active.
+ *   - Anchor DROPPED: the block goes through `mergePreservedThinking`, which
+ *     parks a server-anchored block in `thinkingOrphans[k]` for
+ *     `reinsertThinkingOrphans` to re-seat once a page loads its anchor again,
+ *     and keeps an unconfirmed one in the window, ahead of the kept rows. */
+export function boundSlotWindow(state: ChatState, slot: string): void {
+  if (isUnsafeKey(slot)) return
+  const k = safeKey(slot)
+  if (state.slotHydrated?.[k]) return
+  const msgs = state.slotMessages[k]
+  if (!msgs || msgs.length <= SLOT_RETAIN_LIMIT) return
+  const dropped = msgs.slice(0, msgs.length - SLOT_RETAIN_LIMIT)
+  const kept = msgs.slice(msgs.length - SLOT_RETAIN_LIMIT)
+
+  // A dropped block whose anchor survived has no possible anchor and no
+  // scan-ending row between it and the cut. Every anchor (a tool row, an
+  // answer) and every turn-boundary user row is durable or `streaming`, so the
+  // dropped blocks after the LAST such row are exactly those: they stay in the
+  // window, in order. A block before that row goes to the merge below even when
+  // the row is one its scan would step over (a confirmed steer), so a misread
+  // there costs a park -- lossless -- never a misplaced block.
+  let lastScanStop = -1
+  dropped.forEach((m, i) => { if (isDurableRow(m) || m.role === 'streaming') lastScanStop = i })
+  const inline = dropped.slice(lastScanStop + 1).filter(m => m.role === 'thinking')
+  const settled = dropped.slice(0, lastScanStop + 1)
+
+  // Only the remaining dropped blocks are preserved here: the kept window's own
+  // thinking rows and the inline blocks stay where they are, so they are left
+  // out of `existing` and cannot also be parked (a duplicate on re-seat).
+  // Removing thinking rows does not move any block's anchor, because the anchor
+  // scan steps over them.
+  //
+  // `incoming` is EMPTY and coverage is every durable row of the old window, so
+  // every block with a server-confirmed anchor in the dropped head reads as
+  // "covered, no position here" and is handed to `orphanSink` with the helper's
+  // own anchor and occurrence record. The return value holds the blocks the
+  // helper KEEPS rather than parks (an anchor with no server `ts` yet); they
+  // stay in the window, ahead of the kept rows. Each dropped block lands in
+  // exactly one of `inline`, the sink, the return value, or the helper's own
+  // #5815 drop of a finished turn that names no anchor.
+  const orphanSink: Array<ParkedThinking<ChatMessage>> = []
+  const unparked = mergePreservedThinking(
+    [...settled, ...kept.filter(m => m.role !== 'thinking')], [], msgs.filter(isDurableRow), false, orphanSink)
+  if (orphanSink.length) {
+    const parked = (state.thinkingOrphans ??= {})
+    parked[k] = [...(parked[k] ?? []), ...orphanSink]
+  }
+  const head = [...unparked, ...inline]
+  const retained = head.length ? [...head, ...kept] : kept
+
+  const described = state.slotPaneHasMore?.[k]
+  if (described === undefined) {
+    writeSlotPage(state, slot, retained, undefined, undefined)
+    return
+  }
+  // `false` means the head was row 0. A `true` marker with no cursor names no
+  // position, so the trim keeps it cursorless and the walk stays refused.
+  const droppedDurable = dropped.filter(isDurableRow).length
+  const shift = (hasMore: boolean, prior: number | undefined): number | undefined => {
+    const priorBefore = hasMore ? prior : 0
+    return priorBefore === undefined || (hasMore && priorBefore <= 0) ? undefined : priorBefore + droppedDurable
+  }
+  writeSlotPage(state, slot, retained, true, undefined, shift(described, state.slotPaneNextBefore?.[k]))
+  // A pending switch's origin snapshot is the other retained copy of this
+  // slot's cursor: a rejected switch restores it onto the trimmed array, so it
+  // moves with the head the same way. A cursorless result keeps `nextBefore`
+  // at 0, which `loadOlderMessages` refuses, as the pane's cursorless marker does.
+  const origin = state.slotSwitchOrigin
+  if (origin?.cursor && !isUnsafeKey(origin.key) && safeKey(origin.key) === k) {
+    origin.cursor.nextBefore = shift(origin.cursor.hasMore, origin.cursor.nextBefore) ?? 0
+    origin.cursor.hasMore = true
+  }
 }
 
 /** Cache the ACTIVE slot's on-screen transcript under its key before

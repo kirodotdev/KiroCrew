@@ -38,7 +38,7 @@ import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -49,7 +49,7 @@ import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { api } from '../api/client'
-import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
+import { releaseUnobservedPaneSlot, slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isComposerSendHeld } from '../utils/composerSendHolds'
@@ -457,6 +457,28 @@ export default function ChatPane({
   useEffect(() => {
     if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
+  // `slotHydrated` means "a pane shows this slot NOW": set at mount (or by the
+  // hydrate above), cleared once the last pane showing the slot is gone, so
+  // `boundSlotWindow` reaches a monitor pane that was opened and then left in
+  // the background. The release is deferred one microtask so the observer
+  // counts it reads are settled: a pane mounting the same slot in this commit
+  // (a layout change, StrictMode's re-run) still holds it, and the slot stays
+  // flagged. The cleanup releases the slot this effect ran for, not a later one.
+  // The hold is refused for the active slot, so the effect re-runs when this
+  // pane's slot stops being active: a split pane left on screen after the
+  // reader switches to another chat is flagged the moment its slot is parked.
+  // That re-run's cleanup releases nothing, because this pane still observes
+  // the slot.
+  const paneIsActive = slotKey === activeSlot
+  useEffect(() => {
+    const slot = slotKey
+    dispatch(holdHydratedSlotPane(slot))
+    return () => {
+      queueMicrotask(() => {
+        if (releaseUnobservedPaneSlot(queryClient, slot)) dispatch(clearSlotHydrated(slot))
+      })
+    }
+  }, [slotKey, paneIsActive, dispatch, queryClient])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
   // inside ChatMessageList — growth on EARLIER rows (a tool result updating, a
