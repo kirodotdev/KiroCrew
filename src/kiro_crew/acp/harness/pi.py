@@ -33,9 +33,17 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
-from kiro_crew import acp_tool_gate, agent_sdk, platform_compat
+from kiro_crew import acp_tool_gate, agent_sdk
+from kiro_crew import env as env_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
+from kiro_crew.acp.harness.pi_node import (
+    PI_NODE_FLOOR_FALLBACK,
+    PiNodeChoice,
+    choose_pi_node,
+    node_engine_floor,
+)
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable, PiGateExtensionTampered
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
@@ -169,7 +177,7 @@ _pi_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLV
 
 _pi_bin_cache: tuple[str | None, str] | object = launch_mod._UNRESOLVED
 
-_pi_gate_launcher_cache: dict[tuple[str, str], str] = {}
+_pi_gate_launcher_cache: dict[tuple[str, str, tuple[str, ...]], str] = {}
 
 
 def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
@@ -225,15 +233,68 @@ def _resolve_pi_bin() -> tuple[str | None, str]:
 def _pi_installed_version(pi_bin: str) -> tuple[tuple[int, ...], str] | None:
     """``(version, npm package name)`` of the pi install *pi_bin* runs, or ``None``.
 
-    Read from the npm package's own ``package.json`` rather than by running
-    ``pi --version``: a few small file reads instead of a second child
-    process on every spawn. On POSIX the npm bin link resolves into the package,
-    so the manifest is a few directories above it. On Windows the bin is a
-    ``pi.cmd`` shim: a global one sits in the npm prefix, with the package under
-    that directory's ``node_modules``, and a project-local one sits in
-    ``node_modules/.bin``, beside the package. Only a manifest carrying one of pi's own
-    package names counts. Anything else (a wrapper script, a standalone
-    build) answers ``None``, and the caller lets that through.
+    Read from the npm package's own ``package.json`` (:func:`_pi_manifest`) rather
+    than by running ``pi --version``: a few small file reads instead of a second
+    child process on every spawn. A manifest without a readable version answers
+    ``None``, and the caller lets that through.
+
+    Blocking (reads files); callers run it off the loop.
+    """
+    data = _pi_manifest(pi_bin)
+    if data is None:
+        return None
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(data.get("version") or ""))
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups()), str(data["name"])
+
+
+def _pi_node_floor(pi_bin: str) -> tuple[tuple[int, int, int], bool]:
+    """``(floor, declared)``: the oldest Node.js *pi_bin*'s package admits.
+
+    From ``engines.node`` in pi's own manifest, so the floor moves with pi's
+    releases; :data:`~kiro_crew.acp.harness.pi_node.PI_NODE_FLOOR_FALLBACK` with
+    ``declared`` false when the manifest is missing or declares no range this can
+    read.
+
+    Blocking (reads files); callers run it off the loop.
+    """
+    data = _pi_manifest(pi_bin)
+    engines = data.get("engines") if data is not None else None
+    floor = node_engine_floor(engines.get("node") if isinstance(engines, dict) else None)
+    if floor is None:
+        return PI_NODE_FLOOR_FALLBACK, False
+    return floor, True
+
+
+def _pi_node_choice(session: ProcessSession, pi_bin: str) -> PiNodeChoice:
+    """How the gate launcher runs *pi_bin* so the Node under it meets pi's floor.
+
+    Searched on the PATH the pi child inherits: the session's environment with the
+    same augmentation (:func:`kiro_crew.env.augmented_path`) the read-back's
+    environment gets in :func:`_verify_pi_gate`. Blocking (file reads,
+    ``node --version``); callers run it off the loop.
+    """
+    env = {**os.environ, **session._agent_env_for_spawn(), **session._extra_env}
+    floor, declared = _pi_node_floor(pi_bin)
+    return choose_pi_node(
+        pi_bin,
+        floor,
+        env_mod.augmented_path(env.get("PATH", "")),
+        cwd=session._spawn_work_dir,
+        declared=declared,
+    )
+
+
+def _pi_manifest(pi_bin: str) -> dict | None:
+    """The parsed ``package.json`` of the pi install *pi_bin* runs, or ``None``.
+
+    On POSIX the npm bin link resolves into the package, so the manifest is a few
+    directories above it. On Windows the bin is a ``pi.cmd`` shim: a global one
+    sits in the npm prefix, with the package under that directory's
+    ``node_modules``, and a project-local one sits in ``node_modules/.bin``,
+    beside the package. Only a manifest carrying one of pi's own package names
+    counts. Anything else (a wrapper script, a standalone build) answers ``None``.
 
     Blocking (reads files); callers run it off the loop.
     """
@@ -256,10 +317,7 @@ def _pi_installed_version(pi_bin: str) -> tuple[tuple[int, ...], str] | None:
             continue
         if not isinstance(data, dict) or data.get("name") not in _PI_NPM_PACKAGE_NAMES:
             continue
-        match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(data.get("version") or ""))
-        if not match:
-            return None
-        return tuple(int(part) for part in match.groups()), str(data["name"])
+        return data
     return None
 
 
@@ -455,23 +513,25 @@ def _publish_gate_artifact(
     return target
 
 
-def _pi_gate_launcher_body(pi_bin: str, extension_path: str) -> str:
+def _pi_gate_launcher_body(pi_bin: str, extension_path: str, program: tuple[str, ...] = ()) -> str:
     """The launcher pi-acp is told to run in place of ``pi``.
 
     It forwards every argument the adapter passes and appends the extension flag,
     so the harness process is the one the adapter meant to start plus Crew's gate.
     A shell script on POSIX; a ``.cmd`` on Windows, where the adapter itself uses a
-    shell for exactly that extension.
+    shell for exactly that extension. *program*, when given, is what runs in place
+    of *pi_bin* -- ``(node, pi's script)`` when pi's shebang would find a Node below
+    pi's floor (:func:`~kiro_crew.acp.harness.pi_node.choose_pi_node`, POSIX only).
     """
     if platform_compat.IS_WINDOWS:
         return f'@echo off\r\n"{pi_bin}" %* {_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
-    return (
-        "#!/bin/sh\n"
-        f'exec {shlex.quote(pi_bin)} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
-    )
+    run = " ".join(shlex.quote(part) for part in (program or (pi_bin,)))
+    return f'#!/bin/sh\nexec {run} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
 
 
-def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
+def _ensure_pi_gate_launcher(
+    pi_bin: str, extension_path: str, program: tuple[str, ...] = ()
+) -> str:
     """Write (once per process and inputs) the launcher and return its path.
 
     Lives in the owner-only pi gate artifact directory, which the sandbox exposes
@@ -483,7 +543,7 @@ def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
 
     Blocking (writes a file); callers run it off the loop.
     """
-    key = (pi_bin, extension_path)
+    key = (pi_bin, extension_path, program)
     cached = _pi_gate_launcher_cache.get(key)
     if cached and os.path.isfile(cached):
         return cached
@@ -494,7 +554,7 @@ def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            fh.write(_pi_gate_launcher_body(pi_bin, extension_path))
+            fh.write(_pi_gate_launcher_body(pi_bin, extension_path, program))
         if not platform_compat.IS_WINDOWS:
             os.chmod(tmp, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     except OSError:
@@ -845,6 +905,20 @@ class PiLaunch(ProcessAdapter):
         pi_version_issue = await asyncio.to_thread(_pi_version_issue, pi_bin)
         if pi_version_issue:
             raise AcpError(pi_version_issue)
+        # The Node pi's shebang would find, against pi's own engine floor. Also
+        # refused here rather than left to the read-back: a pi under too old a Node
+        # dies at module load, and the read-back can name only an exit code. When a
+        # Node that meets the floor is beside pi or later on the PATH, the launcher
+        # runs pi under it instead.
+        node_choice = await asyncio.to_thread(_pi_node_choice, session, pi_bin)
+        if node_choice.issue:
+            raise AcpError(node_choice.issue)
+        if node_choice.argv:
+            logger.info(
+                "pi: the Node.js its shebang finds is below pi's engine floor; "
+                "launching pi under %s",
+                node_choice.argv[0],
+            )
         argv = pi_acp_argv
         spawn_label = launch_mod._adapter_spawn_label(
             argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
@@ -884,7 +958,9 @@ class PiLaunch(ProcessAdapter):
         # The names pi will spell its tools after: the permission path maps a pi
         # ``mcp__<server>__<tool>`` title back to the server Crew placed.
         session._pi_mcp_server_names = names
-        self._launcher = await asyncio.to_thread(_ensure_pi_gate_launcher, pi_bin, extension_path)
+        self._launcher = await asyncio.to_thread(
+            _ensure_pi_gate_launcher, pi_bin, extension_path, node_choice.argv
+        )
         # Wrapped in the SAME sandbox with the SAME credential mask as the session
         # spawn, for the same reason the opencode read-back is: this child is the
         # agent itself, loading extensions out of the operator's own directories,
