@@ -591,6 +591,10 @@ class TestHandleMessage:
         assert "went wrong" in all_text.lower() or "🔧" in all_text
 
 
+#: The user row's Slack sender for ``U1`` in conftest's validated workspace.
+_SLACK_SENDER_U1 = {"slack_sender": {"team_id": "TTEST", "enterprise_id": "ETEST", "user_id": "U1"}}
+
+
 class TestHookIntegration:
     @pytest.mark.asyncio
     async def test_auto_reply_skips_acp(self):
@@ -650,6 +654,7 @@ class TestHookIntegration:
                 source_thread="thread1",
                 source_user="U1",
                 agent="ops",
+                extra_meta=_SLACK_SENDER_U1,
             )
         finally:
             _hydrated_sessions.discard("thread1")
@@ -697,6 +702,7 @@ class TestHookIntegration:
                 source_thread="thread2",
                 source_user="U1",
                 agent="research",
+                extra_meta=_SLACK_SENDER_U1,
             )
         finally:
             _hydrated_sessions.discard("thread2")

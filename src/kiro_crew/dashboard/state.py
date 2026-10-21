@@ -126,6 +126,7 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
 )
 from kiro_crew.shared_crew.attribution import with_request_author
+from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard._types import (  # noqa: F401
@@ -156,6 +157,48 @@ _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
 #: The entry point the gateway serves (``server.py``'s ``_DIST_DIR``).
 _SERVED_INDEX = Path(__file__).resolve().parent.parent / "static" / "dist" / "index.html"
 _FOLDER_REPOSITORY = FolderRepository(lambda: logger)
+
+
+def _stamp_slack_row(slot: Any, meta: dict | None, *, stamp: bool) -> dict | None:
+    """The window-side append door of the Slack author reader.
+
+    *stamp* is a live user row: a well-formed ``slack_sender`` then gets its
+    author (``shared_crew.slack_identity.stamp_sender_author``), and when it is
+    the first user row of a slot nobody has stamped, its Slack person is the
+    creator (``stamp_creator_if_fresh``). The key is consumed on every row, so
+    the raw Slack ids never reach the window, a browser frame or the saved
+    transcript. Inside an authorized request's own task the request names the
+    author (``with_request_author``) and the key is only dropped: a request
+    can never speak as a Slack person. Never raises: a failure only leaves the
+    row unattributed.
+    """
+    from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY
+
+    if not isinstance(meta, dict) or SLACK_SENDER_META_KEY not in meta:
+        return meta
+    out = dict(meta)
+    try:
+        from kiro_crew.shared_crew.attribution import request_author_bound, stamp_creator_if_fresh
+        from kiro_crew.shared_crew.contracts import PrincipalKind
+        from kiro_crew.shared_crew.slack_identity import slack_actor, stamp_sender_author
+
+        if not stamp or request_author_bound():
+            out.pop(SLACK_SENDER_META_KEY, None)
+            return out
+        principal = stamp_sender_author(out)
+        if principal is not None and principal.kind is PrincipalKind.HUMAN:
+            window = list(getattr(slot, "messages", ()) or ())
+            prior = sum(1 for m in window if isinstance(m, dict) and m.get("role") == "user")
+            total = getattr(slot, "total_messages", None)
+            if isinstance(total, int) and total > len(window):
+                # Rows beyond the window were said by someone this read cannot
+                # see, so this is not the conversation's first message.
+                prior += 1
+            stamp_creator_if_fresh(slot, slack_actor(principal), prior_user_turns=prior)
+    except Exception:
+        logger.debug("slack author stamp failed for %s", getattr(slot, "key", "?"), exc_info=True)
+    out.pop(SLACK_SENDER_META_KEY, None)
+    return out
 
 
 def note_crew_log_class(state: Any, slot: Any) -> None:
@@ -1269,13 +1312,15 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # transcript's tail and passes broadcast_user=True so a message typed in
     # Slack renders at all (nothing rendered it optimistically here). That
     # exception cannot carry unredacted meta: ConversationLog.append writes
-    # only role/content/ts/source_thread/source_user for such a row -- no
-    # meta dict -- so the arm below never fires for it, and the row's
+    # only role/content/ts/source_thread/source_user for such a row, plus,
+    # for a Slack person's row, the server-stamped public ``author`` (id,
+    # kind, display label, ``via``; the raw Slack ids are consumed at the
+    # write and never stored), so nothing secret rides the arm below, and the row's
     # content is human-typed, which is deliberately raw at every other
     # boundary too. The invariant is pinned by
     # test_rehydrate_does_not_broadcast_replayed_messages and
     # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
-    # it further without re-checking that meta is still absent.
+    # it further without re-checking that meta is still free of secrets.
     direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
     if direct_meta and isinstance(direct_meta, dict):
         payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
@@ -5098,6 +5143,12 @@ class _ChatSlot:
                 datetime.now(timezone.utc),
             ),
         }
+        # Shared Crew: a Slack-sourced row (a linked thread, a code channel) names
+        # its Slack sender. The one reader turns ``slack_sender`` into a live
+        # user row's author (and a never-stamped session's creator) and drops
+        # the raw ids from every row.
+        if isinstance(meta, dict) and SLACK_SENDER_META_KEY in meta:
+            meta = _stamp_slack_row(self, meta, stamp=role == "user" and broadcast)
         if role == "user" and broadcast:
             # Shared Crew: a live user row written by a request handler names
             # that request's server-derived author unless it already names one.

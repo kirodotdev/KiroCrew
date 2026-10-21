@@ -355,6 +355,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
         history_dir=data_home() / "history",
     )
     self.ctx_builder.channel_history = self.channel_history
+    # Shared Crew: a Slack sender's byline reads its display name from this
+    # same users.info cache, never from Slack again.
+    from kiro_crew.shared_crew.slack_identity import set_display_name_source
+
+    set_display_name_source(self.channel_history.user_name)
 
     # Register observe-mode channels for deeper history buffer
     from kiro_crew.config.loader import ACTIVATION_OBSERVE

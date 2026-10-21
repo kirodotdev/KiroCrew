@@ -3456,6 +3456,7 @@ async def _handle_tool_approval(
         thread_ts=thread_ts,
         slack=slack_ops,
         sessions=_orch.sessions if _orch else None,
+        team_id=(payload.get("team") or {}).get("id", "") or "",
     )
 
     # Replace buttons with outcome label — only when an action was processed.

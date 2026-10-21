@@ -1565,6 +1565,22 @@ def transcript_lock_stems(key: str) -> tuple[str, ...]:
     return (_safe_key(f"slack:{bare}"), _safe_key(bare))
 
 
+def _stamp_slack_author(meta: dict) -> Any:
+    """Turn a user row's ``slack_sender`` into its author (``shared_crew.slack_identity``).
+
+    The transcript-side append door of the one reader. Returns the stamped
+    principal, or ``None`` when the row named no well-formed Slack sender.
+    Never raises: a failure only leaves the row unattributed.
+    """
+    try:
+        from kiro_crew.shared_crew.slack_identity import stamp_sender_author
+
+        return stamp_sender_author(meta)
+    except Exception:
+        logger.debug("slack author stamp failed", exc_info=True)
+        return None
+
+
 def _redact_at_write_boundary(role: str, content: str) -> str:
     """Redact model-authored *content* on its way into a transcript.
 
@@ -2187,6 +2203,59 @@ class ConversationLog:
         """Return True if a conversation log file exists for *key*."""
         return self._path(key).exists()
 
+    def _holds_user_rows(self, key: str) -> bool:
+        """Whether *key*'s transcript already holds a ``user`` row.
+
+        The transcript door's half of "the first person to speak started it",
+        the same rule the window door applies (``stamp_creator_if_fresh``): a
+        notice or a reply before the first person's row (a thread-parent
+        notice, a seeded kickoff) does not make them a later sender. Stops at
+        the first user row, so a long conversation is read only up to it.
+        Anything unreadable counts as holding one, so a creator is never
+        recorded on a guess.
+        """
+        try:
+            with self._locked(key), open(self._path(key), "rb") as handle:
+                for raw in handle:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        return True
+                    if isinstance(row, dict) and row.get("role") == "user":
+                        return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return True
+        return False
+
+    def _record_first_creator(self, key: str, principal: Any) -> None:
+        """Record *principal* as the creator of a session it just started.
+
+        Write-once (``shared_crew.contracts.keep_creator``): decided against
+        the on-disk line inside the metadata lock, so an attribution already
+        there is never replaced. A sender that is not a person records nothing.
+        Best effort: a failure only leaves the session reading as legacy.
+        """
+        try:
+            from kiro_crew.shared_crew.contracts import SESSION_ATTRIBUTION_META_KEY
+            from kiro_crew.shared_crew.slack_identity import creator_attribution
+
+            value = creator_attribution(principal)
+            if value is None:
+                return
+            self.update_metadata_if(
+                key,
+                {SESSION_ATTRIBUTION_META_KEY: value},
+                lambda meta: SESSION_ATTRIBUTION_META_KEY not in meta,
+                require_existing=True,
+            )
+        except Exception:
+            logger.debug("first-row creator not recorded for %s", key, exc_info=True)
+
     def has_messages(self, key: str) -> bool:
         """Return True if *key*'s transcript holds at least one message row.
 
@@ -2740,14 +2809,31 @@ class ConversationLog:
                 # the read side — persisting any other shape would store an id
                 # the reader is structurally unable to honour.
                 msg["meta"] = {"mid": mid}
+            slack_author = None
             if extra_meta:
-                msg["meta"] = {**extra_meta, **msg.get("meta", {})}
+                extra_meta = dict(extra_meta)
+                if role == "user":
+                    slack_author = _stamp_slack_author(extra_meta)
+                # Consumed above for a user row; on any other row it names no
+                # author, and the raw Slack ids are never stored.
+                extra_meta.pop("slack_sender", None)
+                merged = {**extra_meta, **msg.get("meta", {})}
+                if merged:
+                    msg["meta"] = merged
+            # The session's first PERSON row, written by a Slack person: they
+            # started it. Judged before the write and under the same lock, so no
+            # second writer can come first.
+            first_by_slack = slack_author is not None and (
+                created_now or not self._holds_user_rows(key)
+            )
 
             # Session transcripts are intentionally local plaintext JSONL (the
             # documented storage format), not a credential/secret store.
             append_line(  # lgtm[py/clear-text-storage-sensitive-data]
                 path, json.dumps(msg), opener=owner_only_opener
             )
+            if first_by_slack:
+                self._record_first_creator(key, slack_author)
 
             # Invalidate cache since file changed
             self._invalidate_cache(key)

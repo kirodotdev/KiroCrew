@@ -250,8 +250,11 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _linked_trust_grantable,
     _LinkedApproval,
     _LinkedApprovalEvent,
+    _open_native_decision,
     _PendingApproval,
+    _resolve_dashboard_approval,
     _resolve_linked_click,
+    _settle_native_decision,
     post_linked_approval,
     resolve_linked_approval,
 )
@@ -296,6 +299,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _persist_channel_config,
     _read_thread_overrides,
     _set_default_agent,
+    _slack_sender_row_meta,
     adopt_default_agent,
     maybe_apply_privacy_modifiers,
     maybe_route_linked_thread,
@@ -1015,6 +1019,7 @@ async def maybe_handle_keyword_command(
     cron_service: CronService | None = None,
     handle_sessions: bool = True,
     channel_agent: str | None = None,
+    user_meta: dict[str, Any] | None = None,
 ) -> bool:
     """Intercept the path-independent keyword commands.
 
@@ -1094,6 +1099,7 @@ async def maybe_handle_keyword_command(
                     source_thread=session_key,
                     source_user=user_id,
                     agent=_agent,
+                    user_meta=user_meta,
                 )
             return True
 
@@ -1113,6 +1119,7 @@ async def maybe_handle_keyword_command(
                     source_thread=session_key,
                     source_user=user_id,
                     agent=_agent,
+                    user_meta=user_meta,
                 )
             return True
 
@@ -1132,6 +1139,7 @@ async def maybe_handle_keyword_command(
                     source_thread=session_key,
                     source_user=user_id,
                     agent=_agent,
+                    user_meta=user_meta,
                 )
             return True
 
@@ -1203,6 +1211,10 @@ async def handle_message(
     ):
         await _sc_turn_gate.run_slack_message(handle_message, _sc_args)
         return
+    # Shared Crew attribution: the user rows this message writes name their
+    # Slack sender (``meta["slack_sender"]``); the append turns it into the
+    # row's author. A trusted bot's message names none: a bot is never a person.
+    _user_row_meta = _slack_sender_row_meta(user_id, team_id, from_trusted_bot)
     Stats().inc_message_received()
     _t0 = time.monotonic()
     # reply_ts is the true Slack thread timestamp (used for posting replies and
@@ -1268,6 +1280,8 @@ async def handle_message(
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        team_id=team_id,
+        sender_is_bot=from_trusted_bot,
     ):
         return
 
@@ -1298,6 +1312,7 @@ async def handle_message(
                     source_thread=session_key,
                     source_user=user_id,
                     agent=_agent,
+                    user_meta=_user_row_meta,
                 )
             return
 
@@ -1393,6 +1408,7 @@ async def handle_message(
         cron_service=cron_service,
         handle_sessions=False,
         channel_agent=channel_agent,
+        user_meta=_user_row_meta,
     ):
         return
 
@@ -2147,6 +2163,7 @@ async def handle_message(
                     event,
                     session_key,
                     is_dm=channel.startswith("D"),
+                    initiator_meta=_user_row_meta,
                 )
                 task.resume()
                 status_ctrl.resume_stall_watchdog()
@@ -2692,6 +2709,7 @@ async def handle_message(
                     source_thread=session_key,
                     source_user=user_id,
                     agent=_agent,
+                    user_meta=_user_row_meta,
                 )
             _release_permit()
             return
@@ -2834,6 +2852,7 @@ async def handle_message(
                         source_thread=session_key,
                         source_user=user_id,
                         agent=_agent,
+                        user_meta=_user_row_meta,
                     )
                 except Exception:
                     logger.warning(
@@ -3106,6 +3125,7 @@ async def handle_message(
                 source_thread=session_key,
                 source_user=user_id,
                 agent=_agent,
+                user_meta=_user_row_meta,
             )
 
         # ── Timing footer ──
@@ -3281,7 +3301,7 @@ async def handle_message(
 
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
         if linked_session_key and _dashboard_state and answer.accumulated and not _skip_writes:
-            _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
+            _mirror_to_dashboard(linked_session_key, text, answer.accumulated, _user_row_meta)
         # ── Auto-title Slack thread (fire-and-forget) ──
         # Claim-early-unclaim-on-failure pattern: ``try_claim`` checks and marks in one
         # synchronous step, so concurrent messages (and the transport path, which
@@ -3456,8 +3476,16 @@ async def _request_approval(
     event: LLMEvent,
     session_key: str = "",
     is_dm: bool = True,
+    initiator_meta: dict[str, Any] | None = None,
 ) -> str:
-    """Post approval buttons, wait for click, return 'approved' or 'rejected'."""
+    """Post approval buttons, wait for click, return 'approved' or 'rejected'.
+
+    Shared Crew: the prompt is also recorded as a decision under the session's
+    dashboard slot key, initiated by the Slack sender whose turn asked
+    (*initiator_meta*, the turn's ``slack_sender`` row meta) and resolved in the
+    name of whoever clicked, so the session's dashboard view says who asked and
+    who answered. Recording only: the click below is still the one answer.
+    """
     blocks = _build_approval_blocks(event, is_dm=is_dm)
     # If posting the approval prompt fails, the ACP permission request would
     # otherwise be left unanswered — the subprocess blocks forever and every
@@ -3474,6 +3502,10 @@ async def _request_approval(
     key = f"{channel}:{approval_ts}"
     pending = _PendingApproval(provider, event.request_id, session_key)
     _pending_approvals[key] = pending
+    _decision = _open_native_decision(session_key, event.request_id, initiator_meta)
+    # The outcome a click chose; stays None when nobody answered.
+    _answered: str | None = None
+    _cancelled = False
     approval_timeout = (
         _APPROVAL_TIMEOUT if _APPROVAL_TIMEOUT is not None else tool_approval_timeout_secs()
     )
@@ -3483,6 +3515,7 @@ async def _request_approval(
         # click that claimed the entry just before the deadline could then
         # never deliver its real outcome (its set_result guards on done()).
         outcome = await asyncio.wait_for(asyncio.shield(pending.future), timeout=approval_timeout)
+        _answered = outcome
     except asyncio.TimeoutError:
         outcome = _OUTCOME_REJECTED
         # Claim the decision BEFORE awaiting anything: while the entry stays
@@ -3541,8 +3574,16 @@ async def _request_approval(
             # Returning "rejected" on a timer instead would close this stream
             # over a tool the person approved and that still executes.
             outcome = await asyncio.shield(pending.future)
+            _answered = outcome
+    except asyncio.CancelledError:
+        # The turn was cancelled while the prompt waited: its decision ends
+        # withdrawn, not expired. Re-raised unchanged.
+        _cancelled = True
+        raise
     finally:
         _pending_approvals.pop(key, None)
+        if _decision is not None:
+            _settle_native_decision(_decision, _answered, pending.responder, _cancelled)
 
     try:
         await slack.delete_message(channel, approval_ts)
@@ -3563,6 +3604,7 @@ async def handle_interaction(
     thread_ts: str = "",
     slack: SlackClientOps | None = None,
     sessions: SessionManager | None = None,
+    team_id: str = "",
 ) -> str | None:
     """Handle a Block Kit button click for tool approval.
 
@@ -3591,6 +3633,11 @@ async def handle_interaction(
         return None
 
     key = f"{channel}:{msg_ts}"
+    # Shared Crew: who answered, for the decision's attribution only. The
+    # allowlist check above already decided whether this click counts.
+    from kiro_crew.shared_crew.slack_identity import gateway_principal
+
+    responder = gateway_principal(user_id, team_id)
 
     # Linked-dashboard-slot approval: the dashboard's _run_chat owns the ACP
     # answer (it is parked on the slot's approval future). Resolve ONLY that
@@ -3600,7 +3647,7 @@ async def handle_interaction(
     # session, and only a widening that actually took counts as an approval.
     linked_entry = _linked_approvals.get(key)
     if linked_entry is not None:
-        return _resolve_linked_click(linked_entry, key, action_id, user_id, sessions)
+        return _resolve_linked_click(linked_entry, key, action_id, user_id, sessions, responder)
 
     # Claim-before-await, symmetric with the timeout arm: popping here (not
     # at the end) means a timeout firing while this click awaits the wire
@@ -3641,6 +3688,9 @@ async def handle_interaction(
     # replaces. approve_tool pops the recorded options before sending, so the
     # guard's fallback reject can land as a cancelled outcome (ends the turn's
     # remaining tool calls) — still strictly better than a wedged subprocess.
+    # Recorded before any path below resolves the future, so the waiter that
+    # reads the outcome also reads who chose it.
+    pending.responder = responder
     floor_refused = False
     try:
         if action_id in (_ACTION_APPROVE, _ACTION_TRUST):

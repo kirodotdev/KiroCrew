@@ -379,12 +379,21 @@ async def maybe_route_linked_thread(
     reply_ts: str,
     target_slot: Any | None = None,
     route_pinned: bool = False,
+    *,
+    team_id: str = "",
+    sender_is_bot: bool = False,
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
     Shared by the native ``handle_message`` path and the messaging-transport
     ``handle_message_transport`` path so a thread linked via
-    ``/kirocrew link-to-dashboard`` behaves identically on both.
+    ``/kirocrew link-to-dashboard`` behaves identically on both. A code
+    channel routes into its bound session through here too.
+
+    The row (or queue entry) it writes names its Slack sender as
+    ``meta["slack_sender"]`` (``shared_crew.slack_identity.gateway_sender_meta``
+    over *user_id* and *team_id*), which the slot's append turns into the
+    row's author. *sender_is_bot* writes none: a bot is never a person.
 
     Returns ``True`` when the caller MUST return without further handling —
     either the message was routed into the linked dashboard slot, or an
@@ -466,6 +475,8 @@ async def maybe_route_linked_thread(
                 reply_ts,
                 target_slot=_dashboard_state.get_linked_slot(reply_ts),
                 route_pinned=True,
+                team_id=team_id,
+                sender_is_bot=sender_is_bot,
             )
 
     _linked_slot_key = _linked_slot.key
@@ -478,8 +489,21 @@ async def maybe_route_linked_thread(
     # broadcast_user=True: append delivers the ONE identity-carrying frame
     # (a frame without ``meta.mid`` lets a client receiving the row through a
     # second door render it a second time as a duplicate).
+    # Shared Crew: the Slack person this row is relayed for. The slot's append
+    # turns it into the row's author (``shared_crew.slack_identity``).
+    from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY
+    from kiro_crew.shared_crew.slack_identity import gateway_sender_meta
+
+    _sender = None if sender_is_bot else gateway_sender_meta(user_id, team_id)
+    _sender_meta = {SLACK_SENDER_META_KEY: _sender} if _sender else {}
     append_and_surface(
-        _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
+        _dashboard_state,  # type: ignore[arg-type]
+        _linked_slot,
+        "user",
+        _safe_text,
+        "msg msg-u",
+        meta=dict(_sender_meta) or None,
+        broadcast_user=True,
     )
     if not _linked_slot.running:
         from kiro_crew.dashboard.chat import _run_chat
@@ -505,7 +529,7 @@ async def maybe_route_linked_thread(
         # only a constraint that appears AFTER this enqueue drops the entry.
         _linked_slot.queue_append(
             text,
-            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            meta={**containment_meta(_dashboard_state, _linked_slot), **_sender_meta},  # type: ignore[arg-type]
             directive_user_origin=True,
             directive_channel_origin=True,
         )
@@ -521,3 +545,18 @@ async def maybe_route_linked_thread(
     )
     logger.info("Routed linked Slack message to dashboard slot %s", _linked_slot_key)
     return True
+
+
+def _slack_sender_row_meta(user_id: str, team_id: str, from_bot: bool) -> dict[str, Any] | None:
+    """The user-row ``meta`` naming this message's Slack sender, or ``None``.
+
+    ``None`` for a bot's message and for ids without Slack's shapes, so the row
+    stays unattributed exactly as before (``shared_crew.slack_identity``).
+    """
+    if from_bot:
+        return None
+    from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY
+    from kiro_crew.shared_crew.slack_identity import gateway_sender_meta
+
+    sender = gateway_sender_meta(user_id, team_id)
+    return {SLACK_SENDER_META_KEY: sender} if sender else None

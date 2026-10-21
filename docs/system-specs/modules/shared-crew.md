@@ -77,8 +77,10 @@ Charging. A turn is charged to its initiator: the request's actor at a handler, 
 server-stamped `author` of a queued entry at the drain (entries restored from disk or
 merged from different people name no one), the bounded automation principal for an
 automation actor (`app`, `cron`, `gateway`, `crew`, `subagent`) or a synthetic turn,
-and the bounded Unknown bucket otherwise. A channel sender has no Shared Crew principal,
-so a person's channel message is Unknown and a monitor wake is automation. A refused
+and the bounded Unknown bucket otherwise. A channel sender owns no Shared Crew budget:
+a Slack person is attributed on their rows (section 2, "Slack senders") but their
+message is still charged to Unknown, and `turn_gate.queued_initiator` names no one
+for a queued entry a Slack person wrote. A monitor wake is automation. A refused
 turn never runs: the dashboard shows an error row, a channel gets a one-line reply, and
 a wake answers busy so it retries its claim.
 
@@ -264,6 +266,62 @@ nothing.
 `ActorContext.auth` is a copy of what the middleware decided, kept for audit. It is
 not a second decision. `correlation_id` is the client's `X-Correlation-Id` when it
 is a short plain token, else the server's `request_id`.
+
+### Slack senders
+
+A Slack message reaches the Crew because the Slack allowlist admitted it, not a
+Shared Crew boundary, so a Slack person is attributed and never admitted
+(`shared_crew/slack_identity.py`).
+
+The contract. Every Slack path that appends a person's user row writes
+`meta["slack_sender"] = {"team_id": "T…", "enterprise_id": "E…" or "", "user_id":
+"U…" or "W…"}`: raw Slack ids only, each matching Slack's shape
+(`\AT[A-Z0-9]{1,31}\Z`, `\AE[A-Z0-9]{1,31}\Z` or empty, `\A[UW][A-Z0-9]{1,31}\Z`), no
+name and no credential. It is plain data and grants nothing. A request may never
+supply it (`chat_handlers.RESERVED_ROW_META_KEYS`). Both append doors read it once,
+through `slack_identity.stamp_sender_author`: `ConversationLog.append` (a Slack
+session's own transcript) and `_ChatSlot.append` (a dashboard session's window, which
+a linked Slack thread and a Slack Code channel route into). The reader sets
+`meta["author"]` to the Slack principal, replacing an absent or Unknown author and
+never a known one, and consumes the key: the raw ids are dropped from every row, so
+they are never stored and never reach a browser. A row written inside an authorized
+request's own task takes the request's author, never a Slack one, and an edited
+queued entry loses its sender. A missing or malformed key leaves the row as it was:
+Unattributed, never a guess. Until startup validation has verified the install,
+whether it is an Enterprise Grid org is unknown, so no sender is written at all.
+
+The principal. `principal_id_for("slack", <enterprise id, else team id>, <user id>)`,
+kind `human`, provenance `slack_event`. Its display name is the Slack display or real
+name from the gateway's `users.info` cache (`ChannelHistory.user_name`, registered with
+`slack_identity.set_display_name_source`), cleaned of control and format
+characters; with no cached name it is empty and surfaces say "Slack user", never the
+raw user id or an avatar URL.
+Slackbot and this app's own user are `machine`; a bot id never matches the user
+shape, and a trusted bot's message writes no `slack_sender` at all. The public shape
+adds `via: "slack"` so a byline, a decision line and a People row can say "via
+Slack"; it carries no workspace or user id.
+
+Creator. The first stamped row of a session records its creator when no person's
+row came before it: on the transcript door when the file holds no `user` row yet (a
+thread-parent notice before it does not count), on the window door when the slot was
+never stamped and holds no user turn (`stamp_creator_if_fresh`). A session with an
+earlier person's row is never back-filled.
+
+Decisions. A Slack click on a dashboard approval settles it through
+`decisions.resolve_channel_click`, the same `state.resolve_approval` call as before,
+run inside the registry so the decision names the clicker; if recording fails, the
+plain call runs. A Slack session's own tool approval opens a channel decision
+(`open_channel_approval`) under its dashboard slot key, initiated by the turn's Slack
+sender and resolved in the clicker's name, or closed `expired` (nobody answered) or
+`withdrawn` (the turn was cancelled). A temporary or incognito thread opens none.
+Option-card answers enter as Slack messages and carry a byline like any other.
+
+Never access. `slack_event` is not a membership provenance, so a Slack person is not a
+collaborator. A channel principal (`contracts.is_channel_principal`) owns no
+admission budget, and is no evidence of a team path: `crew_mode.others_observed` and
+`memory_changes.crew_is_shared` skip it, so a personal Crew stays personal and shows
+no bylines. The same person on Slack and on the tailnet is two principals: nothing
+links them by email or name.
 
 ### Observed collaborators
 
@@ -1616,7 +1674,8 @@ Diagnosing Unknown attribution. `GET /api/auth/me` answers the caller's `princip
 `kind: unknown` with provenance `none` means the request did not come through a
 verified tailnet path: check `trust_identity`, the caller's login in `allowed_logins`,
 that `tailscale serve` (not Funnel or another proxy) fronts the port, and the gateway
-log for whois failures. A channel sender is always Unknown in this build.
+log for whois failures. A Slack sender reads as a `human` with provenance
+`slack_event` (section 2, "Slack senders"); any other channel sender is Unknown.
 
 Quota ownership. `GET /api/shared-crew/capacity` names the limiting scope (`principal`
 or `crew`) and the viewer's active and queued counts. `GET /api/shared-crew/people`
@@ -1636,7 +1695,8 @@ Principal slices are runtime-only systemd units and disappear with the user sess
 
 Known limits. Containment is `best_effort`: runtimes share the gateway's uid. IO is not
 limited, and disk is accounting of accepted request bytes, not a filesystem quota. A
-shared session's runtime stays in its first initiator's slice. Channel senders are
-Unknown. The internal one-shot helpers and the CLI's own processes in the table in
+shared session's runtime stays in its first initiator's slice. Slack senders are
+attributed only, and the same person on Slack and on the tailnet is two principals.
+Other channel senders are Unknown. The internal one-shot helpers and the CLI's own processes in the table in
 section 1 bypass fair admission. Enterprise grant and budget gates exist as contracts
 (section 8) and nothing calls them yet.

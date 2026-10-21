@@ -16,7 +16,7 @@ import { Users } from 'lucide-react'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Skeleton } from '../../components/ui'
-import { capabilityUsable, isUnknownPrincipal, principalName, sharedAccessConfigured } from '../../api/sharedCrewUi'
+import { capabilityUsable, channelName, isUnknownPrincipal, othersSeenIn, principalName, principalVia, sharedAccessConfigured } from '../../api/sharedCrewUi'
 import type { CreatorFilter as CreatorFilterValue } from '../../api/sharedCrew'
 import { creatorDisplay, effectiveMode, hidesTeamAttribution, loadCreatorFilter, normalizeCreatorFilter, saveCreatorFilter } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useSharedCrewSessionsPage } from '../../hooks/sharedCrew/useSharedCrew'
@@ -46,7 +46,7 @@ export function useSharedCrewListView(): SharedCrewListView {
   const modeFailed = attributes && modeReadFailed(modeQuery)
   const mode = effectiveMode(modeQuery.data, {
     teamPath: sharedAccessConfigured(capabilities),
-    othersSeen: (people.data?.people ?? []).some(row => !row.is_viewer),
+    othersSeen: othersSeenIn(people.data?.people),
   })
   const team = attributes && modeQuery.isSuccess && !hidesTeamAttribution(mode)
   const crewId = modeQuery.data?.crew_id ?? ''
@@ -100,7 +100,9 @@ function CreatorFilterSelect({ value, onChange }: { value: CreatorFilterValue; o
       const name = principalName(row.principal)
       if (!name) continue
       opts.push(row.principal.id)
-      labs.push(name)
+      // A Slack Alice and a tailnet Alice are two people: say which is which.
+      const via = principalVia(row.principal)
+      labs.push(via ? i18nT('sharedCrew.name_via_channel', { name, channel: channelName(via) }) : name)
     }
     opts.push('unattributed')
     labs.push(i18nT('sharedCrew.unattributed'))

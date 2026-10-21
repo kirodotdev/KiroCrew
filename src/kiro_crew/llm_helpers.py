@@ -3853,6 +3853,7 @@ def save_conversation_turn(
     source_thread: str | None = None,
     source_user: str | None = None,
     agent: str | None = None,
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
     """Save a user+assistant conversation turn to the history log.
 
@@ -3860,6 +3861,9 @@ def save_conversation_turn(
     messages with provenance tracking.  When *agent* is supplied it is
     recorded in the session metadata on file creation so that
     ``/kirocrew sessions`` displays the correct agent name.
+
+    *user_meta* rides on the USER row only: a Slack path passes the sender's
+    ``slack_sender`` ids here, which the append turns into its author.
     """
     log.append(
         key,
@@ -3868,6 +3872,9 @@ def save_conversation_turn(
         source_thread=source_thread,
         source_user=source_user,
         agent=agent,
+        # Only when there is something to add, so a turn with no sender keeps
+        # the exact append it always made.
+        **({"extra_meta": user_meta} if user_meta else {}),
     )
     if assistant_text:
         log.append(
@@ -3887,8 +3894,11 @@ async def save_conversation_turn_off_loop(
     source_thread: str | None = None,
     source_user: str | None = None,
     agent: str | None = None,
+    user_meta: dict[str, Any] | None = None,
 ) -> str | None:
     """Save a turn without blocking (or fail-fast-dropping on) the event loop.
+
+    *user_meta* is :func:`save_conversation_turn`'s.
 
     Returns the ``ts`` of the row this turn ended on, read back INSIDE the atomic
     hold so it is this turn's own row and not some later writer's. A caller that
@@ -3939,6 +3949,7 @@ async def save_conversation_turn_off_loop(
                 source_thread=source_thread,
                 source_user=source_user,
                 agent=agent,
+                user_meta=user_meta,
             )
             # Reentrant for the same key on the same thread (see
             # ``atomic_appends``), so this reuses the hold rather than

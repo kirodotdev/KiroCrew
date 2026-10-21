@@ -266,8 +266,16 @@ class TestLinkedThreadIntercept:
             # broadcast_user=True so the channel-typed row (never rendered
             # optimistically here) still reaches open dashboard windows through
             # append's own mid-carrying delivery.
+            # Shared Crew: the row names its Slack sender (conftest's validated
+            # workspace), which the slot's append turns into the row's author.
             slot.append.assert_called_once_with(
-                "user", "[REDACTED]", "msg msg-u", broadcast_user=True, meta=None
+                "user",
+                "[REDACTED]",
+                "msg msg-u",
+                broadcast_user=True,
+                meta={
+                    "slack_sender": {"team_id": "TTEST", "enterprise_id": "ETEST", "user_id": "U1"}
+                },
             )
             # LLM gets original text
             assert mock_run_chat.call_args[0][2] == "hello http://evil.com"

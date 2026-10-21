@@ -31,9 +31,11 @@ if TYPE_CHECKING:
         SlackClientOps,
         Stats,
         _dashboard_state,
+        _is_slack_restricted,
         _linked_approvals,
         add_trusted_session,
         effective_session_key,
+        get_dashboard_state,
         is_allowed_user,
         logger,
         redact_credentials,
@@ -43,13 +45,17 @@ if TYPE_CHECKING:
 
 
 class _PendingApproval:
-    __slots__ = ("provider", "request_id", "session_key", "future")
+    __slots__ = ("provider", "request_id", "session_key", "future", "responder")
 
     def __init__(self, provider: LLMProvider, request_id: str | int, session_key: str = "") -> None:
         self.provider = provider
         self.request_id = request_id
         self.session_key = session_key
         self.future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        #: The Shared Crew principal of the Slack person whose click answered
+        #: this prompt (set by ``handle_interaction`` before it resolves the
+        #: future), or ``None`` while unanswered. Attribution only.
+        self.responder: Any = None
 
 
 class _LinkedApproval:
@@ -377,12 +383,43 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
     return blocks
 
 
+def _resolve_dashboard_approval(
+    state: Any, request_id: str, approved: bool, responder: Any = None
+) -> bool:
+    """Settle a dashboard approval a Slack click answered; whether it took.
+
+    The settle is ``state.resolve_approval``, exactly as before. With a
+    *responder* (the Slack person who clicked) it runs inside the Shared Crew
+    decision registry (``decisions.resolve_channel_click``), so the decision
+    names them instead of Unknown.
+    """
+    if responder is None or getattr(responder, "is_unknown", True):
+        return bool(state.resolve_approval(request_id, approved))
+    try:
+        from kiro_crew.shared_crew.decisions import resolve_channel_click
+
+        return resolve_channel_click(
+            state,
+            request_id,
+            approved,
+            responder,
+            lambda: bool(state.resolve_approval(request_id, approved)),
+        )
+    except Exception:
+        # Attribution is a record: whatever went wrong recording it, the click
+        # still settles exactly as before (a future already settled answers
+        # False here, so it is never settled twice).
+        logger.debug("slack click attribution failed for %s", request_id, exc_info=True)
+        return bool(state.resolve_approval(request_id, approved))
+
+
 def _resolve_linked_click(
     linked_entry: _LinkedApproval,
     key: str,
     action_id: str,
     user_id: str,
     sessions: SessionManager | None,
+    responder: Any = None,
 ) -> str:
     """Resolve a click on a linked dashboard slot's prompt; return the action it took.
 
@@ -417,8 +454,8 @@ def _resolve_linked_click(
     resolved = False
     if _dashboard_state is not None and hasattr(_dashboard_state, "resolve_approval"):
         try:
-            resolved = bool(
-                _dashboard_state.resolve_approval(str(linked_entry.request_id), approved)  # type: ignore[attr-defined]
+            resolved = _resolve_dashboard_approval(
+                _dashboard_state, str(linked_entry.request_id), approved, responder
             )
         except Exception:
             logger.warning(
@@ -543,3 +580,62 @@ async def _grant_late_trust(
         resources=session_key,
     )
     return _ACTION_TRUST
+
+
+def _open_native_decision(
+    session_key: str, request_id: object, initiator_meta: dict[str, Any] | None
+) -> str | None:
+    """Record a Slack session's approval prompt as a shared decision; its id, or ``None``.
+
+    Filed under the slot key the session shows under on the dashboard
+    (``channel_slots.channel_slot_name``). ``None`` without a dashboard.
+    """
+    state = get_dashboard_state()
+    if state is None or not session_key:
+        return None
+    # A temporary or incognito thread writes nothing the dashboard can see,
+    # so its approvals are not announced there either.
+    if _is_slack_restricted(session_key):
+        return None
+    try:
+        from kiro_crew.dashboard.channel_slots import channel_slot_name
+        from kiro_crew.shared_crew.contracts import SLACK_SENDER_META_KEY, Principal
+        from kiro_crew.shared_crew.decisions import open_channel_approval
+        from kiro_crew.shared_crew.slack_identity import sender_principal
+
+        initiator = sender_principal((initiator_meta or {}).get(SLACK_SENDER_META_KEY))
+        return open_channel_approval(
+            state,
+            channel_slot_name(session_key),
+            str(request_id),
+            initiator if initiator is not None else Principal.unknown(),
+        )
+    except Exception:
+        logger.debug("slack approval decision not opened for %s", session_key, exc_info=True)
+        return None
+
+
+def _settle_native_decision(
+    decision_id: str, outcome: str | None, responder: Any, withdrawn: bool = False
+) -> None:
+    """Resolve the decision in the clicker's name, or close it when nobody answered.
+
+    Unanswered, it ends ``withdrawn`` when the turn was cancelled and
+    ``expired`` otherwise, as a slot approval does. Never raises: the decision
+    is a record, and the approval's own outcome is already decided.
+    """
+    try:
+        state = get_dashboard_state()
+        if state is None:
+            return
+        from kiro_crew.shared_crew.decisions import settle_channel_approval
+
+        settle_channel_approval(
+            state,
+            decision_id,
+            outcome if responder is not None else None,
+            responder,
+            withdrawn=withdrawn,
+        )
+    except Exception:
+        logger.debug("slack approval decision not settled: %s", decision_id, exc_info=True)

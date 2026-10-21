@@ -97,9 +97,14 @@ def queued_work(entries: Iterable[Mapping[str, Any]]) -> Iterator[None]:
 
 
 def queued_initiator(entries: Iterable[Mapping[str, Any]]) -> str:
-    """The one person every live queue entry names as its author, else ``""``."""
+    """The one person every live queue entry names as its author, else ``""``.
+
+    A channel sender (a Slack person) is attributed, never budgeted: their
+    queued message is charged as it was before Slack senders had a principal.
+    """
     from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
     from kiro_crew.shared_crew.attribution import is_person, message_author
+    from kiro_crew.shared_crew.contracts import is_channel_principal
 
     authors: set[str] = set()
     for entry in entries:
@@ -107,7 +112,7 @@ def queued_initiator(entries: Iterable[Mapping[str, Any]]) -> str:
             return ""
         meta = entry.get("meta")
         author = message_author(meta if isinstance(meta, Mapping) else None)
-        if not is_person(author):
+        if not is_person(author) or is_channel_principal(author):
             return ""
         authors.add(author.id)
     return authors.pop() if len(authors) == 1 else ""
@@ -447,8 +452,9 @@ async def run_channel_turn(
 ) -> T:
     """Run one channel transport turn through admission.
 
-    A channel sender has no Shared Crew principal, so a person's message is
-    charged to the bounded Unknown bucket and a monitor wake to automation.
+    A channel sender owns no Shared Crew budget (a Slack person is attributed
+    on their rows, never budgeted: ``slack_identity``), so a person's message
+    is charged to the bounded Unknown bucket and a monitor wake to automation.
     *refused* answers a turn that was refused or ended before it ran.
     """
     budget = _gate.AUTOMATION_PRINCIPAL.id if automation else Principal.unknown().id

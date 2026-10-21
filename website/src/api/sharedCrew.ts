@@ -26,6 +26,9 @@ export interface PublicPrincipal {
   id: string
   kind: PrincipalKind
   display: DisplaySnapshot
+  /** The channel a channel sender was seen through (`'slack'`): attribution
+   *  only, it grants nothing. Absent for a direct (dashboard) principal. */
+  via?: string
 }
 
 export type AttributionAvailability = 'recorded' | 'legacy_missing' | 'unattributed'

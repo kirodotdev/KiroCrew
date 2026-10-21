@@ -1525,7 +1525,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "error_prompt_busy": "3617d636151fb29f5ff88ac9e803a226a1f77bec56fc013e1bf32f9a65484de6",
     "error_timeout": "608f9764fe3ed40a4e758a69d881f2c829e08a6aa89302e9f007a1c1b463db44",
     "error_unexpected": "ae7bc265f3ffd8441f818df443f1586b1e0f3c6d2009d7b707220f0b6e92829a",
-    "hook_auto_reply": "f976c5ff2c752a2259381bcfd9fbf6e2fb72ca95fcdb1bbfa53c5ddf98f68f53",
+    "hook_auto_reply": "7199530360e690ff8ebe9687b2106a22b2f81a76119c7a5a13dc5d0360163421",
     "hook_deny_and_flag": "128570569dc7d30d1327ba223a903e3d1da2c190df536c018cc8555f04bfb1da",
     "interaction_edges": "80e9ab4e4ba623f57a0360df952f7d6c787348fc81ff69368bbfcfb2ce22bc8f",
     "interactive_approve": "e6f33da7bfb82b921f184c46ac76705f6a2d0bfb3841c230d5be7c30c5783e47",
@@ -1533,12 +1533,12 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "interactive_reject": "2caf89795617e42d1a38dddcc05a93bdba195fb10036f67d71438e824e44cfee",
     "interactive_timeout": "8767f772a5d23a1d318c0fe1ff69acc56bad7b024d552a4e4c5f132be2e024a4",
     "interactive_trust_in_dm": "d1f9b4ac5a71a94236bf697afab088161b9dd828f1aa8beee479ed6c02e76bbb",
-    "keyword_commands": "0ef1fd95b16ed0bbdcce2999f6632c4be8acc92e943cd4a69c05ccd5ffb2fb73",
+    "keyword_commands": "34130123511849cfd49c7f8347547d32f70aeace74432249813409dc369b9f0c",
     "linked_approval": "8a85aaf602b5281707519634a49589c814694ac0f9c7b71164bbdaa2cc474bc9",
-    "linked_dashboard_session": "c44bc74b6221ca50b776136f7f7f3b27967004ec0b2055d2ab22fdca17c85234",
-    "linked_thread_routes_to_slot": "ac7b70b93a3f485e84491edcac4cb8eb3e5aff6fa8a54a23846d8dae6be746af",
+    "linked_dashboard_session": "fe425bbc6b1496b2488fc3a12dffac9f57f6d235678105ba7ba43f2b7879975c",
+    "linked_thread_routes_to_slot": "2971ba6e3c9b73a6bee49ec30902af0716545818240fc25e1bc44ec5555306e3",
     "mention_prefixed_bang": "f6ba6be59eb71104d3fa7202fd9bbcf91a5a6376f253db3fda41a256d468ab1e",
-    "pinned_answer": "c590ad8ef702c7284d257b0d486a8c6b69f76255d32a5d0ae4dd896ad6f549d5",
+    "pinned_answer": "d9b90bd16e10dcf7a2d8eef7be7bfcbb26354b41626cad92846b203d1747e04e",
     "presentation_raises": "361a0de433fd48b58f859146ae2c68a7d9519ea8181399752673f044c299d2ce",
     "privacy_modifiers": "4061ede8e707257cf7903974e6de0a090562202d606bb78e60b2554d945ec8ba",
     "reasoning_only": "a18cd8aa10fbb3dcbb6897ce5fb316ec5ebc84acd12632c4570a295e7bf6721c",
@@ -1552,7 +1552,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "transport_floor_refusal": "8bc29ce9634f29549dbcab78cb139f12f0eb565ea92cc8a6856f6aa8eaae1803",
     "trusted_session": "33cdb5f7e51781f7636d4a8591bda14b7b57c094df5590633f5124d4bf05759d",
     "turn_ceiling_and_shutdown": "3ac9dcaeb5c6c42bf8886118f06df788a8b280da346addf25dbc811baf9e2c9d",
-    "turn_with_history": "bcc140758baf11312bd9e0bd2ec299c92cc4f51802eb5d8afb0e376d29799583",
+    "turn_with_history": "3d3ddbc802efc75662e4a3930066fb8714e427e3fc0e9409e8648e3c6c766528",
     "unstreamed_long_reply": "a338e70172346e12ef9c1d2a7cc155041dfdb54d5e155bd5fb3aa56a58601a94",
     "unstreamed_tool_and_auto_approval": "a771de255da501fa0a5a7a2636fd02cfa115f6bd75e5fd0a058b891bf890acf8",
     "voice_reply_requested": "c7447016937c719eb3bbb1d9e0dc753256f7c4b910cdc450aa01efe6fbbb5f5c",
@@ -1760,17 +1760,23 @@ _SPLIT_HELPERS: dict[str, str] = {
     "_bang_yolo": "commands",
     "_grant_late_trust": "approvals",
     "_mirror_to_dashboard": "finalize",
+    "_open_native_decision": "approvals",
     "_post_review_draft": "finalize",
     "_reply_by_voice": "voice",
+    "_resolve_dashboard_approval": "approvals",
     "_resolve_linked_click": "approvals",
     "_route_bang_command": "commands",
+    "_settle_native_decision": "approvals",
+    "_slack_sender_row_meta": "inbound",
     "_thread_context": "turn_context",
     "_thread_meta_fallback": "turn_context",
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
-#: captured from the one-module file before the split.
-_BASE_SHAPE_DIGEST = "d0818fced3d594d181317b548004673b7eaf31a24ad071cd96433bcc3f43b666"
+#: captured from the one-module file before the split. Re-pinned once since, for
+#: ``maybe_route_linked_thread``'s keyword-only ``team_id`` / ``sender_is_bot``
+#: (Shared Crew Slack attribution); every other line is unchanged.
+_BASE_SHAPE_DIGEST = "4c604ce636b5d4f39410871f6b0588ddaeeb1d6ca3d5d736fe9029f3582fcc52"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

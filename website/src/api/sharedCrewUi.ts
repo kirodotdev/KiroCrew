@@ -22,6 +22,7 @@ import {
   type SharedCrewCapabilities,
   type SharedDecision,
 } from './sharedCrew'
+import { i18nT } from '../i18n/t'
 
 /** One row of `GET /api/shared-crew/sessions`: a catalog row plus its attribution. */
 export interface SharedCrewSessionItem {
@@ -127,10 +128,15 @@ export function isUnknownPrincipal(p: PublicPrincipal | null | undefined): boole
   return !p || p.kind === 'unknown' || p.id === UNKNOWN_PRINCIPAL_ID
 }
 
-/** The label to show for a principal, or `''` when the caller must say Unknown. */
+/** The label to show for a principal, or `''` when the caller must say Unknown.
+ *  A channel sender with no cached name reads as its channel's person ("Slack
+ *  user"): attributed, so never Unattributed, and never their raw user id. */
 export function principalName(p: PublicPrincipal | null | undefined): string {
   if (isUnknownPrincipal(p) || !p) return ''
-  return (p.display.name || p.display.login || '').trim()
+  const label = (p.display.name || p.display.login || '').trim()
+  if (label) return label
+  const via = principalVia(p)
+  return via ? i18nT('sharedCrew.channel_person_unnamed', { channel: channelName(via) }) : ''
 }
 
 /** One or two letters for a principal's chip; never fetched, never an avatar URL. */
@@ -150,6 +156,7 @@ export function messageAuthor(meta: Record<string, unknown> | undefined): Public
   const a = raw as Partial<PublicPrincipal> & { display?: Partial<PublicPrincipal['display']> }
   if (typeof a.id !== 'string' || !a.id) return null
   const kind = a.kind === 'human' || a.kind === 'machine' || a.kind === 'system' ? a.kind : 'unknown'
+  const via = principalVia(a as PublicPrincipal)
   return {
     id: a.id,
     kind,
@@ -158,7 +165,30 @@ export function messageAuthor(meta: Record<string, unknown> | undefined): Public
       login: typeof a.display?.login === 'string' ? a.display.login : '',
       captured_at: typeof a.display?.captured_at === 'number' ? a.display.captured_at : null,
     },
+    ...(via ? { via } : {}),
   }
+}
+
+/** Channels whose senders are attributed (never admitted), and their names. */
+const CHANNEL_NAMES: Record<string, string> = { slack: 'Slack' }
+
+/** The channel a principal was seen through (`'slack'`), else `''`. Only a
+ *  channel this build knows counts, so a stray value never draws a mark. */
+export function principalVia(p: PublicPrincipal | null | undefined): string {
+  const via = p?.via
+  return typeof via === 'string' && via in CHANNEL_NAMES ? via : ''
+}
+
+/** The product name of a channel (`'Slack'`), for "via Slack". */
+export function channelName(via: string): string {
+  return CHANNEL_NAMES[via] ?? ''
+}
+
+/** Whether the People rows show anyone besides the viewer who proves a team
+ *  path: the mode fallback's `othersSeen`. A Slack person is attributed only,
+ *  so they never count (the server's `crew_mode.others_observed` agrees). */
+export function othersSeenIn(rows: readonly { is_viewer?: boolean; principal: PublicPrincipal }[] | undefined): boolean {
+  return (rows ?? []).some(row => !row.is_viewer && !principalVia(row.principal))
 }
 
 /** The id of a session's default owner: its recorded creator, or the viewer

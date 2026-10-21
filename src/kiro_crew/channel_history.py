@@ -75,6 +75,10 @@ class ChannelHistory:
         if user_id and name:
             self._user_names[user_id] = name
 
+    def user_name(self, user_id: str) -> str:
+        """The cached display name for *user_id*, or ``""``. Never a network call."""
+        return self._user_names.get(user_id, "")
+
     def set_observe(self, channel_id: str) -> None:
         """Enable observe mode for a channel (deeper history buffer).
 

@@ -731,6 +731,15 @@ def validated_self_bot_id() -> str:
     return _validated_self_bot_id
 
 
+def validated_workspace() -> tuple[str, str]:
+    """``(team_id, enterprise_id)`` from startup validation (``""`` when unavailable).
+
+    Zero-cost in-memory read. Shared Crew uses it to scope a Slack sender's
+    attribution to the org (or workspace) this gateway is installed in.
+    """
+    return _validated_team_id, _validated_enterprise_id
+
+
 def validated_self_user_id() -> str:
     """The gateway's own bot USER id from startup ``auth.test`` ("" when unavailable).
 

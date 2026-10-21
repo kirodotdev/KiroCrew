@@ -7,7 +7,8 @@
  *  whose mode is not known yet shows none. */
 import { useContext, useSyncExternalStore } from 'react'
 import { ReactReduxContext } from 'react-redux'
-import { bylineFor, capabilityUsable, messageAuthor, principalName, sessionOwnerId, sharedAccessConfigured } from '../../../api/sharedCrewUi'
+import { bylineFor, capabilityUsable, channelName, messageAuthor, othersSeenIn, principalName, principalVia, sessionOwnerId, sharedAccessConfigured } from '../../../api/sharedCrewUi'
+import { ChannelBrandIcon } from '../../../components/ChannelBrandIcon'
 import { effectiveMode, hidesTeamAttribution } from '../../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople, useSharedCrewViewer } from '../../../hooks/sharedCrew/useSharedCrew'
 import type { PublicPrincipal, SessionAttribution } from '../../../api/sharedCrew'
@@ -38,15 +39,25 @@ function useTeamAttribution(): boolean {
   // succeeds, the same as the session list.
   const mode = effectiveMode(modeQuery.data, {
     teamPath: sharedAccessConfigured(capabilities),
-    othersSeen: (people.data?.people ?? []).some(row => !row.is_viewer),
+    othersSeen: othersSeenIn(people.data?.people),
   })
   return attributes && modeQuery.isSuccess && !hidesTeamAttribution(mode)
 }
 
-function SenderLine({ name }: { name: string }) {
+function SenderLine({ name, via }: { name: string; via: string }) {
+  const channel = channelName(via)
+  const title = channel
+    ? i18nT('sharedCrew.sent_by_via', { name, channel })
+    : i18nT('sharedCrew.sent_by', { name })
   return (
-    <div className="text-[12px] leading-5 text-muted mb-0.5 pr-1 truncate max-w-full" data-testid="message-byline" title={i18nT('sharedCrew.sent_by', { name })}>
-      {name}
+    <div className="flex items-center gap-1 text-[12px] leading-5 text-muted mb-0.5 pr-1 max-w-full min-w-0" data-testid="message-byline" title={title}>
+      <span className="truncate min-w-0">{name}</span>
+      {channel && (
+        <span className="inline-flex shrink-0" data-testid="message-byline-via" data-via={via}>
+          <ChannelBrandIcon channel={via} size={12} />
+          <span className="sr-only">{i18nT('sharedCrew.via_channel', { channel })}</span>
+        </span>
+      )}
     </div>
   )
 }
@@ -58,7 +69,7 @@ function AuthoredBy({ author, slotKey }: { author: PublicPrincipal; slotKey?: st
   const ownerId = sessionOwnerId(attribution, viewer.isSuccess ? viewer.data?.id : '')
   const sender = bylineFor(author, ownerId)
   if (!team || !sender) return null
-  return <SenderLine name={principalName(sender) || i18nT('sharedCrew.unattributed')} />
+  return <SenderLine name={principalName(sender) || i18nT('sharedCrew.unattributed')} via={principalVia(sender)} />
 }
 
 export function MessageByline({ meta, slotKey }: { meta?: Record<string, unknown>; slotKey?: string }) {
