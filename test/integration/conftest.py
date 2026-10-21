@@ -176,6 +176,11 @@ cross-home flake three tests later.
      sample (``DEFAULT_SAMPLE_SECS``) and ``debug_threads mode=now`` takes one
      on request, so whether a boot leaves entries depends on how long it ran;
      a fresh process has none.
+   * ``platform.governance._CONFIRM_PATTERNS_MEMO`` -- the ``hooks.confirm_tools``
+     patterns read from the home's config files, keyed on their fingerprint.
+     Grant writers and gate checks fill it whenever no live snapshot is up,
+     so whether a boot leaves one, and from which home, depends on timing; a
+     fresh process has none.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -285,6 +290,7 @@ from kiro_crew.diag import threads as diag_threads
 from kiro_crew.metrics import inventory_gauges
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
+from kiro_crew.platform import governance
 from kiro_crew.security import paths as security_paths
 from kiro_crew.testing import fake_acp_backend
 
@@ -776,6 +782,7 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_SEEN.clear()
     config_loader._MATERIALIZED_COMPLETE = False
     config_loader._MATERIALIZED_AGENTS_READY = False
+    governance._CONFIRM_PATTERNS_MEMO = None
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
@@ -823,6 +830,7 @@ def home_bound_globals_are_clear() -> bool:
         and not config_loader._MATERIALIZED_SEEN
         and not config_loader._MATERIALIZED_COMPLETE
         and not config_loader._MATERIALIZED_AGENTS_READY
+        and governance._CONFIRM_PATTERNS_MEMO is None
         and dashboard_updates._auto_effect is None
         and not browser_launch._warned_lifecycle_losses
     )

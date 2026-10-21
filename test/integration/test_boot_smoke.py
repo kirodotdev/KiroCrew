@@ -23,6 +23,7 @@ from integration import conftest as harness
 from kiro_crew import identity_stores, onboarding_sources, safety_override
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.dashboard.handlers import kiro_usage_api
+from kiro_crew.platform import governance
 from kiro_crew.slack.gateway import GatewayOrchestrator
 
 try:
@@ -84,6 +85,18 @@ def test_dump_dir_must_be_absolute_and_outside_the_checkout(tmp_path: Path) -> N
     inside = Path(harness.__file__).resolve().parents[2] / "build" / "integration-hits"
     with pytest.raises(pytest.UsageError, match="inside the repository checkout"):
         harness.resolve_dump_dir(str(inside))
+
+
+def test_the_reset_forgets_the_confirm_tools_memo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``hooks.confirm_tools`` memo holds patterns read from one home's
+    config files. Whether a boot fills it depends on timing, so the reset
+    that runs between boots must drop it, or the second-boot witness sees
+    it change whenever an earlier boot in the worker filled it."""
+    monkeypatch.setattr(governance, "_CONFIRM_PATTERNS_MEMO", (("fingerprint", 0), ("x__*",)))
+    assert not harness.home_bound_globals_are_clear()
+    harness._reset_home_bound_globals()
+    assert governance._CONFIRM_PATTERNS_MEMO is None
+    assert harness.home_bound_globals_are_clear()
 
 
 @pytest.mark.asyncio
@@ -488,6 +501,12 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # session writes the workspace ``.kiro/cli.json`` overlay from a task that
     # races shutdown, so either boot may be the one that fills it.
     ("kiro_crew.atomic_write", "_default_mode"): "lazy umask cache",
+    # The dotted names of the facades imported so far in this process. A
+    # facade imported lazily by a boot's background work (the update check
+    # imports ``platform.wheel_engine``) is added by whichever boot first
+    # gets that far, so it may land in either; the names are modules, not
+    # home state.
+    ("kiro_crew._facade_mirror", "_INSTALLED"): "lazy import registry",
     ("kiro_crew.executors", "_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_subprocess_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_kiro_spawn_pool"): "lazy thread pool",
