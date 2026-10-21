@@ -451,13 +451,16 @@ above, so script-cron `Skip`/`Report`/`Done` delivery is not this watch's path.
 
 ## Non-goals
 
-The structured GitHub monitor digests PR-level comment bodies to detect that
-one changed, so an in-place edit whose `created_at` never moves still wakes the
-owner. It never interprets what a comment says or decides whether an advisory
-finding is valid, and it deliberately does not read inline review-thread bodies
-at all -- it reports only the count of unresolved, non-outdated threads there. It
-reports typed provider facts and leaves judgment, source inspection, and any
-reply to the reactivated babysit session.
+The structured monitor digests PR-level comment bodies to detect that one
+changed, so an in-place edit whose `created_at` never moves still wakes the
+owner. The GitHub and GitLab adapters both set this digest (GitHub over PR-level
+issue comments, GitLab over MR notes, skipping GitLab's `system` activity notes);
+the digest condition and its fail-closed-on-incomplete-read rule are
+provider-neutral, built in `monitoring.pull_request`. It never interprets what a
+comment says or decides whether an advisory finding is valid, and it deliberately
+does not read inline review-thread bodies at all -- it reports only the count of
+unresolved, non-outdated threads there. It reports typed provider facts and leaves
+judgment, source inspection, and any reply to the reactivated babysit session.
 `monitor_start` remains appropriate when each delivered cycle requires the agent
 to make progress, the objective requires untyped evidence, or the watched subject
 is unsupported by a structured provider.

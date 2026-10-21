@@ -20,7 +20,9 @@ from kiro_crew.monitoring.pull_request import (
     PullRequestProviderError,
     build_pull_request_probe_result,
     classify_provider_error_text,
+    comment_body_fingerprint,
     opaque_provider_check_identity,
+    pr_comment_body_digest,
     provider_error_result,
     provider_failure_result,
 )
@@ -107,16 +109,21 @@ class GitLabMergeRequestProvider:
                 pipelines: list[object] = []
                 discussions: list[object] = []
                 discussions_complete = True
+                notes: list[object] = []
+                notes_complete = True
             else:
                 head_pipeline = mr.get("head_pipeline")
                 pipelines = [] if head_pipeline is None else [_object(head_pipeline)]
                 discussions, discussions_complete = _collection(fetch("discussions"))
+                notes, notes_complete = _read_comments(fetch)
             facts = _facts(
                 target,
                 mr,
                 pipelines,
                 discussions,
+                notes,
                 discussions_complete=discussions_complete,
+                notes_complete=notes_complete,
             )
         except PullRequestProviderError as exc:
             return provider_failure_result(exc)
@@ -165,38 +172,46 @@ class GitLabMergeRequestProvider:
             return GitLabMergeRequestProvider._get_glab_page(target, root)
         if resource == "discussions":
             collection = f"{root}/discussions"
+        elif resource == "comments":
+            # MR notes are the surface a review bot's verdict comment lives on,
+            # the GitLab analogue of GitHub's PR-level issue comments. Paginated
+            # with the exact same page-size and three-page bound as discussions.
+            collection = f"{root}/notes"
         else:
             raise ValueError("unsupported GitLab monitor resource")
-        first = _list(
-            GitLabMergeRequestProvider._get_glab_page(
-                target,
-                (
-                    f"{collection}&per_page={_PAGE_SIZE}&page=1"
-                    if "?" in collection
-                    else f"{collection}?per_page={_PAGE_SIZE}&page=1"
-                ),
+        return GitLabMergeRequestProvider._fetch_collection_pages(target, collection)
+
+    @staticmethod
+    def _fetch_collection_pages(
+        target: GitLabMergeRequestTarget,
+        collection: str,
+    ) -> _Collection:
+        """Walk one list endpoint under the shared page-size and page bound.
+
+        Up to three pages: a short page ends the walk complete, and a third page
+        is read only to learn whether anything is left beyond the second -- the
+        items past the second page are never retained, so the retained set is
+        bounded at ``_MAX_PROVIDER_ITEMS`` whatever the collection's true size.
+        One walk for discussions and notes alike keeps their paging from
+        drifting apart.
+        """
+
+        def page(number: int) -> list[object]:
+            separator = "&" if "?" in collection else "?"
+            return _list(
+                GitLabMergeRequestProvider._get_glab_page(
+                    target,
+                    f"{collection}{separator}per_page={_PAGE_SIZE}&page={number}",
+                )
             )
-        )
+
+        first = page(1)
         if len(first) < _PAGE_SIZE:
             return _Collection(first, True)
-        second = _list(
-            GitLabMergeRequestProvider._get_glab_page(
-                target,
-                (
-                    f"{collection}&per_page={_PAGE_SIZE}&page=2"
-                    if "?" in collection
-                    else f"{collection}?per_page={_PAGE_SIZE}&page=2"
-                ),
-            )
-        )
+        second = page(2)
         if len(second) < _PAGE_SIZE:
             return _Collection([*first, *second], True)
-        third = _list(
-            GitLabMergeRequestProvider._get_glab_page(
-                target,
-                f"{collection}?per_page={_PAGE_SIZE}&page=3",
-            )
-        )
+        third = page(3)
         return _Collection([*first, *second], not third)
 
     @staticmethod
@@ -223,8 +238,10 @@ def _facts(
     mr: Mapping[str, Any],
     pipelines: list[object],
     discussions: list[object],
+    notes: list[object],
     *,
     discussions_complete: bool = True,
+    notes_complete: bool = True,
 ) -> PullRequestFacts:
     raw_state = str(mr["state"]).lower()
     state = _CANONICAL_STATES.get(raw_state, "unknown")
@@ -285,11 +302,11 @@ def _facts(
     unresolved = 0
     for discussion_raw in discussions[:_MAX_PROVIDER_ITEMS]:
         discussion = _object(discussion_raw)
-        notes = _list(discussion.get("notes", []))
+        discussion_notes = _list(discussion.get("notes", []))
         if any(
             _object(note_raw).get("resolvable") is True
             and _object(note_raw).get("resolved") is not True
-            for note_raw in notes
+            for note_raw in discussion_notes
         ):
             unresolved += 1
     return PullRequestFacts(
@@ -304,7 +321,73 @@ def _facts(
         unresolved_review_threads=unresolved,
         review_threads_complete=discussions_complete,
         checks_complete=current_head_pipeline,
+        pr_comment_body_digest=_comment_body_digest(notes, notes_complete),
     )
+
+
+def _comment_body_digest(notes: list[object], notes_complete: bool) -> str:
+    """Digest the MR's human note bodies, or "" when the read was incomplete.
+
+    MR notes are GitLab's PR-level comments -- the surface a review bot rewrites
+    its verdict on in place, with ``created_at`` frozen, so only a digest over
+    the bodies sees that change. Mirrors the GitHub adapter: each body is reduced
+    to a fixed-width fingerprint at the point of retention through the shared
+    helper, and the aggregate digest is built the same way, so the two providers'
+    digests cannot drift.
+
+    ``system: true`` notes are EXCLUDED. GitLab emits a system note for its own
+    activity -- "approved this merge request", "added N commits", "changed the
+    description", label and milestone edits -- none of which is a review remark a
+    human or bot wrote, and all of which move on routine churn a comment-body
+    wake must not fire on. The resolvable review remarks that carry a verdict are
+    user notes (``system: false``), so dropping system notes keeps exactly the
+    bodies this wake exists for.
+
+    Fail-closed: an incomplete read yields "" so no condition is emitted and a
+    page that keeps failing cannot wake the owner forever. A malformed note is
+    treated as an incomplete read for the same reason, mirroring the GitHub page
+    reader that marks a page incomplete on a malformed comment.
+    """
+    if not notes_complete:
+        return ""
+    fingerprints: list[str] = []
+    for note_raw in notes[:_MAX_PROVIDER_ITEMS]:
+        if not isinstance(note_raw, Mapping):
+            return ""
+        if note_raw.get("system") is True:
+            continue
+        body = note_raw.get("body")
+        if not isinstance(body, str):
+            return ""
+        if not body:
+            continue
+        fingerprints.append(comment_body_fingerprint(body))
+    return pr_comment_body_digest(fingerprints)
+
+
+def _read_comments(fetch: Callable[[str], object]) -> tuple[list[object], bool]:
+    """Read the MR notes, isolating any failure to the comment digest alone.
+
+    A failed, timed-out or malformed comment read must NOT fail the whole probe:
+    the comment-body digest is a per-condition wake signal with no bearing on
+    review-readiness, so a refused read drops the digest and nothing else. This
+    mirrors the GitHub adapter, where a comment-read failure yields "" and never a
+    provider error. Every failure class ``_get_glab_page`` or ``_collection`` can
+    raise is caught here and reported as an INCOMPLETE read, which ``_facts`` turns
+    into an empty digest (fail-closed), so a page that keeps failing cannot wake
+    the owner forever.
+    """
+    try:
+        return _collection(fetch("comments"))
+    except (
+        PullRequestProviderError,
+        subprocess.TimeoutExpired,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        return [], False
 
 
 def _object(value: object) -> Mapping[str, Any]:

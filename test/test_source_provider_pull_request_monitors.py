@@ -39,6 +39,13 @@ def _probe(provider, target: str, **kwargs):
     return results[target]
 
 
+def _gitlab_fetch(payloads):
+    """A GitLab fake fetch: a resource the test did not stub (e.g. ``comments``)
+    reads as an empty collection, so a test need only name the resources it cares
+    about."""
+    return lambda _target, resource: payloads.get(resource, [])
+
+
 @pytest.fixture(autouse=True)
 def _isolate_azure_cli_config_dirs(monkeypatch):
     """Provider tests must not inherit Azure CLI paths from the CI host."""
@@ -59,10 +66,7 @@ def test_gitlab_failed_pipeline_beats_pending_mergeability():
         "approvals": {"approvals_left": 0},
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -106,10 +110,7 @@ def test_gitlab_uses_legacy_merge_status_when_detailed_status_is_absent(
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -130,10 +131,7 @@ def test_gitlab_pipeline_identity_is_opaque_before_reaching_agent_context():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -154,10 +152,7 @@ def test_gitlab_rejects_provider_controlled_non_hex_head_revision():
         "approvals": {"approvals_left": 0},
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -178,10 +173,7 @@ def test_gitlab_uses_the_head_pipeline_from_merge_request_metadata():
         "approvals": {"approvals_left": 0},
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -207,10 +199,7 @@ def test_gitlab_requires_a_pipeline_for_the_current_head(head_pipeline):
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -230,10 +219,7 @@ def test_gitlab_uses_the_latest_head_pipeline_after_a_retry():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -255,10 +241,7 @@ def test_gitlab_unmet_approval_and_skipped_pipeline_stay_zero_turn_pending():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -280,10 +263,7 @@ def test_gitlab_requested_changes_are_actionable():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -302,10 +282,7 @@ def test_gitlab_missing_head_revision_stays_pending():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -327,10 +304,7 @@ def test_gitlab_counts_unresolved_discussions_instead_of_notes():
             {"notes": [{"resolvable": True, "resolved": False} for _index in range(5)]}
         ],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -422,6 +396,8 @@ def test_gitlab_native_fetch_reads_only_the_latest_current_head_pipeline(monkeyp
                 "detailed_merge_status": "mergeable",
                 "head_pipeline": {"id": 99, "sha": "c0ffee", "status": "success"},
             }
+        elif "/notes?" in endpoint:
+            payload = []
         else:
             payload = ([{"notes": []}] * 100) if endpoint.endswith("page=1") else []
         return subprocess.CompletedProcess(["glab"], 0, stdout=json.dumps(payload), stderr="")
@@ -439,6 +415,8 @@ def test_gitlab_native_fetch_reads_only_the_latest_current_head_pipeline(monkeyp
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert sum("/pipelines?" in endpoint for endpoint in endpoints) == 0
     assert sum("/discussions?" in endpoint for endpoint in endpoints) == 2
+    # The comment-body read runs for a live MR: an empty first notes page ends it.
+    assert sum("/notes?" in endpoint for endpoint in endpoints) == 1
 
 
 def test_gitlab_exactly_two_full_discussion_pages_are_complete(monkeypatch):
@@ -455,6 +433,9 @@ def test_gitlab_exactly_two_full_discussion_pages_are_complete(monkeypatch):
                 "detailed_merge_status": "mergeable",
                 "head_pipeline": {"id": 99, "sha": "c0ffee", "status": "success"},
             }
+        elif "/notes?" in endpoint:
+            # Notes are not this discussion-pagination test's subject: one short page.
+            payload = []
         elif endpoint.endswith("page=3"):
             payload = []
         else:
