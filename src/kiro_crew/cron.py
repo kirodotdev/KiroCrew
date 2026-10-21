@@ -588,6 +588,10 @@ class CronService:
     _store_version: int = _STORE_VERSION
     _store_extra: Mapping[str, Any] = MappingProxyType({})
     _unknown_fields: Mapping[str, UnknownFields] = MappingProxyType({})
+    # The raw jobs[] entries the last _load could not build into a job. _save
+    # writes them back verbatim, so a save never drops a record it could not
+    # read (the quarantine sidecar is only a backup of them).
+    _skipped_records: tuple[Any, ...] = ()
 
     def __init__(
         self,

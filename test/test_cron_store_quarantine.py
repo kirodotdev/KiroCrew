@@ -27,7 +27,13 @@ import kiro_crew.apps.hooks_integration as hooks_mod
 from kiro_crew.apps.bridges import disarm_app_crons_for_execution
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronService, CronStoreUnreadable
-from kiro_crew.cron_service.store import quarantine_copies, quarantine_unreadable_store
+from kiro_crew.cron_service.store import (
+    decode_store,
+    encode_store,
+    quarantine_copies,
+    quarantine_skipped_records,
+    quarantine_unreadable_store,
+)
 
 # Invalid JSON part-way through a real-looking store, like a truncated or
 # hand-edited file: the job above the break is what a user wants back.
@@ -335,3 +341,470 @@ def test_the_quarantine_never_deletes(tmp_path: Path, monkeypatch: pytest.Monkey
 
     assert calls == []
     assert moved is not None and moved.read_bytes() == _MALFORMED
+
+
+# ── per-record quarantine (.skipped-): a backup of records the store keeps ──
+#
+# A crons.json that PARSES but holds one record _job_from_record cannot build is
+# skipped on load and written back verbatim by the next _save -- the whole-file
+# helper above does not touch it (the file is readable). quarantine_skipped_records
+# also copies those records to a .skipped- sidecar, as a backup only.
+
+
+def _good_record(job_id: str) -> dict:
+    return {
+        "id": job_id,
+        "name": f"job-{job_id}",
+        "message": "m",
+        "schedule": {"kind": "every", "every_secs": 60},
+    }
+
+
+def _bad_record(job_id: str) -> dict:
+    return {"id": job_id, "message": "m", "schedule": {"kind": "every"}}  # no "name"
+
+
+def _skipped_sidecars(store: Path) -> list[Path]:
+    folder = store.parent / "cron-history" / "quarantine"
+    return sorted(folder.glob("crons.json.skipped-*")) if folder.exists() else []
+
+
+def test_decode_store_carries_the_skipped_records_out(tmp_path: Path) -> None:
+    """The records that could not be built leave decode_store on StoreDocument.skipped."""
+    bad_a, bad_b = _bad_record("bad-a"), _bad_record("bad-b")
+    raw = encode_store([], version=2).encode("utf-8")
+    import json as _json
+
+    doc = _json.loads(raw)
+    doc["jobs"] = [_good_record("a"), bad_a, bad_b]
+    document = decode_store(_json.dumps(doc).encode("utf-8"))
+
+    assert document is not None
+    assert [j.id for j in document.jobs] == ["a"]
+    assert list(document.skipped) == [bad_a, bad_b]
+
+
+def test_encode_store_writes_skipped_back_verbatim(tmp_path: Path) -> None:
+    """A round-trip through encode_store keeps every skipped record exactly as read."""
+    import json as _json
+
+    store = tmp_path / "crons.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    bad = _bad_record("bad")
+    not_an_object = ["neither", "a", "job"]
+    store.write_text(
+        _json.dumps({"version": 2, "jobs": [_good_record("a"), bad, not_an_object]}),
+        encoding="utf-8",
+    )
+    document = decode_store(store.read_bytes())
+    assert document is not None and len(document.skipped) == 2
+
+    reencoded = _json.loads(
+        encode_store(document.jobs, version=document.version, skipped=document.skipped)
+    )
+
+    assert [j["id"] for j in reencoded["jobs"][:1]] == ["a"]
+    assert reencoded["jobs"][1:] == [bad, not_an_object]
+    # And the next load skips them again, exactly as the first one did.
+    again = decode_store(_json.dumps(reencoded).encode("utf-8"))
+    assert again is not None
+    assert [j.id for j in again.jobs] == ["a"]
+    assert list(again.skipped) == [bad, not_an_object]
+
+
+def test_a_skipped_record_is_copied_verbatim_to_a_sidecar(tmp_path: Path) -> None:
+    store = tmp_path / "crons.json"
+    bad = _bad_record("bad")
+
+    written = quarantine_skipped_records(store, [bad])
+
+    assert written is not None
+    assert written.parent == tmp_path / "cron-history" / "quarantine"
+    assert written.name.startswith("crons.json.skipped-")
+    import json as _json
+
+    assert _json.loads(written.read_text(encoding="utf-8")) == [bad]
+    assert quarantine_copies(store) == [written]
+
+
+def test_nothing_to_quarantine_writes_no_sidecar(tmp_path: Path) -> None:
+    assert quarantine_skipped_records(tmp_path / "crons.json", []) is None
+    assert _skipped_sidecars(tmp_path / "crons.json") == []
+
+
+def test_a_deeply_nested_skipped_record_does_not_wipe_the_registry(tmp_path: Path) -> None:
+    """End to end: a record the quarantine cannot serialize must not propagate into
+    _load's catch-all, which would empty the live registry and stop every good job."""
+    import json as _json
+
+    deep: object = "x"
+    for _ in range(2000):
+        deep = [deep]
+    mgr = CronService(base_dir=tmp_path)
+    mgr._path.parent.mkdir(parents=True, exist_ok=True)
+    mgr._path.write_text(
+        _json.dumps({"version": 2, "jobs": [_good_record("a"), {"id": "bad", "x": deep}]}),
+        encoding="utf-8",
+    )
+
+    mgr._load()
+
+    assert [j.id for j in mgr._jobs] == ["a"]  # good job survives, no registry wipe
+    assert mgr._load_failed is False
+
+
+def test_the_same_bad_record_is_quarantined_once_across_reloads(tmp_path: Path) -> None:
+    """_load re-runs from _sync on every external change; dedup keeps one copy."""
+    store = tmp_path / "crons.json"
+    bad = _bad_record("bad")
+
+    first = quarantine_skipped_records(store, [bad])
+    again = quarantine_skipped_records(store, [bad])
+
+    assert first is not None
+    assert again is None, "an already-quarantined record is not copied again"
+    assert _skipped_sidecars(store) == [first]
+
+
+def test_a_new_bad_record_beside_an_already_quarantined_one_is_copied(tmp_path: Path) -> None:
+    store = tmp_path / "crons.json"
+    first = quarantine_skipped_records(store, [_bad_record("old")])
+    second = quarantine_skipped_records(store, [_bad_record("old"), _bad_record("new")])
+
+    assert first is not None and second is not None and first != second
+    import json as _json
+
+    # Only the genuinely new record is written to the second sidecar.
+    assert _json.loads(second.read_text(encoding="utf-8")) == [_bad_record("new")]
+
+
+def test_a_second_sidecar_in_the_same_second_does_not_overwrite_the_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("kiro_crew.cron_service.store._utc_stamp", lambda: "STAMP")
+    store = tmp_path / "crons.json"
+    first = quarantine_skipped_records(store, [_bad_record("a")])
+    second = quarantine_skipped_records(store, [_bad_record("b")])
+
+    assert first is not None and second is not None and first != second
+    import json as _json
+
+    assert _json.loads(first.read_text(encoding="utf-8")) == [_bad_record("a")]
+    assert _json.loads(second.read_text(encoding="utf-8")) == [_bad_record("b")]
+
+
+def test_a_sidecar_write_failure_is_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schedule that otherwise loaded must keep running even if the copy cannot be made."""
+
+    def _denied(fd: int, payload: object, path: object) -> None:
+        # Fail the sidecar payload write. Injecting at the write stage (after the
+        # temp open) exercises the swallow without touching os.open, so it does not
+        # depend on the temp file's name and cannot trip tempfile.mkstemp's Windows
+        # EACCES retry loop.
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr("kiro_crew.cron_service.store.atomic_write._write_all", _denied)
+    store = tmp_path / "crons.json"
+
+    assert quarantine_skipped_records(store, [_bad_record("bad")]) is None
+    # Nothing is left behind: the partial temp is unlinked and no .skipped- sidecar
+    # was published.
+    assert _skipped_sidecars(store) == []
+
+
+def test_a_short_write_is_not_published_as_a_truncated_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.write can transfer fewer bytes than asked; the zero-progress guard in
+    _write_all must raise, and the partial sidecar must be removed, not left for
+    doctor to list as a verbatim copy and the next load to duplicate."""
+    real_open = os.open
+    real_write = os.write
+    target_fds: set[int] = set()
+
+    def _track_open(path, *a, **k):  # type: ignore[no-untyped-def]
+        fd = real_open(path, *a, **k)
+        if ".sidecar-tmp-" in str(path):
+            target_fds.add(fd)
+        return fd
+
+    def _short_write(fd: int, data: object) -> int:
+        # No progress on the SIDECAR fd only -> _write_all raises; forward every
+        # other write so background threads on this worker are unaffected.
+        if fd in target_fds:
+            return 0
+        return real_write(fd, data)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("kiro_crew.cron_service.store.os.open", _track_open)
+    monkeypatch.setattr("kiro_crew.cron_service.store.os.write", _short_write)
+    store = tmp_path / "crons.json"
+
+    assert quarantine_skipped_records(store, [_bad_record("bad")]) is None
+    # No sidecar is left behind reporting a copy it did not complete.
+    assert _skipped_sidecars(store) == []
+
+
+def test_a_failed_write_unlinks_the_partial_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPUS finding: an fsync failure after O_EXCL created the file must not leave a
+    truncated/empty sidecar that doctor lists as holding a copy."""
+
+    def _fsync_fail(fd: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("kiro_crew.cron_service.store._fsync_file", _fsync_fail)
+    store = tmp_path / "crons.json"
+
+    assert quarantine_skipped_records(store, [_bad_record("bad")]) is None
+    assert _skipped_sidecars(store) == []  # the partial file was unlinked
+
+
+def test_the_sidecar_is_fsynced_for_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file descriptor and the directory entry are both fsynced before success,
+    so a power loss after the next (fsynced) store save cannot lose the only copy."""
+    fsynced_fds: list[int] = []
+    synced_dirs: list[object] = []
+    monkeypatch.setattr(
+        "kiro_crew.cron_service.store._fsync_file", lambda fd: fsynced_fds.append(fd)
+    )
+    monkeypatch.setattr(
+        "kiro_crew.cron_service.store._fsync_dir", lambda path: synced_dirs.append(path)
+    )
+    store = tmp_path / "crons.json"
+
+    written = quarantine_skipped_records(store, [_bad_record("bad")])
+
+    assert written is not None
+    assert len(fsynced_fds) == 1  # the sidecar's own fd was fsynced
+    assert written.parent in synced_dirs  # and the directory holding the sidecar
+
+
+def test_newly_created_dirs_have_their_parents_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GPT finding: creating cron-history/quarantine from nothing must durably link
+    every new level -- syncing only the leaf loses the whole directory (and the
+    sidecar inside it) if cron-history's own entry is not flushed before a crash."""
+    synced_dirs: list[Path] = []
+    monkeypatch.setattr(
+        "kiro_crew.cron_service.store._fsync_dir",
+        lambda path: synced_dirs.append(Path(path)),
+    )
+    store = tmp_path / "crons.json"  # neither cron-history nor quarantine exists yet
+
+    written = quarantine_skipped_records(store, [_bad_record("bad")])
+
+    assert written is not None
+    # The parent of each newly created level is synced: tmp_path (holds cron-history)
+    # and cron-history (holds quarantine), plus the final sidecar-directory sync.
+    assert (tmp_path / "cron-history") in synced_dirs  # quarantine's parent synced
+    assert tmp_path in synced_dirs  # cron-history's parent synced
+
+
+def test_the_sidecar_never_touches_crons_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store file is preserved exactly: crons.json is never the target of a
+    rename, unlink or rewrite (the sidecar's own temp file is cleaned up, which is
+    not the store)."""
+    store = tmp_path / "crons.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    original = b'{"version": 2, "jobs": []}'
+    store.write_bytes(original)
+    store_targets: list[str] = []
+    real_unlink, real_remove, real_rename = os.unlink, os.remove, os.rename
+
+    def _watch(real):  # type: ignore[no-untyped-def]
+        def _w(path, *a, **k):  # type: ignore[no-untyped-def]
+            if Path(path) == store:
+                store_targets.append(str(path))
+            return real(path, *a, **k)
+
+        return _w
+
+    monkeypatch.setattr(os, "unlink", _watch(real_unlink))
+    monkeypatch.setattr(os, "remove", _watch(real_remove))
+    monkeypatch.setattr(os, "rename", _watch(real_rename))
+
+    quarantine_skipped_records(store, [_bad_record("bad")])
+
+    assert store_targets == []  # crons.json itself was never a destructive-op target
+    assert store.read_bytes() == original
+
+
+def test_the_sidecar_is_published_atomically_with_no_temp_residue(tmp_path: Path) -> None:
+    """GPT race finding: dedup (which scans .skipped-* names on an unlocked concurrent
+    load) must never observe a half-written sidecar. The file is written to a temp,
+    fsynced, then linked into its .skipped- name -- so it appears at that name only
+    when complete, and no .tmp file is left behind."""
+    import json as _json
+
+    store = tmp_path / "crons.json"
+    bad = _bad_record("bad")
+
+    written = quarantine_skipped_records(store, [bad])
+
+    assert written is not None
+    folder = tmp_path / "cron-history" / "quarantine"
+    # The published sidecar is valid and complete the instant it exists at its name.
+    assert _json.loads(written.read_text(encoding="utf-8")) == [bad]
+    # No .tmp residue, and the dedup glob sees exactly one complete sidecar.
+    assert list(folder.glob("*.tmp")) == []
+    assert _skipped_sidecars(store) == [written]
+
+
+def test_the_sidecar_is_behind_the_same_fence_as_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It holds the record's session key and command, so the agent's file tools refuse it."""
+    from kiro_crew.security import is_sensitive_path
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    store = tmp_path / "crons.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_bytes(b'{"version": 2, "jobs": []}')
+
+    written = quarantine_skipped_records(store, [_bad_record("bad")])
+
+    assert written is not None
+    assert is_sensitive_path(str(written))
+
+
+def test_load_quarantines_a_backup_and_the_next_write_keeps_the_record(tmp_path: Path) -> None:
+    """End to end over a real CronService: load skips, sidecar backs it up, save keeps it."""
+    import json as _json
+
+    mgr = CronService(base_dir=tmp_path)
+    mgr._path.parent.mkdir(parents=True, exist_ok=True)
+    bad = _bad_record("bad")
+    mgr._path.write_text(
+        _json.dumps({"version": 2, "jobs": [_good_record("a"), bad]}), encoding="utf-8"
+    )
+
+    mgr._load()
+    # The sidecar exists the moment the load finishes -- before any save runs.
+    sidecars = _skipped_sidecars(mgr._path)
+    assert len(sidecars) == 1
+    assert _json.loads(sidecars[0].read_text(encoding="utf-8")) == [bad]
+
+    mgr._save()
+    reread = _json.loads(mgr._path.read_text(encoding="utf-8"))
+    assert [j["id"] for j in reread["jobs"]] == ["a", "bad"]
+    assert reread["jobs"][-1] == bad  # kept verbatim in the store itself
+
+
+def _write_store_with_a_bad_record(mgr: CronService) -> dict:
+    import json as _json
+
+    mgr._path.parent.mkdir(parents=True, exist_ok=True)
+    bad = _bad_record("bad")
+    mgr._path.write_text(
+        _json.dumps({"version": 2, "jobs": [_good_record("a"), bad]}), encoding="utf-8"
+    )
+    return bad
+
+
+def test_a_save_from_a_sandboxed_writer_keeps_the_record(tmp_path: Path) -> None:
+    """The sandboxed mcp_cron writes its sidecar into a masked
+    cron-history (a tmpfs bind that vanishes when the namespace exits) and then
+    saves crons.json, which IS host-visible. The record must still be in the store.
+
+    Modelled faithfully: a fresh CronService (as mcp_cron builds one) loads, the
+    masked cron-history is discarded as the namespace exit discards it, then a real
+    mutator saves. The host gateway's next load must still see -- and back up --
+    the record.
+    """
+    import json as _json
+    import shutil
+
+    sandboxed = CronService(base_dir=tmp_path)
+    bad = _write_store_with_a_bad_record(sandboxed)
+    sandboxed._load()
+    shutil.rmtree(tmp_path / "cron-history")  # the tmpfs mask goes with the sandbox
+
+    sandboxed.add_job("new", "m", every_secs=3600)
+
+    reread = _json.loads(sandboxed._path.read_text(encoding="utf-8"))
+    assert bad in reread["jobs"]
+    assert len(reread["jobs"]) == 3  # "a", the new job, and the kept bad record
+    assert _skipped_sidecars(sandboxed._path) == []  # no host copy -- and none needed
+
+    gateway = CronService(base_dir=tmp_path)
+    gateway._load()
+    assert len(_skipped_sidecars(gateway._path)) == 1  # the host now holds a backup
+
+
+def test_a_failed_sidecar_write_does_not_drop_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """quarantine_skipped_records returns None on ENOSPC/EACCES; the save must not
+    treat a missing backup as licence to drop the record."""
+    import json as _json
+
+    def _no_space(folder: object) -> None:
+        # Fail inside quarantine_skipped_records itself (it is the only caller),
+        # so the real swallow-and-return-None path runs and _save's own
+        # atomic_write is untouched.
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("kiro_crew.cron_service.store._mkdir_p_durable", _no_space)
+    mgr = CronService(base_dir=tmp_path)
+    bad = _write_store_with_a_bad_record(mgr)
+
+    mgr._load()
+    assert _skipped_sidecars(mgr._path) == []  # the backup did not land
+    mgr._save()
+
+    reread = _json.loads(mgr._path.read_text(encoding="utf-8"))
+    assert [j["id"] for j in reread["jobs"]] == ["a", "bad"]
+    assert reread["jobs"][-1] == bad
+
+
+def test_doctor_names_the_sidecar_and_how_to_recover_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kiro_crew.doctor_checks import workload
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    store = tmp_path / "crons.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_bytes(b'{"version": 2, "jobs": []}')
+    written = quarantine_skipped_records(store, [_bad_record("bad")])
+    assert written is not None
+    issues: list[str] = []
+
+    workload._doctor_cron_health(issues)
+
+    out = capsys.readouterr().out
+    assert out.count("Cron Jobs") == 1
+    assert repr(str(written)) in out  # printed inert
+    assert "skipped-record sidecar" in out
+    assert any("skipped-record sidecar(s) kept aside" in issue for issue in issues)
+
+
+def test_doctor_separates_a_corrupt_move_aside_from_a_skipped_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both families print under one header with their own recovery guidance."""
+    from kiro_crew.doctor_checks import workload
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    store = tmp_path / "crons.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_bytes(_MALFORMED)
+    quarantine_unreadable_store(store)  # whole-file .corrupt-
+    store.write_bytes(b'{"version": 2, "jobs": []}')
+    quarantine_skipped_records(store, [_bad_record("bad")])  # per-record .skipped-
+    issues: list[str] = []
+
+    workload._doctor_cron_health(issues)
+
+    out = capsys.readouterr().out
+    assert out.count("Cron Jobs") == 1
+    assert "unreadable schedule file(s) moved aside" in out
+    assert "skipped-record sidecar(s) kept aside" in out
