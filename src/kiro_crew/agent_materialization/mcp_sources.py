@@ -150,7 +150,19 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
                         continue
                     chosen = dict(spec)
                 else:
-                    chosen = dict(spec)  # stdio/command: nothing to resolve
+                    chosen = dict(spec)  # stdio/command: only the app-dir placeholder below
+                if not chosen.get("url"):
+                    # The same rule registration applies (bridges_mcp.substitute_app_dir), so
+                    # the two writers agree and neither writes an unresolved or escaping path.
+                    # A live entry is already resolved, which makes this a no-op for it.
+                    from kiro_crew.apps.bridges import substitute_app_dir
+                    from kiro_crew.apps.manager import app_dir
+
+                    resolved, refused = substitute_app_dir(chosen, app_dir(name))
+                    if resolved is None:
+                        agent_mod.logger.warning("Skipping MCP server %s: %s", ref, refused)
+                        continue
+                    chosen = resolved
                 servers[ref] = auto_approve._ceiling_filtered_spec(ref, chosen, audit=audit)
         except Exception:  # noqa: BLE001 — one bad app must not poison the rest
             agent_mod.logger.warning("Skipping MCP servers for app %s (manifest error)", name)
