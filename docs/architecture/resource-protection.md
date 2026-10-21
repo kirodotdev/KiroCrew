@@ -588,7 +588,7 @@ itself and the injection works as described above.
   respawns under a new PID), so any pool built on it (`workflows/agent_pool.py`) is
   protected by construction; the knowledge `LLMPool` worker (`AcpWorker`,
   `knowledge/llm_pool.py`) registers inline because it does not ride that engine; and
-  `AcpRuntime` (`acp/runtime.py`) registers at spawn, which covers the code-review-sage
+  `AcpRuntime` (`acp/runtime_spawn_launch.py`) registers at spawn, which covers the code-review-sage
   `ReviewPool` (`apps/builtins/code_review_sage/sage_lib/review_pool.py`), whose
   `_BatchRuntimeHolder` multiplexes every concurrent review onto ONE batch-scoped
   `AcpRuntime` rather than a pool of subprocesses.

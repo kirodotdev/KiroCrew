@@ -75,7 +75,7 @@ CHILD_PERMISSION_ROUTED = "kirocrew.acp.child_permission.routed"
 DROPPED_FRAMES = "kirocrew.acp.dropped_frames"
 
 #: One point per ``session/set_mode`` that did not land on the freshly prepared
-#: skill-view alias on the first try (``acp/runtime.py::_activate_mode_bracketed``).
+#: skill-view alias on the first try (``acp/runtime_mode_activation.py::_activate_mode_bracketed``).
 #: ``outcome`` is the closed enum ``loaded_after_retry`` (the host loaded it after a
 #: forced reload) / ``refused_unloaded`` (it never did; the session start failed) /
 #: ``refused_unprepared`` (no view could be prepared; the start failed) /

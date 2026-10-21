@@ -287,7 +287,7 @@ accepted seconds later, so the existing backoff ladder absorbs it.
 formatter, ahead of `llm_helpers._is_transient_acp_error`'s
 `accessdenied`/`unrecognizedclient` exclusion short-circuit (a
 `_TRANSIENT_MARKERS` entry alone is unreachable, because the exclusion sits
-above the markers), and inside `is_auth_failure_output` so `acp/runtime.py`'s
+above the markers), and inside `is_auth_failure_output` so `acp/runtime_liveness.py`'s
 stderr latch does not convert it to the explicitly non-retryable
 `AcpAuthRequired` and skip the ladder entirely. It is scoped to the "is invalid"
 WORDING, never to the status: a bare 401/403, an `... is expired` token, a

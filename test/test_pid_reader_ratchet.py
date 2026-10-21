@@ -165,7 +165,13 @@ _BASELINE_OWNER_MARKED = 3
 #: name here in the same change that removes its last site.
 _KNOWN_SITE_FILES = (
     "acp/client_start.py",
-    "acp/runtime.py",
+    "acp/runtime_class.py",
+    "acp/runtime_host_requests.py",
+    "acp/runtime_liveness.py",
+    "acp/runtime_session_create.py",
+    "acp/runtime_session_load.py",
+    "acp/runtime_spawn_launch.py",
+    "acp/runtime_tree_kill.py",
     "acp/session_provider.py",
     "providers/base.py",
     "session_parts/claims.py",

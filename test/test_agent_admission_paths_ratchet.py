@@ -66,7 +66,7 @@ ADMISSION_SITES: dict[Site, frozenset[str]] = {
     ("acp/client_start.py", "_spawn"): frozenset({FORK, FRESH}),
     ("acp/harness/kas.py", "KasHarness.session_extras._build"): frozenset({FORK, FRESH}),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): frozenset({FORK}),
-    ("acp/runtime.py", "AcpRuntime._activate_mode_bracketed"): frozenset({FRESH}),
+    ("acp/runtime_mode_activation.py", "_activate_mode_bracketed"): frozenset({FRESH}),
     ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): frozenset({FRESH}),
 }
@@ -78,7 +78,7 @@ KNOWN_GAPS: dict[Site, tuple[frozenset[str], str]] = {
         "covered: AcpRuntime._resolve_spawn_plan runs the freshness gate after this "
         "method returns, as the last check before the process is created",
     ),
-    ("acp/runtime.py", "AcpRuntime._activate_mode_bracketed"): (
+    ("acp/runtime_mode_activation.py", "_activate_mode_bracketed"): (
         frozenset({FORK}),
         "UNCOVERED: a shared runtime spawned as one agent and switched to another "
         "here passes no fork-governance check for the agent it switched to; a "

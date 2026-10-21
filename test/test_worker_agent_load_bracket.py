@@ -348,7 +348,6 @@ def test_every_handshake_driving_spawner_closes_the_bracket():
     assert sorted(spawners) == [
         "client.py",
         "client_start.py",
-        "runtime.py",
         "runtime_spawn_launch.py",
     ], f"the set of handshake-driving spawn paths changed: {spawners}"
     assert sorted(closed) == sorted(spawners), (

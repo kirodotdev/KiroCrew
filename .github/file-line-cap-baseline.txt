@@ -14,7 +14,6 @@
 #   python3 scripts/check_file_line_cap.py --update-baseline
 5522 conftest.py
 2666 scripts/docs_lint.py
-9026 src/kiro_crew/acp/runtime.py
 6697 src/kiro_crew/agent.py
 2683 src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py
 5184 src/kiro_crew/apps/routes.py

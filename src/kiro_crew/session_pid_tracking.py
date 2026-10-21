@@ -781,7 +781,7 @@ def _untrack_root_by_identity(pid: int, start_token: str | None) -> bool:
     Returns whether the retirement COMMITTED -- every write this call owed, not
     merely the session one: the session rewrite landed AND the bare-line step
     settled (removed, or retained for a live holder). The caller logs a full
-    retirement on a true answer (``acp/runtime.py``), so reporting the session
+    retirement on a true answer (``acp/runtime_liveness.py``), so reporting the session
     rewrite alone would claim a clean retirement while a stale bare root line
     survives a refused ``kiro_pids.txt`` write; a refusal is not a commit. The
     sweep does prune such a line within its tick, but a return value that
