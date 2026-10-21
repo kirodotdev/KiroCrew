@@ -374,6 +374,14 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _crew_log_error = ""
     turn._crew_log_error = _crew_log_error
 
+    #: The body of the dead-turn bell entry, set by a terminal
+    #: non-retry error arm (stop-reason or exception) to the one-line text for
+    #: the operator; None when the turn did not end in a death that needs them.
+    #: The finally closer reads it and fires the note ONCE, so the bell is wired
+    #: at a single choke point and a future terminal arm is covered by setting
+    #: this flag rather than by remembering a scattered call.
+    turn.died_notice = None
+
     # Time-to-first-token clock: starts when the user's message reaches the
     # runner, stops at the first visible model output (text OR thinking chunk).
     # This is the end-to-end latency eager spawn / warm pooling exist to cut —

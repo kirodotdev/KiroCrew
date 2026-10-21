@@ -98,6 +98,10 @@ export interface BannerGateContext {
  *  (`dashboard/member_message_notes.py`). */
 export const MEMBER_MESSAGE_CHANNEL = 'system.member'
 
+/** The channel a stopped-chat alert rides (`notifications/bus.py`
+ *  `system.turn`, `dashboard/chat_turn/turn_reply_seams.py`). */
+export const STOPPED_CHAT_CHANNEL = 'system.turn'
+
 /**
  * True when *n* describes something already on the user's screen. A note for
  * the active chat while the window is focused is a fact the transcript shows;
@@ -113,6 +117,12 @@ export function targetsCurrentView(n: Notification, ctx: Pick<BannerGateContext,
   if (!ctx.windowFocused) return false
   if (n.slot && ctx.activeSlot && n.slot === ctx.activeSlot && isChatPath(ctx.pathname)) return true
   if (n.channel === MEMBER_MESSAGE_CHANNEL) return !!n.slot && n.slot === ctx.viewedThread
+  // A stopped-chat alert is view-targeted ONLY by its slot (handled above): its
+  // deep link is `/chat?sid=<dying slot>`, so the generic url-path branch below
+  // would strip the query and match the bare `/chat` route, suppressing the
+  // banner whenever the operator is on ANY chat page -- including a DIFFERENT
+  // chat, which is the exact "work stopped elsewhere" case it exists for.
+  if (n.channel === STOPPED_CHAT_CHANNEL) return false
   if (n.url) {
     const path = n.url.split(/[?#]/)[0]
     if (path === ctx.pathname) return true

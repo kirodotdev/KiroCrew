@@ -172,6 +172,10 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   // opposite of what muting it does, which is silence only the gateway's
   // "a newer version is published" notes.
   'system.apps': () => i18nT('pages.settings.notificationsPanel.channel_apps'),
+  // The bare id is "turn", which reads as the "turn" sound category (conversation
+  // handoffs) and is jargon besides -- this channel carries the bell entry a chat
+  // raises when it STOPS with an error, so it is labelled in task language.
+  'system.turn': () => i18nT('pages.settings.notificationsPanel.channel_turn'),
 }
 
 /** Human label for a channel within its group (drop the source prefix apps
