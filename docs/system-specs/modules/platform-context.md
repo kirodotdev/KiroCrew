@@ -701,9 +701,11 @@ Wired sites:
   exemption bullet below.
 - `mcp_gateway/backend.py` deliberately stays on the baseline redactor for its
   backend stderr and spawn-argv log lines. `gatewayd` is NOT the composition
-  process — it never runs `boot_platform` (see the reasoning at
-  `mcp_gateway/app_call.py`, which relies on the same fact for the security
-  ceiling) — so routing those sites through the context could not reach a
+  process: it never runs `boot_platform` and never installs a context (see the
+  reasoning at `mcp_gateway/app_call.py`, which relies on the same fact for the
+  security ceiling; its one telemetry-only composition, under
+  `mcp_gateway/gatewayd.py::_compose_and_apply` below, installs nothing). So
+  routing those sites through the context could not reach a
   companion policy in the first place, and would only trade the baseline for a
   lazily-composed standalone default resolved per stderr line on the event loop.
   Closing this residual means handing gatewayd a composed context, the same
@@ -820,6 +822,31 @@ Wired sites:
   never hardcodes or interprets any credential path/content — the bytes are
   only hashed. Read through `safe_context_call` (fallback `[]`), so a
   pre-method companion adapter degrades to no-watcher instead of raising.
+- `mcp_gateway/gatewayd.py::_compose_and_apply`: **the one exception to "the
+  daemon never composes": telemetry only.** On a consenting non-standalone host
+  the daemon calls `platform/bootstrap.py::compose_telemetry_provider` on a
+  background thread, after its startup recorder build. That runs the same
+  profile resolution, fleet admission gate, contract check and
+  `assert_security_floor` as `bootstrap_context`, builds the edition's whole
+  context, keeps ONLY `.telemetry` for OTLP destination resolution, and never
+  calls `set_context`: every other `current_context()` reader in the daemon,
+  including the security ceiling (`app_call.py`) and the backend log redactor
+  (`backend.py`), keeps its no-context behavior. The companion's construction
+  side effects therefore also run in the daemon; measured on an edition install
+  against a data home the main process had already set up, that was about 1.1 s,
+  no file created or changed, and two helper threads. Rule for later seams: a
+  SECURITY seam must never be resolved through `compose_telemetry_provider` (it
+  discards everything but `.telemetry`); it keeps the parent-resolves-and-passes
+  channel above. **Why telemetry does not use that channel:** an
+  `OtlpDestination` carries `session`, an authenticated transport whose
+  `Session.auth` is re-evaluated on every export so a short-lived rotating
+  credential is re-read each time (see `OtlpDestination` in
+  `platform/interfaces_runtime.py`). A live session cannot cross a process
+  boundary. Passing the endpoint plus a credential by argv, environment or file
+  would freeze that credential at spawn in a long-lived daemon, which is exactly
+  what the `session` seam exists to avoid, and would place a bearer secret in the
+  daemon's environment or on disk. A watch path (the credential-watch flag above)
+  is not secret and does not rotate, which is why argv suits it.
 - `apps/manager_builtins.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
 - `apps/registry_pipeline/sources.py` / `apps/routes.py` — clone-sandbox-mode decision routes

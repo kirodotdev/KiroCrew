@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Optional
 from kiro_crew.mcp_gateway import backend_record, hazards, lifecycle_log
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.pool import BackendPool
+from kiro_crew.metrics.provider import recheck_consent
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -61,14 +62,20 @@ async def _idle_sweeper(
 
 
 async def _telemetry_consent_sweeper(interval: float, stop_event: asyncio.Event) -> None:
-    """Touch the recorder once per ``interval`` so a consent change is applied.
+    """Re-read telemetry consent once per ``interval`` so a change is applied.
 
     The recorder re-reads ``telemetry.enabled`` only from inside
     ``get_recorder()``, and in this daemon that is otherwise called only when a
     backend is acquired. The observable gauges keep exporting from the reader's
-    own thread, so an idle daemon would never notice a withdrawal. One call per
-    interval is the fast path (a monotonic comparison); a due recheck is handed to
-    the provider's worker thread, never run on the loop.
+    own thread, so an idle daemon would never notice a withdrawal.
+
+    Each tick FORCES a recheck (``recheck_consent``) rather than calling
+    ``get_recorder()``: that one rechecks only once a full window has passed
+    since the worker's last stamp, which lands after the tick that started the
+    read, so a tick per window would re-read only every other tick. A forced
+    tick bounds a withdrawal at ``interval`` plus the read; gatewayd ticks at
+    half the provider's window. The read and any rebuild run on the provider's
+    worker thread, never on the loop.
     """
     try:
         while not stop_event.is_set():
@@ -78,7 +85,7 @@ async def _telemetry_consent_sweeper(interval: float, stop_event: asyncio.Event)
             except asyncio.TimeoutError:
                 pass
             try:
-                facade.get_recorder()
+                recheck_consent()
             except Exception:  # telemetry must never break the daemon
                 logger.debug("telemetry consent recheck failed", exc_info=True)
     except asyncio.CancelledError:

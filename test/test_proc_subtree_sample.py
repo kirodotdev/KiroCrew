@@ -359,7 +359,7 @@ class TestOneHome:
         module is observed by both callers, which is only possible if neither
         has a walk of its own left."""
         with _FakeTree(needles=(sa.STUB_MODULE,)):
-            assert pool_mod._proc_rss_kb(10) == sum(RSS.values())
+            assert pool_mod.backend_rss_kb(10) == sum(RSS.values())
             assert sa._subtree_cpu_jiffies(10) == sum(JIFFIES.values())
             sample = sa._proc_subtree_sample(10)
         assert sample.rss_kb == sum(RSS.values())

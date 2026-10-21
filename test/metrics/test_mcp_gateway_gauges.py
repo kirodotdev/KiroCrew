@@ -18,6 +18,7 @@ import dataclasses
 import os
 import sys
 import threading
+import time as time_mod
 
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
@@ -102,8 +103,8 @@ def test_two_sessions_on_one_backend():
     )
     rss = got[gauges.GAUGE_BACKENDS_RSS]
     assert rss["first_party"] == 0
-    # Linux and Windows have a per-pid RSS probe; macOS does not (a gap).
-    if sys.platform in ("linux", "win32"):
+    # The pool's subtree probe reads /proc: Linux only, a gap elsewhere.
+    if sys.platform == "linux":
         assert rss["third_party"] > 0
     else:
         assert "third_party" not in rss
@@ -127,7 +128,8 @@ def test_attributes_are_closed_and_carry_no_name():
         "other": 1,
     }
     # The pid-less backend gave no RSS reading, so its class is a gap, not 0.
-    assert "other" not in got[gauges.GAUGE_BACKENDS_RSS]
+    # Off Linux no class has a reading, so the metric publishes no point at all.
+    assert "other" not in got.get(gauges.GAUGE_BACKENDS_RSS, {})
 
 
 def test_dead_backend_is_not_counted():
@@ -148,12 +150,45 @@ def test_unreadable_rss_is_a_gap_and_dead_pid_adds_zero():
         _FakeBackend("b", pid=102, refcount=1),
     )
     gauges.bind_pool(pool)
-    readings = {101: 4096, 102: None}
-    data = gauges.read_pool(rss_for_pid=readings.get)
+    readings_kb = {101: 4, 102: -1}
+    data = gauges.read_pool(rss_kb_for_pid=readings_kb.get)
     assert data["rss"]["third_party"] == 4096
-    data = gauges.read_pool(rss_for_pid=lambda pid: None)
+    data = gauges.read_pool(rss_kb_for_pid=lambda pid: -1)
     assert "third_party" not in data["rss"]
     assert data["rss"]["first_party"] == 0
+
+
+def test_gauges_and_control_snapshot_count_the_same_backends(monkeypatch):
+    """One population rule and one RSS probe feed both pool memory figures.
+
+    A draining and a connection-private backend are processes the daemon holds,
+    but no session can be pooled onto either, so neither the dashboard snapshot
+    nor the gauges count them, and both sum the same per-pid reading.
+    """
+    from kiro_crew.mcp_gateway import pool as pool_mod
+
+    readings_kb = {201: 10, 202: 20, 203: 40, 204: 80}
+    monkeypatch.setattr(pool_mod, "backend_rss_kb", lambda pid: readings_kb.get(pid, -1))
+    pool = _pool(
+        _FakeBackend("a", pid=201, refcount=2),
+        _FakeBackend("b", pid=202, refcount=3),
+    )
+    for b in pool._backends.values():
+        b.last_used_at = 0.0
+    draining = _FakeBackend("c", pid=203, refcount=1)
+    private = _FakeBackend("d", pid=204, refcount=1)
+    pool._draining.append(type("_Drain", (), {"backend": draining})())
+    pool._exclusive["stub-1"] = private
+    assert {draining, private} <= set(pool.all_backends())
+    gauges.bind_pool(pool)
+
+    data = gauges.read_pool()
+    snap = asyncio.run(pool.metrics_snapshot_async())
+
+    rows = snap["backends"]
+    assert data["live"]["third_party"] == len(rows) == 2
+    assert data["attached"]["third_party"] == sum(r["stubs"] for r in rows) == 5
+    assert data["rss"]["third_party"] == sum(r["rss_kb"] for r in rows) * 1024 == 30 * 1024
 
 
 def test_unbound_process_publishes_nothing():
@@ -369,20 +404,48 @@ def test_failing_composition_degrades_to_local_only(gatewayd_env, monkeypatch):
     assert rec.enabled  # still collecting locally
 
 
-def test_idle_daemon_stops_exporting_after_consent_is_withdrawn(gatewayd_env, monkeypatch):
-    """The consent sweeper alone, with no acquire, applies a withdrawal."""
-    from kiro_crew.mcp_gateway.daemon.sweepers import _telemetry_consent_sweeper
+def test_compose_telemetry_provider_applies_the_boot_security_floor(gatewayd_env, monkeypatch):
+    """A companion boot would refuse is refused for the daemon's egress too."""
+    gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
+    set_config(True)
+    cfg = KiroCrewConfig.load()
+    assert bootstrap.compose_telemetry_provider(cfg) is edition
 
+    def _weak(profile, cfg, *, entry_points=None, policy=None):
+        base = build_default_context(cfg)
+        return dataclasses.replace(base, profile=profile, telemetry=edition, security=object())
+
+    monkeypatch.setattr(bootstrap, "discover_companion_context", _weak)
+    with pytest.raises(PlatformCompositionError, match="PolicyAuthority"):
+        bootstrap.compose_telemetry_provider(cfg)
+
+
+def _exporting_daemon(gatewayd_env):
     gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
     set_config(True)
     gatewayd._prepare_telemetry()
     _join_compose_thread()
     wait_until(lambda: provider_mod.get_recorder().enabled and readers)
-    built = provider_mod._provider
-    assert built is not None
+    wait_until(lambda: not provider_mod._check_in_flight)
+    assert provider_mod._provider is not None
+    return gatewayd, set_config
+
+
+def test_idle_daemon_stops_exporting_after_consent_is_withdrawn(gatewayd_env):
+    """The consent sweeper alone, with no acquire, applies a withdrawal.
+
+    The provider's recheck window stays at its real value and was just stamped,
+    exactly the state a sweeper tick finds when it lands short of the window. A
+    tick that only asks ``get_recorder()`` sees no recheck due and keeps
+    exporting; a tick must re-read consent itself.
+    """
+    from kiro_crew.mcp_gateway.daemon.sweepers import _telemetry_consent_sweeper
+
+    gatewayd, set_config = _exporting_daemon(gatewayd_env)
+    assert provider_mod._CONSENT_RECHECK_SECS >= 30
+    assert not provider_mod._consent_recheck_due()
 
     set_config(False)
-    monkeypatch.setattr(provider_mod, "_CONSENT_RECHECK_SECS", 0.0)
 
     async def _run():
         stop = asyncio.Event()
@@ -390,6 +453,7 @@ def test_idle_daemon_stops_exporting_after_consent_is_withdrawn(gatewayd_env, mo
         try:
             await async_wait_until(
                 lambda: provider_mod._provider is None,
+                timeout=5,
                 describe=lambda: f"provider={provider_mod._provider!r}",
             )
         finally:
@@ -397,4 +461,56 @@ def test_idle_daemon_stops_exporting_after_consent_is_withdrawn(gatewayd_env, mo
             await task
 
     asyncio.run(_run())
+    assert not provider_mod.get_recorder().enabled
+
+
+class _Clock:
+    """A monotonic clock the test moves; everything else is the real ``time``."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time_mod, name)
+
+
+def test_withdrawal_lands_within_one_window_at_gatewayd_cadence(gatewayd_env, monkeypatch):
+    """At gatewayd's own tick interval a withdrawal is applied inside one window.
+
+    Drives the provider's real recheck on a fake clock: each sweeper tick moves
+    the clock by ``_CONSENT_SWEEP_SECS``, and every config read takes time, so
+    the worker's stamp lands after the tick that started it -- the timing that
+    made a once-per-window tick miss every other window.
+    """
+    from kiro_crew.mcp_gateway.daemon import sweepers
+
+    gatewayd, set_config = _exporting_daemon(gatewayd_env)
+    window = provider_mod._CONSENT_RECHECK_SECS
+    assert gatewayd._CONSENT_SWEEP_SECS <= window / 2
+
+    clock = _Clock()
+    monkeypatch.setattr(provider_mod, "time", clock)
+    set_config(False)
+    off = KiroCrewConfig.load()
+
+    def _slow_load(cls):
+        clock.now += 0.25  # a read is never instantaneous
+        return off
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_slow_load))
+    # The recorder was verified a moment ago, then consent was withdrawn.
+    provider_mod._consent_checked_at = clock.now
+    withdrawn_at = clock.now
+
+    for _tick in range(2):
+        clock.now += gatewayd._CONSENT_SWEEP_SECS
+        sweepers.recheck_consent()
+        wait_until(lambda: not provider_mod._check_in_flight, timeout=5)
+        if provider_mod._provider is None:
+            break
+    assert provider_mod._provider is None, "still exporting after two ticks"
+    assert clock.now - withdrawn_at <= window
     assert not provider_mod.get_recorder().enabled

@@ -120,7 +120,10 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
     ``current_context()`` reader in the calling process keeps exactly the
     behavior it had (fail-closed on a non-standalone profile). Discovery still
     runs the fleet admission gate before any companion code loads, and the
-    contract version is checked, so this composes only what boot itself would.
+    contract version is checked, and the security floor is asserted exactly as
+    boot asserts it, so this accepts only a companion boot itself would accept
+    (the calling process does not use its security authority, but a companion
+    that fails the floor is refused here too rather than trusted for egress).
 
     Raises ``PlatformCompositionError`` the same way boot does; the caller
     decides what that means for it (the daemon degrades to local-only).
@@ -129,7 +132,9 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
     profile = resolve_profile(cfg, entry_points=eps)
     if profile == PROFILE_STANDALONE:
         return DefaultTelemetryProvider()
-    return _checked_companion(profile, cfg, eps).telemetry
+    companion = _checked_companion(profile, cfg, eps)
+    assert_security_floor(companion.security)
+    return companion.telemetry
 
 
 def _checked_companion(

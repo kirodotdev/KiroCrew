@@ -352,6 +352,13 @@ logger = logging.getLogger(__name__)
 # SIGTERM→SIGKILL grace is always derived from (and therefore covers) it.
 _SHUTDOWN_DRAIN_SECS = DRAIN_SECS
 
+#: How often the consent sweeper forces a ``telemetry.enabled`` re-read. Half the
+#: provider's recheck window, so a withdrawal is applied within one tick plus the
+#: read (about 15 s) and always inside the window the metrics spec promises,
+#: whatever the asyncio timer jitter. Each tick is one config read on a worker
+#: thread (a fingerprint-cache hit when the file did not change).
+_CONSENT_SWEEP_SECS = _CONSENT_RECHECK_SECS / 2
+
 #: The gateway PID this daemon was spawned for; 0 when run by hand. Read by
 #: :func:`_pong_payload` so a pinger can tell an ORPHAN (owner dead) from a
 #: daemon another live gateway still owns, and by the stand-down handler.
@@ -822,7 +829,7 @@ async def run_gatewayd(
         # so without this an idle daemon would keep exporting after
         # ``telemetry.enabled`` is turned off.
         consent_sweeper = asyncio.create_task(
-            _telemetry_consent_sweeper(_CONSENT_RECHECK_SECS, stop_event),
+            _telemetry_consent_sweeper(_CONSENT_SWEEP_SECS, stop_event),
             name="mcp-gateway-telemetry-consent",
         )
 
@@ -1424,7 +1431,7 @@ def _prepare_telemetry() -> None:
         # Before the first build, so every resource this daemon exports carries
         # kirocrew.process.role=gatewayd and its kirocrew.process.* gauges can be
         # told apart from the main process's without a join.
-        metrics_provider.set_process_role(metrics_provider.PROCESS_ROLE_GATEWAYD)
+        metrics_provider.mark_gatewayd_process()
         metrics_provider.use_telemetry_provider(_provider_before_composition)
         recorder = metrics_provider.get_recorder()
         if recorder.enabled:

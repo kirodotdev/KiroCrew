@@ -251,21 +251,37 @@ loop starts, composing nothing: a standalone host resolves the lazy default cont
 so its `telemetry.otlp_endpoint` is live from the first build, and the pool gauges
 exist from startup. A consenting host then composes ONLY the edition's telemetry
 provider on a background thread through `platform.bootstrap.compose_telemetry_provider`
-(the same profile resolution, admission gate and contract check as boot, shared with
-`bootstrap_context` through `_checked_companion`) and hands it to
+(the same profile resolution, admission gate, contract check and security floor as
+boot, shared with `bootstrap_context` through `_checked_companion`) and hands it to
 `provider.use_telemetry_provider`. NO context is installed, so every other
-`current_context()` reader in the daemon keeps the behavior it had. Composition builds
+`current_context()` reader in the daemon keeps the behavior it had (why the daemon
+composes rather than receiving destinations from its parent is recorded in
+`platform-context.md`, under `mcp_gateway/gatewayd.py::_compose_and_apply`). Composition builds
 the edition's whole context and keeps only `.telemetry`; because it is off the boot path
 and the event loop, a slow edition never delays the daemon. Only when it adds a
 destination the startup build lacked is the recorder dropped and rebuilt (on the
-provider's worker thread); counters recorded before that swap stay in the local sink,
-and the pool gauges, read live, lose nothing. An off-consent daemon composes nothing
+provider's worker thread); the pool gauges, read live, lose nothing.
+**Accepted limit: the startup window is local-only.** Counters and histograms the
+daemon records before that rebuild (`kirocrew.mcp.backend.acquire.duration`,
+`kirocrew.mcp.lazy_load.*`, `kirocrew.mcp.warm_pool.acquire`) stay in the local sink
+and are never exported, because the swap replaces the MeterProvider and the OTel SDK
+cannot hand its cumulative state to a new one. On a non-standalone host that window
+is the composition time (about 1 s measured on an edition install) plus the rebuild,
+so a backend acquired in the first seconds after a daemon start is under-counted in
+the exported series. Making the first acquire wait on composition would put the
+edition's start-up cost on a session's first tool call, and replaying recorded points
+would need a second store; neither is worth a one-second gap per daemon start.
+An off-consent daemon composes nothing
 and exports nothing; a later opt-in composes lazily in the off-loop rebuild, and a
 factory that raises costs egress only. Consent is re-read only inside `get_recorder()`,
 which the daemon otherwise calls only when a backend is acquired, so
-`daemon/sweepers.py::_telemetry_consent_sweeper` calls it once per
-`_CONSENT_RECHECK_SECS` (30 s): an idle daemon stops exporting within one window of a
-withdrawal.
+`daemon/sweepers.py::_telemetry_consent_sweeper` forces a re-read
+(`provider.recheck_consent`) every `gatewayd._CONSENT_SWEEP_SECS` (half of
+`_CONSENT_RECHECK_SECS`, so 15 s): an idle daemon stops exporting within one tick plus
+the config read of a withdrawal, inside the 30 s window. The tick forces the read
+rather than calling `get_recorder()`, because that one rechecks only once a full
+window has passed since the worker's last stamp, which lands after the tick that
+started the read; a tick per window would re-read only every other tick (about 60 s).
 The resource is the one every process builds (`_resource_attributes`), with the
 daemon's own `process.pid`; its `kirocrew.process.*` gauges therefore start arriving
 as one more process per install, which is the per-process design described under
@@ -365,7 +381,7 @@ process exports — one unbounded value there multiplies every instrument.
 | `service.name` | `kirocrew` | constant |
 | `service.instance.id` | the persisted anonymous install id (`beacon.install_id`) | one per install |
 | `process.pid` | `os.getpid()` | one per live process |
-| `kirocrew.process.role` | `gatewayd` in the MCP gateway daemon (`provider.set_process_role`, called by `gatewayd._prepare_telemetry` before its first build); ABSENT in every other process, so their resources are unchanged. An unknown role maps to `other` | closed set |
+| `kirocrew.process.role` | `gatewayd` in the MCP gateway daemon (`provider.mark_gatewayd_process`, called by `gatewayd._prepare_telemetry` before its first build); ABSENT in every other process, so their resources are unchanged | one constant value |
 | `service.version` | build version, release-clamped via `beacon.release` | `major.minor.patch`, no build stamp |
 | `os.type` | `linux` / `darwin` / `windows` | CLOSED, else `other` |
 | `host.arch` | `amd64` / `arm64` / `x86` | CLOSED, else `other` |
@@ -442,9 +458,9 @@ Tests: `test/metrics/test_resource_attrs.py`.
 | `kirocrew.mcp.backend.acquire.duration` | histogram (ms) | `warm` (bool — `not was_spawned`) | `mcp_gateway/daemon/diagnostics.py::_emit_backend_acquire_metric` — ensure_backend pre-flight + lazy-spawn paths; acquire-only duration captured before attach_stub/create_task overhead. |
 | `kirocrew.mcp.lazy_load.count` / `.duration` | counter + histogram (ms) | `transport` (`stdio`) | `mcp_gateway/daemon/diagnostics.py::_emit_lazy_load_metrics` — legacy lazy-spawn path (also emits backend.acquire). |
 | `kirocrew.mcp.warm_pool.acquire` | counter | `result` (`hit` / `miss`) | `mcp_gateway/prewarm.py::HotKeyStore.record_outcome` (emitted outside the lock). |
-| `kirocrew.mcp_gateway.backends.live` | gauge (1) | `class` (`first_party` / `third_party` / `other`) | `metrics/mcp_gateway_gauges.py::register_mcp_gateway_gauges`, callbacks run only at reader collection and observe only in the process that called `bind_pool` (gatewayd, in `run_gatewayd`). Live backend processes the daemon holds: pooled, draining and connection-private, read through `BackendPool.all_backends` (skipping backends that are not alive). `class` is `first_party` for a name in `mcp_discovery_managed._MANAGED_SERVER_NAMES`, `third_party` for any other name, `other` when the name is missing; the name is dropped after classifying. `first_party` and `third_party` are always published (0 is a real reading), `other` only when non-zero. |
+| `kirocrew.mcp_gateway.backends.live` | gauge (1) | `class` (`first_party` / `third_party` / `other`) | `metrics/mcp_gateway_gauges.py::register_mcp_gateway_gauges`, callbacks run only at reader collection and observe only in the process that called `bind_pool` (gatewayd, in `run_gatewayd`). Live pooled backend processes, read through `BackendPool.live_pooled_backends`: the same population the dashboard's pool snapshot (`BackendPool.metrics_snapshot_async`, served by `daemon/control.py`) counts, so the two saving figures agree. Draining backends (an old process finishing calls after a credential rotation) and connection-private backends (never shared) are excluded: no session can be pooled onto either. `class` is `first_party` for a name in `mcp_discovery_managed._MANAGED_SERVER_NAMES`, `third_party` for any other name, `other` when the name is missing; the name is dropped after classifying. `first_party` and `third_party` are always published (0 is a real reading), `other` only when non-zero. |
 | `kirocrew.mcp_gateway.sessions.attached` | gauge (1) | `class` | Same module and population: the summed stub attachments (`Backend.refcount`) on those backends. `sessions.attached - backends.live` is the number of backend processes pooling avoided. One runtime opens one stub per server however many sessions it hosts, so this is a lower bound on sessions and the saving derived from it is a lower bound too. |
-| `kirocrew.mcp_gateway.backends.rss_bytes` | gauge (By) | `class` | Same module and population: summed current RSS of each backend pid via `platform_compat.proc_rss_bytes_for_pid`. A pid with no reading (it died, or the platform has no per-pid probe: macOS) adds 0 and is skipped; a class where no backend could be read publishes nothing, a gap rather than a fake zero. The backend pid is the process the daemon spawned; a launcher that forks the real server as a grandchild is measured at the launcher only. `bytes_saved ~= (sessions.attached - backends.live) * backends.rss_bytes / backends.live`. gatewayd's own RSS is `kirocrew.process.memory.rss_bytes` where the resource has `kirocrew.process.role=gatewayd`; the main process's has no `kirocrew.process.role`. |
+| `kirocrew.mcp_gateway.backends.rss_bytes` | gauge (By) | `class` | Same module and population: summed current RSS of each backend through `mcp_gateway/pool.py::backend_rss_kb`, the probe the dashboard's pool snapshot uses (the backend pid AND its descendants, so a launcher that forks the real server is measured with it; KiB, exported as bytes). A pid with no reading (it died, or the platform has no `/proc` subtree walk: macOS and Windows) adds 0 and is skipped; a class where no backend could be read publishes nothing, a gap rather than a fake zero. `bytes_saved ~= (sessions.attached - backends.live) * backends.rss_bytes / backends.live`. gatewayd's own RSS is `kirocrew.process.memory.rss_bytes` where the resource has `kirocrew.process.role=gatewayd`; the main process's has no `kirocrew.process.role`. |
 | `kirocrew.skill.lazy_load.count` / `.duration` | counter + histogram (ms) | `hit` (bool) | `skills_body_reads.py::load_skill` (bound as `SkillsLoader.load_skill`) via `_emit_lazy_load_metric` (best-effort; never breaks skill loading). |
 | `kirocrew.subagent.spawned` | counter | `concurrency` (int — the live running count INCLUDING this spawn, bounded by the manager's own concurrency cap, so a MAX over it is the high-water mark without a second instrument), `batched` (bool — the spawn is a member of a fan-out wave rather than a lone one) | `subagent_manager/admission/pump.py::_PumpMixin._log_spawned_impl` — the confirmed-start funnel, reached only after a spawn is admitted, so a rejected or never-started spawn is not counted (a promise an admission-time increment could not make). The `emit_counter` import is function-local, not module-level: `bind_component_globals` rebinds each `*_impl`'s `__globals__` to the owning namespace, where a module-level import here would not be visible. |
 | `kirocrew.subagent.completed` | counter | `outcome` (`completed` / `failed` / `stopped` / `unknown` -- `SubagentInfo.outcome`'s own canonical three-way classification, restated as `metrics/events.py::SUBAGENT_OUTCOMES` because `metrics` sits below the sub-agent manager in the dependency order, and folded through `subagent_outcome` so a record whose outcome cannot be read lands on `unknown` rather than being guessed as `failed`) | `subagent_manager/terminal.py::TerminalCoordinator._record_terminal_metric`, called from `_report_terminal_impl` past the point its finalize claim has been granted. That point, rather than either crew-log closer, is what makes one increment per run true: the reaper and the run loop's own `finally` both race to report and exactly one is let through, whereas a counter on `subagent/completed` and a second on `subagent/failed` would count a run twice on the paths that reach both. Gated on `telemetry.enabled` alone and NOT on the crew-log emitter, so the population is not narrowed to installs that happen to keep a crew log. The `emit_counter` import is function-local for the reason the row above gives. |

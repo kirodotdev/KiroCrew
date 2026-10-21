@@ -183,8 +183,15 @@ def _resolve_spill_threshold() -> int:
 RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold()
 
 
-def _proc_rss_kb(pid: Optional[int]) -> int:
+def backend_rss_kb(pid: Optional[int]) -> int:
     """Resident set size (KiB) for ``pid`` **and all its descendants**.
+
+    The one RSS probe for a pooled backend, shared by
+    :meth:`BackendPool.metrics_snapshot_async` and the exported pool gauges
+    (``metrics/mcp_gateway_gauges.py``), with
+    :meth:`BackendPool.live_pooled_backends` as the shared population, so both
+    report the same memory figure. Linux only (the subtree walk reads
+    ``/proc``); elsewhere it returns -1. Blocking: call it off the event loop.
 
     A pooled MCP backend is frequently a thin launcher (e.g.
     a ``slack-mcp`` launcher or an ``example-mcp`` shim) whose real
@@ -554,12 +561,11 @@ class BackendPool:
                     },
                     b.pid,
                 )
-                for b in self._backends.values()
-                if b.is_alive
+                for b in self.live_pooled_backends()
             ]
             base = self.stats()
         pids = [pid for _, pid in entries]
-        rss_by_pid = await asyncio.to_thread(lambda: {pid: _proc_rss_kb(pid) for pid in pids})
+        rss_by_pid = await asyncio.to_thread(lambda: {pid: backend_rss_kb(pid) for pid in pids})
         rows: list[dict[str, Any]] = []
         for row, pid in entries:
             row["rss_kb"] = rss_by_pid.get(pid, -1)
@@ -1259,6 +1265,23 @@ class BackendPool:
         """
         async with self._lock:
             return [(b.pool_key, b) for b in self._backends.values()]
+
+    def live_pooled_backends(self) -> list["Backend"]:
+        """The population every pool memory figure counts: pooled backends that are alive.
+
+        One rule for both readers of "what pooling costs and saves": the control
+        snapshot (:meth:`metrics_snapshot_async`, served to the dashboard) and the
+        exported pool gauges (``metrics/mcp_gateway_gauges.py``), so the two
+        cannot disagree. DRAINING backends (a credential-rotation cutover's old
+        process, finishing in-flight calls) and connection-private backends (held
+        apart from the reuse index, never shared) are left out: neither is a
+        process a session could be pooled onto. :meth:`all_backends` is the
+        lifecycle view that includes them.
+
+        Synchronous and lock-free (a list copy of the index, safe to call from the
+        metric reader's thread); the async snapshot calls it under the pool lock.
+        """
+        return [b for b in list(self._backends.values()) if b.is_alive]
 
     def all_backends(self) -> list["Backend"]:
         """Return all current backends (non-async, lock-free snapshot).

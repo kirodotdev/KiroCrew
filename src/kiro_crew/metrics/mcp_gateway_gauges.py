@@ -8,7 +8,7 @@ observable gauges read the live pool at collection time:
 =================================================  ====  ========  ===========================
 name                                               unit  attrs     meaning
 =================================================  ====  ========  ===========================
-``kirocrew.mcp_gateway.backends.live``             1     ``class``  live backend processes
+``kirocrew.mcp_gateway.backends.live``             1     ``class``  live pooled backends
 ``kirocrew.mcp_gateway.sessions.attached``         1     ``class``  stub attachments held
 ``kirocrew.mcp_gateway.backends.rss_bytes``        By    ``class``  summed RSS of those backends
 =================================================  ====  ========  ===========================
@@ -30,10 +30,13 @@ reaches an attribute.
 Registration happens in every process's recorder build, inside the consent
 gate. Only a process that called :func:`bind_pool` -- gatewayd -- observes
 anything; elsewhere each callback returns before reading, so no series exists.
-Callbacks run on the metric reader's thread, never on the event loop, and read
-the pool through ``BackendPool.all_backends`` (a lock-free snapshot list) and the RSS
-through ``platform_compat``. A failing read loses that cycle's samples, never
-the reader.
+Callbacks run on the metric reader's thread, never on the event loop. They count
+the population the dashboard's pool snapshot counts
+(``BackendPool.live_pooled_backends``: pooled backends that are alive, a
+lock-free list copy) and read RSS through the same probe
+(``mcp_gateway.pool.backend_rss_kb``: the backend pid and its descendants), so
+the exported saving and the dashboard's agree. A failing read loses that
+cycle's samples, never the reader.
 """
 
 from __future__ import annotations
@@ -41,7 +44,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional
 
-from kiro_crew import platform_compat
 from kiro_crew.metrics.schema import validate_attrs, validate_name
 
 if TYPE_CHECKING:
@@ -99,35 +101,45 @@ def _empty() -> dict[str, int]:
 
 
 def read_pool(
-    rss_for_pid: Callable[[int], Optional[int]] = platform_compat.proc_rss_bytes_for_pid,
+    rss_kb_for_pid: Optional[Callable[[Optional[int]], int]] = None,
 ) -> Optional[dict[str, dict[str, int]]]:
     """Per-class ``live`` / ``attached`` / ``rss`` sums, or ``None`` when unbound.
 
+    The population and the RSS probe are the pool's own
+    (``BackendPool.live_pooled_backends`` and ``pool.backend_rss_kb``), the same
+    two the control snapshot (``BackendPool.metrics_snapshot_async``) uses, so
+    the exported figures and the dashboard's agree. *rss_kb_for_pid* replaces the
+    probe in tests only.
+
     ``rss`` holds only the classes where at least one live backend gave a
     reading. A pid with no reading (it died between the snapshot and the read, or
-    the platform has no per-pid probe -- macOS) adds 0 and is skipped, and a
-    class where NO backend could be read is left out: a gap, never a fake zero.
-    A class with no live backend reports a true 0.
+    the platform has no subtree probe -- macOS and Windows) adds 0 and is
+    skipped, and a class where NO backend could be read is left out: a gap,
+    never a fake zero. A class with no live backend reports a true 0.
     """
     pool = _pool
     if pool is None:
         return None
+    if rss_kb_for_pid is None:
+        # Imported only here: the gateway package is loaded in gatewayd (the one
+        # process that binds a pool), never by a recorder build elsewhere.
+        from kiro_crew.mcp_gateway.pool import backend_rss_kb
+
+        rss_kb_for_pid = backend_rss_kb
     live = _empty()
     attached = _empty()
     rss = _empty()
     unread: set[str] = set()
     read_any: set[str] = set()
-    for backend in pool.all_backends():
-        if not backend.is_alive:
-            continue
+    for backend in pool.live_pooled_backends():
         pid = backend.pid
         refcount = backend.refcount
         cls = classify(backend.pool_key.server_name)
         live[cls] = live.get(cls, 0) + 1
         attached[cls] = attached.get(cls, 0) + max(0, int(refcount))
-        reading = rss_for_pid(pid) if pid else None
-        if reading:
-            rss[cls] = rss.get(cls, 0) + int(reading)
+        reading_kb = rss_kb_for_pid(pid) if pid else -1
+        if reading_kb > 0:
+            rss[cls] = rss.get(cls, 0) + int(reading_kb) * 1024
             read_any.add(cls)
         else:
             rss.setdefault(cls, 0)

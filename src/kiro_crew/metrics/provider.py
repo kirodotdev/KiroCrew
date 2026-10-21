@@ -658,25 +658,22 @@ def _default_metrics_dir() -> Path:
 #: unchanged. Without it the daemon's ``kirocrew.process.*`` gauges carry the same
 #: resource keys as the main process's and differ only in ``process.pid``.
 RESOURCE_ATTR_PROCESS_ROLE = "kirocrew.process.role"
-#: The closed value set for :data:`RESOURCE_ATTR_PROCESS_ROLE`.
+#: Its only value: the MCP gateway daemon. A second role gets its own flag (and
+#: a closed set) when a second process has a caller for it.
 PROCESS_ROLE_GATEWAYD = "gatewayd"
-_PROCESS_ROLES = frozenset({PROCESS_ROLE_GATEWAYD})
 
-_process_role: Optional[str] = None
+_is_gatewayd = False
 
 
-def set_process_role(role: Optional[str]) -> None:
-    """Stamp every resource this process builds from now on with *role*.
+def mark_gatewayd_process() -> None:
+    """Stamp every resource this process builds from now on as the gateway daemon.
 
-    Call before the first ``get_recorder()``: a resource is built once per
-    recorder, and a role that appears mid-life reads downstream as a new series
-    set. A value outside the closed set maps to ``other``; ``None`` clears it.
+    Called once, by gatewayd, before its first ``get_recorder()``: a resource is
+    built once per recorder, and a role that appears mid-life reads downstream
+    as a new series set.
     """
-    global _process_role
-    if role is None:
-        _process_role = None
-    else:
-        _process_role = role if role in _PROCESS_ROLES else _ATTR_OTHER
+    global _is_gatewayd
+    _is_gatewayd = True
 
 
 def _resource_attributes() -> "dict[str, str | int]":
@@ -767,9 +764,8 @@ def _resource_attributes() -> "dict[str, str | int]":
         attrs["process.pid"] = int(os.getpid())
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("process.pid resource attr unavailable: %s", exc)
-    role = _process_role
-    if role is not None:
-        attrs[RESOURCE_ATTR_PROCESS_ROLE] = role
+    if _is_gatewayd:
+        attrs[RESOURCE_ATTR_PROCESS_ROLE] = PROCESS_ROLE_GATEWAYD
     try:
         attrs["service.version"] = beacon.release(__version__)
     except Exception as exc:  # pragma: no cover - defensive
@@ -1421,6 +1417,29 @@ def get_recorder() -> MetricsRecorder:
     return _recorder
 
 
+def recheck_consent() -> None:
+    """Re-read ``telemetry.enabled`` now, whatever the recheck window says.
+
+    For a process whose only periodic caller is a timer (the MCP gateway
+    daemon's consent sweeper). ``get_recorder()`` rechecks only once the window
+    has elapsed since the worker's last stamp, and the worker stamps AFTER its
+    config read; a timer that ticks once per window therefore lands just short
+    of it and sees a recheck only every other tick. Calling this from the timer
+    makes every tick a real recheck, so a withdrawal is applied within one tick
+    interval plus the read.
+
+    Never reads config or builds on the calling thread: a live recorder hands
+    the read to the same worker ``get_recorder()`` uses (one at a time; a check
+    already in flight is not doubled). Without a live recorder this is
+    ``get_recorder()``.
+    """
+    with _lock:
+        if _initialized and _recorder is not None:
+            _schedule_consent_check_locked()
+            return
+    get_recorder()
+
+
 def _consent_recheck_due() -> bool:
     """Whether the recheck window has elapsed. Cheap enough for the hot path."""
     return (time.monotonic() - _consent_checked_at) >= _CONSENT_RECHECK_SECS
@@ -1561,7 +1580,7 @@ def reset_for_testing() -> None:
     guarantees every test starts from a state with no worker able to mutate
     module globals underneath it.
     """
-    global _ever_built
+    global _ever_built, _is_gatewayd
     shutdown()
     _wait_for_in_flight_consent_worker()
     with _lock:
@@ -1569,7 +1588,7 @@ def reset_for_testing() -> None:
     # A process-level provider override and role (a gatewayd entry point run
     # in-process) are state too; the next test starts from neither.
     use_telemetry_provider(None)
-    set_process_role(None)
+    _is_gatewayd = False
 
 
 #: The registered telemetry applier, kept so ``watch_config`` stays idempotent.
