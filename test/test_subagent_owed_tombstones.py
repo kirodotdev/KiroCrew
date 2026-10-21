@@ -25,6 +25,7 @@ import pytest
 import kiro_crew.subagent as sa
 from kiro_crew import subagent_persistence as sp
 from kiro_crew.subagent import SubagentManager
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 PARENT = "dashboard:chat-7"
 
@@ -132,13 +133,14 @@ async def _one_reaper_tick(manager: SubagentManager) -> None:
     """Run the real reaper loop for one whole tick with everything else recorded."""
     with _quiet_reaper(manager) as pump:
         task = asyncio.ensure_future(manager._reaper_loop())
-        for _ in range(3000):  # a whole tick has run once the pump runs twice
-            if pump.call_count >= 2 or task.done():
-                break
-            await asyncio.sleep(0.01)
+        # A whole tick has run once the pump runs twice.
+        await async_wait_until(
+            lambda: pump.call_count >= 2 or task.done(),
+            describe=lambda: f"pump ran {pump.call_count} time(s)",
+        )
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, 10)
+            await await_until(task)
     assert pump.call_count >= 2, "the reaper loop did not complete a tick"
 
 
@@ -201,7 +203,7 @@ async def test_a_reaper_retry_running_at_shutdown_stops_before_its_next_write(mo
         reaper = asyncio.ensure_future(manager._reaper_loop())
         try:
             assert await asyncio.to_thread(entered.wait, 5), "the reaper never began its retry"
-            await asyncio.wait_for(manager.cancel_all(), 10)
+            await finished(manager.cancel_all(), "cancel_all")
             sp.clear_tombstone("strag01")  # the drain re-admits strag01 to orphan recovery
         finally:
             gate.set()

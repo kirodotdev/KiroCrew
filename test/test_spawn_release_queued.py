@@ -27,6 +27,7 @@ from kiro_crew.dashboard.handlers import messaging
 from kiro_crew.mcp_tools import spawn as spawn_tools
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = [
     pytest.mark.xdist_group("member_memory_api"),
@@ -89,7 +90,9 @@ async def _close(mgr: SubagentManager) -> None:
     tasks = [task for task in mgr._tasks.values() if not task.done()]
     for task in tasks:
         task.cancel()
-    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+    await await_until(
+        asyncio.gather(*tasks, return_exceptions=True), timeout=5, what="task teardown"
+    )
     mgr._taskq.close()
 
 
@@ -124,10 +127,12 @@ async def test_the_parent_cancels_its_own_deferred_spawn_and_it_never_starts(
         assert record._stop_origin == "cancelled by its parent session"
 
         # Once its stop report has run, nothing holds the parent attached.
-        for _ in range(250):
-            if not await subagents_attached_async(env.state, None, PARENT, "reload"):
-                break
-            await asyncio.sleep(0.02)
+        async def _parent_detached() -> bool:
+            return not await subagents_attached_async(env.state, None, PARENT, "reload")
+
+        await async_wait_until(
+            _parent_detached, describe=lambda: "the stop report has not released the parent"
+        )
         assert await subagents_attached_async(env.state, None, PARENT, "reload") is False
 
         # A control spawn, deferred the same way and newer than the cancelled
@@ -140,11 +145,14 @@ async def test_the_parent_cancels_its_own_deferred_spawn_and_it_never_starts(
         mgr._taskq_admit_wait_secs = 0.05
         await mgr._taskq.run(mgr._taskq.defer, info.id, wait=-1.0, reason="test: eligible now")
         await mgr._taskq.run(mgr._taskq.defer, control.id, wait=-1.0, reason="test: eligible now")
-        for _ in range(250):
+
+        def _control_started() -> bool:
             if control.id in started:
-                break
+                return True
             mgr._drain_queue()
-            await asyncio.sleep(0.02)
+            return False
+
+        await async_wait_until(_control_started, describe=lambda: f"started: {started}")
         assert control.id in started, "the control spawn never started"
         assert started == [control.id], "a cancelled spawn started"
     finally:

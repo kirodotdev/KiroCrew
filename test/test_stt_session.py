@@ -17,6 +17,7 @@ from kiro_crew.stt import engine as engine_mod
 from kiro_crew.stt import models
 from kiro_crew.stt import session as session_mod
 from kiro_crew.stt import telemetry, vad
+from kiro_crew.testing.wait import await_until
 
 SR = vad.SAMPLE_RATE_HZ
 
@@ -972,18 +973,18 @@ async def test_stop_aborts_an_inflight_partial_and_preserves_audio_for_the_final
     async def partial_decode(pcm, **kwargs):
         predicates.append(kwargs["abort_if"])
         started.set()
-        await asyncio.wait_for(release.wait(), timeout=5)
+        await await_until(release)
         return "" if kwargs["abort_if"]() else await original_decode(pcm, **kwargs)
 
     monkeypatch.setattr(fake, "decode", partial_decode)
     task = asyncio.create_task(session.feed(_int16(0.6)))
     try:
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started)
         assert not predicates[0]()
         session.stop_partials()
         assert predicates[0](), "stop did not invalidate the active native partial"
         release.set()
-        assert await asyncio.wait_for(task, timeout=5) == []
+        assert await await_until(task) == []
         monkeypatch.setattr(fake, "decode", original_decode)
         assert await session.feed(_int16(0.4)) == []
         assert (await session.finish()).text == "spoken words"

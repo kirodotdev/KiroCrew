@@ -63,7 +63,7 @@ from kiro_crew.monitoring.models import (
     MonitorState,
 )
 from kiro_crew.slack import gateway as gw
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, finished
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -617,7 +617,7 @@ class TestShutdownExtras:
         orch._update_check_task = asyncio.create_task(_installer_running())
         await asyncio.sleep(0)
         with patch.object(gw.registry, "shutdown_tasks", return_value=[]):
-            await asyncio.wait_for(orch._shutdown(), timeout=10)
+            await finished(orch._shutdown(), "orchestrator shutdown")
 
         assert stopped == ["update", "teardown"]
 
@@ -696,7 +696,7 @@ class TestShutdownExtras:
                 patch.object(gw.registry, "shutdown_tasks", return_value=[]),
                 patch.object(gw.logger, "warning") as warning,
             ):
-                await asyncio.wait_for(orch._shutdown(), timeout=10)
+                await finished(orch._shutdown(), "orchestrator shutdown")
             assert not update.done()
             # The warning names the task that would not stop, so a reader chasing
             # an orphaned install knows which installer it was.
@@ -707,7 +707,7 @@ class TestShutdownExtras:
             )
         finally:
             release.set()
-            await asyncio.wait_for(update, timeout=5)
+            await await_until(update, timeout=5, what="the released installer")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

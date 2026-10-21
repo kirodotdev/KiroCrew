@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, Mock
 
@@ -19,6 +18,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_NEW,
 )
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+from kiro_crew.testing.wait import finished
 
 
 class _RequestCaptured(Exception):
@@ -116,7 +116,7 @@ async def test_client_session_requests_preserve_ordinary_broker_routing(
     else:
         operation = client._new_session_following_substitution()
     with pytest.raises(_RequestCaptured):
-        await asyncio.wait_for(operation, timeout=5)
+        await finished(operation, "the session request")
     assert len(sent) == 1
     assert sent[0][0] == (METHOD_SESSION_LOAD if entry == "load" else METHOD_SESSION_NEW)
     entries = sent[0][1]["mcpServers"]
@@ -154,7 +154,7 @@ async def test_runtime_session_requests_preserve_broker_routing(
         else runtime.load_session(str(tmp_path / "prior.json"), "prior", agent="another-agent")
     )
     with pytest.raises(_RequestCaptured):
-        await asyncio.wait_for(operation, timeout=5)
+        await finished(operation, "the session request")
     assert len(sent) == 1
     assert sent[0][0] == (METHOD_SESSION_NEW if entry == "new" else METHOD_SESSION_LOAD)
     entries = sent[0][1]["mcpServers"]
@@ -193,7 +193,7 @@ async def test_kas_projection_preserves_direct_or_pooled_tools(
         mcp_gateway_overlay=broker_overlay if pooled else None,
         member_context=True,
     )
-    extras = await asyncio.wait_for(runtime._kas_custom_agents("kirocrew"), timeout=5)
+    extras = await finished(runtime._kas_custom_agents("kirocrew"), "the custom-agent projection")
     projected = extras.custom_agents
     assert projected
     server = projected[0].get("mcpServers", {}).get("builder")

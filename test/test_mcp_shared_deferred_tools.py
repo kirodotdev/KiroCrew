@@ -36,6 +36,7 @@ from kiro_crew.mcp_caller import (
     current_tenant_nonce,
 )
 from kiro_crew.mcp_shared import DeferredTool, ToolCancelled, drive_deferred
+from kiro_crew.testing.wait import wait_until
 
 
 class _Parked(DeferredTool):
@@ -706,7 +707,8 @@ class TestLoopSurvivesStepFailures:
             with monkeypatch.context() as mp:
                 mp.setattr(threading.Thread, "start", _no_more_threads)
                 fut = pool.submit(lambda x: x * 2, 21)  # must not raise
-                assert fut.result(timeout=5.0) == 42
+                wait_until(fut.done)
+                assert fut.result() == 42
         finally:
             pool.shutdown()
 
@@ -771,7 +773,9 @@ class TestLoopSurvivesStepFailures:
             gc.collect()
             assert ref() is None, "the cancelled queue item still holds the step's payload"
             hold.set()
-            pool.submit(lambda: None).result(timeout=5.0)  # the worker drained past the shell
+            drained = pool.submit(lambda: None)  # the worker drained past the shell
+            wait_until(drained.done)
+            drained.result()
             assert ran == []
         finally:
             hold.set()
@@ -785,8 +789,9 @@ class TestLoopSurvivesStepFailures:
                 raise ValueError("step failed")
 
             fut = pool.submit(_boom)
+            wait_until(fut.done)
             with pytest.raises(ValueError, match="step failed"):
-                fut.result(timeout=5.0)
+                fut.result()
         finally:
             pool.shutdown()
 

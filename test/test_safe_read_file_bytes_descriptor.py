@@ -6,6 +6,7 @@ import pytest
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import hooks, platform_compat, portability
+from kiro_crew.testing.wait import await_until
 
 
 def _assert_closed(descriptors):
@@ -601,7 +602,7 @@ async def test_outbox_reader_keeps_loop_live_and_closes_after_cancel(
             assert handshake in done
             heartbeat = loop.create_future()
             loop.call_soon(heartbeat.set_result, True)
-            assert await asyncio.wait_for(heartbeat, 10)
+            assert await await_until(heartbeat, what="the loop heartbeat")
             assert not task.done()
             if cancel:
                 task.cancel()
@@ -609,7 +610,7 @@ async def test_outbox_reader_keeps_loop_live_and_closes_after_cancel(
                     await task
             release.set()
             if not cancel:
-                response = await asyncio.wait_for(task, 10)
+                response = await await_until(task, what="the released read")
                 assert response.status == 200
                 if endpoint == "download":
                     assert response.body == b"safe"
@@ -621,7 +622,11 @@ async def test_outbox_reader_keeps_loop_live_and_closes_after_cancel(
             await asyncio.gather(task, return_exceptions=True)
             # A cancelled HTTP task does not own the worker's descriptors.
             # This serial-pool barrier proves that worker cleanup has completed.
-            await asyncio.wait_for(asyncio.wrap_future(pool.submit(lambda: None)), 10)
+            await await_until(
+                asyncio.wrap_future(pool.submit(lambda: None)),
+                timeout=10,
+                what="the serial-pool barrier",
+            )
     _assert_closed(descriptors)
 
 

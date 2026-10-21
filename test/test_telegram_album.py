@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew.telegram import client as tg_client
 from kiro_crew.telegram.client import TelegramClient, TelegramInbound
+from kiro_crew.testing.wait import async_wait_until, finished
 
 
 def _make_client() -> tuple[TelegramClient, list[TelegramInbound]]:
@@ -289,10 +290,12 @@ class TestAlbumBounds:
         client._dispatch(_photo_update(file_id="first", group="never"))
         # Keep rearming past the ceiling.
         for i in range(3):
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(0.03)  # flake-ok: the rearm cadence IS the stimulus past the ceiling
             client._dispatch(_photo_update(file_id=f"more{i}", group="never"))
 
-        await asyncio.wait_for(_drain(client), timeout=5)
+        # Bounded under the 10s idle window on purpose: only the ceiling can
+        # deliver inside it, so idle-only delivery fails this wait by name.
+        await finished(_drain(client), "the album drain", timeout=5)
         assert received, "the hard ceiling must force a flush"
 
 
@@ -327,12 +330,14 @@ class TestAlbumShutdown:
         assert received == [], "still buffered"
 
         await client.close()
-        # Bounded: give the flush's handler task a moment to run, but never wait
-        # on the 30s timer -- if close() did not flush, this stays empty.
-        for _ in range(20):
-            if received:
-                break
-            await asyncio.sleep(0.01)
+        # Wait for the flush's handler task, bounded well under the 30s timer so
+        # the timer can never be what delivers -- if close() did not flush, this
+        # fails by name while the buffer is still empty.
+        await async_wait_until(
+            lambda: received,
+            timeout=5,
+            describe=lambda: "close() delivered nothing to the handler",
+        )
 
         assert len(received) == 1, "close() must attempt delivery of buffered albums"
         assert received[0].text == "q"

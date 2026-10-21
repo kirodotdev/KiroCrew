@@ -85,6 +85,7 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.testing.harness import _terminate_process_group
+from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
@@ -549,23 +550,25 @@ def _await_assistant_reply(gateway: _GatewayProc, slot: str, timeout: float) -> 
     persisted as well as pushed, and asserting on the persisted copy proves the
     turn actually completed instead of merely having been streamed.
     """
-    deadline = time.monotonic() + timeout
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            detail = gateway.get(f"/api/chat/slots/{slot}")
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            last_error = exc
-            time.sleep(1.0)
-            continue
+
+    def _persisted_reply() -> str | None:
+        detail = gateway.get(f"/api/chat/slots/{slot}")
         for message in detail.get("messages", []):
             if message.get("role") == "assistant" and str(message.get("content", "")).strip():
                 return json.dumps(message)
-        time.sleep(1.0)
-    raise AssertionError(
-        f"no assistant reply within {timeout:.0f}s "
-        f"(last transport error: {last_error!r}) -- on a fresh Windows host this is "
-        "what a fail-closed ACP spawn looks like from the outside"
+        return None
+
+    # A transport error is "not yet": the gateway is still coming up or the turn
+    # is still running. The last one becomes the failure's cause.
+    return wait_until(
+        _persisted_reply,
+        timeout=timeout,
+        interval=1.0,
+        ignoring=(urllib.error.URLError, OSError, ValueError),
+        describe=lambda: (
+            "no assistant reply persisted on the slot -- on a fresh Windows host this is "
+            "what a fail-closed ACP spawn looks like from the outside"
+        ),
     )
 
 
@@ -585,20 +588,13 @@ class TestFreshWindowsGatewayDelegates:
         gateway = fresh_windows_gateway
         from kiro_crew.testing.fake_acp_backend import REPLY_TEXT
 
-        deadline = time.monotonic() + HEALTH_TIMEOUT_SECS
-        health: dict | None = None
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            try:
-                health = gateway.get("/api/health", timeout=10)
-                break
-            except (urllib.error.URLError, OSError) as exc:
-                last_error = exc
-                time.sleep(1.0)
-        if health is None:
-            raise AssertionError(
-                f"/api/health never answered within {HEALTH_TIMEOUT_SECS:.0f}s: " f"{last_error!r}"
-            )
+        wait_until(
+            lambda: gateway.get("/api/health", timeout=10) is not None,
+            timeout=HEALTH_TIMEOUT_SECS,
+            interval=1.0,
+            ignoring=(urllib.error.URLError, OSError),
+            describe=lambda: "/api/health never answered",
+        )
 
         # Restate both preconditions here so a future reader does not have to
         # infer them from the fixture. The gateway WRITES a default config.json at

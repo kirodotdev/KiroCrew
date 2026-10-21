@@ -17,6 +17,7 @@ import pytest
 
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.dashboard import turn_dispatch as td
+from kiro_crew.testing.wait import await_until
 
 
 def _slot() -> MagicMock:
@@ -508,14 +509,14 @@ class TestFinishTurnTask:
             timeout_secs=0.01,
             cancel_ack_timeout_secs=0.5,
         )
-        await asyncio.wait_for(cancel_entered.wait(), timeout=1)
+        await await_until(cancel_entered)
         task.cancel()
         await asyncio.sleep(0)
         release_cancel.set()
 
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await asyncio.wait_for(task, timeout=1)
-        await asyncio.wait_for(cancel_finished.wait(), timeout=1)
+            await await_until(task)
+        await await_until(cancel_finished)
         assert state.sessions.cancel_owned_turn.await_count == 1
 
     @pytest.mark.asyncio

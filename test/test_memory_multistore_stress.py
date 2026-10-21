@@ -23,6 +23,7 @@ from kiro_crew import vector_memory
 from kiro_crew.config import loader
 from kiro_crew.executors import run_in_embed_pool, run_with_recall_deadline
 from kiro_crew.slack.gateway import GatewayOrchestrator
+from kiro_crew.testing.wait import async_wait_until, finished
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
@@ -105,7 +106,7 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
     async def sample():
         while not stop.is_set():
             start = time.monotonic()
-            await asyncio.sleep(0.002)
+            await asyncio.sleep(0.002)  # flake-ok: measurement tick that samples loop lag
             lags.append(max(0.0, time.monotonic() - start - 0.002))
             stats["queue_peak"] = max(stats["queue_peak"], backend._jobs.qsize())
 
@@ -195,19 +196,15 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
         # Polled rather than waited on ``_jobs_changed``: the dispatch loop CLEARS
         # that event, so it is a level that can be lowered between the enqueue and
         # an observer, while ``qsize`` is the condition this test is about.
-        async def wait_for_queue():
-            while backend._jobs.qsize() == 0:
-                await asyncio.sleep(0.01)
-
-        try:
-            await asyncio.wait_for(wait_for_queue(), 60)
-        except TimeoutError:
-            finished = sum(1 for task in tasks if task.done())
-            raise AssertionError(
-                "no embed job reached the queue within 60s: "
-                f"{len(tasks)} operation task(s) created, {finished} already finished, "
+        await async_wait_until(
+            lambda: backend._jobs.qsize() > 0,
+            timeout=60,
+            describe=lambda: (
+                f"no embed job reached the queue: {len(tasks)} operation task(s) created, "
+                f"{sum(1 for task in tasks if task.done())} already finished, "
                 f"queue depth {backend._jobs.qsize()}"
-            ) from None
+            ),
+        )
         stats["queue_peak"] = max(stats["queue_peak"], backend._jobs.qsize())
         release.set()
         # Diagnostics only. This budget expires on a loaded shard from time to
@@ -254,7 +251,7 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
         gateway._auto_migrate_task = None
         gateway.vector_memory = stores["default"]
         for _ in range(3 * len(stores)):
-            await asyncio.wait_for(asyncio.to_thread(gateway._repair_member_memory_once), 10)
+            await finished(asyncio.to_thread(gateway._repair_member_memory_once), "a repair pass")
         duplicate = mismatch = nulls = cross_store = 0
         for name, store in stores.items():
 

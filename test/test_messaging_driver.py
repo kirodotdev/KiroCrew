@@ -38,6 +38,7 @@ from kiro_crew.messaging import (
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorActionCompletion, MonitorActionDisposition
+from kiro_crew.testing.wait import await_until, finished
 
 
 class _RecordingRenderer(Renderer):
@@ -705,11 +706,11 @@ class TestApprovalTimeoutInbandNotice:
             await asyncio.Event().wait()
 
         p.steer = _hanging_steer  # type: ignore[method-assign]
-        await asyncio.wait_for(
+        await finished(
             TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider()).run(
                 "hi"
             ),
-            timeout=2.0,
+            "the bounded steer's turn",
         )
         assert [c[0] for c in p.calls] == ["steer", "reject_tool"]
 
@@ -743,10 +744,10 @@ class TestApprovalTimeoutInbandNotice:
                 "hi"
             )
         )
-        await asyncio.wait_for(parked.wait(), timeout=2.0)
+        await await_until(parked)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=2.0)
+            await await_until(task)
         assert ("reject_tool", "rq1") in p.calls
         denied = [a for a in audited if a.get("operation") == "tool_permission"]
         assert len(denied) == 1

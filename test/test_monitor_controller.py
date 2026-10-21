@@ -44,6 +44,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     ProviderErrorKind,
 )
+from kiro_crew.testing.wait import await_until
 
 
 class _RaisingProvider:
@@ -354,7 +355,7 @@ async def test_actionable_probe_claims_once_before_concurrent_dispatch(tmp_path)
     # task -- leaves nobody to set it. Unbounded, that parks the whole run on an
     # Event instead of failing this test: pytest-timeout's thread method kills the
     # xdist worker and every test it had not reached goes silently uncollected.
-    await asyncio.wait_for(entered.wait(), timeout=5)
+    await await_until(entered, what="the dispatch handoff")
     assert loop.monitor is not None and loop.monitor.wake_in_flight
 
     await controller.tick(loop, now=121.0)
@@ -435,7 +436,7 @@ async def test_terminal_transition_queued_during_claim_persistence_prevents_disp
     # monkeypatched snapshot write, so a tick that stops before persisting the claim,
     # or a rename of `_write_monitor_snapshot_locked` that leaves this setattr
     # intercepting nothing, would hang the run rather than fail the test.
-    await asyncio.wait_for(write_entered.wait(), timeout=5)
+    await await_until(write_entered, what="the claim's snapshot write")
     terminal = asyncio.create_task(getattr(service, terminal_transition)(loop.id, now=121.0))
     await asyncio.sleep(0)
     release_write.set()
@@ -1448,7 +1449,7 @@ async def test_structured_timer_invokes_controller_without_legacy_cycle(tmp_path
         now=time.time() - 16,
     )
 
-    await asyncio.wait_for(ticked.wait(), timeout=2)
+    await await_until(ticked, what="the first tick")
 
     assert loop.cycle_count == 0
     assert loop.monitor is not None and loop.monitor.probe_count == 1

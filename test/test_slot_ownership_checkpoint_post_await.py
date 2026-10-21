@@ -40,6 +40,7 @@ from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are re
 )
 
 from kiro_crew.dashboard.state import SlotOrigin, _ChatSlot
+from kiro_crew.testing.wait import await_until
 
 
 class TestAcquisitionAfterSetup:
@@ -125,12 +126,14 @@ class TestAcquisitionAfterSetup:
                 state.get_or_create_slot("s1", origin=SlotOrigin.USER)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, 5)
+                await await_until(pending)
             assert "s1" not in state._slots_under_construction
             assert "s1" not in state._slots
         finally:
             release.set()
-            await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 5)
+            await await_until(
+                asyncio.gather(pending, return_exceptions=True), timeout=5, what="teardown"
+            )
             assert await asyncio.to_thread(finished.wait, 5)
 
 
@@ -315,7 +318,7 @@ class TestPostAwaitOwnership:
                 "/api/chat/slots/s1/rewind", json={"at_message_index": 0, "content": "APP-EDIT"}
             )
             assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
-        await asyncio.wait_for(asyncio.gather(slot.task), 5)
+        await await_until(slot.task, what="the slot's turn")
         run.assert_not_called()
         assert state._slots["s1"].messages == []
         if phase != "cleanup":

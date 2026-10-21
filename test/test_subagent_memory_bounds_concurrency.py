@@ -56,6 +56,7 @@ from kiro_crew.subagent import (
 )
 from kiro_crew.subagent_manager.admission import FairnessSettings, SpawnAdmissionCoordinator
 from kiro_crew.taskq import model
+from kiro_crew.testing.wait import await_until
 
 pytestmark = [pytest.mark.timeout(60), pytest.mark.usefixtures("healthy_host_memory")]
 
@@ -174,7 +175,7 @@ async def test_twenty_auto_sized_spawns_all_start_on_a_40_gib_host(
         mgr._drain_queue()
         task = getattr(mgr, "_drain_task", None)
         if task is not None:
-            await asyncio.wait_for(asyncio.shield(task), 5)
+            await await_until(task, what="the drain task")
         await asyncio.sleep(0)
 
     try:
@@ -208,7 +209,9 @@ async def test_twenty_auto_sized_spawns_all_start_on_a_40_gib_host(
             tasks.append(drain)
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=5, what="task teardown"
+        )
         mgr._taskq.close()
 
 
@@ -359,8 +362,8 @@ async def test_twenty_backend_initializations_run_at_once_under_the_derived_ceil
         ),
     )
     assert gate.set_capacity(20) == 20, "the daemon's clamp does not hold the gate at 8"
-    permits = await asyncio.wait_for(
-        asyncio.gather(*(gate.acquire(label=f"b{i}") for i in range(20))), 5
+    permits = await await_until(
+        asyncio.gather(*(gate.acquire(label=f"b{i}") for i in range(20))), what="20 permits"
     )
     assert gate.in_flight == 20 and gate.queued == 0
     for permit in permits:

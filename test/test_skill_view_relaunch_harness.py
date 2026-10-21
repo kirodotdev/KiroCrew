@@ -51,7 +51,7 @@ from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import METHOD_SET_MODE
-from kiro_crew.testing.wait import async_wait_until, default_timeout
+from kiro_crew.testing.wait import async_wait_until, default_timeout, finished
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="the fake watcher is driven by inotify"
@@ -406,19 +406,19 @@ async def _one_spawn(
                     # The host never loads its fresh alias: the start fails and no
                     # other copy of the agent is activated.
                     with pytest.raises(runtime_mod.AcpRuntimeError, match="Restart the gateway"):
-                        await asyncio.wait_for(
+                        await finished(
                             rt._activate_mode_bracketed(
                                 "s1", name, budget=5.0, payload_snapshot=None, wire_registered=True
                             ),
-                            timeout=10,
+                            f"activating {name}",
                         )
                     assert len(host.activated) == before
                     continue
-                await asyncio.wait_for(
+                await finished(
                     rt._activate_mode_bracketed(
                         "s1", name, budget=5.0, payload_snapshot=None, wire_registered=True
                     ),
-                    timeout=10,
+                    f"activating {name}",
                 )
                 assert len(host.activated) == before + 1
                 mode, spec = host.activated[-1]
@@ -635,11 +635,11 @@ async def test_a_rewriter_that_wins_the_announcement_race_never_runs_an_unverifi
             patch.object(runtime_mod, "emit_counter", lambda n, a: counter.append(a["outcome"])),
             pytest.raises(runtime_mod.AcpRuntimeError, match="Restart the gateway"),
         ):
-            await asyncio.wait_for(
+            await finished(
                 rt._activate_mode_bracketed(
                     "s1", "late", budget=5.0, payload_snapshot=None, wire_registered=True
                 ),
-                timeout=10,
+                "activating late",
             )
     finally:
         task.cancel()

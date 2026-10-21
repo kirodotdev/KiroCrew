@@ -25,6 +25,7 @@ from kiro_crew.messaging.queue_receipt import (
     receipt_address_key,
     receipt_text,
 )
+from kiro_crew.testing.wait import finished
 
 
 class _Surface:
@@ -375,12 +376,18 @@ class TestLockIsCallerHeld:
         q, s = ReceiptQueue(), _Surface()
 
         async def go() -> None:
+            # The bound is tight on purpose: a transition that took the lock itself
+            # deadlocks here, and that deadlock is what the test asserts against.
             async with q.lock:
-                await asyncio.wait_for(q.create_or_grow_locked("s", s, "a", "alice"), timeout=2)
-                await asyncio.wait_for(
-                    q.flip_answering_locked("s", s, ["a"], owner="alice"), timeout=2
+                await finished(
+                    q.create_or_grow_locked("s", s, "a", "alice"), "create_or_grow", timeout=2
                 )
-                await asyncio.wait_for(q.finish_cancelled_locked("s", s), timeout=2)
+                await finished(
+                    q.flip_answering_locked("s", s, ["a"], owner="alice"),
+                    "flip_answering",
+                    timeout=2,
+                )
+                await finished(q.finish_cancelled_locked("s", s), "finish_cancelled", timeout=2)
 
         asyncio.run(go())
 

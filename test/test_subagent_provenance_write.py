@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew.execution_context import execution_for_store
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ``SubagentManager.spawn`` refuses while the host looks short of memory, which
 # is the runner's state, not this test's input.
@@ -1176,10 +1177,10 @@ async def test_an_abandoned_state_writer_holds_the_conversation() -> None:
 
         # The zombie lands: the hold releases and the conversation is usable again.
         wedged.set()
-        for _ in range(200):
-            if info.id not in manager._abandoned_state_writers:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: info.id not in manager._abandoned_state_writers,
+            describe=lambda: f"abandoned writers: {sorted(manager._abandoned_state_writers)}",
+        )
     assert info.id not in manager._abandoned_state_writers, (
         "the hold outlived the worker -- a conversation would stay permanently "
         "un-promotable and un-releasable"
@@ -1360,10 +1361,10 @@ async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() ->
             await task
         # Drained normally (never expired), so the one-shot recovery is intact.
         assert info._cancel_retry_used is False, "a completed drain must not burn the retry"
-        for _ in range(200):
-            if info.id not in manager._abandoned_state_writers:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: info.id not in manager._abandoned_state_writers,
+            describe=lambda: f"abandoned writers: {sorted(manager._abandoned_state_writers)}",
+        )
     assert info.id not in manager._abandoned_state_writers, "hold outlived the worker"
     assert manager._conversation_busy(conv_key) is None
 
@@ -1374,20 +1375,17 @@ async def _await_off_loop_gate(entered: Any, what: str) -> None:
     The gate only fires when the write goes through ``asyncio.to_thread``, so an
     unbounded ``await entered.wait()`` turns a regression (the write moved back
     onto the loop) into a 120s pytest-timeout with no diagnosis -- three of those
-    is six minutes of a shared runner for one mistake. Five seconds is orders of
-    magnitude above the real gate latency (the write is a patched no-op reached
-    within one scheduling pass) and still fails in the same breath as the cause.
+    is six minutes of a shared runner for one mistake. The helper's lost-run bound
+    fails by name instead, naming the write that never left the loop.
     """
-    import asyncio
-
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=5.0)
-    except (asyncio.TimeoutError, TimeoutError):  # pragma: no cover - regression path
-        raise AssertionError(
-            f"the {what} write never reached asyncio.to_thread, so it ran ON the "
-            "event loop -- update_state ends in a synchronous fsync and must go "
-            "through _write_state_off_loop (#6288, #7302)"
-        ) from None
+    await await_until(
+        entered,
+        what=(
+            f"the {what} write reaching asyncio.to_thread (a write that never gets there "
+            "ran ON the event loop; update_state ends in a synchronous fsync and must go "
+            "through _write_state_off_loop)"
+        ),
+    )
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from mcp_apps_render_helpers import spool_fixture  # noqa: F401
 from mcp_apps_render_helpers import _FakeState, _hex, _write_spool
 
 from kiro_crew import mcp_apps_render
+from kiro_crew.testing.wait import await_until
 
 #: A credential-shaped value for the redaction tests. JWT-shaped rather than the
 #: more familiar cloud access-key shape because an access-key literal is matched
@@ -343,7 +344,7 @@ async def test_a_cancelled_redaction_leaves_the_record_claimable(spool):
                 st, slot_key="dashboard:1", tool_call_id="tc-cancelled", text=text
             )
         )
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -444,7 +445,7 @@ async def test_a_cancellation_during_the_claim_gives_the_claim_back(spool):
                 st, slot_key="dashboard:1", tool_call_id="tc-cancelled", text=text
             )
         )
-        await asyncio.wait_for(taken.wait(), timeout=5)
+        await await_until(taken)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -754,7 +755,7 @@ async def test_a_second_cancellation_still_gives_the_claim_back(spool):
                 st, slot_key="dashboard:1", tool_call_id="tc-twice", text=text
             )
         )
-        await asyncio.wait_for(taken.wait(), timeout=5)
+        await await_until(taken)
 
         task.cancel()  # raises out of the claim's shielded await
         for _ in range(3):

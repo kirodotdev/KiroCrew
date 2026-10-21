@@ -62,6 +62,7 @@ from slack_gateway_cron_exec_coverage_helpers import (
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import async_wait_until
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -654,10 +655,9 @@ class TestAnAbandonedVetDoesNotExecute:
                 # Only NOW let the abandoned vet finish, so it reaches its
                 # dispatch decision strictly after the caller released the guard.
                 release.set()
-                for _ in range(500):
-                    if done:
-                        break
-                    await asyncio.sleep(0.01)
+                await async_wait_until(
+                    lambda: bool(done), describe=lambda: "the abandoned worker never decided"
+                )
 
         assert executed == [], (
             "the payload executed after its awaiter gave up and released the "
@@ -685,10 +685,9 @@ class TestAnAbandonedVetDoesNotExecute:
             ):
                 assert await cb(job) is None
                 release.set()
-                for _ in range(500):
-                    if done:
-                        break
-                    await asyncio.sleep(0.01)
+                await async_wait_until(
+                    lambda: bool(done), describe=lambda: "the abandoned worker never decided"
+                )
 
         assert executed == [], "the command executed after its awaiter gave up"
         assert done == ["refused"], f"the abandoned call did not refuse its payload: {done}"
@@ -831,10 +830,10 @@ class TestTheVetIsAnAccountedBudgetTerm:
             with patch.object(gw, runner, _payload):
                 await cb(job)
                 # Let an orphaned subprocess finish so its observation lands.
-                for _ in range(400):
-                    if guard_at_exit:
-                        break
-                    await asyncio.sleep(0.05)
+                await async_wait_until(
+                    lambda: bool(guard_at_exit),
+                    describe=lambda: "the payload has not finished its observation",
+                )
 
         assert guard_at_exit == [True], (
             f"the {kind} overlap guard was released while the payload was still "

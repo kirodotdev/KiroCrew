@@ -15,6 +15,7 @@ import pytest
 from conftest import make_dir_link
 from kiro_crew import platform_log_append as pla
 from kiro_crew.decisions import log
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture
@@ -203,7 +204,8 @@ def test_concurrent_short_writers_serialize(path, monkeypatch):
     with ThreadPoolExecutor(max_workers=4) as executor:
         results = [executor.submit(writer, index) for index in range(4)]
         for result in results:
-            result.result(timeout=5)
+            wait_until(result.done)
+            result.result()
     assert sorted(json.loads(row)["index"] for row in path.read_bytes().splitlines()) == list(
         range(4)
     )
@@ -216,8 +218,9 @@ def test_contended_append_times_out_without_writing(path, monkeypatch):
         with pla.platform_compat.file_lock(held, exclusive=True):
             with ThreadPoolExecutor(max_workers=1) as executor:
                 pending = executor.submit(pla.append_line, path, b"{}\n")
+                wait_until(pending.done)
                 with pytest.raises(OSError):
-                    pending.result(timeout=5)
+                    pending.result()
     assert path.read_bytes() == b'{"keep":1}\n'
     pla.append_line(path, b"{}\n")
 
@@ -731,7 +734,8 @@ def test_native_concurrent_first_appends_keep_every_record(tmp_path, round_numbe
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(writer, index) for index in range(4)]
         for future in futures:
-            future.result(timeout=5)
+            wait_until(future.done)
+            future.result()
     assert sorted(json.loads(row)["index"] for row in path.read_bytes().splitlines()) == list(
         range(4)
     )

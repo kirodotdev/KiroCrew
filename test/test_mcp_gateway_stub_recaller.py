@@ -24,6 +24,7 @@ import pytest
 
 import kiro_crew.mcp_caller
 from kiro_crew.mcp_gateway import stub as stub_mod
+from kiro_crew.testing.wait import finished
 
 # Pin to one xdist worker (requires --dist loadgroup) alongside the other
 # mcp_gateway suites.
@@ -127,7 +128,7 @@ async def test_recaller_loop_sends_frame_when_key_appears(
 
     w = _CapWriter()
     stop = asyncio.Event()
-    await asyncio.wait_for(stub_mod._recaller_loop(w, "C_X", stop), timeout=2.0)
+    await finished(stub_mod._recaller_loop(w, "C_X", stop), "the recaller loop")
 
     assert len(w.frames) == 1
     frame = w.frames[0]
@@ -153,7 +154,7 @@ async def test_recaller_loop_noop_when_stopped_before_key(
     w = _CapWriter()
     stop = asyncio.Event()
     stop.set()
-    await asyncio.wait_for(stub_mod._recaller_loop(w, None, stop), timeout=1.0)
+    await finished(stub_mod._recaller_loop(w, None, stop), "a recaller loop told to stop")
     assert w.frames == []
 
 
@@ -214,11 +215,11 @@ async def test_run_bridge_installs_write_lock() -> None:
     stop = asyncio.Event()
     stdin = asyncio.StreamReader()
     stdin.feed_eof()
-    await asyncio.wait_for(
+    await finished(
         stub_mod.run_bridge(
             reader, w, stop, stdin=stdin, stdout_writer=w,
             session=stub_mod.StubSession(),
         ),
-        timeout=2.0,
+        "the bridge",
     )
     assert getattr(w, "_mc_write_lock", None) is not None

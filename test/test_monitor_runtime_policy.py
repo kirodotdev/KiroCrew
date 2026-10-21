@@ -6,6 +6,7 @@ import pytest
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.monitoring.models import MonitorBudgets, monitor_state_from_dict
+from kiro_crew.testing.wait import finished
 from kiro_crew.validation import (
     MONITOR_START_SCHEMA,
     MONITOR_UPDATE_SCHEMA,
@@ -350,7 +351,6 @@ async def test_resume_without_a_budget_is_not_rechecked_but_a_supplied_one_is(
     loop whose stored budget exceeds the lowered ceiling; a PATCH that supplies
     that same budget is the write the ceiling binds and answers 400 with the
     refusing range."""
-    import asyncio
     import json
     from unittest.mock import AsyncMock, MagicMock
 
@@ -378,12 +378,14 @@ async def test_resume_without_a_budget_is_not_rechecked_but_a_supplied_one_is(
                 json=AsyncMock(return_value=body),
             )
 
-        response = await asyncio.wait_for(api_autonudge_update(_request({"active": True})), 5)
+        response = await finished(
+            api_autonudge_update(_request({"active": True})), "the resume update"
+        )
         assert response.status == 200
         assert loop.active and loop.max_runtime_secs == MONTH
 
-        response = await asyncio.wait_for(
-            api_autonudge_update(_request({"max_runtime_secs": MONTH})), 5
+        response = await finished(
+            api_autonudge_update(_request({"max_runtime_secs": MONTH})), "the runtime update"
         )
         assert response.status == 400
         assert "604800" in json.loads(response.text)["error"]
@@ -450,7 +452,6 @@ async def test_monitor_slot_read_advertises_the_live_operator_ceiling(monkeypatc
     """The popover validates its runtime input against the ceiling the
     create/update handlers enforce, not against the contract's absolute max, so
     the per-slot read it already performs carries the live value."""
-    import asyncio
     import json
     from unittest.mock import AsyncMock
 
@@ -465,7 +466,7 @@ async def test_monitor_slot_read_advertises_the_live_operator_ceiling(monkeypatc
     )
     monkeypatch.setattr("kiro_crew.dashboard.handlers.autonudge._autonudge_get", lambda: None)
     request = SimpleNamespace(match_info={"slot_key": "chat-1"}, remote="test")
-    response = await asyncio.wait_for(api_monitor_slot_get(request), 5)
+    response = await finished(api_monitor_slot_get(request), "the slot monitor read")
     assert response.status == 200
     payload = json.loads(response.text)
     assert payload["monitor"] is None

@@ -149,37 +149,27 @@
  3 test_llm_pool_ccworker.py
  2 test_local_turn_restart_marker.py
  3 test_mcp_apps_call_endpoint.py
- 3 test_mcp_apps_render.py
- 3 test_mcp_gateway_bluegreen.py
  1 test_mcp_gateway_recaller.py
  1 test_mcp_gateway_session_inject.py
- 3 test_mcp_gateway_stub_recaller.py
  1 test_mcp_launch_approval.py
  1 test_mcp_preflight.py
- 3 test_mcp_shared_deferred_tools.py
  1 test_meetings_audio_import.py
- 3 test_member_memory_mcp_routing.py
  1 test_members_eventlog_wiring_append_ordering.py
  1 test_memory_admission_queue.py
- 3 test_memory_multistore_stress.py
  2 test_memv2_audit_a_prompt.py
  2 test_memv2_audit_c_followup.py
  1 test_messaging_approval.py
  1 test_messaging_attachments.py
  1 test_messaging_auto_title.py
- 3 test_messaging_driver.py
  1 test_mochi_activity.py
  1 test_mochi_autonomous_unfreeze.py
  1 test_model_access_fallback_interactive.py
- 3 test_monitor_controller.py
- 3 test_monitor_runtime_policy.py
  1 test_native_subagent_boundary.py
  2 test_oneshot_supervisor.py
  1 test_opencode_session_mcp.py
  1 test_papyrus_latex.py
  1 test_pid_lifecycle_process_sweeps.py
  2 test_plan_mode.py
- 3 test_platform_log_append.py
  1 test_pod_e2e_video_guard.py
  2 test_pod_windows_boot.py
  1 test_pptx_maker_routes.py
@@ -189,7 +179,6 @@
  2 test_push_guard_diagnostics.py
  1 test_push_guard_squash.py
  1 test_queue_boundary_finalize.py
- 3 test_queue_receipt.py
  1 test_registry_store_art_prewarm.py
  1 test_registry_store_art_prewarm_rewarm.py
  1 test_remote_crew_chaining.py
@@ -197,7 +186,6 @@
  9 test_resume_publishes_hydrated_slot.py
  5 test_runloop_integration.py
  1 test_runtime_start_gate_headroom.py
- 3 test_safe_read_file_bytes_descriptor.py
  1 test_sandbox_argv.py
  2 test_sandbox_mount_source_sweep.py
  1 test_scenarios_v2_logic.py
@@ -242,19 +230,14 @@
  1 test_side_steer_queue.py
  5 test_sign_in_refresher.py
  1 test_skill_catalog_snapshot.py
- 3 test_skill_view_relaunch_harness.py
- 3 test_skills_cold_start.py
  1 test_slack_events_coverage_route_flow.py
  2 test_slack_gateway_coverage_mcp_broker.py
- 3 test_slack_gateway_cron_exec_coverage.py
- 3 test_slack_gateway_more_coverage.py
  2 test_slack_handler.py
  2 test_slack_handler_composition_contract_golden.py
  2 test_slack_handler_coverage.py
  1 test_slack_home_tab.py
  1 test_slack_sessions_view.py
  1 test_slot_create_default_agent.py
- 3 test_slot_ownership_checkpoint_post_await.py
  5 test_slot_patch_frames.py
  1 test_slot_payload_lineage.py
  1 test_slots_broadcast_byte_pacing.py
@@ -264,19 +247,14 @@
  1 test_spawn_approval_channel_governance_13491.py
  1 test_spawn_approval_mid_wait_deny_13559.py
  1 test_spawn_exec_shim.py
- 3 test_spawn_release_queued.py
  2 test_stall_enrichment.py
  1 test_stop_kill_cancel.py
  1 test_stt_config_field_types.py
- 3 test_stt_session.py
  2 test_stub_writer_death.py
  1 test_subagent_coverage_live_runs.py
  1 test_subagent_error_detail.py
- 3 test_subagent_memory_bounds_concurrency.py
  1 test_subagent_no_tool_calls_note.py
- 3 test_subagent_owed_tombstones.py
  1 test_subagent_panel_durable_replay_records.py
- 3 test_subagent_provenance_write.py
  2 test_subagent_queued_visibility.py
  1 test_subagent_release_off_loop.py
  1 test_subagent_sizing.py
@@ -289,7 +267,6 @@
  1 test_taskrunner_atomic_persistence.py
  2 test_taskrunner_execution_capture_async.py
  2 test_taskrunner_execution_context.py
- 3 test_telegram_album.py
  1 test_telegram_parity_inbound.py
  1 test_telegram_turn_lifecycle.py
  1 test_terminal_commands.py
@@ -298,7 +275,6 @@
  1 test_todo_pill_resync.py
  2 test_tool_permission.py
  1 test_trusted_apps_api.py
- 3 test_turn_dispatch.py
  2 test_update_ownership.py
  1 test_vector_commit_failures.py
  1 test_wait_tool_early_end.py
@@ -306,7 +282,6 @@
  2 test_webhook_permission_requests.py
  1 test_wecom_client_cov80.py
  1 test_wheel_engine_lifecycle.py
- 3 test_windows_fail_closed_optin.py
  1 test_windows_job_limits.py
  2 test_windows_tree_reap.py
  1 test_work_ledger_projection.py
