@@ -58,6 +58,14 @@ class NotRemote(LookupError):
     """The session runs on this machine: there is no remote workspace."""
 
 
+class CloudSandboxOnly(SessionEnvironmentUnavailable):
+    """The session runs in a Kiro cloud sandbox, which only its own agent reaches.
+
+    Kiro Crew holds no transport into that sandbox, so files, git and a terminal
+    are refused here rather than served from the wrong machine.
+    """
+
+
 class WorkspaceNotRunning(SessionEnvironmentUnavailable):
     """The session's workspace is stopped (or not created yet)."""
 
@@ -101,10 +109,16 @@ async def _resolve(session_key: str, *, wake: bool = True) -> _Target:
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
-    from kiro_crew.coder.session_launch import PROVIDER_ID
+    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID, PROVIDER_ID
     from kiro_crew.session_environments.routing import chosen_provider
 
     kind = chosen_provider(section, profile_id, recorded_provider) or PROVIDER_ID
+    if kind == KIRO_CLOUD_PROVIDER_ID:
+        # The sandbox belongs to Kiro's cloud and only its own agent reaches it.
+        raise CloudSandboxOnly(
+            "this session runs in a Kiro cloud sandbox; its files and shell are reached "
+            "only by its own agent, not from Kiro Crew"
+        )
     if kind != PROVIDER_ID:
         return await vm_browse._resolve_persistent(
             kind, section, home, owner, profile_id, wake=wake

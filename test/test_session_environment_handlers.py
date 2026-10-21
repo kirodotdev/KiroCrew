@@ -72,6 +72,7 @@ async def _client(tmp_path, monkeypatch, *, owner=True):
     app.router.add_get("/s/{slot}", handlers.api_chat_slot_environment_get)
     app.router.add_put("/s/{slot}", handlers.api_chat_slot_environment_put)
     app.router.add_get("/b/{slot}", handlers.api_chat_slot_environment_browse)
+    app.router.add_get("/h/{slot}", handlers.api_chat_slot_environment_health)
     app.router.add_put("/w/{slot}", handlers.api_chat_slot_environment_file_put)
     app.router.add_post("/check", handlers.api_session_environments_check)
     app.router.add_get("/ws", handlers.api_session_environments_workspaces_get)
@@ -596,6 +597,15 @@ async def test_terminal_remote_slot_never_falls_back_to_a_local_shell(tmp_path, 
     argv, why, code = await terminal._remote_terminal_argv(request, "main")
     assert argv is None and "not available" in why and code == "terminal_placement_unavailable"
 
+    async def cloud(key):
+        raise session_browse.CloudSandboxOnly("this session runs in a Kiro cloud sandbox")
+
+    # A Kiro Cloud chat has no shell Kiro Crew can reach, and never will: the tab
+    # parks instead of redialing an outage that is not one.
+    monkeypatch.setattr(session_browse, "remote_terminal_argv", cloud)
+    argv, why, code = await terminal._remote_terminal_argv(request, "main")
+    assert argv is None and "Kiro cloud sandbox" in why and code == "terminal_wrong_machine"
+
     async def remote(key):
         return ["coder", "ssh", "--disable-autostart", "crewenv-x"]
 
@@ -1050,3 +1060,18 @@ async def test_browse_endpoint_forwards_a_rename_source(tmp_path, monkeypatch):
         await client.get("/b/main?op=git_diff&path=new.txt&from=old.txt")
         await client.get("/b/main?op=git_diff&path=new.txt")
     assert calls == [("git_diff", "new.txt", "old.txt"), ("git_diff", "new.txt", None)]
+
+
+@sync
+async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkeypatch):
+    """Only a Kiro Cloud sandbox's own agent reaches it, so a health read is answered
+    with ``cloud_sandbox`` (the browse routes' code), never the 502 of a broken read."""
+    async with _client(tmp_path, monkeypatch) as client:
+
+        async def cloud(_key):
+            raise session_browse.CloudSandboxOnly("runs in a Kiro cloud sandbox")
+
+        monkeypatch.setattr(session_browse, "session_health", cloud)
+        resp = await client.get("/h/main")
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "cloud_sandbox"

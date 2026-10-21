@@ -165,6 +165,21 @@ class TestApi:
             assert resp.status == 200, await resp.text()
             assert "default_profile" not in _stored(config_file)["session_environments"]
 
+    async def test_the_default_profile_leaf_may_name_a_kiro_cloud_profile(self, config_file):
+        """Every saved profile list counts, not only the Coder one."""
+        async with _api() as client:
+            section = {
+                "coder_url": "",
+                "profiles": [],
+                "kiro_cloud_profiles": [{"id": "cloud", "name": "Cloud", "repositories": []}],
+            }
+            assert (await _patch(client, "session_environments", section)).status == 200
+            resp = await _patch(client, "session_environments.default_profile", "cloud")
+            assert resp.status == 200, await resp.text()
+            assert _stored(config_file)["session_environments"]["default_profile"] == "cloud"
+            resp = await _patch(client, "session_environments.default_profile", "big-box")
+            assert resp.status == 400 and (await resp.json())["code"] == "unknown_profile"
+
     async def test_a_default_profile_leaf_with_no_saved_section_is_refused(self, config_file):
         async with _api() as client:
             resp = await _patch(client, "session_environments.default_profile", "a")
@@ -234,3 +249,241 @@ class TestApi:
             resp = await _patch(client, "session_environments" + field, value)
             assert resp.status == 400
         assert config_file.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_cloud_profile_round_trips_and_survives_an_older_client(self, config_file):
+        cloud = {"id": "cloud", "name": "Kiro Cloud", "repositories": ["acme/web"]}
+        async with _api() as client:
+            resp = await _patch(client, "session_environments.kiro_cloud_profiles", [cloud])
+            assert resp.status == 200, await resp.text()
+            # A dashboard that predates Kiro Cloud saves the section without it.
+            resp = await _patch(
+                client,
+                "session_environments",
+                {"coder_url": "https://c.example.com", "profiles": []},
+            )
+            assert resp.status == 200, await resp.text()
+            got = await _section(client)
+            # The id decides the provider, so a Coder profile may not reuse it.
+            clash = await _patch(
+                client,
+                "session_environments",
+                {
+                    "coder_url": "https://c.example.com",
+                    "profiles": [_profile("cloud")],
+                    "kiro_cloud_profiles": [cloud],
+                },
+            )
+            assert clash.status == 400
+        assert got["kiro_cloud_profiles"] == [cloud]
+
+    @pytest.mark.parametrize("default", ["kc1", "dev"])
+    async def test_a_cloud_list_leaf_drops_a_default_whose_profile_it_removes(
+        self, config_file, default
+    ):
+        """A leaf write that removes the default's profile drops the default, as a
+        whole-section save does, so it never names a profile that is gone."""
+        seeded = {
+            "coder_url": "https://c.example.com",
+            "profiles": [_profile("dev")],
+            "kiro_cloud_profiles": [{"id": "kc1", "name": "Cloud", "repositories": []}],
+            "default_profile": default,
+        }
+        async with _api() as client:
+            assert (await _patch(client, "session_environments", seeded)).status == 200
+            resp = await _patch(client, "session_environments.kiro_cloud_profiles", [])
+            assert resp.status == 200, await resp.text()
+            saved = _stored(config_file)["session_environments"]
+            assert saved["kiro_cloud_profiles"] == []
+            if default == "kc1":
+                assert "default_profile" not in saved
+            else:
+                # A default naming a profile the write kept is left alone.
+                assert saved["default_profile"] == "dev"
+            # The next whole-section save of what the tab shows still succeeds.
+            assert (await _patch(client, "session_environments", saved)).status == 200
+
+    @pytest.mark.parametrize(
+        "bad_entry,default,kept",
+        [
+            # A hand-edited profile id that is not a string sits beside a valid one.
+            ({"id": ["dev"], "name": "Bad"}, "kc1", True),
+            ({"id": {"x": 1}, "name": "Bad"}, "kc1", True),
+            # A hand-edited default that is not a string is dropped, not crashed on.
+            ({"id": "dev2", "name": "Ok"}, ["kc1"], False),
+            ({"id": "dev2", "name": "Ok"}, {"id": "kc1"}, False),
+        ],
+    )
+    async def test_a_malformed_hand_edit_does_not_fail_an_unrelated_leaf_write(
+        self, config_file, bad_entry, default, kept
+    ):
+        """The dangling-default check reads the section raw: a non-string profile id
+        or default from a hand edit must not turn a valid write into a 500."""
+        _write_section(
+            config_file,
+            {
+                "coder_url": "https://c.example.com",
+                "profiles": [_profile("dev"), bad_entry],
+                "kiro_cloud_profiles": [{"id": "kc1", "name": "Cloud", "repositories": []}],
+                "default_profile": default,
+            },
+        )
+        async with _api() as client:
+            resp = await _patch(client, "session_environments.stop_on_shutdown", False)
+            assert resp.status == 200, await resp.text()
+            saved = _stored(config_file)["session_environments"]
+            assert saved["stop_on_shutdown"] is False
+            if kept:
+                assert saved["default_profile"] == "kc1"
+            else:
+                assert "default_profile" not in saved
+            # The explicit default leaf reads the same raw lists, and is not crashed either.
+            dflt = await _patch(client, "session_environments.default_profile", "kc1")
+            assert dflt.status == 200, await dflt.text()
+        assert _stored(config_file)["session_environments"]["default_profile"] == "kc1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path,value",
+        [
+            # A leaf write of the cloud list, checked against the Coder list on disk.
+            # (Coder profiles have no leaf path; the whole-section case covers them.)
+            (
+                "session_environments.kiro_cloud_profiles",
+                [{"id": "dev", "name": "Dev", "repositories": []}],
+            ),
+            # A whole-section save that omits the cloud list, which the writer preserves.
+            (
+                "session_environments",
+                {"coder_url": "https://c.example.com", "profiles": [_profile("cloud")]},
+            ),
+        ],
+    )
+    async def test_a_write_that_would_share_an_id_across_providers_is_refused(
+        self, config_file, path, value
+    ):
+        async with _api() as client:
+            seed = await _patch(
+                client,
+                "session_environments",
+                {
+                    "coder_url": "https://c.example.com",
+                    "profiles": [_profile("dev")],
+                    "kiro_cloud_profiles": [
+                        {"id": "cloud", "name": "Kiro Cloud", "repositories": []}
+                    ],
+                },
+            )
+            assert seed.status == 200, await seed.text()
+            before = config_file.read_bytes()
+            resp = await _patch(client, path, value)
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "profile_id_collision"
+        assert config_file.read_bytes() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            {"profiles": [{"name": "no id"}, "not an object", None, _profile("dev")]},
+            {"profiles": None, "kiro_cloud_profiles": None},
+            {"profiles": [], "kiro_cloud_profiles": [{"name": "no id"}, 7, None]},
+            {"profiles": [_profile("dev", id=3)], "kiro_cloud_profiles": [{"id": 3}]},
+        ],
+    )
+    async def test_a_hand_edited_entry_the_loader_drops_does_not_break_a_write(
+        self, config_file, stored
+    ):
+        """The id check reads each list the way the loader does, so a dropped entry cannot 500."""
+        _write_section(config_file, {"coder_url": "https://c.example.com", **stored})
+        cloud = [{"id": "cloud", "name": "Kiro Cloud", "repositories": []}]
+        async with _api() as client:
+            # A leaf that rewrites neither list: the check reads both as stored.
+            resp = await _patch(client, "session_environments.stop_on_shutdown", False)
+            assert resp.status == 200, await resp.text()
+            resp = await _patch(client, "session_environments.kiro_cloud_profiles", cloud)
+            assert resp.status == 200, await resp.text()
+            resp = await _patch(client, "session_environments.default_profile", "cloud")
+            assert resp.status == 200, await resp.text()
+        assert _stored(config_file)["session_environments"]["kiro_cloud_profiles"] == cloud
+
+
+class TestStaleCardSave:
+    """A whole-section save from a card or tab that predates a provider keeps that
+    provider's saved profiles (and a default naming one), never wiping them."""
+
+    pytestmark = pytest.mark.asyncio
+
+    async def test_a_save_that_omits_the_cloud_list_keeps_it_and_its_default(self, config_file):
+        cloud = {"id": "cloud", "name": "Kiro Cloud", "repositories": ["acme/web"]}
+        seeded = {
+            "coder_url": "https://c.example.com",
+            "profiles": [_profile("dev")],
+            "kiro_cloud_profiles": [cloud],
+            "default_profile": "cloud",
+        }
+        # What an older Settings tab or an agent's change card sends: only the keys it knows.
+        stale = {"coder_url": "https://c.example.com", "profiles": [_profile("dev")]}
+        async with _api() as client:
+            assert (await _patch(client, "session_environments", seeded)).status == 200
+            resp = await _patch(client, "session_environments", stale)
+            assert resp.status == 200, await resp.text()
+        saved = _stored(config_file)["session_environments"]
+        assert saved["kiro_cloud_profiles"] == [cloud]
+        assert saved["default_profile"] == "cloud"
+
+    async def test_a_hand_edited_cloud_list_the_loader_refuses_is_not_carried(self, config_file):
+        _write_section(
+            config_file,
+            {
+                "coder_url": "https://c.example.com",
+                "profiles": [],
+                "kiro_cloud_profiles": [{"id": "Not Valid!", "repositories": "x"}],
+                "default_profile": "Not Valid!",
+            },
+        )
+        stale = {"coder_url": "https://c.example.com", "profiles": []}
+        async with _api() as client:
+            assert (await _patch(client, "session_environments", stale)).status == 200
+        saved = _stored(config_file)["session_environments"]
+        assert "kiro_cloud_profiles" not in saved and "default_profile" not in saved
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"id": "Not Valid!", "repositories": "x"},
+            "not an object",
+            {"id": "cloud", "name": "Duplicate", "repositories": []},
+        ],
+        ids=["bad-entry", "not-an-object", "duplicate-id"],
+    )
+    async def test_one_hand_edited_cloud_entry_does_not_drop_the_valid_ones(
+        self, config_file, malformed
+    ):
+        """The omitted list is carried as the loader reads it: entry by entry."""
+        cloud = {"id": "cloud", "name": "Kiro Cloud", "repositories": ["acme/web"]}
+        _write_section(
+            config_file,
+            {
+                "coder_url": "https://c.example.com",
+                "profiles": [],
+                "kiro_cloud_profiles": [cloud, malformed],
+                "default_profile": "cloud",
+            },
+        )
+        stale = {"coder_url": "https://c.example.com", "profiles": []}
+        async with _api() as client:
+            assert (await _patch(client, "session_environments", stale)).status == 200
+        saved = _stored(config_file)["session_environments"]
+        assert saved["kiro_cloud_profiles"] == [cloud]
+        assert saved["default_profile"] == "cloud"
+
+
+def test_every_optional_key_has_the_loaders_validator():
+    """A key without a validator is never carried, so a new provider list must add one."""
+    from kiro_crew.config.session_environments import SECTION_OPTIONAL_KEYS
+    from kiro_crew.dashboard.handlers.core_config_patch import (
+        _session_environment_key_validators,
+    )
+
+    assert set(_session_environment_key_validators()) == set(SECTION_OPTIONAL_KEYS)

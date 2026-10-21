@@ -42,7 +42,7 @@ export const SLOT_ENVIRONMENT_RETRY = {
   retryDelay: 250,
 } as const
 
-type RemoteEnvironment = { profile: string; name: string; workdir: string }
+type RemoteEnvironment = { profile: string; name: string; workdir: string; provider?: string }
 
 /** Only an explicit successful local placement (or the read's `owner_only`
  *  refusal: a caller that cannot bind chats) permits gateway file/shell access.
@@ -70,8 +70,8 @@ export function useSlotEnvironmentPlacement(slot: string | null | undefined) {
     if (!isSuccess) return undefined
     if (id === null) return null
     if (typeof id !== 'string' || !id) return undefined
-    return { profile: id, name: match?.name ?? id, workdir: match?.workdir ?? '' }
-  }, [slot, ownerOnly, isSuccess, id, match?.name, match?.workdir])
+    return { profile: id, name: match?.name ?? id, workdir: match?.workdir ?? '', provider: data?.provider ?? match?.provider }
+  }, [slot, ownerOnly, isSuccess, id, match?.name, match?.workdir, data?.provider, match?.provider])
   return { remote, error: ownerOnly ? null : error }
 }
 
