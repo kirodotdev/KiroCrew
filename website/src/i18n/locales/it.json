@@ -7985,7 +7985,8 @@
       "paste_lines_other": "[ Incolla #{{seq}} · {{count}} righe ]",
       "preview_more_lines_many": "… {{count}} altre righe",
       "preview_more_lines_one": "… {{count}} altra riga",
-      "preview_more_lines_other": "… {{count}} altre righe"
+      "preview_more_lines_other": "… {{count}} altre righe",
+      "preview_gesture_hint": "Doppio clic per inserire il testo completo · Backspace rimuove l'incollato"
     },
     "privacyChapter": {
       "continue": "Continua",

@@ -9042,7 +9042,8 @@
       "paste_lines_one": "[[ Þàşţè #{{seq}} · {{count}} ĺìñè ] ·················]",
       "paste_lines_other": "[[ Þàşţè #{{seq}} · {{count}} ĺìñèş ] ··················]",
       "preview_more_lines_one": "[… {{count}} ɱøŕè ĺìñè ···········]",
-      "preview_more_lines_other": "[… {{count}} ɱøŕè ĺìñèş ············]"
+      "preview_more_lines_other": "[… {{count}} ɱøŕè ĺìñèş ············]",
+      "preview_gesture_hint": "[Ðøùƀĺè-çĺìçķ ţø ìñşèŕţ ţĥè ƒùĺĺ ţèẋţ · Ɓàçķşþàçè ŕèɱøṽèş ţĥè þàşţè ·······················]"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "[Ì ùñðèŕşţàñð, þùƀĺìşĥ þùƀĺìçĺý ·····················]",

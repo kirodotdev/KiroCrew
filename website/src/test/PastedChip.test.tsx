@@ -89,7 +89,7 @@ describe('PastedChip hover preview', () => {
     expect(screen.queryByTestId('paste-preview-2')).not.toBeInTheDocument()
     act(() => { vi.advanceTimersByTime(350) })
     expect(screen.getByTestId('paste-preview-2')).toBeInTheDocument()
-    expect(screen.getByText(/preview line 1/)).toBeInTheDocument()
+    expect(screen.getByText('preview line 1')).toBeInTheDocument()
   })
 
   it('caps the preview and shows a "+N more lines" footer for long pastes', () => {
@@ -107,6 +107,13 @@ describe('PastedChip hover preview', () => {
     const panel = screen.getByTestId('paste-preview-2')
     expect(panel.textContent).toContain('c')
     expect(panel.textContent).not.toContain('more line')
+  })
+
+  it('names no composer gestures in a sent-bubble preview', () => {
+    render(<PastedChip block={longBlock} />)
+    hover(screen.getByRole('button'))
+    expect(screen.queryByTestId('paste-preview-2-hint')).toBeNull()
+    expect(screen.getByTestId('paste-preview-2').textContent).not.toContain('Backspace')
   })
 
   it('dismisses the preview on mouse leave', async () => {

@@ -7731,7 +7731,8 @@
       "hide_paste_preview": "貼り付けのプレビューを非表示",
       "show_paste_preview": "貼り付けのプレビューを表示",
       "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
-      "preview_more_lines_other": "… 他{{count}}行"
+      "preview_more_lines_other": "… 他{{count}}行",
+      "preview_gesture_hint": "ダブルクリックで全文を挿入 · Backspace で貼り付けを削除"
     },
     "privacyChapter": {
       "continue": "続行",

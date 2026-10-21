@@ -7985,7 +7985,8 @@
       "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]",
       "preview_more_lines_many": "… {{count}} lignes de plus",
       "preview_more_lines_one": "… {{count}} ligne de plus",
-      "preview_more_lines_other": "… {{count}} lignes de plus"
+      "preview_more_lines_other": "… {{count}} lignes de plus",
+      "preview_gesture_hint": "Double-clic pour insérer le texte complet · Retour arrière supprime le collage"
     },
     "privacyChapter": {
       "continue": "Continuer",

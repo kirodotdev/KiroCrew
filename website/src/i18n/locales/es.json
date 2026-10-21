@@ -7985,7 +7985,8 @@
       "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]",
       "preview_more_lines_many": "… {{count}} líneas más",
       "preview_more_lines_one": "… {{count}} línea más",
-      "preview_more_lines_other": "… {{count}} líneas más"
+      "preview_more_lines_other": "… {{count}} líneas más",
+      "preview_gesture_hint": "Doble clic para insertar el texto completo · Retroceso quita lo pegado"
     },
     "privacyChapter": {
       "continue": "Continuar",

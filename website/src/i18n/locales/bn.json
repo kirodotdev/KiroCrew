@@ -7858,7 +7858,8 @@
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "preview_more_lines_one": "… আরও {{count}} লাইন",
-      "preview_more_lines_other": "… আরও {{count}} লাইন"
+      "preview_more_lines_other": "… আরও {{count}} লাইন",
+      "preview_gesture_hint": "পুরো লেখা বসাতে ডাবল-ক্লিক করো · Backspace পেস্টটি সরায়"
     },
     "privacyChapter": {
       "continue": "চালিয়ে যান",

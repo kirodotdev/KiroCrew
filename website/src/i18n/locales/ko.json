@@ -7731,7 +7731,8 @@
       "hide_paste_preview": "붙여넣기 미리보기 숨기기",
       "show_paste_preview": "붙여넣기 미리보기 표시",
       "paste_lines_other": "[ 붙여넣기 #{{seq}} · {{count}}줄 ]",
-      "preview_more_lines_other": "… {{count}}줄 더"
+      "preview_more_lines_other": "… {{count}}줄 더",
+      "preview_gesture_hint": "두 번 클릭하여 전체 텍스트 삽입 · Backspace로 붙여넣기 제거"
     },
     "privacyChapter": {
       "continue": "계속",

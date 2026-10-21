@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { PREVIEW_MAX_LINES, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
 
@@ -18,6 +19,37 @@ interface Props {
    *  prefix so a sent chip and a composer token with the same seq never collide
    *  under one test id. */
   testIdPrefix?: string
+  /** One short line naming what the user can do with the token (the composer
+   *  passes its expand/remove gestures). Omitted, nothing is shown. */
+  hint?: string
+}
+
+/** Height of one preview row in px. Mirrors the `<pre>`'s `text-[11px]
+ *  leading-[1.5]` classes below; change both together. */
+const PREVIEW_ROW_PX = 16.5 // text-[11px] at leading-[1.5]
+
+/**
+ * Count the preview lines the reader can begin to read inside the
+ * height-capped `<pre>`. Each line is its own inline span, so a wrapped
+ * line's rect spans all its rows; a line counts as shown once at least half
+ * of its first row is visible, even when its later rows are clipped. The
+ * test is the row's midpoint, not its bottom, because an inline span's rect
+ * starts at the font's content area, a few px below the row's top, so
+ * "row bottom" read from it overshoots and would hide a fully visible last
+ * line. A rect whose top is at or above the box's own top always counts;
+ * that only matters for an unlaid-out (all-zero) rect, which would
+ * otherwise count every line as hidden.
+ */
+function countShownLines(pre: HTMLElement): number {
+  const { top, bottom } = pre.getBoundingClientRect()
+  let shown = 0
+  for (const line of pre.querySelectorAll('[data-preview-line]')) {
+    const lineTop = line.getBoundingClientRect().top
+    const firstRowVisible = lineTop + PREVIEW_ROW_PX / 2 < bottom
+    if (lineTop > top && !firstRowVisible) break
+    shown++
+  }
+  return shown
 }
 
 /**
@@ -29,12 +61,27 @@ interface Props {
  * previews cannot drift. It is presentational only: open/close, timing, and
  * anchor computation stay with each caller, whose trigger semantics differ (a
  * real <button> chip vs. the textarea's caret/hover).
+ *
+ * The `<pre>` is capped both by line count and by height, so wrapped lines can
+ * push later lines out of view. The footer counts the lines the reader cannot
+ * begin to read (less than half of the first row inside the box), measured before paint,
+ * so shown + footer = total.
  */
-export default function PastePreviewTooltip({ open, panelId, anchor, content, seq, testIdPrefix = 'paste-preview' }: Props) {
-  const previewLines = content.split('\n')
-  const truncated = previewLines.length > PREVIEW_MAX_LINES
-  const previewText = previewLines.slice(0, PREVIEW_MAX_LINES).join('\n')
-  const moreCount = previewLines.length - PREVIEW_MAX_LINES
+export default function PastePreviewTooltip({ open, panelId, anchor, content, seq, testIdPrefix = 'paste-preview', hint }: Props) {
+  const preRef = useRef<HTMLPreElement>(null)
+  const [measured, setMeasured] = useState<{ content: string; shown: number } | null>(null)
+  const allLines = content.split('\n')
+  const previewLines = allLines.slice(0, PREVIEW_MAX_LINES)
+  const total = allLines.length
+  const shown = measured && measured.content === content ? measured.shown : previewLines.length
+  const moreCount = total - shown
+
+  useLayoutEffect(() => {
+    const pre = preRef.current
+    if (!open || !anchor || !pre) return
+    const next = countShownLines(pre)
+    setMeasured(prev => (prev && prev.content === content && prev.shown === next ? prev : { content, shown: next }))
+  }, [open, anchor, content])
 
   return (
     <AnimatePresence>
@@ -55,10 +102,19 @@ export default function PastePreviewTooltip({ open, panelId, anchor, content, se
             bottom: anchor.below ? undefined : window.innerHeight - anchor.top,
           }}
         >
-          <pre className="m-0 overflow-hidden text-[11px] font-mono text-muted leading-[1.5] whitespace-pre-wrap" style={{ maxHeight: PREVIEW_MAX_HEIGHT - 40, wordBreak: 'break-word' }}>{previewText}</pre>
-          {truncated && (
-            <div className="pt-1 text-[10px] text-muted-strong border-t border-border mt-1.5">
+          <pre ref={preRef} className="m-0 overflow-hidden text-[11px] font-mono text-muted leading-[1.5] whitespace-pre-wrap" style={{ maxHeight: PREVIEW_MAX_HEIGHT - 40, wordBreak: 'break-word' }}>
+            {previewLines.map((line, i) => (
+              <span key={i} data-preview-line="">{line}{i < previewLines.length - 1 ? '\n' : ''}</span>
+            ))}
+          </pre>
+          {moreCount > 0 && (
+            <div data-testid={`${testIdPrefix}-${seq}-more`} className="pt-1 text-[10px] text-muted-strong border-t border-border mt-1.5">
               {i18nT('components.pastedChip.preview_more_lines', { count: moreCount })}
+            </div>
+          )}
+          {hint && (
+            <div data-testid={`${testIdPrefix}-${seq}-hint`} className={`text-[10px] text-muted ${moreCount > 0 ? 'pt-0.5' : 'pt-1 border-t border-border mt-1.5'}`}>
+              {hint}
             </div>
           )}
         </motion.div>

@@ -7731,7 +7731,8 @@
       "hide_paste_preview": "隐藏粘贴预览",
       "show_paste_preview": "显示粘贴预览",
       "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
-      "preview_more_lines_other": "… 还有 {{count}} 行"
+      "preview_more_lines_other": "… 还有 {{count}} 行",
+      "preview_gesture_hint": "双击插入完整文本 · 按 Backspace 删除粘贴内容"
     },
     "privacyChapter": {
       "continue": "继续",

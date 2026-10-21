@@ -8112,7 +8112,8 @@
       "preview_more_lines_few": "… ещё {{count}} строки",
       "preview_more_lines_many": "… ещё {{count}} строк",
       "preview_more_lines_one": "… ещё {{count}} строка",
-      "preview_more_lines_other": "… ещё {{count}} строки"
+      "preview_more_lines_other": "… ещё {{count}} строки",
+      "preview_gesture_hint": "Двойной щелчок вставляет весь текст · Backspace удаляет вставку"
     },
     "privacyChapter": {
       "continue": "Продолжить",

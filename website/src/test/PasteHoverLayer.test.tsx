@@ -122,7 +122,7 @@ describe('PasteHoverLayer hover preview', () => {
     expect(screen.queryByTestId('composer-paste-preview-1')).not.toBeInTheDocument()
     act(() => { vi.advanceTimersByTime(350) })
     expect(screen.getByTestId('composer-paste-preview-1')).toBeInTheDocument()
-    expect(screen.getByText(/composer line 1/)).toBeInTheDocument()
+    expect(screen.getByText('composer line 1')).toBeInTheDocument()
   })
 
   it('caps the preview at PREVIEW_MAX_LINES and shows "+N more" footer', () => {
@@ -137,6 +137,14 @@ describe('PasteHoverLayer hover preview', () => {
     expect(panel.textContent).toContain('composer line 12')
     expect(panel.textContent).not.toContain('composer line 13')
     expect(panel.textContent).toContain('8 more lines')
+  })
+
+  it('names the double-click expand and Backspace remove gestures', () => {
+    const { moveOver } = setup([shortBlock], valueWith(shortBlock))
+    resetIdx()
+    moveOver()
+    act(() => { vi.advanceTimersByTime(350) })
+    expect(screen.getByTestId('composer-paste-preview-2-hint').textContent).toBe('Double-click to insert the full text · Backspace removes the paste')
   })
 
   it('shows full content without footer for short pastes', () => {

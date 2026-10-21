@@ -4,6 +4,7 @@ import { findTokenRanges, type PasteBlock } from '../utils/pasteTokens'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
 import PastePreviewTooltip from './PastePreviewTooltip'
+import { i18nT } from '../i18n/t'
 
 export interface PasteHoverHandle {
   /** Call on textarea mousemove to check if a paste token is under the cursor. */
@@ -214,6 +215,10 @@ const PasteHoverLayer = forwardRef<PasteHoverHandle, Props>(function PasteHoverL
       content={hovered ? hovered.content : ''}
       seq={hovered ? hovered.seq : 0}
       testIdPrefix="composer-paste-preview"
+      // The gestures pasteEditor's handleTextareaClick and Backspace handler
+      // honour. The preview never opens on touch, so the mouse wording is
+      // the only one a reader of this line can see.
+      hint={i18nT('components.pastedChip.preview_gesture_hint')}
     />
   </OverlayPortal>
 })

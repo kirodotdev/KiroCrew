@@ -7985,7 +7985,8 @@
       "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]",
       "preview_more_lines_many": "… mais {{count}} linhas",
       "preview_more_lines_one": "… mais {{count}} linha",
-      "preview_more_lines_other": "… mais {{count}} linhas"
+      "preview_more_lines_other": "… mais {{count}} linhas",
+      "preview_gesture_hint": "Clique duas vezes para inserir o texto completo · Backspace remove o conteúdo colado"
     },
     "privacyChapter": {
       "continue": "Continuar",

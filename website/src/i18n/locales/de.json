@@ -7858,7 +7858,8 @@
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
       "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]",
       "preview_more_lines_one": "… {{count}} weitere Zeile",
-      "preview_more_lines_other": "… {{count}} weitere Zeilen"
+      "preview_more_lines_other": "… {{count}} weitere Zeilen",
+      "preview_gesture_hint": "Doppelklick fügt den ganzen Text ein · Rücktaste entfernt die Einfügung"
     },
     "privacyChapter": {
       "continue": "Weiter",

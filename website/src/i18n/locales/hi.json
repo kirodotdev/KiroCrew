@@ -7858,7 +7858,8 @@
       "paste_lines_one": "[ पेस्ट #{{seq}} · {{count}} पंक्ति ]",
       "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]",
       "preview_more_lines_one": "… {{count}} और पंक्ति",
-      "preview_more_lines_other": "… {{count}} और पंक्तियाँ"
+      "preview_more_lines_other": "… {{count}} और पंक्तियाँ",
+      "preview_gesture_hint": "पूरा टेक्स्ट डालने के लिए डबल-क्लिक करो · Backspace पेस्ट को हटाता है"
     },
     "privacyChapter": {
       "continue": "जारी रखें",
