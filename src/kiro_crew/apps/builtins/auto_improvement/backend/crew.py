@@ -11,6 +11,7 @@ from typing import Any
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
+from kiro_crew.crew_avatar_seed import default_icon_avatar
 from kiro_crew.execution_context import member_config_for_id
 from kiro_crew.member_workspace import (
     AUTO_WORKSPACE,
@@ -93,6 +94,9 @@ def ensure_team() -> dict[str, str]:
                     workspace=AUTO_WORKSPACE,
                     description=spec.description,
                     source=store.APP_NAME,
+                    # The same name-seeded icon every create path applies, so an
+                    # app-provisioned crew is born an icon, not the trait ghost.
+                    avatar=default_icon_avatar(spec.name),
                 )
                 config.agents[spec.name] = member
                 previous_store = member.memory_store
