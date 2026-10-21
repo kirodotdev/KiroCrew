@@ -564,3 +564,83 @@ class TestRecursiveForceRmFloor:
         assert "could not read" in is_denied("rm -fr /")
         assert is_denied("git status") is None
         assert is_denied("echo $PATH") is None
+
+
+class TestRmFloorReadsQuotingAsBash:
+    """The floor reads quotes the way bash does, one shell level down too.
+
+    A ``-c`` operand is read from the floor's own word scan, not the shared walk's
+    expanded frame, which gives ``bash -c 'RM -fr \\$HOME'`` (a dir named ``$HOME``) and
+    ``bash -c "RM -fr \\$HOME"`` (the real home) the same nested words.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'RM -fr "/"',
+            'RM -fr "$HOME"',
+            'bash -c "RM -fr \\$HOME"',
+            "bash -c 'RM -fr $HOME'",
+            'bash -c "RM -fr $HOME"',
+            # The outer shell expands the home first, so the inner escape hits a ``/``.
+            'bash -c "RM -fr \\\\$HOME"',
+            "sh -c 'RM -r -f /'",
+            "bash -lc 'cd x && RM -fr ~'",
+            "bash -o pipefail -c 'RM -fr /'",
+            "bash -c -- 'RM -fr /'",
+            "bash -c - 'RM -fr /'",  # a lone ``-`` also ends the options
+            "sh -c + 'RM -fr ~'",
+            "bash -c + -- 'RM -fr /'",  # a lone ``+`` sets nothing and the walk goes on
+            "bash + -c 'RM -fr /'",
+            "RM -fr \\\n/",  # bash joins a line continuation into the target
+            "bash -c 'RM -fr \\\n~'",
+            "r\\\nm -fr /",  # the continuation splits the program word itself
+            "bash -c \\\n  'RM -fr $HOME'",  # a line continuation is no empty operand
+            "bash -c -e 'RM -fr ~'",
+            "bash --rcfile x -c 'RM -fr /'",
+            "bash -c $'RM -fr /'",
+            "bash -c $'RM -fr \\x7e'",
+            "bash -c $'RM -fr \\057'",
+            "bash -c $'ls\\nRM -fr /'",  # bash cuts the operand at the decoded newline
+            "bash -c $'ls\\cJRM -fr ~'",
+            "bash -c $'ls\\c*RM -fr /'",  # bash makes 0x0a of any X with X & 0x1f == 10
+            "bash -c $'ls\\c\\\\\\nRM -fr /'",  # ``\\c\\\\`` is one byte; the ``\\n`` stays live
+            "bash -eo pipefail -c 'RM -fr ~'",
+            "bash -co pipefail 'RM -fr ~'",
+            "bash -oc pipefail 'RM -fr /'",
+            "bash -c \"sh -c 'RM -fr \\$HOME'\"",
+        ],
+    )
+    def test_a_wipe_bash_runs_is_refused_by_the_floor(self, command):
+        reason = is_denied(command.replace("RM", "rm"))
+        assert reason is not None and "component=argv-floor" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'RM -fr "\\/"',  # a dir named ``\\/``
+            'RM -fr "\\$HOME"',  # a dir named ``$HOME``
+            "bash -c 'RM -fr \\$HOME'",
+            "bash -c 'RM -fr \"~\"'",
+            "bash -c 'RM -fr /tmp/x'",
+            "bash -c 'echo RM -fr /'",
+            "bash -c RM -fr /",  # ``-fr`` and ``/`` are ``$0`` and ``$1``
+            "bash script.sh -c 'RM -fr /'",
+            "RM -fr '\\\n/'",  # single quotes keep the backslash and newline
+            "RM -fr $'\\\n/'",  # and so does ``$'...'``
+            "bash -c $'RM -fr \\x7e/x'",
+            "bash -c $'ls\\\\nRM -fr /'",  # an escaped backslash, then the letter n
+            "bash -c $'ls\\c\\nRM -fr /'",  # ``\\c\\`` is one byte, then the letter n
+            "bash -c $'RM -fr \\x01HOME'",
+        ],
+    )
+    def test_a_literal_name_bash_reads_stays_allowed(self, command):
+        assert is_denied(command.replace("RM", "rm")) is None
+
+    def test_too_many_nested_shells_fail_closed(self):
+        import shlex
+
+        command = "rm x"
+        for _ in range(9):
+            command = "sh -c " + shlex.quote(command)
+        assert "could not read" in is_denied(command)

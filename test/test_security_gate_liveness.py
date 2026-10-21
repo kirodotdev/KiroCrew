@@ -425,7 +425,11 @@ def _url_payload_command(n: int) -> str:
 #: the ``feed`` call sites, including the cut that lands only at whitespace or the
 #: buffer start, and the check that keeps a key name ending another credential
 #: inside that credential. No credential branch moved.
-_PACKAGE_LINE_BUDGET = 31_865
+#:
+#: Raised again, from 31,865, for ``rm_floor`` reading a nested shell's ``-c`` operand:
+#: a bash-faithful word scan, the shell's option walk and a depth cap that fails
+#: closed. No pattern moved.
+_PACKAGE_LINE_BUDGET = 31_970
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
