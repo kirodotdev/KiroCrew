@@ -874,7 +874,7 @@ nothing reads either. New code for a member goes to the module that owns it. In
 | `embedding_repair` | The recorded vector space, `reconcile_embedding_space` and the three NULL-vector sweeps |
 | `recall` | `recall`, its single-inference retry, and the bounded evidence payload |
 | `migration` | Legacy `lessons.jsonl` parsing, Markdown parsing through the `MemoryFiles` the store resolves, the episode clustering promotion uses, and promotion's key inference (`infer_semantic_key`) |
-| `text_scoring` | Stemming, the row-token memo, keyword and hybrid scores, MMR, the dense-script keyword floor and the list-search predicate |
+| `text_scoring` | Stemming, the row-token memo, keyword and hybrid scores, the semantic-row score the V1 fact reader and the consolidation scorer share (`_semantic_key_words`, `_semantic_row_score`), MMR, the dense-script keyword floor and the list-search predicate |
 | `term_index` | The resident set's compact row-term index: every row's key and value terms as ids into one vocabulary, and one query's matched terms per text |
 | `semantic_scoring_patch` | Patching the resident `_SemanticScoringSet` (rows, per-width row vectors, term index) for one written key under the new generation, and checking keys patched inside an unfinished transaction against the table so a rollback leaves nothing behind |
 | `write_outcomes` | What a write reports: `SemanticRejectCode`, `LessonWriteOutcome`, `EpisodicWriteOutcome` and `LessonWriteResult`, which keep `kiro_crew.vector_memory` as their `__module__` |
@@ -883,6 +883,7 @@ nothing reads either. New code for a member goes to the module that owns it. In
 | `bulk_ingest` | The writer loops of `migrate_from_markdown`, `import_memory` and `promote_episodic_patterns` |
 | `store_bookkeeping` | Record revisions and eligibility (`_record_mutation`, `with_record_metadata`, `_eligible_rows`), the `memory_events` audit trail (`_log_event`, `get_events`, `rotate_events`, `get_rejection_stats`) and the `memory_meta` helpers |
 | `derived_state` | Vector-space currency (the embedding token and the config guard a managed vector is published under) and the invalidation of both resident scoring sets (the semantic one is patched for a keyed write) |
+| `consolidation_relevance` | What a consolidation pass reads about the rows its bounded semantic table cannot show whole: each row's relevance to the span (`score_consolidation_rows`: one embed of the span's user text against the stored vectors, the chat path's hybrid score, keywords alone without a vector) and the cursor its rotating slice resumes from (`consolidation_rotation_cursor`, and the compare-and-set `advance_consolidation_rotation`, in `memory_meta`) |
 
 Beside the facade, and bound the same way, live the owners a runtime module may not
 be: the code that opens the connection, and the code that names a relation only the
