@@ -257,8 +257,10 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
 
         async def _ticker():
             while True:
-                # flake-ok: pre-existing 10 ms loop-side ticker, moved verbatim; the prompt thread waits on the event it sets
-                await asyncio.sleep(0.01)
+                # The prompt thread waits on the event this ticker sets.
+                await asyncio.sleep(
+                    0.01
+                )  # flake-ok: the loop-side ticker's interval is the measurement
                 ticks["n"] += 1
                 if ticks["n"] >= 3:
                     released.set()

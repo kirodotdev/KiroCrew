@@ -8,11 +8,12 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from kiro_crew.testing.wait import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -172,11 +173,12 @@ class TestCIProgress(unittest.TestCase):
             encoding="utf-8",
         )
         try:
-            deadline = time.monotonic() + 15
-            while not (self.root / "ready").exists():
-                self.assertIsNone(proc.poll())
-                self.assertLess(time.monotonic(), deadline, "child never reached its fixture gate")
-                time.sleep(0.01)
+            wait_until(
+                lambda: (self.root / "ready").exists() or proc.poll() is not None,
+                timeout=15,
+                describe=lambda: "child never reached its fixture gate",
+            )
+            self.assertIsNone(proc.poll(), "child exited before reaching its fixture gate")
             rows = next(iter(self.records().values()))
             self.assertTrue(any(r["event"] == "test_start" for r in rows))
             self.assertTrue(any(r.get("phase") == "setup" for r in rows))

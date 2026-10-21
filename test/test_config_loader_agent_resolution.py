@@ -28,6 +28,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.memory_stores import provision_member_memory
+from kiro_crew.testing.wait import async_wait_until
 
 # ---------------------------------------------------------------------------
 # Phase 3: Multi-Agent Orchestration Property Tests (Task 1.5)
@@ -1089,13 +1090,11 @@ class TestAppAgentDispatch(unittest.TestCase):
             async def _on_loop():
                 loop_thread = threading.get_ident()
                 loader.schedule_materialized_agents_refresh()
-                # Give the executor a moment to run the offloaded scan.
-                for _ in range(100):
-                    if scan_threads:
-                        break
-                    # flake-ok: bounded 100 x 10 ms early exit, not a barrier: asyncio.run joins
-                    # the default executor before the asserts below read scan_threads
-                    await asyncio.sleep(0.01)
+                # Wait for the executor to run the offloaded scan.
+                await async_wait_until(
+                    lambda: bool(scan_threads),
+                    describe=lambda: "the offloaded scan never ran",
+                )
                 return loop_thread
 
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):

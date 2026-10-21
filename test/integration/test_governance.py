@@ -18,9 +18,7 @@ patched inside the process: the memory bar is set through the operator's own
 
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +27,7 @@ from kiro_crew.subagent_wait_reasons import (
     QUEUED_REASON_CONCURRENCY_LIMIT,
     QUEUED_REASON_LOW_MEMORY,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.integration
 
@@ -131,14 +130,20 @@ def _write_spec(directory: Path, name: str, **extra) -> None:
 
 async def _settled(gw, session: str, spawn_id: str, *, secs: float = 60.0) -> dict:
     """Wait until the run is done so no child outlives the test body."""
-    deadline = time.monotonic() + secs
-    while time.monotonic() < deadline:
+
+    async def _done_entry() -> dict | None:
         listing = await gw.get_json("/api/spawn", headers=gw.mcp_headers(session), auth=False)
         for entry in listing["agents"]:
             if entry["id"] == spawn_id and entry["done"]:
                 return entry
-        await asyncio.sleep(0.2)
-    pytest.fail(f"spawn {spawn_id} did not settle in {secs}s")
+        return None
+
+    return await async_wait_until(
+        _done_entry,
+        timeout=secs,
+        interval=0.2,
+        describe=lambda: f"spawn {spawn_id} did not settle",
+    )
 
 
 #: Where kiro-cli reads the spawn allow-list from an agent spec. A glob list;

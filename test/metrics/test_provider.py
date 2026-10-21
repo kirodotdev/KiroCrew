@@ -11,6 +11,7 @@ from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
 from kiro_crew.metrics.provider import MetricsRecorder, get_recorder, reset_for_testing
 from kiro_crew.metrics.provider import shutdown as provider_shutdown
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import wait_until
 
 #: Taken at import, before any test installs a clock.
 _REAL_SLEEP = time.sleep
@@ -85,21 +86,6 @@ def test_recorder_is_cached(monkeypatch):
         reset_for_testing()
 
 
-def _wait_for(predicate, timeout=5.0):
-    """Poll until predicate holds. Used where the background work is a trivial
-    no-op that completes in microseconds (e.g. a fake reader shutdown call, or
-    draining a real worker after a deliberately-triggered timeout in
-    ``TestResetForTestingWaitsOutInFlightWorker``). Tests that need to observe
-    a real consent-worker RUN use event-based synchronization instead — see
-    ``_worker_event``."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return False
-
-
 def _worker_event(monkeypatch):
     """Wrap ``_consent_worker`` so it signals a threading.Event on completion.
 
@@ -158,7 +144,7 @@ def test_reader_thread_reaped_when_meterprovider_init_fails(tmp_path, monkeypatc
     try:
         rec = get_recorder()
         assert rec.enabled is False  # degraded to no-op
-        assert _wait_for(lambda: shutdown_calls["n"] == 1)  # reaped, not orphaned
+        wait_until(lambda: shutdown_calls["n"] == 1)  # reaped, not orphaned
     finally:
         reset_for_testing()
 
@@ -202,9 +188,10 @@ def test_the_otlp_reader_is_reaped_too_when_init_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(provider_mod, "MeterProvider", _boom)
     try:
         assert get_recorder().enabled is False
-        assert _wait_for(
-            lambda: sorted(shut) == ["local", "otlp"]
-        ), f"expected both readers reaped, got {sorted(shut)}"
+        wait_until(
+            lambda: sorted(shut) == ["local", "otlp"],
+            describe=lambda: f"expected both readers reaped, got {sorted(shut)}",
+        )
     finally:
         reset_for_testing()
 
@@ -1251,5 +1238,5 @@ class TestResetForTestingWaitsOutInFlightWorker:
             # Let the real worker actually finish (its own finally clears the
             # flag) so the next test's reset_for_testing() has nothing to wait
             # out.
-            assert _wait_for(lambda: provider_mod._check_in_flight is False, timeout=10)
+            wait_until(lambda: provider_mod._check_in_flight is False, timeout=10)
             reset_for_testing()

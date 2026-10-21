@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_title import (
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.testing.wait import await_until
 
 
 def test_prompt_isolates_and_delimits_transcript():
@@ -1146,7 +1147,7 @@ class TestTitleCallBounds:
             assert sessions.acquired == sessions.destroyed == 1
         finally:
             task.cancel()
-            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=3.0)
+            await await_until(asyncio.gather(task, return_exceptions=True), timeout=3.0)
 
     @pytest.mark.asyncio
     async def test_a_turn_the_stale_watchdog_ended_gives_no_title(self, _title_inputs):

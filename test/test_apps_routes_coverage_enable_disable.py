@@ -29,6 +29,7 @@ from apps_routes_coverage_helpers import (
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
+from kiro_crew.testing.wait import await_until
 
 # ---------------------------------------------------------------------------
 # Enable / disable warning + rollback branches
@@ -497,8 +498,7 @@ class TestRepeatedToggleIsIdempotent:
         async def _script(*args: Any, **kwargs: Any) -> dict[str, Any]:
             scripts.append("onDisable")
             # Hold the lock until the second request has read its pre-lock metadata.
-            # flake-ok: pre-existing 5 s bounded wait for the second request's pre-lock read -- moved verbatim; tracked for a de-flake pass
-            await asyncio.wait_for(both_read.wait(), timeout=5)
+            await await_until(both_read, what="the second request's pre-lock read")
             return {"output": "", "failed": False}
 
         monkeypatch.setattr(routes_mod, "get_app", _get_app)

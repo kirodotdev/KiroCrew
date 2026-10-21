@@ -46,6 +46,8 @@ from typing import Iterator
 
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until
+
 pytestmark = pytest.mark.timeout(120)
 
 _JOB_ID = "nightly-dispatcher"
@@ -391,11 +393,9 @@ async def _seed_and_settle(gw, key: str, message: str, job_id: str = "") -> None
     text = await resp.text()
     assert resp.status == 200, text
     slot = gw.state._slots[key]
-    for _ in range(300):
-        if not slot.running:
-            break
-        await asyncio.sleep(0.1)
-    assert not slot.running
+    await async_wait_until(
+        lambda: not slot.running, timeout=30, describe=lambda: f"slot {key!r} is still running"
+    )
 
 
 async def _persisted_meta(gw, key: str) -> dict:

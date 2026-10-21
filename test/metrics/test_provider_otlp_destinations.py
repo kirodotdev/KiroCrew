@@ -16,7 +16,6 @@ a signal this core does not emit) leaves the local reader working.
 from __future__ import annotations
 
 import dataclasses
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,6 +29,7 @@ from kiro_crew.platform.context import (
     set_context,
 )
 from kiro_crew.platform.interfaces import OtlpDestination
+from kiro_crew.testing.wait import wait_until
 
 ENDPOINT = "https://collector.example.internal:4318/v1/metrics"
 
@@ -38,15 +38,6 @@ def _patch_config(monkeypatch, **tel_kwargs):
     fake = KiroCrewConfig(telemetry=TelemetryConfig(**tel_kwargs))
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
     monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
-
-
-def _wait_for(predicate, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
 
 
 class _StubProvider:
@@ -511,7 +502,8 @@ class TestReaping:
         )
 
         assert get_recorder().enabled is False, "degraded to a no-op recorder"
-        assert _wait_for(
-            lambda: sorted(shut) == [1, 2]
-        ), f"expected readers 1 and 2 reaped, got {sorted(shut)}"
+        wait_until(
+            lambda: sorted(shut) == [1, 2],
+            describe=lambda: f"expected readers 1 and 2 reaped, got {sorted(shut)}",
+        )
         assert len(built) == 3, "the third reader raised inside its constructor"

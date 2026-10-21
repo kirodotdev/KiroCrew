@@ -13,6 +13,7 @@ import pytest
 
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack.handler import _pending_approvals, _thread_agents, _trusted_sessions
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -65,18 +66,18 @@ async def _approval_prompt_ts(slack, channel: str = "C1") -> str:
     budget. So this waits for the registration, which is the state a click needs,
     and fails by name when it never comes instead of falling through silently.
     """
-    started = time.monotonic()
-    while True:
+
+    def _registered_ts() -> str | None:
         posted = [a for a in slack.actions if a[0] == "blocks"]
         if posted and f"{channel}:{posted[0][1]['ts']}" in _pending_approvals:
             return posted[0][1]["ts"]
-        elapsed = time.monotonic() - started
-        if elapsed > _LOST_RUN_SECS:
-            pytest.fail(
-                f"no approval prompt was registered within the {_LOST_RUN_SECS:.0f}s "
-                f"lost-run ceiling ({elapsed:.1f}s elapsed); actions={slack.actions}"
-            )
-        await asyncio.sleep(0.01)
+        return None
+
+    return await async_wait_until(
+        _registered_ts,
+        timeout=_LOST_RUN_SECS,
+        describe=lambda: f"no approval prompt was registered; actions={slack.actions}",
+    )
 
 
 class FakeProvider:

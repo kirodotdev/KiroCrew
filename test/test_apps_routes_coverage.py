@@ -60,6 +60,7 @@ from kiro_crew.apps.routes import (
     _unregister_notification_channels,
     register_app_routes,
 )
+from kiro_crew.testing.wait import await_until
 
 
 async def _no_op_executor(*args: Any, **kwargs: Any) -> None:
@@ -1009,7 +1010,7 @@ class TestRegisterExternal:
                         },
                     )
                 )
-                await asyncio.wait_for(request_entered.wait(), timeout=2)
+                await await_until(request_entered)
                 await asyncio.sleep(0)
                 assert not route_call_started.is_set()
 

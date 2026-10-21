@@ -22,6 +22,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import ToolHookResult
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, LLMEvent
+from kiro_crew.testing.wait import async_wait_until
 
 
 async def _async_iter(items: list):  # type: ignore[type-arg]
@@ -109,7 +110,6 @@ def _set_stream(client: AsyncMock, events: list[LLMEvent]) -> None:
 # the deadline exists only so a future that never appears surfaces as the named
 # assertion below rather than as a killed worker.
 _ANSWER_WAIT_SECS = 30.0
-_ANSWER_POLL_SECS = 0.01
 
 
 async def _answer_approval(
@@ -128,26 +128,25 @@ async def _answer_approval(
     runner the event can arrive after the poke, leaving the turn parked on an approval nobody will
     ever answer.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        fut = owner._approval_futures.get(request_id)  # type: ignore[attr-defined]
-        if fut is not None:
-            if not fut.done():
-                try:
-                    if before_answer is not None:
-                        before_answer()
-                finally:
-                    # A failed observation must not leave the runner parked.
-                    fut.set_result(outcome)
-            return
-        assert loop.time() < deadline, (
-            f"approval future {request_id!r} was never registered within "
-            f"{timeout:.0f}s — the turn never reached its permission event, so "
-            f"there was nothing to answer"
-        )
-        # flake-ok: pre-existing 10 ms poll inside a deadline-bounded wait for a registration -- moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(_ANSWER_POLL_SECS)
+    futures = owner._approval_futures  # type: ignore[attr-defined]
+    # The predicate reads membership, not the future itself: a future returned to
+    # the wait would be awaited, and this answerer needs it still pending.
+    await async_wait_until(
+        lambda: request_id in futures,
+        timeout=timeout,
+        describe=lambda: (
+            f"approval future {request_id!r} was never registered — the turn never "
+            "reached its permission event, so there was nothing to answer"
+        ),
+    )
+    fut = futures[request_id]
+    if not fut.done():
+        try:
+            if before_answer is not None:
+                before_answer()
+        finally:
+            # A failed observation must not leave the runner parked.
+            fut.set_result(outcome)
 
 
 def _context_builder(hook_result: ToolHookResult | None = None) -> MagicMock:

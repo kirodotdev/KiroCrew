@@ -6,7 +6,6 @@ throttle fallback wiring, and the usage row a model-spending cron turn appends.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +20,8 @@ from cron_gateway_integration_helpers import (
     _run_llm_callback,
     _run_script_callback,
 )
+
+from kiro_crew.testing.wait import finished
 
 # ── Per-job model override: _acquire_with_model_fallback / _annotate_model_downgrade ──
 
@@ -43,7 +44,7 @@ class TestLlmCronAdmission:
             return original(key, execution)
 
         monkeypatch.setattr(execution_context, "bind_session_execution", bind)
-        result, _ = await asyncio.wait_for(_run_llm_callback(gw, job), 10)
+        result, _ = await finished(_run_llm_callback(gw, job), "the LLM callback", timeout=10)
         assert result == "Agent response here"
         # Mode publication also tightens the same canonical record.
         assert len(bindings) == (2 if with_modes else 1)

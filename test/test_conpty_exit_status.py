@@ -65,7 +65,9 @@ def _measure_death(pty: WindowsPty) -> tuple[bool, float, int]:
         polls += 1
         if time.monotonic() >= deadline:
             return False, time.monotonic() - started, polls
-        time.sleep(_POLL_INTERVAL_S)
+        time.sleep(
+            _POLL_INTERVAL_S
+        )  # flake-ok: measurement poll; elapsed time and poll count are the data
     return True, time.monotonic() - started, polls
 
 

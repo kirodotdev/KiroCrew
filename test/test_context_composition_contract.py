@@ -24,7 +24,6 @@ lives in ``context_composition_contract_helpers.py``.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
 import threading
@@ -41,6 +40,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context_blocks import measure_prompt
 from kiro_crew.hooks import HookManager, HookResult
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import finished
 
 pytestmark = [
     pytest.mark.xdist_group("context_composition_contract"),
@@ -1156,6 +1156,8 @@ async def test_session_routing_is_read_off_the_event_loop(monkeypatch) -> None:
 
     monkeypatch.setattr(ctx, "store_of_session", _store_of_session)
     monkeypatch.setattr(ctx, "prepare_store_vectors", _prepare)
-    store = await asyncio.wait_for(ctx.session_store_for_turn(object(), "dashboard:k"), 10)
+    store = await finished(
+        ctx.session_store_for_turn(object(), "dashboard:k"), "the turn's store lookup", timeout=10
+    )
     assert store == ""
     assert seen and all(thread != loop_thread for thread in seen)

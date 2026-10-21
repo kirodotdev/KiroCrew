@@ -19,13 +19,13 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
+from kiro_crew.testing.wait import wait_until
 
 CHILD = Path(__file__).parent / "fixtures" / "crew_log_crash_child.py"
 SESSION = "crash-child-session"
@@ -63,21 +63,18 @@ def _wait_for_marker(
         except (FileNotFoundError, UnicodeDecodeError):
             return False
 
-    deadline = time.monotonic() + MARKER_TIMEOUT
-    while time.monotonic() < deadline:
-        if _announced():
-            return
-        code = child.poll()
-        if code is not None:
-            if _announced():
-                return
-            raise AssertionError(
-                f"child exited with {code} before failpoint {expected!r}; "
-                f"output:\n{_output_tail(out_path)}"
-            )
-        time.sleep(0.02)
+    wait_until(
+        lambda: _announced() or child.poll() is not None,
+        timeout=MARKER_TIMEOUT,
+        describe=lambda: (
+            f"child never reached failpoint {expected!r}; output:\n{_output_tail(out_path)}"
+        ),
+    )
+    if _announced():
+        return
     raise AssertionError(
-        f"child never reached failpoint {expected!r}; output:\n{_output_tail(out_path)}"
+        f"child exited with {child.poll()} before failpoint {expected!r}; "
+        f"output:\n{_output_tail(out_path)}"
     )
 
 

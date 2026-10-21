@@ -1308,7 +1308,11 @@ async def test_binding_only_update_serializes_against_generic_snapshot_save(tmp_
                         loop,
                     )
                     try:
-                        fired["task"].result(timeout=0.5)
+                        # A serialized fast path cannot finish while this thread
+                        # holds the lock, so this window expires by design.
+                        fired["task"].result(
+                            timeout=0.5
+                        )  # flake-ok: the window is the stimulus under test
                     except concurrent.futures.TimeoutError:
                         pass
                 return real_owner(crew, target)

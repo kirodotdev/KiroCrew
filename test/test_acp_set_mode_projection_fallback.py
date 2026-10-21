@@ -29,6 +29,7 @@ from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import AcpModeNotFound, AcpRuntimeError
 from kiro_crew.acp.skill_projection import NativeSkillProjection
 from kiro_crew.acp.types import METHOD_SET_MODE
+from kiro_crew.testing.wait import finished
 
 STALE_ALIAS = "kirocrew-skill-view-" + "a" * 24
 FRESH_ALIAS = "kirocrew-skill-view-" + "b" * 24
@@ -125,7 +126,7 @@ async def _with_reader(rt: AcpRuntime, coro):
     task = asyncio.ensure_future(rt._reader_loop())
     await asyncio.sleep(0)
     try:
-        return await asyncio.wait_for(coro, timeout=10)
+        return await finished(coro, "the call under the reader loop", timeout=10)
     finally:
         task.cancel()
         try:
