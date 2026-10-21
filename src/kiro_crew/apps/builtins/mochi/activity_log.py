@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Any, Iterator, TypedDict
 
 from kiro_crew.platform_compat import chmod_safe, file_lock
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +144,9 @@ def log_activity(data_dir: str | Path, kind: str, content: str) -> None:
     Redacting at the chokepoint (not at the ~8 call sites) is deliberate: a new
     caller cannot forget it.
     """
-    content, _ = redact_credentials(content)
-    content, _ = redact_exfiltration_urls(content)
+    from kiro_crew.security import redact
+
+    content = redact(content)
     base = Path(data_dir)
     path = base / LOG_FILE
     # Lock the whole read-modify-write. This append log is written from several

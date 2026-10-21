@@ -784,10 +784,9 @@ def _redacted(raw: str) -> str:
     # Imported here rather than at module scope: ``security`` is a heavy module
     # and this module is imported by the voice/STT call paths purely for the
     # local gate, which needs none of it.
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
     lines = raw.strip().splitlines()
     first = lines[0] if lines else ""
-    first, _ = redact_credentials(first)
-    first, _ = redact_exfiltration_urls(first)
+    first = redact(first)
     return first[:300]

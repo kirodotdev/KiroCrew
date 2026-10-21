@@ -38,7 +38,6 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import AWS_PROFILE_NAME_RE
 from kiro_crew.deploy import engine
 from kiro_crew.platform_compat import file_lock, open_lock_file
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
 
 logger = logging.getLogger(__name__)
@@ -313,8 +312,8 @@ def _configure_set(key: str, value: str, profile: str) -> str | None:
     rc, _out, err = engine.run_aws(["configure", "set", key, value], profile)
     if rc != 0:
         raw = (err or f"aws configure set {key} failed").strip()[:200]
-        raw, _ = redact_credentials(raw)
-        raw, _ = redact_exfiltration_urls(raw)
+        from kiro_crew.security import redact
+        raw = redact(raw)
         return raw
     return None
 

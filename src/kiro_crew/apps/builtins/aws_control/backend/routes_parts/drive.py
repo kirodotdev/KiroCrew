@@ -41,7 +41,10 @@ from kiro_crew.apps.builtins.aws_control.backend.routes_parts.common import (
 )
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.deploy.engine import AWSError
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (  # noqa: F401 - pinned by test_routes_parts_facade.py
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 # --------------------------------------------------------------------------
 # Drive
@@ -390,8 +393,9 @@ def _redact_preview(data: bytes, size: int) -> tuple[str, bool, bool]:
     still have seen only partially, and a split run is never shown.
     """
     text = data.decode("utf-8", errors="replace")
-    text, credential_hits = redact_credentials(text)
-    text, url_hits = redact_exfiltration_urls(text)
+    from kiro_crew.security import redact_with_findings
+
+    text, credential_hits, url_hits = redact_with_findings(text)
     truncated = size > _PREVIEW_MAX_BYTES
     if truncated:
         text = _trim_preview(text, _PREVIEW_MAX_BYTES)

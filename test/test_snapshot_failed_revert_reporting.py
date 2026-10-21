@@ -198,8 +198,7 @@ class TestTheOutboundScrubCoversWhatItClaims:
     def test_the_egress_pass_runs_after_the_shared_pair(self) -> None:
         """The shared warnings stay the primary signal; this only closes what they miss."""
         src = inspect.getsource(redact._scrub)
-        assert src.index("redact_credentials(") < src.index("_scrub_unrecognised(")
-        assert src.index("redact_exfiltration_urls(") < src.index("_scrub_unrecognised(")
+        assert src.index("redact_with_findings(") < src.index("_scrub_unrecognised(")
 
     def test_the_shared_redactors_are_not_widened_by_this_pass(self) -> None:
         """Those run over live output, where a false positive corrupts what is read."""

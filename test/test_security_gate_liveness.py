@@ -425,7 +425,12 @@ def _url_payload_command(n: int) -> str:
 #: the ``feed`` call sites, including the cut that lands only at whitespace or the
 #: buffer start, and the check that keeps a key name ending another credential
 #: inside that credential. No credential branch moved.
-_PACKAGE_LINE_BUDGET = 31_865
+#:
+#: Raised again, from 31,865, for ``pass_compose.py``: the one composed pass that finds
+#: credential and outbound-URL spans on the same text and rewrites it once. It is new
+#: behaviour, not moved code, so no other file shrinks to pay for it, and it belongs in
+#: this package because egress code must reach the raw passes only through it.
+_PACKAGE_LINE_BUDGET = 32_056
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

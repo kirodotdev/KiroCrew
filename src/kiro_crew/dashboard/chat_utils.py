@@ -31,7 +31,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.quick_prompts import QUICK_PROMPTS
-from kiro_crew.security import (
+from kiro_crew.security import (  # noqa: F401 - pinned by test_chat_utils.py
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -107,8 +107,9 @@ def history_corpus_unreadable(code: str = "history_corpus_unreadable") -> Any:
 def _redact_deep(obj):
     """Recursively redact all string values in a nested structure."""
     if isinstance(obj, str):
-        obj, _ = redact_exfiltration_urls(obj)
-        obj, _ = redact_credentials(obj)
+        from kiro_crew.security import redact
+
+        obj = redact(obj)
         return obj
     if isinstance(obj, dict):
         return {k: _redact_deep(v) for k, v in obj.items()}
@@ -141,8 +142,9 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
                 encoded[:limit].decode("utf-8", errors="ignore")
                 + f"\n… [truncated at {limit:,} bytes]"
             )
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
+    from kiro_crew.security import redact
+
+    text = redact(text)
     return text
 
 
@@ -171,8 +173,9 @@ def _build_stream_chunk(msg: dict) -> str:
     content = redact_display_content(msg.get("content", ""))
     cls_val = msg.get("cls", "")
     if isinstance(cls_val, str):
-        cls_val, _ = redact_exfiltration_urls(cls_val)
-        cls_val, _ = redact_credentials(cls_val)
+        from kiro_crew.security import redact
+
+        cls_val = redact(cls_val)
     else:
         cls_val = _redact_deep(cls_val)
     return json.dumps(
@@ -380,12 +383,15 @@ def _tool_identity_fields(event: "LLMEvent") -> dict[str, str]:
 
 def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEvent") -> str:
     """Broadcast an auto-approved tool call via WS with redacted title. Returns redacted title."""
-    title, _ = redact_exfiltration_urls(event.title)
-    title, _ = redact_credentials(title)
-    kind, _ = redact_exfiltration_urls(event.tool_kind)
-    kind, _ = redact_credentials(kind)
-    tcid, _ = redact_exfiltration_urls(event.tool_call_id or "")
-    tcid, _ = redact_credentials(tcid)
+    from kiro_crew.security import redact
+
+    title = redact(event.title)
+    from kiro_crew.security import redact
+
+    kind = redact(event.tool_kind)
+    from kiro_crew.security import redact
+
+    tcid = redact(event.tool_call_id or "")
     state.broadcast_ws(
         "tool_call",
         {
@@ -422,8 +428,9 @@ def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: 
     so a future caller passing unredacted LLM-derived text (e.g. a compaction
     summary) can never leak a credential/exfil URL. Both passes are idempotent.
     """
-    msg_text, _ = redact_credentials(msg_text)
-    msg_text, _ = redact_exfiltration_urls(msg_text)
+    from kiro_crew.security import redact
+
+    msg_text = redact(msg_text)
     meta = {"kind": "compaction"}
     append_and_surface(state, slot, "assistant", msg_text, "msg msg-a", meta=meta)
 
@@ -450,8 +457,9 @@ def _broadcast_compaction_result(
     if status_type == "completed":
         slot._compaction_fail_streak = 0
         slot._compaction_fail_cooldown_until = 0.0
-        summary, _ = redact_credentials(event.title)
-        summary, _ = redact_exfiltration_urls(summary)
+        from kiro_crew.security import redact
+
+        summary = redact(event.title)
         msg_text = (
             f"✅ Conversation compacted: {summary}" if summary else "✅ Conversation compacted."
         )
@@ -472,8 +480,9 @@ def _broadcast_compaction_result(
             # once/twice. Nothing new to say — don't spam identical notices.
             return None
 
-        error, _ = redact_credentials(event.title or "unknown error")
-        error, _ = redact_exfiltration_urls(error)
+        from kiro_crew.security import redact
+
+        error = redact(event.title or "unknown error")
         if streak <= _COMPACTION_NOTICE_SHOW_FIRST_N:
             msg_text = f"❌ Compaction failed: {error}"
         else:

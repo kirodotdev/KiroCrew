@@ -176,8 +176,7 @@ async def _poll_workflow_campaign(
                 # Fail closed: strip the text entirely rather than persisting
                 # potentially credential-laden LLM output to disk unredacted.
                 return untrusted._redact_finding({"v": text})["v"] if text else ""
-            cleaned, _ = untrusted.redact_credentials(text)
-            cleaned, _ = untrusted.redact_exfiltration_urls(cleaned)
+            cleaned = untrusted.redact(text)
             return cleaned
 
         svc = getattr(state, "workflow_service", None) if state is not None else None

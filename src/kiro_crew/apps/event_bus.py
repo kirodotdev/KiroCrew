@@ -10,7 +10,6 @@ import asyncio
 import logging
 from typing import Any, Callable
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 #: Fixed WS message type for ALL app-published events. App event names are
@@ -118,8 +117,9 @@ class EventBus:
     def _redact_value(self, value: Any) -> Any:
         """Recursively redact string values in nested structures."""
         if isinstance(value, str):
-            value, _ = redact_credentials(value)
-            value, _ = redact_exfiltration_urls(value)
+            from kiro_crew.security import redact
+
+            value = redact(value)
             return value
         if isinstance(value, dict):
             return {k: self._redact_value(v) for k, v in value.items()}

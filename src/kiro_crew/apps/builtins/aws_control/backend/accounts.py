@@ -83,10 +83,9 @@ def _safe_field(text: str) -> str:
     those safe without either one repeating the pass. It is allowlisted in
     ``NON_EGRESS_REDACTION_MODULES`` on exactly that ground.
     """
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(text)
     return text
 
 

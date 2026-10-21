@@ -333,10 +333,9 @@ class TestEgress:
 
     def test_a_failing_redactor_drops_the_snippet_rather_than_sending_it(self, monkeypatch):
         """A scan that did not complete cannot clear text for the wire."""
-        import kiro_crew.security as security
-
         monkeypatch.setattr(
-            security, "redact_credentials", lambda _t: (_ for _ in ()).throw(RuntimeError("x"))
+            "kiro_crew.security.pass_compose.compose",
+            lambda _t: (_ for _ in ()).throw(RuntimeError("x")),
         )
         assert mr.scrubbed("anything at all", mr.MAX_SNIPPET_CHARS) == ""
 

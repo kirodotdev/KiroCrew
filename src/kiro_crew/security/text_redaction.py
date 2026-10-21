@@ -1,7 +1,10 @@
 """The package's redaction entry points: whole text, audit samples and streams.
 
-:func:`redact` and :func:`redact_with_findings` run the two baseline passes over a
-whole string in their one correct order, exfiltration URLs before credentials.
+:func:`redact_with_findings` is the one composed pass over the two baseline
+passes (exfiltration URLs and credentials), built in
+:mod:`kiro_crew.security.pass_compose`: neither order of two sequential passes is
+right, so code outside this package calls it rather than sequencing the raw
+passes. :func:`redact` and :func:`redact_and_truncate` call it.
 :func:`redact_and_truncate` redacts BEFORE it truncates, so a secret straddling the
 cut cannot leak as a fragment. :class:`StreamRedactor` redacts streamed output chunk
 by chunk, holding back a trailing credential-class run until it is complete. Every
@@ -36,13 +39,9 @@ if TYPE_CHECKING:
 def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     """Apply all redaction passes, reporting what each one removed.
 
-    The same passes in the same order as :func:`redact`, which is the point of
-    it living here: exfiltration URLs run FIRST because that pass matches whole
-    URLs, and a credential replaced ahead of it leaves a placeholder inside one,
-    which the URL matcher then fails to recognise as the shape it is there to
-    catch. A caller that wants the found lists would otherwise hand-sequence
-    the two calls and own that ordering separately -- which several already do,
-    in the reverse order.
+    Both passes find their spans on the original text and the text is rewritten
+    once (see :mod:`kiro_crew.security.pass_compose`); neither order of two
+    sequential passes is right. Call this instead of hand-sequencing them.
 
     Returns ``(text, credential_warnings, url_warnings)``. Both lists hold the
     WARNING strings the underlying passes report (``"Redacted credential pattern
@@ -55,14 +54,7 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     companion's extra patterns apply; use this one for the warnings, or where the
     baseline is deliberately the subject.
     """
-    # Owners of the re-exported names read below, resolved through the
-    # import system so the value is read from the one place it lives.
-    _exfil = _submodule("exfil")
-    _redaction = _submodule("redaction")
-
-    text, urls = _exfil.redact_exfiltration_urls(text)
-    text, credentials = _redaction.redact_credentials(text)
-    return text, list(credentials), list(urls)
+    return _submodule("pass_compose").compose(text)
 
 
 def redact(text: str) -> str:
@@ -599,11 +591,4 @@ def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
     would cut a secret in half, leaving a prefix that fails to match the
     credential regex and therefore escapes redaction.
     """
-    # Owners of the re-exported names read below, resolved through the
-    # import system so the value is read from the one place it lives.
-    _exfil = _submodule("exfil")
-    _redaction = _submodule("redaction")
-
-    return _redaction.redact_credentials(_exfil.redact_exfiltration_urls(text or "")[0])[0][
-        :max_chars
-    ]
+    return redact_with_findings(text or "")[0][:max_chars]

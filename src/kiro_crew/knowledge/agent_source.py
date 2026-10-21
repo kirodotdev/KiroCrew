@@ -31,7 +31,6 @@ import tempfile
 from datetime import datetime
 
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 from .ingestion import DUPLICATE_JOB_STATUS, ImportChunkBudgetError, IngestionPipeline
@@ -92,8 +91,8 @@ def _redact_for_ingest(text: str) -> str:
     persist secrets: run the same redaction the artifact-ingest path applies
     before the text crosses into the store.
     """
-    cleaned, _ = redact_credentials(text)
-    cleaned, _ = redact_exfiltration_urls(cleaned)
+    from kiro_crew.security import redact
+    cleaned = redact(text)
     return cleaned
 
 

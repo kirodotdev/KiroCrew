@@ -22,7 +22,7 @@ from uuid import uuid4
 from kiro_crew import _facade_mirror
 from kiro_crew.embeddings import PRIORITY_NORMAL
 from kiro_crew.llm_helpers import _extract_json_of_type
-from kiro_crew.security import (
+from kiro_crew.security import (  # noqa: F401 - pinned by test_ingestion_facade.py
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -224,8 +224,8 @@ def _redact(text: str | None) -> str | None:
     """Redact LLM-derived text before storing."""
     if not text:
         return text
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
+    from kiro_crew.security import redact
+    text = redact(text)
     return text
 
 
@@ -237,8 +237,8 @@ def _redact_for_ingest(text: str) -> str:
     credential pasted into a file never reaches the extraction worker or the index.
     Same helper the artifact path uses on its body.
     """
-    cleaned, _ = redact_credentials(text)
-    cleaned, _ = redact_exfiltration_urls(cleaned)
+    from kiro_crew.security import redact
+    cleaned = redact(text)
     return cleaned
 
 

@@ -30,7 +30,6 @@ from kiro_crew.discord.session_resume import ResumeReleaseError
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
 from kiro_crew.messaging.link import rebind_conversation_location, release_conversation_location
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_map import ConversationOwnershipConflict
 from kiro_crew.stats import Stats
 
@@ -182,8 +181,9 @@ async def _handle_compact(
             """Redact backend-echoed, LLM-influenced compaction text before
             it reaches the external Discord surface: normal turns get this
             via the shared TurnDriver, but this path sends directly."""
-            cleaned, _ = redact_credentials(text or "")
-            cleaned, _ = redact_exfiltration_urls(cleaned)
+            from kiro_crew.security import redact
+
+            cleaned = redact(text or "")
             return cleaned
 
         try:

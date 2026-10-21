@@ -39,7 +39,6 @@ from kiro_crew.mcp_discovery_server_info import (
 )
 from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.user_json import loads_user_jsonc
 
 logger = logging.getLogger("kiro_crew.mcp_discovery")
@@ -282,8 +281,9 @@ def _display_transport(value: Any) -> str:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     except (TypeError, ValueError):
         text = type(value).__name__
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    from kiro_crew.security import redact
+
+    text = redact(text)
     if len(text) > _MALFORMED_TRANSPORT_MAX:
         text = text[:_MALFORMED_TRANSPORT_MAX] + "..."
     return text

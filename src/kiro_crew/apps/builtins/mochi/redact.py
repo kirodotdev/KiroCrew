@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 
 
 def redact_tree(value: Any) -> Any:
@@ -24,9 +24,7 @@ def redact_tree(value: Any) -> Any:
     through unchanged.
     """
     if isinstance(value, str):
-        redacted, _ = redact_credentials(value)
-        redacted, _ = redact_exfiltration_urls(redacted)
-        return redacted
+        return redact(value)
     if isinstance(value, list):
         return [redact_tree(item) for item in value]
     if isinstance(value, dict):

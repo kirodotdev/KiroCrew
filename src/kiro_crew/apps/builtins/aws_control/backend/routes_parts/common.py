@@ -359,10 +359,9 @@ def _safe_error(exc: BaseException) -> str:
     outbound error runs BOTH passes: credentials, then exfiltration URLs.
     Same chain the deploy handlers apply at their own boundary.
     """
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+    from kiro_crew.security import redact
 
-    text, _ = redact_credentials(str(exc))
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(str(exc))
     return text
 
 

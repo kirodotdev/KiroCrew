@@ -210,10 +210,9 @@ def redacted(text: str, limit: int) -> str:
     if not text or limit <= 0:
         return ""
     try:
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.security import redact_with_findings
 
-        cleaned, _warnings = redact_credentials(str(text))
-        cleaned, _warnings = redact_exfiltration_urls(cleaned)
+        cleaned, _, _ = redact_with_findings(str(text))
     except Exception:
         logger.debug("message.steer: redaction failed; sending no turn text", exc_info=True)
         return ""

@@ -106,8 +106,6 @@ def _new_websocket_hub(state: Any) -> WebSocketHub:
         serving_loop_provider=lambda: state.serving_loop,
         running_loop_provider=lambda: state._running_loop(),
         logger_provider=lambda: logger,
-        redact_credentials_provider=lambda: redact_credentials,
-        redact_exfiltration_urls_provider=lambda: redact_exfiltration_urls,
         scope_state_provider=lambda: state,
     )
 

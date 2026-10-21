@@ -165,8 +165,7 @@ def _safe_error(exc: BaseException) -> str:
     like ``[Errno 2] No such file or directory: '/home/<user>/.kiro/crew/...'``,
     which the credential and URL passes do not match at all.
     """
-    text, _ = security.redact_credentials(str(exc))
-    text, _ = security.redact_exfiltration_urls(text)
+    text = security.redact(str(exc))
     text, _ = security.redact_local_paths(text)
     return text
 
