@@ -802,8 +802,10 @@ class TestWorkflowRunIntegration:
         with patch("kiro_crew.taskrunner.time.time_ns", return_value=123):
             first, second = await asyncio.gather(runner.plan("first"), runner.plan("second"))
 
-        assert first.task_id == "plan_123"
-        assert second.task_id == "plan_124"
+        # plan() awaits before it takes _start_lock, so either call may reach
+        # the id allocation first. Only distinctness is the contract here.
+        assert first.task_id != second.task_id
+        assert {first.task_id, second.task_id} == {"plan_123", "plan_124"}
         assert set(runner._runs) == {"plan_123", "plan_124"}
 
     @pytest.mark.asyncio
