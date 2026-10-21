@@ -19,6 +19,7 @@ import asyncio
 import logging
 
 import pytest
+from stream_fakes import report_finished_turn
 
 from kiro_crew.workflow_memory import WorkflowMemoryError
 from kiro_crew.workflows.agent_pool import build_pooled_agent_fn
@@ -72,6 +73,19 @@ class _FailingSessions:
             raise _TeardownError(_TEARDOWN_SECRET)
         self.live.pop(key, None)
 
+    # What a failed step's session teardown uses (repo_checkout_guard).
+    def get_provider(self, key):
+        return self.live.get(key)
+
+    def session_generation(self, key):
+        return 0
+
+    async def destroy_if(self, key, generation, should_destroy):
+        if not should_destroy():
+            return False
+        await self.destroy(key)
+        return True
+
 
 class _FakeScope:
     """Minimal WorkflowScope stand-in: ``validate`` rejects on the Nth call."""
@@ -97,6 +111,7 @@ class _FakeScope:
 
 async def _ok_stream(provider, prompt, **kwargs):
     await asyncio.sleep(0)
+    report_finished_turn(kwargs)
     return f"[{provider.tag}] {prompt}"
 
 
@@ -162,7 +177,10 @@ async def test_body_error_wins_over_destroy_failure(monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG, logger=_LOGGER):
         with pytest.raises(ValueError, match="provider failed"):
             await _run_overflow(agent_fn)
-    assert sessions.destroy_calls == ["wf-unpooled:run:0"]
+    # The step's own teardown, then the branch-switch guard ending the session it
+    # left (repo_checkout_guard.end_managed_session), which fails the same way.
+    assert sessions.destroy_calls[:2] == ["wf-unpooled:run:0"] * 2
+    assert set(sessions.destroy_calls) == {"wf-unpooled:run:0"}
     assert _TEARDOWN_SECRET not in caplog.text
     await pool.shutdown()
 
@@ -216,7 +234,10 @@ async def test_cancellation_propagates_and_still_tears_down(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
     # Teardown was attempted; its failure neither masked nor swallowed the cancel.
-    assert sessions.destroy_calls == ["wf-unpooled:run:0"]
+    # The step's own teardown, then the branch-switch guard ending the session it
+    # left (repo_checkout_guard.end_managed_session), which fails the same way.
+    assert sessions.destroy_calls[:2] == ["wf-unpooled:run:0"] * 2
+    assert set(sessions.destroy_calls) == {"wf-unpooled:run:0"}
     await pool.shutdown()
 
 
@@ -233,7 +254,10 @@ async def test_private_validate_rejection_propagates_over_destroy_failure(caplog
         with pytest.raises(WorkflowMemoryError, match="identity changed"):
             await _run_overflow(agent_fn)
     assert scope.validate_calls == 4
-    assert sessions.destroy_calls == ["wf-unpooled:run:0"]
+    # The step's own teardown, then the branch-switch guard ending the session it
+    # left (repo_checkout_guard.end_managed_session), which fails the same way.
+    assert sessions.destroy_calls[:2] == ["wf-unpooled:run:0"] * 2
+    assert set(sessions.destroy_calls) == {"wf-unpooled:run:0"}
     assert _TEARDOWN_SECRET not in caplog.text
     await pool.shutdown()
 

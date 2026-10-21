@@ -10,7 +10,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_process_tree_confirmed_dead``,
 ``_saw_auth_failure``, ``_saw_sandbox_init_failure``, ``_scratch_dir``,
-``_stall_turn_sessions``, ``_stderr_lines``, ``_stdin_stall_death``.
+``_stall_turn_sessions``, ``_stderr_lines``, ``_stdin_stall_death``, ``_teardown_root_dead``,
+``_teardown_survivors``.
 
 Instance fields read: ``_acp_backend``, ``_answer_tasks``, ``_initialized``, ``_process``,
 ``_session_queues``.
@@ -53,6 +54,8 @@ async def spawn(
     if self._process is not None:
         raise AcpRuntimeError("Runtime already spawned")
     self._process_tree_confirmed_dead = False
+    self._teardown_root_dead = False
+    self._teardown_survivors = {}
 
     admission = runtime_start._cold_start_admission()
     notify_start_queue(logger, on_gate_queued, START_QUEUE_ADMISSION)
@@ -203,6 +206,8 @@ async def _revive_after_failed_start(self: AcpRuntime) -> bool:
     self._scratch_dir = None
     self._dead = False
     self._process_tree_confirmed_dead = False
+    self._teardown_root_dead = False
+    self._teardown_survivors = {}
     self._death_summary = None
     self._death_reason = ""
     self._death_label = ""

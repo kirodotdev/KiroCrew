@@ -25,6 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew import repo_checkout_guard
 from kiro_crew.acp import transport_framing
 from kiro_crew.acp._dispatch import _loggable_request_id
 from kiro_crew.acp._frame_record import record_frame
@@ -121,10 +122,23 @@ async def _send_request(
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
 
+    is_prompt = repo_checkout_guard.is_tracked(method)
+    if is_prompt:
+        # The branch switch's busy check sees every prompt from before its
+        # write until the backend answers it (repo_checkout_guard). No await
+        # without a checkout in flight, so nothing reorders here.
+        folder = str(getattr(self, "_spawn_work_dir", "") or "")
+        await repo_checkout_guard.before_prompt(folder)
+        if not self._process or not self._process.stdin:
+            raise AcpError("ACP process not running")
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         params = projection.request(method, params)
     req_id = self._next_req_id()
+    if is_prompt:
+        repo_checkout_guard.prompt_sent(
+            str(getattr(self, "_process_instance", "") or ""), req_id, folder, method=method
+        )
     if on_id is not None:
         on_id(req_id)
     req = JsonRpcRequest(method=method, params=params, id=req_id)
@@ -401,6 +415,13 @@ async def _read_message(self: AcpClient, timeout: float = _READ_TIMEOUT) -> Json
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         data = projection.frame(data)
+    if data.get("method") is None and ("result" in data or "error" in data):
+        # A response, read off the wire once: if it answers a prompt, the
+        # backend has ended that turn, whichever loop reads it (a later turn
+        # reads the answer to one a cancelled caller stopped waiting on).
+        repo_checkout_guard.prompt_answered(
+            str(getattr(self, "_process_instance", "") or ""), data.get("id"), data.get("result")
+        )
     return JsonRpcMessage(
         id=data.get("id"),
         method=data.get("method"),

@@ -10,10 +10,12 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_process``,
 ``_process_instance``, ``_process_tree_confirmed_dead``, ``_scope_unit``,
-``_spawn_work_dir``.
+``_spawn_work_dir``, ``_teardown_instance``, ``_teardown_root_dead``,
+``_teardown_survivors``.
 
 Instance fields read: ``_descendant_scan_lock``, ``_exit_watch_task``, ``_pid``,
-``_reader_task``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir``.
+``_reader_task``, ``_recheck_teardown_survivors``, ``_spawn_start_token``, ``_start_time``,
+``_stderr_task``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import functools
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, repo_checkout_guard
 from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _capture_child_records, _get_child_pids
 from kiro_crew.executors import subprocess_executor
@@ -448,9 +450,30 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     self._process_tree_confirmed_dead = False
     try:
         await self._kill_inner(expected=expected, reason=reason)
+        if self._process is None and self._teardown_root_dead:
+            await self._recheck_teardown_survivors()
     finally:
         self._discard_sandbox_cleanup()
         await self._discard_bound_workspace()
+
+
+async def _recheck_teardown_survivors(self: AcpRuntime) -> None:
+    """Re-read the last teardown's verdict on a kill that found no process.
+
+    That teardown proved the root dead and left its surviving descendants
+    tracked for the orphan sweep, so a repeat kill has nothing to signal and
+    would otherwise leave ``_process_tree_confirmed_dead`` False for good,
+    even after the sweep (or the descendant itself) has ended them. Each
+    survivor is pruned by its own recorded identity, as the teardown did.
+    """
+    if self._teardown_survivors:
+        alive = await asyncio.to_thread(_prune_dead_descendants, dict(self._teardown_survivors))
+        self._teardown_survivors = {
+            pid: rec for pid, rec in self._teardown_survivors.items() if pid in alive
+        }
+    self._process_tree_confirmed_dead = not self._teardown_survivors
+    if self._process_tree_confirmed_dead:
+        repo_checkout_guard.prompt_process_gone(getattr(self, "_teardown_instance", ""))
 
 
 async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str = "") -> None:
@@ -469,6 +492,8 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
     # self._dead internally; doing it up front (before teardown) ensures any
     # waiters learn the runtime died. Calling it after setting _dead=True
     # would hit its early-return guard and skip all cleanup.
+    # Whose prompts a confirmed death below ends (repo_checkout_guard).
+    dying_instance = str(getattr(self, "_process_instance", "") or "")
     self._mark_dead(f"killed ({reason})" if reason else "killed", expected=expected)
 
     if self._reader_task and not self._reader_task.done():
@@ -541,6 +566,9 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         # the placeholder true for a tree it could not confirm.
         self._note_reaped_after_kill(process.returncode)
         self._process_tree_confirmed_dead = process.returncode is not None
+        self._teardown_root_dead = process.returncode is not None
+        self._teardown_survivors = {}
+        self._teardown_instance = dying_instance
         self._process = None
         self._process_instance = ""
         self._scope_unit = ""
@@ -672,3 +700,10 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                     survivors,
                 )
         self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+        # Kept so a later kill that finds no process can re-read the verdict
+        # once the orphan sweep (or the descendant itself) has ended them.
+        self._teardown_root_dead = root_confirmed_dead
+        self._teardown_survivors = {pid: saved_children[pid] for pid in survivors}
+        # Whose prompts the re-check that confirms this tree gone ends
+        # (_recheck_teardown_survivors, which kill() runs next).
+        self._teardown_instance = dying_instance

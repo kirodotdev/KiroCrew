@@ -995,3 +995,92 @@ class TestAcpRuntimePidTracking:
 
         assert calls["pid"] == []
         assert calls["session"] == []
+
+
+class TestRepeatKillAfterSurvivors:
+    """A teardown that left descendants for the orphan sweep is re-read by a later kill."""
+
+    @staticmethod
+    def _after_teardown(monkeypatch, alive_sets):
+        """A runtime whose kill already ran: root dead, pid 777 left for the sweep."""
+        import kiro_crew.acp.runtime as rt_mod
+
+        rt, _, _ = _make_runtime()
+        rt._process = None
+        rt._teardown_root_dead = True
+        rt._teardown_survivors = {777: object()}
+        answers = iter(alive_sets)
+        monkeypatch.setattr(rt_mod, "_prune_dead_descendants", lambda saved: next(answers))
+        return rt
+
+    @pytest.mark.asyncio
+    async def test_the_tree_stays_unconfirmed_while_a_survivor_runs(self, monkeypatch):
+        rt = self._after_teardown(monkeypatch, [[777]])
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is False
+        assert list(rt._teardown_survivors) == [777]
+
+    @pytest.mark.asyncio
+    async def test_the_tree_is_confirmed_once_the_survivor_is_gone(self, monkeypatch):
+        rt = self._after_teardown(monkeypatch, [[777], []])
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is False
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is True
+        assert rt._teardown_survivors == {}
+
+    @pytest.mark.asyncio
+    async def test_a_root_not_proved_dead_is_never_confirmed_by_a_repeat_kill(self, monkeypatch):
+        rt = self._after_teardown(monkeypatch, [])
+        rt._teardown_root_dead = False
+        rt._teardown_survivors = {}
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is False
+
+    @pytest.mark.asyncio
+    async def test_a_kill_records_its_survivors_for_the_next_kill(self, monkeypatch):
+        import kiro_crew.acp.runtime as rt_mod
+
+        if rt_mod.platform_compat.IS_WINDOWS:
+            pytest.skip("the Windows owned drain confirms the whole tree itself")
+        rt, _, proc = _make_runtime()
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = 0
+        rt._child_pids = {777: object()}
+        monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: None)
+        monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: None)
+        monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
+        monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a: None)
+        monkeypatch.setattr(rt_mod, "_prune_dead_descendants", lambda saved: list(saved))
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is False
+        assert rt._teardown_root_dead is True
+        assert list(rt._teardown_survivors) == [777]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_survivor_keeps_a_repeat_kill_unconfirmed(self, monkeypatch):
+        import kiro_crew.acp.runtime as rt_mod
+
+        rt = self._after_teardown(monkeypatch, [[888], [888]])
+        rt._teardown_survivors = {}
+        rt._FAILED_START_REAP_WAIT = 0.0
+        monkeypatch.setattr(rt_mod, "_kill_escaped_children", lambda escapees: None)
+        await rt._kill_failed_start_escapees({888: object()})
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is False
+        assert list(rt._teardown_survivors) == [888]
+
+    @pytest.mark.asyncio
+    async def test_an_inconclusive_failed_start_reap_is_never_confirmed(self, monkeypatch):
+        import kiro_crew.acp.runtime as rt_mod
+
+        rt = self._after_teardown(monkeypatch, [])
+        rt._teardown_survivors = {}
+
+        def _boom(escapees):
+            raise OSError("reap failed")
+
+        monkeypatch.setattr(rt_mod, "_kill_escaped_children", _boom)
+        await rt._kill_failed_start_escapees({888: object()})
+        await rt.kill()
+        assert rt.process_tree_confirmed_dead is False

@@ -10,8 +10,8 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
 ``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_sandbox_init_failure``,
-``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
-``recording_allowed``.
+``_session_folders``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
+``_stderr_lines``, ``recording_allowed``.
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
@@ -678,6 +678,7 @@ async def _finish_create_session(
         session_key=session_key,
         bound_cwd=str(session_work_dir),
     )
+    self._session_folders[session_id] = str(session_work_dir)
     handle.memory_mode = memory_mode
     # The token this session's stubs carry, so a later claim (warm-pool
     # rekey) can name THIS session instead of every session on the runtime.

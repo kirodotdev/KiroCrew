@@ -1813,7 +1813,8 @@ def test_the_launch_capture_patches_no_moved_name() -> None:
 #: facade's write also reaches in the owner modules that code moved to. Every entry is
 #: patched for code of the facade's own family -- the client's stderr drain and session
 #: init (``logger``), ``AcpClient.send_command`` (``redact_exfiltration_urls``), the
-#: runtime's response bound and descendant snapshot -- or for the launch the driver
+#: runtime's response bound and descendant snapshot, the failed-start escapee kill
+#: (``_kill_failed_start_escapees`` stayed in the runtime) -- or for the launch the driver
 #: starts: each driver hands the launch tail its OWN sandbox wrap, scrub and scratch
 #: module (``_launch_tools``), so those patches reach the launch they drive, while a
 #: host's routing read-back wraps and scrubs with its adapter module's binding, which
@@ -1829,6 +1830,7 @@ _SHARED_BINDINGS_PATCHED: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew.acp.client", "wrap_argv_async"),
         ("kiro_crew.acp.runtime", "_RESPONSE_WRITE_BOUND_SECS"),
         ("kiro_crew.acp.runtime", "_get_child_pids"),
+        ("kiro_crew.acp.runtime", "_kill_escaped_children"),
         ("kiro_crew.acp.runtime", "agent_scratch"),
         ("kiro_crew.acp.runtime", "launch"),
         ("kiro_crew.acp.runtime", "scrub_agent_subprocess_env"),

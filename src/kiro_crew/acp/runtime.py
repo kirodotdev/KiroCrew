@@ -36,6 +36,7 @@ from kiro_crew import (
     agent_scratch,
     member_essential_context,
     platform_compat,
+    repo_checkout_guard,
     runtime_death,
 )
 from kiro_crew.acp import kas_secret_storage, runtime_process_tree
@@ -871,6 +872,7 @@ class AcpRuntime:
     _snapshot_descendants = _rt_tree._snapshot_descendants
     _signal_tree = _rt_tree._signal_tree
     kill = _rt_tree.kill
+    _recheck_teardown_survivors = _rt_tree._recheck_teardown_survivors
     _kill_inner = _rt_tree._kill_inner
     # Launching the child process and its handshake: ``kiro_crew.acp.runtime_spawn_launch``.
     _discard_sandbox_cleanup = _rt_launch._discard_sandbox_cleanup
@@ -1115,6 +1117,12 @@ class AcpRuntime:
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
         self._session_queues: dict[str, asyncio.Queue[JsonRpcMessage | None]] = {}
+        # sessionId -> the folder that session was opened in, for the branch
+        # switch's busy check on its prompts (repo_checkout_guard).
+        self._session_folders: dict[str, str] = {}
+        # The process instance whose teardown left survivors, so a later re-check
+        # that confirms them gone can end its prompts.
+        self._teardown_instance = ""
         # sessionId -> the ``model`` kiro-cli's last ``_kiro.dev/agent/switched``
         # named for it. ``session/set_mode`` answers ``{}``; this notification,
         # sent before that answer, is the only report of the model the activated
@@ -1178,6 +1186,10 @@ class AcpRuntime:
         # descendant survived. Consumers use it to decide whether a work
         # directory is safe to reclaim.
         self._process_tree_confirmed_dead = False
+        # The last teardown's own verdict: whether it proved the root dead, and
+        # the descendants it left alive for the orphan sweep (see ``kill``).
+        self._teardown_root_dead = False
+        self._teardown_survivors: dict[int, ChildRecord] = {}
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own
@@ -2294,6 +2306,14 @@ class AcpRuntime:
                         # unknown-session line a flood.
                         logger.debug("Response with non-numeric id %r dropped", msg.id)
                         continue
+
+                    # The backend has ended the turn of a prompt it answers,
+                    # whether or not anyone still waits on it. Matched on the id
+                    # exactly as the wire carried it, not the coerced one.
+                    if msg.method is None:
+                        repo_checkout_guard.prompt_answered(
+                            self._process_instance, msg.id, msg.result
+                        )
 
                     # Check awaited requests first (init, session/new, set_mode)
                     future = self._pending_requests.pop(req_id, None)
@@ -3439,6 +3459,33 @@ class AcpRuntime:
 
     # ── Protocol Interface (used by AcpSessionHandle) ──
 
+    async def _admit_prompt(self, method: str, params: dict[str, Any]) -> str | None:
+        """Wait out a branch switch before a request that starts agent work.
+
+        ``None`` for any other request. For a prompt (``PROMPT_METHODS``), the
+        folder its session was opened in, or ``""`` when that is unknown (busy in
+        every repository), returned once no checkout covers it; with none in
+        flight, without suspending. Every request writer of this runtime calls it
+        before it reserves an id and :meth:`_record_prompt` right after, with no
+        await between (repo_checkout_guard).
+        """
+        if not repo_checkout_guard.is_tracked(method):
+            return None
+        folder = getattr(self, "_session_folders", {}).get(str(params.get("sessionId") or ""), "")
+        await repo_checkout_guard.before_prompt(folder)
+        if not self._process or not self._process.stdin:
+            raise AcpRuntimeDead("process not running")
+        if self._dead:
+            raise AcpRuntimeDead("runtime is dead")
+        return folder
+
+    def _record_prompt(self, method: str, req_id: int, folder: str | None) -> None:
+        """Count a prompt :meth:`_admit_prompt` admitted until the backend answers it."""
+        if folder is not None:
+            repo_checkout_guard.prompt_sent(
+                str(getattr(self, "_process_instance", "") or ""), req_id, folder, method=method
+            )
+
     async def send_request(
         self,
         method: str,
@@ -3461,11 +3508,14 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        folder = await self._admit_prompt(method, params)
+
         projection = getattr(self, "_native_skill_projection", None)
         if projection is not None:
             params = projection.request(method, params)
         req_id = self._next_id
         self._next_id += 1
+        self._record_prompt(method, req_id, folder)
 
         # Register for session routing so the response goes to the right queue
         session_id = params.get("sessionId")
@@ -3830,8 +3880,10 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        folder = await self._admit_prompt(method, params)
         req_id = self._next_id
         self._next_id += 1
+        self._record_prompt(method, req_id, folder)
         projection = getattr(self, "_native_skill_projection", None)
         if projection is not None:
             params = projection.request(method, params)
@@ -3939,6 +3991,7 @@ class AcpRuntime:
     def unregister_session(self, session_id: str) -> None:
         """Unregister a session queue (called by AcpSessionHandle.destroy)."""
         self._session_queues.pop(session_id, None)
+        getattr(self, "_session_folders", {}).pop(session_id, None)
         self._switched_model_record().pop(session_id, None)
         # Clean up any pending routed requests for this session
         stale = [k for k, v in self._routed_requests.items() if v == session_id]
@@ -4874,8 +4927,10 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        folder = await self._admit_prompt(method, params)
         req_id = self._next_id
         self._next_id += 1
+        self._record_prompt(method, req_id, folder)
         ahead = self._one_at_a_time_ahead(method, req_id)
 
         projection = getattr(self, "_native_skill_projection", None)

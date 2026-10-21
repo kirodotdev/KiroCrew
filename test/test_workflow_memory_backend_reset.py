@@ -4,6 +4,8 @@ import json
 import subprocess
 import sys
 
+from stream_fakes import report_finished_turn
+
 from kiro_crew.testing import fake_acp_backend
 
 
@@ -270,6 +272,7 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
 
     async def _stream(provider, prompt, **kwargs):
         events.append(("stream", provider.key))
+        report_finished_turn(kwargs)
         return prompt
 
     monkeypatch.setattr("kiro_crew.workflows.agent_pool.stream_and_collect", _stream)

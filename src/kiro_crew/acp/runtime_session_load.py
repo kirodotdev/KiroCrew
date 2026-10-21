@@ -6,7 +6,7 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_session_inits_in_flight``, ``_session_queues``.
+Instance fields written: ``_session_folders``, ``_session_inits_in_flight``, ``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
@@ -327,6 +327,7 @@ async def load_session(
         session_key=session_key,
         bound_cwd=str(load_params["cwd"]),
     )
+    self._session_folders[resume_sid] = str(load_params["cwd"])
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
     handle.member_dispatch_mounted = member_mounted

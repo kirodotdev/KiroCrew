@@ -14,6 +14,8 @@ interface GitReposPanelProps {
   /** The chat whose repositories are listed. */
   slotKey: string
   onFileOpen?: (path: string) => void
+  /** True while this chat's response runs: a checkout would change files under the turn. */
+  busy?: boolean
 }
 
 /** How many open sections poll their status on the interval at once. */
@@ -28,7 +30,7 @@ export const MAX_POLLING_SECTIONS = 3
  * tab lists them without the user picking a project folder first. The chat's
  * project, when it is in a repository, comes first.
  */
-export default function GitReposPanel({ slotKey, onFileOpen }: GitReposPanelProps) {
+export default function GitReposPanel({ slotKey, onFileOpen, busy = false }: GitReposPanelProps) {
   const { data, error, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['git-repos', slotKey],
     queryFn: () => api.projectGitRepos(slotKey),
@@ -158,7 +160,11 @@ export default function GitReposPanel({ slotKey, onFileOpen }: GitReposPanelProp
               projectDir={repo.path}
               onFileOpen={onFileOpen}
               onOpenChange={handleOpenChange}
+              busy={busy}
               section={{
+                // Only the chat's project: the switch route accepts slot
+                // projects, not the repositories a tool call merely touched.
+                branchSwitch: repo.source === 'project',
                 label: repo.path,
                 badge: repo.source === 'project' ? i18nT('components.gitPanel.source_project') : undefined,
                 badgeTitle: repo.source === 'project' ? i18nT('components.gitPanel.source_project_help') : undefined,

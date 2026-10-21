@@ -289,5 +289,7 @@
   "pages.settings.chatPanel.follow_default_confirm_title",
   "pages.settings.chatPanel.follow_default_done",
   "pages.settings.chatPanel.follow_default_model_chats",
-  "pages.settings.chatPanel.follow_default_more"
+  "pages.settings.chatPanel.follow_default_more",
+  "components.branchSwitcher.ahead_count",
+  "components.branchSwitcher.behind_count"
 ]
