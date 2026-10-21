@@ -21,6 +21,7 @@ import pytest
 from kiro_crew.acp.runtime import AcpRuntime, JsonRpcMessage
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.metrics import events as metric_events
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _make_runtime():
@@ -177,10 +178,7 @@ async def test_routed_child_permission_emits_routed(recorded):
             ).encode()
         )
         # Let the reader route the frame.
-        for _ in range(20):
-            await asyncio.sleep(0.01)
-            if not queues["parent-session"].empty():
-                break
+        await async_wait_until(lambda: not queues["parent-session"].empty())
         routed = [a for n, a in recorded if n == metric_events.CHILD_PERMISSION_ROUTED]
         assert routed == [{"surface": "runtime"}]
         assert not queues["parent-session"].empty()  # actually delivered

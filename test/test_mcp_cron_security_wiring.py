@@ -15,7 +15,6 @@ import json
 import os
 import sys
 import threading
-import time
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -29,6 +28,7 @@ from kiro_crew.mcp_cron import (
     _unidentified_caller_refusal,
     _unowned_row_refusal,
 )
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -255,11 +255,10 @@ class _CronLoopHarness:
                 + "\n"
             ).encode("utf-8"),
         )
-        deadline = time.monotonic() + 10.0
-        # flake-ok: pre-existing 10 s poll for the loop's answer, moved verbatim; its expiry fails the assert below; tracked for a de-flake pass
-        while time.monotonic() < deadline and not self.responses:
-            time.sleep(0.02)
-        assert self.responses, f"loop never answered tools/call for {tool_name}"
+        wait_until(
+            lambda: self.responses,
+            describe=lambda: f"loop never answered tools/call for {tool_name}",
+        )
         return self.responses[0][1]
 
     def close(self) -> None:

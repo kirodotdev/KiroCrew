@@ -19,6 +19,7 @@ from embeddings_helpers import _DIM, _make_fake_llama_class, _write_model_file
 
 import kiro_crew.embeddings as embeddings_mod
 from kiro_crew.embeddings import LlamaCppEmbedder
+from kiro_crew.testing.wait import wait_until
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _reset_embedding_singletons = embeddings_helpers._reset_embedding_singletons
@@ -370,13 +371,11 @@ class TestEmbedPriority:
     @staticmethod
     def _await_queued(queued: list, expected: int, timeout: float = 5.0) -> None:
         """Block until *expected* submissions have reached the queue."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if len(queued) >= expected:
-                return
-            # flake-ok: pre-existing 10 ms poll under a 5 s deadline that fails naming the missing submissions; moved verbatim, tracked for a de-flake pass
-            time.sleep(0.01)
-        raise AssertionError(f"only {len(queued)} of {expected} enqueued: {queued}")
+        wait_until(
+            lambda: len(queued) >= expected,
+            timeout=timeout,
+            describe=lambda: f"only {len(queued)} of {expected} enqueued: {queued}",
+        )
 
     def test_interactive_preempts_queued_bulk(self, tmp_path: Path, monkeypatch) -> None:
         emb, order, release, queued, threads = self._gated(tmp_path, monkeypatch)

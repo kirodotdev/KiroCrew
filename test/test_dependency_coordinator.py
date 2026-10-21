@@ -31,6 +31,7 @@ from kiro_crew.taskq.dependency import (
 )
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 from kiro_crew.taskq.waits import WaitRecord
+from kiro_crew.testing.wait import await_until
 
 T0 = 1_000_000.0
 GH = "github:api"
@@ -1213,7 +1214,7 @@ async def test_a_report_driven_give_up_releases_a_parked_run_on_the_loop(
     assert sorted(coord.waiters(GH)) == ["reporter", "victim"]
 
     clock.advance(31.0)  # past the scope's wall-clock deadline
-    parked = asyncio.create_task(asyncio.wait_for(released.wait(), timeout=10.0))
+    parked = asyncio.create_task(await_until(released, what="the give-up hooks' release"))
     verdict = await store.run(coord.report, "reporter", _signal(), generation=reporter)
     # Handed to the loop DURING the call, so it is queued ahead of this
     # coroutine's own resumption: the awaiting caller never sees a give-up whose

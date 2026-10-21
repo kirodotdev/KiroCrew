@@ -28,6 +28,7 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 )
 
 from kiro_crew.dashboard.handlers import knowledge as kh
+from kiro_crew.testing.wait import await_until
 
 # --------------------------------------------------------- startup / wiring
 
@@ -93,8 +94,7 @@ class TestStartWatcherAsync:
         app = _make_app(store, pipeline=MagicMock(), watcher=old)
         await kh._start_watcher_async(app)
         try:
-            # flake-ok: the 5 s cap only names a lost event; the test waits on started, not on time
-            await asyncio.wait_for(started.wait(), timeout=5)
+            await await_until(started, what="the replacement watcher starting")
             old.stop.assert_awaited_once()
             assert isinstance(app["knowledge_watcher"], _FakeWatcher)
             # The watcher is constructed with the store and pipeline only: it no

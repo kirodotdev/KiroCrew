@@ -51,7 +51,7 @@ import kiro_crew.dashboard.handlers as _HANDLERS_PKG
 from kiro_crew import executors
 from kiro_crew.dashboard import file_api
 from kiro_crew.dashboard.handlers import files as f
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 #: The shared open-and-check prefix resolves the validator through the
 #: ``handlers`` package at call time -- a documented monkey-patch seam kept for
@@ -934,7 +934,7 @@ class TestBoundedProbePool:
 
         # Unrelated work on the DEFAULT executor is untouched: it completes well
         # inside the admission window while every probe worker is gone.
-        unrelated = await asyncio.wait_for(asyncio.to_thread(lambda: 42), timeout=1.0)
+        unrelated = await finished(asyncio.to_thread(lambda: 42), "unrelated default-executor work")
         assert unrelated == 42
 
         # A real endpoint request is refused, not queued behind the wedge.

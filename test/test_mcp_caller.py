@@ -25,6 +25,7 @@ from kiro_crew.mcp_caller import (
     new_tenant_nonce,
     tenant_nonce_from_meta,
 )
+from kiro_crew.testing.wait import await_until
 
 
 def test_single_session_identity_preserves_cached_caller(monkeypatch):
@@ -174,7 +175,7 @@ async def test_interleaved_member_calls_keep_their_ordinary_session_identity(mon
         count += 1
         if count == 2:
             both_started.set()
-        await asyncio.wait_for(both_started.wait(), timeout=2)
+        await await_until(both_started, what="both requests being in flight")
         try:
             return mcp_core._resolve_session_key_strict(), mcp_core._caller_header()
         finally:

@@ -31,6 +31,7 @@ from kiro_crew.auth.service import (
 )
 from kiro_crew.auth.shape import Transport
 from kiro_crew.auth.store import TokenStore
+from kiro_crew.testing.wait import async_wait_until
 
 
 class _FakeResp:
@@ -115,13 +116,14 @@ async def _hit_callback(port: int, query: dict[str, str]) -> str:
             return await resp.text()
 
 
-async def _poll_until_terminal(service, login_id, tries=50):
-    for _ in range(tries):
+async def _poll_until_terminal(service, login_id):
+    async def _terminal():
         result = await service.poll_device(login_id)
-        if result["status"] != "pending":
-            return result
-        await asyncio.sleep(0.02)
-    raise AssertionError("login never reached a terminal state")
+        return result if result["status"] != "pending" else None
+
+    return await async_wait_until(
+        _terminal, describe=lambda: "login never reached a terminal state"
+    )
 
 
 @pytest.mark.asyncio

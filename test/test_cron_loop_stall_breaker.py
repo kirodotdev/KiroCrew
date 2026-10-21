@@ -24,6 +24,7 @@ from kiro_crew import cron_inflight
 from kiro_crew.cron import CronJob, CronService, CronStoreUnreadable
 from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.stall_attribution import attribute_dump, describe
+from kiro_crew.testing.wait import finished
 
 pytestmark = pytest.mark.asyncio
 
@@ -391,7 +392,10 @@ class TestMarkerIoRefusesWhatItDidNotWrite:
         d.mkdir(parents=True, exist_ok=True)
         os.mkfifo(d / "cafebabe.json")
         assert (
-            await asyncio.wait_for(asyncio.to_thread(cron_inflight.read_markers, tmp_path), 10)
+            await finished(
+                asyncio.to_thread(cron_inflight.read_markers, tmp_path),
+                "read_markers returning past a FIFO marker",
+            )
             == []
         )
 

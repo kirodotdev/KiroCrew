@@ -24,6 +24,7 @@ from kiro_crew import decisions as core
 from kiro_crew.decisions.points import MAX_KEY_CHARS, as_text
 from kiro_crew.decisions.points import skills_select as sel
 from kiro_crew.decisions.types import Answer
+from kiro_crew.testing.wait import wait_until
 
 
 class _FakeLoader:
@@ -503,9 +504,7 @@ def test_an_expired_budget_cancels_the_call_and_keeps_the_baseline(bg_loop, enab
     waited = time.monotonic() - started
     assert picked is None
     assert waited < 10, "the caller must not wait past its own budget"
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not observed.get("cancelled"):
-        time.sleep(0.02)
+    wait_until(lambda: observed.get("cancelled"), describe=lambda: observed)
     assert observed == {"started": True, "cancelled": True}, "no detached call may survive"
 
 

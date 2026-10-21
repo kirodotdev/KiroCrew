@@ -25,6 +25,7 @@ import pytest
 
 import kiro_crew.cron as cron_mod
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy
+from kiro_crew.testing.wait import await_until
 
 _ADMITTED = SimpleNamespace(admitted=True, reason="")
 
@@ -101,7 +102,7 @@ async def _tick(service: CronService, job_id: str) -> None:
     await service._on_timer()
     claim = service._claims.get(job_id)
     if claim is not None and claim.task is not None:
-        await asyncio.wait_for(claim.task, timeout=5.0)
+        await await_until(claim.task, what="the run the tick dispatched")
 
 
 def _one_shot_removals(recorder: _Recorder) -> list[dict]:

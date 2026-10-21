@@ -38,6 +38,7 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.wait import await_until
 
 
 def _add_job(store, job_id="job-1", *, status="processing", source_id=None):
@@ -1389,7 +1390,7 @@ class TestBatchEmbedItems:
                 "/api/knowledge/embedding/generate", json={"rebuild": True, "force": True}
             )
             data = await resp.json()
-            await asyncio.wait_for(ran.wait(), timeout=5)
+            await await_until(ran, what="the rebuild job running")
         assert data == {"job_id": "new-job", "status": "processing"}
 
     @pytest.mark.asyncio

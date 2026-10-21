@@ -80,7 +80,7 @@ async def _ticking(coro):
     async def ticker() -> None:
         nonlocal ticks
         while not stop.is_set():
-            await asyncio.sleep(_TICK)
+            await asyncio.sleep(_TICK)  # flake-ok: a tick-rate measurement, not a wait on a signal
             ticks += 1
 
     task = asyncio.create_task(ticker())

@@ -38,6 +38,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.hooks import HOOK_EVENTS, ScriptHookStore, set_global_hook_store
+from kiro_crew.testing.wait import async_wait_until
 
 
 class _FakeHandle:
@@ -1431,10 +1432,8 @@ class TestExecuteHookReviewFixes:
         )
         task = asyncio.ensure_future(hooks_mod.run_script_hook(hook, "", {}))
         try:
-            for _ in range(200):
-                await asyncio.sleep(0.05)
-                if killed or task.done() or governance_calls:
-                    break
+            # The governance check runs off the loop just before the spawn.
+            await async_wait_until(lambda: killed or task.done() or governance_calls)
             await asyncio.sleep(0.5)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

@@ -34,6 +34,7 @@ from kiro_crew.dashboard.listener_guard import (
     listener_guard_exit_code,
     probe_target,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -93,11 +94,7 @@ def _listening_socket(site: web.TCPSite) -> socket.socket:
 
 
 async def _wait_until(pred: Any, *, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not pred():
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("condition not met in time")
-        await asyncio.sleep(0.01)
+    await async_wait_until(pred, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

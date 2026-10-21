@@ -94,7 +94,7 @@ def _daemon_on(path: Path, reply: bytes | None, *, chunked: bool = False):
                     # A stream hands back whatever is buffered, not whole frames.
                     for i in range(0, len(reply), 4):
                         conn.sendall(reply[i : i + 4])
-                        time.sleep(0.002)
+                        time.sleep(0.002)  # flake-ok: paces chunks so reads return partial frames
                 else:
                     conn.sendall(reply)
             except OSError:

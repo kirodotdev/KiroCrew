@@ -9,7 +9,6 @@ autouse fixtures live in ``issue_radar_crew_runtime_helpers.py``.
 """
 
 import ast
-import asyncio
 import contextlib
 import inspect
 import os
@@ -43,6 +42,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.safety_override import reset_singleton, safety_override
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
@@ -857,12 +857,12 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
             # commit retires. Retry non-blocking attempts — never a blocking
             # acquire on the event-loop thread — until the transient hold
             # clears; the budget is generous because a miss fails the test.
-            for _ in range(200):
-                if platform_compat.try_acquire_lock(fd, exclusive=True):
-                    break
-                # flake-ok: a bounded retry (200 x 50 ms) of a non-blocking lock attempt, not a barrier; pre-existing, moved verbatim
-                await asyncio.sleep(0.05)
-            else:
+            try:
+                await async_wait_until(
+                    lambda: platform_compat.try_acquire_lock(fd, exclusive=True),
+                    describe=lambda: "the writer's transient hold never cleared",
+                )
+            except AssertionError:
                 self.fail("could not stage the foreign holder on the shared root")
             try:
                 slot = _FakeSlot("crew-c_7029iso")

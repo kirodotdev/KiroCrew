@@ -4,7 +4,6 @@ import functools
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +15,7 @@ from kiro_crew.jsonl_util import (
     SplitlinesBoundaryRecord,
     strict_raw_records_with_offsets,
 )
+from kiro_crew.testing.wait import wait_until
 
 
 def _write_transcript(
@@ -283,14 +283,15 @@ def test_same_size_rewrite_with_restored_mtime_misses_the_index_cache(
     target = b'{"role": "user", "content": "message-10"'
     assert data.count(target) == 1
     corrupted = data.replace(target, b'x"role": "user", "content": "message-10"')
-    for _attempt in range(200):
-        # Filesystem timestamps tick coarsely (ext4: jiffies); wait for a tick
-        # so ctime can differ from the stamp taken before the rewrite.
-        time.sleep(0.005)
+
+    def _rewritten_on_a_later_tick() -> bool:
+        # Filesystem timestamps tick coarsely (ext4: jiffies); rewrite until a
+        # tick has passed so ctime can differ from the stamp taken before.
         path.write_bytes(corrupted)
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-        if path.stat().st_ctime_ns != before.st_ctime_ns:
-            break
+        return path.stat().st_ctime_ns != before.st_ctime_ns
+
+    wait_until(_rewritten_on_a_later_tick)
     after = path.stat()
     assert after.st_ctime_ns != before.st_ctime_ns
     assert (after.st_mtime_ns, after.st_size, after.st_ino) == (

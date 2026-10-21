@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew import perf_sampler
 from kiro_crew.diag import threads as dt
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -478,9 +479,10 @@ def test_a_recovered_heartbeat_allows_a_later_episode_to_be_captured() -> None:
     # the beat puts drift seconds past it rather than milliseconds.
     dt.start_probe(emit_event=lambda kind, _p: events.append(kind), stall_after=0.5)
     try:
-        for _ in range(2):
+        for episode in (1, 2):
             dt._probe._beat_at = time.monotonic() - 5.0
-            time.sleep(0.3)
+            # The probe thread captures the stall on its next tick.
+            wait_until(lambda n=episode: events.count("loop_stall") >= n, describe=lambda: events)
             _beat_steadily(0.3)  # a healthy loop again: closes the episode
     finally:
         dt.stop_probe()

@@ -21,6 +21,7 @@ from kiro_crew.execution_context import (
     read_vouched_session_execution,
 )
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import await_until
 
 
 def _state(tmp_path):
@@ -125,7 +126,7 @@ async def test_cancelled_guarded_save_adopts_mode_when_worker_finishes(tmp_path,
     finally:
         release.set()
     if worker_future is not None:
-        await asyncio.wait_for(asyncio.shield(worker_future), 5)
+        await await_until(worker_future, what="the released save worker")
 
     assert state.conversation_log.get_metadata(key).get("memory_mode") == "temporary"
     assert slot._pending_memory_mode == "temporary"

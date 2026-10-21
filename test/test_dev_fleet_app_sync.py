@@ -7,7 +7,6 @@ fleet payload's build-pending, run-pointer and provision-run fields.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
@@ -26,6 +25,7 @@ from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
+from kiro_crew.testing.wait import async_wait_until
 
 
 # --- sync runner emits ::step:: markers ---
@@ -461,12 +461,10 @@ async def test_disk_name_derivation_from_path():
         result = await mod._disk()
         assert result["status"] == "computing"
 
-        # Wait for background task
-        for _ in range(50):
-            # flake-ok: pre-existing bounded 50 ms poll of the disk scan status, moved verbatim; on expiry the status assertion below fails
-            await asyncio.sleep(0.05)
-            if mod._DISK["status"] == "done":
-                break
+        # The scan finishes on a background task.
+        await async_wait_until(
+            lambda: mod._DISK["status"] == "done", describe=lambda: mod._DISK["status"]
+        )
 
     assert mod._DISK["status"] == "done"
     assert "kirocrew" in mod._DISK["per"] or "kirocrew-wt-feature-x" in mod._DISK["per"]

@@ -18,6 +18,7 @@ from kiro_crew.dashboard.handlers.knowledge import (
     pick_folder,
 )
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture()
@@ -226,13 +227,9 @@ class TestAddSourceLocalFile:
             })
             assert resp.status == 201
             # The task claims 'syncing' off the loop before it ingests, so reaching
-            # ingest_file costs a worker-thread hop. Poll rather than sleep a fixed
-            # span, which races that on a loaded runner.
-            import asyncio
-            for _ in range(200):
-                if pipeline.ingest_file.called:
-                    break
-                await asyncio.sleep(0.01)
+            # ingest_file costs a worker-thread hop. Wait on the call rather than
+            # sleep a fixed span, which races that on a loaded runner.
+            await async_wait_until(lambda: pipeline.ingest_file.called)
             pipeline.ingest_file.assert_called_once()
 
     @pytest.mark.asyncio

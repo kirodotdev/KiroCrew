@@ -23,6 +23,7 @@ from kiro_prerequisite_helpers import _FakeRuntime, _make_executable, _no_audit
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, ProcessResult
+from kiro_crew.testing.wait import await_until
 
 
 class TestKiroPrerequisiteWorkflowReadinessLatch:
@@ -502,7 +503,7 @@ class TestKiroPrerequisiteWorkflowReadinessLatch:
 
         task = service.warm_up()
         assert task is not None
-        await asyncio.wait_for(probe_started.wait(), timeout=1)
+        await await_until(probe_started, what="the warm-up probe starting")
 
         await service.close()
 

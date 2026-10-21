@@ -13,6 +13,7 @@ import pytest
 
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.subagent import SubagentInfo
+from kiro_crew.testing.wait import async_wait_until
 
 # ── Helpers (same pattern as test_cron_slack_delivery.py) ──
 
@@ -566,11 +567,8 @@ class TestDashboardInjectionRoutesRunChat:
             p1, p2,
         ):
             await subagent_done(info)
-            # Wait for the task's done callbacks to fire (may need multiple event-loop ticks under load)
-            for _ in range(20):
-                await asyncio.sleep(0.05)
-                if gateway.subagent_mgr.notify_injection_failed.call_count:
-                    break
+            # The task's done callbacks fire on later event-loop ticks.
+            await async_wait_until(lambda: gateway.subagent_mgr.notify_injection_failed.call_count)
 
         gateway.subagent_mgr.notify_injection_failed.assert_called_once()
         call_kwargs = gateway.subagent_mgr.notify_injection_failed.call_args

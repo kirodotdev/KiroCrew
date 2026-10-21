@@ -14,6 +14,7 @@ from test_embedding_rebuild_generation import vector_blobs
 
 from kiro_crew import embeddings as emb
 from kiro_crew.dashboard.handlers import memory
+from kiro_crew.testing.wait import wait_until
 
 rebuild_home = _rebuild_home
 
@@ -160,34 +161,31 @@ def _wait_for_marker(
     the child's own stdout and stderr, because the child's output is the only
     evidence of where it got stuck.
 
-    The budget is spent in the loop CONDITION, and the failure is a raised message
-    rather than an assertion inside the body, so a timeout can never surface as a
-    comparison. An asserted `time.monotonic() < deadline` cannot say anything on
-    Windows: `time.monotonic()` there reports whole milliseconds off
-    GetTickCount64, whose 15.625ms tick divides ten seconds exactly, so a deadline
-    set that far ahead lands on the grid and the first reading at or after it is
-    equal rather than greater -- pytest then renders both operands identically, as
-    `assert 3085.343 < 3085.343`.
+    The failure is a raised message rather than an assertion on the clock, so a
+    timeout can never surface as a comparison of two equal readings: on Windows
+    `time.monotonic()` reports whole milliseconds off GetTickCount64, whose
+    15.625ms tick divides ten seconds exactly, so a deadline set that far ahead
+    lands on the grid and `assert monotonic() < deadline` renders both operands
+    identically.
     """
     marker = home_root / name
     started = time.monotonic()
-    deadline = started + budget
-    while time.monotonic() <= deadline:
-        if marker.exists():
+    try:
+        wait_until(lambda: marker.exists() or process.poll() is not None, timeout=budget)
+    except AssertionError:
+        if marker.exists():  # written as the budget ran out
             return
-        if process.poll() is not None:
-            raise AssertionError(
-                f"the child exited with {process.returncode} before writing "
-                f"{marker.name}: {_child_output(process)}"
-            )
-        time.sleep(0.01)
-    if marker.exists():  # written as the budget ran out
+        waited = time.monotonic() - started
+        process.kill()
+        raise AssertionError(
+            f"the child never wrote {marker.name} within {budget}s "
+            f"(waited {waited:.1f}s, still running): {_child_output(process)}"
+        ) from None
+    if marker.exists():
         return
-    waited = time.monotonic() - started
-    process.kill()
     raise AssertionError(
-        f"the child never wrote {marker.name} within {budget}s "
-        f"(waited {waited:.1f}s, still running): {_child_output(process)}"
+        f"the child exited with {process.returncode} before writing "
+        f"{marker.name}: {_child_output(process)}"
     )
 
 

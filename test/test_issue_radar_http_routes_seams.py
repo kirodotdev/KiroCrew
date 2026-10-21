@@ -32,6 +32,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+from kiro_crew.testing.wait import await_until
 
 BASE = "/api/apps/issue-radar"
 SHA = "a" * 40
@@ -694,7 +695,7 @@ class TestDepsSeams(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(routes, "_rebuild_deps", rebuild):
             routes._schedule_deps_refresh(app, KEY)
             task = app[routes._DEPS_REFRESH_TASKS_APP_KEY]["github:github.com:o/r"]
-            await asyncio.wait_for(task, 5)
+            await await_until(task, what="the scheduled deps refresh")
         rebuild.assert_awaited_once_with(app, KEY)
 
     async def test_the_rebuild_reaches_the_patched_issue_loader(self):

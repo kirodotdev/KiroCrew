@@ -26,7 +26,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -42,6 +41,8 @@ from test_cli_manifest_signature import (  # noqa: F401  (fixtures are looked up
     _stage_cdn,
     test_key,
 )
+
+from kiro_crew.testing.wait import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "cli.sh"
@@ -716,10 +717,7 @@ def test_pipx_never_inspects_metadata_to_decide_the_rollback() -> None:
 
 
 def _wait_for(path: Path, *, seconds: float) -> None:
-    deadline = time.monotonic() + seconds
-    while not path.exists():
-        assert time.monotonic() < deadline, f"{path} never appeared"
-        time.sleep(0.05)
+    wait_until(path.exists, timeout=seconds, describe=lambda: f"{path} never appeared")
 
 
 def test_pipx_second_run_waits_and_never_restores_a_stale_snapshot(

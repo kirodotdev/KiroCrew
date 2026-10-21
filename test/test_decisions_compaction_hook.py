@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import session_compaction as sc
+from kiro_crew.testing.wait import finished
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -243,7 +244,9 @@ class TestItCannotCostTheCompaction:
             # The whole compaction has to complete while the scoring is still
             # outstanding. The scoring task is deliberately still UNFINISHED when the
             # compaction returns -- which is the claim: nothing awaits it.
-            outcome = await asyncio.wait_for(coordinator._compact_session("k", 80.0), timeout=5)
+            outcome = await finished(
+                coordinator._compact_session("k", 80.0), "compaction with the scoring still hung"
+            )
             pending = [task for task in owner._background_tasks if not task.done()]
             for task in pending:
                 task.cancel()

@@ -32,12 +32,13 @@ import json
 import os
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from test_gateway_lock import _lock_failure_evidence, kernel_lock_home  # noqa: F401
+
+from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "fork"), reason="fork-inheritance semantics are POSIX-only"
@@ -167,15 +168,14 @@ def _start_orphaning_holder(home: Path, reap: list[int]) -> _OrphaningHolder:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    deadline = time.monotonic() + 30
-    while not pid_file.exists():
-        if proc.poll() is not None:
-            pytest.fail(f"lock holder exited {proc.returncode} before publishing its child")
-        if time.monotonic() > deadline:
-            proc.kill()
-            proc.wait(timeout=10)
-            pytest.fail("lock holder did not publish its child within 30s")
-        time.sleep(0.02)
+    try:
+        wait_until(lambda: pid_file.exists() or proc.poll() is not None)
+    except AssertionError:
+        proc.kill()
+        proc.wait(timeout=10)
+        pytest.fail("lock holder did not publish its child")
+    if not pid_file.exists():
+        pytest.fail(f"lock holder exited {proc.returncode} before publishing its child")
     child = int(pid_file.read_text().strip())
     reap.append(child)
     return _OrphaningHolder(home=home, parent=proc, child=child, release=release)
