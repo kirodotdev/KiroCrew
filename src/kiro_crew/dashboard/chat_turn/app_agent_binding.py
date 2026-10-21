@@ -1,6 +1,6 @@
 """Which agent an app-owned dashboard slot runs as: whether the app's binding applies, whether
-the turn's backend may run the app's own agent, its start directories, and retiring and
-recovering the app agent's session."""
+the turn's backend may run the app's own agent, and retiring and recovering the app agent's
+session."""
 
 from __future__ import annotations
 
@@ -37,33 +37,6 @@ def app_agent_binding_applies(slot: "_ChatSlot") -> bool:
     """
     owner_app, _, owner_agent = (slot.app_agent_owner or "").partition("/")
     return bool(owner_app and owner_agent and slot.agent == owner_agent)
-
-
-def _app_agent_start_dirs(
-    state: "DashboardState", session_key: str, project: str | None
-) -> tuple[str | None, ...]:
-    """Every directory the provider for *session_key* can start in, project first.
-
-    With a project, the provider starts there. Without one, session allocation
-    falls back to the cwd the session map stored for a resumed session, the warm
-    pool's cwd, or the factory's per-session work directory -- so an app-owned
-    turn on a session whose project was cleared is checked against each of them,
-    not against no project at all.
-    """
-    if project:
-        return (project,)
-    from kiro_crew.config.loader import _session_work_dir
-
-    sessions = getattr(state, "sessions", None)
-    session_map = getattr(sessions, "_session_map", None)
-    stored = session_map.get_cwd(session_key) if session_map is not None else ""
-    pool_cwd = getattr(sessions, "_pool_cwd", "") if sessions is not None else ""
-    return (
-        None,
-        stored if isinstance(stored, str) else None,
-        pool_cwd if isinstance(pool_cwd, str) else None,
-        str(_session_work_dir(session_key)),
-    )
 
 
 async def _retire_app_agent_session(

@@ -258,34 +258,6 @@ class AgentNameClaim(NamedTuple):
     detail: str
 
 
-def project_claims_agent_name(agent: str, work_dir: str | Path | None) -> AgentNameClaim | None:
-    """A checkout claim or unverifiable scan, or ``None`` when no claim is found.
-
-    Stems and declared names match case-insensitively across the screened native
-    agents tree, including nested and linked directories. Unverifiable specs and
-    scan limits refuse; the installed agents directory itself is not a checkout
-    shadow. This uses the same reader and scan as the reserved-name admission gate.
-    """
-    if not agent or not work_dir:
-        return None
-    folded = agent.casefold()
-    claimed_path: Path | None = None
-
-    def claim(spec: Path) -> str | None:
-        nonlocal claimed_path
-        name = _matching_claim(spec, lambda name: name.casefold() == folded)
-        if name is not None:
-            claimed_path = spec
-        return name
-
-    reason = _project_agent_claim_refusal(work_dir, claim)
-    if reason is None:
-        return None
-    if claimed_path is not None:
-        return AgentNameClaim("claimed", str(claimed_path))
-    return AgentNameClaim("unverifiable", reason)
-
-
 def agents_dir_competing_claim(
     agent: str, agents_dir: Path, own_file: Path
 ) -> AgentNameClaim | None:

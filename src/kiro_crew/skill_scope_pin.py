@@ -3,12 +3,13 @@
 Skill scope is otherwise resolved from a session's agent NAME
 (``agent_discovery.agent_skill_globs``), and a name resolves project-first: a
 checkout's spec declaring the same name would decide which skills the agent sees.
-A palette-opened app agent on kiro-cli runs its app's launch copy
-(``apps.agent_launch``), whose skills are served through ``skill_search`` from the
-app's registered ``<app>--<agent>.json``; that file, and no name lookup, is its scope.
+A palette-opened app agent runs its app's registered ``<app>--<agent>.json``: on
+kiro-cli as the app's launch copy (``apps.agent_launch``), whose skills are served
+through ``skill_search`` from that file, and on KAS as the user-level spec Crew sends.
+That file, and no name lookup, is its scope.
 
 The gateway sets the pin once a turn holds its session's lease: the registered file
-for a turn that runs the launch copy, none for every other turn of the key
+for an admitted app-owned turn, none for every other turn of the key
 (``dashboard.chat_turn.turn_admission``). Set no earlier, so a sibling turn waiting
 for the lease cannot change the scope of the turn that is running. Every skill-scope
 reader asks :func:`pinned_skill_globs` first: the ``skill_search`` route and dollar

@@ -275,7 +275,7 @@ CONTEXT_OVERFLOW_KIND = "context_overflow"
 
 #: Row-level kind for the terminal `error` row a refused app-owned agent turn
 #: produces (``apps.manager.app_command_agent_refusal``: the app's agent is
-#: shadowed, ambiguous or not installed), and for a session start whose agent has
+#: reserved, ambiguous or not installed), and for a session start whose agent has
 #: no definition at all (``AcpAgentUnavailable``, typically a disabled app's
 #: Crew Member). A retry re-runs the same check against the same files, so the
 #: frontend withholds Resume on this row and the composer does not urge it; the

@@ -181,7 +181,6 @@ from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.app_agent_binding import (
     _app_agent_host_allowed,
-    _app_agent_start_dirs,
     _app_agent_turn_backend,
     _provider_backend,
     _recover_app_agent_binding,

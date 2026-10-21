@@ -935,7 +935,7 @@ launch the agent from its spec. Any other backend would run the app-authored pro
 without the app's spec, so `dashboard/chat_turn/turn_admission.py` (`_turn_admit`) refuses the turn before the
 claim (the selected backend) and again after it (the claimed provider's
 capabilities), with `apps.manager.app_agent_backend_refusal` as the message and the
-`app_agent_refused` row kind. The bare-name check `app_command_agent_refusal` runs
+`app_agent_refused` row kind. The registration check `app_command_agent_refusal` runs
 only on an allowed backend.
 
 On Kiro the turn does not hand kiro-cli the bare name, which kiro-cli resolves
@@ -1000,7 +1000,19 @@ exactly that copy is refused and reset. Rosters (`list_agents`,
 `is_internal_agent_spec`) leave the copies out, and the copy spawns under its own
 reserved name, never through a view built by a name lookup; `_deregister_agents` and an update that drops the agent
 remove an app's copies. KAS keeps the bare
-name: Crew reads the spec it sends. The bare-name check still runs on both.
+name: Crew reads the spec it sends, and a name the user level declares resolves to the
+user-level spec whatever the checkout holds (`acp.harness.kas.resolve_projected_spec`).
+Before the claim an admitted turn binds its session to the app's agent
+(`apps.agent_launch.bind_session_app_agent`), and the KAS projection of a bound session
+reads the registered file by its path (`read_bound_app_spec`): a file gone by then (the
+app switched off after the check) refuses the session instead of falling back to a
+checkout spec of the same name. A KAS turn pins its session's skill scope and injected prompt to the registered file
+the same way, so a checkout's same-named spec sets neither on either backend.
+
+No checkout is consulted for an app-owned turn, so a checkout spec of the agent's bare
+name does not refuse it. `app_command_agent_refusal` refuses only what no checkout can
+fix: a reserved name (a skill-view alias or the launch-copy prefix), and a registered
+spec that is missing, unverifiable, or not the only user-level spec declaring the name.
 
 A `contributes.commands[].agent` that no checked agent path declares is an install
 error. When an agent path was unchecked, that miss is reported as unchecked too, so
@@ -1009,11 +1021,7 @@ agent, so the agent prune removes every `<app>--*.json` config it had registered
 
 The root is screened once per pass, so each declared path costs one screen call.
 The app listing's command-agent containment (`contain_command_agents`, which runs on
-every `GET /api/apps`) uses the same `_app_path_refusal`. The command-agent home-directory
-exemption compares only canonical paths returned by the same screen; a refused
-directory has no identity key and cannot qualify, and project scanning then
-supplies its link-refusal reason. Ordinary local aliases of the installed agents
-directory keep the exemption.
+every `GET /api/apps`) uses the same `_app_path_refusal`.
 
 A manifest is portable data validated on whichever host installs the app, so all
 three must reach the same verdict everywhere. Both lexical checks are therefore

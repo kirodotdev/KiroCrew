@@ -59,7 +59,7 @@ _BASE_MODULE_NAMES = frozenset("""
     _is_generated_deps_artifact_name _now_iso _orphaned_builtins_cache _owned_data_dir
     _owner_json _parse_approved_grants _pending_session_approval_after_manifest_change
     _read_approved_grants _read_installed _remove_any_shape _reserved_name_code
-    _restore_trust_grant _rmtree_dirfd _same_dir_key _screened_spec_path
+    _restore_trust_grant _rmtree_dirfd _screened_spec_path
     _temp_data_name_obstruction _tree_swap _tree_swap_guard _tree_swap_last _tree_swap_mark
     _tree_swap_seq _tree_swap_spanned _tree_swap_state _tree_swaps_active _trust_grant_local
     _trust_grant_repository _update_in_progress _update_marker_dir

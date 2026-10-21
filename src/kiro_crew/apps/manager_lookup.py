@@ -14,7 +14,6 @@ from __future__ import annotations
 import functools
 import json
 import logging
-import os
 import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -75,10 +74,10 @@ def _app_agent_registration(app_name: str, agent: str) -> tuple[str, tuple[str, 
     app-authored prompt could run with that other spec's tools and auto-approvals.
     An ambiguous name is refused rather than guessed at.
 
-    This listing checks only the USER-level agents dir: it does not know which
-    project a session will run in. Project-level shadowing is refused per turn by
-    :func:`app_command_agent_refusal`, which the session the command opens carries
-    as ``app_agent_owner``.
+    This listing checks only the USER-level agents dir. A checkout's spec of the
+    same name never runs as the app's agent: the session the command opens carries
+    ``app_agent_owner``, and its turns launch the registered file
+    (:func:`app_command_agent_refusal`).
     """
     from kiro_crew.agent_discovery import _read_agent_spec
     from kiro_crew.agent_sdk import agents_dir_competing_claim
@@ -145,17 +144,6 @@ def _screened_spec_path(path: Path) -> Path | None:
     return None if screened is None else Path(screened)
 
 
-def _same_dir_key(path: Path) -> str | None:
-    """A screened canonical comparison key, or None when the path is refused."""
-    from kiro_crew import hooks
-
-    try:
-        screened = hooks.validate_file_path(str(path))
-        return None if screened is None else os.path.normcase(screened)
-    except (OSError, ValueError):
-        return None
-
-
 def app_agent_backend_refusal(owner: str) -> str:
     """Why a session bound to app *owner*'s agent cannot run on its backend.
 
@@ -182,21 +170,21 @@ def app_agent_launch_refusal(owner: str, detail: str) -> str:
     return f"{_app_display_name(owner)} can't run: {detail}"
 
 
-def app_command_agent_refusal(owner: str, agent: str, *projects: str | None) -> str | None:
+def app_command_agent_refusal(owner: str, agent: str) -> str | None:
     """Why a session bound to app *owner*'s agent must not run as *agent* now, or None.
 
-    The bare ``agent`` name is what the provider resolves, project-first, by declared
-    ``name`` or by filename stem. A turn on a session a palette command opened for the
-    app's own agent therefore runs only when that name still means the app's
-    registered spec: no directory in *projects* -- every directory the session's
-    provider can start in -- declares it or carries a ``.kiro/agents/<agent>`` spec,
-    and the app's materialized ``<app>--<agent>.json`` is the only user-level spec
-    declaring it. The first entry is the session's own project; the rest are the
-    directories the provider falls back to without one. Checked on every turn, so a
-    project switched or cleared later, or a spec dropped in later, is caught too. Does
-    filesystem I/O; call it off the event loop.
+    A turn on a session a palette command opened for the app's own agent runs only
+    while the app's materialized ``<app>--<agent>.json`` is installed and is the only
+    user-level spec declaring *agent*, and *agent* is not a name Kiro Crew reserves.
+    No checkout is consulted: neither allowed backend lets a checkout's spec of that
+    name stand in for the app's. On kiro-cli the turn launches the app's launch copy
+    from an empty directory (:mod:`kiro_crew.apps.agent_launch`); on KAS a name the
+    user level declares resolves to the user-level spec whatever the checkout holds
+    (``acp.harness.kas.resolve_projected_spec``). On both, the turn pins the
+    session's skill scope and injected prompt to the registered file
+    (:mod:`kiro_crew.skill_scope_pin`). Does filesystem I/O; call it off the event
+    loop.
     """
-    from kiro_crew.agent_sdk import project_claims_agent_name
     from kiro_crew.agent_spec_format import APP_AGENT_LAUNCH_PREFIX, NATIVE_SKILL_ALIAS_PREFIX
 
     app = _app_display_name(owner)
@@ -209,36 +197,6 @@ def app_command_agent_refusal(owner: str, agent: str, *projects: str | None) -> 
             f"{app} can't run: it has a setup problem its author needs to fix "
             f'(its agent "{agent}" uses a name Kiro Crew reserves). '
             f"Ask {app}'s author to rename that agent."
-        )
-    from kiro_crew.apps import bridges  # bridges imports this module
-    from kiro_crew.config.paths import project_agents_dir
-
-    user_agents_dir = _same_dir_key(bridges._kiro_agents_dir())
-    for project in dict.fromkeys(p for p in projects if p):
-        # A project whose ``.kiro/agents`` IS the user-level agents dir (the home
-        # directory as the project) holds the app's own registered spec, so it is
-        # the registration check below, not a shadow: scanning it here would
-        # refuse every turn and tell the user to rename the app's own agent.
-        if (
-            user_agents_dir is not None
-            and _same_dir_key(project_agents_dir(Path(project).expanduser())) == user_agents_dir
-        ):
-            continue
-        claim = project_claims_agent_name(agent, project)
-        if claim is None:
-            continue
-        if claim.kind == "unverifiable":
-            return f"{app} can't run here: {claim.detail}"
-        if project == projects[0]:
-            return (
-                f'{app} can\'t run here: this project has its own agent named "{agent}". '
-                f"Run the command again from the command palette in another project, "
-                f'or rename "{agent}" in this project\'s .kiro/agents folder.'
-            )
-        return (
-            f"{app} can't run here: this session's folder {project} has its own agent "
-            f'named "{agent}". Start the command again from the command palette in a '
-            f'project session, or rename "{agent}" in that folder\'s .kiro/agents.'
         )
     registration, others = _app_agent_registration(owner, agent)
     if registration == "unverifiable":

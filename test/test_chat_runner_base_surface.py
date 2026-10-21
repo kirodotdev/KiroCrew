@@ -809,11 +809,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     "app_agent_binding": (
         ("app_agent_binding_applies", "function", "(slot: \"'_ChatSlot'\") -> 'bool'"),
         (
-            "_app_agent_start_dirs",
-            "function",
-            "(state: \"'DashboardState'\", session_key: 'str', project: 'str | None') -> 'tuple[str | None, ...]'",
-        ),
-        (
             "_retire_app_agent_session",
             "async function",
             "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", session_key: 'str') -> 'None'",

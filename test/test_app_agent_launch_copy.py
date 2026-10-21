@@ -864,6 +864,16 @@ def _bind(ctx):
     ctx.slot.app_agent_owner = f"{_APP}/{agent}"
 
 
+def _bind_in(project):
+    """``_bind``, with the session working in the checkout at *project*."""
+
+    def bind(ctx):
+        _bind(ctx)
+        ctx.slot.project = str(project)
+
+    return bind
+
+
 def _streamed(record):
     return [call for call in record.provider_calls if call.name.startswith("stream")]
 
@@ -890,8 +900,8 @@ async def test_a_project_spec_written_between_check_and_spawn_is_not_the_one_lau
     (project / ".kiro" / "agents").mkdir(parents=True)
     real_check = manager.app_command_agent_refusal
 
-    def check_then_shadow(owner, name, *projects):
-        verdict = real_check(owner, name, *projects)
+    def check_then_shadow(owner, name):
+        verdict = real_check(owner, name)
         (project / ".kiro" / "agents" / f"{name}.json").write_text(
             json.dumps({"name": name, "prompt": "the checkout's prompt", "allowedTools": ["*"]})
         )
@@ -911,7 +921,7 @@ async def test_a_project_spec_written_between_check_and_spawn_is_not_the_one_lau
     launched = json.loads((agents_dir / f"{launch}.json").read_text())
     assert launched["prompt"] == "the app's prompt"
     assert launched["allowedTools"] == ["fs_read"]
-    assert managed_agent_shadow.project_claims_agent_name(launch, project) is None
+    assert not list((project / ".kiro" / "agents").glob(f"{launch}*"))
 
 
 @pytest.mark.asyncio
@@ -920,8 +930,6 @@ async def test_a_checkout_spec_of_a_launch_name_does_not_refuse_the_turn(
 ):
     # No per-turn check of the copy's name against the checkout: kiro-cli never reads
     # a checkout spec for it, so a turn in such a checkout runs as the copy.
-    from kiro_crew.dashboard import chat_runner
-
     agent = KiroCrewConfig.load().default_agent
     _register(agents_dir, agent)
     project = tmp_path / "checkout"
@@ -929,10 +937,8 @@ async def test_a_checkout_spec_of_a_launch_name_does_not_refuse_the_turn(
     (project / ".kiro" / "agents" / "kirocrew-app-launch-squat.json").write_text(
         json.dumps({"name": "kirocrew-app-launch-squat", "allowedTools": ["*"]})
     )
-    monkeypatch.setattr(manager, "app_command_agent_refusal", lambda *a: None)
-    monkeypatch.setattr(chat_runner, "_app_agent_start_dirs", lambda *a: (str(project),))
     record = await run_turn(
-        TurnScript(message="deploy it", setup=_bind, provider=_KiroProvider),
+        TurnScript(message="deploy it", setup=_bind_in(project), provider=_KiroProvider),
         slot=SlotSpec(),
         config={"agent": {"acp_backend": "kiro"}},
     )
@@ -955,6 +961,63 @@ async def test_on_kas_the_turn_keeps_the_bare_name(agents_dir, monkeypatch):
     assert _allocated_launches(record) == [None]
     assert _streamed(record)
     assert not list(agents_dir.glob("kirocrew-app-launch-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refused", [False, True])
+async def test_an_admitted_turn_binds_its_session_before_the_claim(
+    agents_dir, monkeypatch, refused
+):
+    # The KAS projection reads the registered file by path for a bound session
+    # (acp.harness.kas), so the binding exists by the time the session is allocated.
+    from kiro_crew.dashboard.chat_runner import effective_session_key
+
+    bindings: dict = {}
+    monkeypatch.setattr(agent_launch, "_KAS_BINDINGS", bindings)
+    agent = KiroCrewConfig.load().default_agent
+    if not refused:
+        _register(agents_dir, agent)
+    seen: list = []
+
+    def bind(ctx):
+        _bind(ctx)
+        seen.append(effective_session_key(ctx.slot))
+
+    record = await run_turn(
+        TurnScript(message="deploy it", setup=bind, provider=_KasProvider),
+        slot=SlotSpec(),
+        config={"agent": {"acp_backend": "kas"}},
+    )
+    if refused:
+        assert not bindings and not record.allocations
+    else:
+        assert bindings == {seen[0]: (_APP, agent)}
+        assert _streamed(record)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_not_bound_to_the_app_drops_the_keys_binding(agents_dir, monkeypatch):
+    # A slot recreated under a deleted app slot's name (or switched to another
+    # agent) runs its own agent: the old binding must not decide its projection.
+    from kiro_crew.dashboard.chat_runner import effective_session_key
+
+    bindings: dict = {"another-session": (_APP, "deploy")}
+    monkeypatch.setattr(agent_launch, "_KAS_BINDINGS", bindings)
+    seen: list = []
+
+    def stale_binding(ctx):
+        key = effective_session_key(ctx.slot)
+        seen.append(key)
+        bindings[key] = (_APP, str(ctx.slot.agent))
+
+    record = await run_turn(
+        TurnScript(message="hello", setup=stale_binding, provider=_KasProvider),
+        slot=SlotSpec(),
+        config={"agent": {"acp_backend": "kas"}},
+    )
+    assert _streamed(record)
+    assert seen and seen[0] not in bindings
+    assert bindings == {"another-session": (_APP, "deploy")}
 
 
 @pytest.mark.asyncio
@@ -1039,11 +1102,15 @@ def test_a_spec_that_forbids_skill_search_refuses_the_turn(agents_dir):
 
 
 @pytest.mark.asyncio
-async def test_skill_search_scopes_by_the_apps_registered_file(
-    agents_dir, tmp_path, monkeypatch, clean_pins
+@pytest.mark.parametrize(
+    "backend, provider", [("kiro", _KiroProvider), ("kas", _KasProvider)], ids=["kiro", "kas"]
+)
+async def test_a_checkout_spec_of_the_bare_name_neither_refuses_nor_scopes_the_turn(
+    agents_dir, tmp_path, clean_pins, backend, provider
 ):
-    # The checkout declares the agent's bare name with its own skill mapping; the
-    # session's skill scope still comes from the app's registered file, for the
+    # The checkout declares the agent's bare name with its own grants and skills
+    # before the turn starts. The turn is not refused, and on each allowed backend
+    # the session's skill scope comes from the app's registered file, for the
     # skill_search route, dollar skills and the injected directory alike.
     from kiro_crew import context
     from kiro_crew.agent_discovery import session_skill_globs
@@ -1053,22 +1120,22 @@ async def test_skill_search_scopes_by_the_apps_registered_file(
     _register(agents_dir, agent, resources=["skill://app-skills/**/SKILL.md"])
     project = tmp_path / "checkout"
     (project / ".kiro" / "agents").mkdir(parents=True)
-    real_check = manager.app_command_agent_refusal
-
-    def check_then_shadow(owner, name, *projects):
-        verdict = real_check(owner, name, *projects)
-        (project / ".kiro" / "agents" / f"{name}.json").write_text(
-            json.dumps({"name": name, "resources": ["skill://checkout-skills/**/SKILL.md"]})
+    (project / ".kiro" / "agents" / f"{agent}.json").write_text(
+        json.dumps(
+            {
+                "name": agent,
+                "allowedTools": ["*"],
+                "resources": ["skill://checkout-skills/**/SKILL.md"],
+            }
         )
-        return verdict
-
-    monkeypatch.setattr(manager, "app_command_agent_refusal", check_then_shadow)
+    )
     record = await run_turn(
-        TurnScript(message="deploy it", setup=_bind, provider=_KiroProvider),
+        TurnScript(message="deploy it", setup=_bind_in(project), provider=provider),
         slot=SlotSpec(),
-        config={"agent": {"acp_backend": "kiro"}},
+        config={"agent": {"acp_backend": backend}},
     )
     assert _streamed(record)
+    assert not any("app_agent_refused" in str(row) for row in record.window)
     [(session_key, pinned)] = clean_pins.items()
     assert pinned == agents_dir / f"{_APP}--{agent}.json"
 

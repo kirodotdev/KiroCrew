@@ -1,8 +1,9 @@
 """A session a palette command opened for its app's OWN agent runs only as that agent.
 
-The provider resolves the bare agent name project-first, so a same-named spec in the
-session's project (or a second user-level spec) would run the app-authored prompt
-with that other spec's tools. The turn is refused before the prompt is sent.
+The turn runs the app's registered ``<app>--<agent>.json``, so it is refused before
+the prompt is sent when that spec is missing, unverifiable or not the only user-level
+spec declaring the name. A checkout's same-named spec is never the one run, so it
+refuses nothing.
 """
 
 from __future__ import annotations
@@ -65,110 +66,15 @@ def _agents(tmp_path, monkeypatch):
     return agents_dir
 
 
-@pytest.mark.parametrize("refuse_user_dir", [False, True])
-def test_refused_directory_is_not_resolved_or_exempted(tmp_path, monkeypatch, refuse_user_dir):
-    from kiro_crew import agent_sdk, hooks
-    from kiro_crew.config.paths import project_agents_dir
-
-    agents_dir = _agents(tmp_path, monkeypatch)
-    project = tmp_path / "project"
-    project.mkdir()
-    project_agents = project_agents_dir(project)
-    refused = {project_agents}
-    if refuse_user_dir:
-        refused.add(agents_dir)
-    validate = hooks.validate_file_path
-    resolve = Path.resolve
-    resolved = []
-
-    def screen(raw):
-        return None if Path(raw) in refused else validate(raw)
-
-    def record(path, *args, **kwargs):
-        if path in refused:
-            resolved.append(path)
-        return resolve(path, *args, **kwargs)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(hooks, "validate_file_path", screen)
-        patch.setattr(Path, "resolve", record)
-        key = manager._same_dir_key(project_agents)
-        claim = agent_sdk.project_claims_agent_name("deploy", str(project))
-        refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(project))
-    assert resolved == []
-    assert key is None
-    assert claim is not None and claim.kind == "unverifiable"
-    assert refusal is not None and refusal.endswith(claim.detail)
-
-
 def test_the_registered_unique_agent_is_allowed(tmp_path, monkeypatch):
     _agents(tmp_path, monkeypatch)
-    project = tmp_path / "proj"
-    project.mkdir()
-    assert manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(project)) is None
-
-
-def test_a_project_agent_with_the_same_name_is_refused(tmp_path, monkeypatch):
-    _agents(tmp_path, monkeypatch)
-    project = tmp_path / "proj"
-    (project / ".kiro" / "agents").mkdir(parents=True)
-    (project / ".kiro" / "agents" / "deploy.json").write_text(
-        '{"name": "deploy", "allowedTools": ["*"]}'
-    )
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(project))
-    assert refusal and 'this project has its own agent named "deploy"' in refusal
-
-
-@pytest.mark.parametrize("declared_name", ["deploy", "other"])
-def test_a_nested_project_spec_claiming_the_name_by_filename_is_refused(
-    tmp_path, monkeypatch, declared_name
-):
-    _agents(tmp_path, monkeypatch)
-    project = tmp_path / "proj"
-    nested = project / ".kiro" / "agents" / "team"
-    nested.mkdir(parents=True)
-    (nested / "deploy.json").write_text(f'{{"name": "{declared_name}", "allowedTools": ["*"]}}')
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(project))
-    assert refusal and 'this project has its own agent named "deploy"' in refusal
-
-
-@pytest.mark.parametrize("linked", [False, True])
-def test_a_nested_project_spec_declaring_the_name_is_refused(tmp_path, monkeypatch, linked):
-    _agents(tmp_path, monkeypatch)
-    project = tmp_path / "proj"
-    agents = project / ".kiro" / "agents"
-    agents.mkdir(parents=True)
-    nested = tmp_path / "team" if linked else agents / "team"
-    nested.mkdir()
-    if linked:
-        (agents / "team").symlink_to(nested, target_is_directory=True)
-    (nested / "x.json").write_text('{"name": "deploy", "allowedTools": ["*"]}')
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(project))
-    assert refusal and 'this project has its own agent named "deploy"' in refusal
-    fallback = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None, str(project))
-    assert fallback and f"this session's folder {project}" in fallback
-
-
-def test_the_home_directory_as_project_is_not_a_shadow(tmp_path, monkeypatch):
-    # With the home directory as the project, ``<project>/.kiro/agents`` IS the
-    # user-level agents dir that holds the app's own registered spec. That is
-    # the registration check, not a shadow: the turn must run.
-    home = tmp_path / "home"
-    agents_dir = home / ".kiro" / "agents"
-    agents_dir.mkdir(parents=True)
-    (agents_dir / "pr-bulk-ops--deploy.json").write_text('{"name": "deploy"}')
-    monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
-    assert manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(home)) is None
-    # The same folder reached through a symlinked project path is still not a shadow.
-    link = tmp_path / "home-link"
-    link.symlink_to(home, target_is_directory=True)
-    assert manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(link)) is None
+    assert manager.app_command_agent_refusal("pr-bulk-ops", "deploy") is None
 
 
 def test_a_second_user_level_spec_with_the_same_name_is_refused(tmp_path, monkeypatch):
     agents_dir = _agents(tmp_path, monkeypatch)
     (agents_dir / "alpha-deploy.json").write_text('{"name": "deploy"}')
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal and 'also named "deploy"' in refusal
     assert "Rename or remove alpha-deploy.json" in refusal
     assert "pr-bulk-ops--deploy.json" not in refusal
@@ -179,7 +85,7 @@ def test_a_user_level_spec_claiming_the_name_by_filename_is_refused(tmp_path, mo
     # The resolver also matches a spec by its filename stem, so ``deploy.json``
     # claims ``deploy`` even though it declares no ``name``.
     (agents_dir / "deploy.json").write_text('{"allowedTools": ["*"]}')
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal and "Rename or remove deploy.json" in refusal
     assert manager._app_registered_agent("pr-bulk-ops", "deploy") is False
 
@@ -190,7 +96,7 @@ def test_a_hardlinked_user_level_competitor_is_unverifiable(tmp_path, monkeypatc
     external.write_text('{"name": "deploy", "allowedTools": ["*"]}')
     os.link(external, agents_dir / "host.json")
 
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal is not None
     assert "could not be verified" in refusal
     assert "host.json" in refusal
@@ -211,7 +117,7 @@ def test_a_registered_spec_linked_to_a_host_spec_keeps_the_host_as_a_competitor(
     registered.unlink()
     registered.symlink_to(host)
 
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal is not None and 'also named "deploy"' in refusal
     assert "deploy.json" in refusal
     assert manager._app_registered_agent("pr-bulk-ops", "deploy") is False
@@ -238,7 +144,7 @@ def test_a_refused_registered_spec_link_is_reported_not_followed(tmp_path, monke
     monkeypatch.setattr(hooks, "validate_file_path", screen)
     monkeypatch.setattr(agent_discovery, "_read_agent_spec", reader)
 
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal is not None and "could not be verified" in refusal
     assert registered.name in refusal
     assert manager._app_registered_agent("pr-bulk-ops", "deploy") is False
@@ -264,7 +170,7 @@ def test_a_differently_named_user_level_competitor_is_refused(tmp_path, monkeypa
     competitor.parent.mkdir(exist_ok=True)
     competitor.write_text('{"name": "deploy"}')
 
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal and 'also named "deploy"' in refusal
     assert f"Rename or remove {competitor.name}" in refusal
 
@@ -284,7 +190,7 @@ def test_an_unlistable_user_level_directory_is_unverifiable(tmp_path, monkeypatc
         return scandir(path)
 
     monkeypatch.setattr(managed_agent_shadow.os, "scandir", unreadable)
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal and "could not be verified" in refusal
     assert str(nested) in refusal
 
@@ -298,37 +204,16 @@ def test_user_level_scan_limits_are_unverifiable(tmp_path, monkeypatch, limit):
     nested.mkdir()
     (nested / "x.json").write_text('{"name": "unrelated"}')
     monkeypatch.setattr(managed_agent_shadow, limit, 1)
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert refusal and "too many to verify" in refusal
     assert "also named" not in refusal
-
-
-@pytest.mark.parametrize("fallback", [False, True])
-def test_an_unverifiable_project_spec_reports_the_real_reason(tmp_path, monkeypatch, fallback):
-    from kiro_crew.agent_sdk import project_claims_agent_name
-
-    _agents(tmp_path, monkeypatch)
-    project = tmp_path / "proj"
-    agents = project / ".kiro" / "agents"
-    agents.mkdir(parents=True)
-    external = tmp_path / "external.json"
-    external.write_text('{"name": "unrelated"}')
-    os.link(external, agents / "host.json")
-
-    projects = (None, str(project)) if fallback else (str(project),)
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", *projects)
-    claim = project_claims_agent_name("deploy", project)
-    assert claim is not None and claim.kind == "unverifiable"
-    assert refusal == f"pr-bulk-ops can't run here: {claim.detail}"
-    assert "could not be read" in refusal
-    assert "has its own agent named" not in refusal
 
 
 def test_a_refusal_names_the_app_by_its_display_name(tmp_path, monkeypatch):
     agents_dir = _agents(tmp_path, monkeypatch)
     (agents_dir / "alpha-deploy.json").write_text('{"name": "deploy"}')
     monkeypatch.setattr(manager, "_app_display_name", lambda name: "PR Bulk Ops")
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy")
     assert (
         refusal and refusal.startswith("PR Bulk Ops can't run") and "'pr-bulk-ops'" not in refusal
     )
@@ -363,7 +248,7 @@ def test_display_name_refuses_a_manifest_symlinked_to_a_sensitive_file(tmp_path,
 
 def test_an_unregistered_app_agent_is_refused(tmp_path, monkeypatch):
     _agents(tmp_path, monkeypatch)
-    refusal = manager.app_command_agent_refusal("other-app", "deploy", None)
+    refusal = manager.app_command_agent_refusal("other-app", "deploy")
     assert refusal and "isn't installed" in refusal
 
 
@@ -381,7 +266,7 @@ async def test_the_turn_is_refused_before_the_prompt_reaches_the_provider(
     monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
     seen = []
 
-    def refusal(owner, name, *projects):
+    def refusal(owner, name):
         seen.append((owner, name))
         return "replaced by a project agent" if refused else None
 
@@ -783,45 +668,6 @@ async def test_a_refusal_retires_a_session_registered_under_the_key():
     assert removed == ["owned"]
 
 
-def test_a_project_spec_claiming_the_name_by_filename_is_refused(tmp_path, monkeypatch):
-    # The resolver matches a project spec by filename stem too, so ``deploy.json``
-    # declaring another name still answers to ``deploy``.
-    _agents(tmp_path, monkeypatch)
-    project = tmp_path / "proj"
-    (project / ".kiro" / "agents").mkdir(parents=True)
-    (project / ".kiro" / "agents" / "deploy.json").write_text(
-        '{"name": "zzz", "allowedTools": ["*"]}'
-    )
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", str(project))
-    assert refusal and 'this project has its own agent named "deploy"' in refusal
-
-
-def test_without_a_project_every_fallback_folder_is_checked(tmp_path, monkeypatch):
-    # A cleared project does not mean "no project": the provider can still start in
-    # the session's stored cwd, so a shadow there refuses the turn.
-    _agents(tmp_path, monkeypatch)
-    stored = tmp_path / "old-proj"
-    (stored / ".kiro" / "agents").mkdir(parents=True)
-    (stored / ".kiro" / "agents" / "deploy.json").write_text('{"name": "deploy"}')
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None, str(stored), None)
-    assert refusal and f"this session's folder {stored}" in refusal
-    assert manager.app_command_agent_refusal("pr-bulk-ops", "deploy", None, None) is None
-
-
-def test_start_dirs_cover_the_stored_cwd_pool_and_work_dir(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from kiro_crew.dashboard import chat_runner
-
-    session_map = SimpleNamespace(get_cwd=lambda key: "/stored" if key == "k" else "")
-    state = SimpleNamespace(sessions=SimpleNamespace(_session_map=session_map, _pool_cwd="/pool"))
-    monkeypatch.setenv("KIROCREW_WORKSPACE", str(tmp_path))
-    dirs = chat_runner._app_agent_start_dirs(state, "k", None)
-    assert dirs[0] is None and "/stored" in dirs and "/pool" in dirs
-    assert any(d and d.startswith(str(tmp_path.resolve())) for d in dirs[3:])
-    assert chat_runner._app_agent_start_dirs(state, "k", "/proj") == ("/proj",)
-
-
 def test_a_skill_view_shaped_agent_name_is_refused(tmp_path, monkeypatch):
     # The spawn maps a skill-view name to the host agent its view was built from,
     # so even a registered, unique spec under that name is not the app's to run.
@@ -830,7 +676,7 @@ def test_a_skill_view_shaped_agent_name_is_refused(tmp_path, monkeypatch):
     view = "kirocrew-skill-view-0123456789abcdef01234567"
     (agents_dir / f"pr-bulk-ops--{view}.json").write_text(f'{{"name": "{view}"}}')
     monkeypatch.setattr(bridges, "KIRO_AGENTS_DIR", agents_dir)
-    refusal = manager.app_command_agent_refusal("pr-bulk-ops", view, None)
+    refusal = manager.app_command_agent_refusal("pr-bulk-ops", view)
     assert refusal and "a name Kiro Crew reserves" in refusal
 
 

@@ -475,8 +475,19 @@ class KasHarness(MembershipHarness):
             # second read is removed rather than re-verified. Every other agent mirrors
             # nothing, has no snapshot, and is resolved nearest-first here.
             agents_dir = paths_mod.kiro_agents_dir()
+            # A session bound to an app's own agent projects that app's registered
+            # file, read by its path; a bound file that is gone refuses the session
+            # instead of falling back to a checkout's spec of the same name.
+            from kiro_crew.apps.agent_launch import AppAgentLaunchError, read_bound_app_spec
+
+            try:
+                bound = read_bound_app_spec(session_key, agent)
+            except AppAgentLaunchError as exc:
+                raise AcpAgentUnavailable(exc.detail, agent=agent) from exc
             if snapshot is not None and snapshot.spec is not None:
                 spec, prompt_dir = snapshot.spec, agents_dir
+            elif bound is not None:
+                spec, prompt_dir = bound, agents_dir
             else:
                 try:
                     spec, prompt_dir = resolve_projected_spec(agents_dir, agent, work_dir)

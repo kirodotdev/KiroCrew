@@ -154,7 +154,6 @@ class _ChatTurn:
     _open_construct: "str"
     _owner_backend: "str | None"
     _owner_host_allowed: "bool"
-    _owner_project: "Any | None"
     _parsed_input: "Any | None"
     _pending_dir_for_digest: "dict[str, str]"
     _pending_dir_tool: "dict[str, str]"
