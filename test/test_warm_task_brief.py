@@ -18,6 +18,7 @@ class _State:
         self._warm_task_brief_tasks = {}
         self._warm_task_brief_model_active: set[str] = set()
         self.frames: list[tuple[str, dict]] = []
+        self.preparing_pushes: list[dict[str, bool]] = []
         self.slots = {}
         self.sessions = object()
 
@@ -29,6 +30,12 @@ class _State:
 
     def get_slot(self, key: str):
         return self.slots.get(key)
+
+    def push_slots_update(self) -> None:
+        # What every slots frame would say about each slot's indicator.
+        self.preparing_pushes.append(
+            {key: slot._preparing_count > 0 for key, slot in self.slots.items()}
+        )
 
     def flush_slot_now(self, slot) -> bool:
         slot.flushed += 1
@@ -46,6 +53,7 @@ class _Slot:
         self.rows: list[dict] = []
         self.messages = self.rows
         self.flushed = 0
+        self._preparing_count = 0
 
     def append(self, role: str, content: str, cls: str = "", **kwargs):
         row = {"role": role, "content": content, "cls": cls}
@@ -1057,3 +1065,146 @@ def test_work_ledger_wake_is_not_a_user_turn():
         [{"role": "user", "content": "[work-ledger wake] item=it_1 status=done"}]
     )
     assert turns[0].injected is True
+
+
+def _arm_indicator_probe(state: _State, slot: _Slot) -> list[tuple[str, bool]]:
+    """Record, per posted row, whether the indicator was on when it landed."""
+    seen: list[tuple[str, bool]] = []
+    append = slot.append
+
+    def spy(role, content, cls="", **kwargs):
+        row = append(role, content, cls, **kwargs)
+        seen.append(((row.get("meta") or {}).get("kind", ""), slot._preparing_count > 0))
+        return row
+
+    slot.append = spy
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_indicator_spans_the_opener_to_the_result(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snapshot()
+    running_during_model: list[bool] = []
+
+    async def run_model(*args, **kwargs):
+        running_during_model.append(slot.running)
+        return '{"message":"Here is where we are."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    seen = _arm_indicator_probe(state, slot)
+
+    await warm_task_brief._prepare_warm_task_brief(
+        state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+    )
+
+    assert seen == [
+        ("warm_task_brief_claim", False),
+        ("warm_task_brief_preparing", True),
+        ("warm_task_brief_result", True),
+    ]
+    # The indicator is not a turn: the brief's own deferral still sees idle.
+    assert running_during_model == [False]
+    assert state.preparing_pushes == [{slot.key: True}, {slot.key: False}]
+
+
+@pytest.mark.asyncio
+async def test_indicator_clears_after_the_failure_line(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snapshot()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("provider failed")
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], fail)
+    seen = _arm_indicator_probe(state, slot)
+
+    await warm_task_brief._prepare_warm_task_brief(
+        state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+    )
+
+    assert seen[-1] == ("warm_task_brief_failure", True)
+    assert slot._preparing_count == 0
+    assert state.preparing_pushes[-1] == {slot.key: False}
+
+
+@pytest.mark.asyncio
+async def test_indicator_clears_on_a_stale_drop(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snapshot()
+    sent = replace(_claimed(base), fingerprint="changed", user_fingerprint="sent")
+    _arm_model(monkeypatch, slot, [base, _claimed(base), sent])
+
+    await warm_task_brief._prepare_warm_task_brief(
+        state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+    )
+
+    assert "warm_task_brief_result" not in _kinds(slot)
+    assert slot._preparing_count == 0
+    assert state.preparing_pushes == [{slot.key: True}, {slot.key: False}]
+
+
+@pytest.mark.asyncio
+async def test_indicator_clears_when_the_brief_task_is_cancelled(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    base = _snapshot()
+    entered = asyncio.Event()
+
+    async def run_model(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base)], run_model)
+    task = await _start_brief(state, slot)
+    await asyncio.wait_for(entered.wait(), timeout=30)
+    assert slot._preparing_count == 1
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=30)
+
+    assert slot._preparing_count == 0
+    assert state.preparing_pushes[-1] == {slot.key: False}
+
+
+@pytest.mark.asyncio
+async def test_no_indicator_when_the_brief_skips_before_the_opener(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    _arm_model(monkeypatch, slot, [_snapshot(previous_claim="fp")])
+
+    await warm_task_brief._prepare_warm_task_brief(
+        state, slot, warm_task_brief.ReturnCandidate(slot.key, 0, 1)
+    )
+
+    assert state.preparing_pushes == []
+
+
+@pytest.mark.asyncio
+async def test_a_turn_started_while_preparing_defers_and_the_indicator_holds(monkeypatch):
+    state = _LiveState()
+    slot = _live_slot(state)
+    base = _snapshot()
+    held: list[bool] = []
+
+    async def patrol_turn():
+        await waiting.wait()
+        held.append(slot._preparing_count > 0)
+        slot.append("assistant", "Patrol: nothing new.", "msg msg-a")
+
+    async def run_model(*args, **kwargs):
+        slot.task = asyncio.create_task(patrol_turn())
+        return '{"message":"Here is where we are."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    waiting = _spy_wait(monkeypatch)
+    task = await _start_brief(state, slot)
+    await asyncio.wait_for(task, timeout=30)
+
+    assert held == [True]
+    assert _live_kinds(slot)[-1] == "warm_task_brief_result"
+    assert slot._preparing_count == 0

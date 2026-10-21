@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.slot_preparing import preparing_message
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -627,6 +629,18 @@ def _post_message(
 async def _prepare_warm_task_brief(
     state: "DashboardState", slot: "_ChatSlot", candidate: ReturnCandidate
 ) -> None:
+    # The working indicator is entered at the opener and left on every exit:
+    # result, failure line, stale drop, cancellation or error.
+    with ExitStack() as indicator:
+        await _run_warm_task_brief(state, slot, candidate, indicator)
+
+
+async def _run_warm_task_brief(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    candidate: ReturnCandidate,
+    indicator: ExitStack,
+) -> None:
     # A return during a turn (a patrol cycle, say) defers until the turn ends,
     # as long as the owner keeps the thread on screen.
     returned_at = time.time()
@@ -664,6 +678,10 @@ async def _prepare_warm_task_brief(
         return
 
     language = _language_of(snapshot.original_request)
+    # From the opener on, the thread shows the normal working indicator
+    # without marking a turn: the deferral above and below still reads
+    # ``slot.running``.
+    indicator.enter_context(preparing_message(state, slot))
     _post_message(
         state,
         slot,

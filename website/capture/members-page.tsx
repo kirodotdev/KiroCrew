@@ -55,6 +55,14 @@ window.addEventListener('capture:frame', (e) => {
   // radar's turn has ended (the slots frame a stop delivers): the crewmate
   // reads idle, for a frame whose action follows a stop.
   if (d.kind === 'idle') store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 4, running: false, mode: 'member', agent: 'radar' }]))
+  // No turn runs, but the gateway is preparing a message for the thread (the
+  // slots frame's `preparing`); `landed` is the frame that clears it, with the
+  // prepared reply arriving as an ordinary assistant row.
+  if (d.kind === 'preparing') store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 4, running: false, preparing: true, mode: 'member', agent: 'radar' }] as never))
+  if (d.kind === 'landed') {
+    store.dispatch(sseChatMessage({ slot: d.slot, role: 'assistant', content: d.text ?? '', ts: new Date().toISOString() }))
+    store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 5, running: false, preparing: false, mode: 'member', agent: 'radar' }] as never))
+  }
   // A pushed `member_projection` roster frame, the way the WebSocket delivers
   // one: this is how a crewmate's recency advances on the user's own send
   // without a roster refetch, so a recording of the Recent sort reordering has

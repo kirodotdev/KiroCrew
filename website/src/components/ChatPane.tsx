@@ -262,7 +262,11 @@ export default function ChatPane({
   // The typing bubble shows from the person's Send, not only once the turn
   // that answers is live (useCrewmateAwaitingReply).
   const { awaitingReply, markSent: markCrewmateSent } = useCrewmateAwaitingReply(!!crewmate, slotKey, allMessages, crewmateLive, paneSlot)
-  const crewmateTyping = crewmateLive || awaitingReply
+  // The gateway is preparing a message for this slot outside any turn (a
+  // background reply such as the warm task brief). It shows the same working
+  // indicator a turn shows, but is not a turn: the composer stays idle.
+  const preparing = !!paneSlot?.preparing
+  const crewmateTyping = crewmateLive || awaitingReply || preparing
   // The composer agrees with the typing bubble: from the person's Send it is
   // busy (Stop while empty), not idle, though the answering turn's first frame
   // can be seconds away. `busy` alone is the store's word, and the store has
@@ -789,7 +793,7 @@ export default function ChatPane({
                 )
                 : (
                   <ChatFooter
-                    running={running || !!paneSlot?.running}
+                    running={running || !!paneSlot?.running || preparing}
                     stopping={stopUnderWay}
                     state={streamState}
                     lastRole={messages[messages.length - 1]?.role ?? ''}

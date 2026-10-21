@@ -44,6 +44,7 @@ import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThre
 import { setMountedMemberThreadSlot, clearMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
 import { PILL_ACTIVITY_KEY, type PillActivityKind } from './pillActivity'
 import { useSlotActivity } from './useSlotActivity'
+import { AWAITING_REPLY_ACTIVITY } from '../../components/chat/useCrewmateAwaitingReply'
 import ChatPane from '../../components/ChatPane'
 import MateWelcomeCard from './MateWelcomeCard'
 import { useMateGreeting } from './mateGreeting'
@@ -395,11 +396,13 @@ export function useMembersPageThreadView({
   const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
   const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? s.dashboard.slots.find((sl) => sl.key === pillSlotKey) : undefined))
   const uiLang = useLanguage().resolved
-  const pillAct = useSlotActivity(pillSlotKey, {
+  const pillTurnAct = useSlotActivity(pillSlotKey, {
     running: !!active && !!isRunning(active),
     delegatedOnly: !!pillLiveSlot?.subagents_running && !pillLiveSlot?.running,
     stopping: !!pillLiveSlot?.stopping,
   })
+  // Preparation outside a turn reads as working, never as the last turn's status.
+  const pillAct = pillTurnAct.kind === 'idle' && pillLiveSlot?.preparing ? AWAITING_REPLY_ACTIVITY : pillTurnAct
   // The resting line's age ("Idle · 6m ago") is on screen for as long as the
   // thread rests, so it must move on its own: re-read the clock on the
   // drawer's coarse tick while the pill is resting, and not at all while it is

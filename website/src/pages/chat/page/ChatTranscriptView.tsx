@@ -203,7 +203,7 @@ export default function ChatTranscriptView({
           scrollerEl={() => scrollerRef.current}
         />
         {/* Footer */}
-        <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
+        <ChatFooter running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
         {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
           <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <SessionPulseSurveyCard

@@ -314,6 +314,11 @@ export interface ChatSlot extends TurnIdentityFields {
    * like a stall worth pressing Stop on (#14841). The composer shows it and
    * the Stop button becomes a warning while it is set. */
   compacting?: boolean
+  /** The gateway is preparing an assistant message for this slot outside any
+   * turn (a background model call whose reply will land as an ordinary row).
+   * Not a turn: `running` stays false, so sends and queueing are unchanged;
+   * only the chat's working indicator reads it. Absent from an older gateway. */
+  preparing?: boolean
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean

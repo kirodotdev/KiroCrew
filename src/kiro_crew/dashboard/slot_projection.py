@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.dashboard.slot_preparing import is_preparing
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 
@@ -433,6 +434,11 @@ class SlotProjection:
             # idle while it holds the session, which without this field looks
             # like a stall worth pressing Stop on.
             "compacting": bool(getattr(slot, "_compacting", False)),
+            # A background assistant message is being prepared outside any
+            # turn (``slot_preparing``). Separate from `running` for the same
+            # reason as `compacting`: it must not make the slot look busy to
+            # sends or queueing, only show the chat's working indicator.
+            "preparing": is_preparing(slot),
             # A cooperative Stop was declined moments ago (the session was
             # compacting) and the next press escalates to a force stop. Read
             # with the same window the stop route uses, so the button's hint and

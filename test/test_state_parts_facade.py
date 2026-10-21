@@ -406,6 +406,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_chunk_seq": ("value", "0"),
     "_closing": ("value", "0"),
     "_compacting": ("value", "False"),
+    "_preparing_count": ("value", "0"),
     "_compaction_continue_retries": ("value", "0"),
     "_compaction_fail_cooldown_until": ("value", "0.0"),
     "_compaction_fail_streak": ("value", "0"),

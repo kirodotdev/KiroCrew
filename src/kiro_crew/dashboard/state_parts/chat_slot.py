@@ -150,6 +150,7 @@ class _ChatSlot:
         "_coordinator_approvals",
         "_has_reader_flag",
         "_compacting",
+        "_preparing_count",
         "_stop_declined_at",
         "_stop_state_raw",
         "_stop_generation",
@@ -474,6 +475,7 @@ class _ChatSlot:
     _coordinator_approvals: Callable[[str], list[dict]] | None
     _has_reader_flag: bool
     _compacting: bool
+    _preparing_count: int
     _stop_declined_at: float
     _stop_state_raw: str
     _stop_generation: int

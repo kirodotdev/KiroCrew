@@ -641,6 +641,31 @@ describe('MembersPage identity pill and Profile entry', () => {
     expect(line).toHaveAttribute('data-activity', 'idle')
   })
 
+  it.each(['streaming', 'tool'] as const)('preparing shows Working instead of a stale %s status', async (kind) => {
+    const slot = 'member-oncall'
+    const { store } = await renderPage([row({ bound: true, slot_key: slot })])
+    fireEvent.click(await rosterRow('oncall'))
+    // The confirmed thread POST mounts the pane before its live readings change.
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    const line = screen.getByTestId('member-pill-activity')
+    const frame = { key: slot, mode: 'member', running: false, messages: 1 }
+    act(() => {
+      store.dispatch(sseSlots([{ ...frame, preparing: true }]))
+      store.dispatch(setSlotStatusDetail({ slot, kind, purpose: 'Previous tool step', toolName: 'old-tool', ts: 1 }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'working')
+    expect(line.textContent).toBe('Working')
+    expect(screen.getByTestId('member-pill-activity-sr').textContent).toBe('Working')
+
+    // A live turn keeps its own status even while preparation is flagged.
+    act(() => { store.dispatch(sseSlots([{ ...frame, running: true, preparing: true }])) })
+    expect(line).toHaveAttribute('data-activity', kind === 'streaming' ? 'writing' : 'tool')
+    expect(line.textContent).toBe(kind === 'streaming' ? 'Writing…' : 'Previous tool step')
+
+    act(() => { store.dispatch(sseSlots([{ ...frame, preparing: false }])) })
+    expect(line).toHaveAttribute('data-activity', 'idle')
+  })
+
   it('keeps editing behind the Profile pencil, not the identity pill', async () => {
     localStorage.setItem(PANEL_OPEN_KEY, '0')
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
