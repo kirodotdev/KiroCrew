@@ -8941,6 +8941,8 @@
       "title": "Carpetas de proyecto de confianza"
     },
     "skillPickerMenu": {
+      "retry": "Reintentar",
+      "retrying": "Reintentando…",
       "loading_skills_ctrl_enter_held": "Cargando skills…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
       "loading_skills_enter_held": "Cargando skills…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
       "no_matching_skills": "No hay skills coincidentes",
@@ -8957,6 +8959,9 @@
       "trust_needed_hint": "De este proyecto. Selecciónala para revisarla y confiar en la carpeta."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "No se pudieron cargar los comandos",
+      "retry": "Reintentar",
+      "retrying": "Reintentando…",
       "commands_load_failed_ctrl_enter_sends": "No se pudieron cargar los comandos: Ctrl+Enter envía el mensaje",
       "commands_load_failed_enter_sends": "No se pudieron cargar los comandos: Enter envía el mensaje",
       "desc_agent": "Cambiar o gestionar el agente activo",

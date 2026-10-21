@@ -8803,6 +8803,8 @@
       "title": "भरोसेमंद प्रोजेक्ट फ़ोल्डर"
     },
     "skillPickerMenu": {
+      "retry": "फिर से कोशिश करो",
+      "retrying": "पुनः प्रयास हो रहा है…",
       "loading_skills_ctrl_enter_held": "स्किल लोड हो रही हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
       "loading_skills_enter_held": "स्किल लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "no_matching_skills": "कोई मेल खाती स्किल नहीं",
@@ -8819,6 +8821,9 @@
       "trust_needed_hint": "इस प्रोजेक्ट से। इसे चुनो ताकि जाँच कर फ़ोल्डर पर भरोसा कर सको।"
     },
     "slashCommandMenu": {
+      "commands_load_failed": "कमांड लोड नहीं हो सके",
+      "retry": "फिर से कोशिश करो",
+      "retrying": "पुनः प्रयास हो रहा है…",
       "commands_load_failed_ctrl_enter_sends": "कमांड लोड नहीं हो सके — Ctrl+Enter संदेश भेज देगा",
       "commands_load_failed_enter_sends": "कमांड लोड नहीं हो सके — Enter संदेश भेज देगा",
       "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",

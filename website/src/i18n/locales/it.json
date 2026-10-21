@@ -8941,6 +8941,8 @@
       "title": "Cartelle di progetto attendibili"
     },
     "skillPickerMenu": {
+      "retry": "Riprova",
+      "retrying": "Nuovo tentativo…",
       "loading_skills_ctrl_enter_held": "Caricamento delle skill… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
       "loading_skills_enter_held": "Caricamento delle skill… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "no_matching_skills": "Nessuna skill corrispondente",
@@ -8957,6 +8959,9 @@
       "trust_needed_hint": "Da questo progetto. Selezionala per esaminarla e considerare attendibile la cartella."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Impossibile caricare i comandi",
+      "retry": "Riprova",
+      "retrying": "Nuovo tentativo…",
       "commands_load_failed_ctrl_enter_sends": "Impossibile caricare i comandi — Ctrl+Invio invia il messaggio",
       "commands_load_failed_enter_sends": "Impossibile caricare i comandi — Invio invia il messaggio",
       "desc_agent": "Cambia o gestisci l’agente attivo",

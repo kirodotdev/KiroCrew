@@ -8941,6 +8941,8 @@
       "title": "Pastas de projeto confiáveis"
     },
     "skillPickerMenu": {
+      "retry": "Tentar novamente",
+      "retrying": "Tentando novamente…",
       "loading_skills_ctrl_enter_held": "Carregando habilidades… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
       "loading_skills_enter_held": "Carregando habilidades… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
       "no_matching_skills": "Nenhuma habilidade correspondente",
@@ -8957,6 +8959,9 @@
       "trust_needed_hint": "Deste projeto. Escolha-a para revisar e confiar na pasta."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Não foi possível carregar os comandos",
+      "retry": "Tentar novamente",
+      "retrying": "Tentando novamente…",
       "commands_load_failed_ctrl_enter_sends": "Não foi possível carregar os comandos — Ctrl+Enter envia a mensagem",
       "commands_load_failed_enter_sends": "Não foi possível carregar os comandos — Enter envia a mensagem",
       "desc_agent": "Alternar ou gerenciar o agente ativo",

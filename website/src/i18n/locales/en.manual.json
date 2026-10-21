@@ -3347,6 +3347,8 @@
       "root": "(root)"
     },
     "skillPickerMenu": {
+      "retry": "Retry",
+      "retrying": "Retrying…",
       "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; press Esc, then Enter sends the message",
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
@@ -3659,6 +3661,9 @@
       "title_md": "Medium width"
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Couldn't load commands",
+      "retry": "Retry",
+      "retrying": "Retrying…",
       "loading_commands_enter_held": "Loading commands… — Enter won’t send yet; press Esc, then Enter sends the message",
       "loading_commands_ctrl_enter_held": "Loading commands… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "commands_load_failed_ctrl_enter_sends": "Couldn't load commands — Ctrl+Enter sends the message",

@@ -8803,6 +8803,8 @@
       "title": "বিশ্বস্ত প্রজেক্ট ফোল্ডার"
     },
     "skillPickerMenu": {
+      "retry": "আবার চেষ্টা করো",
+      "retrying": "আবার চেষ্টা করা হচ্ছে…",
       "loading_skills_ctrl_enter_held": "স্কিল লোড হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
       "loading_skills_enter_held": "স্কিল লোড হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই",
@@ -8819,6 +8821,9 @@
       "trust_needed_hint": "এই প্রকল্প থেকে। যাচাই করে ফোল্ডার বিশ্বাস করতে এটি বেছে নাও।"
     },
     "slashCommandMenu": {
+      "commands_load_failed": "কমান্ড লোড করা যায়নি",
+      "retry": "আবার চেষ্টা করো",
+      "retrying": "আবার চেষ্টা করা হচ্ছে…",
       "commands_load_failed_ctrl_enter_sends": "কমান্ড লোড করা যায়নি — Ctrl+Enter বার্তা পাঠাবে",
       "commands_load_failed_enter_sends": "কমান্ড লোড করা যায়নি — Enter বার্তা পাঠাবে",
       "desc_agent": "সক্রিয় এজেন্ট বদলাও বা পরিচালনা করো",

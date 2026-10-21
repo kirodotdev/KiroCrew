@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { OverlayPortal } from './overlayRoot'
 import { usePickerSource } from './dashboardPickerSource'
+import ErrorNotice from './ErrorNotice'
 import { pickerQueryKey, type SlashCommand } from '../chat-core/composer/pickerSource'
 import { i18nT } from '../i18n/t'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
@@ -143,7 +144,7 @@ const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ 
 export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter', hidden }: Props) {
   const source = usePickerSource()
   const load = source.slashCommands
-  const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError } = useQuery<SlashCommand[]>({
+  const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError, refetch } = useQuery<SlashCommand[]>({
     queryKey: pickerQueryKey(source, ['slash-commands']),
     queryFn: ({ signal }) => load!(signal),
     enabled: typeof load === 'function',
@@ -164,6 +165,27 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
   // Displayed order (bottom-up when the menu opens above); resultsRef mirrors it
   // so the keyboard-nav choose() indexes the same list the user sees.
   const [displayed, setDisplayed] = useState<SlashCommand[]>([])
+
+  // A manual retry is in flight: set when the user presses Retry on the
+  // load-failure notice, cleared when that re-ask settles. A dedicated flag
+  // rather than a query internal, like the sibling pickers' own busy flags —
+  // on a refetch after an error react-query flips back to its pending state, so
+  // this is what keeps the notice with an inert "Retrying…" on screen for the
+  // re-ask instead of the first-load "Loading commands…" copy. Cleared off
+  // `isFetching` going false below.
+  const [retrying, setRetrying] = useState(false)
+  useEffect(() => { if (!isFetching) setRetrying(false) }, [isFetching])
+  const retryLoad = useCallback(() => {
+    if (isFetching) return
+    setRetrying(true)
+    void refetch()
+  }, [isFetching, refetch])
+  // The re-ask is in flight THIS render. `retrying` state clears one commit late
+  // (its effect runs after the settle commit), so on a Retry that succeeds with
+  // zero rows the failed role="alert" copy would show for one frame before
+  // flipping to "No matching commands". Anding with
+  // `isFetching`, false the moment the query settles, closes that frame.
+  const retryInFlight = retrying && isFetching
   const resultsRef = useRef<SlashCommand[]>([])
 
   const choose = useCallback((idx: number) => {
@@ -194,12 +216,14 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
 
   // Uses the SAME nav hook as the $skill / @file pickers, which gives the slash
   // menu arrow-scroll and consistent Enter/Tab/Escape.
-  const { selected, setSelected, selectedRef, itemRefs, hoverSelect } = useListKeyboardNav({
+  const retryRef = useRef<HTMLButtonElement>(null)
+  const { selected, setSelected, selectedRef, itemRefs, hoverSelect, restoreEmptyFocus } = useListKeyboardNav({
     open: visible,
     count: displayed.length,
     onChoose: choose,
     onClose,
     releaseKeysWhenEmpty,
+    emptyActionRef: retryRef,
   })
 
   // Order + initial selection: bottom-up when the menu opens above the input
@@ -233,12 +257,22 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
    *  release Enter, but "No matching commands" asserts the live list was read
    *  and did not hold the typed prefix. On a failed load it was never read —
    *  the rows are the offline fallback, and the served list is provider-aware,
-   *  so a command it would have offered may simply never have arrived. Named
-   *  per the send binding on both paths, for the reason given below. */
-  const emptyKey = isError
-    ? (sendOnEnter === 'ctrl-enter'
-        ? 'components.slashCommandMenu.commands_load_failed_ctrl_enter_sends'
-        : 'components.slashCommandMenu.commands_load_failed_enter_sends')
+   *  so a command it would have offered may simply never have arrived. The
+   *  failed copy is held through the re-ask too (`retryInFlight`): a Retry with
+   *  no cached data resets the query to pending (`isError` false), and the text
+   *  must not flip to "No matching commands" there.
+   *  Anding `retrying` with `isFetching` also keeps it from lingering one frame
+   *  past the settle commit. Named per the send binding on both paths. */
+  const emptyKey = (isError || retryInFlight)
+    // While Enter is still swallowed (the re-ask is in flight, or the list has
+    // not settled), show the plain failed copy — not the "Enter sends" variant,
+    // which would promise a key the composer is holding. Mirrors how
+    // SkillPickerMenu builds its key.
+    ? (!releaseKeysWhenEmpty
+        ? 'components.slashCommandMenu.commands_load_failed'
+        : sendOnEnter === 'ctrl-enter'
+          ? 'components.slashCommandMenu.commands_load_failed_ctrl_enter_sends'
+          : 'components.slashCommandMenu.commands_load_failed_enter_sends')
     : (sendOnEnter === 'ctrl-enter'
         ? 'components.slashCommandMenu.no_matching_commands_ctrl_enter_sends'
         : 'components.slashCommandMenu.no_matching_commands_enter_sends')
@@ -261,7 +295,44 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
         // it at the point of action, mirroring the $skill picker's empty state.
         // Named per the composer's send binding ('ctrl-enter' → bare Enter is
         // a newline); role="status" so screen-reader users hear the flip too.
-        ? (isFetching
+        ? ((isError || retryInFlight)
+            // A failed load is an ERROR surface, so it renders through
+            // ErrorNotice (errors-use-error-notice) — never a hand-written
+            // status div — and gains the re-ask the four sibling pickers carry
+            // (#7068). No hand-off: this floats over the composer's unsaved
+            // draft. `refetch()` re-issues the SAME query; on success the menu
+            // re-renders from the live list with no error, so the notice clears
+            // itself. Only the load-FAILED (or retry-in-flight) empty state
+            // offers it — a genuine "no matching commands" has nothing to
+            // re-ask. This branch precedes the loading one so the re-ask shows
+            // an inert "Retrying…", not the first-load copy (a refetch after an
+            // error flips react-query back to pending). ErrorNotice is
+            // role="alert", announcing the Enter-sends flip the copy carries.
+            // Retry is inert-but-focusable while busy. Mousedown preserves
+            // composer focus; Tab reaches Retry and Tab/Shift+Tab return to
+            // the composer. Activation restores focus before refetch, and the
+            // nav hook returns focus to the composer whenever the button
+            // unmounts while holding it (a retry already in flight landing),
+            // so focus never drops to <body>.
+            ? <div className="px-3 py-3 flex items-center gap-2" aria-busy={retryInFlight || undefined}>
+                {/* No hand-off: this menu floats over the composer's unsaved draft. */}
+                <ErrorNotice
+                  variant="inline"
+                  className="flex-1 min-w-0 whitespace-normal"
+                  message={i18nT(emptyKey)}
+                />
+                <button
+                  type="button"
+                  ref={retryRef}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => { restoreEmptyFocus(); retryLoad() }}
+                  aria-disabled={retryInFlight || undefined}
+                  className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 shrink-0 aria-disabled:opacity-50"
+                >
+                  {retryInFlight ? i18nT('components.slashCommandMenu.retrying') : i18nT('components.slashCommandMenu.retry')}
+                </button>
+              </div>
+            : isFetching
             ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(loadingKey)}</div>
             : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>)
         : displayed.map((cmd, i) => (
