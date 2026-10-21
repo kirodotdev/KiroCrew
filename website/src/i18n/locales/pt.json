@@ -17693,7 +17693,7 @@
         "unavailable_extra_missing": "Os pacotes de voz não estão instalados no ambiente Python do gateway.",
         "unavailable_no_wheel": "Não existe um reconhecedor de voz pré-compilado para esta plataforma. Instale um compilador C++ e o CMake e reinstale os pacotes de voz.",
         "unavailable_import_failed": "O reconhecedor de voz está instalado, mas não pôde ser carregado nesta máquina.",
-        "unavailable_unsupported_cpu": "O reconhecedor de fala foi compilado para instruções de CPU que esta máquina não tem, por isso não é carregado. Instale uma compilação feita para esta CPU ou escolha outro provedor ou Desativado no menu Provedor abaixo.",
+        "unavailable_unsupported_cpu": "O reconhecedor de fala não consegue rodar no processador deste computador, por isso não é carregado. Escolha \"Transcribe (AWS)\" no menu Provedor abaixo (seu áudio vai para a AWS e é cobrado na sua conta da AWS) ou desligue \"Ativado\" acima. Instalou o {{productName}} com pip em vez do app para desktop? Você pode, em vez disso, recompilar o reconhecedor a partir do código-fonte nesta máquina.",
         "unavailable_load_crashed": "A última tentativa de carregar o modelo de fala travou o {{productName}}, por isso ele não é carregado de novo até que os pacotes de voz sejam reinstalados. Reinstale os pacotes de voz ou escolha outro provedor ou Desativado no menu Provedor abaixo.",
         "unavailable_native_probe_crashed": "O reconhecedor de fala travou durante a verificação, por isso não é carregado. Reinstale os pacotes de voz ou escolha outro provedor ou Desativado no menu Provedor abaixo.",
         "unavailable_model_missing": "O modelo de voz ainda não está nesta máquina. Baixe-o abaixo.",

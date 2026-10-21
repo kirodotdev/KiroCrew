@@ -8268,7 +8268,7 @@
         "unavailable_extra_missing": "The voice packages are not installed in the gateway's Python environment.",
         "unavailable_no_wheel": "There is no prebuilt speech recogniser for this platform. Install a C++ compiler and CMake, then reinstall the voice packages.",
         "unavailable_import_failed": "The speech recogniser is installed but could not be loaded on this machine.",
-        "unavailable_unsupported_cpu": "The speech recogniser was built for CPU instructions this machine does not have, so it is not loaded. Install a build made for this CPU, or pick another provider or Off from the Provider menu below.",
+        "unavailable_unsupported_cpu": "The speech recogniser can't run on this computer's processor, so it is not loaded. Pick \"Transcribe (AWS)\" in the Provider menu below (your audio goes to AWS and is billed to your AWS account), or switch off \"Enabled\" above. Installed {{productName}} with pip rather than the desktop app? You can instead rebuild the recogniser from source on this machine.",
         "unavailable_load_crashed": "The last attempt to load the speech model crashed {{productName}}, so it is not loaded again until the voice packages are reinstalled. Reinstall the voice packages, or pick another provider or Off from the Provider menu below.",
         "unavailable_native_probe_crashed": "The speech recogniser crashed while being checked, so it is not loaded. Reinstall the voice packages, or pick another provider or Off from the Provider menu below.",
         "unavailable_model_missing": "The speech model is not on this machine yet. Download it below.",

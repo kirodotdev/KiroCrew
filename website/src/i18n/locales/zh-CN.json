@@ -17153,7 +17153,7 @@
         "unavailable_extra_missing": "语音相关软件包未安装在 gateway 的 Python 环境中。",
         "unavailable_no_wheel": "此平台没有预编译的语音识别组件。请先安装 C++ 编译器和 CMake，然后重新安装语音软件包。",
         "unavailable_import_failed": "语音识别组件已安装，但在本机上无法加载。",
-        "unavailable_unsupported_cpu": "语音识别器是为本机不支持的 CPU 指令构建的，因此不会加载。请安装适用于此 CPU 的版本，或在下方的“提供方”菜单中选择其他提供方或“关闭”。",
+        "unavailable_unsupported_cpu": "语音识别器无法在这台电脑的处理器上运行，因此不会加载。请在下方的“提供方”菜单中选择“Transcribe（AWS）”（音频会发送到 AWS，并向 AWS 账户计费），或关闭上方的“已启用”。用 pip 而不是桌面应用安装了 {{productName}}？也可以改为在本机从源码重新构建语音识别器。",
         "unavailable_load_crashed": "上次加载语音模型时 {{productName}} 崩溃了，因此在重新安装语音组件之前不会再加载。请重新安装语音组件，或在下方的“提供方”菜单中选择其他提供方或“关闭”。",
         "unavailable_native_probe_crashed": "语音识别器在检查时崩溃，因此不会加载。请重新安装语音组件，或在下方的“提供方”菜单中选择其他提供方或“关闭”。",
         "unavailable_model_missing": "本机上还没有语音模型。请在下方下载。",

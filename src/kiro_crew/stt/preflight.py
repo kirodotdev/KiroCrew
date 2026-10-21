@@ -444,6 +444,24 @@ def _classify_exit(returncode: int) -> str | None:
     return None
 
 
+#: The closing sentences of a ``CODE_UNSUPPORTED_CPU`` refusal: what to do now.
+#:
+#: No published build is offered because none fits: PyPI ships one recogniser
+#: wheel per Python and platform, and every desktop app bundles that one into an
+#: interpreter the user does not rebuild packages into. A pip install can be
+#: rebuilt from source, which compiles the recogniser for the CPU it runs on, so
+#: that remedy is offered on every OS but only for a pip install. Another
+#: provider is named, never chosen for the user: Amazon Transcribe sends the
+#: audio to AWS and bills the account, so the sentence says so.
+_UNSUPPORTED_CPU_REMEDY = (
+    "Pick Amazon Transcribe as the provider (stt.provider), which sends the audio "
+    "to AWS and bills your AWS account, or turn speech-to-text off (stt.enabled). "
+    "If Kiro Crew was installed with pip rather than the desktop app, you can "
+    "instead rebuild the speech runtime from source here (needs a C++ compiler "
+    "and CMake), which builds it for this CPU"
+)
+
+
 def _build_features(info: str) -> tuple[str, ...]:
     """The ``KEY = 1`` names in a system-info string, via the capabilities parser."""
     flags, _sections = capabilities._parse(info)
@@ -487,8 +505,7 @@ def probe_native(
                 CODE_UNSUPPORTED_CPU,
                 "the speech runtime raised Illegal instruction on this CPU before any "
                 "model was loaded: the installed build was compiled for instructions "
-                f"this machine ({platform.machine()}) does not have. Turn speech-to-text "
-                "off (stt.enabled), or install a build made for this CPU",
+                f"this machine ({platform.machine()}) does not have. " + _UNSUPPORTED_CPU_REMEDY,
             )
         if code == CODE_NATIVE_PROBE_CRASHED:
             return Verdict(
@@ -514,8 +531,7 @@ def probe_native(
             "the installed speech runtime was built for "
             + ", ".join(lacking)
             + f", which this CPU ({platform.machine()}) does not have; loading it "
-            "would stop the gateway with Illegal instruction. Turn speech-to-text "
-            "off (stt.enabled), or install a build made for this CPU",
+            "would stop the gateway with Illegal instruction. " + _UNSUPPORTED_CPU_REMEDY,
             raw=out.strip(),
         )
     return Verdict(True, raw=out.strip())
