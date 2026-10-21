@@ -19,7 +19,6 @@ Three layers, each pinned where its defect would live:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,10 +32,12 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
 )
 from kiro_crew.dashboard.chat import api_chat_slot_autocompact
+from kiro_crew.dashboard.chat_handlers import _autocompact_txn_lock
 from kiro_crew.dashboard.chat_persistence import _validate_autocompact_pct
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _manager() -> SessionManager:
@@ -599,15 +600,19 @@ class TestConcurrentPostSerialization:
         state = _mock_state(slot)
         calls = 0
         second_done = asyncio.Event()
+        txn_lock = _autocompact_txn_lock(slot_history_key(slot))
 
         async def saver(*args: object, **kwargs: object) -> bool:
             nonlocal calls
             calls += 1
             if calls == 1:
-                # Hold the first request's persist open so the second can
-                # (absent serialization) run its whole transaction, then fail.
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(second_done.wait(), 0.5)
+                # Hold the first request's persist open until the second request is
+                # parked on the slot's transaction lock -- or, absent serialization,
+                # has run its whole transaction -- then fail.
+                await async_wait_until(
+                    lambda: second_done.is_set() or bool(txn_lock._waiters),
+                    describe=lambda: f"second committed: {second_done.is_set()}",
+                )
                 raise OSError("disk full")
             second_done.set()
             return True

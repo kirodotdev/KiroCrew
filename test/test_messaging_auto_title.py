@@ -25,6 +25,7 @@ import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.messaging import auto_title
+from kiro_crew.testing.wait import finished
 
 _KEY = "telegram:kirocrew:direct:4242"
 
@@ -1368,7 +1369,7 @@ class TestLock:
         assert fresh is not held, "reset must install a lock, not reuse the held one"
         assert not fresh.locked()
         # And it is actually usable, not merely reporting itself free.
-        await asyncio.wait_for(fresh.acquire(), timeout=1)
+        await finished(fresh.acquire(), "acquiring the fresh lock")
         fresh.release()
 
     def test_the_lock_still_works_when_the_event_loop_changes(self):

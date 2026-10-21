@@ -56,6 +56,7 @@ from mcp_launch_approval_helpers import (  # noqa: F401 -- the fixture is reques
 
 from kiro_crew.mcp_gateway import rewriter
 from kiro_crew.mcp_gateway.hashing import encode_target_args
+from kiro_crew.testing.wait import async_wait_until
 
 #: Opts this module out of the conftest fixture that approves every gatewayd launch.
 ENFORCE_LAUNCH_APPROVAL = True
@@ -363,11 +364,9 @@ async def test_gateway_rechecks_approval_after_spawn_queue_wait(tmp_path, monkey
         )
     )
     try:
-        for _ in range(100):
-            await asyncio.sleep(0.005)
-            if admission.gate.queued == 1:
-                break
-        assert admission.gate.queued == 1
+        await async_wait_until(
+            lambda: admission.gate.queued == 1, describe=lambda: admission.gate.queued
+        )
         revoked = True
         blocker.release()
         with pytest.raises(gatewayd._TargetUnknown, match="approval changed"):

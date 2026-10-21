@@ -30,6 +30,7 @@ from kiro_crew.resource_status import (
     POSTURE_UNKNOWN,
     ResourceStatus,
 )
+from kiro_crew.testing.wait import finished
 
 
 def _status(posture: str, gb: float = 1.5, load: float | None = 0.5) -> ResourceStatus:
@@ -301,7 +302,9 @@ class TestMaybeSample:
         async def scenario() -> None:
             await notifier.maybe_sample()  # must return promptly, not raise
 
-        asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))
+        # The bound is the assertion: the sample must be forfeited at PROBE_TIMEOUT_SECS,
+        # well before the stalled probe's own 5 s release.
+        asyncio.run(finished(scenario(), "maybe_sample forfeiting the stalled probe", timeout=2.0))
         assert notes == []  # stalled sample forfeited
         release.set()  # let the abandoned worker thread finish
 

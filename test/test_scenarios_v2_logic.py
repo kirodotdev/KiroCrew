@@ -21,6 +21,7 @@ from kiro_crew.taskrunner import (
     TaskRunner,
     WorkingMemory,
 )
+from kiro_crew.testing.wait import await_until
 
 
 def _make_mock_sessions() -> MagicMock:
@@ -573,7 +574,7 @@ class TestScenarioParallelExecution:
                         if len(arrived) >= 2:
                             barrier.set()
                         else:
-                            await asyncio.wait_for(barrier.wait(), timeout=2.0)
+                            await await_until(barrier, what="the other parallel step arriving")
                         break
                 yield LLMEvent(kind="text_chunk", text="done")
                 yield LLMEvent(kind="complete")

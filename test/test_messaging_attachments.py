@@ -612,7 +612,7 @@ class TestBlockingWorkLeavesTheEventLoop:
             nonlocal ticks
             while not stop:
                 ticks += 1
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(0.005)  # flake-ok: the tick that measures free loop time
 
         t = asyncio.create_task(_ticker())
         await asyncio.sleep(0.01)

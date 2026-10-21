@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.testing.wait import until_parked
 
 
 @pytest.fixture(autouse=True)
@@ -288,11 +289,7 @@ def test_a_declined_reset_under_a_racing_turn_is_busy(tmp_path, eager):
 
 async def _queued_on(lock: asyncio.Lock) -> None:
     """Yield until a waiter is parked on *lock*, so the verb has passed its first gate."""
-    for _ in range(200):
-        if getattr(lock, "_waiters", None):
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("the reload never queued on the slot lock")
+    await until_parked(lock, describe=lambda: "the reload never queued on the slot lock")
 
 
 def test_a_target_linked_while_queued_on_its_lock_is_refused(tmp_path, eager):

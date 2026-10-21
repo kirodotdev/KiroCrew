@@ -23,7 +23,6 @@ the only real signals are to the test's own children.
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -34,6 +33,7 @@ from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import platform_compat, runtime_reconcile
 from kiro_crew import session_pid as sp
 from kiro_crew.acp import runtime_process_tree as tree
+from kiro_crew.testing.wait import wait_until
 
 live = pytest.mark.skipif(not comm_is_settable(), reason="needs a real Linux /proc")
 
@@ -57,10 +57,8 @@ class TestALiveProcessUnderTheName:
         with renamed_child() as (child, _):
             assert sp._pid_exited_but_unreaped(child) is False
             os.kill(child, 9)  # this test's own child
-            deadline = time.monotonic() + 10
-            while not sp._pid_exited_but_unreaped(child):  # a zombie until reaped
-                assert time.monotonic() < deadline, "the exit was never seen"
-                time.sleep(0.02)
+            # A zombie until reaped: the exit must be seen.
+            wait_until(lambda: sp._pid_exited_but_unreaped(child))
 
     def test_its_group_holds_a_live_member(self) -> None:
         with renamed_child() as (child, _):

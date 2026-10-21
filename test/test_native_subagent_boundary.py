@@ -102,6 +102,7 @@ from kiro_crew.adaptive.signals import SIGNAL_TIMEOUTS, classify
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_gateway.host_budget import HostBudget, HostBudgetExhausted, HostBudgetLimits
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
+from kiro_crew.testing.wait import finished
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -881,7 +882,7 @@ async def _await_frame(queue: asyncio.Queue, method: str) -> JsonRpcMessage:
     and nothing to settle. The method is asserted because an EARLIER frame
     arriving instead would satisfy the wait while proving nothing.
     """
-    msg = await asyncio.wait_for(queue.get(), timeout=_FRAME_CEILING_SECS)
+    msg = await finished(queue.get(), "the owner's next frame", timeout=_FRAME_CEILING_SECS)
     assert msg.method == method, f"the owner's next frame was {msg.method}, not {method}"
     return msg
 

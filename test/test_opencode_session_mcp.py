@@ -41,6 +41,7 @@ from kiro_crew.providers.mirrors.opencode import (
     opencode_tool_id,
     without_stdio_tag,
 )
+from kiro_crew.testing.wait import wait_until
 
 #: What opencode 1.18.30's ``initialize`` actually answered. Two fields, because
 #: ACP's ``McpCapabilities`` has exactly two -- which is the whole point: there is
@@ -1175,12 +1176,12 @@ def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
     # Windows, the sweep's caller filter recognises only the sanctioned helpers,
     # and a bare existence probe cannot tell our reaped grandchild's reissued
     # number from the grandchild itself.
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if platform_compat.get_process_start_id(grandchild) != grandchild_identity:
-            break
-        time.sleep(0.2)
-    else:  # pragma: no cover - the failure this test exists to catch
+    try:
+        wait_until(
+            lambda: platform_compat.get_process_start_id(grandchild) != grandchild_identity,
+            describe=lambda: f"pid {grandchild} still carries identity {grandchild_identity}",
+        )
+    except AssertionError:  # pragma: no cover - the failure this test exists to catch
         try:
             platform_compat.kill_pid_pinned(
                 grandchild, grandchild_identity, platform_compat.SIGKILL

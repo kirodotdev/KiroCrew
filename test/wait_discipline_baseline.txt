@@ -99,87 +99,37 @@
  3 test_llm_pool_ccworker.py
  2 test_local_turn_restart_marker.py
  3 test_mcp_apps_call_endpoint.py
- 1 test_mcp_gateway_recaller.py
- 1 test_mcp_gateway_session_inject.py
- 1 test_mcp_launch_approval.py
- 1 test_mcp_preflight.py
- 1 test_meetings_audio_import.py
- 1 test_members_eventlog_wiring_append_ordering.py
- 1 test_memory_admission_queue.py
  2 test_memv2_audit_a_prompt.py
  2 test_memv2_audit_c_followup.py
- 1 test_messaging_approval.py
- 1 test_messaging_attachments.py
- 1 test_messaging_auto_title.py
- 1 test_mochi_activity.py
- 1 test_mochi_autonomous_unfreeze.py
- 1 test_model_access_fallback_interactive.py
- 1 test_native_subagent_boundary.py
  2 test_oneshot_supervisor.py
- 1 test_opencode_session_mcp.py
- 1 test_papyrus_latex.py
- 1 test_pid_lifecycle_process_sweeps.py
  2 test_plan_mode.py
- 1 test_pod_e2e_video_guard.py
  2 test_pod_windows_boot.py
- 1 test_pptx_maker_routes.py
  2 test_private_cron_proxy.py
- 1 test_proc_non_utf8_kill_paths.py
- 1 test_provider_spawn_off_loop_18172.py
  2 test_push_guard_diagnostics.py
- 1 test_push_guard_squash.py
- 1 test_queue_boundary_finalize.py
- 1 test_registry_store_art_prewarm.py
- 1 test_registry_store_art_prewarm_rewarm.py
- 1 test_remote_crew_chaining.py
- 1 test_resource_pressure_notify.py
  9 test_resume_publishes_hydrated_slot.py
  5 test_runloop_integration.py
- 1 test_runtime_start_gate_headroom.py
- 1 test_sandbox_argv.py
  2 test_sandbox_mount_source_sweep.py
- 1 test_scenarios_v2_logic.py
  2 test_security_conductor_scripts_verify_finding.py
  2 test_sel.py
  2 test_sel_prune_streaming.py
- 1 test_session_autocompact_override.py
  2 test_session_broadcast.py
 16 test_session_capabilities.py
- 1 test_session_card_source_links_knob.py
  2 test_session_config_hot_reload.py
  3 test_session_control_audit.py
  2 test_session_control_create.py
- 1 test_session_control_reload.py
  2 test_session_control_rename.py
- 1 test_session_control_revive.py
  5 test_session_core_audit.py
  6 test_session_drain.py
  3 test_session_map_flush.py
- 1 test_session_map_mirror.py
- 1 test_session_more_coverage.py
- 1 test_session_not_found_surfaces.py
  3 test_session_pool_reaping.py
  7 test_session_pool_refill.py
- 1 test_session_pulse_counter.py
- 1 test_session_scope_reap_seams.py
  4 test_session_sharing.py
 10 test_session_start_gate.py
- 1 test_session_start_queued_behind.py
- 1 test_session_storage_api.py
- 1 test_session_terminated_reap.py
  2 test_session_transfer.py
  2 test_session_transfer_import_body.py
- 1 test_session_transfer_outbound.py
- 1 test_session_tree_push.py
  3 test_session_usage.py
- 1 test_session_usage_refresh_routes.py
- 1 test_session_usage_scrape.py
- 1 test_session_work_dir.py
  2 test_shell_audit_log.py
- 1 test_shutdown_event.py
- 1 test_side_steer_queue.py
  5 test_sign_in_refresher.py
- 1 test_skill_catalog_snapshot.py
  2 test_slack_gateway_coverage_mcp_broker.py
  2 test_slack_handler.py
  2 test_slack_handler_composition_contract_golden.py

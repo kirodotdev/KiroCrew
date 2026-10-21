@@ -449,20 +449,14 @@ class TestEnvHasKirocrewMarker:
         until the child completes exec (production is immune — the sweep's
         min-age guard runs long after exec).
         """
-        import time
-
         from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
         from kiro_crew.session_pid import _env_has_kirocrew_marker
+        from kiro_crew.testing.wait import wait_until
 
         env = {**os.environ, KIROCREW_SPAWNED_ENV: KIROCREW_SPAWNED_VALUE}
         proc = subprocess.Popen(["sleep", "30"], env=env)
         try:
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if _env_has_kirocrew_marker(proc.pid):
-                    break
-                time.sleep(0.05)
-            assert _env_has_kirocrew_marker(proc.pid) is True
+            wait_until(lambda: _env_has_kirocrew_marker(proc.pid) is True)
         finally:
             proc.kill()
             proc.wait()

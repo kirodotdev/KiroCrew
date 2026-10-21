@@ -28,6 +28,7 @@ from test_cron_acp_retry import gw_and_cb  # noqa: F401  (fixture)
 from kiro_crew.acp.client import AcpError
 from kiro_crew.llm_helpers import SESSION_NOT_FOUND_GIVE_UP_TEXT, SESSION_NOT_FOUND_RETRY_NOTICE
 from kiro_crew.providers.base import EVENT_TOOL_CALL, LLMEvent
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _lost() -> AcpError:
@@ -439,19 +440,25 @@ def test_cron_sequence_step_defers_reset_when_subagents_pending(gw_and_cb):  # n
 # ── subagent run ────────────────────────────────────────────────────────────
 
 
-async def _settle(mgr, info, rounds: int = 400) -> None:
+async def _settle(mgr, info) -> None:
     """Wait for *info* to end, following any respawned task."""
-    for _ in range(rounds):
-        task = mgr._tasks.get(info.id)
-        if task is not None and not task.done():
+
+    def _live_task():
+        for key in (info.id, f"{info.id}:recovery"):
+            task = mgr._tasks.get(key)
+            if task is not None and not task.done():
+                return task
+        return None
+
+    while not info.done:
+        # Between one task ending and its respawn registering there is no task to
+        # await, so wait on the state: the end itself, or a live task to follow.
+        await async_wait_until(
+            lambda: info.done or _live_task() is not None, describe=lambda: dict(mgr._tasks)
+        )
+        task = _live_task()
+        if task is not None:
             await task
-        recovery = mgr._tasks.get(f"{info.id}:recovery")
-        if recovery is not None and not recovery.done():
-            await recovery
-            continue
-        if info.done:
-            return
-        await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio

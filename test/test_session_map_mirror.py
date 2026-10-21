@@ -33,6 +33,7 @@ from kiro_crew.session_map import (
     SessionMap,
     set_unbind_listener,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture()
@@ -1614,10 +1615,10 @@ class TestAuditDoesNotBlockTheLoop:
             with patch("kiro_crew.session_map.sel", side_effect=RuntimeError("sel down")):
                 # The removal still commits despite the broken sink.
                 assert session_map.clear_mirror_link("dashboard:chat-1") is True
-                for _ in range(200):
-                    if any("audit failed" in r.message for r in caplog.records):
-                        break
-                    await asyncio.sleep(0.01)
+                await async_wait_until(
+                    lambda: any("audit failed" in r.message for r in caplog.records),
+                    describe=lambda: [r.message for r in caplog.records],
+                )
 
         assert session_map.get_mirror_link("dashboard:chat-1") is None
         assert any("audit failed" in r.message for r in caplog.records)

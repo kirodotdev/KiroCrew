@@ -29,6 +29,7 @@ from kiro_crew.apps.registry import (
     _prewarm_owner_tier_store_assets,
     _read_manifest_cache,
 )
+from kiro_crew.testing.wait import finished
 
 # ---------------------------------------------------------------------------
 # The rewarm-age import guard
@@ -239,7 +240,9 @@ class TestCloneFailureBackoff:
         monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 0.2)
         entry = _entry()
 
-        fetched = await asyncio.wait_for(_prewarm_owner_tier_store_assets(reg, [entry]), timeout=5)
+        fetched = await finished(
+            _prewarm_owner_tier_store_assets(reg, [entry]), "the prewarm returning at its budget"
+        )
         assert fetched == 0
         assert not reg_mod._clone_failure_path(entry).exists()
 

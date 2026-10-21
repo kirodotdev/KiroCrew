@@ -31,7 +31,7 @@ from kiro_crew.dashboard.chat_runner import (
 from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND
 from kiro_crew.dashboard.state import CRON_NOTIFY_PREFIX
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Short enough to keep the suite fast, long enough that the "after the grace
 # period" checks below really are after it.
@@ -98,12 +98,20 @@ def _hold_first_admission(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
 
 async def _settle(state, slot) -> None:
     """Wait until the slot is idle and no background drain is left running."""
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        pending = [t for t in state._background_tasks if not t.done()]
-        if not slot.running and not pending:
-            return
-    raise AssertionError("slot never went idle")
+    # The drain is armed by a done-callback on the preparation task, and callbacks
+    # fire in registration order on a later loop step: once this one has fired, a
+    # drain that was admitted is already among the background tasks.
+    callbacks_ran = asyncio.get_running_loop().create_future()
+    state.memory_startup_task.add_done_callback(lambda _task: callbacks_ran.set_result(None))
+    await await_until(callbacks_ran, what="the preparation task's done-callbacks")
+
+    def _pending() -> list:
+        return [t for t in state._background_tasks if not t.done()]
+
+    await async_wait_until(
+        lambda: not slot.running and not _pending(),
+        describe=lambda: f"running={slot.running} pending={_pending()}",
+    )
 
 
 def _finish_preparation(state) -> None:

@@ -29,6 +29,7 @@ import pytest
 
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.queue_poller import QueuePoller
+from kiro_crew.testing.wait import await_until
 
 
 class TestOwnerLoopNeverAwaitsPoll:
@@ -65,7 +66,7 @@ class TestOwnerLoopNeverAwaitsPoll:
 
         now["ms"] += 10 * 60_000  # past any spawn deadline
         poller.tick(now["ms"])
-        await asyncio.wait_for(wait_task, timeout=1)
+        await await_until(wait_task, what="the spawn watch check unfreezing")
 
 
 class TestSpawnCompletionWatcher:

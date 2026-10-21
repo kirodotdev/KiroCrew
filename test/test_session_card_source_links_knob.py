@@ -27,6 +27,7 @@ import kiro_crew.dashboard.handlers.source_providers as sp
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_source_links
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.testing.wait import default_timeout
 
 PRS = [f"https://github.com/acme/widgets/pull/{n}" for n in (11, 12)]
 ISSUES = [f"https://github.com/acme/widgets/issues/{n}" for n in (21, 22)]
@@ -145,7 +146,7 @@ class TestSnapshotRead:
         ):
             # Runs in a worker thread: marshal the Event back onto the loop.
             loop.call_soon_threadsafe(started.set)
-            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=5)
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=default_timeout())
             # The reading this load is holding: chips still ON.
             return frozenset(), frozenset(), True, frozenset(), frozenset()
 

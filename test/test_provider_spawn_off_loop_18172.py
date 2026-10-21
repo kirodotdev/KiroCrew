@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from kiro_crew import platform_compat  # noqa: E402
 from kiro_crew.dashboard.source_providers import runner  # noqa: E402
 from kiro_crew.testing.ids import unallocatable_pids  # noqa: E402
+from kiro_crew.testing.wait import async_wait_until  # noqa: E402
 
 _BLOCK_SECS = 0.4
 
@@ -431,14 +432,11 @@ class TestWindowsRealChild:
             )
         )
         try:
-            # Wait until the child exists, then assert; a failed assertion must
-            # still tear the worker and its child down (the finally below).
-            for _ in range(100):
-                if handle.get("proc") is not None:
-                    break
-                await asyncio.sleep(0.05)
-            proc = handle.get("proc")
-            assert proc is not None, "child never started"
+            # Wait until the child exists, then assert; a failed wait must still
+            # tear the worker and its child down (the finally below).
+            proc = await async_wait_until(
+                lambda: handle.get("proc"), describe=lambda: "child never started"
+            )
             handle["cancel"].set()
             with pytest.raises(asyncio.CancelledError):
                 await worker

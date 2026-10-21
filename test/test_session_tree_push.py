@@ -23,6 +23,7 @@ from kiro_crew.crew_log import session_tree_projection as stp
 from kiro_crew.crew_log.session_tree import EDGE_NAMED, EDGE_NONE, EdgeRecord, OpenedRecord
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -263,7 +264,6 @@ def test_a_failed_seed_is_retried_without_a_reader(monkeypatch):
     a retry that queued on it would never run.
     """
     import threading
-    import time
 
     monkeypatch.setattr(stp, "SEED_RETRY_COOLDOWN_SECS", 0.05)
     proj = stp.SessionTreeProjection()
@@ -284,9 +284,7 @@ def test_a_failed_seed_is_retried_without_a_reader(monkeypatch):
         proj.ensure_seeded()
         assert proj.reading().incomplete
         assert done.wait(5)
-        deadline = time.monotonic() + 5
-        while len(heard) < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: len(heard) >= 2, describe=lambda: heard)
     finally:
         proj.cancel_pending_checkpoint()
 

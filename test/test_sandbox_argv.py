@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +20,7 @@ import sandbox_argv_helpers
 
 import kiro_crew.sandbox as sandbox_mod
 from kiro_crew.sandbox import sandbox_exec_argv, wrap_argv
+from kiro_crew.testing.wait import wait_until
 
 # Several tests spawn real child interpreters (subprocess.run([sys.executable, ...]));
 # pin the module to a dedicated xdist worker so concurrent cold-starts under -n auto
@@ -551,11 +551,7 @@ class TestAgentSliceMemoryHigh:
                 # live config after the first releases it.
                 sb._reconcile_slice_memory_high_off_thread()
                 release.set()
-                for _ in range(200):
-                    if len(calls) == 2:
-                        break
-                    time.sleep(0.01)
-            assert len(calls) == 2
+                wait_until(lambda: len(calls) == 2, describe=lambda: f"reconcile calls: {calls}")
         finally:
             self._restore()
 

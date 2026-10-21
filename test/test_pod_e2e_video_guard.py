@@ -28,6 +28,7 @@ import pytest
 from non_utf8_comm import comm_is_settable, renamed_child
 
 from conftest import _find_posix_test_shell
+from kiro_crew.testing.wait import wait_until
 
 _SKILL = (
     Path(__file__).resolve().parent.parent
@@ -208,13 +209,14 @@ def test_descendant_pids_finds_a_grandchild(driver):
          "time.sleep(20)"]
     )
     try:
-        deadline = time.monotonic() + 5
-        pids: list[int] = []
-        while time.monotonic() < deadline:
-            pids = driver._descendant_pids(os.getpid())
-            if len(pids) >= 2:
-                break
-            time.sleep(0.1)
+
+        def _walked() -> list[int] | None:
+            found = driver._descendant_pids(os.getpid())
+            return found if len(found) >= 2 else None
+
+        pids = wait_until(
+            _walked, describe=lambda: f"descendants so far: {driver._descendant_pids(os.getpid())}"
+        )
         assert child.pid in pids
         assert len(pids) >= 2, "grandchild (chromium stand-in) not walked"
     finally:

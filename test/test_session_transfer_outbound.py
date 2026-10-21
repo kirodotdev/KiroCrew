@@ -416,8 +416,9 @@ async def test_an_upload_the_peer_stops_reading_times_out(tmp_path, monkeypatch)
         async with stall:
             with body.open("rb") as fh:
                 async for _chunk in mod._upload_chunks(fh, stall):
-                    # flake-ok: pre-existing 1 s stall that outlasts the patched 50 ms transfer timeout under test, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(1)  # the peer never reads the next chunk
+                    # The peer never reads the next chunk: only the lapsed
+                    # no-progress deadline can end this wait.
+                    await asyncio.Event().wait()
 
     with pytest.raises(TimeoutError):
         await _stalled_peer()

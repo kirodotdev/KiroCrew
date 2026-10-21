@@ -13,7 +13,6 @@ import shlex
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import push_guard_helpers
@@ -41,6 +40,7 @@ from push_guard_helpers import (
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import wait_until
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -484,11 +484,10 @@ class TestPushGuardSquash:
             start_new_session=True,
         )
         try:
-            for _ in range(300):
-                if mark.exists() or proc.poll() is not None:
-                    break
-                # flake-ok: 0.1 s poll step of a wait bounded at 300 steps for the hook's mark file
-                time.sleep(0.1)
+            wait_until(
+                lambda: mark.exists() or proc.poll() is not None,
+                describe=lambda: f"hook mark {mark} absent, hook exit {proc.poll()}",
+            )
             assert mark.exists(), "the hook never started"
             # SIGINT to the group is what a terminal's Ctrl-C sends.
             os.killpg(proc.pid, getattr(signal, sig))
