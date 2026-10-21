@@ -5674,7 +5674,8 @@ and it refuses to run while a file under proof carries uncommitted edits.
 
 ```bash
 python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/prove.py
-# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red
+# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 11 frontend tests · 30 baseline red
+# it also prints the `Proof:` line a fix PR pastes under `## Tests`
 # add --per-hunk to name the hunks no test catches
 ```
 

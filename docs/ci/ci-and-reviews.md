@@ -2098,7 +2098,15 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   completeness). The sweep check is **advisory**: it annotates a warning and passes
   until `ENFORCE_FROM` in the script names a date, after which it fails pull requests
   opened on or after that date. Locally `diff_signals.py --check-body` prints the same
-  findings and returns exit 23 only once the check is enforcing. The first five
+  findings and returns exit 23 only once the check is enforcing. A further advisory
+  check asks a `fix:` PR for one `Proof:` line inside `## Tests`
+  (`.github/scripts/proof_line_check.py`, run from the base ref so a branch cannot weaken
+  it): `Proof: PROVEN <tests that fail without the fix> (head <sha12>)`, or `Proof: not
+  provable -- <reason>` from a closed list. It checks presence, place and shape only, so a
+  hand-typed `PROVEN` line passes CI; locally `diff_signals.py --check-body` compares the
+  line with the record `prove.py` writes for the same tree and returns exit 24 once
+  enforcing. Until `ENFORCE_FROM` in the script names a date it annotates a warning and
+  passes; after it, it fails pull requests opened on or after that date. The first five
   checks are blocking.
 
 Separately, **`dependency-review.yml`** fails a PR that adds or changes a

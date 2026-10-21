@@ -14,7 +14,7 @@ over prose.
 | `Fast Gate` | yes | fix it first: the heavy matrix and the fork AI lanes wait on it, so fewer red checks does not mean fewer defects |
 | `Internal Content Scan` | yes | an added line carries internal-only content; remove it (`docs/system-specs/oss-fork-boundaries.md`) |
 | `CI`, `Build` | yes | tests, lint, coverage, e2e, artifacts — Phase 3 (a) |
-| `Code Review` | yes | grep rules, Semgrep, woke, and PR Hygiene: a Conventional-Commits title, at most two commits, the template's headings with a filled `**Goal:**`, `## Pattern harvest` on a `fix`/`revert` PR (plus a `## Sibling sweep`, a warning for now), and a `Reader:` line when the diff takes something away |
+| `Code Review` | yes | grep rules, Semgrep, woke, and PR Hygiene: a Conventional-Commits title, at most two commits, the template's headings with a filled `**Goal:**`, `## Pattern harvest` on a `fix`/`revert` PR (plus a `## Sibling sweep` and, on a `fix:` PR, a `Proof:` line inside `## Tests`, both warnings for now), and a `Reader:` line when the diff takes something away |
 | `Issue Gate` | once enabled | the issue line or its tier (SKILL.md's *Issue first*) |
 | `Opus 5.5 Review`, `GPT 6.1 Review` | Critical/High | line-level findings — Phase 3 (b) |
 | `Security Scope Review` | yes | each row is a legitimate operation your tightening newly refuses; narrow the rule, or override `scope` |
