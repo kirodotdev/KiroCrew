@@ -81,6 +81,7 @@ export type {
   ChatMessage,
   ChatSlotDetailResponse,
   SubagentActivity,
+  SubagentTranscriptItem,
   ToolPayloadCut,
   ToolActivity,
   BlockType,

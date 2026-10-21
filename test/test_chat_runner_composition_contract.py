@@ -1272,6 +1272,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     ),
     r"StreamRedactor": (
         _RUNNER_HOME,
+        "dashboard/chat_turn/native_cards.py",
         "dashboard/chat_turn/turn_entry.py",
         "dashboard/chat_turn/turn_locals.py",
     ),

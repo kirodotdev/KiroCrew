@@ -291,6 +291,8 @@ def test_terminal_children_do_not_count_as_announced():
     tracker["child-live"] = {"done": False, "started": 0.0}
     unfinished = any(not i.get("done") for i in tracker.values())
     assert unfinished is True
-    chat_runner._native_subagent_close_all(state, slot, tracker, None)
+    chat_runner._native_subagent_close_all(
+        state, slot, tracker, None, card_output_len={}, streams={}
+    )
     assert all(i.get("done") for i in tracker.values())
     assert unfinished is True  # snapshot unaffected by close_all

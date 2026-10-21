@@ -66,6 +66,8 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
     STOP_RECOVERY_MAX_RETRIES,
+    SUBAGENT_ACTIVITY_THINKING,
+    SUBAGENT_ACTIVITY_TOOL_RESULT,
     TERMINAL_TOOL_STATUSES,
     WAIT_REASON_INPUT,
     RefusalInfo,
@@ -293,8 +295,14 @@ from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _sync_served_model,
 )
 from kiro_crew.dashboard.chat_turn.native_cards import (
+    _NATIVE_DENIED_PAST_BOUND_REASON,
+    _NATIVE_NOT_APPLIED_NOTE,
+    _NATIVE_NOT_APPLIED_PAST_BOUND,
     _append_native_output,
+    _native_subagent_activity,
     _native_subagent_close_all,
+    _native_subagent_flat_call,
+    _native_subagent_flat_result,
     _native_subagent_sync,
     _post_native_question_card,
     _retain_terminal_native,
@@ -577,6 +585,14 @@ from kiro_crew.dashboard.handlers.usage import (
     read_turn_model,
 )
 from kiro_crew.dashboard.member_message_notes import post_turn_reply
+from kiro_crew.dashboard.native_subagent_cards import (
+    _NATIVE_RUNNING_PREFIX,
+    NATIVE_SUBAGENT_INPUT_CHARS,
+    NATIVE_SUBAGENT_RESULT_CHARS,
+    NATIVE_SUBAGENT_UNNAMED_FEED_LINE,
+    _admit_native_call,
+    _native_output_is_new,
+)
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -616,6 +632,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     HOOK_CONTINUATION_RECOVERY_PREFIX,
     HOOK_HALTED_RECOVERY_PREFIX,
     MONITOR_WAKE_PREFIX,
+    NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
     NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
     NATIVE_SUBAGENT_OUTPUT_HARD,
@@ -1574,6 +1591,8 @@ async def _run_chat(
     _leak_card_posted = turn._leak_card_posted
     _native_card_output = turn._native_card_output
     _native_card_output_len = turn._native_card_output_len
+    _native_result_seen = turn._native_result_seen
+    _native_streams_red = turn._native_streams_red
     _native_tc_card = turn._native_tc_card
     _native_tracker = turn._native_tracker
     _noticed_leak = turn._noticed_leak
@@ -2790,18 +2809,23 @@ async def _run_chat(
                     slot.key,
                 )
                 _native_subagent_sync(
-                    state, slot, event.subagents, _native_tracker, _native_card_output
+                    state,
+                    slot,
+                    event.subagents,
+                    _native_tracker,
+                    _native_card_output,
+                    _native_card_output_len,
+                    _native_streams_red,
                 )
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
-                # kiro-cli's _kiro.dev/session/update tags a sub-agent's inner
-                # tool call with its sessionId. This ALWAYS arrives before the
-                # corresponding flat tool_call/tool_call_update, so building the
-                # toolCallId->card map here lets those flat events (which carry
-                # the full tool title AND the real output) attribute to the
-                # right sub-agent card.
+                # A native child's frame, re-tagged by the handle with the
+                # child's sessionId. Its tool calls, results, reasoning and
+                # text are projected onto the child's card by
+                # ``_native_subagent_activity`` -- which also fills the
+                # toolCallId->card map the flat tool_call/tool_result arms
+                # read, for a wire that tags a child's frames with the
+                # parent's sessionId.
                 _sid = event.sub_session_id
-                if _sid in _native_tracker and event.tool_call_id:
-                    _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
                 # Permission-rejection notices (the handle's own "⛔ …" lines,
                 # e.g. drain-time rejects yielded at turn start) arrive BEFORE
                 # any subagent_list populates the per-turn tracker — dropping
@@ -2811,20 +2835,17 @@ async def _run_chat(
                 if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
                     _txt = redact(event.text)
                     slot.append("notice", _txt, "msg msg-info")
-                # Some kiro-cli builds also stream the sub-agent's own text via
-                # agent_message_chunk on this channel — surface it on the card.
-                if _sid in _native_tracker and event.text:
-                    _card_id = f"native:{_redact_tool_field(_sid)}"
-                    _txt = redact(event.text)
-                    _native_card_output_len[_card_id] = _append_native_output(
-                        _native_card_output.setdefault(_card_id, []),
-                        _txt,
-                        _native_card_output_len.get(_card_id, 0),
-                    )
-                    state.broadcast_ws(
-                        "subagent_chunk",
-                        {"id": _card_id, "slot": slot.key, "text": _txt},
-                    )
+                _native_subagent_activity(
+                    state,
+                    slot,
+                    event,
+                    _native_tracker,
+                    _native_card_output,
+                    _native_card_output_len,
+                    _native_tc_card,
+                    _native_result_seen,
+                    _native_streams_red,
+                )
             elif event.kind == EVENT_COMPLETE:
                 # Latch the terminal reason the INSTANT the completion arrives,
                 # before any cancellable await in this arm runs. The full
@@ -2936,7 +2957,14 @@ async def _run_chat(
                 # Safety net: complete any native subagent cards still marked
                 # running at turn end (in case a terminal status was missed),
                 # so cards don't stay stuck "running".
-                _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+                _native_subagent_close_all(
+                    state,
+                    slot,
+                    _native_tracker,
+                    _native_card_output,
+                    card_output_len=_native_card_output_len,
+                    streams=_native_streams_red,
+                )
                 _u = event.usage
                 if monitor_completion is not None and is_monitor_completion_evidence(
                     event.stop_reason,
@@ -7056,7 +7084,14 @@ async def _run_chat(
         # long-completed children for a later ceiling timeout.
         _children_unfinished_final = any(not _i.get("done") for _i in _native_tracker.values())
         try:
-            _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+            _native_subagent_close_all(
+                state,
+                slot,
+                _native_tracker,
+                _native_card_output,
+                card_output_len=_native_card_output_len,
+                streams=_native_streams_red,
+            )
         finally:
             slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
             slot._native_subagent_output = {}
