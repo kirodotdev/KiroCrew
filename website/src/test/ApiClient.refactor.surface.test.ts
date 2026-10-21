@@ -121,7 +121,7 @@ const API_KEY_ORDER = [
   'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideOpen',
   'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose', 'sideStop',
   'chatMode', 'generateTitle', 'resolveNavLinks', 'renameSlot', 'setTodoTask',
-  'regenerateSlot', 'continueSlot', 'resetConversation', 'switchVariant', 'editResend',
+  'regenerateSlot', 'continueSlot', 'resetConversation', 'repairImages', 'switchVariant', 'editResend',
   'rewind', 'slackLink', 'unlinkSlack', 'pauseSlack',
   'pauseMirror', 'channelTargets', 'linkMirror', 'remindMirror',
   'unlinkMirror', 'slackChannels', 'chatFolders', 'createChatFolder',

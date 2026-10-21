@@ -17,6 +17,7 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { useTurnRecovery } from '../pages/chat/page/turnRecovery'
 import { settingsPath } from '../components/settingsPath'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
@@ -160,4 +161,72 @@ describe('fresh session on a context overflow', () => {
       expect(hook.result.current.cardOwnsRecovery).toBe(true)
     })
   }
+})
+
+describe('repair images on a many-image pixel-cap wedge', () => {
+  const coded = (code: string, message = 'x') => new ApiError(409, message, JSON.stringify({ code, error: message }))
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('repairs, re-issues, and reports done when the turn resumed', async () => {
+    const repair = vi.spyOn(api, 'repairImages').mockResolvedValue({ slot: 'slot-a', repaired: true, resumed: true })
+    const { hook } = harness()
+    expect(hook.result.current.repairImages).toBe('idle')
+    await act(async () => { hook.result.current.handleRepairImages() })
+    expect(repair).toHaveBeenCalledWith('slot-a')
+    expect(hook.result.current.repairImages).toBe('done')
+  })
+
+  it('reports done_not_resumed when the repair landed but the re-issue raced', async () => {
+    vi.spyOn(api, 'repairImages').mockResolvedValue({ slot: 'slot-a', repaired: true, resumed: false })
+    const { hook } = harness()
+    await act(async () => { hook.result.current.handleRepairImages() })
+    expect(hook.result.current.repairImages).toBe('done_not_resumed')
+  })
+
+  it('stays idle when nothing was over the cap (repaired=false), re-issuing the turn', async () => {
+    vi.spyOn(api, 'repairImages').mockResolvedValue({ slot: 'slot-a', repaired: false, resumed: false })
+    const { hook } = harness()
+    await act(async () => { hook.result.current.handleRepairImages() })
+    expect(hook.result.current.repairImages).toBe('idle')
+  })
+
+  it('goes to the failed dead-end on image_repair_backup_exists, suppressing the top notice', async () => {
+    vi.spyOn(api, 'repairImages').mockRejectedValue(coded('image_repair_backup_exists', 'a .pre-image-repair.bak sidecar already exists'))
+    const { opts, hook } = harness()
+    await act(async () => { hook.result.current.handleRepairImages() })
+    // The failed card carries its own reason, so no refused-press notice on top.
+    expect(opts.showRefusedPress).not.toHaveBeenCalled()
+    expect(hook.result.current.repairImages).toBe('failed')
+  })
+
+  it('stays retryable on image_repair_failed, showing the friendly localized hint', async () => {
+    vi.spyOn(api, 'repairImages').mockRejectedValue(coded('image_repair_failed', 'the transcript moved under the repair'))
+    const { opts, hook } = harness()
+    await act(async () => { hook.result.current.handleRepairImages() })
+    // Generic repair failure: the friendly hint, NOT the raw backend text.
+    const [action, err] = (opts.showRefusedPress as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(action).toBe('repair_images')
+    expect((err as Error).message).not.toContain('transcript moved')
+    expect(hook.result.current.repairImages).toBe('idle')
+  })
+
+  it('surfaces the specific reason for a transient reload 409 instead of the generic hint', async () => {
+    vi.spyOn(api, 'repairImages').mockRejectedValue(coded('turn_in_flight', 'a turn is already in flight on this slot'))
+    const { opts, hook } = harness()
+    await act(async () => { hook.result.current.handleRepairImages() })
+    const [action, err] = (opts.showRefusedPress as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(action).toBe('repair_images')
+    // A transient code carries an actionable reason, so it is passed through.
+    expect((err as Error).message).toContain('turn is already in flight')
+    expect(hook.result.current.repairImages).toBe('idle')
+  })
+
+  it('does nothing while a turn is running', async () => {
+    const repair = vi.spyOn(api, 'repairImages').mockResolvedValue({ slot: 'slot-a', repaired: true, resumed: true })
+    const { opts, hook } = harness()
+    hook.rerender({ ...opts, slotRunning: true })
+    await act(async () => { hook.result.current.handleRepairImages() })
+    expect(repair).not.toHaveBeenCalled()
+  })
 })

@@ -13,25 +13,30 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _GUARDED_WRITE_WAIT_SECS,
+        _SESSION_RELOAD_NOTICE,
         DashboardState,
         NudgeLoop,
         SlotCloseError,
+        SlotContinueRefusal,
         _app_cancel_denied,
         _ChatSlot,
         _history_key_for,
         _persist_handover_tail,
         _replacement_shares_transcript,
         _resettle_restricted_key,
+        _slot_replaced_while_queued,
         _subagents_attached_response,
         _switch_target_busy,
         _sync_dashboard_slots,
         _unblock_pending_waits,
+        continue_slot_turn,
         deny_app_slot_access,
         effective_session_key,
         logger,
         loop_slot_keys,
         note_slot_closed,
         read_bounded_json,
+        reload_slot_session,
         save_slot_off_loop,
         sel,
         select_idle_slot_keys,
@@ -230,6 +235,227 @@ async def _restore_slot_nudge_loop(
         # too. The 500 already tells the caller the close did not happen; the
         # retired loop is visible as gone in the dashboard, not silently dead.
         logger.warning("autonudge loop restore after failed slot close failed", exc_info=True)
+
+
+async def api_chat_slot_repair_images(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/repair-images — recover a many-image-wedged turn.
+
+    The remedy the ``image_repair`` error-card kind points at. When a turn is
+    refused because an image already in the native history exceeds the provider's
+    2000px many-image cap (the ``image_dimension_wedge`` tag), Resume replays the
+    identical history and fails the same way. This route downscales the oversized
+    images in place in the transcript and re-issues the interrupted turn, so no
+    turns are lost -- unlike reset-conversation, which starts over.
+
+    One mechanism, in order: (1) tear the slot's kiro-cli process down through
+    the shared :func:`reload_slot_session` path, which carries every busy /
+    children / rebind guard the reload and reset routes use; (2) WHILE that
+    process is down and both locks are held -- the only moment
+    ``session_image_repair`` will touch the transcript, since it refuses a file a
+    live kiro-cli holds -- scan and, if anything is over the cap, rewrite the
+    transcript in place with its ``.pre-image-repair.bak`` sidecar; (3) let the
+    reload path re-arm the resume spawn, which ``session/load``s the repaired
+    transcript; (4) re-issue the interrupted turn with ``continue_slot_turn``.
+
+    A transcript that turns out to need no repair (every image already within the
+    cap) is left untouched and the turn is still re-issued: the wedge may have
+    been cleared by hand, and re-sending a now-compliant history is the recovery
+    either way.
+
+    Authorization and the guard callbacks are the reload route's own, so an app
+    token must own both the slot and the session, and every refusal maps the
+    same way. The repair step's own refusals (a transcript that moved under it,
+    an existing sidecar) surface as a 409; a process still live after teardown is
+    the reload path's ``turn_in_flight``.
+    """
+    from kiro_crew import session_image_repair
+    from kiro_crew.config.paths import kiro_sessions_dir
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return slot_not_found()
+
+    def _still_ours(_after_reset: bool) -> bool:
+        return not _slot_replaced_while_queued(
+            state, slot, name, request, "chat.slot_repair_images"
+        )
+
+    def _denied(session_key: str) -> "web.Response | None":
+        return _app_cancel_denied(request, slot, "chat.slot_repair_images", session_key)
+
+    def _busy(session_key: str) -> bool:
+        provider = state.sessions.get_provider(session_key)
+        if provider is not None and provider.has_active_turn():
+            return True
+        return _switch_target_busy(state, slot, session_key, provider)  # type: ignore[arg-type]
+
+    # Records whether the in-lock repair actually REWROTE a transcript. The
+    # route reports ``repaired`` from this, not unconditionally: a session with
+    # no transcript, or one already within the cap, is left untouched and must
+    # not claim a repair. A real repair FAILURE (sidecar exists, transcript
+    # moved, OSError) raises out of the hook instead -- which propagates through
+    # ``reload_slot_session`` and SKIPS the respawn, so the turn is never
+    # re-issued onto an unrepaired transcript.
+    repair_state: dict[str, object] = {"rewrote": False}
+
+    class _RepairFailed(Exception):
+        def __init__(self, message: str, code: str = "image_repair_failed") -> None:
+            super().__init__(message)
+            self.message = message
+            # Distinguishes the one PERMANENT refusal (a prior backup sidecar
+            # blocks a second repair -> image_repair_backup_exists, a dead end
+            # the frontend answers with "start a fresh session") from the other
+            # causes (moved transcript, unverifiable scan, OSError) that map to
+            # the generic image_repair_failed and stay retryable.
+            self.code = code
+
+    async def _repair_transcript(session_key: str) -> None:
+        # The process is down and both locks are held: the one window
+        # session_image_repair will act in. The transcript file is
+        # ``kiro_sessions_dir()/<sid>.jsonl`` for the resumable sid the reload
+        # path preserved; with no sid there is no accumulated conversation to
+        # repair, so the repair is simply skipped (rewrote stays False).
+        sessions_dir = kiro_sessions_dir()
+
+        def _run() -> tuple[bool, str | None, str]:
+            # Returns (rewrote, error). ``error`` is a real repair failure, which
+            # the caller turns into a raise so the respawn is skipped. The whole
+            # body runs off the event loop (``asyncio.to_thread`` below): both
+            # the resumable-sid lookup (a persisted-state FILE CHECK) and the
+            # transcript-path probe (a ``stat`` per suffix on the sessions
+            # mount) land here rather than stalling the loop if that mount is
+            # slow to answer.
+            sid = state.sessions.resumable_sid(session_key) or ""
+            if not sid:
+                # No resumable session: nothing accumulated to repair, skip.
+                return (False, None, "")
+            # ``session_image_repair`` operates on the kiro-cli ``<sid>.jsonl``
+            # transcript. (The ``<sid>.json`` file kiro-cli also keeps is resume
+            # metadata, not the conversation, so it is deliberately not a
+            # fallback here.)
+            transcript_path = sessions_dir / f"{sid}.jsonl"
+            if not transcript_path.exists():
+                # No accumulated conversation to repair; skip, not a failure.
+                return (False, None, "")
+            report, lines = session_image_repair.scan_file(transcript_path)
+            if report.error:
+                return (
+                    False,
+                    f"could not read the transcript: {report.error}",
+                    "image_repair_failed",
+                )
+            if report.unanchored_images or report.walk_truncated:
+                # The scan's tripwire fired: the generic walk saw image-shaped
+                # blocks the anchored traversal did not, or the walk hit its
+                # depth ceiling. Either way scan_file's "nothing over the cap"
+                # cannot be trusted, so treating lines=None as "re-issue as-is"
+                # would silently replay the same wedge. Refuse instead -- a real
+                # failure the route maps to a 409 -- rather than respawn onto a
+                # transcript whose images the scan could not fully see.
+                return (
+                    False,
+                    "the transcript scan could not verify every image "
+                    "(the conversation shape may have drifted); not re-issued",
+                    "image_repair_failed",
+                )
+            if lines is None:
+                # Nothing over the cap; leave the file untouched. Not a failure
+                # -- the wedge may have cleared by hand -- so the turn is still
+                # re-issued, but repaired stays False.
+                return (False, None, "")
+            try:
+                session_image_repair.apply_repair(
+                    transcript_path,
+                    lines,
+                    backup=True,
+                    expect=report.source_stat,
+                )
+            except session_image_repair.BackupExistsError as exc:
+                # A prior repair on this session already wrote the
+                # ``.pre-image-repair.bak`` sidecar. That sidecar is the single
+                # recovery copy of the original bytes, and the repair module
+                # refuses to overwrite it ON PURPOSE (its "No --no-backup flag"
+                # decision), so a second wedge is refused rather than rewritten
+                # without a backup. This is the one PERMANENT dead end (only a
+                # manual file move clears it), so it gets its own code and the
+                # frontend offers a fresh session rather than a pointless retry.
+                return (False, str(exc), "image_repair_backup_exists")
+            except session_image_repair.TranscriptMovedError as exc:
+                return (False, str(exc), "image_repair_failed")
+            except session_image_repair.TranscriptLiveError as exc:
+                # Should not happen -- the process is down -- but surface it
+                # rather than respawn onto an unrepaired transcript.
+                return (False, str(exc), "image_repair_failed")
+            except OSError as exc:
+                return (False, f"could not write the repair: {exc}", "image_repair_failed")
+            return (True, None, "")
+
+        rewrote, err, code = await asyncio.to_thread(_run)
+        if err is not None:
+            # Raise so reload_slot_session's after_reset hook propagates and the
+            # respawn is SKIPPED -- the turn is never re-issued onto a transcript
+            # the repair could not fix.
+            raise _RepairFailed(err, code)
+        repair_state["rewrote"] = rewrote
+
+    try:
+        resp = await reload_slot_session(
+            state,
+            slot,
+            name,
+            still_ours=_still_ours,
+            denied=_denied,
+            busy=_busy,
+            notice=_SESSION_RELOAD_NOTICE,
+            after_reset_in_lock=_repair_transcript,
+        )
+    except _RepairFailed as exc:
+        # The teardown ran and the repair was refused, so the respawn did not
+        # happen and no turn was re-issued. The slot is idle and resumable. The
+        # code distinguishes the permanent backup-exists dead end (the frontend
+        # offers a fresh session) from the other causes (retryable).
+        return web.json_response(
+            {"error": exc.message, "code": exc.code, "slot": name},
+            status=409,
+        )
+    # A non-2xx reload response (a 404/409 from its guards) is returned as-is:
+    # nothing was re-issued because the teardown itself was refused.
+    if resp.status >= 300:
+        return resp
+    repaired = bool(repair_state["rewrote"])
+    # Re-issue the interrupted turn against the (possibly repaired) reloaded
+    # conversation. Outside the reload locks: continue_slot_turn takes slot._lock
+    # itself.
+    try:
+        await continue_slot_turn(
+            state,
+            slot,
+            directive_user_origin=not bool(request.get("app", "")),
+            # Same-name registration can change while the lock or child probe
+            # waits, exactly as it can for the plain Continue endpoint.
+            replaced=lambda: _slot_replaced_while_queued(
+                state, slot, name, request, "chat.slot_repair_images"
+            ),
+            via="repair_images",
+        )
+    except SlotContinueRefusal as exc:
+        # The slot is reloaded (and repaired, if anything was over the cap); the
+        # turn was not re-issued (e.g. a turn started racing). Report
+        # ``resumed: False`` so the frontend keeps a Resume affordance instead
+        # of claiming the turn runs. ``exc`` is logged, not returned: the
+        # frontend branches on ``resumed`` alone.
+        logger.info("Slot %s repair re-issue refused: %s (%s)", name, exc.message, exc.code)
+        return web.json_response(
+            {
+                "slot": name,
+                "repaired": repaired,
+                "resumed": False,
+            },
+            status=200,
+        )
+    return web.json_response({"slot": name, "repaired": repaired, "resumed": True})
 
 
 async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response:

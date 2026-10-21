@@ -11262,7 +11262,14 @@
         "restart_gateway_failed": "Das Gateway wurde nicht neu gestartet.",
         "restart_gateway_refused_hint": "Bitte die Person, die dieses Gateway betreibt, es neu zu starten. Sie kann {{command}} in einem Terminal ausführen.",
         "restart_gateway_retry_hint": "Drücke erneut „{{button}}“ oder führe {{command}} in einem Terminal aus.",
-        "restart_gateway_refused_title": "Dieses Konto kann das Gateway nicht neu starten."
+        "restart_gateway_refused_title": "Dieses Konto kann das Gateway nicht neu starten.",
+        "repair_images": "Bilder reparieren und fortsetzen",
+        "repair_images_pending": "Bilder werden repariert…",
+        "repair_images_hint": "Verkleinert die zu großen Bilder, damit der Chat fortgesetzt werden kann. Deine Nachrichten bleiben erhalten und die Originale werden gesichert. Du kannst einen Chat einmal reparieren; ein fehlgeschlagener Versuch zählt nicht.",
+        "repair_images_done": "Bilder repariert. Der Assistent antwortet wieder.",
+        "repair_images_done_not_resumed": "Bilder repariert. Drücke auf Fortsetzen, um die Antwort fortzusetzen.",
+        "repair_images_failed": "Bilder können in einem Chat nicht zweimal repariert werden. Starte eine neue Sitzung, um fortzufahren — dieser Chat bleibt in deiner Liste, und der Assistent macht anhand einer Zusammenfassung weiter.",
+        "repair_images_retry_hint": "Diesmal ist etwas schiefgelaufen, daher wurde deine eine Reparatur nicht verbraucht — du kannst es erneut versuchen."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",
@@ -12326,7 +12333,8 @@
       "comments_refused": "{{name}} hat diese Kommentare nicht erhalten — sende sie aus dem Dokument erneut. Die Kommentare sind noch dort.",
       "comments_refused_overlay": "{{name}} hat diese Kommentare nicht erhalten — öffne das Seitenpanel erneut und sende sie noch einmal. Die Kommentare sind noch im Dokument.",
       "comments_sent_other": "{{count}} Kommentare gesendet",
-      "your_crewmate": "Dein Crewmate"
+      "your_crewmate": "Dein Crewmate",
+      "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

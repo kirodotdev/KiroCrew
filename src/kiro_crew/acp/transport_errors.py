@@ -140,6 +140,14 @@ class AcpError(Exception):
         # current attachment from an unsupported image retained in native
         # history. Set only from the raw provider data field.
         self.image_format_unsupported: bool = False
+        # Narrow structural subtype for the provider's many-image PIXEL cap: an
+        # image already in native history exceeds 2000px on its longest edge.
+        # Distinct from ``image_format_unsupported`` and ``context_overflow``
+        # because its fix is distinct -- the oversized images can be downscaled
+        # in the transcript in place (``session_image_repair``), losing no turns.
+        # The dashboard reads this flag to offer "Repair images and resume"
+        # instead of Resume. Set only from the raw provider data field.
+        self.image_dimension_wedge: bool = False
         # Whether a TRANSIENT failure is the network path to the provider
         # (dispatch failure, connection reset or refused, DNS, TLS, connect
         # timeout) rather than a provider answer such as a 5xx or a throttle.
@@ -960,6 +968,26 @@ _RE_IMAGE_FORMAT_UNSUPPORTED = re.compile(
     re.IGNORECASE,
 )
 
+# The provider's "many-image" PIXEL-DIMENSION cap: once a conversation holds more
+# than ~20 images, every image in it must be <= 2000 px on its longest edge, and
+# ONE oversized image rejects the whole turn with
+# "image dimensions exceed max allowed size for many-image requests: 2000 pixels".
+# The offending bytes are an image already in the NATIVE history (kiro-cli's
+# built-in ``read``/Image tool inlines a file at full resolution and never checks
+# its pixel size), so Resume re-sends the identical payload and fails identically
+# -- but UNLIKE the structural rejections above this one is RECOVERABLE in place:
+# the oversized images can be downscaled where they sit in the transcript
+# (``session_image_repair``), losing no turns, rather than needing a fresh
+# conversation. So it carries its OWN tag (``image_dimension_wedge``), distinct
+# from ``context_overflow`` whose only fix is a reset. Matched against ``data``
+# only, like its image siblings, so a phrase echo in the JSON-RPC ``message``
+# cannot stamp an unrelated error. The word boundary on "pixels" keeps the match
+# anchored to the dimension verdict and not to any sentence mentioning images.
+_RE_MANY_IMAGE_DIMENSION = re.compile(
+    r"image dimensions? exceed max allowed size for many-image requests",
+    re.IGNORECASE,
+)
+
 # kiro-cli's OWN refusal of a request no compaction round can make fit: "This
 # message is too large to send, and it contains no text that can be shortened.
 # Remove or reduce the attached content and try again." It is raised when the
@@ -1151,6 +1179,14 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # intentional and self-documenting, not incidental to the False
         # fall-through, and so a future transient marker added below cannot
         # accidentally match malformed-request wording.
+        return False
+    if _RE_MANY_IMAGE_DIMENSION.search(data):
+        # Terminal on this conversation: an image already in the native history
+        # exceeds the provider's 2000px many-image cap, so replaying the same
+        # history is refused identically every time. Recovery is to downscale the
+        # offending images in place (session_image_repair), not to retry. Scoped
+        # to `data` like its image siblings, and stated explicitly so a
+        # co-occurring 5xx wrapper or retry hint cannot rescue a dimension verdict.
         return False
     if _RE_CONTEXT_WINDOW_OVERFLOW.search(data):
         # Terminal on this native session: its startup/turn envelope already
@@ -1466,6 +1502,31 @@ def _format_acp_error_worded(
                 "This chat is too big for the model to read in one request (Input is "
                 "too long), often because it holds many images such as screenshots. "
                 "Retrying or switching models will not help. Start a fresh session."
+                f"{req_id_suffix}"
+            )
+        elif _RE_MANY_IMAGE_DIMENSION.search(data):
+            # The provider's many-image PIXEL cap (>2000px on an image already in
+            # history). The provider's sentence first, then the fix. Surface-blind
+            # like its image siblings: it names no dashboard control and no
+            # command, only the remedy. The remedy DIFFERS by harness, because the
+            # dashboard's "Repair images and resume" card is wired only for Kiro
+            # (the ``image_dimension_wedge`` tag below is set only on that
+            # backend). Telling a non-Kiro harness to repair in place would name a
+            # recovery it has no way to run, so those harnesses are told to start
+            # a fresh conversation -- the recovery they do have -- instead.
+            if backend in ("", ACP_BACKEND_KIRO):
+                recovery = (
+                    "Recover by repairing the oversized images in place -- "
+                    "downscaling them in the stored conversation -- which loses no "
+                    "turns, unlike starting a fresh session."
+                )
+            else:
+                recovery = "Start a new conversation so the oversized images are not " "replayed."
+            formatted = (
+                "An image already in this conversation is larger than the model's "
+                "2000-pixel limit for conversations with many images, so the whole "
+                "turn was refused. Retrying will not help. "
+                f"{recovery}"
                 f"{req_id_suffix}"
             )
         elif _RE_IMAGE_FORMAT_UNSUPPORTED.search(data):
@@ -1816,10 +1877,11 @@ def _raise_acp_error(
     )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four
+    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Five
     # answers carry the tag: context-window overflow, malformed request, image
-    # validation failure, and kiro-cli's own refusal of a request it could not
-    # shrink to fit -- each reproduced exactly by re-sending the same context.
+    # validation failure, the many-image pixel-dimension cap, and kiro-cli's own
+    # refusal of a request it could not shrink to fit -- each reproduced exactly
+    # by re-sending the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
     # The claude adapter's overflow rides in ``message`` (anchored match, see
@@ -1829,10 +1891,12 @@ def _raise_acp_error(
         or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)
     )
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
+    _image_dimension_wedge = bool(_RE_MANY_IMAGE_DIMENSION.search(raw_data_field))
     if (
         _context_overflow
         or _RE_MALFORMED_REQUEST.search(raw_data_field)
         or _image_format_unsupported
+        or _image_dimension_wedge
         or _RE_OVERSIZED_REQUEST.search(raw_data_field)
     ):
         err.structural_terminal = True
@@ -1843,6 +1907,20 @@ def _raise_acp_error(
         err.context_overflow = True
     if _image_format_unsupported:
         err.image_format_unsupported = True
+    if _image_dimension_wedge:
+        # Terminal for every harness (re-sending the same oversized history is
+        # refused identically), so transient stays False. But the REPAIR this
+        # tag offers is Kiro-only -- it rewrites kiro-cli's own transcript -- so
+        # the dashboard-repair tag is set only for the kiro-cli backend
+        # (``""`` IS the kiro id, per the session-expiry branch above). Under
+        # another harness the error stays terminal and structural but carries no
+        # repair affordance, which is honest: a remedy written for Kiro is not
+        # offered by default to a harness it cannot help (AGENTS.md "Harness
+        # parity", the H-class negative-identity shape). The self-wake loop reads
+        # structural_terminal (set above) and stops re-firing regardless.
+        err.transient = False
+        if backend in ("", ACP_BACKEND_KIRO):
+            err.image_dimension_wedge = True
     # Tag a model-rejection so the SUBSTITUTE (background) retry layer can pick a
     # served model; harmless on every other error (attributes just stay unset).
     rejected = _rejected_model_from_error(error)

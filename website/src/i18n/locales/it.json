@@ -11426,7 +11426,14 @@
         "restart_gateway_failed": "Il gateway non si è riavviato.",
         "restart_gateway_refused_hint": "Chiedi a chi gestisce questo gateway di riavviarlo. Può eseguire {{command}} in un terminale.",
         "restart_gateway_retry_hint": "Premi di nuovo «{{button}}» oppure esegui {{command}} in un terminale.",
-        "restart_gateway_refused_title": "Questo account non può riavviare il gateway."
+        "restart_gateway_refused_title": "Questo account non può riavviare il gateway.",
+        "repair_images": "Ripara le immagini e riprendi",
+        "repair_images_pending": "Riparazione delle immagini in corso…",
+        "repair_images_hint": "Riduce le immagini troppo grandi così la chat può continuare. I tuoi messaggi vengono conservati e gli originali vengono salvati. Puoi riparare una chat una volta; un tentativo fallito non conta.",
+        "repair_images_done": "Immagini riparate. L'assistente sta rispondendo di nuovo.",
+        "repair_images_done_not_resumed": "Immagini riparate. Premi Riprendi per continuare la risposta.",
+        "repair_images_failed": "Le immagini non possono essere riparate due volte nella stessa chat. Avvia una nuova sessione per continuare — questa chat resta nel tuo elenco e l'assistente prosegue da un riepilogo.",
+        "repair_images_retry_hint": "Qualcosa è andato storto questa volta, quindi la tua unica riparazione non è stata utilizzata — puoi riprovare."
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",
@@ -12514,7 +12521,8 @@
       "comments_refused_overlay": "{{name}} non ha ricevuto questi commenti — riapri il pannello laterale e inviali di nuovo. Sono ancora nel documento.",
       "comments_sent_other": "{{count}} commenti inviati",
       "comments_sent_many": "{{count}} commenti inviati",
-      "your_crewmate": "Il tuo crewmate"
+      "your_crewmate": "Il tuo crewmate",
+      "could_not_repair_images": "Impossibile riparare le immagini"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

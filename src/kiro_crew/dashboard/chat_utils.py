@@ -666,6 +666,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNENTITLED_KIND,

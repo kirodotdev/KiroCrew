@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         AUTH_REQUIRED_KIND,
         CONTEXT_OVERFLOW_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MODEL_UNENTITLED_KIND,
         SESSION_START_FAILED_KIND,
@@ -253,23 +254,28 @@ async def _note_cycle_failure(
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Seven structural tags, read here without looking at the prose. Four are set
+    Eight structural tags, read here without looking at the prose. Four are set
     by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``),
     a spent plan allowance (``usage_limit``) and a context overflow
     (``context_overflow``, whose fix is a fresh conversation, not a retry on
     any model). The entitlement verdict wins
     when it is set, because its fix (pick a served model) is the one the prose
-    describes; the other two are exclusive at raise time. The fourth,
+    describes; the other two are exclusive at raise time. A fifth,
+    ``image_dimension_wedge``, is set from the raw frame when an image already in
+    native history exceeds the provider's 2000px many-image cap; it ranks ABOVE
+    ``context_overflow`` because its fix is more specific and loses no turns
+    (downscale the oversized images in place rather than reset), and the two are
+    mutually exclusive at raise time. The sixth,
     ``session_start_failed``, is set at the ACP session-start timeout raise
     sites on BOTH exception families (``AcpError`` on the dedicated client,
     ``AcpRequestTimeout`` on the shared runtime, which share no base -- hence
     ``getattr``) and ranks below them: a start that failed because the process is
-    signed out has a fix, and that fix is what the card should show. The sixth,
+    signed out has a fix, and that fix is what the card should show. The seventh,
     ``agent_unavailable``, is set by the session start that finds no definition
     for its agent (``AcpAgentUnavailable``); its row is the app-agent refusal,
     because a retry finds the same missing definition and the prose names the fix.
-    The seventh, ``kiro_cli_missing``, is set where the kiro-cli binary is not
+    The eighth, ``kiro_cli_missing``, is set where the kiro-cli binary is not
     found at spawn (``AcpKiroCliMissing`` on the runtime path, ``AcpError`` on the
     dedicated client); its row lets a feature-request chat offer the form.
     """
@@ -280,6 +286,8 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": AUTH_REQUIRED_KIND}
     if getattr(exc, "usage_limit", False):
         return {"kind": USAGE_LIMIT_KIND}
+    if getattr(exc, "image_dimension_wedge", False) is True:
+        return {"kind": IMAGE_REPAIR_KIND}
     if getattr(exc, "context_overflow", False) is True:
         return {"kind": CONTEXT_OVERFLOW_KIND}
     if getattr(exc, "session_start_failed", False) is True:

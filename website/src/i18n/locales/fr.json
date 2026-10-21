@@ -8456,8 +8456,8 @@
       "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
     "lessonSaved": {
-      "saved": "Leçon enregistrée\u202f: {{rule}}",
-      "updated": "Leçon mise à jour\u202f: {{rule}}",
+      "saved": "Leçon enregistrée : {{rule}}",
+      "updated": "Leçon mise à jour : {{rule}}",
       "review": "Voir les leçons"
     },
     "selfChange": {
@@ -11426,7 +11426,14 @@
         "restart_gateway_failed": "La passerelle n’a pas redémarré.",
         "restart_gateway_refused_hint": "Demande à la personne qui gère cette passerelle de la redémarrer. Elle peut lancer {{command}} dans un terminal.",
         "restart_gateway_retry_hint": "Appuie à nouveau sur « {{button}} », ou lance {{command}} dans un terminal.",
-        "restart_gateway_refused_title": "Ce compte ne peut pas redémarrer la passerelle."
+        "restart_gateway_refused_title": "Ce compte ne peut pas redémarrer la passerelle.",
+        "repair_images": "Répare les images et reprends",
+        "repair_images_pending": "Réparation des images…",
+        "repair_images_hint": "Réduit les images trop volumineuses pour que la conversation puisse continuer. Tes messages sont conservés et les originaux sont sauvegardés. Tu peux réparer une conversation une fois ; une tentative échouée ne compte pas.",
+        "repair_images_done": "Images réparées. L'assistant répond à nouveau.",
+        "repair_images_done_not_resumed": "Images réparées. Appuie sur Reprendre pour continuer la réponse.",
+        "repair_images_failed": "Les images ne peuvent pas être réparées deux fois dans une même conversation. Démarre une nouvelle session pour continuer — cette conversation est conservée, et l'assistant reprend à partir d'un résumé.",
+        "repair_images_retry_hint": "Quelque chose s'est mal passé cette fois, donc ta réparation unique n'a pas été utilisée — appuie sur « Répare les images et reprends » pour réessayer."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",
@@ -12514,7 +12521,8 @@
       "comments_refused_overlay": "{{name}} n’a pas reçu ces commentaires — rouvre le panneau latéral et envoie-les de nouveau. Ils sont toujours dans le document.",
       "comments_sent_other": "{{count}} commentaires envoyés",
       "comments_sent_many": "{{count}} commentaires envoyés",
-      "your_crewmate": "Ton crewmate"
+      "your_crewmate": "Ton crewmate",
+      "could_not_repair_images": "Impossible de réparer les images"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

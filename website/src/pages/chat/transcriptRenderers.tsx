@@ -39,7 +39,7 @@ import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
 import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
-import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState } from './ErrorCard'
+import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState, type RepairImagesState } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
@@ -179,6 +179,12 @@ export interface TranscriptRendererOptions {
   onFreshSession?: () => void
   /** Where that press stands, for the card's spinner and its "done" line. */
   freshSession?: FreshSessionState
+  /** Fix for the newest `image_repair` row: downscale the oversized images in
+   *  the slot's transcript in place, then re-issue the interrupted turn. Omitted
+   *  on a surface that cannot repair a session. */
+  onRepairImages?: () => void
+  /** Where that press stands, for the card's spinner and its "done" line. */
+  repairImages?: RepairImagesState
   /** Draw the assistant rows as a CREWMATE speaking: avatar + name + time on
    *  the first message of a run, one bordered bubble per message, grouped
    *  corners (components/chat/crewmateBubbles). Set by the Members page for a
@@ -281,6 +287,25 @@ export function contextOverflowIsNewest(messages: readonly ChatMessage[]): boole
   return isContextOverflow(messages[idx])
 }
 
+/** True when the newest error row is a many-image dimension wedge
+ *  (`isImageRepair`) and nothing after it opens a new turn. The row offers
+ *  "Repair images and resume" instead of Resume, and `newestErrorOwnsRecovery`
+ *  hides the composer's Resume too. */
+export function imageRepairIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    // The repair route itself posts a `session_reload` SYSTEM-NOTICE assistant
+    // row after the teardown; it is not real assistant output, so skip it before
+    // the role check or this would return false the moment a repair runs and the
+    // card would lose its `done`/`done_not_resumed` state.
+    if (isSystemNoticeRow(row)) continue
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return isImageRepair(messages[idx])
+}
+
 /** True when the newest error row is a refused app-owned agent turn
  *  (`isAppAgentRefused`) and nothing after it opens a new turn. The row
  *  withholds Resume (a retry re-runs the same refusal); `newestErrorOwnsRecovery`
@@ -318,7 +343,7 @@ function capabilityRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
  *  composer's gate by joining it here. Typing still works. */
 export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boolean {
   return featureRequestRefusalIsNewest(messages) || sessionStartRepeatIsNewest(messages)
-    || contextOverflowIsNewest(messages) || appAgentRefusalIsNewest(messages)
+    || contextOverflowIsNewest(messages) || imageRepairIsNewest(messages) || appAgentRefusalIsNewest(messages)
     || capabilityRefusalIsNewest(messages)
 }
 
@@ -676,6 +701,7 @@ export function createTranscriptRenderers(
         // is the transcript's newest state: an older row, or one a later turn
         // already answered past, is settled and its session may already be new.
         const overflow = isContextOverflow(m)
+        const imageRepair = isImageRepair(m)
         return ctx.row(
           <ErrorCard
             content={transient ? transient.text : m.content}
@@ -702,8 +728,15 @@ export function createTranscriptRenderers(
             onOpenCapabilities={openCapabilities}
             onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
             turnLimitSlot={isTurnTimeout(m) ? o.slot : undefined}
-            onFreshSession={overflow && newest && contextOverflowIsNewest(ctx.messages) ? o.onFreshSession : undefined}
+            onFreshSession={
+              (overflow && newest && contextOverflowIsNewest(ctx.messages)) ||
+              (imageRepair && newest && imageRepairIsNewest(ctx.messages))
+                ? o.onFreshSession
+                : undefined
+            }
             freshSession={o.freshSession}
+            onRepairImages={imageRepair && newest && imageRepairIsNewest(ctx.messages) ? o.onRepairImages : undefined}
+            repairImages={o.repairImages}
           />,
         )
       },

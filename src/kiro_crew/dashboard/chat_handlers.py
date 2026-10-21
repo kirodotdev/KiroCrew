@@ -244,6 +244,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _retire_slot_nudge_loop,
     _slot_still_ours,
     api_chat_slot_delete,
+    api_chat_slot_repair_images,
     api_chat_slot_reset_conversation,
     api_chat_slots_cleanup,
     close_slot,

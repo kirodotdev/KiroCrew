@@ -9,7 +9,7 @@ const clipboard = vi.hoisted(() => ({ copyCode: vi.fn<(text: string) => Promise<
 vi.mock('../utils/clipboard', async (importOriginal) => ({ ...(await importOriginal<object>()), ...clipboard }))
 
 import { ApiError } from '../api/apiError'
-import { ErrorCard, capabilityRefusal, isAuthRequired, isContextOverflow, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
+import { ErrorCard, capabilityRefusal, isAuthRequired, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
 import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
@@ -374,6 +374,105 @@ describe('ErrorCard — conversation too big for the model', () => {
     expect(isContextOverflow({ meta: { kind: 'context_overflow' } })).toBe(true)
     expect(isContextOverflow({ kind: 'usage_limit' })).toBe(false)
     expect(isContextOverflow({})).toBe(false)
+  })
+})
+
+describe('ErrorCard — an image is over the many-image pixel cap', () => {
+  const WEDGE = 'An image already in this conversation is larger than the model\u2019s 2000-pixel limit for conversations with many images.'
+
+  it('offers Repair images and resume and NO Resume, with the hint saying no turns are lost', () => {
+    const onContinue = vi.fn()
+    const onRepairImages = vi.fn()
+    render(<ErrorCard content={WEDGE} onContinue={onContinue} onRepairImages={onRepairImages} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-image-repair', 'true')
+    expect(card).toHaveTextContent('2000-pixel')
+    expect(screen.getByTestId('error-card-repair-images-hint')).toHaveTextContent(i18nT('pages.chat.errorCard.repair_images_hint'))
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    fireEvent.click(screen.getByTestId('error-card-repair-images'))
+    expect(onRepairImages).toHaveBeenCalledTimes(1)
+    expect(onContinue).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  it('disables the press while it runs, so it cannot double-fire', () => {
+    const onRepairImages = vi.fn()
+    render(<ErrorCard content={WEDGE} onRepairImages={onRepairImages} repairImages="pending" />)
+    const btn = screen.getByTestId('error-card-repair-images')
+    expect(btn).toBeDisabled()
+    fireEvent.click(btn)
+    expect(onRepairImages).not.toHaveBeenCalled()
+    // While the repair runs, the alarming error prose ("Retrying will not help")
+    // is suppressed — it reads oddly over a fix that is in progress (UX). The
+    // pending button label carries the state instead.
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('2000-pixel limit')
+    expect(btn).toHaveTextContent(i18nT('pages.chat.errorCard.repair_images_pending'))
+    // The card also drops its danger colours while repairing: a repair in
+    // progress is "working on it", not "still broken".
+    expect(screen.getByTestId('error-card').className).not.toMatch(/bg-danger-subtle/)
+    cleanup()
+  })
+
+  it('says the turn is running again once done, drops the button and the danger colours', () => {
+    render(<ErrorCard content={WEDGE} onRepairImages={() => {}} repairImages="done" />)
+    expect(screen.queryByTestId('error-card-repair-images')).toBeNull()
+    expect(screen.getByTestId('error-card').className).not.toMatch(/bg-danger-subtle/)
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('2000-pixel')
+    expect(screen.getByTestId('error-card-repair-images-hint')).toHaveTextContent(i18nT('pages.chat.errorCard.repair_images_done'))
+    cleanup()
+  })
+
+  it('when repaired but the turn did not restart, keeps a Resume and says so', () => {
+    const onContinue = vi.fn()
+    render(<ErrorCard content={WEDGE} onRepairImages={() => {}} onContinue={onContinue} repairImages="done_not_resumed" />)
+    // No Repair button (the repair is done), danger colours dropped.
+    expect(screen.queryByTestId('error-card-repair-images')).toBeNull()
+    expect(screen.getByTestId('error-card').className).not.toMatch(/bg-danger-subtle/)
+    // The hint says the reply did not restart, and a Resume is offered.
+    expect(screen.getByTestId('error-card-repair-images-hint')).toHaveTextContent(i18nT('pages.chat.errorCard.repair_images_done_not_resumed'))
+    fireEvent.click(screen.getByTestId('error-card-repair-images-resume'))
+    expect(onContinue).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
+  it('when the repair itself failed, drops the Repair button and offers a fresh session', () => {
+    const onFreshSession = vi.fn()
+    render(<ErrorCard content={WEDGE} onRepairImages={() => {}} onFreshSession={onFreshSession} repairImages="failed" />)
+    // The Repair button is gone — pressing it again would only fail the same way.
+    expect(screen.queryByTestId('error-card-repair-images')).toBeNull()
+    // Still an error (danger colours kept), and the hint gives the reason in the card.
+    expect(screen.getByTestId('error-card').className).toMatch(/bg-danger-subtle/)
+    expect(screen.getByTestId('error-card-repair-images-hint')).toHaveTextContent(i18nT('pages.chat.errorCard.repair_images_failed'))
+    // The contradictory "recover by repairing" backend prose is suppressed — the
+    // card does not tell the user to repair while saying it cannot be repaired.
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('2000-pixel limit')
+    // A fresh-session way out is offered so the card is not a dead end.
+    fireEvent.click(screen.getByTestId('error-card-repair-images-fresh-session'))
+    expect(onFreshSession).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
+  it('the failed-card fresh-session button reports pending then done', () => {
+    const { rerender } = render(<ErrorCard content={WEDGE} onRepairImages={() => {}} onFreshSession={() => {}} freshSession="pending" repairImages="failed" />)
+    // Pending: the button is disabled (so a second press cannot fire).
+    expect(screen.getByTestId('error-card-repair-images-fresh-session')).toBeDisabled()
+    // Done: the button is replaced by a ready line, not left looking idle.
+    rerender(<ErrorCard content={WEDGE} onRepairImages={() => {}} onFreshSession={() => {}} freshSession="done" repairImages="failed" />)
+    expect(screen.queryByTestId('error-card-repair-images-fresh-session')).toBeNull()
+    expect(screen.getByTestId('error-card-repair-images-fresh-session-done')).toHaveTextContent(i18nT('pages.chat.errorCard.fresh_session_done'))
+    // The failure is over once the fresh session started: the card drops its
+    // danger colours and the failed reason line, so the ready confirmation does
+    // not sit in a red error box (UX: "Ready" must not read as still broken).
+    expect(screen.getByTestId('error-card').className).not.toMatch(/bg-danger-subtle/)
+    expect(screen.queryByTestId('error-card-repair-images-hint')).toBeNull()
+    cleanup()
+  })
+
+  it('recognises the image_repair kind on both carriers', () => {
+    expect(isImageRepair({ kind: 'image_repair' })).toBe(true)
+    expect(isImageRepair({ meta: { kind: 'image_repair' } })).toBe(true)
+    expect(isImageRepair({ kind: 'context_overflow' })).toBe(false)
+    expect(isImageRepair({})).toBe(false)
   })
 })
 

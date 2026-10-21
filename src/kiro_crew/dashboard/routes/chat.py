@@ -131,6 +131,7 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/{slot}/reset-conversation", chat.api_chat_slot_reset_conversation
     )
+    app.router.add_post("/api/chat/slots/{slot}/repair-images", chat.api_chat_slot_repair_images)
     app.router.add_post("/api/chat/slots/{slot}/agent", chat.api_chat_slot_agent)
 
     # Optimizer
