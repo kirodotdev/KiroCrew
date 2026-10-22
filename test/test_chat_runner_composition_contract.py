@@ -511,6 +511,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_loop_gen",
         "_directive_channel_origin",
         "_commands_off",
+        "_recovery_echo_owed",
         "_turn_actor",
         "regenerate_hint",
         "_on_consumed",

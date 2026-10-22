@@ -843,6 +843,7 @@ from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.start_priority import StartPriority, person_priority
+from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     GrantDeadline,
@@ -1254,6 +1255,26 @@ def _hands_off_queue_on_exit(
     return guarded
 
 
+#: The dashboard -> Slack mirror's working placeholder, posted under the prompt
+#: echo and deleted once the task stream, the answer or the turn's end takes over.
+_MIRROR_THINKING = "💭 _Thinking…_"
+
+
+async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: str) -> str:
+    """Delete the mirror's "Thinking…" placeholder *ts*; return the new (empty) ts.
+
+    Best-effort and never raises: the placeholder is decoration, and a failed
+    delete must not fail a turn that already delivered. Returns ``""`` either
+    way, so the caller stops owing the delete and never repeats it.
+    """
+    if ts and channel:
+        try:
+            await slack_client.delete_message(channel, ts)
+        except Exception:
+            logger.debug("Failed to delete the mirror's Thinking placeholder", exc_info=True)
+    return ""
+
+
 def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: bool) -> None:
     """Emit the user-message → first-visible-token latency histogram.
 
@@ -1572,6 +1593,10 @@ async def _run_chat(
     # entry this way; without the switch, a channel's queued "/clear" would be the
     # one queued "/clear" in the system that ran instead of being said.
     _commands_off: bool = False,
+    # A verbatim recovery replay of a dashboard prompt whose first attempt died
+    # before the mirror posted its echo. Set only by the drain, from the entry's
+    # ``MIRROR_ECHO_OWED_META_KEY`` stamp, so the replay is echoed once.
+    _recovery_echo_owed: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1613,6 +1638,7 @@ async def _run_chat(
         _directive_loop_gen=_directive_loop_gen,
         _directive_channel_origin=_directive_channel_origin,
         _commands_off=_commands_off,
+        _recovery_echo_owed=_recovery_echo_owed,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -5224,6 +5250,11 @@ async def _run_chat(
                     if not _these_options:
                         break
 
+                # The answer starts here, so the "Thinking…" placeholder (still
+                # up on a turn that ran no tool) goes before the answer lands.
+                turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                    state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+                )
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
@@ -7391,6 +7422,13 @@ async def _run_chat(
                     await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
+            if turn._mirror_thinking_ts and state.slack_client and _mirror_chan:
+                # A turn that ended with neither a tool nor a mirrored answer
+                # (an error, a cancel, a withheld reply) still owes the thread
+                # its placeholder's removal. Best-effort and never raises.
+                turn._mirror_thinking_ts = await _retire_mirror_thinking(
+                    state.slack_client, _mirror_chan, turn._mirror_thinking_ts
+                )
             if _acquired and (needs_session_reset or needs_conversation_discard):
                 # Neither branch below goes through `_reset_slot_session`, so the
                 # withhold verdict is dropped here: both replace the session that

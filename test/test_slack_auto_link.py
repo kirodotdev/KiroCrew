@@ -355,7 +355,8 @@ class TestHook:
         slot.append("assistant", "first reply")
         slot.append("user", "second message")
         slot.drain()
-        await _run_chat(state, slot, "second message")
+        # Stamped as the dashboard send handler stamps a person's send.
+        await _run_chat(state, slot, "second message", _directive_user_origin=True)
 
         echoes = [
             call.args
@@ -391,7 +392,7 @@ class TestHook:
         slot.append("user", prompt)
         slot.drain()
 
-        await _run_chat(state, slot, prompt)
+        await _run_chat(state, slot, prompt, _directive_user_origin=True)
 
         texts = [
             call.args[1]
@@ -400,7 +401,9 @@ class TestHook:
         ]
         echo = next(t for t in texts if "ping" in t)
         assert "<!channel>" not in echo and "<@U999>" not in echo
-        assert "&lt;!channel&gt;" in echo and "&lt;@U999&gt;" in echo
+        # The broadcast stays escaped; the mention is flattened to plain text,
+        # which Slack does not parse as a mention either.
+        assert "&lt;!channel&gt;" in echo and "ping @U999 now" in echo
 
 
 class TestSharedHelper:

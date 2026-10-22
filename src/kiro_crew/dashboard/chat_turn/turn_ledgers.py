@@ -28,6 +28,10 @@ if TYPE_CHECKING:
         _REPLAYS_COMPLETION_KEY,
         TURN_ACTOR_META_KEY,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _mirror_echo_owed,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import _session_stop_generation_for
 
 
@@ -129,6 +133,10 @@ def _queue_recovery(
         # without these lists the replayed transcript row falls back to a
         # whitespace-bounded path and truncates spaced attachment names.
         _recovery_meta.update(attachment_meta(_current_replay_message.get("meta")))
+    if payload == RecoveryPayload.ORIGINAL and _mirror_echo_owed(turn):
+        # The person's own words, replayed because the turn died before its
+        # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).
+        _recovery_meta[MIRROR_ECHO_OWED_META_KEY] = True
     _recovery_qid = slot.queue_insert(
         index,
         content,

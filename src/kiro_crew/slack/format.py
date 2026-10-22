@@ -252,6 +252,82 @@ def escape_mrkdwn(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# A Slack angle-bracket entity, closed on the same line. Each body character
+# excludes ``<`` and ``>``, so an entity cannot nest or swallow its neighbour,
+# and an opener left unterminated (a prompt cut mid-link by the echo's length
+# bound) never matches -- it falls through to the blanket escape.
+_SLACK_ENTITY_RE = re.compile(r"<([^<>\n]*)>")
+# The entity bodies the prompt echo keeps live. A web link (``<url>`` or
+# ``<url|label>``) and a channel reference (``<#C…>`` or ``<#C…|name>``) are
+# navigation: rendering them is the whole point of keeping them.
+_KEEP_LINK_RE = re.compile(r"(https?://[^\s<>|]+)(?:\|([^<>]*))?")
+_KEEP_CHANNEL_RE = re.compile(r"(#[CG][A-Z0-9]+)(?:\|([^<>]*))?")
+# A user mention (``<@U…>``/``<@W…>``, with or without a ``|label``) is the
+# opposite: it notifies the person named, so the echo flattens it to plain text.
+_USER_MENTION_RE = re.compile(r"@([UW][A-Z0-9]+)(?:\|([^<>]*))?")
+
+
+def escape_mrkdwn_keep_links(text: str) -> str:
+    """Escape *text* like :func:`escape_mrkdwn`, but keep links and channel refs live.
+
+    For an echo of what someone typed (the dashboard -> Slack prompt mirror),
+    where a link the user pasted should still be a link. Exactly three entity
+    shapes are NOT escaped:
+
+    * ``<https://…>`` / ``<https://…|label>`` -- kept as a link;
+    * ``<#C…>`` / ``<#C…|name>`` -- kept as a channel reference;
+    * ``<@U…>`` / ``<@W…>`` (optionally ``|label``) -- flattened to plain
+      ``@label`` (or ``@U…``). Plain ``@name`` pings nobody: Slack parses only
+      the entity, and the client never sends ``link_names``.
+
+    Every other entity -- ``<!channel>``, ``<!here>``, ``<!everyone>``,
+    ``<!subteam^…>``, ``<mailto:…>``, anything unrecognised -- and every stray
+    ``&``, ``<`` or ``>`` is escaped exactly as :func:`escape_mrkdwn` does, so a
+    broadcast still cannot be smuggled through. A label's ``&`` is escaped too.
+
+    This only decides how Slack RENDERS the text; it removes nothing. Redaction
+    (credentials, exfiltration URLs) must already have run on *text*: a URL the
+    exfiltration filter rewrote is a ``[REDACTED: …]`` placeholder, which is not
+    ``https://`` and so is escaped as text rather than kept as a link.
+    """
+
+    def _amp(value: str) -> str:
+        return value.replace("&", "&amp;")
+
+    out: list[str] = []
+    pos = 0
+    for match in _SLACK_ENTITY_RE.finditer(text):
+        out.append(escape_mrkdwn(text[pos : match.start()]))
+        pos = match.end()
+        body = match.group(1)
+        if link := _KEEP_LINK_RE.fullmatch(body):
+            url, label = link.group(1), link.group(2)
+            out.append(f"<{url}|{_amp(label)}>" if label else f"<{url}>")
+        elif channel := _KEEP_CHANNEL_RE.fullmatch(body):
+            ref, name = channel.group(1), channel.group(2)
+            out.append(f"<{ref}|{_amp(name)}>" if name else f"<{ref}>")
+        elif mention := _USER_MENTION_RE.fullmatch(body):
+            out.append("@" + escape_mrkdwn(mention.group(2) or mention.group(1)))
+        else:
+            out.append(escape_mrkdwn(match.group(0)))
+    out.append(escape_mrkdwn(text[pos:]))
+    return "".join(out)
+
+
+def mirror_prompt_echo(text: str) -> str:
+    """Render a mirrored dashboard prompt as a Slack ``> 💬 …`` blockquote.
+
+    *text* is the already redacted, already truncated prompt. A quote rather
+    than the old ``_…_`` italic wrapper: an underscore pair splits a link that
+    contains one, and italics cannot hold a multi-line prompt. Slack quotes one
+    line per ``>``, so every line is prefixed; a ``>`` the prompt itself starts a
+    line with was escaped to ``&gt;`` first and cannot open a nested quote.
+    """
+    lines = escape_mrkdwn_keep_links(text).split("\n")
+    lines[0] = f"💬 {lines[0]}"
+    return "\n".join(f"> {line}" for line in lines)
+
+
 def build_options_selected_blocks(
     choices: list[str],
     selected_indices: list[int] | int,
