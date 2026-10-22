@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.security import _submodule
 
-from . import redaction, stream_aws_anchor
+from . import pass_compose, redaction, stream_aws_anchor
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,7 +54,7 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     companion's extra patterns apply; use this one for the warnings, or where the
     baseline is deliberately the subject.
     """
-    return _submodule("pass_compose").compose(text)
+    return pass_compose.compose(text)
 
 
 def redact(text: str) -> str:
