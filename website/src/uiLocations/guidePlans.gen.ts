@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:99de0a46e570074d3de396e71b96172b8a233d8d22714a85c8e4035441b8ce96"
+export const GUIDE_BUILD_DIGEST = "sha256:ef5e43ab9ceadcc32730313690a83de2f3dbafbb3cb494f1c2c4506ac6225060"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -80,7 +80,9 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.new",
   "members.new-advanced",
   "members.permissions",
+  "members.profile-tab",
   "members.roster-list",
+  "members.settings",
   "members.switcher",
   "members.switcher.new",
   "members.switcher.show-roster",
@@ -172,6 +174,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "revealer": "members.edit",
     "state": "crewmate_profile_closed"
   },
+  "members.profile-tab": {
+    "kind": "state",
+    "revealer": "members.profile-tab",
+    "state": "crewmate_profile_tab_closed"
+  },
   "members.roster": {
     "kind": "state",
     "revealer": "members.switcher.show-roster",
@@ -181,6 +188,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "state",
     "revealer": "members.back",
     "state": "crewmate_chat_open_phone"
+  },
+  "members.settings": {
+    "kind": "state",
+    "revealer": "members.settings",
+    "state": "crewmate_settings_closed"
   },
   "menu:apps.sources": {
     "kind": "menu",
@@ -1936,6 +1948,89 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:members.edit",
             "location": "members.edit",
             "label_key": "pages.membersPage.profile_card"
+          }
+        ]
+      }
+    ]
+  },
+  "members.profile-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:gate:preview_flag:mc-preview-crew",
+            "kind": "gate",
+            "gate": "preview_flag:mc-preview-crew",
+            "setting_id": "developer.mates"
+          },
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.profile-tab",
+            "location": "members.profile-tab",
+            "label_key": "pages.membersPage.profile_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.settings": {
+    "version": 2,
+    "label_key": "pages.membersPage.profile_settings",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:gate:preview_flag:mc-preview-crew",
+            "kind": "gate",
+            "gate": "preview_flag:mc-preview-crew",
+            "setting_id": "developer.mates"
+          },
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.edit",
+            "location": "members.edit",
+            "label_key": "pages.membersPage.profile_card",
+            "when": "crewmate_profile_closed",
+            "scope": "members.profile"
+          },
+          {
+            "id": "any:members.profile-tab",
+            "location": "members.profile-tab",
+            "label_key": "pages.membersPage.profile_tab",
+            "when": "crewmate_profile_tab_closed",
+            "scope": "members.profile-tab"
+          },
+          {
+            "id": "any:members.settings",
+            "location": "members.settings",
+            "label_key": "pages.membersPage.profile_settings"
           }
         ]
       }

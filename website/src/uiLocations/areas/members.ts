@@ -170,10 +170,54 @@ export const LOCATIONS = {
     },
     placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'crewmate_selected' }] }],
   },
-  // The profile card's Permissions row (CrewProfilePanel): "what it may do",
-  // the newcomer's door to a crewmate's tools, which opens the editor. The card
-  // opens from the header pill (`members.edit`), so a guide walks: choose the
-  // crewmate in the roster, open its card, here.
+  // The profile card's Profile tab, last on its rail (the card opens on
+  // Sessions). The Settings row lives on it, so a guide to anything there
+  // selects this tab first; it is the reveal scope for that step.
+  'members.profile-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my crewmate's profile", 'what my crewmate is about', "the crewmate's memory and workspace"],
+      'zh-CN': ['队友资料', '队友简介', '队友的记忆和工作区'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+      ],
+    }],
+  },
+  // The profile card's Settings row (CrewProfileSettings), on its Profile tab:
+  // the door to the crewmate's own settings page (permission, model, worker
+  // model, the dashboard lock). The card opens from the header pill
+  // (`members.edit`) on Sessions, so a guide walks: choose the crewmate, open
+  // its card, its Profile tab, here.
+  'members.settings': {
+    kind: 'button',
+    label: { from: 'attr', attr: 'aria-label' },
+    terms: {
+      en: ['crewmate settings', 'my crewmate\'s model', 'change the crewmate\'s model', 'lock the dashboard layout'],
+      'zh-CN': ['队友设置', '队友的模型', '锁定仪表板布局'],
+      ja: ['クルーメイトの設定'],
+      ko: ['크루메이트 설정'],
+      es: ['ajustes del agente'],
+      fr: ["réglages de l'agent"],
+      de: ['Einstellungen des Agenten'],
+      pt: ['configurações do agente'],
+      it: ["impostazioni dell'agente"],
+      ru: ['настройки агента'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+        { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' },
+      ],
+    }],
+  },
+  // The Settings page's Permissions row: "what it may do", the newcomer's door
+  // to a crewmate's tools. One more step on the walk above: open Settings, here.
   'members.permissions': {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },
@@ -194,6 +238,8 @@ export const LOCATIONS = {
       requires: [
         { kind: 'condition', id: 'crewmate_selected' },
         { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' },
+        { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' },
+        { kind: 'shown_by', location: 'members.settings', when: 'crewmate_settings_closed' },
       ],
     }],
   },

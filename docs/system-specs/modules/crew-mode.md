@@ -1893,8 +1893,49 @@ the opener always stays. The panel chord toggles only while a mate is
 open.
 
 The Profile tab holds the mate's own settings (`CrewProfileSettings`):
-permission (Normal / Reads / Trust), model and effort. They are changed there,
-never in the chat. Each pick writes the crew record (`approval_mode`, `model`,
+permission (Normal / Reads / Trust), model and effort, the worker pair and the
+dashboard lock. They are changed there, never in the chat. The Profile tab
+shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
+the model (permission · model; not the worker pick, which beside the mate's own
+name read as a riddle); nothing else of the settings
+is on the card. Tapping it pushes the **Settings** page over the card: one
+iOS-style group of rows (`profileRow.tsx`: `Row`, `RowStatic`, `RowGroup`),
+never a form, where each picker row reads its current value, muted, before a
+chevron, and tapping it pushes a single-choice page one level deeper. Both are
+the card's own push (`ProfilePagePushContext`, the mechanism the Goals tab's
+pages use), which stacks: `open(title, onPop, depth)` pushes at a depth (or
+retitles the page at it, popping anything deeper), `close(depth)` drops from a
+depth up, `hosts[depth]` is where each level portals its body; a level under a
+deeper one slides a quarter-width left and goes inert like the card under the
+first, and each level's one back control names the page under it (the first
+names the mate). The picker page is titled with the row's label, one option
+per row with the option's one-line description under it (what each permission
+mode lets the mate do; what an Inherited model or effort resolves to), a
+trade-off caption under the list where there is one (the effort and worker
+pages), and a check mark on the stored value. The options are a radio group:
+the checked one is the Tab stop, Up/Down/Home/End move focus, Enter or Space
+picks. A pick saves on
+the spot and the page stays open with the check moved and any notice shown,
+until the person goes back — a refused permission (409) or a failed write would
+otherwise pop out of sight. While a save runs the options are held with
+`aria-disabled`, never `disabled`: the pick is made from the focused option, and
+disabling it would drop focus onto the body, outside the card's Escape handler.
+A row that folds while its page is open (the effort rows follow whether the
+model reasons, so clearing a stale level from its own page folds its row) pops
+its page; the last rendered page keeps painting, held, through the exit slide,
+and since the opener is gone the card lands focus on itself (`tabIndex=-1`, only
+after a pop, never on open) so Escape still closes it. The lock, a boolean, stays
+a switch in the same group, its one line of help as the group's caption. The
+Settings row carries the `members.settings` find_ui location and is the
+`members.settings` reveal scope (state `crewmate_settings_closed`); the card's
+Profile tab carries `members.profile-tab` (a `Tablist` `segments` marker) and is
+the `members.profile-tab` scope (state `crewmate_profile_tab_closed`), since the
+card opens on Sessions and the row lives on Profile; the Permissions row carries
+`members.permissions` (its accessible name is the label alone; the value is its
+description), reached by a guide through the card, its Profile tab and then the
+Settings row, and sits with its page in a `GuideTrustRootRegion`, so no guide
+points at it by id or by name.
+Each pick writes the crew record (`approval_mode`, `model`,
 `reasoning_effort` on `PUT /api/agents/{name}`) and then the live DM slot, so
 the open thread follows at once. `approval_mode` is `""` until the user picks one, and while it is `""` the
 thread opens in `trust` (`_seed_member_approval` seeds the slot from `mode or

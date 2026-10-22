@@ -270,6 +270,9 @@ const FORWARDING_PROVEN = [
   // Proven in src/test/sidePanelAddMenu.test.tsx: the side panel "+" menu's
   // AddMenuItem forwards the marker to the DropdownMenuItem it renders.
   'AddMenuItem',
+  // Proven in src/test/Tablist.test.tsx: a `segments` entry's marker lands on
+  // that tab's <button> and on no other.
+  'Tablist',
   // Proven below: SimpleSelect forwards only the marker, to its trigger (Radix)
   // or its native <select> (touch); SegmentedControl draws a segment's own
   // marker on that segment's radio.

@@ -121,6 +121,8 @@ export const UI_REVEAL_STATES = {
   crewmate_roster_folded: 'a crewmate chat is open on a wide screen, which folds the roster column away',
   crewmate_chat_open_phone: 'a crewmate chat fills the phone screen, so the roster is behind it',
   crewmate_profile_closed: "the crewmate's profile card is closed (pressing the crewmate's name in the chat header opens it)",
+  crewmate_profile_tab_closed: "the crewmate's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
+  crewmate_settings_closed: "the crewmate's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
 } as const
 
 export type UiRevealState = keyof typeof UI_REVEAL_STATES
@@ -147,6 +149,8 @@ export const UI_REVEAL_SCOPES = {
   'members.roster': 'crewmate_roster_folded',
   'members.roster-phone': 'crewmate_chat_open_phone',
   'members.profile': 'crewmate_profile_closed',
+  'members.profile-tab': 'crewmate_profile_tab_closed',
+  'members.settings': 'crewmate_settings_closed',
 } as const satisfies Record<string, UiRevealState>
 
 export type UiRevealScopeId = keyof typeof UI_REVEAL_SCOPES

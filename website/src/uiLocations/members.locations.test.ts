@@ -45,8 +45,12 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   'members.switcher.unread': ['button', 'pages.membersPage.unread_message', 'Unread message', '未读消息', ['page.members'], 'header', '/members', [CREW_PREVIEW, vp('desktop'), cond('crewmate_selected')]],
   'members.switcher.unread-more': ['button', 'pages.membersPage.switch_crewmate', 'Switch mate', '切换队友', ['page.members'], 'header', '/members', [CREW_PREVIEW, vp('desktop'), cond('crewmate_selected')]],
   'members.edit': ['button', 'pages.membersPage.profile_card', 'Profile', '资料卡', ['page.members'], 'content', '/members', [CREW_PREVIEW, cond('crewmate_selected')]],
-  // The profile card's Permissions row: a crewmate's tools, behind its card.
-  'members.permissions': ['button', 'pages.membersPage.profile_permissions', 'Permissions', '权限', ['page.members'], 'content', '/members', [CREW_PREVIEW, cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }]],
+  // The profile card's Profile tab (the card opens on Sessions): the step before the Settings row.
+  'members.profile-tab': ['tab', 'pages.membersPage.profile_tab', 'Profile', '资料', ['page.members'], 'content', '/members', [CREW_PREVIEW, cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }]],
+  // The profile card's Settings row: the door to the crewmate's own settings page, behind its card's Profile tab.
+  'members.settings': ['button', 'pages.membersPage.profile_settings', 'Settings', '设置', ['page.members'], 'content', '/members', [CREW_PREVIEW, cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }, { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' }]],
+  // The Settings page's Permissions row: a crewmate's tools, one more push in.
+  'members.permissions': ['button', 'pages.membersPage.profile_permissions', 'Permissions', '权限', ['page.members'], 'content', '/members', [CREW_PREVIEW, cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }, { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' }, { kind: 'shown_by', location: 'members.settings', when: 'crewmate_settings_closed' }]],
   'members.details': ['toggle', 'pages.membersPage.panel_toggle', 'Dashboard & files', '仪表板和文件', ['page.members'], 'header', '/members', [CREW_PREVIEW, cond('crewmate_selected'), cond('crewmate_panel_not_docked')]],
   'agents.add': ['button', 'pages.kiroCrewAgentsPage.add_crew_member', 'New mate', '新建队友', ['page.capabilities', 'tab.capabilities.crews'], 'toolbar', '/capabilities?tab=crews', []],
   'agents.create-first': ['button', 'pages.kiroCrewAgentsPage.create_your_first_crew', 'Create your first mate', '创建你的第一位队友', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('no_crewmates')]],

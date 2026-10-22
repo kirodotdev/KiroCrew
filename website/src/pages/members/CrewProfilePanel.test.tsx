@@ -25,7 +25,7 @@ vi.mock('../../components/crew/CrewMonitoredAvatar', () => ({
   ),
 }))
 
-import { useContext } from 'react'
+import { useContext, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CrewProfilePanel, { PROFILE_TABS, ProfilePagePushContext } from './CrewProfilePanel'
 
@@ -342,9 +342,14 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByTestId('crew-profile-model')).toBeNull()
   })
 
-  it('carries no guide marker: the permission picker it holds is answered in words, not guided', () => {
+  it('carries one guide marker of its own: the Profile tab, the step a guide to the Settings row takes first', () => {
+    // The permission picker the card holds is answered in words, not guided (it
+    // is a trust root); the settings body is a slot here, so its row is absent.
     setup()
-    expect(document.querySelectorAll('[data-ui-location]')).toHaveLength(0)
+    const marked = document.querySelectorAll('[data-ui-location]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toBe(screen.getByRole('tab', { name: 'Profile' }))
+    expect(marked[0]).toHaveAttribute('data-ui-location', 'members.profile-tab')
   })
 
   it('says there is no description instead of rendering an empty card', () => {
@@ -542,6 +547,175 @@ describe('CrewProfilePanel tab pages', () => {
       </>
     )
   }
+
+  /** A tab whose opener leaves while its page is open: the page's own pick
+   *  folds the row that opened it (a settings row clearing a stale level). */
+  function FoldingStub() {
+    const push = useContext(ProfilePagePushContext)
+    const [row, setRow] = useState(true)
+    return (
+      <>
+        {row && <button type="button" onClick={() => push?.open('Effort', () => {})}>open page</button>}
+        {push?.host ? createPortal(
+          <button type="button" data-testid="stub-pick" onClick={() => { setRow(false); push.close() }}>clear</button>,
+          push.host,
+        ) : null}
+      </>
+    )
+  }
+
+  it('lands focus on the card itself when a page pops and its opener is gone, so Escape still closes', async () => {
+    const h = setup({ initialTab: 'goals', goalsBody: <FoldingStub /> })
+    const opener = screen.getByRole('button', { name: 'open page' })
+    opener.focus()
+    fireEvent.click(opener)
+    const pick = await screen.findByTestId('stub-pick')
+    pick.focus()
+    fireEvent.click(pick)
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-pushed-title')).toBeNull())
+    // The opener unmounted, so focus cannot go back to it; the body would take
+    // it, outside the card. The card takes it instead.
+    expect(screen.queryByRole('button', { name: 'open page' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByTestId('crew-profile-panel'))
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' })
+    expect(h.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('opening the card never pulls focus onto it', () => {
+    // The fallback above runs only after a pop; a freshly opened card leaves
+    // focus where it was (the composer, usually).
+    const before = document.createElement('button')
+    document.body.appendChild(before)
+    before.focus()
+    setup()
+    expect(document.activeElement).toBe(before)
+    before.remove()
+  })
+
+  /** A tab with two levels: a first page, and a second pushed from it (the
+   *  Profile tab's Settings page and a picker over it). */
+  function StackStub({ onPop0, onPop1 }: { onPop0: () => void; onPop1: () => void }) {
+    const push = useContext(ProfilePagePushContext)
+    return (
+      <>
+        <button type="button" onClick={() => push?.open('Settings', onPop0, 0)}>open settings</button>
+        {push?.hosts[0] ? createPortal(
+          <div data-testid="stub-level-0">
+            <button type="button" onClick={() => push.open('Permissions', onPop1, 1)}>open permissions</button>
+          </div>,
+          push.hosts[0],
+        ) : null}
+        {push?.hosts[1] ? createPortal(<div data-testid="stub-level-1">picker</div>, push.hosts[1]) : null}
+      </>
+    )
+  }
+
+  it('stacks a second page over the first: the title and the back control name each level, and back pops one', async () => {
+    const onPop0 = vi.fn(); const onPop1 = vi.fn()
+    setup({ initialTab: 'goals', goalsBody: <StackStub onPop0={onPop0} onPop1={onPop1} /> })
+    fireEvent.click(screen.getByRole('button', { name: 'open settings' }))
+    expect(await screen.findByTestId('stub-level-0')).toBeInTheDocument()
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Settings')
+    expect(screen.getByTestId('crew-profile-back')).toHaveTextContent('oncall')
+
+    const openPermissions = screen.getByRole('button', { name: 'open permissions' })
+    openPermissions.focus()
+    fireEvent.click(openPermissions)
+    expect(await screen.findByTestId('stub-level-1')).toBeInTheDocument()
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Permissions')
+    // One back control, naming the page under this one, not the crewmate.
+    expect(screen.getAllByTestId('crew-profile-back')).toHaveLength(1)
+    expect(screen.getByTestId('crew-profile-back')).toHaveTextContent('Settings')
+    // The first level goes inert under the second, like the card under the first.
+    expect(screen.getByTestId('crew-profile-page-tab-page')).toHaveAttribute('inert', '')
+    expect(screen.getByTestId('crew-profile-page-tab-page-1')).not.toHaveAttribute('inert')
+
+    // Back pops the picker only: the Settings page is current again.
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    expect(onPop1).toHaveBeenCalledTimes(1)
+    expect(onPop0).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByTestId('stub-level-1')).toBeNull())
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Settings')
+    expect(screen.getByTestId('crew-profile-back')).toHaveTextContent('oncall')
+    expect(screen.getByTestId('crew-profile-page-tab-page')).not.toHaveAttribute('inert')
+    // Focus goes back to the row that pushed the picker, on the page now on top.
+    expect(document.activeElement).toBe(openPermissions)
+
+    // Back again pops the Settings page and lands on the card.
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    expect(onPop0).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-pushed-title')).toBeNull())
+    expect(screen.getByTestId('crew-profile-pane-goals')).toBeInTheDocument()
+  })
+
+  it('re-opening the level under an open page keeps that page and its opener', async () => {
+    // A tab's effect may call `open(..., 0)` again while level 1 is up (its
+    // dependencies moved). That must retitle in place, not rebuild level 1 with
+    // the back control, where focus just landed, as its opener.
+    function Reopener() {
+      const push = useContext(ProfilePagePushContext)
+      return (
+        <>
+          <button type="button" onClick={() => push?.open('Settings', () => {}, 0)}>open settings</button>
+          {push?.hosts[0] ? createPortal(
+            <button type="button" onClick={() => push.open('Permissions', () => {}, 1)}>open permissions</button>,
+            push.hosts[0],
+          ) : null}
+          {push?.hosts[1] ? createPortal(<div data-testid="stub-level-1">picker</div>, push.hosts[1]) : null}
+          <button type="button" onClick={() => push?.open('Settings', () => {}, 0)}>reopen settings</button>
+        </>
+      )
+    }
+    setup({ initialTab: 'goals', goalsBody: <Reopener /> })
+    fireEvent.click(screen.getByRole('button', { name: 'open settings' }))
+    const row = await screen.findByRole('button', { name: 'open permissions' })
+    row.focus()
+    fireEvent.click(row)
+    await screen.findByTestId('stub-level-1')
+    expect(document.activeElement).toBe(screen.getByTestId('crew-profile-back'))
+    // The re-run, with focus on the back control.
+    fireEvent.click(screen.getByRole('button', { name: 'reopen settings', hidden: true }))
+    expect(screen.getByTestId('stub-level-1')).toBeInTheDocument()
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Permissions')
+    // Back still hands focus to the row that opened the picker.
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    await waitFor(() => expect(screen.queryByTestId('stub-level-1')).toBeNull())
+    expect(document.activeElement).toBe(row)
+  })
+
+  it('Escape pops one level at a time', async () => {
+    const h = setup({ initialTab: 'goals', goalsBody: <StackStub onPop0={vi.fn()} onPop1={vi.fn()} /> })
+    fireEvent.click(screen.getByRole('button', { name: 'open settings' }))
+    await screen.findByTestId('stub-level-0')
+    fireEvent.click(screen.getByRole('button', { name: 'open permissions' }))
+    await screen.findByTestId('stub-level-1')
+    fireEvent.keyDown(screen.getByTestId('crew-profile-panel'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('stub-level-1')).toBeNull())
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Settings')
+    fireEvent.keyDown(screen.getByTestId('crew-profile-panel'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-pushed-title')).toBeNull())
+    expect(h.onClose).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByTestId('crew-profile-panel'), { key: 'Escape' })
+    expect(h.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('a tab closing from a depth drops that level and everything over it', async () => {
+    function Closer() {
+      const push = useContext(ProfilePagePushContext)
+      return (
+        <>
+          <button type="button" onClick={() => { push?.open('A', () => {}, 0); push?.open('B', () => {}, 1) }}>open two</button>
+          <button type="button" onClick={() => push?.close(0)}>close all</button>
+        </>
+      )
+    }
+    setup({ initialTab: 'goals', goalsBody: <Closer /> })
+    fireEvent.click(screen.getByRole('button', { name: 'open two' }))
+    expect(await screen.findByTestId('crew-profile-page-tab-page-1')).toBeInTheDocument()
+    // The tab's body is inert under the pages; the close comes from the tab's own code path.
+    fireEvent.click(screen.getByRole('button', { name: 'close all', hidden: true }))
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-pushed-title')).toBeNull())
+  })
 
   it('pushes a tab page over the card with its title, and back hands it back to the tab', async () => {
     const onPop = vi.fn()
