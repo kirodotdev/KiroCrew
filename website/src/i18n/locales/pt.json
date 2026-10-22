@@ -9788,6 +9788,7 @@
       "open_in_side_panel": "Abrir no painel lateral",
       "path_copied": "Caminho copiado",
       "reveal_blocked": "Este caminho está protegido e não pode ser aberto.",
+      "reveal_copied_instead": "Não foi possível abrir este caminho na máquina que executa o {{productName}}, então ele foi copiado no lugar.",
       "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o {{productName}}.",
       "show_folder_in_side_panel": "Mostrar a pasta no painel lateral"
     },

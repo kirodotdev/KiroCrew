@@ -24,13 +24,18 @@ const H = vi.hoisted(() => ({
 // helper (which the reveal button now routes through) branches on it.
 vi.mock('../api/client', () => ({ api: H.api, ApiError: class ApiError extends Error {} }))
 
-// The reveal-in-file-manager button is gated on branding.directLocal: a remote
-// session degrades reveal to a clipboard copy, so the affordance is hidden
-// there. Default to a local session so the existing header assertions hold; a
-// dedicated case below flips it to pin the hidden (remote) state.
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+// The reveal-in-file-manager button is gated on the shared reveal gate
+// (branding.directLocal AND branding.desktopLauncher): a remote or headless
+// session could only have reveal answered with a clipboard copy, so the
+// affordance is hidden there. Default to a local desktop session so the existing
+// header assertions hold; dedicated cases below pin the hidden states.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 vi.mock('../pierre/tree', () => ({
@@ -76,6 +81,7 @@ beforeEach(() => {
   H.api.projectGitStatus.mockReset().mockResolvedValue({ repo: true, files: [] })
   H.api.revealPath.mockReset().mockResolvedValue(undefined)
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
 })
 
 describe('FilesHomePanel header', () => {
@@ -139,6 +145,14 @@ describe('FilesHomePanel header', () => {
     // A remote session cannot drive the operator's file manager, so the button
     // is gated out entirely rather than firing a reveal that degrades to a copy.
     brandingEnv.directLocal = false
+    mount()
+    expect(within(header()).queryByLabelText('Show in file manager')).toBeNull()
+  })
+
+  it('hides the reveal action when the gateway host has no desktop launcher', () => {
+    // Direct-local (an `ssh -L` browser reads as one) but headless: the reveal
+    // could only be answered with a copy of the project path.
+    brandingEnv.desktopLauncher = false
     mount()
     expect(within(header()).queryByLabelText('Show in file manager')).toBeNull()
   })

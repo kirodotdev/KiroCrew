@@ -54,11 +54,12 @@ vi.mock('../components/MarkdownRenderer', async () => {
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
-// FileViewer's overflow gates Open/Reveal on directLocal (the browser is on the
-// gateway machine). Mock it true so the reveal-menu tests can see those items;
-// the remote-hidden case is covered in FilePathMenu.test.tsx.
+// FileViewer's overflow gates Open/Reveal on the shared reveal gate (the browser
+// is on the gateway machine, and that machine has a launcher). Mock both true so
+// the reveal-menu tests can see those items; the hidden cases are covered in
+// FilePathMenu.test.tsx.
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Kiro Crew', avatar: '/logo.png', directLocal: true }),
+  useBranding: () => ({ botName: 'Kiro Crew', avatar: '/logo.png', directLocal: true, desktopLauncher: true }),
 }))
 
 import { fileExplorerApi } from '../apps/file-explorer/api'
@@ -409,17 +410,21 @@ describe('FileExplorerPage reveal', () => {
     expect(reveal).toHaveBeenCalledExactlyOnceWith('/home/user/notes.txt', 'reveal')
   })
 
-  it('does not alert locally when the mocked backend resolves with a copy fallback', async () => {
+  it('says the path was copied, in place, when the backend resolves with a copy fallback', async () => {
     // The copy fallback is centralized in revealOrOpen (FilePathMenu.tsx),
-    // which calls api.revealPath and then copyToClipboard itself without an
-    // alert, so this call site must not add one once the real client resolves.
+    // which calls api.revealPath, then copyToClipboard, and reports the copy
+    // through the caller's notice: no alert, and no silent copy either.
     const reveal = spyReveal({ ok: true, copy: '/home/user/notes.txt' })
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
     const alerted = captureAlert()
     renderPage()
     await ready()
     await openFromTree('notes.txt')
     await pickFromOverflow('Show in file manager')
     await waitFor(() => expect(reveal).toHaveBeenCalled())
+    expect(copyToClipboard).toHaveBeenCalledWith('/home/user/notes.txt')
+    const notice = await screen.findByTestId('file-viewer-reveal-error')
+    expect(notice).toHaveTextContent(i18nT('components.filePathMenu.reveal_copied_instead'))
     expect(alerted).not.toHaveBeenCalled()
   })
 

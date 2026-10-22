@@ -9502,6 +9502,7 @@
       "open_in_side_panel": "在侧边面板中打开",
       "path_copied": "路径已复制",
       "reveal_blocked": "此路径受保护，无法打开。",
+      "reveal_copied_instead": "无法在运行 {{productName}} 的计算机上打开此路径，已改为复制该路径。",
       "reveal_failed": "无法在运行 {{productName}} 的计算机上打开此路径。",
       "show_folder_in_side_panel": "在侧边面板中显示文件夹"
     },

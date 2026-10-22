@@ -9645,6 +9645,7 @@
       "open_in_side_panel": "Im Seitenpanel öffnen",
       "path_copied": "Pfad kopiert",
       "reveal_blocked": "Dieser Pfad ist geschützt und kann nicht geöffnet werden.",
+      "reveal_copied_instead": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden und wurde stattdessen kopiert.",
       "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden.",
       "show_folder_in_side_panel": "Ordner im Seitenpanel anzeigen"
     },

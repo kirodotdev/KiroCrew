@@ -9502,6 +9502,7 @@
       "open_in_side_panel": "사이드 패널에서 열기",
       "path_copied": "경로 복사됨",
       "reveal_blocked": "이 경로는 보호되어 있어 열 수 없습니다.",
+      "reveal_copied_instead": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없어 대신 경로를 복사했습니다.",
       "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다.",
       "show_folder_in_side_panel": "사이드 패널에 폴더 표시"
     },

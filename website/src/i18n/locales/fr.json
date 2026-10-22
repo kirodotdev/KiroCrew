@@ -9788,6 +9788,7 @@
       "open_in_side_panel": "Ouvrir dans le panneau latéral",
       "path_copied": "Chemin copié",
       "reveal_blocked": "Ce chemin est protégé et ne peut pas être ouvert.",
+      "reveal_copied_instead": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}, il a donc été copié à la place.",
       "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}.",
       "show_folder_in_side_panel": "Afficher le dossier dans le panneau latéral"
     },
