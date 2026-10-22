@@ -3214,7 +3214,7 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: → stop) stalls on an approval prompt at its second step with nobody at the
 #: keyboard.
 #: ``session_broadcast`` joins on exactly ``session_send``'s argument rather than a
-#: new one, and the fan-out does not widen it: the verb's DEFAULT audience is read
+#: new one, and the fan-out does not widen it: the verb's `all: true` audience is read
 #: from the same ``created_by`` field the ownership fence reads, and every delivery
 #: re-runs that fence per target, so a member's broadcast reaches the worker
 #: sessions it opened and nothing else — the same confinement, applied to each of

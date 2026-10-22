@@ -811,12 +811,20 @@ async def api_session_control_broadcast(request: web.Request) -> web.Response:
                         "a session key, transcript name, or exact title",
                         code="target_too_long",
                     )
+        # A JSON boolean only. A string such as "false" is truthy in Python, so
+        # reading it loosely would let a malformed value select the whole fleet.
+        all_created = body.get("all", False)
+        if all_created is None:
+            all_created = False
+        if not isinstance(all_created, bool):
+            raise sc.SessionControlError("all must be a boolean", code="invalid_field_type")
         result = await sc.broadcast_to_targets(
             state,
             caller_session_key=_read_session_key(request),
             message=message,
             mode=mode,
             targets=targets,
+            all_created=all_created,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

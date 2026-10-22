@@ -61,7 +61,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_revive": {"target": "chat-2"},
     "session_history_list": {},
     "session_send": {"target": "chat-2", "message": "hi"},
-    "session_broadcast": {"message": "hi", "mode": "queue"},
+    "session_broadcast": {"message": "hi", "mode": "queue", "all": True},
     "session_status": {},
     "session_adopt": {"target": "chat-2"},
     "session_release": {"target": "chat-2"},

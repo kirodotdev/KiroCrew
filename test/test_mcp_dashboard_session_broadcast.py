@@ -56,11 +56,11 @@ def _row(target: str, **kw) -> dict:
 class TestBroadcastForwarding:
     def test_the_mode_and_message_go_to_the_broadcast_route(self) -> None:
         _, sent = _bc(
-            {"message": "rebase first", "mode": "queue"},
+            {"message": "rebase first", "mode": "queue", "all": True},
             {"ok": True, "mode": "queue", "requested": 1, "delivered": 1, "results": []},
         )
         assert sent.path == "/api/session-control/broadcast"
-        assert sent.body == {"message": "rebase first", "mode": "queue"}
+        assert sent.body == {"message": "rebase first", "mode": "queue", "all": True}
         assert sent.session_key == "dashboard:chat-1-100"
 
     def test_targets_are_forwarded_when_named(self) -> None:
@@ -84,7 +84,7 @@ class TestBroadcastForwarding:
         gate and audit work, the broadcast audit write, or the HTTP response.
         """
         _, sent = _bc(
-            {"message": "stop", "mode": "steer"},
+            {"message": "stop", "mode": "steer", "all": True},
             {"ok": True, "mode": "steer", "requested": 0, "delivered": 0, "results": []},
         )
         timeout = sent.timeout
@@ -94,79 +94,82 @@ class TestBroadcastForwarding:
         assert timeout > worst_case_delivery
         assert timeout > 30, "the default would expire mid-fleet"
 
-    def test_an_omitted_targets_key_is_not_invented(self) -> None:
-        """Omission selects the default audience without inventing a field."""
+    def test_all_true_is_forwarded_and_no_targets_key_is_invented(self) -> None:
+        """`all: true` is the opt-in to every created session; it travels as a bare
+        boolean and the client adds no `targets` key beside it."""
         _, sent = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []},
         )
-        assert "targets" not in sent.body
+        assert sent.body == {"message": "rebase", "mode": "queue", "all": True}
 
-    def test_an_empty_target_list_is_forwarded_for_the_backend_to_refuse(self) -> None:
-        """An empty list is a caller error the BACKEND owns, so it must travel.
+    def test_an_explicit_empty_targets_list_is_forwarded_as_given(self) -> None:
+        """A gateway older than this tool refuses an explicit empty list but reads a
+        bare body as "every session you created". Dropping `[]` here would turn an
+        empty audience into a fleet-wide send when the two versions meet."""
+        resp = {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []}
+        _, sent = _bc({"message": "go", "mode": "queue", "targets": []}, resp)
+        assert sent.body == {"message": "go", "mode": "queue", "targets": []}
 
-        Dropping it here would silently widen a broadcast nobody asked to widen:
-        the request would arrive indistinguishable from an omitted key and reach
-        the whole default audience.
-        """
-        _, sent = _bc(
-            {"message": "stop", "mode": "queue", "targets": []},
-            {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []},
-        )
-        body = sent.body
-        assert "targets" in body, "an empty list must not be dropped on the client"
-        assert body["targets"] == []
+    def test_an_empty_targets_list_beside_all_is_forwarded_with_it(self) -> None:
+        resp = {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []}
+        _, sent = _bc({"message": "go", "mode": "queue", "all": True, "targets": []}, resp)
+        assert sent.body == {"message": "go", "mode": "queue", "all": True, "targets": []}
 
-    def test_an_explicit_null_targets_reaches_the_default_audience(self) -> None:
-        """`targets: null` is the default audience, not a crash.
-
-        The validator keeps the key for a non-required field passed as explicit
-        JSON ``null`` and hands back the spec default (``None``), so a presence
-        test sends ``None`` into ``list()`` and the model gets
-        ``Error: 'NoneType' object is not iterable`` where the documented
-        default-audience broadcast belongs.
-        """
-        out, sent = _bc(
-            {"message": "rebase", "mode": "queue", "targets": None},
-            {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []},
-        )
+    def test_a_null_targets_is_not_forwarded(self) -> None:
+        """`null` is the validator's default for an absent field, not a list."""
+        resp = {"ok": True, "mode": "queue", "requested": 0, "delivered": 0, "results": []}
+        out, sent = _bc({"message": "go", "mode": "queue", "all": True, "targets": None}, resp)
         assert "NoneType" not in out
-        assert "targets" not in sent.body
+        assert sent.body == {"message": "go", "mode": "queue", "all": True}
 
-    def test_the_three_target_shapes_stay_distinguishable(self) -> None:
-        """Omitted, empty and null are three outcomes, never two.
+    @pytest.mark.parametrize("args", [{}, {"targets": None}, {"all": False}, {"all": None}])
+    def test_a_call_that_names_no_audience_sends_no_request(self, args) -> None:
+        """Kiro CLI drops `targets: []`, so "no audience" arrives as a missing key.
+        A body without `targets` is read by a gateway older than this tool as every
+        session the caller created, so the tool refuses locally and sends nothing."""
+        dash = InMemoryDashboardClient({"POST /api/session-control/broadcast": {"ok": True}})
+        ctx = ToolContext(dash, Caller.strict("dashboard:chat-1-100"))
+        out = TABLE.call("session_broadcast", {"message": "stop", "mode": "steer", **args}, ctx)
+        assert dash.requests == []
+        assert out.startswith("Error:")
+        assert "all: true" in out and "target_required" in out
+        assert "Nothing was sent" in out
 
-        Collapsing any pair breaks one of them: null must join omitted at the
-        default audience, while the empty list must stay separable from both so
-        the backend can refuse it.
-        """
-        resp = {
-            "ok": True,
-            "mode": "queue",
-            "requested": 0,
-            "delivered": 0,
-            "results": [],
+    def test_an_explicit_empty_targets_list_alone_reaches_the_backend_to_be_refused(self) -> None:
+        """An explicit `[]` is forwarded: a gateway older than this tool refuses it
+        and the new backend refuses it as `target_required`."""
+        refusal = {
+            "error": "no audience selected: name the sessions in targets, or pass all: true",
+            "code": "target_required",
         }
-        bodies = {}
-        for label, args in (
-            ("omitted", {"message": "go", "mode": "queue"}),
-            ("empty", {"message": "go", "mode": "queue", "targets": []}),
-            ("null", {"message": "go", "mode": "queue", "targets": None}),
-        ):
-            _, sent = _bc(args, resp)
-            bodies[label] = sent.body
+        out, sent = _bc({"message": "stop", "mode": "steer", "targets": []}, refusal)
+        assert sent.body == {"message": "stop", "mode": "steer", "targets": []}
+        assert out.startswith("Error:") and "all: true" in out
 
-        assert "targets" not in bodies["omitted"]
-        assert "targets" not in bodies["null"]
-        assert bodies["empty"]["targets"] == []
-        assert bodies["null"] == bodies["omitted"], "null must behave like omitted"
-        assert bodies["empty"] != bodies["omitted"], "an empty list is not an omission"
+    def test_targets_beside_all_are_both_forwarded_for_the_backend_to_refuse(self) -> None:
+        refusal = {"error": "pass targets or all: true, not both", "code": "audience_conflict"}
+        out, sent = _bc(
+            {"message": "stop", "mode": "queue", "all": True, "targets": ["chat-2"]}, refusal
+        )
+        assert sent.body["all"] is True and sent.body["targets"] == ["chat-2"]
+        assert out.startswith("Error:") and "not both" in out
+
+    def test_a_non_boolean_all_is_refused_without_a_request(self) -> None:
+        """A string such as "false" is truthy in Python; it must never select the fleet."""
+        dash = InMemoryDashboardClient({"POST /api/session-control/broadcast": {"ok": True}})
+        ctx = ToolContext(dash, Caller.strict("dashboard:chat-1-100"))
+        out = TABLE.call(
+            "session_broadcast", {"message": "stop", "mode": "queue", "all": "false"}, ctx
+        )
+        assert out.startswith("Error:")
+        assert dash.requests == []
 
 
 class TestBroadcastReports:
     def test_a_queue_broadcast_reports_each_target_and_the_tally(self) -> None:
         out, _ = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {
                 "ok": True,
                 "mode": "queue",
@@ -182,7 +185,7 @@ class TestBroadcastReports:
 
     def test_a_steer_broadcast_says_it_cut_into_the_running_turns(self) -> None:
         out, _ = _bc(
-            {"message": "stop", "mode": "steer"},
+            {"message": "stop", "mode": "steer", "all": True},
             {
                 "ok": True,
                 "mode": "steer",
@@ -198,7 +201,7 @@ class TestBroadcastReports:
         """The caller asked for an interruption and one target did not get one.
         Reporting a plain queue would leave it believing every target was cut into."""
         out, _ = _bc(
-            {"message": "stop", "mode": "steer"},
+            {"message": "stop", "mode": "steer", "all": True},
             {
                 "ok": True,
                 "mode": "steer",
@@ -212,7 +215,7 @@ class TestBroadcastReports:
 
     def test_a_queue_broadcast_never_mentions_steering(self) -> None:
         out, _ = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {
                 "ok": True,
                 "mode": "queue",
@@ -227,7 +230,7 @@ class TestBroadcastReports:
         """A model that cannot see WHICH target was missed cannot recover the
         delivery, and nothing retries it."""
         out, _ = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {
                 "ok": True,
                 "mode": "queue",
@@ -252,7 +255,7 @@ class TestBroadcastReports:
     def test_a_fully_delivered_broadcast_does_not_warn_about_missed_targets(self) -> None:
         """A warning on every call is a warning nobody reads."""
         out, _ = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {
                 "ok": True,
                 "mode": "queue",
@@ -267,7 +270,7 @@ class TestBroadcastReports:
         """A conductor before its first dispatch is in this state, and "delivered 0
         of 0" reads like something broke."""
         out, _ = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {
                 "ok": True,
                 "mode": "queue",
@@ -282,7 +285,7 @@ class TestBroadcastReports:
 
     def test_an_api_refusal_is_surfaced_as_an_error(self) -> None:
         out, _ = _bc(
-            {"message": "rebase", "mode": "queue"},
+            {"message": "rebase", "mode": "queue", "all": True},
             {"error": "a broadcast reaches at most 32 sessions"},
         )
         assert out.startswith("Error:")
@@ -456,12 +459,23 @@ class TestBroadcastSchema:
 
     @pytest.mark.parametrize("mode", ["queue", "steer"])
     def test_both_modes_validate(self, mode: str) -> None:
-        cleaned = validate_tool_args({"message": "hi", "mode": mode}, SESSION_BROADCAST_SCHEMA)
+        cleaned = validate_tool_args(
+            {"message": "hi", "mode": mode, "all": True}, SESSION_BROADCAST_SCHEMA
+        )
         assert cleaned["mode"] == mode
+
+    def test_the_schema_advertises_all_as_an_optional_boolean(self) -> None:
+        from kiro_crew.mcp_dashboard import _tool_definitions
+
+        tool = next(t for t in _tool_definitions() if t["name"] == "session_broadcast")
+        schema = tool["inputSchema"]
+        assert schema["properties"]["all"]["type"] == "boolean"
+        assert "all" not in schema["required"]
+        assert "all: true" in tool["description"]
 
     def test_message_is_required(self) -> None:
         with pytest.raises(ValidationError):
-            validate_tool_args({"mode": "queue"}, SESSION_BROADCAST_SCHEMA)
+            validate_tool_args({"mode": "queue", "all": True}, SESSION_BROADCAST_SCHEMA)
 
     def test_a_non_string_target_is_refused_at_the_schema(self) -> None:
         """The model supplies these arguments, so a number in the list is a real

@@ -29,7 +29,7 @@ MAX_LONG_STRING = 50_000  # task specs, inline content
 # a way to occupy the event loop for as long as the caller likes.
 #
 # The VALUE is tied to ``dashboard.state.MAX_SLOTS_PER_CREATOR`` (50) and must
-# never fall below it. The broadcast's DEFAULT audience is "every live session
+# never fall below it. The broadcast's `all: true` audience is "every live session
 # this caller created" (``broadcast_audience``), and that set is bounded by the
 # per-creator slot cap and by nothing else -- so a cap under it makes the
 # documented default path refuse itself with ``too_many_targets`` as soon as a

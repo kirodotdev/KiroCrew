@@ -621,13 +621,28 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
 
 def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
     payload = {"message": args["message"], "mode": args["mode"]}
+    # A call that names no audience is refused HERE, before any request. Kiro CLI
+    # drops an empty `targets: []` from the call, so "no audience" reaches this
+    # function as a missing key, and a bare body is the one thing that must never be
+    # sent: a gateway older than this tool reads a body without `targets` as every
+    # session the caller created. The backend refuses the same call, so a new
+    # gateway gives the same answer; this check only covers the older one.
+    if args.get("targets") is None and args.get("all") is not True:
+        return (
+            "Error: could not broadcast: no audience selected: name the sessions in "
+            "targets, or pass all: true to reach every session you created "
+            "(target_required). Nothing was sent."
+        )
     # The VALUE decides, not the key: the validator keeps an explicit JSON
     # `null` as the field's `None` default, so a presence test would send
-    # `None` into `list()`. `None` and omission both select the default
-    # audience, while an explicitly empty list is still forwarded for the
-    # backend to refuse rather than widened to that audience here.
+    # `None` into `list()`. A list is forwarded as given, an empty one included:
+    # a gateway older than this tool refuses an explicit empty list but reads a
+    # bare body as "every session you created", so dropping `[]` here would turn
+    # an empty audience into a fleet-wide send during a mixed-version rollout.
     if args.get("targets") is not None:
         payload["targets"] = list(args["targets"])
+    if args.get("all") is True:
+        payload["all"] = True
     try:
         resp = ctx.client.post(
             "/api/session-control/broadcast",
