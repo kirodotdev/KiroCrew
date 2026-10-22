@@ -11,6 +11,7 @@ import { CHAT_PANE_DROP_TYPE } from './collision'
 import type { ChatFolder } from '../../../types'
 import FolderGlyph from '../../../components/FolderGlyph'
 import type { Slot } from '../types'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 
 /**
  * Full-pane drop affordance for "drag a session into the open chat".
@@ -382,7 +383,9 @@ export function FolderDragGhost({ folder }: { folder?: ChatFolder }) {
  *  Shared by the folder-tree and flat-lane overlays. Falls back to the slot key
  *  when the session carries no distinct title. */
 export function SessionDragGhost({ slot, fallbackLabel }: { slot?: Slot; fallbackLabel: string }) {
-  const label = slot?.title && slot.title !== slot.key ? slot.title : (slot?.key ?? fallbackLabel)
+  // The ghost reads as the row it lifts: "Untitled session" for an untitled
+  // slot, never its key (#22049).
+  const label = slot ? sessionDisplayTitle(slot) : fallbackLabel
   return (
     <div data-testid="session-drag-ghost" className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text shadow-lg max-w-[240px] truncate pointer-events-none">{label}</div>
   )

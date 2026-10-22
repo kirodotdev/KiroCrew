@@ -88,13 +88,13 @@ describe('rowName', () => {
     expect(rowName(session({ title: 'Windows testing issue found' }))).toBe('Windows testing issue found')
   })
 
-  it('appends the slot key when untitled, so rows stay distinguishable', () => {
+  it('names an untitled row "Untitled session" beside its slot key, never "New Session…" (#22049)', () => {
     const name = rowName(session({ title: 'New Session…', untitled: true, slot_key: 'chat-70' }))
-    expect(name).toBe('New Session… chat-70')
+    expect(name).toBe('Untitled session chat-70')
   })
 
-  it('falls back to the key when there is no title at all', () => {
-    expect(rowName(session({ title: '', key: 'dashboard:x' }))).toBe('dashboard:x')
+  it('names a row with no title at all "Untitled session" beside its key', () => {
+    expect(rowName(session({ title: '', key: 'dashboard:x', slot_key: '' }))).toBe('Untitled session dashboard:x')
   })
 })
 

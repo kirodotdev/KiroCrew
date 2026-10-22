@@ -632,7 +632,8 @@ describe('MemoryTab — manual consolidation', () => {
     // problems.)
     expect(notice.textContent).toContain('The server rejected a summarize request — its reply, which calls this operation "consolidation", is shown below; the other sessions were not affected. Press Summarize now to retry.')
     expect(notice.textContent).not.toContain('Its reply is shown below')
-    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('1 failed session: zzq-s2')
+    // An untitled session reads "Untitled session", never its key (#22049).
+    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('1 failed session: Untitled session')
     const detail = within(notice).getByTestId('consolidate-failed-detail')
     expect(detail.textContent).toBe('zzq-consolidate-failed')
     expect(detail.className).toContain('font-mono')
@@ -684,7 +685,7 @@ describe('MemoryTab — manual consolidation', () => {
     // shows that first request's reply -- the same request, not a mix.
     const notice = await screen.findByRole('alert')
     expect(notice.textContent).toContain('1/3 sessions (2 failed)')
-    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('2 failed sessions, the first: zzq-s2')
+    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('2 failed sessions, the first: Untitled session')
     expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe('zzq-first-failure')
   })
 
@@ -901,7 +902,7 @@ describe('MemoryTab — manual consolidation', () => {
     expect(notice.textContent).toContain('1/3 sessions (1 failed)')
     expect(screen.getByTestId('consolidate-msg').textContent).toContain('1 private session skipped (temporary or incognito)')
     // The refused one is a skip, not a failure: one failed, one skipped, one summarized.
-    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('1 failed session: zzq-s3')
+    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('1 failed session: Untitled session')
     expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe('zzq-consolidate-failed')
   })
 

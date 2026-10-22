@@ -39,6 +39,7 @@ import MonitorRadar from '../../components/MonitorRadar'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel, withMemorySource } from '../../utils/agentLabel'
+import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../lib/agentMemorySource'
 import { sameRowView, type SessionRowView } from './rows'
 import { memberThreadTitle } from '../../lib/memberThreadTitle'
@@ -307,11 +308,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // A crewmate's own DM thread is named after the crewmate, never after a generated
   // topic (`memberThreadTitle`). Local rows only: a peer's roster is not ours.
   const memberTitle = peerId ? null : memberThreadTitle(s, installedAgents)
-  const shownTitle = memberTitle ?? (s.title && s.title !== s.key ? s.title : s.key)
+  // An untitled row reads "Untitled session", never its key (#22049); the key
+  // stays in the tooltip, where it tells untitled rows apart.
+  const shownTitle = memberTitle ?? sessionDisplayTitle(s)
   // The tooltip keeps a topic stored before the thread was named after the crewmate.
   const tooltipTitle = memberTitle !== null && s.title && s.title !== s.key && s.title !== memberTitle
     ? `${memberTitle}: ${s.title}`
-    : shownTitle
+    : memberTitle ?? (isUntitledSession(s) ? `${shownTitle} · ${s.key}` : shownTitle)
   // Inside a crew group the header already names the machine, so the row
   // drops its own crew chip.
   const inCrewGroup = scope.startsWith('crew:')

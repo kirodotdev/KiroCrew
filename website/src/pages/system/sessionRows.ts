@@ -16,6 +16,7 @@
  */
 import { api } from '../../api/client'
 import { fmtDuration, fmtNumber, fmtPercent, fmtUnit, type FormatUnit } from '../../i18n/format'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { nestsUnder } from '../../lib/sessionLineage'
 
 type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
@@ -159,12 +160,17 @@ export function sparklineBars(
 }
 
 /**
- * A session with no generated title yet must still be distinguishable — every
- * such row would otherwise read identically — so the slot key disambiguates it.
+ * A session with no generated title yet reads "Untitled session", never the
+ * backend's "New Session…" placeholder or a bare key (#22049). It must still be
+ * distinguishable — every such row would otherwise read identically — so its
+ * slot key (or, with none, its session key) stands beside the label.
  */
 export function rowName(row: SessionPayloadRow): string {
-  if (row.untitled && row.slot_key) return `${row.title} ${row.slot_key}`
-  return row.title || row.key
+  if (row.untitled || !row.title) {
+    // An empty title makes the shared helper return the "Untitled session" label.
+    return `${sessionDisplayTitle({ key: row.key, title: '' })} ${row.slot_key || row.key}`
+  }
+  return row.title
 }
 
 /** Cell heat, as a fraction of the largest value in the column. */

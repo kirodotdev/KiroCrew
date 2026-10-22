@@ -530,6 +530,17 @@ key leads the row's second line, never its name: a session search hit with no
 body snippet (the query highlighted there) and a "Continue a previous chat"
 suggestion (beside its date).
 
+The live session list follows the same rule: a sidebar row
+(`chat-sidebar/SessionRow.tsx`) and its drag preview (`chat-sidebar/dnd/targets.tsx`)
+read "Untitled session", and so does a session tab (`components/SessionTabStrip.tsx`).
+A row or tab has no second line, so its hover title carries the key instead
+(`Untitled session · <key>`); a crewmate's own thread keeps the crewmate's name.
+The System → Sessions table names an untitled row "Untitled session" beside its
+slot key (`pages/system/sessionRows.ts`), in place of the backend's
+`New Session…` placeholder. A single-session message names it "Untitled session"
+with no key: the could-not-open notice (`pages/chat/page/ChatPaneNotices.tsx`) and
+the Memory tab's failed-consolidation line (`pages/overview/MemoryTab.tsx`).
+
 `ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
 calls each owner hook where that block used to sit, so React runs the effects in
 the same order as before. `ChatSidebar.ownerComposition.test.ts` pins that call

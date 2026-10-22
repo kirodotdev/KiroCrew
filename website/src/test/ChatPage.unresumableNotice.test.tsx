@@ -195,6 +195,15 @@ describe('unresumable-resume notice on the chat pane (#5925)', () => {
     expect(notice.textContent).not.toContain('chat session')
   })
 
+  it('names an untitled session "Untitled session", never its key (#22049)', async () => {
+    // The resume payload carries `title || key`, so an untitled session's
+    // title IS its key here; the notice must not print it as the name.
+    await renderWith({ key: 'chat-9-1785440411', title: 'chat-9-1785440411', surface: '', reason: 'failed' })
+    const notice = await screen.findByTestId('unresumable-resume-error')
+    expect(notice.textContent).toContain('Untitled session')
+    expect(notice.textContent).not.toContain('chat-9-1785440411')
+  })
+
   it('an unregistered surface gets a surface-free sentence, not raw machine vocabulary', async () => {
     // The wire `surface` is a machine value. Interpolating it renders lowercase
     // machine words mid-sentence ("it's a subagent session"), and its empty case
