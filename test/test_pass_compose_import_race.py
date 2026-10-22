@@ -44,6 +44,7 @@ def test_pass_compose_fully_loaded_when_text_redaction_imports() -> None:
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, (
         "pass_compose was not fully loaded when text_redaction imported.\n"
