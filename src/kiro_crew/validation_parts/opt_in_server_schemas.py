@@ -648,6 +648,10 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("reason", str, max_len=500),
         ],
     ),
+    "find_capabilities": ToolSchema(
+        tool_name="find_capabilities",
+        fields=[FieldSpec("query", str, max_len=200)],
+    ),
     "request_capabilities": ToolSchema(
         tool_name="request_capabilities",
         fields=[

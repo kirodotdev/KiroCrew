@@ -1743,7 +1743,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates`, `dashboard_fields`, `dashboard_types`, `dashboard_write`, `dashboard_templates`, `dashboard_preview`, `dashboard_apply`, `dashboard_rollback`, `dashboard_snapshot` |
 | `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel`, `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change`, `get_change_status`, `search_docs`, `find_ui` |
-| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report`, `save_notes` |
+| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `find_capabilities`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report`, `save_notes` |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
 so the default `kirocrew` template, every mate built from it, the worker
@@ -1808,9 +1808,19 @@ turn, as every card outcome does. A `set_approval_mode` for the mode the thread
 already runs in (a record pinning none opens in
 `MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE`) is refused `no_change` rather than
 drawn as a card from an empty value.
-Pressing a `request_capabilities` card writes the crewmate's own file in place
-(crew-mode.md, "Conductor and worker"). The worker does not mount it
-(`MATE_WORKER_EXCLUDED_TOOLS`).
+`find_capabilities` is a read for the crewmate's conductor: `POST
+/api/member/self/capabilities` (`handlers/member_capability_catalog.py`)
+answers what the crewmate's worker has (`mate_worker.resolve_worker_spec`), the
+servers and skills this gateway has loaded that it lacks, and, for a `query`,
+the MCP registry search the MCP page runs (`mcp_discover.search_registry`,
+external text redacted). Data only, never a transport. A `request_capabilities`
+draft that names `additions` has them resolved by the gateway into the card's
+operations (`additions_to_draft`): a gateway server's own entry, an official
+registry install plan (`mcp_discover.official_install_plan`, the spec
+`/api/mcp/discover/install` would write), or a loaded skill; the card states
+where each comes from and which tools would run without asking, and pressing it
+writes the crewmate's own file in place (crew-mode.md, "Conductor and
+worker"). The worker mounts neither tool (`MATE_WORKER_EXCLUDED_TOOLS`).
 The crewmate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
 `member-rules/`) splits the same way. `set_goal` and `set_key_results` are card
 asks (`crewmate.goal`, `crewmate.key_results`, applied and undone through

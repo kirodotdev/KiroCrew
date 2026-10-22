@@ -7,5 +7,7 @@
     {"text": "Issues in issues.md left untriaged", "target": "0", "readings": ["2", "0 (both triaged)"]}
   ],
   "milestones_card_waiting": false,
-  "heartbeat_minutes": 30
+  "heartbeat_minutes": 30,
+  "worker_servers": ["git", "issuetracker"],
+  "gateway_has_beyond_worker": ["teamchat"]
 }

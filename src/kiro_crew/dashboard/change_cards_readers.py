@@ -1210,7 +1210,13 @@ async def read_context(
                 + ", ".join(withheld)
                 + "; the tool keeps asking each time, and no card can change that",
             )
-        return {"impact": impact, "label": await asyncio.to_thread(_crewmate_label, p["member"])}
+        from kiro_crew.dashboard.handlers.member_capability_catalog import gateway_matches
+
+        return {
+            "impact": impact,
+            "label": await asyncio.to_thread(_crewmate_label, p["member"]),
+            "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+        }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
 

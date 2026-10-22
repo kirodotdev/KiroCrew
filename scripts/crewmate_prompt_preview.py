@@ -9,7 +9,8 @@
 
 Every piece of text comes from ``src/kiro_crew/crewmate_prompts.json``; this script
 runs the real assembly code over a FIXTURE (a JSON file: the goal, milestones met or
-open, whether a milestones card waits, the waiting items, a worker report) in a throwaway data home, and prints
+open, whether a milestones card waits, the worker's servers and what the gateway has
+beyond them, the waiting items, a worker report) in a throwaway data home, and prints
 each assembled prompt under a ``=== <piece> ===`` header. No gateway, no model, no
 pod: edit the JSON, run this, read the result.
 
@@ -51,6 +52,7 @@ PIECES = (
     "first_welcome",
     "goal_welcome",
     "upgrade_notice",
+    "dispatch_note",
 )
 
 
@@ -85,6 +87,8 @@ def _record(fx: dict[str, Any], slug: str, member: str) -> dict[str, Any]:
 def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
     """Each piece's assembled text for fixture *fx*, keyed by piece name."""
     from kiro_crew import context as ctx
+    from kiro_crew import crewmate_dynamic_capabilities
+    from kiro_crew import mate_capability_catalog as cc
     from kiro_crew import mate_upgrade_notice, mate_worker, members
     from kiro_crew.context_assembly import member as cm
     from kiro_crew.dashboard import (
@@ -94,6 +98,9 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
         mate_welcome,
     )
 
+    # The preview is of the crewmate prompts with Dynamic capabilities on,
+    # whatever the host config says.
+    crewmate_dynamic_capabilities._override = True
     slug = members.slug_for_name(member)
     rec = _record(fx, slug, member)
     tools = fx.get("has_mate_tools", True)
@@ -110,6 +117,10 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
     import kiro_crew.member_mate_tools as mmt
 
     mmt.binding_has_mate_tools = lambda _b: tools  # type: ignore[assignment]
+    worker = fx.get("worker_servers") or []
+    lacks = fx.get("gateway_has_beyond_worker") or []
+    cc.worker_has = lambda _s, _c: {"servers": [{"name": n} for n in worker]}
+    cc.gateway_lacks = lambda _s, _c: {"servers": [{"name": n} for n in lacks]}
     entry = SimpleNamespace(display_name=member, description=fx.get("description", ""))
     gid = rec["goals"][0]["id"]
     out = {
@@ -137,6 +148,7 @@ def assemble(fx: dict[str, Any], member: str) -> dict[str, str]:
         ),
         "goal_welcome": mate_welcome.goal_kickoff(entry, member, "", has_mate_tools=tools),
         "upgrade_notice": mate_upgrade_notice.NOTICE_PROMPT,
+        "dispatch_note": cc.dispatch_summary({}, {}),
     }
     return {piece: out[piece] for piece in PIECES}
 

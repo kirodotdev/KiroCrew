@@ -857,3 +857,52 @@ describe('a card in the conversation', () => {
     expect(readCardRef({ ...base, meta: { card: 'c1' } })).toBeNull()
   })
 })
+
+describe('the card that lets a crewmate ask for tools', () => {
+  const toolAccess = (over: Partial<Card> = {}) => card({
+    id: 'ta1',
+    kind: 'crewmate.update',
+    title: 'gateway title',
+    changes: [{ field: 'dynamic_capabilities', label: 'dynamic_capabilities', before: false, after: true }],
+    params: { name: 'scout', fields: { dynamic_capabilities: true } },
+    scope: { members: ['Scout'], count: 1 },
+    plan: { apply: [{ method: 'PUT', path: '/api/agents/scout', body: { dynamic_capabilities: true } }], undo: null },
+    ...over,
+  })
+
+  it('wears the Preview badge and says each tool still needs approval', async () => {
+    pending = [toolAccess()]
+    renderCards()
+    const badge = await screen.findByTestId('change-card-preview')
+    expect(badge).toHaveTextContent(i18nT('pages.membersPage.profile_preview_tag'))
+    const title = L('tool_access_title', { name: 'Scout' })
+    expect(screen.getByText(title, { exact: false })).toBeTruthy()
+    expect(title).toMatch(/still needs your approval/)
+    expect(title).not.toMatch(/\b(add|grant)s?\b/i)
+  })
+
+  it('answers with Turn on and Not now, and no other card does', async () => {
+    pending = [
+      toolAccess(),
+      card({ id: 'up9', kind: 'crewmate.update', title: 'Update crewmate “Scout”', params: { name: 'scout', fields: { model: 'x' } } }),
+    ]
+    renderCards()
+    await screen.findByTestId('change-card-preview')
+    const applies = await screen.findAllByTestId('change-card-apply')
+    const cancels = screen.getAllByTestId('change-card-cancel')
+    expect(applies.map(b => b.textContent)).toEqual([L('tool_access_turn_on'), expect.not.stringContaining(L('tool_access_turn_on'))])
+    expect(cancels.map(b => b.textContent)).toEqual([L('tool_access_not_now'), L('cancel')])
+  })
+
+  it('is the only card with the badge: a capabilities card and another crewmate update have none', async () => {
+    pending = [
+      card({ id: 'cap1', kind: 'crewmate.capabilities', title: 'Add teamchat to Scout', params: { member: 'scout', draft: { operations: [] } } }),
+      card({ id: 'up1', kind: 'crewmate.update', title: 'Update crewmate “Scout”', params: { name: 'scout', fields: { model: 'x' } } }),
+      card({ id: 'up2', kind: 'crewmate.update', title: 'Update crewmate “Scout”', params: { name: 'scout', fields: { dynamic_capabilities: true, model: 'x' } } }),
+    ]
+    renderCards()
+    await waitFor(() => expect(screen.getAllByTestId('change-card')).toHaveLength(3))
+    expect(screen.queryByTestId('change-card-preview')).toBeNull()
+    expect(screen.getByText('Add teamchat to Scout')).toBeTruthy()
+  })
+})

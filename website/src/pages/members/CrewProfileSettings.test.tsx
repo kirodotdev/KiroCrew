@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { Provider } from 'react-redux'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { MemberRosterRow } from '../../api/client'
 import { createTestStore } from '../../test/helpers'
 
@@ -29,6 +29,7 @@ const mockApi = vi.hoisted(() => ({
   agentResolvedModel: vi.fn(),
   memberDashboard: vi.fn(),
   memberDashboardLock: vi.fn(),
+  kirocrewConfig: vi.fn(),
 }))
 vi.mock('../../api/client', () => ({ api: mockApi }))
 const modelsState = vi.hoisted(() => ({ isDegraded: false }))
@@ -101,6 +102,7 @@ beforeEach(() => {
   mockApi.chatSlotModel.mockResolvedValue({ ok: true })
   mockApi.chatSlotReasoningEffort.mockResolvedValue({ ok: true })
   mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
+  mockApi.kirocrewConfig.mockResolvedValue({ dashboard: {} })
 })
 afterEach(() => { cleanup(); hosts?.forEach((h) => h.remove()) })
 
@@ -596,5 +598,78 @@ describe('CrewProfileSettings dashboard lock', () => {
     // but the caption is still shown so the row is not context-free.
     expect(screen.queryByRole('switch', { name: SWITCH })).toBeNull()
     expect(group()).toHaveTextContent("can't replace")
+  })
+})
+
+/** Renders the card from the cached roster row, as the profile page does. */
+function RosterBacked({ initial }: { initial: MemberRosterRow }) {
+  const qc = useQueryClient()
+  const rows = useQuery({
+    queryKey: MEMBERS_ROSTER_QUERY_KEY,
+    // A refetch answers what the server holds: the last value written to the row.
+    queryFn: () => qc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY) ?? [initial],
+    initialData: [initial],
+    staleTime: Infinity,
+  })
+  const m = rows.data?.find((r) => r.name === initial.name) ?? initial
+  return <CrewProfileSettings member={m} slotKey="member-oncall" />
+}
+
+function setupRosterBacked(m: MemberRosterRow) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  lastQc = qc
+  render(
+    <QueryClientProvider client={qc}>
+      <Provider store={createTestStore()}>
+        <RosterBacked initial={m} />
+      </Provider>
+    </QueryClientProvider>,
+  )
+}
+
+describe('CrewProfileSettings Dynamic capabilities preview', () => {
+  const sw = () => within(screen.getByTestId('crew-profile-dynamic-capabilities')).getByRole('switch')
+
+  it('follows a later change to the stored flag after its own save', async () => {
+    setupRosterBacked(member())
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    fireEvent.click(sw())
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('true'))
+    // An undo from elsewhere writes the roster row back to off.
+    act(() => {
+      lastQc.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => ({ ...r, dynamic_capabilities: false })))
+    })
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('false'))
+  })
+
+  it('is off for a new crewmate and carries a Preview tag', async () => {
+    setup(member())
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(sw().getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByTestId('crew-profile-dynamic-capabilities-preview')).toHaveTextContent('Preview')
+  })
+
+  it('writes only this crewmate\'s record', async () => {
+    setupRosterBacked(member())
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    fireEvent.click(sw())
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dynamic_capabilities: true }))
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('true'))
+  })
+
+  it('turns an on crewmate back off', async () => {
+    setupRosterBacked(member({ dynamic_capabilities: true }))
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    fireEvent.click(sw())
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dynamic_capabilities: false }))
+    await waitFor(() => expect(sw().getAttribute('aria-checked')).toBe('false'))
+  })
+
+  it('shows a crewmate\'s stored flag', async () => {
+    setup(member({ dynamic_capabilities: true }))
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(sw().getAttribute('aria-checked')).toBe('true')
   })
 })

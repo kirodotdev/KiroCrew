@@ -484,18 +484,84 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
             raise CardError(400, "invalid_body", f"unknown field '{unknown[0][:64]}'")
     except CardError as exc:
         return _refusal(exc)
-    if str(body.get("kind") or "") in catalog.SELF_ONLY_KINDS:
+    kind = str(body.get("kind") or "")
+    if kind in catalog.SELF_ONLY_KINDS:
         # A crewmate raises its own page offer through its kirocrew-mate tool, so the
         # asked-once record is kept; propose_change never raises it.
         return _refusal(CardError(403, "self_only", "only the crewmate itself can offer this"))
+    params = body.get("params")
+    if (
+        kind == catalog.KIND_CREWMATE_CAPABILITIES
+        and isinstance(params, dict)
+        and "origins" in params
+    ):
+        # Where each server comes from is the gateway's own record, written only
+        # by ``request_capabilities`` after it resolves the named additions
+        # (``member_self``); a caller never supplies one.
+        _audit(sk, "cards.propose", "denied", "origins_not_accepted")
+        return _refusal(
+            CardError(400, "invalid_param", "'origins' is set by the gateway, not the caller")
+        )
+    if kind == catalog.KIND_CREWMATE_CAPABILITIES and await asyncio.to_thread(
+        _crewmate_drives_capabilities_off, request.app["state"], slot_key, sk
+    ):
+        _audit(sk, "cards.propose", "denied", "dynamic_capabilities_off")
+        return _refusal(
+            CardError(
+                403,
+                "dynamic_capabilities_off",
+                "a crewmate asks for its worker's capabilities with request_capabilities, "
+                "which offers the user the Preview first; use that instead",
+            )
+        )
     return await propose_for_caller(
         request,
         slot_key,
         sk,
-        kind=str(body.get("kind") or ""),
+        kind=kind,
         params=body.get("params"),
         reason=body.get("reason"),
     )
+
+
+def _crewmate_drives_capabilities_off(state: Any, slot_key: str, sk: str) -> bool:
+    """A crewmate (its chat or its worker) asking for a capability card it may not raise.
+
+    While that crewmate's Dynamic capabilities preview is off
+    (``kiro_crew.crewmate_dynamic_capabilities``) the crewmate-driven capability
+    path is withheld, ``propose_change`` included. A worker whose crewmate
+    cannot be named counts as off. Any other caller -- the main assistant asked
+    to add a tool to a crewmate -- proposes the card as before. Blocking.
+    """
+    from kiro_crew import crewmate_dynamic_capabilities as dyn
+    from kiro_crew import members
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key)
+    if is_crewmate_thread(slot):
+        return dyn.restricted_for(slot.agent)
+    if members.is_crewmate_worker_session(slot_key) or members.is_crewmate_worker_session(sk):
+        return dyn.restricted_for(_worker_crewmate(slot))
+    return False
+
+
+def _worker_crewmate(slot: Any) -> str:
+    """The crewmate a worker *slot* runs for, from its execution record, else ``""``."""
+    if slot is None:
+        return ""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+        from kiro_crew.dashboard.crewmate_approval import crewmate_name_for
+        from kiro_crew.execution_context import read_session_execution
+
+        record = read_session_execution(slot_history_key(slot))
+        if record is None:
+            return ""
+        return crewmate_name_for(KiroCrewConfig.load(), record) or ""
+    except Exception:  # noqa: BLE001 - an unnamed crewmate counts as off
+        logger.debug("worker crewmate unreadable for %s", getattr(slot, "key", ""), exc_info=True)
+        return ""
 
 
 async def propose_for_caller(
@@ -1671,6 +1737,41 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
         undo_reason=reason,
         status=cards.STATUS_PARTIAL if partial else cards.STATUS_APPLIED,
     )
+    from kiro_crew import crewmate_dynamic_capabilities
+
+    # The nudge is the crewmate-driven capability path: that
+    # crewmate's Dynamic capabilities preview
+    # (``kiro_crew.crewmate_dynamic_capabilities``). The card names its crewmate.
+    raw_params = rec.get("params")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+    if rec["kind"] == catalog.KIND_CREWMATE_CAPABILITIES and await asyncio.to_thread(
+        crewmate_dynamic_capabilities.enabled_for, str(params.get("member") or "")
+    ):
+        # A card press starts no turn: tell the crewmate, so the work that waited
+        # on the capability moves to a worker that has it.
+        from kiro_crew.dashboard import goal_setup
+
+        goal_setup.schedule_capabilities_nudge(
+            request.app.get("state"),
+            rec["slot_key"],
+            str(rec.get("title") or ""),
+            card_member=str(params.get("member") or ""),
+        )
+    from kiro_crew import mate_tool_access
+
+    if rec["kind"] == catalog.KIND_CREWMATE_UPDATE and mate_tool_access.is_tool_access_card(params):
+        # The user turned the crewmate's preview on (Turn on): the request that
+        # raised this card becomes its own capabilities card, and the conductor
+        # is reloaded onto the request tools and told.
+        from kiro_crew.dashboard import goal_setup
+
+        goal_setup.schedule_tool_access_nudge(
+            request.app.get("state"),
+            rec["slot_key"],
+            app=request.app,
+            session_key=str(rec.get("session_key") or ""),
+            card_member=str(params.get("name") or ""),
+        )
 
 
 def register_change_card_routes(app: web.Application) -> None:

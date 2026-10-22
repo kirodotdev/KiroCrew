@@ -285,6 +285,14 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
+        return web.json_response(
+            {
+                "error": "dynamic_capabilities must be a boolean",
+                "code": "invalid_dynamic_capabilities",
+            },
+            status=400,
+        )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -449,6 +457,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if "dynamic_capabilities" in body:
+            # The per-crewmate preview (``kiro_crew.crewmate_dynamic_capabilities``);
+            # validated above as a strict bool.
+            agent.dynamic_capabilities = body["dynamic_capabilities"]
+            changed.append("dynamic_capabilities")
         if "approval_mode" in body:
             # Compare-and-set: the profile sends the value it last read, and a
             # write made from a stale read is refused with the current value,

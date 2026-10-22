@@ -165,9 +165,26 @@ function listOp(card: Pick<Card, 'kind' | 'params'>): ListOp | null {
   return { op, item, wording }
 }
 
+/** The one card that lets a crewmate ask the user for its worker's tools
+ *  (`kiro_crew/mate_tool_access.py`): a `crewmate.update` writing only its
+ *  `dynamic_capabilities` flag on. It is a preview opt-in, so it carries the
+ *  Preview badge the Profile card's switch shows. */
+export function isToolAccessCard(card: Pick<Card, 'kind' | 'params'>): boolean {
+  if (card.kind !== 'crewmate.update') return false
+  const fields = card.params.fields
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false
+  const entries = Object.entries(fields as Record<string, unknown>)
+  return entries.length === 1 && entries[0][0] === 'dynamic_capabilities' && entries[0][1] === true
+}
+
 /** The card's title in the reader's language where the dashboard owns the
- *  wording (a list setting's add/remove); otherwise the gateway's title. */
-export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'changes'>): string {
+ *  wording (a list setting's add/remove, the tool-access ask, the import); otherwise
+ *  the gateway's title. */
+export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'changes'> & Partial<Pick<Card, 'scope'>>): string {
+  if (isToolAccessCard(card)) {
+    const name = card.scope?.members?.[0] || String(card.params.name ?? '')
+    return i18nT('components.changeCards.tool_access_title', { name })
+  }
   // The gateway's title is English; the import's is rebuilt in the reader's language.
   const name = card.kind === 'crewmate.import' ? card.params?.name : undefined
   if (typeof name === 'string' && name) return i18nT('components.changeCards.title_crewmate_import', { name })

@@ -872,3 +872,21 @@ def _reset_create_rate_limit_buckets():
     yield
     with create_rate_limit._lock:
         create_rate_limit._buckets.clear()
+
+
+@pytest.fixture(autouse=True)
+def _crewmate_dynamic_capabilities_on():
+    """Run every test with every crewmate's Dynamic capabilities ON unless it says otherwise.
+
+    The per-crewmate preview (``KiroCrewAgentConfig.dynamic_capabilities``) ships
+    off, but the suite pins the crewmate-driven capability path it holds
+    (find_capabilities, the card, the hand-off summary, the nudge). A test of the
+    per-crewmate read sets ``crewmate_dynamic_capabilities._override = None``
+    itself (``test/test_crewmate_dynamic_capabilities.py``).
+    """
+    from kiro_crew import crewmate_dynamic_capabilities
+
+    prior = crewmate_dynamic_capabilities._override
+    crewmate_dynamic_capabilities._override = True
+    yield
+    crewmate_dynamic_capabilities._override = prior

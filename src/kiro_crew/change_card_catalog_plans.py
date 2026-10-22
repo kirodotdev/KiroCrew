@@ -23,6 +23,7 @@ import urllib.parse
 from typing import Any
 
 from kiro_crew import guide_catalog
+from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.change_card_catalog_kinds import (
     _CODE_EXEC_SETTINGS,
@@ -545,7 +546,15 @@ def build_preview(
         # it (its display name, from the context); the key is the identity the
         # plan addresses and stays in the params and the path.
         label = str(context.get("label") or p["name"])
-        out["title"] = f"Update mate “{label}”"
+        out["title"] = (
+            # The Preview opt-in a crewmate's first ``request_capabilities`` raises
+            # while its flag is off (``kiro_crew.mate_tool_access``): a question
+            # in the user's words, with no preview internals.
+            f"Allow {label} to ask you for tools its worker needs? "
+            "Each one still needs your approval."
+            if changed == {"dynamic_capabilities": True}
+            else f"Update mate “{label}”"
+        )
         # ``field`` lets the card draw the user's word for the field and its
         # values (the dashboard's FIELD_LABELS); ``label`` stays the fallback.
         out["changes"] = [
@@ -721,6 +730,19 @@ def build_preview(
             # A server this card defines runs its launch line in the member's
             # next session: shown in full, and marked as running code.
             out["changes"] += _server_spec_rows(server, spec)
+        origins = p.get("origins") or {}
+        gateway = set(context.get("gateway") or ())
+        out["changes"] += _mate_catalog.origin_rows(p["draft"], origins, gateway, impact, _display)
+        # Named additions read as one plain line each; the raw rows (sections,
+        # launch lines, origins) stay on the card behind its Details.
+        summary = _mate_catalog.addition_summary(p["draft"], origins, gateway, impact, _display)
+        if summary:
+            # An approval row that widens stays in the main view: a grant (a
+            # whole server's included) is never hidden behind Details.
+            out["changes"] = summary + [
+                row if _widening_row(row, impact) else {**row, "detail": True}
+                for row in out["changes"]
+            ]
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         # An auto-approval this draft grants widens what the member runs without
         # asking, and a launch line runs third-party code. Both can be true at
@@ -732,6 +754,12 @@ def build_preview(
         # both would surface as ``code_exec`` and silently drop the "runs
         # without asking" acknowledgement the plain-widen draft requires.
         approval_expanded = any(i.get("approval_expanded") for i in impact)
+        # Named additions that are all servers this gateway already runs bring
+        # no new outside code, so only the third-party warning goes. An approval
+        # the draft widens keeps its acknowledgement, whatever the server.
+        known_code = bool(summary) and _mate_catalog.only_gateway_servers(p["draft"], gateway)
+        if known_code:
+            launched = []
         out["widen"] = approval_expanded
         if launched:
             out["risk"] = RISK_CODE_EXEC
@@ -1293,6 +1321,18 @@ def _capability_plan(member: str, revision: str, draft: dict[str, Any]) -> list[
         step("POST", path + "/preview", base),
         step("PUT", path, _with_fills(base, fills), fill=fills),
     ]
+
+
+def _widening_row(row: dict[str, Any], impact: list[dict[str, Any]]) -> bool:
+    """Whether *row* (an :func:`_impact_rows` row) adds an approval the preview counts as wider."""
+    section = row.get("label")
+    if section not in ("allowedTools", "autoApprove"):
+        return False
+    added = set(row.get("add") or [])
+    return any(
+        i.get("approval_expanded") and i.get("section") == section and i.get("id") in added
+        for i in impact
+    )
 
 
 def _impact_rows(impact: list[dict[str, Any]]) -> list[dict[str, Any]]:

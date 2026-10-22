@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
 
@@ -374,7 +375,8 @@ KINDS: dict[str, KindDef] = {
         KindDef(
             KIND_CREWMATE_UPDATE,
             "Change one crewmate's description, display name, model, effort or the "
-            "approval mode of its own chat (normal, trust_reads, trust).",
+            "approval mode of its own chat (normal, trust_reads, trust), or let it "
+            "request tools for its worker itself (dynamic_capabilities).",
             _obj(
                 {
                     "name": _STR,
@@ -385,6 +387,7 @@ KINDS: dict[str, KindDef] = {
                             "model": _STR,
                             "reasoning_effort": _STR,
                             "approval_mode": _STR,
+                            "dynamic_capabilities": _BOOL,
                         },
                         [],
                     ),
@@ -1010,11 +1013,23 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             raise _fail("invalid_param", "'fields' must be a non-empty object")
         _only(
             fields,
-            {"description", "display_name", "model", "reasoning_effort", "approval_mode"},
+            {
+                "description",
+                "display_name",
+                "model",
+                "reasoning_effort",
+                "approval_mode",
+                "dynamic_capabilities",
+            },
             "fields",
         )
         f = {}
         for key in fields:
+            if key == "dynamic_capabilities":
+                # The crewmate's own Dynamic capabilities preview
+                # (``kiro_crew.crewmate_dynamic_capabilities``), a flag.
+                f[key] = _clean_bool(fields, key)
+                continue
             f[key] = _clean_str(
                 fields, key, max_len=_TEXT_MAX if key == "description" else 64, allow_empty=True
             )
@@ -1025,7 +1040,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             )
         return {"name": name, "fields": f}
     if kind == KIND_CREWMATE_CAPABILITIES:
-        _only(p, {"member", "draft"})
+        _only(p, {"member", "draft", "origins"})
         member = _member_name(p, "member")
         draft = p.get("draft")
         if not isinstance(draft, dict):
@@ -1049,7 +1064,13 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         clean_draft: dict[str, Any] = {"operations": clean_ops}
         if "enroll" in draft:
             clean_draft["enroll"] = _clean_bool(draft, "enroll")
-        return {"member": member, "draft": clean_draft}
+        out_caps: dict[str, Any] = {"member": member, "draft": clean_draft}
+        if "origins" in p:
+            try:
+                out_caps["origins"] = _mate_catalog.clean_origins(p["origins"])
+            except ValueError as exc:
+                raise _fail("invalid_param", str(exc)) from None
+        return out_caps
     if kind == KIND_CREWMATE_GOAL:
         _only(p, {"member", "long_term", "goal_id"})
         out_goal: dict[str, Any] = {

@@ -86,6 +86,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # The .crewmate provenance stamp (rfc-crewmate-share.md §5.4 step 5):
         # written once by the import's create, rendered by nothing yet.
         "imported",
+        # Same home and same reason: the profile card's Dynamic capabilities
+        # preview switch (``kiro_crew.crewmate_dynamic_capabilities``).
+        "dynamic_capabilities",
     }
 )
 

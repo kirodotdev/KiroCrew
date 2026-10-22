@@ -49,6 +49,8 @@ export interface MemberRosterRow {
   worker_model?: string
   /** Same for the reasoning effort; '' = the crewmate's own level. */
   worker_reasoning_effort?: string
+  /** The per-crewmate Dynamic capabilities preview (default off). */
+  dynamic_capabilities?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
    *  identity every per-member route and binding is keyed on. */
   display_name?: string

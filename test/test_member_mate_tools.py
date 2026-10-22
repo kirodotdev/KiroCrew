@@ -126,12 +126,18 @@ def test_the_shipped_defaults_auto_approve_every_mate_grant() -> None:
     assert shipped == set(agent._MATE_AUTO_GRANTS)
 
 
-def test_a_missing_capability_goes_straight_to_its_card():
+def test_a_found_capability_goes_straight_to_its_card():
     """The card is the question to the user, so nothing asks first in chat."""
+    from kiro_crew import mcp_mate
+
+    assert "request_capabilities right away" in member_ctx._MATE_TOOLS_IDENTITY
     identity = member_ctx._MATE_TOOLS_IDENTITY
-    # A worker's MISSING CAPABILITY line leads to the card.
-    assert "MISSING CAPABILITY" in identity and "request_capabilities" in identity
-    assert "card is your question to the user" in identity
+    assert "before you tell the user something is not available" in identity
+    # The hand-off result and a worker's MISSING CAPABILITY line both lead to the catalog.
+    assert "session_create" in identity and "MISSING CAPABILITY" in identity
+    assert "card is your question to the user" in member_ctx._MATE_TOOLS_IDENTITY
+    find = next(t for t in mcp_mate._tool_definitions() if t["name"] == "find_capabilities")
+    assert "straight away" in find["description"]
 
 
 def test_an_unreadable_or_missing_template_keeps_the_default_wording(monkeypatch) -> None:

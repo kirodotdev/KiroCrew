@@ -1528,3 +1528,40 @@ def test_the_goal_section_carries_no_reading_so_progress_does_not_resend_it() ->
     assert "17 pages" not in after and "pages reviewed" in after and "40" in after
     prompt = goal_reminder.reminder_prompt(member_goals.read_goals(slug, ORDINARY), "daily")
     assert "17 pages" in prompt
+
+
+def test_a_hidden_turn_may_raise_a_card_only_for_servers_the_gateway_runs(
+    _floor_monkeypatch,
+) -> None:
+    """A worker report naming a missing capability arrives on a turn the user did not
+    send; the card for a server this gateway already runs is the next step in that
+    chain, and still changes nothing until the user presses it. Outside code
+    (a registry install), a skill, or a raw draft stays user-turn only."""
+    _capture_proposals(_floor_monkeypatch)
+    _seed()
+    state = FakeState()
+    slot = _thread(state, ORDINARY, user_sent=False)
+
+    def ask(draft):
+        return {"request": "capabilities", "params": {"draft": draft}}
+
+    gateway = {"additions": [{"server": "teamchat", "source": "gateway"}]}
+    status, body = _call(state, PROPOSE, ask(gateway), slot.key)
+    assert body.get("code") != "not_user_turn", (status, body)
+    # An auto-approval is admitted too: the card then carries its own
+    # "runs without asking" acknowledgement for the user to tick.
+    approving = {
+        "additions": [{"server": "teamchat", "source": "gateway", "auto_approve": ["post"]}]
+    }
+    status, body = _call(state, PROPOSE, ask(approving), slot.key)
+    assert body.get("code") != "not_user_turn", (status, body)
+    for draft in (
+        {"additions": [{"server": "x", "source": "registry", "registry_id": "io.x/x"}]},
+        {"additions": [{"server": "x", "source": "registry"}]},
+        {"additions": [{"skill": "pdf"}]},
+        {"additions": [{"server": "teamchat", "source": "gateway"}, {"skill": "pdf"}]},
+        {"mcpServers": {"x": {"command": "x"}}},
+        {"additions": []},
+    ):
+        status, body = _call(state, PROPOSE, ask(draft), slot.key)
+        assert (status, body["code"]) == (403, "not_user_turn"), draft

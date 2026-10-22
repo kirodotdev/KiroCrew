@@ -157,6 +157,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
+                # A crewmate's worker reload waits for a reserved worker slot the
+                # same way, through _switch_target_busy.
+                ("crewmate_worker_reload.py", "_is_busy"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),

@@ -9,6 +9,10 @@ re-check the file and its kit record, then, once every candidate is proven,
 repoint each binding under the create path's optimistic lock and move its
 pre-upgrade threads (:func:`repoint_moved_threads`).
 
+Everything carried over is the crewmate's file content, so the worker's catalog
+reports it as already there and no capability card is ever raised for it
+(``mate_capability_catalog.worker_has``).
+
 Nothing is deleted, so pointing ``kiro_agent`` back rolls a crewmate's new chats
 back; threads already moved stay on the conductor (``repointed`` is a record, not
 an undo). ``~/.kiro/mates/migrated.json`` keeps it from moving again. Idempotent, best

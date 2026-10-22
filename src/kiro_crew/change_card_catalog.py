@@ -744,6 +744,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _step_fill,
         _step_path_fill,
         _user_fill,
+        _widening_row,
         _with_fills,
         build_preview,
         import_files_path,
@@ -755,6 +756,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
         MEMBER_APPROVAL_MODES,

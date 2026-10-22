@@ -324,3 +324,45 @@ def test_the_nudge_waits_for_a_busy_thread_then_sends_once(monkeypatch) -> None:
     assert args[1] is slot and "[Goal set]" in args[2]
     assert "set goal 2" in args[2]
     assert kwargs == {"human_seen": True}
+
+
+def test_an_applied_capabilities_card_wakes_its_crewmate_to_use_it(monkeypatch) -> None:
+    """A card press starts no turn, so the grant must not wait until the user types."""
+    from kiro_crew import member_goals
+    from kiro_crew import members as members_mod
+    from kiro_crew.dashboard import mate_welcome
+
+    slot = _Slot()
+    slot.running = False
+    state = _State(slot)
+    sent: list[tuple] = []
+    monkeypatch.setattr(goal_setup, "POLL_SECS", 0)
+    monkeypatch.setattr(members_mod, "member_slug", lambda _n, _c=None: "scout")
+    monkeypatch.setattr(
+        members_mod, "read_dm_binding", lambda _slug: {"member": "scout", "slot_key": slot.key}
+    )
+    monkeypatch.setattr(
+        member_goals, "read_goals", lambda _s, _m: {"goals": [], "key_results": [], "schedules": {}}
+    )
+    monkeypatch.setattr(mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k)))
+
+    async def go() -> None:
+        # A card for another crewmate raised in Scout's thread wakes nobody.
+        goal_setup.schedule_capabilities_nudge(
+            state, slot.key, "Add x to Briar's worker", card_member="briar"
+        )
+        assert not goal_setup._tasks(state)
+        goal_setup.schedule_capabilities_nudge(
+            state, slot.key, "Add teamchat to Scout's worker", card_member="scout"
+        )
+        goal_setup.schedule_capabilities_nudge(
+            state, "member-dm:other", "Add x", card_member="scout"
+        )
+        await async_wait_until(lambda: bool(sent))
+
+    asyncio.run(go())
+    ((args, _kwargs),) = sent
+    assert args[1] is slot
+    assert args[2].startswith("[Capabilities added]")
+    assert "Add teamchat to Scout's worker" in args[2]
+    assert "session_send" in args[2]
