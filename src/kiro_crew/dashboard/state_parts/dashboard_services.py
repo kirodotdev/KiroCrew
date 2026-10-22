@@ -477,6 +477,11 @@ def mark_question_pending(
     slot = self._slots.get(slot_key)
     if slot is not None:
         self.notify_dashboard_card(slot, "question")
+    # Opening a question can land after its tool call's log growth settled (a
+    # retried open POST), so tell the feed directly, as retiring one does.
+    from kiro_crew.dashboard import crewmate_feed
+
+    crewmate_feed.question_retired(slot_key)
 
 
 def clear_question_pending(
@@ -488,13 +493,20 @@ def clear_question_pending(
     reason: str | None = None,
 ) -> bool:
     """Retire only question records matching both supplied filters."""
-    return _questions_for(self).clear_pending(
+    cleared = _questions_for(self).clear_pending(
         self,
         slot_key,
         blocking=blocking,
         card_id=card_id,
         reason=reason,
     )
+    if cleared:
+        # A crewmate page's waiting fold is fed on log growth, and retiring a
+        # question writes no log entry: tell the feed directly.
+        from kiro_crew.dashboard import crewmate_feed
+
+        crewmate_feed.question_retired(slot_key)
+    return cleared
 
 
 def _broadcast_question_retired(

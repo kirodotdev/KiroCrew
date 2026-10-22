@@ -133,8 +133,10 @@ def test_dashboard_save_describes_a_page_written_as_view_html() -> None:
     (tool,) = [t for t in mcp_panel._list_tools() if t["name"] == "dashboard_save"]
     view = tool["inputSchema"]["properties"]["view"]["description"]
     assert '{"html": "..."}' in view and "data-dashboard-field" in view
-    # It names the variables the tab actually sets, not a vague "theme variables".
-    assert "var(--text)" in view and "var(--bg)" in view and "fixed fallback" in view
+    assert "using host or custom variables" in view
+    assert "window.kirocrew.subscribe" in view and "needs no text cell" in view
+    model = tool["inputSchema"]["properties"]["model"]["description"]
+    assert "`array`" in model and "`object`" in model
     text = (tool["description"] + view).lower()
     assert "blocks" not in text and "block type" not in text and "block catalog" not in text
 

@@ -933,3 +933,25 @@ def test_a_create_cards_after_read_finds_its_schedule_at_its_own_step(
     got = asyncio.run(cards.read_state("crewmate.create", p, evidence, state=state, app=None))
     assert asked == [job_id]
     assert got["schedule_exists"] is True
+
+
+def test_a_dismissed_card_tells_the_crewmate_feed(world, tmp_path, monkeypatch):
+    """A dismiss keeps the card's status, so it writes no log entry: the route tells a
+    crewmate page's waiting list itself, or a dismissed failed card stays listed."""
+    from kiro_crew.dashboard import crewmate_feed
+
+    told: list[str] = []
+    monkeypatch.setattr(crewmate_feed, "question_retired", told.append)
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        card = await _propose_setting(c)
+        told.clear()
+        step = card["plan"]["apply"][0]
+        await c.patch("/api/config/kirocrew", json=step["body"], headers=_card_headers(card))
+        told.clear()
+        r = await c.post(f"/api/cards/{card['id']}/dismiss", headers=OWNER)
+        return r.status
+
+    assert _run(world, store, go) == 200
+    assert told == [SLOT]

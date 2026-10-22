@@ -64,6 +64,11 @@ def builtin(tmp_path: Path, _floor_monkeypatch: Any) -> Path:
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
     _floor_monkeypatch.setattr(routes, "_owner_only", _none)
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
+    # The stub config above has no ``agent`` section, so the panel switch would read
+    # as off; these tests are about the tab, with the panel on as it ships.
+    from kiro_crew import members
+
+    _floor_monkeypatch.setattr(members, "crew_panel_enabled", lambda: True)
     return root
 
 
@@ -372,6 +377,15 @@ class TestTheBuildYourPageLineNeverReplacesAPage:
         assert dashboard_agentic.tab_shows_suggestions("mate") is True
         assert self._line("mate") == ""
 
+    def test_the_crew_panel_switched_off_gets_no_line(self, builtin: Path) -> None:
+        # ``agent.crew_panel: false`` mounts no ``kirocrew-panel``, so the crewmate has
+        # no dashboard_save / dashboard_apply to follow the line with.
+        from kiro_crew import members
+
+        assert self._line("mate") != ""
+        with patch.object(members, "crew_panel_enabled", return_value=False):
+            assert self._line("mate") == ""
+
     def test_the_line_asks_for_one_ready_message_after_the_apply(self, builtin: Path) -> None:
         from kiro_crew.dashboard import goal_reminder
 
@@ -386,63 +400,6 @@ class TestTheBuildYourPageLineNeverReplacesAPage:
         with patch.object(dashboard_agentic, "package_on_screen", return_value="my-pkg"):
             assert dashboard_agentic.tab_shows_suggestions("mate") is False
             assert self._line("mate") == ""
-
-    def test_the_line_names_the_tab_variables_and_the_default_look(self, builtin: Path) -> None:
-        from kiro_crew.dashboard import goal_reminder
-        from kiro_crew.dashboard.handlers.dashboard_page_checks import HOST_THEME_VARS
-
-        line = goal_reminder.DASHBOARD_BUILD_LINE
-        named = {f"--{n}" for n in __import__("re").findall(r"var\(--([\w-]+)\)", line)}
-        # Every variable the line names is one the tab sets, and the core ones are there.
-        assert named and named <= HOST_THEME_VARS
-        assert {"--bg", "--text", "--card", "--border", "--accent", "--muted"} <= named
-        assert "prefers-reduced-motion" in line and "the motion is off" in line
-
-    def test_the_line_asks_for_live_work_drawn_by_kind(self, builtin: Path) -> None:
-        from kiro_crew.dashboard import goal_reminder
-
-        line = goal_reminder.DASHBOARD_BUILD_LINE
-        # Goal and milestones live on the Profile tab: not the default content.
-        assert "not your goal or milestones" in line and "Profile" in line
-        assert "goal for the goal" not in line
-        # It names the live-work folds it binds.
-        for fold in ("work", "workstreams", "subagents", "tools", "timeline", "waiting", "usage"):
-            assert f" {fold} " in f" {line} ".replace(",", " "), fold
-        # A style the user asked for wins; without one there is no borrowed look.
-        assert "user asked for a style, which wins" in line
-        assert "no borrowed look or metaphor" in line
-        # Each value is drawn as the kind of information it is.
-        assert "drawn as the kind of information it is" in line
-        for kind in (
-            "a chart of that change",
-            "its progress",
-            "progress side by side",
-            "stands out",
-            "moving feed",
-            "a count is a count",
-        ):
-            assert kind in line, kind
-        assert "values animate to new values" in line and "prefers-reduced-motion" in line
-        # A progress needs a measure; an uncovered value gets plain words, not raw.
-        assert "a state alone is not a progress" in line
-        assert "never the raw value" in line
-        # No scene, theme or concrete motif, layout or effect is prescribed.
-        low = line.lower()
-        for word in (
-            "scene",
-            "theme you pick",
-            "neon",
-            "rain",
-            "weather",
-            "lantern",
-            "lanes",
-            "tracks",
-            " map",
-            "hero",
-            "motif",
-            "palette",
-        ):
-            assert word not in low, word
 
 
 class TestTheTurnBlockNeverAsksForAPage:

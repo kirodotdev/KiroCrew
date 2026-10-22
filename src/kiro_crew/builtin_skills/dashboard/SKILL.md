@@ -1,269 +1,138 @@
 ---
 name: dashboard
-description: "Load this when somebody asks about their crewmate's Dashboard tab: a page that shows something particular, a change to the one they have, or going back. dashboard_save stores your page, dashboard_apply puts it live; every change is a version. Every number comes from a fold, never from your typing."
+description: "Build or change a crewmate's Dashboard tab: a page worth returning to, with real work woven into its design. dashboard_save stores it; dashboard_apply puts it live. Values arrive through declared fields, independently of the page."
 triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another dashboard, dashboard page, show me a different, go back to the old dashboard, build a dashboard, dashboard gallery, dashboard template
 ---
 
 # The Dashboard Tab
 
-ONE page per crewmate. You write it, the person owns it, and the gateway keeps
-it fed.
+One page per crewmate. You design it, the person owns it, and the gateway feeds
+its declared fields. The page, the values and the frame have different jobs:
 
-Three parts, and knowing which is which is most of the job:
-
-| Part | Who | Rule |
-|---|---|---|
-| the page | you write the HTML | changes only when you apply it, and only you can |
-| the values | the crew log folds | pushed in as they move, never typed by you |
-| the frame | the gateway | no network, text-only bindings, nothing you write runs outside it |
-
-## 1. You own it, and every change is one rollback away
-
-Your page goes live on apply, and only you can apply it:
-
-```
-dashboard_save -> dashboard_apply -> live, as a new version
-```
-
-1. **Save.** `dashboard_save` takes the package's `model`, `view` and `theme`.
-   `view.html` carries your markup, your CSS and your script, and it is the only
-   view a crewmate page has: a `view` of `blocks` is refused. `model` names every
-   field you bind, and it is also the list the controller pushes, so a binding
-   the model does not declare is refused at the save and told to you by name.
-   The gateway fills `kind` and `bound_to` from who you are, so the package is
-   always your own. Saving stores it; the page in force does not move yet.
-   The save then RUNS the page once, offline,
-   over a SYNTHETIC copy of your crewmate's current data: the same fields,
-   nesting, list lengths, nulls and types, with invented values (booleans and
-   the schema's fixed words are kept, and an `enum` field shows one of its own
-   labels at random). A key inside a value is kept only if your page spells it
-   out, as a word or in quotes, or the dashboard type catalog lists it for
-   that value, so reach data by the names you write in the page. In the rows
-   of a list read from the crew log, only a row's own keys are kept: the keys
-   of an object nested inside a row are invented. The page never sees the
-   record, so a value quoted in an error is not a real one. The reply carries a `verification`
-   block: `passed`, `failed` with each script error and the `view.html` line and
-   column it was thrown at, `timed_out` when the run hit its time limit, or
-   `skipped` with the reason (no system-installed browser on the machine, for
-   one). Fix a failed page and save again before you apply it.
-   An error that depends on how two invented values compare (a count above its
-   total) may come from the copy; one that depends on a missing field, a null or
-   a wrong type does not. The page is run as the dashboard shows it: the
-   gateway's secret filter rewrites text in a page that looks like a key (a long
-   run of letters and digits can), and when it changed yours the reply says how
-   many places and the line of the first, never what was replaced. A script that
-   depends on such a string breaks on the dashboard and here, and nowhere else;
-   write the string in shorter pieces and join them in code. The run has no
-   network, so a library the page loads
-   from the CDN allowlist is not fetched. A page whose script stops at that
-   library's name (`Chart is not defined`) comes back `skipped`, not `failed`,
-   because the rest of that script did not run; any other error is still
-   `failed`. It checks the first paint only: a refill that arrives later is not
-   exercised. The save waits for the run, which usually takes about a second and
-   never more than about twelve. One page is checked at a time across the gateway,
-   so a save that finds another check running, or a machine short of memory, is
-   `skipped` at once and does not wait.
-2. **Apply.** `dashboard_apply` with no arguments puts your saved package live
-   as a new version. Your `dashboard_write` fields keep working on it, and
-   `dashboard_fields` lists them.
-3. **Say what changed**, not what the page shows -- they are looking at it.
-
-There is no preview step. A person cannot see an exfiltration script by looking
-at a page, so a "please approve" step would add a click and no safety. What
-keeps the page safe is the frame (section 4). What keeps the person in charge is
-the history: every apply is a version.
-
-A TEMPLATE page goes live the same way: `dashboard_apply` with a `template_id`
-from `dashboard_templates`. `dashboard_preview` is only a look, for when the
-person asks to see one first; it changes nothing.
-
-**Going back** is `dashboard_rollback`. `dashboard_fields` lists the versions a
-rollback can reach; a version is either a template page or one of your saved
-packages, and the one you restore is the one that draws. Going back moves
-FORWARD: restoring version 1 over version 2 writes version 3, so it is itself
-undoable.
-
-**When the layout is locked.** The person can lock the page's layout with the
-**Lock dashboard layout** switch on their Profile tab, and the Dashboard tab
-then shows a small **Layout locked -- unlock on Profile** badge-button. The lock
-is a ceiling over you: while it holds, the tab keeps the page that was in force
-when they locked it, and `dashboard_apply` and `dashboard_rollback` answer
-`dashboard_locked`. Your `[DASHBOARD]` block says LOCKED when it is. Then do
-not apply or propose another page: ask them to
-unlock it, and wait until they say they have. Only the person can unlock it, and
-no tool of yours can. You can still preview a template for them to look at, and
-`dashboard_write` values still land.
-
-Only the owner writes the page or its values. A worker is refused on every
-artifact write path to another crewmate's package and told to `work_report`
-instead; the ledger fold then carries its report onto the page by itself.
-
-Three things not to do:
-
-- Do not change the page without telling the person what changed.
-- Do not report what the page shows. They are looking at it. Say what changed.
-- Do not write a number into the markup. Bind it.
-
-## 2. The design is yours; the honesty is not optional
-
-Choose the information architecture and the visual form the work needs, and
-change it when the work changes. No panel is required and no form is a template.
-
-What is fixed is what the page is allowed to claim:
-
-- **Real evidence only.** Real states and real counts. No invented percentage,
-  no made-up elapsed time, no fabricated approval, no "complete" from an idle
-  worker.
-- **A projection, not a second store.** The page presents what the ledger and
-  the folds already hold. It is never the place a status lives.
-- **One page, updated in place.** Change the page the person has; do not mint a
-  new one per milestone.
-- **Numbers come from bindings.** A number you type is true once, at the moment
-  you typed it, and wrong every time the page is opened afterwards. A number
-  read from a fold is true tomorrow.
-- **No imitation controls.** Decisions go through the real `ask_question`
-  surface and the runtime's own approval flow. A button you draw in HTML cannot
-  change anybody's permissions, and a page that implies it can is lying about
-  authority it does not have.
-- **Say which claims are yours.** A value you asserted and a value the log
-  recorded are different kinds of claim. The frame marks yours; do not blur it.
-- **Your words agree with the folded numbers.** A headline or summary you write is a
-  claim about the same work the folds count, so it may never contradict them.
-  Derive it from the folded values in the page's script, so it changes when they
-  do; a hand-written one is rewritten the moment the numbers move. A line saying
-  nothing runs beside a count of two running is the page contradicting itself.
-- **Plain words, never internals.** Show what a value means to the person, not
-  how the log spells it: translate an event type, a state or a phase into
-  everyday words before it reaches the screen, and never show an internal id,
-  slot or session key -- in a row, a label or your own headline. The ledger's
-  `phase` and every row's `state` are log words too: the page's script maps
-  each value it shows to plain words, so no hyphenated value reaches the screen.
-  A value the map does not know -- a timeline `type` such as `session/opened`
-  included -- still gets plain words, a general phrase, never the raw value.
-
-### A page that updates itself
-
-Every field on the page reads a crew-log fold, so the page moves the moment an
-event lands and stays true when you are not writing to it. With no other ask,
-the page is about the work live right now -- what the user cares about this
-minute -- and these folds carry it:
-
-| what the page shows | the fold |
+| Part | Job |
 |---|---|
-| what each of your work items is doing, its state and what it produced | `work`, `workstreams` |
-| helpers you dispatched in this session, and tool calls | `subagents`, `tools` |
-| what just landed, and what stopped | `timeline` |
-| what waits on the user: open questions and cards waiting on a button | `waiting`, `approvals` |
-| spend | `usage` |
+| page | your HTML, CSS and script, versioned when applied |
+| values | recorded facts, pushed through the declared model |
+| frame | isolation, text bindings and the subscription bridge |
 
-A list or a map a script draws has rows, and `dashboard_types` names each row's
-keys (`row_keys`) and the one that names the row (`names_the_row`): a
-`timeline.moments` row is named by its `type`, the crew-log entry type, and a
-`subagents.by_id` row by its `task`, with `outcome` empty while it runs. Read
-those keys; a key you guess draws nothing.
+## 1. Save, check, apply
 
-Work you hand out shows up where it is recorded: items in the work ledger are in
-`work` and `workstreams`, and a helper dispatched in this session is in
-`subagents`. Read `dashboard_types` for which of these hold anything for you, and
-draw what is running from those; do not assume one way of handing work out.
+Read `dashboard_fields` for the page in force and its fields, and
+`dashboard_types` for the available folds and row keys. Tell the person what
+changed when the new page is live. Work that has grown a lot -- more workstreams, a
+longer history, a new kind of reading -- is a good reason to redesign the page
+once; it is never a reason to redraw it every turn.
 
-Your goal and milestones are not default content: the user already sees them on
-your Profile tab, and a page that repeats them is a second copy of that tab. The
-`goal` fold (each milestone's target, latest reading, met or open) is there for a
-page the user asks to show them on.
+`dashboard_save` takes `model`, `view` and an optional `theme`. `view.html`
+holds the markup, CSS and script; a crewmate page uses HTML rather than
+`view.blocks`. Every field read by a binding or a script belongs in `model`.
+The gateway derives `kind` and `bound_to` from the caller. Saving stores a
+draft; `dashboard_apply` with no arguments makes it a new live version.
 
-When the page needs a fact no fold carries, the fact belongs in the crew log as
-an event type of its own, recorded where it changes (by the gateway, or by you
-through the tool that records it), rather than a value you keep typing.
-A hand-written field (`{"agentic": true}`) is for prose only you know, such as
-your own verdict. The `dashboard_save` reply lists every field with its type and
-source and names the hand-written ones under `manual_fields`, so you can see
-which cells go stale the moment you stop writing them.
+The save runs the page once, offline, over a synthetic copy of the current
+record: the same fields, list lengths, nulls and types, with invented values.
+Booleans and fixed vocabulary words are kept; an enum uses its declared labels.
+Keys are kept when the page spells them out or the type catalog names them.
+Nested objects inside list rows can have invented keys. Read fields by their
+published names. The browser sees the copy, not the record.
 
-Two checks the gateway makes on every save, because the page run is skipped on
-a machine with no browser (the reply's `verification.note` then says nothing
-was checked): `shape_warnings` names each list, record or time you bound to a
-`data-dashboard-field` cell, which shows it raw (`[]`, an ISO string), so draw
-it in your script (`dashboard_types` and `dashboard_fields` carry `rendering`
-for each type); `theme_warnings` says your fixed colours cover one colour
-scheme only, so the page is unreadable in the other, and names a surface you
-painted under text that keeps the tab's colours.
+The `verification` result is `passed`, `failed` with script error positions,
+`timed_out`, or `skipped` with a reason. A failed page needs a repair and a new
+save before apply. A count above its total can be a synthetic-data mismatch;
+a missing field, null or wrong type is still a case the page needs to handle.
+A pass means the first paint raised no script errors: later pushes, small
+screens, visual quality and colour contrast still need their own checks.
 
-### A look that belongs to the work
+The gateway's secret filter also processes markup and script. A note reports
+how many places changed and the first line, without revealing the replaced
+text. A long identifier-like string can trigger it; shorter pieces joined in
+code avoid accidental identifier matches. The offline check does not fetch
+CDN libraries. A script that stops only because such a library is missing
+returns `skipped`; other errors remain failures. One check runs at a time.
+Busy or low-memory hosts skip it; the save waits at most about twelve seconds.
 
-A style the user asks for, in chat or on a card, wins over everything below and
-stays on every later rebuild. A borrowed look -- a metaphor taken from
-something outside the work -- needs the user's own taste to get right, so add
-one only when the user asks for a style. With none asked, the page has none: its
-look comes from the information itself, drawn well.
+A template from `dashboard_templates` uses `dashboard_apply(template_id=...)`.
+`dashboard_preview` is an optional look when the person asks, not an approval
+gate for authored code. `dashboard_rollback` restores a version listed by
+`dashboard_fields`; restoring an old version itself creates a new version.
 
-**Draw each value as the kind of information it is.** Read what your work
-actually holds and give each kind the element it calls for:
+**Layout lock.** The person's **Lock dashboard layout** switch on Profile
+holds the current page. A `[DASHBOARD]` block marked LOCKED means apply and
+rollback answer `dashboard_locked`. The person can unlock it; you can explain
+that path and wait. Field writes and template previews remain available.
+Only the owner writes its page or values. A worker reports through
+`work_report`, whose record feeds the owner's folds.
 
-- **A value that changes over time** is a chart of that change, and the chart
-  moves when the value moves.
-- **Something moving toward done** is drawn as its progress toward done, when
-  a fold measures it (items done of a total, a reading toward a target). A
-  state is not a measure: a running worker with no count behind it is drawn as
-  running, not as a bar part-way full.
-- **Parallel workstreams** are their progress side by side, so the reader
-  compares them at a glance.
-- **Something waiting on the user** stands out from everything else on the
-  page, and is never hidden.
-- **Recent events** are a feed that moves: a new one arrives at the top and the
-  older ones make room.
-- **A count is a count**: a number, set large enough to read at a glance.
+## 2. A page worth returning to
 
-Only the kinds your work has get an element: a page about one long task does
-not grow an empty feed. Rows of detail are welcome below the main elements, for
-the reader who wants them.
+Aim for a page the person enjoys opening, even before reading a number.
+Its whole composition and the way the work appears within it create that
+appeal. Clear data and a distinctive visual character belong together.
 
-**Polished and alive.**
+**Make the design your own.** Carry the user's chosen style through later
+changes. When they leave the style open, choose a coherent direction from
+the work and its context. That freedom includes a theme, atmosphere and
+visual metaphor, as well as an abstract design. Let that character reach
+across the page rather than stop at a heading or an icon.
 
-- **Typography and spacing carry the order.** What matters most is first and
-  largest; the rest steps down in size and weight, with room around each part.
-- **Motion where the data changes.** A value animates to its new value, a chart
-  draws in, a progress fills, a new item arrives rather than appears (the
-  `living-ui` skill says how a change should feel). Motion that carries no
-  change stays cheap, does no layout work and pauses while the tab is hidden.
-  Under `prefers-reduced-motion` the motion is off and every change is instant.
-- **What is written agrees with what is drawn.** A number or label beside a
-  chart, a progress or a feed reads the same fold value and says which part it
-  counts: ten workers drawn do not sit beside a bare zero that means "none
-  running".
-- **Nothing covers anything.** A banner, badge or callout takes its own space,
-  never the space of a value the reader needs to see.
-- **Every row fits the width.** Long text wraps or ends in an ellipsis inside
-  its row; nothing runs off the side.
+**Give the whole page visual depth.** Backgrounds, wallpaper, pattern,
+texture, expressive frames and layered surfaces are welcome parts of the
+design. Their purpose can be atmosphere rather than measurement. Give the
+data equal care: its placement, scale and visual form belong to the same
+composition. A decorative layer can enrich the work without pretending to
+be evidence about it.
 
-An idea you may use or ignore, for depth and craft: build the page in layers,
-the way a house goes up -- for example a background layer, frames around the
-data, then the data placed into them. What those layers look like is yours to
-choose.
+**Let the evidence suggest the picture.** Look for change, comparison,
+proportion, relationships and progress in what the page can actually read.
+Charts reveal recorded changes over time; comparisons and distributions
+can reveal a great deal from current values alone. Progress draws on a
+known target or a defined total. A state without a measure can still have
+a vivid visual presence and motion that means active, waiting or finished.
+Choose the form that helps this work make sense, with detail available
+where it is useful. A count can be part of a larger picture as well as a
+readable number. A distribution of task states is a measured comparison,
+not a claim that each task has completed a fraction of its work.
 
-Colour only with the variables the Dashboard tab sets for the scheme
-in force (and colours derived from them), so light and dark both read:
+**Make it feel alive.** Subtle ambient motion and animation run constantly
+while the page is in view, not only when a value changes, and lift the whole
+experience. Data-driven motion on top helps the reader notice an arrival, a
+change or a finish. Give those two
+kinds of motion a clear purpose and a shared rhythm. Keep long-running
+effects light on resources, without repeated layout work, and pause them
+while the page is hidden. The still composition keeps its character and
+meaning.
 
-| variable | use |
-|---|---|
-| `--bg`, `--bg-elevated` | page and raised surfaces |
-| `--card`, `--card-fg` | a card and the text on it |
-| `--text`, `--text-strong`, `--muted` | body, emphasis, secondary text |
-| `--border` | borders and dividers |
-| `--accent`, `--accent-subtle` | the accent and its tint |
-| `--ok`, `--warn`, `--danger` | states |
+**Reduced motion is for the reader who set it.** Under
+`prefers-reduced-motion: reduce` every value jumps to its target, ambient
+layers hold still and no entrance plays; the page still answers input.
+Every other reader gets the motion, so do not hold it back by default.
 
-A `var()` of any other name -- `var(--my-fg, #e8e8e8)` -- is not set by the tab,
-so it draws its fixed fallback in both schemes: pale text on the light tab. The
-save reply's `theme_warnings` names any such variable.
+**Keep every claim true.** Numbers, labels and data-driven geometry agree
+with their sources and with each other. Proportions have a stated meaning
+and a real denominator. Time charts show recorded samples and their time
+range. Missing readings, incomplete history and unmeasured progress stay
+distinct from zero. Running or idle alone says nothing about how much of
+a task is complete. Decoration remains distinct from measured evidence,
+and an animation's intermediate positions are not new measurements.
 
-A surface you paint yourself owns the text on it. When part of the page gets its
-own background -- a fixed colour, a gradient, or a theme token that sets one of
-the tab's variables to a fixed value -- the tab's text colours still change with
-the scheme, so text laid on that surface disappears into it in one of them.
-Either leave the surface on the tab's variables as the tab sets them, or set the
-text on it too: a colour that reads on that surface, or surface and text set
-together for each scheme. `theme_warnings` names a surface left this way.
+**Make the work easy to read.** Use plain words and useful names, keeping
+internal ids, session keys and file-system paths out of the visible page.
+Map each phase, state and event type to its meaning; an unknown type gets a
+truthful general phrase. Free text an agent wrote into a fold -- a ledger's
+`next`, a report's summary, a waiting item's text -- can carry a session name,
+a path or a whole build report: show it as a short plain sentence (its first
+sentence, the rest behind a disclosure), with ids and paths left out. Important changes and things waiting on the person remain easy
+to find. Colour works with words or shape to carry meaning. Decorative
+layers leave text and useful controls clear, and long content fits from
+a narrow view to a wide one: at 320px a label and its value wrap or stack,
+and nothing is clipped or scrolls sideways.
+
+**Design colour as a whole.** The tab's theme variables are a useful base;
+custom variables, textures and independently coloured surfaces can also
+belong to the design. Pair each surface with text that reads on it, and
+check the complete result in both light and dark. Treat a colour warning
+as a place to inspect and improve, rather than a reason to remove the
+page's character.
 
 **Pair type, do not name it.** The frame gives three role variables,
 `var(--font-sans)`, `var(--font-serif)` and `var(--font-mono)`, each built
@@ -276,142 +145,151 @@ tabular-nums` aligns figures without switching to monospace. Text in any
 one script stays in one style; the generic families already pick each
 script's system face. A style the user names wins.
 
-Search the Kiro Crew documentation with `search_docs` (and `find_ui` for where
-a control is) before guessing how a fold, a field or a setting works.
+Judge the result both as a whole picture and as a view of the work. It
+should remain worth looking at when the values hold still, and make a
+real change in the work easy to see when they move. A tidy set of numbers
+alone does not establish that quality.
 
 ## 3. What a glance should answer
 
-A reader opens this page to know where the work stands, without asking how the
-system works. Whatever form you give it, the page should let them answer at a
-glance:
+The page has both visual character and a useful view of the work:
 
-| Question | Where the answer comes from |
+| Question | Available evidence |
 |---|---|
-| Where does the work stand? | your work items and workstreams (`work`, `workstreams`) |
-| What is running right now? | ledger work items (`work`, `workstreams`), helpers in this session (`subagents`) |
-| What is stuck? | blocked items, and helpers that failed or never ran |
-| What needs me? | anything waiting on the person (`waiting`, `approvals`) |
+| Where does the work stand? | work items, workstreams, relevant goal readings |
+| What is running right now? | workstreams, helpers in this session |
+| What is stuck? | blocked work, failed helpers, outstanding dependencies |
+| What needs me? | waiting items and approvals |
 
-Two things hold whatever the design:
+Anything waiting on the person is easy to find, never hidden. When nothing
+waits, the page says so. Include `waiting.count` and `waiting.items` in the
+model so a request arriving after the first paint is visible too. Choose
+vocabulary that keeps sessions,
+accepted work items and project outcomes distinct. A closed session does not
+establish that its task was accepted. Decisions use the real `ask_question`
+and approval surfaces; a drawn control carries no approval authority.
 
-- Anything that waits on the person is never hidden.
-- When nothing waits, the page says so, rather than leaving the reader to wonder.
+## 4. Choose evidence before drawing it
 
-Write the vocabulary down before you draw: what one item is, what done means,
-what waiting means. A page whose words drift from the work reads as wrong even
-when every number is right.
+The page presents recorded facts rather than becoming a second status store.
+Fold-backed fields update by themselves. Choose evidence that explains this
+project, including relevant goals and milestones when they reveal progress;
+repeating the Profile form is different from drawing a useful project view.
 
-## 4. The frame contract
+| Evidence | Fold and shape |
+|---|---|
+| work items and their outcomes | `work`, `workstreams.items` |
+| hourly accepted work and measured spend | `workstreams.series`: `hour`, `accepted`, `credits` |
+| parallel work and task spans | each workstream's `tasks`: `created_at`, `closed_at`, `status` |
+| goal readings and milestone counts | `goal.milestones` (`target`, `current`), `milestones_total` |
+| recent recorded events | `timeline.moments`: `time`, `type`, optional event details |
+| things waiting on the person | `waiting.items`, `count`; `approvals` |
+| helpers, tool use and spend of the live session, since it started | `subagents`, `tools`, `usage` |
 
-Your page is a body fragment in a frame the gateway owns. It may run JS.
+`dashboard_types` publishes paths, `row_keys`, `names_the_row` and nested row
+hints. A path ends at an array: bind the whole array and read its rows in
+script. Array length is a useful derived count, not the only possible binding.
+A map is read by its published keys. `folded_through` reports how far a fold
+has consumed its log; it is not a sample count or proof of nonempty data.
 
-Three ways a value reaches it, and you choose per element:
+A task's state is not a completion percentage. `goal` keeps a
+latest snapshot: its `target` and `current` strings may be prose rather than
+numbers. Show each milestone's reading beside its target, as text. Whether a
+milestone is reached is what you recorded in its reading with
+`key_result_progress` ("met", "done", a number), never something the page
+works out; an arbitrary prose target is not a denominator. With no milestones confirmed, show that state rather
+than a 0/0 ratio. A goal's text can carry a repository path: show the project
+by its name, and a source by the file's name within the project, never an
+absolute or home-directory path. A source list can lag a newer measurement: resolve differences against
+the actual project before presenting an old issue as still open.
+`workstreams` is the measured project history a page most often misses: each
+board's `accepted` of `total`, its `tasks` with their spans, and `series`, hourly
+buckets of accepted items and recorded spend -- a bounded set, not guaranteed
+continuous history. `usage`, `tools`, `timeline` and `subagents` describe the
+live session only, from when it last started; spend across the project is each
+workstream's `credits`, with `credits_reported` false where nothing was measured. Lists expose omitted counts; retain that
+meaning when drawing a subset. Unreported spend differs from measured zero.
 
-1. `data-dashboard-field="<name>"` on an element: the host sets that element's
-   **text**. No markup, no attributes -- a text node, so a value can never
-   become an element. This is the path for every cell a reader reads.
-2. `window.kirocrew.fields` in a script: the same values as data, for a chart to
-   draw from. It also carries `agentic` (the values you wrote rather than the
-   gateway folded), `seq` (the fold watermark) and `stale`.
-3. `window.kirocrew.subscribe(name, cb)`: `cb(value, name)` runs once when you
-   subscribe and again on every push that carries that field, and it returns a
-   disposer. This is the path for anything you DRAW -- a tree, a chart, a progress.
+For a project fact absent from folds, first look for its recording tool or an
+existing project artifact. An agentic field can hold a verified snapshot as a
+number, text, boolean, array or object, as well as your own verdict. Label its
+source and observation time visibly, and use `dashboard_write` when that
+source changes. A snapshot remains an observation at that time, not a claim
+of automatic freshness. Repeated observations can form a measured series;
+values invented for the sake of a chart cannot. The save reply names
+`manual_fields`, and the frame marks agent-written claims.
 
-The host fills (1) itself from the same object it hands to (2) and (3), so a
-page cannot show one number in a cell and a different one in its chart.
+## 5. The frame contract
 
-Where your own script builds rows, create elements and set `textContent`. A
-value out of the crew log is whatever somebody wrote there, so assigning a
-template string to `innerHTML` is how a recorded value becomes markup on your
-page. The bindings in (1) cannot do that to you; your own markup can.
+The page is a body fragment in a gateway-owned iframe. Inline CSS, SVG and JS
+can draw it. Network access is closed: `connect-src 'none'`; no fetch, XHR,
+websocket, remote fonts or beacons. Libraries are limited to the frame's fixed
+allowlist. Embedded imagery is an inline `data:` URL, in `view.html` or in
+`theme.css`; `theme.css` refuses a `url()` with an address, which would load
+nothing. A page cannot loosen the frame policy.
 
-**Hearing an update.** Subscribe during parse and keep drawing: the callback
-fires immediately against the read the page already holds, so first paint has
-the numbers, and the registry outlives each refill even though the host
-replaces that object wholesale. A field counts as present or absent,
-not truthy, so a counter reaching `0` still reaches your callback. A throw in
-one callback costs only that callback, not the others on the page. There is
-also a plain `kirocrew-dashboard` event on `window`, but it only says that
-something landed and leaves you to diff a whole read to find out what;
-`subscribe` is the better entry point. Bindings update whether or not you
-subscribe, so subscribe only for what you draw.
+The iframe has `allow-scripts` only, an opaque origin, and no access to the
+host's cookies, storage or DOM. If the owner's network policy withholds script,
+a `<noscript>` explanation can say that the view needs it. Start script-filled
+regions hidden and reveal them after drawing; an unfilled placeholder is not
+evidence about the person's work.
 
-What the frame refuses:
+Values arrive in three ways:
 
-- **No egress.** `connect-src 'none'`. No fetch, no XHR, no websocket, no remote
-  font, no beacon. Publish fresh content through the tool instead.
-- **No dynamic exec.** The frame mounts with `allow-scripts` and nothing else,
-  on an opaque origin with no access to the dashboard's cookies, storage or DOM.
-- **A fixed library allowlist**, and it can be used for nothing else, because
-  nothing can be sent to it.
+1. `data-dashboard-field="name"` fills an element with text. Useful for a
+   scalar cell; arrays and objects appear as raw JSON through this path.
+2. `window.kirocrew.fields` holds the same declared values, with `agentic`,
+   `seq` and `stale` beside them.
+3. `window.kirocrew.subscribe(name, cb)` calls `cb(value, name)` immediately
+   and on each push. Its returned function unsubscribes. A chart or script-only
+   field needs no extra text binding or hidden sink.
 
-Egress is closed harder here than a chat card needs, and the reason is what this
-page HOLDS: real numbers out of the operator's own crew log. A page that can both
-read those and open a channel is an exfiltration path with a data source
-attached.
+Subscribe during parse. The subscription survives a replaced fields object;
+zero is a present value and still reaches the callback. A failing callback
+leaves the others running. The `kirocrew-dashboard` event is also available,
+but only announces a refill rather than naming the field.
 
-If your page needs a script to draw itself, carry a `<noscript>` fallback saying
-so, and ship anything a script fills HIDDEN so the script reveals it.
-`allow-scripts` is withheld wherever an admin ceiling restricts the owner
-agent's network egress, and a page that shows a placeholder or an empty-state
-line in that mode states something about the owner's data that is not true.
+Use `createElement` and `textContent` for recorded text. Inserting recorded
+strings as `innerHTML` would turn somebody's data into page markup. Numerical
+geometry comes from validated numbers. Bindings and graphics read the same
+source, and labels say which subset they describe.
 
-**Staleness.** A field whose source did not resolve is reported, not guessed at.
-The page keeps the last values that did resolve and the host shows a band saying
-the data is stale. A half-filled page is the one state a status surface must
-never reach, because a reader cannot tell it from a current one.
-
-## 5. Which values exist
-
-Fold names available today: `status`, `usage`, `timeline`, `tools`, `approvals`,
-`subagents`, `class`, `outline`, `ledger`, `radar`, `work`, `panel`, `agentic`,
-`mistakes`, `workstreams`, and a tree-keyed `worktree`.
-
-Each is a list of paths, and a path is dotted keys only -- there is no index
-syntax, so a per-row value has no path and a list's LENGTH is what you bind.
-
-Read the live list rather than this paragraph. `dashboard_types` says which
-folds exist and what each one holds, so you read a number from a real path
-instead of guessing one, and the `dashboard-template` skill's `FOLDS.md` and
-`folds.json` are generated from the product's own projections. `dashboard_fields`
-tells you which fields the page you are on declares, which of them are yours,
-and which of your past writes were refused. Read it before you write.
-
-Every fold here is available. None is required. A page that needs two of them is
-a correct page.
+The host retains the last resolved fields and shows a stale band when a
+source fails. Preserve that distinction rather than replacing an unread
+value with a made-up zero. Your words and graphics agree with the folded
+numbers; derive changing headlines from those values too.
 
 ## 6. Theme and reach
 
-The `widgets` skill owns the theme contract and this page follows it: theme
-variables, never hard-coded colour, so the page tracks light and dark without a
-second design.
+The frame supplies `--bg`, `--bg-elevated`, `--card`, `--card-fg`, `--text`,
+`--text-strong`, `--muted`, `--border`, `--accent`, `--accent-subtle`, `--ok`,
+`--warn`, `--danger` and other host theme variables. Your CSS and `theme.tokens`
+can define custom properties too. An undefined variable uses its fallback;
+a defined custom variable is a normal design tool.
 
-- Readable at 320px wide, through to an expanded view. No fixed-width canvas and
-  no table that forces the whole page to scroll sideways; stack or disclose dense
-  content on a phone.
-- When a bound value moves or a new item lands, the `living-ui` skill says
-  how that motion should feel. Never run the idle tour it describes for
-  explainers: this page stays open all day.
-- Under `prefers-reduced-motion`, the ambient layer off and every change instant.
-- Colour is never the only carrier of a state: pair it with a word.
-- Every link gets `target="_blank" rel="noopener noreferrer"`.
-- Plain-language names. A session or run id belongs in folded detail, never as a
-  main label.
+Pair surface and text colours, either through host variables or your own
+scheme-aware definitions. Fixed colours can also form a readable self-contained
+surface when its text is designed with it. A fallback in `var(--text, ...)`
+is unused while the tab defines `--text`: that text still changes with the
+host scheme. A fixed surface can instead pair with its own text property,
+including captions, bound cells and chart labels. The save's theme warnings
+are CSS heuristics, not measured contrast failures. Inspect the named surface
+in both schemes while preserving the intended design.
+
+A page fits from 320px through an expanded view, with wrapping or disclosure
+for dense detail. A banner has space without covering data. Links use
+`target="_blank" rel="noopener noreferrer"`. Data-driven changes stay readable
+while ambient layers give the page continuity. When a bound value moves or a
+new item lands, the `living-ui` skill says how that motion should feel. Skip
+the idle tour it describes for explainers: this page stays open all day.
 
 ## 7. Pages to start from
 
-`gallery/` beside this file holds whole working packages. Copy one, pass its
-`model`, `view` and `theme` (the gateway fills `kind` and `bound_to`), change
-what it binds, and save it with `dashboard_save`; nothing loads a gallery page by
-id, so editing your copy cannot reach anybody else's.
+`gallery/` and `GALLERY.md` beside this file show how a page declares and binds
+its fields, not how a page should look. Read a package for the connection you
+need, then compose the page for this work. Its plain appearance is a wiring
+example, not a quality target. Your model declares every field your script or
+markup reads; the controller pushes only that list.
 
-`GALLERY.md`, also beside this file, lists those packages and the pages that
-shipped together, with the reader question each one answers. They show how a
-page declares and binds its fields, not how a page should look: their look is
-plain on purpose, and yours comes from section 2. Read one for its wiring, then
-write your own page.
-
-One rule a copied package will teach you the hard way: the package's `model` is
-the list of fields the controller pushes, so a name only your markup knows is a
-cell nothing ever fills, and the save is refused and says so. Declare every
-field you bind.
+Search documentation with `search_docs` and locate controls with `find_ui`
+when a fold, field or setting needs clarification.

@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Forty-four types. Read [envelope.md](envelope.md) first for the fields every entry
+Forty-seven types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -63,6 +63,8 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/instance_changed`](#dashboardinstance_changed) | One mate dashboard-instance change: adopted, edited or rolled back. | live | `gateway` | — |
 | [`dashboard/agentic_value`](#dashboardagentic_value) | One agent-written dynamic dashboard value. | live | `gateway` | — |
 | [`dashboard/agentic_refused`](#dashboardagentic_refused) | A refused agentic dashboard write (the mistake book's input), or a correction. | live | `gateway` | — |
+| [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
+| [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -1539,6 +1541,42 @@ best-effort, so a publish whose entry never landed leaves the fold with no recor
 the file still serves that crew's panel.
 
 **Since** — #13440.
+
+## A crewmate's own record
+
+Two snapshots the gateway appends to a crewmate's own DM session log so its
+Dashboard page can bind them (`dashboard/crewmate_feed.py`). Each replaces the
+last one whole in its slot fold, so a page reading it moves when the fact does,
+with no value the crewmate typed.
+
+#### `dashboard/goal_recorded`
+
+Kind `session`, `src` `gateway`. Written after every write of the crewmate's goal
+record (a goal set, milestones applied, a reading recorded), through
+`member_goals.add_change_listener`, and only when it differs from the last one
+recorded for that thread. A write while the thread has no live session (an idle
+thread between turns, or after a restart) is held, newest wins, and recorded on
+the thread's next growth, when its session is known. Folded as `goal`.
+
+| field | type | notes |
+| --- | --- | --- |
+| `goals` | array of `{text}` | the goals, in the record's order |
+| `milestones` | array of `{text, target, current, at}` | `current` is the reading the crewmate last recorded with `key_result_progress` and `at` its time; whether the target is reached is the crewmate's own word in that reading, not judged by the gateway; at most `CREWMATE_ROW_LIMIT` rows |
+| `goals_total` | integer | how many goals the record holds in all |
+| `milestones_total` | integer | how many milestones the record holds in all |
+
+#### `dashboard/waiting_changed`
+
+Kind `session`, `src` `gateway`. Written when the list
+`dashboard.member_waiting.waiting_items` reads off the thread differs from the
+last one recorded, checked after each growth of the crewmate's DM log (a reply,
+an `[OPTIONS]` chip, a card raised or pressed, a turn ending). Folded as
+`waiting`.
+
+| field | type | notes |
+| --- | --- | --- |
+| `items` | array of `{kind, text, options, options_total, asked_at}` | newest first; `kind` is `options`, `question` or `card`; at most `CREWMATE_WAITING_LIMIT`, each with at most `CREWMATE_OPTION_LIMIT` choices and `options_total` counting them all |
+| `total` | integer | how many items wait in all, including any past `items` |
 
 ## Change cards and guides
 

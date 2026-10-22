@@ -38,6 +38,7 @@ from urllib.parse import quote
 
 from kiro_crew import dashboard_agentic
 from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
+from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 from kiro_crew.mcp_core import (
     _get,
     _post,
@@ -232,8 +233,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "dashboard_save",
             "description": (
-                "SAVE the page you composed and PUT IT LIVE as YOUR crewmate's "
-                "Dashboard. A page is three declarations and this call saves all "
+                "SAVE a draft of your crewmate's Dashboard page. dashboard_apply "
+                "puts it live separately. A page has three declarations; this saves all "
                 "three at once: a "
                 "`model` naming the fields the page holds and where each value "
                 "comes from, a `view` holding the page itself as inline HTML, and a "
@@ -285,49 +286,37 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "The fields the page holds, as "
                             '`{"types": {<field_name>: {...}}}`. Each field names '
                             "a data type (`number`, `text`, `bool`, `timestamp`, "
-                            "`enum`) and a `source`, and may carry a `label` and "
-                            "`description` a reader sees. Field names are "
-                            "lowercase letters, digits and underscores."
+                            "`enum`, `array`, `object`) and a `source`, and may carry "
+                            "a `label` and `description`. Read a whole array or object "
+                            "in script; dashboard_types supplies row keys. A verified "
+                            "project snapshot can use an agentic source, with its "
+                            "source and observation time shown on the page. Field "
+                            "names are lowercase letters, digits and underscores."
                         ),
                     },
                     "view": {
                         "type": "object",
                         "description": (
-                            'The page, as `{"html": "..."}`: inline HTML (your '
-                            "markup, CSS and script) with one element carrying "
-                            '`data-dashboard-field="<name>"` for each field the '
-                            "model declares, which the host fills as text. Colour it "
-                            "with the variables the tab sets for light and dark "
-                            "(var(--bg), var(--card), var(--text), var(--muted), "
-                            "var(--border), var(--accent), var(--ok), var(--warn), "
-                            "var(--danger)...); any other var() name draws its fixed "
-                            "fallback in both schemes. With no style asked, the page "
-                            "shows the live work, not your goal, with no borrowed "
-                            "look: each value drawn as the kind of information it "
-                            "is (a change over time a chart, work toward done its "
-                            "progress, parallel workstreams side by side, what "
-                            "waits on the user standing out, recent events a "
-                            "moving feed, a count a count), rows of detail below "
-                            "that fit the width, values that animate when they "
-                            "change, motion off under prefers-reduced-motion. "
-                            "Words agree with the folded numbers and with what is "
-                            "drawn, and are plain: no raw event type, phase, "
-                            "state name or internal id; nothing covers anything. "
-                            "A surface the page paints "
-                            "itself needs text colours that read on it in both "
-                            "schemes. The dashboard skill has the detail."
+                            'The page, as `{"html": "..."}`: inline HTML, CSS and script. '
+                            + PAGE_LOOK
+                            + " Text cells can use "
+                            '`data-dashboard-field="<name>"`; drawings subscribe through '
+                            "window.kirocrew.subscribe. Every field is declared in the "
+                            "model, but a script-only field needs no text cell or hidden "
+                            "sink. The dashboard skill covers the frame and design."
                         ),
                     },
                     "theme": {
                         "type": "object",
                         "description": (
                             'Look, as `{"tokens": {"--name": "value"}}`, with an '
-                            'optional `"css"` string beside it for rules the '
-                            "tokens cannot express. None of "
-                            "the look is fixed by the product, so this is where "
-                            "you set it. It may be omitted, as may `tokens`: "
-                            "either is stored as an empty `tokens` object, which "
-                            "takes the defaults."
+                            'optional `"css"` string. Host variables and custom '
+                            "properties are both available; pair surfaces and text "
+                            "for light and dark. A texture or wallpaper in `css` is an "
+                            'inline data: URL (url("data:image/svg+xml,...")); an '
+                            "address that needs the network is refused. Omitting theme or "
+                            "tokens stores an empty tokens object. The page can still "
+                            "define its own complete design in view.html."
                         ),
                     },
                 },
@@ -925,9 +914,24 @@ def _flatten(node: Any, prefix: str = "") -> list[str]:
         return []
     ntype = str(node.get("type", "?"))
     label = prefix or "(the whole value)"
+    hints: list[str] = []
+    keys = node.get("row_keys")
+    if isinstance(keys, list) and keys:
+        hints.append("row_keys: " + ", ".join(str(key) for key in keys))
+    if node.get("names_the_row"):
+        hints.append("names_the_row: " + str(node["names_the_row"]))
+    if node.get("row_note"):
+        hints.append(str(node["row_note"]))
+    nested = node.get("nested_rows")
+    if isinstance(nested, dict):
+        for name, row in nested.items():
+            if isinstance(row, dict):
+                child = _flatten({"type": "array", **row}, f"{label}[].{name}")
+                hints.append("nested rows (script only): {" + "; ".join(child) + "}")
+    suffix = (" [" + "; ".join(hints) + "]") if hints else ""
     if node.get("opaque") is True:
-        keyed = node.get("keyed_by")
-        return [f"{label}: object, keyed by {keyed}" if keyed else f"{label}: object, keyed by ids"]
+        keyed = node.get("keyed_by") or "ids"
+        return [f"{label}: object, keyed by {keyed}{suffix}"]
     properties = node.get("properties")
     if ntype == "object" and isinstance(properties, dict) and properties:
         out: list[str] = []
@@ -937,7 +941,7 @@ def _flatten(node: Any, prefix: str = "") -> list[str]:
     tail = " (may be null)" if node.get("nullable") else ""
     if ntype == "array":
         tail += " -- a path cannot reach inside it"
-    return [f"{label}: {ntype}{tail}"]
+    return [f"{label}: {ntype}{tail}{suffix}"]
 
 
 def _render_rendering(payload: dict[str, Any]) -> list[str]:

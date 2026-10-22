@@ -1913,6 +1913,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # path carries no home directory into the log ring / /api/logs stream.
         # It is an operational log line, not an output boundary of its own.
         "dashboard/stall_enrichment.py",
+        # Builds a crewmate's "waiting on you" list from its own thread, redacted the
+        # way the sidebar preview is. It returns data and serves nothing: the list
+        # leaves through `dashboard/crewmate_feed.py` into the crewmate's crew log,
+        # and is shown only through the Dashboard page's data island.
+        "dashboard/member_waiting.py",
+        # Redacts a crewmate's goal and milestone text the same way before appending
+        # it as a snapshot to that crewmate's own crew log. It serves nothing; the
+        # snapshot is shown only through the Dashboard page's data island.
+        "dashboard/crewmate_feed.py",
         # Gate-side log hygiene, same shape: the declared-name spec scan redacts
         # an agent name and the spec filenames it read from the user-writable
         # agents directory before naming them in the twin-specs WARNING in the

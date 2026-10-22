@@ -1340,7 +1340,8 @@ def test_the_daily_reminder_asks_for_a_page_only_while_there_is_none(
 def test_the_build_line_is_an_html_page_saved_and_applied() -> None:
     line = goal_reminder.DASHBOARD_BUILD_LINE
     assert "view.html" in line and "dashboard_save" in line and "dashboard_apply" in line
-    assert "worker" not in line and "conductor" not in line
+    # Crewmate wording: "your work items", never "your worker".
+    assert "your worker" not in line and "conductor" not in line
     assert goal_reminder.dashboard_line("", {"goals": [{"text": "x"}], "key_results": [{}]}) == ""
 
 

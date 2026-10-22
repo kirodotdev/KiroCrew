@@ -176,6 +176,31 @@ def _newest_unit(slot: str) -> str:
         return ""
 
 
+def _live_or_newest_unit(state: Any, slot: str | None) -> str:
+    """The unit the slot's LIVE session is serving, else :func:`_newest_unit`.
+
+    The page's session folds (``usage``, ``timeline``, ``tools``, ``subagents``) are
+    keyed by one unit, and "newest" orders a slot's unrelated chains by their roots'
+    header clock: a unit that joined the slot after the live session's chain began --
+    an imported or rebuilt log, a chain whose link to the live one was never written --
+    would win, and the page would read another session's spend as this one's (a pod
+    showed 0.0 credits beside 94.1 recorded). The live provider's own id answers the
+    question the page asks, so it leads whenever it is one of the slot's units.
+    """
+    if not slot:
+        return ""
+    try:
+        from kiro_crew.crew_log.projection import units_in_succession
+        from kiro_crew.crew_log.resolve import unit_for_session_key
+
+        live = unit_for_session_key(getattr(state, "sessions", None), f"dashboard:{slot}")
+        if live and live in units_in_succession(slot):
+            return live
+    except Exception:
+        logger.debug("dashboard: no live session unit on %r", slot, exc_info=True)
+    return _newest_unit(slot)
+
+
 def _utc_stamp(stamp: str) -> str:
     """*stamp* as one aware UTC second (``...+00:00``), or ``""`` when it is not one.
 
@@ -1805,6 +1830,8 @@ async def _serve_package(
     slot, session_unit = await _run(
         lambda: (_dashboard_slot(member, slug), _write_session(slug, member))
     )
+    live_unit = await _run(lambda: _live_or_newest_unit(state, slot))
+    session_unit = live_unit or session_unit
     page = member_dashboard_fields.LivePage(
         slug,
         slot,

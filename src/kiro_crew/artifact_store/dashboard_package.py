@@ -42,7 +42,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.artifact_store.model import ArtifactValidationError
 
@@ -879,15 +879,52 @@ def _validate_theme(raw: Any) -> dict[str, Any]:
         # so a fetching construct cannot load -- it would fail silently and read
         # as a style that does not apply. Refusing it here says why instead.
         lowered = css.lower()
-        for construct in ("@import", "url(", "<script", "</style", "javascript:"):
+        for construct in ("@import", "<script", "</style", "javascript:"):
             if construct in lowered:
                 raise _refuse(
                     "theme.css",
                     f"must not contain {construct!r}: the page iframe has no network "
                     "and takes no agent-authored code",
                 )
+        if _theme_fetches(lowered):
+            raise _refuse("theme.css", THEME_URL_REFUSAL)
         out["css"] = css
     return out
+
+
+#: Why ``theme.css`` refuses a ``url()`` that is not an inline ``data:`` URL.
+THEME_URL_REFUSAL: Final[str] = (
+    "must not contain a url() with an address: the page iframe has no network, so it "
+    "would load nothing. A texture, pattern or wallpaper can be an inline data: URL "
+    'instead -- url("data:image/svg+xml,...") or a base64 image -- which needs no '
+    "network"
+)
+
+
+def _theme_fetches(lowered: str) -> bool:
+    """Whether lower-cased theme CSS holds a ``url(`` that is not an inline ``data:`` URL.
+
+    A ``data:`` URL carries its bytes with it, so it reaches no network and the frame's
+    ``img-src data:`` admits it; any other address is a fetch the frame refuses. One
+    linear pass: the text is the agent's, so no backtracking pattern runs over it.
+    """
+    at = 0
+    while True:
+        start = lowered.find("url(", at)
+        if start < 0:
+            return False
+        cursor = start + 4
+        while cursor < len(lowered) and lowered[cursor] in " \t\r\n\f\"'":
+            cursor += 1
+        if not lowered.startswith("data:", cursor):
+            return True
+        # Resume past the whole data URL: its own bytes can hold a ``url(#id)`` (an SVG
+        # gradient or pattern reference), which points inside the data, not at an address.
+        quote = next((c for c in lowered[start + 4 : cursor] if c in "\"'"), "")
+        end = lowered.find(quote, cursor) if quote else lowered.find(")", cursor)
+        if end < 0:
+            return False
+        at = end + 1
 
 
 def theme_stylesheet(raw: Any) -> str:

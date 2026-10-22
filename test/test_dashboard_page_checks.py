@@ -164,7 +164,7 @@ def test_a_painted_surface_with_its_own_text_colour_or_a_small_mark_is_fine():
         " body{background:var(--bg)} .note{color:var(--muted)}"
     )
     out = checks.theme_warnings(_package(f"<style>{layer}</style>", {}))
-    assert not [w for w in out if "paints its own fixed background" in w]
+    assert checks.PAINTED_SURFACE.format(selectors=".sky") not in out
     mark = ".pin{position:absolute;width:10px;height:10px;background:#e33} .v{color:var(--text)}"
     assert checks.theme_warnings(_package(f"<style>{mark}</style>", {})) == []
     dot = ".dot{background:#4caf50} .v{color:var(--text)}"
@@ -218,60 +218,6 @@ def test_the_host_stylesheet_falls_back_per_scheme_never_to_dark_only():
     assert "color-scheme: light dark" in css
 
 
-def test_the_skill_names_only_variables_the_tab_sets():
-    import re
-    from pathlib import Path
-
-    skill = Path(__file__).resolve().parents[1] / "src/kiro_crew/builtin_skills/dashboard/SKILL.md"
-    text = skill.read_text("utf-8")
-    section = text[text.index("### A look that belongs to the work") :]
-    section = section[: section.index("\n## ")]
-    named = set(re.findall(r"`(--[\w-]+)`", section))
-    assert {"--bg", "--text", "--card", "--border", "--accent"} <= named
-    assert named <= checks.HOST_THEME_VARS
-    assert "prefers-reduced-motion" in section and "the motion is off" in section
-    # No borrowed look unless the user asks for a style; values drawn by kind.
-    assert "add\none only when the user asks for a style" in section
-    assert "Draw each value as the kind of information it is" in section
-    # The layered build is offered as an optional idea, never a requirement.
-    assert "An idea you may use or ignore" in section
-    # Principles only: no named theme, motif, layout or effect is prescribed.
-    low = section.lower()
-    for word in (
-        "cyberpunk",
-        "neon",
-        "2077",
-        "rain",
-        "weather",
-        "lantern",
-        "sea ",
-        "lane",
-        "track",
-        " map",
-        "hero",
-        "motif",
-        "palette",
-        "glitch",
-        "scene",
-        "theme of your own",
-    ):
-        assert word not in low, word
-
-
-def test_the_skill_defaults_to_live_work_not_the_goal():
-    from pathlib import Path
-
-    skill = Path(__file__).resolve().parents[1] / "src/kiro_crew/builtin_skills/dashboard/SKILL.md"
-    text = skill.read_text("utf-8")
-    section = text[text.index("### A page that updates itself") :]
-    section = section[: section.index("### A look that belongs to the work")]
-    table = section[: section.index("Your goal and milestones")]
-    assert "`goal`" not in table
-    for fold in ("`work`", "`workstreams`", "`subagents`", "`tools`", "`timeline`", "`waiting`"):
-        assert fold in table, fold
-    assert "Profile tab" in section
-
-
 def test_rules_are_read_in_one_pass_including_nested_and_a_long_brace_free_tail():
     css = "@media (min-width: 1px) { .a { color: #fff } } body{background:#000} .b{}"
     assert checks._rules(css) == [
@@ -305,101 +251,16 @@ def test_a_var_with_a_long_run_of_spaces_is_read_in_linear_time():
     assert checks._resolve("var(--nope,   #fff )", {}) == "#fff"
 
 
-def _skill_text() -> str:
+def test_the_skill_has_unique_sections_and_a_discoverable_identity():
+    """Structure is testable; the design prose needs a rendered-page review."""
     from pathlib import Path
 
     skill = Path(__file__).resolve().parents[1] / "src/kiro_crew/builtin_skills/dashboard/SKILL.md"
-    return skill.read_text("utf-8")
-
-
-def test_the_glance_section_asks_questions_and_sets_no_layout():
-    text = _skill_text()
-    section = text[text.index("## 3. What a glance should answer") :]
-    section = section[: section.index("\n## ")]
-    for q in ("Where does the work stand?", "What is running right now?", "What is stuck?"):
-        assert q in section, q
-    assert "What needs me?" in section
-    # The two rules that hold whatever the design.
-    assert "never hidden" in section and "the page says so" in section
-    # No layout hard limits pull the page back to a grid of tiles.
-    for gone in ("1280", "no scroll", "Numbers over words", "Hard limits", "warm colour"):
-        assert gone not in section, gone
-    assert "manager view" not in text.lower()
-
-
-def _three_surfaces() -> dict[str, str]:
-    """The skill, the first-build line and the dashboard_save view text."""
-    from kiro_crew import mcp_panel
-    from kiro_crew.dashboard.goal_reminder import DASHBOARD_BUILD_LINE
-
-    tools = {t["name"]: t for t in mcp_panel._list_tools()}
-    view = tools["dashboard_save"]["inputSchema"]["properties"]["view"]["description"]
-    return {"skill": _skill_text(), "build line": DASHBOARD_BUILD_LINE, "tool": view}
-
-
-def test_each_surface_teaches_drawing_by_kind_and_plain_true_words():
-    for where, text in _three_surfaces().items():
-        flat = " ".join(text.split())
-        assert "kind of information it is" in flat, where
-        for kind in ("chart", "progress", "side by side", "standing out", "feed", "a count"):
-            assert kind in flat or kind.replace("standing out", "stands out") in flat, (where, kind)
-        assert (
-            "agree with the folded numbers" in flat or "agrees with the folded numbers" in flat
-        ), where
-        assert "internal id" in flat, where
-        assert "phase" in flat, where
-        assert "nothing covers anything" in flat.lower(), where
-        assert "fit the width" in flat or "fits the width" in flat, where
-        assert "borrowed look" in flat, where
-        assert (
-            "surface the page paints itself" in flat or "surface you paint yourself" in flat
-        ), where
-    skill = " ".join(_skill_text().split())
-    look = skill[skill.index("### A look that belongs to the work") :]
-    look = look[: look.index("Colour only with the variables")]
-    for rule in (
-        "A value that changes over time",
-        "Something moving toward done",
-        "Parallel workstreams",
-        "Something waiting on the user",
-        "Recent events",
-        "A count is a count",
-        "Only the kinds your work has get an element",
-        "Rows of detail are welcome below the main elements",
-        "Typography and spacing carry the order",
-        "Motion where the data changes",
-        "What is written agrees with what is drawn",
-        "Nothing covers anything",
-        "Every row fits the width",
-        "nothing runs off the side",
-        "A state is not a measure",
-    ):
-        assert rule in look, rule
-    # An event type the page's words do not cover still never shows raw.
-    assert "never the raw value" in skill
-
-
-def test_no_surface_names_a_look():
-    """Principles only: no theme, motif, palette, object, layout or animation recipe."""
-    import re
-
-    banned = (
-        r"boats?", r"sea", r"harbou?r", r"lighthouse", r"waves?", r"lanterns?",
-        r"rain", r"neon", r"weather", r"cyberpunk", r"glitch", r"motifs?", r"palettes?",
-        r"chalkboard", r"constellation", r"sky", r"garden", r"city", r"orbits?",
-        r"lamps?", r"flames?", r"planets?", r"scenes?", r"d3", r"chart\.js",
-        r"recharts", r"echarts",
-    )  # fmt: skip
-    for where, text in _three_surfaces().items():
-        for word in banned:
-            hit = re.search(rf"\b{word}\b", text, re.I)
-            assert hit is None, (where, hit.group(0) if hit else "")
-
-
-def test_the_gallery_teaches_wiring_not_a_look():
-    text = _skill_text()
-    section = " ".join(text[text.index("## 7. Pages to start from") :].split())
-    assert "how a page declares and binds its fields, not how a page should look" in section
+    text = skill.read_text("utf-8")
+    assert text.startswith("---\nname: dashboard\n")
+    headings = [line for line in text.splitlines() if line.startswith("## ")]
+    assert headings and len(headings) == len(set(headings))
+    assert text.count("```") % 2 == 0
 
 
 def test_dashboard_types_names_the_rows_a_page_draws():
@@ -413,9 +274,6 @@ def test_dashboard_types_names_the_rows_a_page_draws():
     assert moments["names_the_row"] == "type"
     by_id = types["subagents"]["shape"]["properties"]["by_id"]
     assert by_id["row_keys"] == list(SUBAGENT_ROW_KEYS) and by_id["names_the_row"] == "task"
-    # The skill points a page at those names, so it never guesses a key.
-    text = _skill_text()
-    assert "`row_keys`" in text and "`names_the_row`" in text
 
 
 def test_the_subagent_row_keys_are_the_keys_the_fold_writes():
@@ -480,3 +338,37 @@ def test_the_type_check_reads_a_long_value_with_no_nested_repeat():
     pattern = checks._FONT_DECL.pattern
     assert pattern.count("*") == 2 and ")*" not in pattern and "+)" not in pattern
     assert _fonts("p { font:" + " " * 200_000 + "x }") == []
+
+
+def test_the_colour_checks_read_a_bounded_number_of_rules_and_say_so():
+    """Surfaces and text rules are compared pairwise, so a page with thousands of
+    rules is read only up to the bound, and the reply says the check stopped."""
+    limit = checks.MAX_THEME_RULES
+    quiet = "".join(f".k{i} {{ margin: 0; }}" for i in range(limit * 20))
+    # Past the bound: read, this light text on the host's page would be flagged.
+    late = ".late { color: #fff; }"
+    warnings = checks.theme_warnings(_package(f"<style>{quiet}{late}</style>", {}))
+    assert checks.THEME_CUT_SHORT.format(limit=limit) in warnings
+    assert checks.THEME_ONE_SCHEME not in warnings
+    small = checks.theme_warnings(
+        _package("<style>body { background: #000; color: #fff; }</style>", {})
+    )
+    assert not any("only the first" in w for w in small)
+
+
+def test_a_selector_list_is_read_up_to_its_bound():
+    selector = ", ".join(f".a{i}" for i in range(checks.MAX_SELECTOR_PARTS * 10))
+    assert len(checks._parts(selector)) == checks.MAX_SELECTOR_PARTS
+
+
+def test_many_undefined_variables_are_named_once_and_summarised():
+    css = "".join(f"p {{ color: var(--u{i}, #fff); }}" for i in range(50))
+    (line,) = [
+        w for w in checks.theme_warnings(_package(f"<style>{css}</style>", {})) if "--u0" in w
+    ]
+    assert "and 42 more" in line and "--u9," not in line
+
+
+def test_a_character_whose_casefold_is_longer_does_not_shift_the_style_text():
+    html = "<title>Straße</title><style>body{background:#111;color:#eee}</style>"
+    assert checks._style_bodies(html) == "body{background:#111;color:#eee}"

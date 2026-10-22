@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         bind_address_for,
         build_allowed_origins,
         build_hardened_runner,
+        crewmate_feed,
         data_home,
         handlers,
         logger,
@@ -172,6 +173,7 @@ async def start_api_server(
     # resolves the same loop instead of each latching its own copy from
     # whichever thread happens to arrive first.
     state.bind_serving_loop(asyncio.get_running_loop())
+    crewmate_feed.start(state)  # the goal and waiting folds a crewmate's page reads
     # Voice settings live in slack/handler's module state and are otherwise
     # loaded only on the Slack startup path (set_orch_cfg) — without this a
     # dashboard-only gateway (no Slack tokens) resets TTS to defaults on

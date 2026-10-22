@@ -1468,34 +1468,25 @@ A `skipped` result carries a `note` saying in words that nothing was run or
 checked (`dashboard_page_checks.VERIFICATION_SKIPPED`). The reply also lists
 every field the model declares in `fields`, each with its `type` and its
 `source` (`fold:<fold>.<path>`, or `manual` for a hand-written one), names the
-hand-written ones under `manual_fields` with a `manual_note` saying they go stale
-without writes. Two checks the gateway makes itself, on the package text, ride
-the same reply whatever the run did (`dashboard/handlers/dashboard_page_checks.py`);
-neither refuses the save. `shape_warnings` names each `array`, `object` or
-`timestamp` field the page binds with `data-dashboard-field`, because the host
-fills that cell as text and shows `[]` or a raw ISO string; `dashboard_types` and
-`dashboard_fields` carry the same `rendering` advice per type. `theme_warnings`
-fires, unless the CSS names both schemes (`prefers-color-scheme`, `light-dark(`,
-`data-mode`, `data-theme`), when a fixed text colour sits on a background the host
-paints: each CSS rule in `theme.css` and the page's own `<style>` that fixes
-`color` is checked for a fixed opaque background on the same rule, on a rule for an
-ancestor selector, or on the page (`html`, `body`, `:root`), so a coloured dot
-elsewhere is not read as the page's background. A `var()` of a host theme variable
-(`dashboard_page_checks.HOST_THEME_VARS`, the names the tab sets) follows the
-scheme; any other `var()` draws its theme token or its fallback, so
-`var(--my-fg, #eee)` counts as fixed. The reverse fires too: a fixed page or token
-background with no fixed text colour. Such a page reads in one scheme and not the
-other. It also names (`dashboard_page_checks.UNDEFINED_VAR`) every colour `var()`
--- in the CSS or an inline `style` -- whose variable neither the tab
-(`HOST_THEME_VARS`, the names `website/src/lib/widgetSrcdoc.ts` `THEME_VAR_NAMES`
-copies into the frame for the scheme in force), the theme tokens nor the page's own
-CSS defines, when its fallback is a fixed colour: `var(--my-fg, #e8e8e8)` draws that
-fallback in both schemes. The host stylesheet the page is composed with
-(`dashboard_frame._HOST_CSS`) falls back per scheme with `light-dark()`, never to
-dark-only values.
-The `kirocrew-core` MCP tools render all of it as text (`mcp_panel._render_saved`,
-`_render_rendering`), so the crewmate reads the field types and both warnings in
-its `dashboard_save` result, not only an HTTP caller.
+hand-written ones under `manual_fields`. Their `manual_note` distinguishes a
+verified, dated project observation from an automatically refreshed reading.
+Numbers, arrays and objects can hold verified snapshots; their source and
+observation time remain visible, and existing folded facts still use folds.
+Two checks on the package text ride the reply whatever the page run did;
+neither refuses the save. `shape_warnings` names arrays, objects and timestamps
+bound to text cells and explains that visible unformatted cells show raw values.
+A script-only field can subscribe without a text binding or hidden sink.
+
+`theme_warnings` uses CSS-text heuristics to locate possible unpaired colours,
+not to assert a measured contrast failure. The existing checks examine fixed
+foreground/background pairs, positioned surfaces and undefined fallback
+variables, accounting for host variables, theme tokens and stylesheet-defined
+custom properties. Their messages ask the author to inspect actual surfaces
+in light and dark and preserve the intended design. A decorative surface can
+remain when it carries no text. A defined custom property is not an error.
+The host stylesheet retains its scheme-aware fallbacks. The colour checks read
+at most `MAX_THEME_RULES` (400) CSS rules and 16 selectors per rule, and a page
+past that bound is told the check stopped (`THEME_CUT_SHORT`).
 A type check (`font_warnings`, carried in `theme_warnings`) adds a soft line,
 worded as a pairing rule, when the page sets more than two distinct font
 families (a role variable and its generic families count as one: sans, serif
@@ -1505,6 +1496,42 @@ names. The frame's base styles carry three type role variables built only from
 CSS generic families, never a named typeface: `--font-sans: system-ui,
 sans-serif` (the body default), `--font-serif: ui-serif, serif` and
 `--font-mono: ui-monospace, monospace`.
+
+The MCP text preserves the catalog's `row_keys`, `names_the_row`, `row_note`
+and `nested_rows` beside each path. Nested rows are script-readable metadata,
+not new dotted index paths. Each nested group is bracketed and retains its
+full parent context (for example `items[].tasks[].events`), so a task's event
+keys cannot be mistaken for board keys. Goal and waiting rows, workstream boards, task
+spans, hourly series and task events are described alongside worker and timeline
+rows. Tests compare these keys with the real fold renderers. Row hints stay on
+their parent path line, so the path budget does not consume or truncate them
+as separate paths.
+
+The dashboard authoring skill and first-build/tool descriptions invite a
+coherent project-led theme, wallpaper, texture, frames and ambient or data-driven
+motion. They retain truthful measurements, readable light/dark surfaces,
+plain labels and the existing frame boundary. State distributions use real
+counts; a worker state alone is not completion progress. Relevant milestones
+can explain project outcomes without copying the Profile form. The page is
+judged as a whole composition as well as a view of the work; a successful script
+check alone establishes neither visual quality nor later-update behaviour.
+
+`theme.css` refuses `@import`, `<script`, `</style` and `javascript:`, and a
+`url()` whose target is not an inline `data:` URL
+(`dashboard_package._theme_fetches`, one linear pass): the frame has no network, so
+an address would load nothing, and the refusal (`THEME_URL_REFUSAL`) says a
+texture or wallpaper can be an inline `data:` URL, which the frame's
+`img-src data:` admits.
+
+The page's session folds (`usage`, `timeline`, `tools`, `subagents`) are keyed by
+the unit the slot's LIVE session serves when it is one of the slot's units
+(`member_dashboard._live_or_newest_unit`, through `crew_log.resolve.
+unit_for_session_key`), and by the newest unit in succession otherwise: newest
+orders a slot's unrelated chains by their roots' header clock, so a later
+unrelated unit would otherwise feed the page another session's spend.
+
+The `kirocrew-core` MCP tools render the field types and warnings as text
+(`mcp_panel._render_saved`, `_render_rendering`) before the apply instruction.
 
 It costs the gateway little by construction. It runs only for a save of `view.html`,
 never for a write, a preview, an apply or a page load. One check runs at a time across

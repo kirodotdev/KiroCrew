@@ -838,6 +838,20 @@ class TestRejectInvalid:
                 id="css-fetches",
             ),
             pytest.param(
+                lambda p: p["theme"].update({"css": ".a{background:url( 'https://x/t.png')}"}),
+                "can be an inline data: URL instead",
+                id="css-url-with-an-address",
+            ),
+            pytest.param(
+                lambda p: p["theme"].update(
+                    {
+                        "css": '.a{background:url("data:image/png;base64,AA")} .b{background:url(t.png)}'
+                    }
+                ),
+                "can be an inline data: URL instead",
+                id="css-a-second-url-with-an-address",
+            ),
+            pytest.param(
                 lambda p: p["model"].update({"types": {}}),
                 "must declare at least one field",
                 id="empty-model",
@@ -1299,3 +1313,23 @@ class TestAMissingThemeIsTheEmptyTheme:
         p["theme"] = "dark"
         with pytest.raises(ArtifactValidationError, match="theme"):
             dp.validate_package(p)
+
+
+def test_an_svg_data_url_with_an_internal_url_reference_is_kept() -> None:
+    """``url(%23g)`` inside an inline SVG points at a gradient in the data itself, so the
+    scan skips the whole data URL; an address after it is still refused."""
+    svg = (
+        "data:image/svg+xml,%3Csvg xmlns=%27x%27%3E%3Cdefs%3E%3ClinearGradient id=%27g%27/%3E"
+        "%3C/defs%3E%3Crect fill=%27url(%23g)%27/%3E%3C/svg%3E"
+    )
+    for quoted in (f'"{svg}"', f"'{svg}'"):
+        assert not dp._theme_fetches(f".wall{{background:url({quoted})}}")
+    assert dp._theme_fetches(f'.w{{background:url("{svg}")}} .b{{background:url(t.png)}}')
+
+
+def test_a_theme_texture_written_as_an_inline_data_url_is_kept() -> None:
+    """A data: URL carries its bytes, so it reaches no network and the frame admits it."""
+    p = package()
+    css = '.wall{background:url( "data:image/svg+xml,%3Csvg%20xmlns=%27x%27/%3E" )} .b{color:red}'
+    p["theme"].update({"css": css})
+    assert dp.validate_package(p)["theme"]["css"] == css

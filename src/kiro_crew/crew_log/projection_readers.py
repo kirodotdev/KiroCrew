@@ -7,7 +7,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from kiro_crew import session_ledger
-from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME, PANEL_FOLD_NAME
+from kiro_crew.crew_log.entry_types import (
+    DASHBOARD_FOLD_NAME,
+    GOAL_FOLD_NAME,
+    PANEL_FOLD_NAME,
+    WAITING_FOLD_NAME,
+)
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.projection_catalogue import (
     KNOWN_TYPES,
@@ -265,6 +270,11 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         # clock step between two units of one slot sorts the retired unit last under the
         # header clock, and its stale value would then overwrite a value the live session
         # wrote and the write path accepted -- silently, because both are well-formed.
+        return units_in_succession(slot)
+    if name in (GOAL_FOLD_NAME, WAITING_FOLD_NAME):
+        # The same reason again: each keeps the NEWEST snapshot whole, so a retired
+        # session sorted last by its header clock would bring back an old goal or a
+        # question already answered.
         return units_in_succession(slot)
     return session_units_for_slot(slot)
 

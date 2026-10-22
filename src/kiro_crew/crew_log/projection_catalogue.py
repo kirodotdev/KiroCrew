@@ -13,8 +13,10 @@ from typing import Any, Final, Literal
 
 from kiro_crew.crew_log.entry_types import (
     DASHBOARD_FOLD_NAME,
+    GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
     SESSION_ENTRY_TYPES,
+    WAITING_FOLD_NAME,
 )
 from kiro_crew.crew_log.schema import Entry
 
@@ -100,6 +102,8 @@ SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = (
     DASHBOARD_FOLD_NAME,
     MISTAKES_FOLD_NAME,
     WORKSTREAMS_FOLD_NAME,
+    GOAL_FOLD_NAME,
+    WAITING_FOLD_NAME,
 )
 
 #: The slot-keyed fold served by its OWNER and by no generic route. This fold's owner

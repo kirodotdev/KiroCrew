@@ -17,54 +17,66 @@ from typing import Any, Final
 #: How a page shows each field type a ``data-dashboard-field`` cell shows raw.
 RENDERING: Final[dict[str, str]] = {
     "array": (
-        "A list of rows. A data-dashboard-field cell shows it as raw JSON text, such as "
-        "[]; read it in the page's own script (window.kirocrew.subscribe) and draw one "
-        "element per row, with a line for an empty list."
+        "A list of rows, read whole through window.kirocrew.subscribe. Its row keys "
+        "can drive charts, comparisons, distributions, timelines or detail rows. "
+        "A visible data-dashboard-field cell instead shows raw JSON such as []; "
+        "a script-only field needs no text cell or hidden sink."
     ),
     "object": (
-        "A nested record. A data-dashboard-field cell shows it as raw JSON text; read it "
-        "in the page's own script (window.kirocrew.subscribe) and draw the keys it needs."
+        "A nested record, read through window.kirocrew.subscribe and drawn from its "
+        "published keys. A visible data-dashboard-field cell instead shows raw JSON; "
+        "a script-only field needs no text cell or hidden sink."
     ),
     "timestamp": (
-        "An ISO-8601 time such as 2026-10-19T01:24:28+00:00. A data-dashboard-field cell "
-        "shows it raw; format it in the page's own script (new Date(value)."
-        "toLocaleString(), or a relative time such as 5 min ago)."
+        "An ISO-8601 time. Format it in script (new Date(value).toLocaleString(), "
+        "or an elapsed time with a known start). A text binding shows the raw stamp."
     ),
 }
 
 #: One line of a save reply's ``shape_warnings``.
 SHAPE_WARNING: Final[str] = (
-    "{field} is {kind} but a data-dashboard-field cell shows it as plain text. {how}"
+    "{field} is {kind} and is bound to a text cell. If visible without formatting, "
+    "that cell shows the raw value. {how}"
 )
 
-#: A save reply's ``theme_warnings`` line when the theme's colours cover one scheme.
+#: A CSS-text heuristic, not a measured contrast failure.
 THEME_ONE_SCHEME: Final[str] = (
-    "Your theme sets fixed colours for one scheme only, so the page is unreadable in "
-    "the other (pale text on white, or dark text on a dark board). Colour with the "
-    "dashboard's theme variables (var(--text), var(--bg), var(--accent)...; a var() "
-    "the dashboard does not set, such as var(--my-fg, #eee), draws its fixed fallback), "
-    "or set "
-    "both schemes: a @media (prefers-color-scheme: dark) block, or "
-    ':root[data-mode="dark"] rules beside the light ones.'
+    "Colour check: fixed text or surface colours may not be paired in both schemes. "
+    "This CSS-text check does not measure contrast. Inspect the page in light and dark "
+    "and pair each surface with readable text, using the dashboard's theme variables "
+    "or your own scheme-aware colours. Keep the intended design; removing colour is "
+    "not the goal."
 )
 
-#: A save reply's ``theme_warnings`` line for a ``var()`` the frame never defines.
-#: ``{names}`` is the variables, ``{host}`` the ones the frame does define.
+#: ``{names}`` is the unresolved variables; ``{host}`` lists host-defined choices.
 UNDEFINED_VAR: Final[str] = (
-    "{names} is not a variable the Dashboard tab defines and your theme tokens do not "
-    "set it, so the page always draws its fixed fallback colour, which reads in one "
-    "scheme only. Use the variables the tab sets for the scheme in force: {host}."
+    "{names} is not a variable defined by the Dashboard tab, your theme tokens or "
+    "your stylesheet, so its fixed fallback is used. Check that fallback on its "
+    "actual surface in light and dark, or define the custom property. Available "
+    "host variables: {host}. A fixed colour alone is not a contrast failure."
 )
 
-#: A save reply's ``theme_warnings`` line for a surface the page paints itself under
-#: text that keeps the tab's scheme colours. ``{selectors}`` is the surfaces.
+#: How many CSS rules, and selectors per rule, the colour checks read. The checks
+#: compare surfaces with text rules pairwise, so the reading is bounded rather than
+#: let grow with whatever a page holds; a page past it is told the check stopped.
+MAX_THEME_RULES: Final[int] = 400
+MAX_SELECTOR_PARTS: Final[int] = 16
+
+#: Said when the colour checks stopped at :data:`MAX_THEME_RULES`.
+THEME_CUT_SHORT: Final[str] = (
+    "Colour check: this page has more than {limit} CSS rules, so only the first "
+    "{limit} were checked. Inspect the rest of the page in light and dark yourself."
+)
+
+#: The text scan cannot prove where a positioned decorative layer sits.
 PAINTED_SURFACE: Final[str] = (
-    "Your page paints its own fixed background on {selectors}, but the text drawn there "
-    "keeps the Dashboard tab's text colours, which follow the scheme, so in one scheme "
-    "that text nearly disappears into the surface. When the page paints a surface, it "
-    "also owns the colour of the text on it: fix a text colour that reads on that surface, set "
-    "surface and text together for each scheme (a @media (prefers-color-scheme: dark) "
-    "pair), or paint the surface with the tab's own variables left as the tab sets them."
+    "Colour check on {selectors}: this fixed background may sit under text that "
+    "follows the Dashboard scheme. Inspect whether text actually appears on it and "
+    "reads clearly in light and dark. Pair surface and text colours if needed. "
+    "A decorative layer without text can remain; this is a CSS-text heuristic, "
+    "not a measured contrast failure. In var(--text, ...), the fallback is unused "
+    "while the tab defines --text. Pair a fixed surface with its own text property, "
+    "including captions and bound cells."
 )
 
 #: ``{n}`` families, ``{names}`` the first few. A pairing rule, not a refusal.
@@ -84,7 +96,7 @@ FONT_NAMED: Final[str] = (
     "unless the user named this face."
 )
 
-#: The host variables a page colours with, in the order the skill names them.
+#: Useful host variables; page-defined custom properties work too.
 HOST_COLOUR_VARS: Final[str] = (
     "--bg, --bg-elevated, --card, --card-fg, --text, --text-strong, --muted, --border, "
     "--accent, --accent-subtle, --ok, --warn, --danger"
@@ -97,12 +109,13 @@ VERIFICATION_SKIPPED: Final[str] = (
     "before you apply it."
 )
 
-#: A save reply's ``manual_note`` when the page holds a hand-written field.
+#: Hand-written observations have provenance and age rather than automatic freshness.
 MANUAL_FIELDS_NOTE: Final[str] = (
-    "These fields change only when you write them with dashboard_write, so they go "
-    "stale the moment you stop. A fact the crew log already records reads better "
-    "from its fold (dashboard_types lists them: work, workstreams, usage...); keep a "
-    "manual field for prose only you know, such as your own verdict."
+    "These fields change through dashboard_write, not an automatic source update. "
+    "Use a fold where it records the same fact. Verified project snapshots and your "
+    "own verdicts can be manual: show their source and observation time, and update "
+    "them when that source changes. Arrays and objects can carry measured samples; "
+    "an old observation is not a live reading."
 )
 
 #: The field types a page has to draw itself: a text cell shows them raw.
@@ -191,9 +204,16 @@ def _opaque(value: str) -> bool:
 _COLOUR_FN = re.compile(r"\b(rgba?|hsla?|oklch|oklab|lab|lch)\(")
 
 
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
 def _style_bodies(html: str) -> str:
-    """The text of every ``<style>`` element in *html*, joined, in one linear pass."""
-    low = html.casefold()
+    """The text of every ``<style>`` element in *html*, joined, in one linear pass.
+
+    The tags are found in an ASCII-lowered copy of the same length, so each offset in it
+    is an offset into *html*: ``casefold`` turns "ß" into "ss" and would shift them.
+    """
+    low = html.translate(_ASCII_LOWER)
     out: list[str] = []
     at = 0
     while True:
@@ -256,7 +276,8 @@ def _rules(text: str) -> list[tuple[str, str]]:
 
 def _parts(selector: str) -> list[list[str]]:
     """Each comma-separated selector as its compound steps (``.a > .b`` -> ``.a``, ``.b``)."""
-    return [p.split() for p in re.sub(r"[>+~]", " ", selector).split(",") if p.strip()]
+    parts = [p.split() for p in re.sub(r"[>+~]", " ", selector).split(",") if p.strip()]
+    return parts[:MAX_SELECTOR_PARTS]
 
 
 def _covered(fg_steps: list[str], bg_selectors: list[list[str]]) -> bool:
@@ -308,7 +329,9 @@ def theme_warnings(package: Mapping[str, Any]) -> list[str]:
     bg_selectors: list[list[str]] = []
     surfaces: list[tuple[str, list[list[str]], bool]] = []
     scheme_text: list[list[str]] = []
-    for selector, body in _rules(text):
+    rules = _rules(text)
+    cut = len(rules) > MAX_THEME_RULES
+    for selector, body in rules[:MAX_THEME_RULES]:
         fixed_fg = fixed_bg = scheme_fg = False
         for prop, value in _COLOUR_DECL.findall(body):
             drawn = _resolve(value, tokens, pin_host=prop != "color")
@@ -340,7 +363,8 @@ def theme_warnings(package: Mapping[str, Any]) -> list[str]:
         or (page_bg and not fg_token and not fg_rules)
         or (bg_token and not fg_token and not fg_rules)
     )
-    return ([THEME_ONE_SCHEME] if one_scheme else []) + painted + out
+    cut_note = [THEME_CUT_SHORT.format(limit=MAX_THEME_RULES)] if cut else []
+    return ([THEME_ONE_SCHEME] if one_scheme else []) + painted + out + cut_note
 
 
 #: A rule that lifts its element out of the flow, so it lies under or over other content.
@@ -405,16 +429,18 @@ def _undefined_var_warnings(text: str, html: str, tokens: Mapping[str, Any]) -> 
     """
     scope = f"{text}\n{html}"
     defined = set(HOST_THEME_VARS) | {str(k) for k in tokens} | set(_DEFINED_VAR.findall(text))
-    names: list[str] = []
+    names: dict[str, None] = {}  # ordered and constant-time to test
     for m in _VAR.finditer(scope):
         name, fallback = m.group(1), (m.group(2) or "").strip()
         if name in defined or name in names:
             continue
         if _FIXED_COLOUR.search(_resolve(fallback, tokens)):
-            names.append(name)
+            names[name] = None
     if not names:
         return []
-    return [UNDEFINED_VAR.format(names=", ".join(names), host=HOST_COLOUR_VARS)]
+    listed = list(names)
+    shown = ", ".join(listed[:8]) + (f" and {len(listed) - 8} more" if len(listed) > 8 else "")
+    return [UNDEFINED_VAR.format(names=shown, host=HOST_COLOUR_VARS)]
 
 
 #: The frame's three role variables, and the generic families each one stands for.

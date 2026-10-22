@@ -2244,17 +2244,21 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   Goal Reminder, the goal-setup nudge (`goal_setup.kickoff_prompt`) and the
   `[Milestones confirmed]` turn (`goal_setup.milestones_prompt`), each built off
   the loop, end with `goal_reminder.DASHBOARD_BUILD_LINE`: write your own HTML page
-  (`view.html`) with the dashboard skill, `dashboard_save` it and
-  `dashboard_apply` it, showing the goal, milestones with readings, what the
-  mate works on and what waits on the user; every value read from a
-  crew-log fold where one carries it, a fact no fold carries recorded as a new
-  crew-log event type, a hand-written field only for prose the mate alone
-  knows; the look taken from the project and the goal unless the user asked
-  for a style, which wins and is kept on rebuilds -- with no style asked,
-  modern, polished and good-looking, with an entrance and value-change motion,
-  nothing looping and none under `prefers-reduced-motion`; colour only from the
-  variables the tab sets (`--bg`, `--card`, `--text`, `--muted`, `--border`,
-  `--accent`, `--ok`, `--warn`, `--danger` and their pairs), named in the line; `search_docs` before guessing; and, once `dashboard_apply` has put it
+  (`view.html`) with the dashboard skill, stored by `dashboard_save` and put
+  live by `dashboard_apply`, reading `dashboard_types` for paths and row keys
+  (`work` and `workstreams` for progress, hourly history and project
+  spend, `goal` for relevant milestones, `waiting`, `timeline`, and `tools` and
+  `usage` for the live session's activity); a verified project snapshot may be
+  an agentic field with its source and observation time shown. The look is
+  `dashboard_templates.page_look.PAGE_LOOK`, the one text the build line and the
+  `dashboard_save` view description both carry verbatim: a page worth returning
+  to, the user's style carried forward or a theme of the mate's own, with
+  backgrounds, texture, frames and ambient or data-driven motion (long-running
+  effects paused while hidden); recorded values only, progress against a real
+  measure; plain words, with internal ids, session keys and file-system paths
+  out of view and an agent's free text shown as a short plain sentence; surface
+  and text colours paired in light and dark; long content fitting from 320px
+  with nothing clipped. And, once `dashboard_apply` has put it
   live, one short chat message telling the user a Dashboard page is ready on the
   Dashboard tab (no preview, no card) -- the one message a gateway wake posts about
   the page. There is no default page: the line stops on the first wake after the
@@ -2492,6 +2496,64 @@ SUGGESTIONS page (`CrewDashboardEmpty`): the
 mate's face under a first-person bubble and three prompts that only fill its
 chat box (`onAct`); a staged preview and a root session's Overview are not
 affected. A refresh opens the Dashboard tab rather than the strip's persisted
+focus, once per mate and strip bucket per page load (`dashboardOnLoad.ts`),
+so a tab picked afterwards or on an in-app return stays. **Waiting on
+you** is data the mate's own page binds, the `waiting` slot fold (see "A
+mate's own record as folds" below). The list it folds is
+`dashboard/member_waiting.waiting_items`, newest first, at most five: every
+speech row of the mate's own thread since the person last answered whose
+text ends in an `[OPTIONS: ...]` line, every `ask_question` card still waiting
+there, and every change card still pending there, titled by the card. The
+person answers with a row a human send path marks
+(`history.HUMAN_TURN_META_KEY`: a typed message, an `[OPTIONS]` chip pressed in
+the chat, a steer) or by pressing a change card in that thread (applied,
+partial, failed on apply, or declined; its `finished_at` is the answer's time):
+either ends the walk, so every question asked before it clears. It reads the
+same rows and parser the sidebar's question badge reads
+(`slot.sidebar_messages`, the bounded tail a restored thread holds before its
+window loads) and the change-card store, so a gateway wake, which writes no row
+and presses no card, keeps an item, and so does a card that only expired.
+
+**A mate's own record as folds.** Two facts a page about a mate's
+work needs are recorded into its own DM session log by the gateway, as
+snapshots, at the point each changes (`dashboard/crewmate_feed.py`, started
+from the app's startup hook beside `bind_serving_loop`, a no-op with the crew
+log off): `dashboard/goal_recorded` after every write of the goal record
+(`member_goals.add_change_listener`), folded as `goal` (the first goal's text,
+the goals, each milestone's target and the reading the mate last recorded with
+`key_result_progress`, side by side as text with its time, and the totals; whether
+a milestone is reached is the mate's own word in that reading, never judged by the
+gateway), and
+`dashboard/waiting_changed` when `waiting_items` differs from the last list
+recorded, checked after each growth of that DM log (`emit.add_growth_listener`,
+coalesced for 0.4 s), folded as `waiting` (`items`, `count`, `omitted`, `newest`). The list
+reads the change-card store, and the settle runs on the serving loop, so each
+settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
+thread); when warming fails nothing is recorded, so the last complete list stands
+rather than one missing the store's pending cards, and the cold store is never read on the loop (`test/test_crewmate_feed_cold_store.py`).
+A goal
+write while the thread has no live session (a milestones press between turns, a
+write after a restart) is held in `crewmate_feed._held_goals`, newest wins, and
+recorded on the thread's next growth, when its session is known. An
+entry is appended only when its snapshot differs from the last one this
+process recorded for that thread, so the check's own append records nothing.
+A snapshot counts as recorded only once its append commits (the writer's
+`on_settled`); one the writer rejects is appended again on the next check, and
+one still being written is not appended twice. A new snapshot is compared with
+the newest one being written when there is one, else the last committed, so a
+goal changed and changed back while the writer is busy is appended again. The
+newest goal snapshot is held until an append of it commits. Each thread
+remembers the session it last logged into, so a growth that lands after the
+turn's teardown still records that thread. A goal snapshot shortens every cell
+until the entry fits one crew-log line, and carries `goals_total`,
+`milestones_total` for the whole record. Goal and milestone text is
+redacted like the waiting list. Both lists cut at their fold's row bound and
+count what they cut (`goals_omitted`, `milestones_omitted`, `waiting.omitted`).
+A goal written before the thread had a session (the create flow sets it before
+the first turn) has nowhere to land then, so the thread's first growth that
+finds no goal recorded reads the record off the loop and records it.
+Both folds are slot-keyed and eager, so the frame's live push moves a page
+bound to them with no `dashboard_write`. A refresh opens the Dashboard tab rather than the strip's persisted
 focus, once per mate and strip bucket per page load (`dashboardOnLoad.ts`),
 so a tab picked afterwards or on an in-app return stays. Its "Opening the
 conversation" line is withheld while the main column already says it
