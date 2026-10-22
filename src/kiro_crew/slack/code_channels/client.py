@@ -211,4 +211,21 @@ def parse_channel_info(channel_id: str, raw: Any) -> ChannelInfo:
         name=str(channel.get("name") or ""),
         origin_channel_id=str(origin.get("channel_id") or ""),
         origin_ts=str(origin.get("ts") or ""),
+        shared=_shared(channel),
     )
+
+
+#: ``conversations.info`` flags that put a channel in front of people outside
+#: this workspace: Slack Connect (``is_ext_shared``), an invitation to it not yet
+#: accepted (``is_pending_ext_shared``), and a share across an Enterprise org's
+#: workspaces (``is_org_shared``); ``is_shared`` is the umbrella flag.
+_SHARE_FLAGS = ("is_ext_shared", "is_pending_ext_shared", "is_org_shared", "is_shared")
+
+
+def _shared(channel: dict[str, Any]) -> bool | None:
+    """Any share flag set -> True; the two primary flags present and unset -> False."""
+    if any(channel.get(flag) is True for flag in _SHARE_FLAGS):
+        return True
+    if channel.get("is_ext_shared") is False and channel.get("is_shared") is False:
+        return False
+    return None

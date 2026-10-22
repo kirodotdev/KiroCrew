@@ -457,6 +457,36 @@ class TestUnfurlControl:
             slack.post_blocks.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_reserved_code_channel_button_is_refused(self, mock_sel):
+        """An agent may not post a button wearing a gateway code-channel action id."""
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER")
+        slack.post_blocks = AsyncMock(return_value="1712793600.000001")
+        state = _mock_state(slack_client=slack, owner_id="U_OWNER")
+        app = _make_app(state)
+        blocks = [
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "action_id": "kc_code_channel_enable_handoff",
+                        "value": "C0CODECHAN1",
+                        "text": {"type": "plain_text", "text": "Acknowledge review"},
+                    }
+                ],
+            }
+        ]
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={"text": "fallback", "blocks": blocks, "session": "slack"},
+            )
+            assert resp.status == 400
+            assert (await resp.json()).get("code") == "blocks_reserved_action"
+            slack.post_blocks.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_plain_section_and_button_blocks_are_accepted(self, mock_sel):
         """Blocks without server-fetched media still reach Slack."""
         slack = MagicMock()

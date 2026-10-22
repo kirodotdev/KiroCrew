@@ -20,10 +20,14 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _audit,
     _caller_is_ownership_fenced,
 )
+from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+    worker_dashboard_link,
+)
 from kiro_crew.dashboard.session_control_parts.model_switch import _pending_pick_view
 from kiro_crew.dashboard.session_control_parts.session_messaging import broadcast_audience
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
     _broadcast_resolution_slots,
+    _code_channel_admitted,
     _deny_factory,
     authorize_target,
     refuse_caller_identity,
@@ -249,6 +253,39 @@ def _bounded_status_title(value: object) -> str:
     return sanitize_outbound(str(value or ""))[:MAX_SESSION_STATUS_TITLE_CHARS]
 
 
+def _activity_fields(slot: Any) -> dict[str, Any]:
+    """``{"last_activity_at", "since_activity_s"}``: when *slot* last wrote a row.
+
+    State only: the timestamp of the newest transcript row this process holds
+    (or the on-disk tail it was told about), never any of its text. Read through
+    ``sidebar_messages``, which for a restored row whose window is still pending
+    returns the bounded tail read at restore instead of loading the transcript --
+    so this never reads a file on the event loop. Empty when no row has a
+    readable stamp.
+    """
+    from datetime import datetime, timezone
+
+    from kiro_crew.history_schema import latest_transcript_ts
+
+    sidebar = getattr(slot, "sidebar_messages", None)
+    try:
+        rows = sidebar() if callable(sidebar) else []
+        newest = rows[-1].get("ts") if rows else None
+    except Exception:
+        newest = None
+    last = latest_transcript_ts(newest, getattr(slot, "_disk_tail_ts", None))
+    if not last:
+        return {}
+    try:
+        when = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+    except ValueError:
+        return {}
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    elapsed = max(0, int((datetime.now(timezone.utc) - when).total_seconds()))
+    return {"last_activity_at": when.isoformat(), "since_activity_s": elapsed}
+
+
 def _pending_approval_fields(state: "DashboardState", slot: Any) -> dict[str, Any]:
     """``{"pending_approval": True, "pending_approval_tool": ...}`` while *slot* waits.
 
@@ -395,9 +432,13 @@ async def created_session_status(
     deny = _deny_factory(caller_session_key=caller_session_key, operation="status", target="")
     caller_key = refuse_caller_identity(state, caller_session_key=caller_session_key, deny=deny)
     caller_slot = refuse_caller_surface(state, caller_key=caller_key, deny=deny)
+    # A code channel's conductor (admitted by the gate above) is told each live
+    # worker's last-activity age and dashboard link: state only, never transcript
+    # text. Every other caller's rows are exactly as before.
+    via_code_channel = _code_channel_admitted(deny)
     ownership_fenced = (
         _caller_is_ownership_fenced(state, caller_key) if caller_fenced is None else caller_fenced
-    )
+    ) or via_code_channel
     tree_children, tree_state = _created_tree_roster(caller_key)
 
     # The first suspension in this verb, deliberately AFTER the complete
@@ -578,6 +619,7 @@ async def created_session_status(
             continue
         queue_depth = len(slot._queue)
         running = bool(slot.running)
+        link = worker_dashboard_link(key) if via_code_channel else ""
         rows.append(
             {
                 "target": key,
@@ -586,6 +628,8 @@ async def created_session_status(
                 "running": running,
                 "queue_depth": queue_depth,
                 **_pending_approval_fields(state, slot),
+                **(_activity_fields(slot) if via_code_channel else {}),
+                **({"dashboard_link": link} if link else {}),
                 "source": "+".join(sources),
             }
         )

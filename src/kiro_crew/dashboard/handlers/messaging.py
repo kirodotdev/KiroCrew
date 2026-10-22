@@ -187,6 +187,7 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _proactive_source_line,
     _read_send_message,
     _redact_all,
+    _reserved_action_refusal,
     _resolve_session_link_url,
     _resolve_session_target,
     _sanitize_blocks,
@@ -228,11 +229,13 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     api_spawn_status,
 )
 from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
+    _save_code_channel_dispatch_locked,
     _slack_config_save_locked,
     _validate_slack_token,
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest_status,
+    save_code_channel_dispatch,
 )
 from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     _missing_scope_message,

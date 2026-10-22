@@ -819,6 +819,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
+    _status_activity_suffix,
     _summary_time,
 )
 from kiro_crew.mcp_dashboard_session_tools import (  # noqa: E402, F401

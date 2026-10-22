@@ -1770,6 +1770,9 @@ abstraction Slack uses, so one bot serves many parallel, topic-scoped sessions
   (`session_control.owner_dm_refusal` stays `direct` + a single scope segment, a
   predicate shared with Discord), the fail-safe default — a private topic can
   hold a conversation without gaining host-wide session-control authority.
+  (The one other channel-session exemption is a Slack code channel's own recorded
+  session, bounded to its own one-level workers -- see
+  [session-control](session-control.md#code-channel-conductor-callers-the-second-exemption).)
   Outbound: `may_send_to` authorizes a threaded link whose chat_id is a
   roster-listed **positive** user id — a private topic, attested by the same
   `direct_peer_of` the owner-DM predicate uses — so proactive sends (cron,

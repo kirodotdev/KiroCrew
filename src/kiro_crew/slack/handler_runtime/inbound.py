@@ -472,6 +472,14 @@ async def maybe_route_linked_thread(
             )
 
     _linked_slot_key = _linked_slot.key
+    # Who wrote the text this slot is about to carry, for the code-channel
+    # dispatch exemption: it admits a channel-origin turn only while every author
+    # on record passes ``is_allowed_user`` (checked above for this one).
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+        note_channel_sender,
+    )
+
+    note_channel_sender(_linked_slot, user_id)
     # Redact for UI display only — LLM receives original text so it can process
     # user intent fully (redaction strips URLs/creds that may be relevant
     # context). The LLM's own output is redacted before display.

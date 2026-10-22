@@ -265,6 +265,23 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    code_channel_dispatch: bool = field(
+        default=False,
+        metadata=_meta(
+            "Code Channel Dispatch",
+            "Let a Slack code channel's own session hand work to worker sessions: "
+            "create them, bind them to its work ledger and follow their status. "
+            "Only on turns the owner started, only for workers it created itself, "
+            "one level deep, filed in the channel's folder, with the channel's own "
+            "approval mode and never more; channels shared beyond this workspace "
+            "are excluded. Needs slack.code_channels on as well; turning that on "
+            "does not turn this on. Off keeps the full channel containment: a "
+            "conductor in a code channel cannot hand off work. Off by default, and "
+            "a missing, unreadable or malformed value reads as off. Takes effect "
+            "on the next call; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channels: bool = field(
         default=False,
         metadata=_meta(
