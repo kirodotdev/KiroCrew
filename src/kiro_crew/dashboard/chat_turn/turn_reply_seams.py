@@ -229,8 +229,8 @@ def _attach_abnormal_turn_stats(
     footer, because there is no row to carry one.
 
     The row is mutated in place; it reaches disk because the turn's
-    ``finally`` runs ``_flush_file_changes``, which marks the slot dirty on
-    every exit. Best-effort: a failure never disturbs the cancel teardown or
+    ``finally`` awaits ``_flush_file_changes_off_loop``, whose on-loop attach
+    marks the slot dirty on every exit. Best-effort: a failure never disturbs the cancel teardown or
     the usage row.
 
     Only a row THIS runner appended (``slot._turn_reply_mids``) can carry

@@ -12,6 +12,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
+        _FILE_CHANGES_DRAIN_SECS,
         _GUARDED_WRITE_WAIT_SECS,
         DashboardState,
         NudgeLoop,
@@ -527,6 +528,55 @@ async def close_slot(
             slot.cancel_close()
 
 
+async def _drain_file_changes_flush(slot: "_ChatSlot") -> None:
+    """Wait, bounded, for the turn's in-flight file-change flush before the archival save.
+
+    The cancelled turn's ``finally`` reads the after-content of every file it
+    wrote on a worker thread and attaches the chips when that read returns
+    (``chat_runner._flush_file_changes_off_loop``). The bounded wait on the task
+    above can give up while that read is still running; the archive below would
+    then persist the window WITHOUT the chips, and the attach that follows lands
+    on a slot already out of ``state._slots``, where no later save is admitted.
+    So the archive waits for the flush itself, up to ``_FILE_CHANGES_DRAIN_SECS``.
+    A read still running past that is a stuck filesystem or resolver, not a
+    large file: the chips are dropped from the archive KNOWINGLY, with a warning
+    naming the slot, and the close completes -- a close must never hang on a
+    read that never returns.
+
+    Never raises. A flush that fails leaves the archive to write what the window
+    holds. A cancellation of the CLOSE while it waits here is absorbed, as the
+    bounded task wait above absorbs its own: the slot is already popped, so a
+    close that unwound here would leave the surviving flush attaching chips to a
+    slot no periodic or shutdown save visits, and the archive below is the one
+    write that still reaches disk. The worker thread cannot be cancelled either
+    way, so absorbing the cancel changes only whether the archive runs, never
+    how long the read takes; the deadline keeps counting across it.
+    """
+    flush = getattr(slot, "_file_changes_flush", None)
+    if flush is None or flush.done():
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FILE_CHANGES_DRAIN_SECS
+    while not flush.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "Slot %s closed while its file-change read was still running after "
+                "%.0fs; the archive is written without this turn's file-change chips",
+                slot.key,
+                _FILE_CHANGES_DRAIN_SECS,
+            )
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(flush), timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+        except asyncio.TimeoutError:
+            continue
+        except Exception:
+            return
+
+
 async def _close_slot(
     state: DashboardState,
     slot: "_ChatSlot",
@@ -756,6 +806,7 @@ async def _close_slot(
             )
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
+    await _drain_file_changes_flush(slot)
     # Post-pop teardown race: across the awaits above (and the app-notify awaits
     # before the pop) a concurrent same-key recreate — a POST /api/chat or the
     # session_close MCP verb — can mint a REPLACEMENT slot under `name`. When that
@@ -1148,6 +1199,11 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
+        # Same obligation as the single-tab close: the cancelled turn's file-change
+        # flush may still be reading on a worker thread past the wait above, and
+        # both writes below (the hand-over drain and the archive) must carry its
+        # chips, or the late attach lands on this popped slot where no save admits it.
+        await _drain_file_changes_flush(removed)
         # Post-pop teardown race (same as the single-tab close, same gate): across
         # the cancel await above a concurrent same-key recreate can mint a
         # REPLACEMENT slot under `name`. When that replacement writes the SAME

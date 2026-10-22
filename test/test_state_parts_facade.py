@@ -454,6 +454,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_fallback_slot_model": ("value", "''"),
     "_fallback_walked": ("value", "[]"),
     "_file_changes": ("value", "[]"),
+    "_file_changes_flush": ("value", "None"),
     "_folder_changed": ("value", "False"),
     "_folder_suggested": ("value", "False"),
     "_foreign_reported": ("value", "frozenset()"),

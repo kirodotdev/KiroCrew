@@ -1405,7 +1405,16 @@ class TestFailedWriteRecordsNoChange:
         elif cancel_point == "compaction-notice":
             monkeypatch.setattr(chat_runner, "_notice_compaction_after_turn", cancel_async)
         elif cancel_point == "after-reads":
-            monkeypatch.setattr(chat_runner, "_turn_after_reads", cancel)
+            # Both turn exits read off the loop now: the landed path's read is
+            # cancelled, and the finally's flush reads again and attaches.
+            real_after_reads = chat_runner._turn_after_reads
+
+            def cancel_first_read(*args, **kwargs):
+                if not reached:
+                    cancel(*args, **kwargs)
+                return real_after_reads(*args, **kwargs)
+
+            monkeypatch.setattr(chat_runner, "_turn_after_reads", cancel_first_read)
 
         f, other = short_tmp_dir / "cfg", short_tmp_dir / "other"
         f.write_text(self.DISK)

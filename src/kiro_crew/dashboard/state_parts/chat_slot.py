@@ -285,6 +285,7 @@ class _ChatSlot:
         "_git_repo_walk_pending",
         "_git_repo_walk_task",
         "_turn_reply_mids",
+        "_file_changes_flush",
         "linked_session_key",
         # Relay-archive marker: an older build ran this slot's turns on a peer
         # crew. See ``dashboard/relay_archive.py``.
@@ -505,6 +506,7 @@ class _ChatSlot:
     _git_repo_walk_pending: list[str]
     _git_repo_walk_task: asyncio.Task[None] | None
     _turn_reply_mids: list[str]
+    _file_changes_flush: asyncio.Future[None] | None
     linked_session_key: str
     _active_turn_session_key: str
     _responsive: Any

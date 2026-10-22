@@ -1219,7 +1219,7 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_runner() -> None:
     assert {
         "sel",
         "save_slot_off_loop",
-        "_flush_file_changes",
+        "_flush_file_changes_off_loop",
         "_resolve_channel_target",
         "_recovery_delay",
         "_should_suppress_requeue",

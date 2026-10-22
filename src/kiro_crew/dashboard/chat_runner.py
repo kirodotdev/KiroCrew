@@ -243,16 +243,21 @@ from kiro_crew.dashboard.chat_turn.file_changes import (  # noqa: F401
     _MAX_RECONSTRUCT_BYTES,
     _PATH_TRUNCATION_MARKER,
     _apply_turn_snapshot_budget,
+    _attach_file_changes,
     _budgeted_opcodes,
     _classify_str_replace_before,
     _disk_digest,
     _excerpt_pair,
     _failed_write_entries,
     _flush_file_changes,
+    _flush_file_changes_off_loop,
     _forget_entries,
     _line_change_input,
     _note_reply_row,
+    _pending_file_changes,
     _pending_str_replace_payload,
+    _prepare_file_changes,
+    _read_and_prepare_file_changes,
     _read_turn_afters,
     _record_turn_snapshot,
     _resolve_pending_str_replace,
@@ -4686,29 +4691,20 @@ async def _run_chat(
             )
             if _prompt_depth == 0 and _stats_attached:
                 slot._carried_ttft_clock = None
-            # Attach accumulated file changes to this turn's assistant row before persist.
-            # The turn-end disk reads and diffs (a whole file of up to two megabytes
-            # for a large edited file) run off the event loop; the flush then applies
-            # them to the slot here, on the loop. The teardown flush in the
-            # finally reads inline without them: it runs where an await could
-            # skip the session-permit release, so it keeps the ordinary capped
-            # read only.
-            _changes_now = getattr(slot, "_file_changes", None)
-            _after_reads = (
-                await asyncio.to_thread(
-                    _turn_after_reads, list(_changes_now), bool(_shell_tool_calls)
-                )
-                if isinstance(_changes_now, list) and _changes_now
-                else None
-            )
+            # Attach accumulated file changes to this turn's assistant row before
+            # persist. Awaited: the turn-end disk reads, diffs (a whole file of up
+            # to two megabytes for a large edited file), redaction and budget run
+            # on a worker thread, and the attach has happened when this returns,
+            # so the save below still carries the chips. A cancellation that
+            # lands during the read is re-raised after the attach, into this
+            # turn's own CancelledError arm.
             # Copied before the flush, which clears the reply ids on exit.
             _note_reply_mids = list(_reply_mids) if isinstance(_reply_mids, list) else []
-            _flush_file_changes(
+            await _flush_file_changes_off_loop(
                 slot,
                 turn_boundary=_turn_msg_boundary,
                 turn_start_mid=_turn_start_mid,
                 turn_had_shell=bool(_shell_tool_calls),
-                after_reads=_after_reads,
             )
             # The reply is in the window, so this save is the durable clear of
             # the in-flight marker: retire it first and the omission rides the
@@ -7092,14 +7088,23 @@ async def _run_chat(
             pass
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
-        # bug this fix prevents.
+        # bug this fix prevents. The after-content reads run off the loop, and
+        # a cancellation landing on this await comes back up only after the
+        # attach, and is HELD here rather than let through -- raised here it
+        # would pass every ``except Exception`` below, skip the session permit
+        # release and the queue hand-off, and leave the session busy until a
+        # restart. It is re-raised at the end of this block, after
+        # ``_end_turn_tail`` (which holds its own the same way).
+        _held_flush_cancel: asyncio.CancelledError | None = None
         try:
-            _flush_file_changes(
+            await _flush_file_changes_off_loop(
                 slot,
                 turn_boundary=_turn_msg_boundary,
                 turn_start_mid=_turn_start_mid,
                 turn_had_shell=bool(_shell_tool_calls),
             )
+        except asyncio.CancelledError as exc:
+            _held_flush_cancel = exc
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
         # Replay settlement belongs on the one path every turn exit crosses.
@@ -7376,8 +7381,12 @@ async def _run_chat(
         # The per-exit duties and the queue hand-off, in their one order. Run to
         # completion: a cancel landing inside the tail (a turn deadline during
         # the deferred-reset consume) is deferred until the hand-off ran, then
-        # re-raised, so the queue is never left behind a finished task.
+        # re-raised, so the queue is never left behind a finished task. A cancel
+        # the file-change flush at the top of this block held resurfaces here,
+        # once the hand-off has run, for the same reason.
         await run_to_completion(_end_turn_tail(state, slot, turn_exit))
+        if _held_flush_cancel is not None:
+            raise _held_flush_cancel
 
 
 # Every function the owners define runs on this module's globals, so a patch of

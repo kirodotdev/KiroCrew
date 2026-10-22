@@ -444,6 +444,10 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # mid-turn (a workflow or sub-agent completion) is never this turn's
     # reply, whatever its position. Reset where the turn's start is captured.
     self._turn_reply_mids = []
+    # The turn-end file-change flush while it runs off the loop
+    # (``_flush_file_changes_off_loop``), so a close that gave up waiting
+    # for the cancelled turn can still drain it before archiving.
+    self._file_changes_flush = None
     self.linked_session_key = ""  # when set, _run_chat uses this as session key
     # Where the turn CURRENTLY in flight actually started, as opposed to
     # where the slot would route a new one. The two diverge whenever the
