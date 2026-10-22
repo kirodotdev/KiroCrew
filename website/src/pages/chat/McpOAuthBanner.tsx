@@ -50,6 +50,7 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, han
   const failed = !!m.meta?.failed
   const superseded = !!m.meta?.superseded
   const expired = !!m.meta?.expired
+  const timedOut = expired && m.meta?.expired_reason === 'attempt_ended'
   const error = (m.meta?.error as string) || ''
   // `superseded` and `expired` carry no `oauth_url` (the backend pops it), so both
   // have to be named here or the banner would silently vanish instead of telling
@@ -65,6 +66,7 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, han
       failed={failed}
       superseded={superseded}
       expired={expired}
+      timedOut={timedOut}
       error={error}
       askAgent={handOff}
     />
@@ -78,6 +80,7 @@ export default function McpOAuthBanner({
   failed,
   superseded,
   expired,
+  timedOut,
   error,
   askAgent = true,
 }: {
@@ -87,6 +90,8 @@ export default function McpOAuthBanner({
   failed?: boolean
   superseded?: boolean
   expired?: boolean
+  /** The expired flow's sign-in attempt ended, rather than its hosting process. */
+  timedOut?: boolean
   error?: string
   /** Offer the "Ask the agent" hand-off on the failed state. */
   askAgent?: boolean
@@ -151,7 +156,8 @@ export default function McpOAuthBanner({
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
         <History className="shrink-0 text-text/50 lucide-inline" />
         <span className="flex-1 text-text">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.expired')}
+          <span className="font-mono font-semibold">{label}</span>{' '}
+          {i18nT(timedOut ? 'pages.chat.mcpOAuthBanner.attempt_ended' : 'pages.chat.mcpOAuthBanner.expired')}
         </span>
       </div>
     )

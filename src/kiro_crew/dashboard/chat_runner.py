@@ -271,10 +271,12 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     _connections_managed_mcp_names,
     _drain_session_init_oauth_requests,
     _emit_mcp_oauth_request,
+    _expire_ended_mcp_oauth_banners,
     _mark_mcp_oauth_completed,
     _mcp_server_name_is_ambiguous,
     _publish_session_mcp_report,
     _record_session_mcp_event,
+    _show_mcp_oauth_request,
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
     _agent_fallback_chain,
@@ -2775,13 +2777,8 @@ async def _run_chat(
                 # kiro-cli emits this notification when an MCP server's token
                 # has expired or never existed. Surface as an inline banner —
                 # kiro-cli's local callback handles the rest of the OAuth flow.
-                await _approve_discovered_mcp_oauth_endpoint(event.server_name, event.oauth_url)
-                _emit_mcp_oauth_request(
-                    state,
-                    slot,
-                    event.server_name,
-                    event.oauth_url,
-                    minted_by=str(getattr(client, "process_instance", "") or ""),
+                await _show_mcp_oauth_request(
+                    state, slot, client, event.server_name, event.oauth_url
                 )
                 _record_session_mcp_event(
                     state,

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp import runtime_frame_accounting as _rt_frames
@@ -234,6 +234,8 @@ class AcpRuntime:
     _answer_host_request = _rt_host._answer_host_request
     mcp_sign_in_holds = _rt_host.mcp_sign_in_holds
     begin_mcp_sign_in = _rt_host.begin_mcp_sign_in
+    set_mcp_sign_in_ended_hook = _rt_host.set_mcp_sign_in_ended_hook
+    _announce_mcp_sign_in_ended = _rt_host._announce_mcp_sign_in_ended
     _run_mcp_sign_in = _rt_host._run_mcp_sign_in
     begin_mcp_reattempt = _rt_host.begin_mcp_reattempt
     _run_mcp_reattempt = _rt_host._run_mcp_reattempt
@@ -331,10 +333,15 @@ class AcpRuntime:
         # most one sign-in runs at a time and its URL goes to the session that
         # started it -- see begin_mcp_sign_in.
         self._mcp_sign_in: tuple[str, str] | None = None
+        # Monotonic identity of the latest attempt, retained after its slot ends.
+        self._mcp_sign_in_attempt = 0
         # MCP re-attempts in flight on this process, as (session_id,
         # server_name): a reset without startOAuth for a server that failed
         # for want of a credential -- see begin_mcp_reattempt.
         self._mcp_reattempts: set[tuple[str, str]] = set()
+        # Per-session hooks told when a sign-in ends unconnected, so an idle
+        # chat retires its dead Authorize link -- see set_mcp_sign_in_ended_hook.
+        self._mcp_sign_in_ended_hooks: dict[str, Callable[[str], None]] = {}
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(

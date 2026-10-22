@@ -340,6 +340,18 @@ class AcpProvider(LLMProvider):
             except Exception:  # pragma: no cover - read-only shapes
                 pass
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None] | None) -> None:
+        """See LLMProvider. Stored, then re-applied when the runtime path swaps in."""
+        self._mcp_sign_in_ended_hook = hook
+        install = getattr(getattr(self, "_client", None), "set_mcp_sign_in_ended_hook", None)
+        if install is not None:
+            install(hook)
+
+    def mcp_sign_in_live(self, server_name: str) -> bool | None:
+        """See LLMProvider. Asked of the live inner client, which owns the runtime."""
+        ask = getattr(getattr(self, "_client", None), "mcp_sign_in_live", None)
+        return ask(server_name) if ask is not None else None
+
     @property
     def model_pin_refused(self) -> str:
         """The pinned model the adapter refused at startup, or ``""``.

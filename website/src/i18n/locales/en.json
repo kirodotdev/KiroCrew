@@ -6615,7 +6615,8 @@
         "remote_gateway_hint": "On a remote gateway the browser's localhost callback will fail — that is expected. Copy the full address the browser landed on and paste it here to finish authorizing.",
         "requires_authentication": "requires authentication.",
         "superseded": "sign-in is no longer active — a newer request replaced it. Use the latest Authorize button to sign in.",
-        "expired": "sign-in is no longer active — the session that started it ended. Send a message to get a fresh Authorize link."
+        "expired": "sign-in is no longer active — the session that started it ended. Send a message to get a fresh Authorize link.",
+        "attempt_ended": "sign-in ended before it was completed. Use the latest Authorize button and finish signing in within a minute, or send any message if no Authorize button is showing."
       },
       "notificationItem": {
         "delete": "Delete"

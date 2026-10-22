@@ -121,6 +121,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "maybe_refresh_available_models": ("function", True, "9de63ef05543", "acp_model_effort"),
     "mcp_config_hot_reload": ("property", False, "a6632a57e602", "acp"),
     "mcp_session_report": ("function", False, "89ea891969f7", "acp"),
+    "set_mcp_sign_in_ended_hook": ("function", False, "85c2af9db33d", "acp"),
+    "mcp_sign_in_live": ("function", False, "f070c8fd267a", "acp"),
     "member_capabilities_supported": ("property", False, "a6632a57e602", "acp"),
     "member_dispatch_mounted": ("property", False, "16180c63d5e6", "acp"),
     "member_tool_limits_supported": ("property", False, "a6632a57e602", "acp"),

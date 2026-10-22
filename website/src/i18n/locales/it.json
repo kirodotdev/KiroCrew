@@ -11514,7 +11514,8 @@
         "remote_gateway_hint": "Su un gateway remoto il callback localhost del browser fallirà: è previsto. Copia l'indirizzo completo su cui è arrivato il browser e incollalo qui per completare l'autorizzazione.",
         "requires_authentication": "richiede l'autenticazione.",
         "superseded": "non ha più un accesso attivo: una richiesta più recente lo ha sostituito. Usa il pulsante «Autorizza» più recente per accedere.",
-        "expired": "non ha più un accesso attivo: la sessione che lo ha avviato è terminata. Invia un messaggio per ottenere un nuovo link «Autorizza»."
+        "expired": "non ha più un accesso attivo: la sessione che lo ha avviato è terminata. Invia un messaggio per ottenere un nuovo link «Autorizza».",
+        "attempt_ended": "non ha completato l'accesso prima della fine del tentativo. Usa il pulsante Autorizza più recente e completa l'accesso entro un minuto, oppure invia un messaggio qualsiasi se non è visibile alcun pulsante Autorizza."
       },
       "notificationItem": {
         "acknowledged": "Confermato",

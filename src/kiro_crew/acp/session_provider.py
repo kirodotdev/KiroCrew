@@ -373,6 +373,7 @@ class AcpSessionProvider(LLMProvider):
                     )
                 raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
         self._handle = new_handle
+        self._install_mcp_sign_in_ended_hook()
         # The fresh session launched fresh stubs carrying a fresh token, and
         # nothing has named it: an unnamed token is refused, not resolved from
         # the shared runtime's tree. Claim it now, against the session this
@@ -435,6 +436,34 @@ class AcpSessionProvider(LLMProvider):
     def child_fidelity_aware(self, value: bool) -> None:
         if hasattr(self._handle, "child_fidelity_aware"):
             self._handle.child_fidelity_aware = value
+
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None] | None) -> None:
+        """Install the hook told when one of this session's sign-ins ends unconnected.
+
+        It is kept on the provider and re-installed for each new handle, so a
+        session reset keeps reporting to the same chat.
+        """
+        self._mcp_sign_in_ended_hook = hook
+        self._install_mcp_sign_in_ended_hook()
+
+    def mcp_sign_in_live(self, server_name: str) -> bool | None:
+        """See LLMProvider. Answered by the runtime's sign-in slot, the one place
+        that knows whether the attempt behind a link is still running."""
+        if not getattr(getattr(self._runtime, "_harness", None), "opens_external_urls", False):
+            return None
+        holds = getattr(self._runtime, "mcp_sign_in_holds", None)
+        session_id = getattr(self._handle, "session_id", "") or ""
+        if holds is None or not session_id:
+            return None
+        return bool(holds(session_id, server_name))
+
+    def _install_mcp_sign_in_ended_hook(self) -> None:
+        hook = getattr(self, "_mcp_sign_in_ended_hook", None)
+        install = getattr(self._runtime, "set_mcp_sign_in_ended_hook", None)
+        session_id = getattr(self._handle, "session_id", "") or ""
+        if install is None or not session_id:
+            return
+        install(session_id, hook)
 
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.

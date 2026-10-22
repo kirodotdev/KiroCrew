@@ -199,6 +199,25 @@ describe('McpOAuthBanner', () => {
       expect(screen.getByText(/Send a message/i)).toBeInTheDocument()
     })
 
+    it('says an ended attempt ended, not that the session ended', () => {
+      render(
+        <McpOAuthBanner serverName="miro" oauthUrl="" completed={false} expired={true} timedOut />,
+      )
+      expect(screen.getByText(/ended before it was completed/i)).toBeInTheDocument()
+      expect(screen.queryByText(/the session that started it ended/i)).not.toBeInTheDocument()
+      expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    })
+
+    it('reads the timeout reason from the message meta', () => {
+      const m = {
+        role: 'mcp_oauth',
+        content: '',
+        meta: { server_name: 'miro', expired: true, expired_reason: 'attempt_ended' },
+      } as unknown as ChatMessage
+      render(<>{renderMcpOAuthMessage(m)}</>)
+      expect(screen.getByText(/ended before it was completed/i)).toBeInTheDocument()
+    })
+
     it('keeps naming the server so the user knows which sign-in died', () => {
       render(<McpOAuthBanner serverName="miro" oauthUrl="" completed={false} expired={true} />)
       expect(screen.getByText('miro')).toBeInTheDocument()
