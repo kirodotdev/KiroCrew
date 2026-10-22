@@ -7,7 +7,7 @@ actually does. Stdlib only; portable across OSes.
 
 With ``--check-body`` it also reads the PR body the skill writes --
 ``<git-dir>/prepare-pr-body.md``, with ``<git-dir>`` from
-``git rev-parse --absolute-git-dir`` -- and runs three checks on it:
+``git rev-parse --absolute-git-dir`` -- and runs four checks on it:
 
 * **Accounting (hard).** Every changed *area* -- the unit ``pr-scope.yml`` counts,
   a module directory for ``src/kiro_crew/`` and ``website/src/``, the top-level
@@ -35,6 +35,11 @@ With ``--check-body`` it also reads the PR body the skill writes --
   A failure prints that script's message; that is exit 22. A base without the
   script (another repo) skips it silently.
 
+* **Gate proof (advisory).** A ``Gate proof:`` line in the body is a claim that
+  ``pre_push_gate.py`` ran. It is checked against ``<git-dir>/prepare-pr-gate-proof.json``
+  for HEAD's tree; a line the proof contradicts, or that has no proof behind it, is exit
+  25. A body with no such line never fails: the proof is optional.
+
 All checks run and print before any exit; when several breach, the lowest code wins.
 
 Size and age signals are printed, never an exit code. ``! SIZE`` appears at
@@ -46,10 +51,12 @@ the machine.
 
 Usage:  python3 diff_signals.py [base-branch] [--check-body] [--age]
 Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too long |
-        22 template sections missing | 2 environment error
+        22 template sections missing | 25 a Gate proof: line the recorded proof contradicts |
+        2 environment error
 """
 
 import argparse
+import importlib.util
 import os
 import re
 import shutil
@@ -357,6 +364,34 @@ def check_body(body, name_status, word_limit=WORD_LIMIT):
     return 0
 
 
+def gate_proof_check(body, gitdir):
+    """Return 25 when a ``Gate proof:`` line in ``body`` contradicts the recorded proof, else 0.
+
+    ``pre_push_gate.py`` owns the proof format, so it is loaded from beside this script.
+    Without a ``Gate proof:`` line, or without that script, there is nothing to contradict.
+    """
+    if "Gate proof:" not in body:
+        return 0
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pre_push_gate.py")
+    previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # no __pycache__ here
+    try:
+        spec = importlib.util.spec_from_file_location("pre_push_gate", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(path)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+    except (AttributeError, ImportError, OSError, SyntaxError):
+        return 0
+    finally:
+        sys.dont_write_bytecode = previous
+    tree = run(["git", "rev-parse", "HEAD^{tree}"])[1].strip()
+    problem = gate.contradiction(body, gitdir, tree)
+    if problem:
+        print("GATE PROOF: {} - fix the line or delete it; the proof is optional".format(problem))
+        return 25
+    return 0
+
+
 def template_check(body, base):
     """Run the base ref's ``TEMPLATE_CHECK`` on ``body``; return 0 or 22.
 
@@ -426,7 +461,7 @@ def main(argv):
         err("ERROR: origin/{0} not found - run: git fetch origin {0}".format(base))
         return 2
 
-    body = None
+    body = gitdir = None
     if args.check_body:
         gitdir = run(["git", "rev-parse", "--absolute-git-dir"])[1].strip()
         if not gitdir:
@@ -478,7 +513,9 @@ def main(argv):
     if body is not None:
         rc = check_body(body, ns)
         tpl = template_check(body, base)
-        return rc or tpl
+        # Evaluated before the return: every check prints, then the lowest code wins.
+        gate_proof = gate_proof_check(body, gitdir)
+        return rc or tpl or gate_proof
     return 0
 
 
