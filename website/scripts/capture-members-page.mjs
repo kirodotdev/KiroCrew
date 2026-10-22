@@ -212,14 +212,15 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   await page.close()
 }
 
-// 06c — the empty state: a member with no workers reads one honest sentence.
+// 06c — the empty state: a member with no workers explains, in the tab's own
+// word (workers), why one would ever have any, with the mascot art above it.
 {
   const page = await newPage('dark')
   await page.getByText('fixer', { exact: true }).first().click()
   await page.getByTestId('member-drawer').waitFor()
   await page.getByTestId('member-driving-empty').waitFor()
   const empty = await page.getByTestId('member-driving-empty').textContent()
-  check('06c-driving empty state', /Not driving any sessions/.test(empty || ''), `empty=${(empty || '').trim()}`)
+  check('06c-driving empty state', /brings in a few workers/.test(empty || '') && /on its own/.test(empty || ''), `empty=${(empty || '').trim()}`)
   await page.screenshot({ path: `${OUT}/06c-driving-sessions-empty-dark.png` })
   await page.close()
 }

@@ -2059,7 +2059,18 @@ contract: it focuses Side Chat and returns true while the Profile draft remains
 mounted.
 
 **Sessions** lists only live dashboard sessions whose `created_by` is the
-mate's DM slot. Rows use the shared status precedence (approval, question,
+mate's DM slot. The tab keeps its name (a recorded decision), but its empty
+box speaks the reader's words, not the mechanism's: a first-time user has no
+model for why a mate would "drive sessions", so the box says session, chat or
+driving nowhere. The
+empty box (`crew-profile-sessions-empty`, the testid keeps the internal noun)
+explains the mechanism in those words — a lead naming the mate ("When a
+big job comes in, {{name}} brings in a few workers to share it.") and one
+line saying the list fills here and is empty now — under an illustration
+built only from the brand mascot assets (`ghost-poses` pose-7 as the
+mate, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
+workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
+is an opacity, never a recolour, and reads on both palettes (#23003). Rows use the shared status precedence (approval, question,
 running, idle), link to that session through the page's guarded session exit,
 preserve stable ordering while the set is unchanged, and fold after five rows.
 Child subagent runs remain presence for the roster but are not dashboard
@@ -2908,7 +2919,7 @@ card's counters already show the return). Runtime `notice` rows and
 compaction status cards are hidden rather than removed from history. When the
 filter leaves NOTHING to draw although the transcript is not empty (a patroller
 that has never spoken), the pane's empty hint is the mate's — "<name> hasn't
-said anything to you yet." plus a verb-first second line pointing at where its visible work is ("See the sessions it is driving."). That second
+said anything to you yet." plus a verb-first second line pointing at where its visible work is ("See what it is working on." — neutral about whether any worker exists yet, since the tab it opens may be the empty box, and never "sessions"). That second
 line is a link when the host passes `onOpenCrewWorkLog` (the Members page does:
 it opens Profile on Sessions), plain text otherwise — words that read as a
 destination must be one. Never the fresh-thread "Session ready" line, which

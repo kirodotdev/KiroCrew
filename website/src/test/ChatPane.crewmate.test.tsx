@@ -314,7 +314,7 @@ describe("a mate's chat", () => {
     const view = renderPane({ onOpenCrewWorkLog })
     const where = await view.findByTestId('crewmate-quiet-where')
     expect(where.tagName).toBe('BUTTON')
-    expect(where).toHaveTextContent('See the sessions it is driving.')
+    expect(where).toHaveTextContent('See what it is working on.')
     expect(where.className).toMatch(/underline/)
     fireEvent.click(where)
     expect(onOpenCrewWorkLog).toHaveBeenCalledTimes(1)
