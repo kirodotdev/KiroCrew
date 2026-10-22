@@ -256,7 +256,9 @@ script cron's result (`_deliver_script_result`) and an MCP App's `ui/message`
 (`send_to_target`) with a `peer` origin: a `user` row on both paths, a steer only
 when it asked for one and the slot is running. `send_to_target` keeps its audience
 fence, cancellation shield and post-RPC re-gate around those calls. The idle
-autonudge fire still chooses its own branch.
+autonudge fire writes its nudge row through `session_deliver.write_origin_row` (the
+`automation` origin, plus its `monitor` record), the same mapping a steered wake
+uses, but still chooses idle vs running itself (#23064).
 
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus

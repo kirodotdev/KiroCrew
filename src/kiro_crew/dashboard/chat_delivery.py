@@ -923,11 +923,17 @@ async def steer_into_running_turn(
         # `append_and_surface`, not a bare append: with an HTTP stream reader
         # attached the append's own broadcast is suppressed, and the other tabs
         # would otherwise get the cut but never the row.
+        # The role, cls and `meta.nudge` come from the wake's origin
+        # (`session_deliver.origin_row`), the mapping the idle fire's row uses.
+        from kiro_crew.dashboard.session_deliver import automation, origin_row
         from kiro_crew.dashboard.state import append_and_surface
 
-        meta["nudge"] = dict(nudge_meta)
+        role, cls, origin_meta = origin_row(
+            automation(nudge_meta.get("cycle", 0), nudge_meta.get("loop_id", ""))
+        )
+        meta.update(origin_meta)
         state.broadcast_ws("chat_segment", {"slot": slot.key})
-        append_and_surface(state, slot, "nudge", _row_content, "msg msg-nudge", meta=meta)
+        append_and_surface(state, slot, role, _row_content, cls, meta=meta)
         return STEER_STEERED
     _row = slot.append("user", _row_content, "msg msg-u", ts=ts, meta=meta)
     push_payload: dict[str, Any] = {

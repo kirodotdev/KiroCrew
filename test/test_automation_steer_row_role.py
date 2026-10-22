@@ -92,6 +92,29 @@ class TestSteeredRow:
         assert [f.get("role") for f in frames] == ["nudge"]
 
     @pytest.mark.asyncio
+    async def test_the_steered_row_comes_from_the_wake_origin(self, tmp_path, monkeypatch):
+        """One origin-to-row mapping: the steer and the idle fire share it."""
+        from kiro_crew.dashboard import session_deliver
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        slot._acp_client = _steer_client()
+        real = session_deliver.origin_row
+        seen: list[tuple[str, dict]] = []
+
+        def _recording(origin):
+            seen.append((origin.kind, dict(origin.nudge or {})))
+            return real(origin)
+
+        monkeypatch.setattr(session_deliver, "origin_row", _recording)
+        await steer_into_running_turn(
+            state, slot, WAKE, user_origin=False, admission={}, nudge_meta=NUDGE
+        )
+        assert seen == [(session_deliver.ORIGIN_AUTOMATION, NUDGE)]
+
+    @pytest.mark.asyncio
     async def test_a_peer_steer_still_writes_a_user_row(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

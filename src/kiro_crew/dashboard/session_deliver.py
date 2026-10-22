@@ -102,6 +102,20 @@ def origin_row(origin: Origin) -> tuple[str, str, dict[str, Any]]:
     raise ValueError(f"unknown delivery origin: {origin.kind!r}")
 
 
+def write_origin_row(
+    slot: "_ChatSlot", text: str, origin: Origin, *, extra_meta: dict | None = None
+) -> dict[str, Any]:
+    """Append *origin*'s row (:func:`origin_row`) with *text*; return the row.
+
+    The one writer the idle paths share: :func:`deliver`'s own, and the idle
+    autonudge fire, which writes its nudge row when its turn is accepted.
+    *extra_meta* adds sender facts the origin does not carry (a monitor
+    wake's ``monitor`` record) and never replaces the origin's own keys.
+    """
+    role, cls, meta = origin_row(origin)
+    return slot.append(role, text, cls, meta={**(extra_meta or {}), **meta})
+
+
 async def deliver(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -135,8 +149,7 @@ async def deliver(
     from kiro_crew.dashboard.chat_runner import _run_chat
     from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 
-    role, cls, meta = origin_row(origin)
-    slot.append(role, text, cls, meta=meta)
+    write_origin_row(slot, text, origin)
     # Not the person's speech: no human exemption from the drain's linked drop.
     # An app's text is a synthetic payload, which keeps it off a linked
     # channel mirror where it would read as the human's own words.
