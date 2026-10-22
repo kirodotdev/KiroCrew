@@ -17,7 +17,7 @@
         "resume": {}
       }
     },
-    "agent_version": "1.18.30",
+    "agent_version": "1.19.1",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -59,6 +59,10 @@
           {
             "name": "High",
             "value": "high"
+          },
+          {
+            "name": "Default",
+            "value": "default"
           }
         ],
         "type": "select"
@@ -85,7 +89,7 @@
     ],
     "frame": "response",
     "id": 2,
-    "session_id": "ses_0000000000000000000000000a"
+    "session_id": "opencode-session-1"
   },
   {
     "config_options": [
@@ -124,6 +128,10 @@
           {
             "name": "High",
             "value": "high"
+          },
+          {
+            "name": "Default",
+            "value": "default"
           }
         ],
         "type": "select"
@@ -188,6 +196,10 @@
           {
             "name": "High",
             "value": "high"
+          },
+          {
+            "name": "Default",
+            "value": "default"
           }
         ],
         "type": "select"
@@ -305,6 +317,10 @@
           {
             "name": "High",
             "value": "high"
+          },
+          {
+            "name": "Default",
+            "value": "default"
           }
         ],
         "type": "select"

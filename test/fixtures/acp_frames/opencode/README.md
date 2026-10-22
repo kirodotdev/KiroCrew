@@ -11,14 +11,9 @@ the corpus does and does not prove.
 | `session-load-live.jsonl` | live | a `session/load` from a second process: the replayed `user_message_chunk` / `agent_message_chunk` updates and the load result, which carries `configOptions` and no `modes` |
 | `mcp-directive-call-live.jsonl` | live | a Crew MCP `tool_call`, its `in_progress` refinement and its terminal `tool_call_update` -- the single-underscore `kirocrew-core_<tool>` title, an empty-then-refined `rawInput`, and a result carrying a directive marker |
 | `compact-live.jsonl` | live | a MANUAL `/compact`: an ordinary turn's `usage_update` and `stopReason`, then the `/compact` turn's summary `agent_message_chunk`, its far smaller `usage_update`, and its `stopReason: end_turn` with NO compaction status frame |
-| `effort-live.jsonl` | live | `session/set_config_option` results for the per-model `effort` select (low, medium, high on a reasoning model, absent on a plain one), a `-32602` refusal of an unoffered level, and the reset to the first level after a model switch |
+| `effort-live.jsonl` | live | `session/set_config_option` results for the per-model `effort` select (low, medium, high and default on a reasoning model, absent on a plain one), a `-32602` refusal of an unoffered level, and the reset to the first level after a model switch |
 
-Captured off `opencode acp` 1.18.30 driving a local Ollama model, agent-to-client
-lines verbatim, with the recording user's home directory replaced by `~`.
-`tool-call-live.jsonl` is a **slice**: the 430 `agent_message_chunk` frames the
-model emitted around the tool call are omitted for length, and the fixture's own
-`_meta.note` says so. `effort-live.jsonl` is captured off the same version against a
-local OpenAI-compatible stub instead, and its `_meta.note` lists its reductions.
+Re-captured off `opencode acp` 1.19.1, the release the Real Adapter Contract lane pins, with each file's `initialize` frame kept so its version is read off the wire. Five drive a local Ollama model (llama3.2 3b, 16k context); `effort-live.jsonl` and `mcp-directive-call-live.jsonl` drive a local OpenAI-compatible stub instead. Every capture ran in a throwaway home and a scratch project, and was reduced at capture through `scripts/capture_acp_compaction.py`'s own reduction: the working directory reads `<cwd>`, the home directory `~`, session and message ids are synthetic, the local model id is the synthetic `local/model-1`, the command inventory is dropped and each `configOptions` select is cut to its current option -- except in `effort-live.jsonl`, whose selects ARE the evidence and keep their stub models and levels. `tool-call-live.jsonl` and `compact-live.jsonl` are **slices**, and each fixture's own `_meta.note` says what was omitted.
 
 ## What the permission capture establishes
 
@@ -31,14 +26,11 @@ second half, observed: with `permission: ask` resolved, OpenCode emitted
 `session/request_permission` before running `bash`, waited for the client's
 `allow_once`, and only then ran the command.
 
-Two things it does *not* pin. It was observed on OpenCode 1.18.30, and nothing in
+What it does *not* pin: it was observed on OpenCode 1.19.1 (and before that on 1.18.30), and nothing in
 this repository pins per-call emission across upgrades the way the read-back pins
-config precedence -- `agent-host-contract.md` records the version. And the
-recording model garbled the echo text (`kirocrew-op encode-live`); that is the model,
-and it is left verbatim because an edited frame is no longer evidence of what the
-wire carried.
+config precedence -- `agent-host-contract.md` records the version.
 
-The earlier capture in `tool-call-live.jsonl` shows the other path: a call whose
+The capture in `tool-call-live.jsonl` shows the other path: a call whose
 arguments fail OpenCode's own schema is rejected BEFORE any permission check, so no
 permission frame exists for it. Both fixtures are kept because they are different
 facts about the same harness.
@@ -69,7 +61,7 @@ The capture pins how OpenCode names a mounted Crew server. Shipping code now
 sends this backend its MCP array through `ACP_BACKENDS_SESSION_MCP_ARRAY`, using
 the same element shape; `agent-host-contract.md` §5 describes that production
 path. The remaining boundary is version-specific: this naming rule was observed
-on 1.18.30, and nothing in this repository pins it across adapter upgrades.
+on 1.18.30 and again on 1.19.1, and nothing in this repository pins it across adapter upgrades.
 
 ## What the compaction capture establishes
 
@@ -81,11 +73,13 @@ question: does this harness finish a `/compact` inside the `session/prompt` turn
 emitting no separate status? `compact-live.jsonl` answers both halves in one slice:
 
 ```
-usage_update       used=14011   (an ordinary turn)
-id=3 result        stopReason=end_turn
+usage_update       used=12528   (the seventh ordinary turn)
+id=9 result        stopReason=end_turn
 agent_message_chunk            (the /compact turn's summary)
-usage_update       used=514
-id=4 result        stopReason=end_turn      <- and nothing after it
+usage_update       used=3720
+id=10 result       stopReason=end_turn      <- and no status frame after it
+usage_update       used=10135   (the next ordinary turn)
+id=11 result       stopReason=end_turn
 ```
 
 The ABSENCE is the evidence. No `compaction_status` frame of any kind follows the
@@ -95,13 +89,7 @@ capability rather than waiting on the queue, and why waiting on the queue instea
 would spend the whole `COMPACT_WAIT_TIMEOUT_SECS` and then recycle a session that
 had just compacted correctly.
 
-What it does not prove on its own is that the SESSION shrank rather than that one
-request was smaller. A longer drive settles that: over four growing turns `used`
-climbed 14863 → 15727 → 16614 → 17478, and the first ordinary turn after a
-`/compact` read 14577 — below the pre-compact peak — with the model answering from
-a summary of the dropped turns. That series is recorded in the pull request that
-added this file rather than here, because it is six turns of filler text and carries
-no frame class this corpus needs.
+The slice also shows the SESSION shrank, not just one request: over seven growing turns `used` climbed 7566 → 12528, and the first ordinary turn after `/compact` read 10135, below the pre-compact peak. The six earlier turns are omitted for length; their series is in the fixture's `_meta.note`. A drive this short only falls if its history outgrows what opencode keeps verbatim through a compaction (`preserve_recent_tokens`, by default a quarter of the usable context), which is why the turns are filler notes rather than one-liners.
 
 goose joined both sets on its own capture (`../goose/compact-live.jsonl`). pi has no
 such capture and is therefore in neither set, even though its adapter source says it

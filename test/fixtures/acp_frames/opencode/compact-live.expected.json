@@ -17,7 +17,7 @@
         "resume": {}
       }
     },
-    "agent_version": "1.18.30",
+    "agent_version": "1.19.1",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -26,37 +26,13 @@
     "config_options": [
       {
         "category": "model",
-        "currentValue": "opencode/big-pickle",
+        "currentValue": "local/model-1",
         "id": "model",
         "name": "Model",
         "options": [
           {
-            "name": "OpenCode Zen/Big Pickle",
-            "value": "opencode/big-pickle"
-          },
-          {
-            "name": "OpenCode Zen/Ling 3.0 Flash Fin Free",
-            "value": "opencode/ling-3.0-flash-fin-free"
-          },
-          {
-            "name": "OpenCode Zen/MiMo V2.5 Free",
-            "value": "opencode/mimo-v2.5-free"
-          },
-          {
-            "name": "OpenCode Zen/Muse Spark 1.2 Free",
-            "value": "opencode/muse-spark-1.2-contributor-free"
-          },
-          {
-            "name": "OpenCode Zen/Muse Spark 1.3 Free",
-            "value": "opencode/muse-spark-1.3-contributor-free"
-          },
-          {
-            "name": "OpenCode Zen/Nemotron 3 Ultra Free",
-            "value": "opencode/nemotron-3-ultra-free"
-          },
-          {
-            "name": "OpenCode Zen/Nemotron 3.5 Lightning Free",
-            "value": "opencode/nemotron-3.5-lightning-free"
+            "name": "Local/model-1",
+            "value": "local/model-1"
           }
         ],
         "type": "select"
@@ -71,11 +47,6 @@
             "description": "The default agent. Executes tools based on configured permissions.",
             "name": "build",
             "value": "build"
-          },
-          {
-            "description": "Plan mode. Disallows all edit tools.",
-            "name": "plan",
-            "value": "plan"
           }
         ],
         "type": "select"
@@ -83,14 +54,14 @@
     ],
     "frame": "response",
     "id": 2,
-    "session_id": "ses_f48d6cdbaffeOXOzLHrYprzaz3"
+    "session_id": "opencode-session-1"
   },
   {
     "action": "update",
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_0b72932a5001kliiGjz0E6jEJN",
+        "message_id": "msg-7",
         "text": "ok"
       }
     ],
@@ -107,18 +78,18 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      14011,
-      200000
+      12528,
+      16384
     ],
     "usage_cost": 0.0
   },
   {
     "frame": "response",
-    "id": 3,
+    "id": 9,
     "prompt_tokens": [
-      12219,
-      3,
-      1792,
+      6297,
+      2,
+      6231,
       0
     ],
     "stop_reason": "end_turn"
@@ -128,14 +99,478 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_0b72945ac0016T6O3uHjWcyjm0",
-        "text": "## Objective\n- Fulfill the user's request to reply with the single word \"ok\" (completed; no actual coding task exists).\n\n## Important Details\n- The entire conversation consists of the user instructing the assistant to reply with \"ok\" and the assistant complying.\n- No constraints, preferences, decisions, or task context were provided beyond this.\n\n## Work State\n### Completed\n- Assistant replied \"ok\" as requested.\n\n### Active\n- (none)\n\n### Blocked\n- (none)\n\n## Next Move\n1. (none)\n2. (none)\n\n## Relevant Files\n- (none)"
+        "message_id": "msg-8",
+        "text": "##"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "## Objective\n- Fulfill the user's request to reply with the single word \"ok\" (completed; no actual coding task exists).\n\n## Important Details\n- The entire conversation consists of the user instructing the assistant to reply with \"ok\" and the assistant complying.\n- No constraints, preferences, decisions, or task context were provided beyond this.\n\n## Work State\n### Completed\n- Assistant replied \"ok\" as requested.\n\n### Active\n- (none)\n\n### Blocked\n- (none)\n\n## Next Move\n1. (none)\n2. (none)\n\n## Relevant Files\n- (none)",
+      "text": "##",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " Objective"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " Objective",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "-"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " No"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " No",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " specific"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " specific",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " task"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " task",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " was"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " was",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " described"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " described",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " in"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " in",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " the"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " the",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " conversation"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " conversation",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " history"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " history",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": ".\n\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ".\n\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "##"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "##",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " Important"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " Important",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " Details"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " Details",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "-"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " None"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " None",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ".",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " None"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " None",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "\n\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "##"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "##",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " Relevant"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " Relevant",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " Files"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " Files",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": "-"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": " `<conversation"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " `<conversation",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-8",
+        "text": ">`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ">`",
       "thinking": false
     }
   },
@@ -145,14 +580,52 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      514,
-      200000
+      3720,
+      16384
     ],
     "usage_cost": 0.0
   },
   {
     "frame": "response",
-    "id": 4,
+    "id": 10,
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-9",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      10135,
+      16384
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 11,
+    "prompt_tokens": [
+      8039,
+      2,
+      2096,
+      0
+    ],
     "stop_reason": "end_turn"
   }
 ]

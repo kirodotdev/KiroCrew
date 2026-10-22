@@ -194,7 +194,7 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # the ``session/prompt`` turn.
 #
 # opencode is a member on a LIVE capture, measured on opencode 1.18.30, and it joins
-# despite advertising nothing: its ``available_commands_update`` lists only
+# despite advertising nothing: its ``available_commands_update`` on 1.18.30 lists only
 # ``customize-opencode``, ``init`` and ``review``. That silence was read here as "no
 # compaction capability of any kind", and it is not one -- the harness serves
 # ``/compact`` out of its PROMPT handler rather than out of its command list, so the
@@ -204,12 +204,11 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # and the next ORDINARY turn read 14577 -- below the pre-compact peak -- with the
 # model answering out of a summary of the turns that were dropped. So the context
 # really shrank, and the turn's own terminal frame is the only done signal there is.
-# The single-turn slice of that drive is committed as evidence rather than quoted:
-# ``test/fixtures/acp_frames/opencode/compact-live.jsonl`` carries the ordinary
-# turn, the ``/compact`` turn's ``used: 514``, and the ``end_turn`` with nothing
-# after it -- which is the ABSENCE this membership rests on. This capture is not
-# retaken on the Real Adapter Contract lane's pin
-# (``test/real_adapters/package.json``).
+# Re-measured on 1.19.1, the Real Adapter Contract lane's pin, and committed as
+# evidence rather than quoted: ``test/fixtures/acp_frames/opencode/compact-live.jsonl``
+# climbs 7566 -> 12528 over seven turns, reads ``used: 3720`` on the ``/compact`` turn,
+# ends it ``end_turn`` with no status frame -- the ABSENCE this membership rests on --
+# and reads 10135 on the next ordinary turn.
 #
 # codex is a member on a capture rather than on its documentation. Measured on
 # codex-acp 1.11.0 over stdio, it advertises ``compact`` in its ``available_commands_update``
