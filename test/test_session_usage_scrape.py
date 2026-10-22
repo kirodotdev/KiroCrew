@@ -30,6 +30,7 @@ from session_usage_helpers import (
 )
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.testing.wait import finished
 
 
 class TestScrapeIsTheAutomaticFallback:
@@ -407,7 +408,11 @@ class TestUnavailableReasonNamesTheRealRemedy:
         monkeypatch.setattr(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang)
         sessions_mod._usage_cache = dict(_CACHED_A)
         try:
-            await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+            # The bound is the assertion: the patched 0.2 s deadline must end the
+            # refresh long before the hung API's own 30 s release would.
+            await finished(
+                sessions_mod._fetch_usage_bg(), "the deadline ending the refresh", timeout=10
+            )
         finally:
             released.set()
         assert sessions_mod._usage_cache == {"available": False}

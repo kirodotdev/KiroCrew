@@ -508,9 +508,12 @@ class TestBothStartupSitesStash:
 
     @staticmethod
     def _func(name: str) -> ast.AsyncFunctionDef:
+        import inspect
+
         from kiro_crew.dashboard import server as server_mod
 
-        tree = ast.parse(Path(server_mod.__file__).read_text(encoding="utf-8"))
+        source_file = inspect.getsourcefile(getattr(server_mod, name)) or ""
+        tree = ast.parse(Path(source_file).read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
                 return node

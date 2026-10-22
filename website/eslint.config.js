@@ -154,7 +154,6 @@ export default [
       'src/components/RestartButton.tsx',
       'src/components/TagManagerList.tsx',
       'src/components/WebAppArtifactCard.tsx',
-      'src/components/notifications/NotificationFeed.tsx',
       'src/components/themeEditor.tsx',
       'src/hooks/useKeyboardShortcuts.ts',
       'src/hooks/useSessionActions.ts',

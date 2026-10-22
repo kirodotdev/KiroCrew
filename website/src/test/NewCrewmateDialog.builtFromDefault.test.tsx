@@ -79,7 +79,7 @@ describe('NewCrewmateDialog — Built from is a default, not a required pick', (
     )
   })
 
-  it('asks for a workspace of the crewmate\'s own unless Advanced names one to share', async () => {
+  it('asks for a workspace of the mate\'s own unless Advanced names one to share', async () => {
     renderDialog()
     fireEvent.change(nameInput(), { target: { value: 'researcher' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))

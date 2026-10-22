@@ -37,7 +37,7 @@ vi.mock('../api/client', () => ({
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import { api } from '../api/client'
-import { updateSlotPin } from '../store/dashboardSlice'
+import { sseSlotTitle, updateSlotPin } from '../store/dashboardSlice'
 
 const SLOT = 'pane-a'
 const TITLE = 'Alpha session'
@@ -282,6 +282,30 @@ describe('SessionTitleControl', () => {
     expect(api.renameSlot).toHaveBeenCalledWith(SLOT, TITLE)
     // One shot: used, it is gone.
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+  })
+
+  it('names the Undo for an untitled session "Untitled session", never its key, and still restores the raw value (#20871)', async () => {
+    const { store } = renderControl()
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title: SLOT })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
+    await waitFor(() => expect(storeTitle(store)).toBe('Generated title'))
+    const undo = await screen.findByRole('button', { name: 'Undo: Untitled session' })
+    expect(undo.getAttribute('title')).toBe('Untitled session')
+    await act(async () => { fireEvent.click(undo) })
+    expect(storeTitle(store)).toBe(SLOT)
+  })
+
+  it('types out a generated title that replaces the "Untitled session" label (#20871)', async () => {
+    const { store } = renderControl()
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title: SLOT })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
+    await waitFor(() => expect(storeTitle(store)).toBe('Generated title'))
+    const trigger = screen.getByRole('button', { name: 'Generated title (rename session)' })
+    // Still typing: a strict prefix of the generated title is on screen.
+    const typed = trigger.textContent ?? ''
+    expect(typed.length).toBeLessThan('Generated title'.length)
+    expect('Generated title'.startsWith(typed)).toBe(true)
+    await waitFor(() => expect(trigger.textContent).toBe('Generated title'))
   })
 
   it('the Undo offer ends when the title moves on or the user starts another attempt', async () => {

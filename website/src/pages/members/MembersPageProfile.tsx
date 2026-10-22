@@ -40,7 +40,7 @@ import { lastActivityEpoch } from '../chat/sessionOrder'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageSidePanelState } from './MembersPageSidePanel'
 import { type MembersPageThreadState } from './MembersPageThread'
-import { DRIVING_VISIBLE, memberMemoryDisplay, PROFILE_MEMORY_KEYS, type ProfileCardOpen, type TFn } from './membersPageModel'
+import { memberMemoryDisplay, PROFILE_MEMORY_KEYS, type ProfileCardOpen, type TFn } from './membersPageModel'
 import { type MembersPageCrewEditing } from './useMembersPageCrewEditor'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageRosterSignals } from './useMembersPageRoster'
@@ -488,8 +488,7 @@ export function MembersPageProfileCard({
   const { isRunning, activeView } = rosterView
   const { activeSlot, freshStart, askFreshStart, confirmedSlot } = thread
   const {
-    profileCardW, activeMemberKey, openCrewView, openSessionGuarded, drivingSessions, setDrivingExpandedFor,
-    drivingExpanded, visibleDriving,
+    profileCardW, openCrewView, openSessionGuarded, drivingSessions,
   } = sidePanel
   const {
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, setSchedDraftDirty,
@@ -581,7 +580,7 @@ export function MembersPageProfileCard({
         </div>
       ) : (
         <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-driving">
-          {visibleDriving.map((s) => {
+          {drivingSessions.map((s) => {
             const kind = tabStatus(s, [], s.key)
             const status = DRIVING_STATUS[kind]
             const label = t(status.label)
@@ -610,18 +609,6 @@ export function MembersPageProfileCard({
             )
           })}
         </ul>
-      )}
-      {drivingSessions.length > DRIVING_VISIBLE && (
-        <button
-          type="button"
-          onClick={() => setDrivingExpandedFor(drivingExpanded ? '' : activeMemberKey)}
-          className="self-start text-[12.5px] font-semibold text-accent cursor-pointer"
-          aria-expanded={drivingExpanded}
-        >
-          {drivingExpanded
-            ? t('pages.membersPage.driving_show_less')
-            : t('pages.membersPage.driving_show_all', { count: drivingSessions.length })}
-        </button>
       )}
     </div>
   )

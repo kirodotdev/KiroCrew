@@ -13,6 +13,7 @@ import pytest
 from kiro_crew.mcp_discovery import McpServerInfo
 from kiro_crew.mcp_gateway import preflight as pf
 from kiro_crew.mcp_gateway import verdict_cache as vc
+from kiro_crew.testing.wait import async_wait_until
 
 # The identities the pre-flight really sends, not copies of them. A double keyed
 # by hardcoded names answers nothing when a name changes, and the pre-flight then
@@ -322,13 +323,11 @@ _PASS_STATE_CEILING_SECS = 30.0
 
 async def _await_pass_state(ready, describe, what: str) -> None:
     """Return once ``ready()`` holds; past the ceiling, raise naming *what*."""
-    loop = asyncio.get_running_loop()
-    start = loop.time()
-    while not ready():
-        elapsed = loop.time() - start
-        if elapsed > _PASS_STATE_CEILING_SECS:
-            raise AssertionError(f"{what}: not reached after {elapsed:.2f}s ({describe()})")
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        ready,
+        timeout=_PASS_STATE_CEILING_SECS,
+        describe=lambda: f"{what}: {describe()}",
+    )
 
 
 async def _finished(aw, what: str):

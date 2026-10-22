@@ -546,7 +546,9 @@ class TestTheViewDoesNotOutliveTheGateway:
 
         from kiro_crew.dashboard import server
 
-        src = inspect.getsource(server)
+        src = inspect.getsource(server) + (
+            Path(server.__file__).parent / "server_runtime" / "browser_lifecycle.py"
+        ).read_text(encoding="utf-8")
         assert "_browser_view_shutdown" in src
         assert "app.on_cleanup.append(_browser_view_shutdown)" in src
         assert "browser_cli_view.stop" in src

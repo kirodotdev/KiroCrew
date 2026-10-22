@@ -135,9 +135,11 @@ function renderChatPage(opts: {
    *  real boot holds: the flag is set by the writer that delivers the list. Pass
    *  false with a populated list only to model the pre-arrival window. */
   slotsLoaded?: boolean
+  /** This window's recency stack, oldest first. */
+  slotHistory?: string[]
 }) {
   const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed,
-          messages = [], slotCursorKey = null, slotsLoaded = slots.length > 0 } = opts
+          messages = [], slotCursorKey = null, slotsLoaded = slots.length > 0, slotHistory = [] } = opts
   const preload: PreloadState = {
     dashboard: {
       status: { platform: 'darwin' }, connected: true, slots, slotsLoaded, approvalMode: 'normal',
@@ -150,7 +152,7 @@ function renderChatPage(opts: {
       slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
       lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
       pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
-      subagents: {}, toolLog: [], activityOpen: false, activityTab: 'logs', slotActivity: {}, slotHistory: [],
+      subagents: {}, toolLog: [], activityOpen: false, activityTab: 'logs', slotActivity: {}, slotHistory,
       slotMessages: {}, slotLoading: false, slotRun: {},
     },
   }
@@ -1855,5 +1857,94 @@ describe('late slot-list load does not override a user switch (deep-link race)',
     // The late deep-link activation MUST NOT revert to chat-1-100.
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
     expect(store.getState().chat.activeSlot).not.toBe('chat-1-100')
+  })
+})
+
+/** Every tab and popout of the origin writes `mc-active-slot-chat` on each slots
+ *  frame, so when the chat a window shows leaves the list, the stored key names
+ *  whatever ANOTHER window showed last. */
+describe('the active chat leaves the list mid-session', () => {
+  const four = [...slots, slot('chat-4-400', 'Other window')]
+  const without = (key: string) => four.filter(s => s.key !== key)
+
+  it('lands on the chat this tab showed before, not the one another window stored', async () => {
+    const { store } = renderChatPage({ route: '/chat?sid=chat-3-300', activeSlot: 'chat-3-300', slots: four, slotHistory: ['chat-2-200'] })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-3-300'))
+    // A second tab switches to chat-4-400 and rewrites the shared key.
+    localStorage.setItem('mc-active-slot-chat', 'chat-4-400')
+    // chat-3-300 is closed in that tab; this tab's next frame omits it.
+    await act(async () => { store.dispatch(sseSlots(without('chat-3-300'))) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    expect(detailCalls()).not.toContain('chat-4-400')
+  })
+
+  it('with no history of its own, does not open the chat another window stored', async () => {
+    const { store } = renderChatPage({ route: '/chat?sid=chat-3-300', activeSlot: 'chat-3-300', slots: four })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-3-300'))
+    localStorage.setItem('mc-active-slot-chat', 'chat-4-400')
+    vi.mocked(api.chatSlotDetail).mockClear()
+    await act(async () => { store.dispatch(sseSlots(without('chat-3-300'))) })
+    // The existing last resort, the first listed chat, is kept on purpose.
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+    expect(detailCalls()).toEqual(['chat-1-100'])
+  })
+
+  it('a first load still reopens the stored chat', async () => {
+    localStorage.setItem('mc-active-slot-chat', 'chat-4-400')
+    const { store } = renderChatPage({ route: '/chat', slots: four })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-4-400'))
+  })
+
+  it('a popout whose chat is closed elsewhere shows no chat instead of re-keying', async () => {
+    const { store } = renderChatPage({ route: '/popout/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: four, slotHistory: ['chat-1-100'] })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    localStorage.setItem('mc-active-slot-chat', 'chat-4-400')
+    vi.mocked(api.chatSlotDetail).mockClear()
+    await act(async () => { store.dispatch(sseSlots(without('chat-2-200'))) })
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(detailCalls()).toEqual([])
+    // ?sid= still names the popout's own chat, so a reload stays bound to it.
+    expect(currentUrl).toMatch(/sid=chat-2-200/)
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('a popout reloaded after its chat left the list stays on its own chat', async () => {
+    // The reload: a fresh mount on the URL the popout kept, with another
+    // window's chat in the shared key and the popout's chat still unlisted.
+    localStorage.setItem('mc-active-slot-chat', 'chat-4-400')
+    const { store } = renderChatPage({ route: '/popout/chat?sid=chat-2-200', slots: without('chat-2-200') })
+    await act(async () => {})
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(detailCalls()).toEqual([])
+    expect(currentUrl).toMatch(/sid=chat-2-200/)
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+    // A later frame that lists it again opens it.
+    await act(async () => { store.dispatch(sseSlots(four)) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    // A late deep link resolves through both sid readers, so assert which
+    // chat was fetched, not how many times.
+    expect(new Set(detailCalls())).toEqual(new Set(['chat-2-200']))
+  })
+
+  it('a popout with no ?sid= of its own never opens the stored chat', async () => {
+    localStorage.setItem('mc-active-slot-chat', 'chat-4-400')
+    const { store } = renderChatPage({ route: '/popout/chat', slots: four })
+    await act(async () => {})
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(detailCalls()).toEqual([])
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('a popout reopens its own chat when a later frame lists it again', async () => {
+    const { store } = renderChatPage({ route: '/popout/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: four })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    await act(async () => { store.dispatch(sseSlots(without('chat-2-200'))) })
+    await act(async () => {})
+    await act(async () => { store.dispatch(sseSlots(four)) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    expect(currentUrl).toMatch(/sid=chat-2-200/)
   })
 })

@@ -11,7 +11,7 @@ All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS
 | `local` (default) | this process, whisper.cpp held loaded by [`kiro_crew.stt`](../../../src/kiro_crew/stt/__init__.py) | free | desktop builds include the runtime; select a model and click **Download now** |
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
-| `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns 503 because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
+| `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns a `stt_streaming_disabled` error frame because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
 
 The batch path at `POST /api/stt/transcribe` (`transcribe.transcribe_audio`)
 serves whole files instead: a Slack voice memo, a channel voice note, an upload.
@@ -308,7 +308,9 @@ surface: a spoken credential must not flash unredacted.
 
 ## Activation
 
-The endpoint answers **503** unless all three hold:
+The endpoint answers with a typed WebSocket error frame (code `stt_streaming_disabled`)
+unless all three hold — completing the upgrade first so the browser receives a
+machine-readable code rather than a bare 503 that only surfaces as `'connection'`:
 
 1. `stt.enabled`
 2. `stt.streaming`

@@ -497,6 +497,9 @@ def _runtime(lines):
     runtime._stderr_lines = []
     runtime._saw_auth_failure = False
     runtime._saw_sandbox_init_failure = False
+    # Same sink, same startup-window guard: the drain reads it per line, so a
+    # missing attribute ends the drain early under its broad ``except Exception``.
+    runtime._saw_delegate_launch_failure = False
     runtime._sandbox_wrapped_by_crew = False
     # The sandbox latch arms only while startup is unfinished, so the window has
     # to be open for a startup corpus to land. Startup ends at the first session
@@ -1061,6 +1064,9 @@ async def test_a_cancel_during_the_last_attempts_settle_also_cleans_up():
     # Attempt 0 classifies without waiting, so the wait under test is attempt 1's
     # throttle read, which settles only before any prompt or tool was seen.
     client._sandbox_init_failure = AsyncMock(return_value=None)
+    # The delegate-launch classifier sits beside it on the same arm and settles
+    # too, so it is stubbed for the same reason.
+    client._delegate_launch_failure = AsyncMock(return_value=None)
     client._prompt_or_tool_seen = False
     client._stderr_task = asyncio.ensure_future(_wedged())
     real_settle = client._settle_stderr

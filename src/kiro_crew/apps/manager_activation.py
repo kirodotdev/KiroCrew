@@ -30,6 +30,8 @@ from kiro_crew.apps.manager_records import (
     app_dir,
     apps_dir,
     get_app_manifest,
+    hold_app_record_lock,
+    holds_app_record_locks,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.sel import sel
@@ -111,6 +113,7 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
         return None
 
 
+@holds_app_record_locks
 def enable_app(
     name: str,
     *,
@@ -127,6 +130,7 @@ def enable_app(
     """
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
+    hold_app_record_lock(name)
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
@@ -270,6 +274,7 @@ def session_approval_consent_candidates() -> list[str]:
     ]
 
 
+@holds_app_record_locks
 def mark_session_approval_consent_pending(name: str) -> bool:
     """Disable *name* and mark its ``sessionApproval`` grant pending, then audit it.
 
@@ -279,6 +284,7 @@ def mark_session_approval_consent_pending(name: str) -> bool:
     between this check and the write. The write adds the marker, so each record
     is handled once. Re-enabling goes through the disclosure surface.
     """
+    hold_app_record_lock(name)
     if not _session_approval_consent_unrecorded_on_disk(name):
         return False
     meta = _read_installed(name)
@@ -302,10 +308,12 @@ def mark_session_approval_consent_pending(name: str) -> bool:
     return True
 
 
+@holds_app_record_locks
 def disable_app(name: str) -> AppResult:
     """Disable an installed app without removing it."""
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
+    hold_app_record_lock(name)
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")

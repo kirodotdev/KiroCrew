@@ -20,6 +20,7 @@ import pytest
 
 from kiro_crew.constants import NO_TOOL_CALLS_NOTE
 from kiro_crew.subagent import SubagentInfo
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -208,12 +209,11 @@ class TestCompletionEventNote:
                 mgr.batch_members_pending = MagicMock(return_value=n != len(infos) - 1)
                 await on_done(info)
                 await asyncio.sleep(0)
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + 5.0
-            while not injected:
-                if loop.time() >= deadline:
-                    raise AssertionError("the completion event was never injected")
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: injected,
+                timeout=5.0,
+                describe=lambda: "the completion event was never injected",
+            )
             pending = [t for t in orch.dashboard_state._background_tasks if not t.done()]
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)

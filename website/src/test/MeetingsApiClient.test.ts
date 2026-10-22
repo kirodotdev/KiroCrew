@@ -70,6 +70,23 @@ describe('meetingsApi transport', () => {
     })
   })
 
+  it('carries extra string fields from the error body as context', async () => {
+    // A 409 start refusal now includes the blocking meeting\'s title and status
+    // so the UI can name it in the error toast.
+    fetchMock.mockResolvedValue(response(409, {
+      error: 'another meeting is already active',
+      code: 'meeting_already_active',
+      blocking_meeting_title: 'Weekly sync',
+      blocking_meeting_status: 'active',
+    }))
+
+    await expect(meetingsApi.start('m', {})).rejects.toMatchObject({
+      status: 409,
+      blockingMeetingTitle: 'Weekly sync',
+      blockingMeetingStatus: 'active',
+    })
+  })
+
   it('adds the opaque cursor only to incremental transcript requests', async () => {
     fetchMock.mockResolvedValue(response(200, { segments: [], next_cursor: 42 }))
 

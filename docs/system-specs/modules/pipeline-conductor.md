@@ -34,7 +34,8 @@ Publishing never changes permissions. See [artifacts](artifacts.md).
 
 | File | Role |
 |---|---|
-| `src/kiro_crew/agent.py` | `_PIPELINE_CONDUCTOR_SYSTEM_PROMPT`, `_PIPELINE_CONDUCTOR_CORE_GRANTS`, `_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS` |
+| `src/kiro_crew/agent_parts/spec_prompts.py` | `_PIPELINE_CONDUCTOR_SYSTEM_PROMPT` |
+| `src/kiro_crew/agent_parts/spec_grants.py` | `_PIPELINE_CONDUCTOR_CORE_GRANTS`, `_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS` |
 | `src/kiro_crew/agent_materialization/conductor_agents.py` | `_install_pipeline_conductor_agent` |
 | `src/kiro_crew/agent_files.py` | `PIPELINE_CONDUCTOR_AGENT_FILENAME`, and its membership in `OWNED_KIRO_AGENT_FILES` |
 | `src/kiro_crew/subagent_parts/agent_policy.py` | `UNADVERTISED_AGENTS` — the conductor is never offered in a rendered agent roster (read through `kiro_crew.subagent`) |

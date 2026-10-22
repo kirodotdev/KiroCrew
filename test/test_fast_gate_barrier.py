@@ -68,7 +68,12 @@ _GATE_JOBS = (
 # that was born there. Explicit for the same reason as _GATE_JOBS -- a job added
 # without the push/variable clause would be the one job left running on a
 # queue-on push, and a file-derived list would admit it silently.
-_FAST_GATE_JOBS = _GATE_JOBS[:-1] + ("memory-store-seam", "docs-lint", "static-ratchets")
+_FAST_GATE_JOBS = _GATE_JOBS[:-1] + (
+    "memory-store-seam",
+    "docs-lint",
+    "static-ratchets",
+    "flake-pattern-ratchet",
+)
 
 #: The exact `if` clause that trims a job off the push path while the repository
 #: variable MERGE_QUEUE_ENABLED is 'true', and keeps it there while it is unset.

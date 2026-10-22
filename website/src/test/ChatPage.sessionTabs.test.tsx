@@ -10,7 +10,7 @@
  *      would leave the whole feature unreachable with no test failing.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -36,10 +36,10 @@ vi.mock('../pages/chat/composerFocus', async (importOriginal) => {
   return { ...actual, focusComposer: focusComposerMock }
 })
 
-const sidebarProps: Array<{ onOpenSlotInNewTab?: (key: string) => void }> = []
+const sidebarProps: Array<{ onOpenSlotInNewTab?: (key: string) => void; onSelectSlot?: (key: string) => void }> = []
 vi.mock('../pages/ChatSidebar', () => ({
-  default: (props: { onOpenSlotInNewTab?: (key: string) => void }) => {
-    sidebarProps.push({ onOpenSlotInNewTab: props.onOpenSlotInNewTab })
+  default: (props: { onOpenSlotInNewTab?: (key: string) => void; onSelectSlot?: (key: string) => void }) => {
+    sidebarProps.push({ onOpenSlotInNewTab: props.onOpenSlotInNewTab, onSelectSlot: props.onSelectSlot })
     return null
   },
   SIDEBAR_MIN: 200,
@@ -61,8 +61,11 @@ vi.mock('../pages/chat/CollapsibleToolGroup', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
 vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
+// What the mocked `loadChatConfig` adds on top of its defaults, so a test can
+// opt into a chat setting.
+const chatConfigState = vi.hoisted(() => ({ value: {} as Record<string, unknown> }))
 vi.mock('../pages/chat/ChatSettings', () => ({
-  loadChatConfig: () => ({ contentWidth: 'compact' }),
+  loadChatConfig: () => ({ contentWidth: 'compact', ...chatConfigState.value }),
   CONTENT_WIDTH: { compact: { messages: '900px', input: '916px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } },
 }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
@@ -96,6 +99,9 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as never
 
 import ChatPage from '../pages/ChatPage'
+// `switchSlot.pending` moves `activeSlot` synchronously; `setActiveSlot` is that
+// one move, without the fetch bookkeeping this file's hand-built state lacks.
+import { setActiveSlot } from '../store/chatSlice'
 
 const SLOTS = [
   { key: 'chat-1', title: 'First', messages: 1, running: false, mode: '', created: '', last_ts: '' },
@@ -257,5 +263,77 @@ describe('ChatPage – session tab strip', () => {
     sidebarProps.length = 0
     renderChatPage({ embedded: true })
     if (sidebarProps.length) expect(sidebarProps.at(-1)?.onOpenSlotInNewTab).toBeUndefined()
+  })
+})
+
+/** What a sidebar row's plain click does, in its order: the switch moves
+ *  `activeSlot` at once, then the row calls `onSelectSlot`. */
+function sidebarClick(store: ReturnType<typeof createTestStore>, key: string) {
+  act(() => {
+    store.dispatch(setActiveSlot(key))
+    sidebarProps.at(-1)?.onSelectSlot?.(key)
+  })
+}
+
+/** The strip's tabs, left to right, as session keys. */
+function tabOrder(): string[] {
+  return screen.getAllByRole('tab').map(tab => (tab.getAttribute('data-testid') ?? '').replace('session-tab-', ''))
+}
+
+describe('ChatPage – "Open Sidebar Sessions in a Session Tab"', () => {
+  beforeEach(() => {
+    sidebarProps.length = 0
+    localStorage.clear()
+    chatConfigState.value = {}
+  })
+
+  it('off (the default), a sidebar click still replaces the active tab\'s session', () => {
+    // The replace keeps the strip hidden for a user who never opens a second
+    // tab, so leaving the setting off must not change it.
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+    const { store } = renderChatPage()
+    sidebarClick(store, 'chat-3')
+    expect(tabOrder()).toEqual(['chat-3', 'chat-2'])
+  })
+
+  it('on, a sidebar click gives the session its own tab beside the active one', () => {
+    chatConfigState.value = { sidebarClickOpensTab: true }
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+    const { store } = renderChatPage()
+    sidebarClick(store, 'chat-3')
+    // chat-1 keeps its session; chat-3 lands right after it, where the row
+    // menu's "Open in a session tab" puts it. The switch lands first here, so
+    // this also pins `openInNewTab` reading the active session when called:
+    // read later, it is already chat-3 and the tab goes to the end.
+    expect(tabOrder()).toEqual(['chat-1', 'chat-3', 'chat-2'])
+  })
+
+  it('on, the first sidebar click brings up the strip', () => {
+    chatConfigState.value = { sidebarClickOpensTab: true }
+    const { store } = renderChatPage()
+    expect(screen.queryByTestId('session-tab-strip')).toBeNull()
+    sidebarClick(store, 'chat-2')
+    expect(tabOrder()).toEqual(['chat-1', 'chat-2'])
+  })
+
+  it('on, a click on a session that already has a tab only selects it, with no cue', () => {
+    chatConfigState.value = { sidebarClickOpensTab: true }
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+    const { store } = renderChatPage()
+    sidebarClick(store, 'chat-2')
+    expect(tabOrder()).toEqual(['chat-1', 'chat-2'])
+    // The switch is the response. The row menu's open would cue this tab.
+    expect(screen.getByTestId('session-tab-chat-2')).not.toHaveAttribute('data-cued')
+  })
+
+  it('on, a pick from the collapsed sidebar\'s recents flyout gets its own tab too', async () => {
+    // The flyout is the sidebar's list while the sidebar is collapsed.
+    chatConfigState.value = { sidebarClickOpensTab: true }
+    renderChatPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide sessions sidebar' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Show sessions sidebar' }), { key: 'ArrowDown' })
+    const menu = await screen.findByRole('menu')
+    fireEvent.click(menu.querySelector('[data-slot-key="chat-3"]')!)
+    expect(tabOrder()).toEqual(['chat-1', 'chat-3'])
   })
 })

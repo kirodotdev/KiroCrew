@@ -420,6 +420,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._wsred = _wsred
     # Set once the end-of-turn flush has saved ``assistant_text`` as the reply.
     turn._reply_flushed = False
+    # The reply rows this turn appended, snapshotted before _flush_file_changes
+    # clears the live slot list, so the Slack mirror can still read the whole
+    # answer. None until that snapshot is taken.
+    turn._reply_mids_snapshot = None
 
     # Same rolling-buffer protection for the separate chat_thinking wire stream
     # (thinking is broadcast-only / ephemeral, but still real-time on the WS).

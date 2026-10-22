@@ -34,6 +34,7 @@ from kiro_crew import skills as skills_module
 from kiro_crew.skill_runtime import catalog as catalog_module
 from kiro_crew.skill_search_index import SKILL_SEARCH_INDEX_FILENAME, SkillSearchIndex
 from kiro_crew.skills import SkillsLoader, _trusted_skill_roots
+from kiro_crew.testing.wait import wait_until
 
 _WAIT = 30.0
 """Bound on every wait a test itself must unblock, so a missed release fails by
@@ -266,12 +267,7 @@ def _trusted(loader: SkillsLoader) -> bool:
 
 def _await(condition, what: str) -> None:
     """Poll *condition* until true, so no assertion rests on a fixed sleep."""
-    deadline = time.monotonic() + _WAIT
-    while time.monotonic() < deadline:
-        if condition():
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"timed out waiting for {what}")
+    wait_until(condition, timeout=_WAIT, describe=lambda: f"timed out waiting for {what}")
 
 
 class TestNoTurnWaitsForAWalk:

@@ -13,6 +13,7 @@ import type { AppDispatch, RootState } from '../../../store'
 import { clearSwitchSlotGone, clearUndeletableHistory, clearUnresumableResume, switchSlotNoticeCopy } from '../../../store/chatSlice'
 import { findSurfaceBySlotMode, surfaceLabel } from '../../../surfaces/registry'
 import { slotChannelLabel } from '../../../utils/channelOrigin'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { historyDeleteRefusalMessage } from '../../../utils/historyDeleteRefusal'
 import type { ShortNameMatch } from '../../../utils/sessionKeys'
 import type { ErrorReport } from '../../../utils/errorReport'
@@ -59,7 +60,7 @@ const UnrestoredTabsNotice = lazy(() => import('./UnrestoredTabsNotice'))
  * because the sidebar's own row still renders them.
  */
 function unresumableNoticeMessage(r: { key: string; title: string; surface: string; reason: 'surface' | 'failed' }): string {
-  const title = r.title || r.key
+  const title = sessionDisplayTitle(r)
   if (r.reason === 'failed') {
     return i18nT('pages.chatPage.could_not_open_this_session', { title })
   }

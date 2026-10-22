@@ -19,6 +19,7 @@ import pytest
 
 from conftest import host_abs
 from kiro_crew.dashboard import terminal_commands as tc
+from kiro_crew.testing.wait import finished
 
 
 @pytest.fixture(autouse=True)
@@ -1267,6 +1268,6 @@ class TestRunProbe:
         with pytest.raises(asyncio.CancelledError):
             await task
         # The slot is free again, so a following probe is not blocked.
-        assert await asyncio.wait_for(
-            tc._run_probe(["/bin/echo", "ok"], None), timeout=5,
+        assert await finished(
+            tc._run_probe(["/bin/echo", "ok"], None), "the following probe", timeout=5,
         ) == "ok\n"

@@ -1,0 +1,42 @@
+{
+  "_comment": "Gates pre_push_gate.py runs for kirodotdev/KiroCrew. Each gate names the CI file and the exact text of the CI step it mirrors (test_gate_map_covers_ci.py pins both). Every gate runs on every diff, because a path filter that misses one input gives a false green proof. Only a gate that took more than about 10 s when measured carries a 'slow' note and a 'paths' filter, and that filter is the gate's real inputs (its sources, its tool config, its baseline files), which a test reads back from the gate's script. 'base_env' receives the merge-base sha. 'self_test': true runs cmd + --test first. Frontend gates need website/node_modules and stay in ci_only.",
+  "gates": [
+    {"id": "black", "cmd": ["{py}", "scripts/check_black_formatting.py"], "module": "black", "ci": {"file": "ci.yml", "text": "scripts/check_black_formatting.py"}},
+    {"id": "isort", "cmd": ["{py}", "-m", "isort", "--check-only", "src/kiro_crew", "test", "conftest.py", "xdist_budget.py"], "module": "isort", "paths": ["^(src/kiro_crew|test)/", "^(conftest|xdist_budget)\\.py$", "^(pyproject\\.toml|setup\\.cfg)$"], "slow": "30.6 s", "ci": {"file": "ci.yml", "text": "isort --check-only src/kiro_crew test conftest.py xdist_budget.py"}},
+    {"id": "flake8", "cmd": ["{py}", "-m", "flake8", "src/kiro_crew", "test", "conftest.py", "xdist_budget.py"], "module": "flake8", "paths": ["^(src/kiro_crew|test)/", "^(conftest|xdist_budget)\\.py$", "^(pyproject\\.toml|setup\\.cfg)$"], "slow": "34.4 s", "ci": {"file": "ci.yml", "text": "flake8 src/kiro_crew test conftest.py xdist_budget.py"}},
+    {"id": "mypy", "cmd": ["{py}", "-m", "mypy", "src/kiro_crew/"], "module": "mypy", "paths": ["^src/kiro_crew/", "^(pyproject\\.toml|setup\\.cfg)$"], "slow": "3.0 s warm cache; ci.yml times a cold run at about 3 min", "ci": {"file": "ci.yml", "text": "mypy src/kiro_crew/"}},
+    {"id": "subprocess-encoding", "cmd": ["{py}", "scripts/check_subprocess_encoding.py"], "self_test": true, "paths": ["^(src|scripts|test|packages|docker|packaging)/", "^(conftest|xdist_budget|setup)\\.py$", "^\\.github/subprocess-encoding-baseline\\.txt$"], "slow": "70.4 s", "ci": {"file": "ci.yml", "text": "scripts/check_subprocess_encoding.py"}},
+    {"id": "acp-frame-host-data", "cmd": ["{py}", "scripts/check_acp_frame_host_data.py"], "ci": {"file": "ci.yml", "text": "scripts/check_acp_frame_host_data.py"}},
+    {"id": "agent-sdk-boundary", "cmd": ["{py}", "scripts/check_agent_sdk_boundary.py"], "self_test": true, "paths": ["^src/", "^\\.github/agent-sdk-boundary-baseline\\.txt$", "^scripts/(check_agent_sdk_boundary|ratchet_scope)\\.py$"], "slow": "19.3 s", "ci": {"file": "ci.yml", "text": "scripts/check_agent_sdk_boundary.py"}},
+    {"id": "sync-io-in-async", "cmd": ["{py}", "scripts/check_sync_io_in_async.py"], "self_test": true, "paths": ["^src/", "^\\.github/sync-io-in-async(-fs)?-baseline\\.txt$", "^scripts/(check_sync_io_in_async|ratchet_scope)\\.py$"], "slow": "20.7 s", "ci": {"file": "ci.yml", "text": "scripts/check_sync_io_in_async.py"}},
+    {"id": "file-line-cap", "cmd": ["{py}", "scripts/check_file_line_cap.py"], "self_test": true, "ci": {"file": "ci.yml", "text": "scripts/check_file_line_cap.py"}},
+    {"id": "lockdown-before-publish", "cmd": ["{py}", "scripts/check_lockdown_before_publish.py"], "ci": {"file": "ci.yml", "text": "scripts/check_lockdown_before_publish.py"}},
+    {"id": "comment-history", "cmd": ["{py}", "scripts/check_comment_history.py"], "self_test": true, "base_env": "COMMENT_HISTORY_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_comment_history.py"}},
+    {"id": "brand-name", "cmd": ["{py}", "scripts/check_brand_name.py"], "self_test": true, "base_env": "BRAND_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_brand_name.py"}},
+    {"id": "harness-parity", "cmd": ["{py}", "scripts/check_harness_parity.py"], "self_test": true, "base_env": "HARNESS_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_harness_parity.py"}},
+    {"id": "feature-map", "cmd": ["{py}", "scripts/check_feature_map.py"], "self_test": true, "base_env": "FEATURE_MAP_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_feature_map.py"}},
+    {"id": "loop-bound-locks", "cmd": ["{py}", "scripts/check_loop_bound_locks.py"], "self_test": true, "ci": {"file": "fast-gate.yml", "text": "scripts/check_loop_bound_locks.py"}},
+    {"id": "builtin-skill-scope", "cmd": ["{py}", "scripts/check_builtin_skill_scope.py"], "self_test": true, "ci": {"file": "fast-gate.yml", "text": "scripts/check_builtin_skill_scope.py"}},
+    {"id": "testpaths-coverage", "cmd": ["{py}", "scripts/check_testpaths_coverage.py"], "self_test": true, "ci": {"file": "fast-gate.yml", "text": "scripts/check_testpaths_coverage.py"}},
+    {"id": "cwd-relative-repo-reads", "cmd": ["{py}", "scripts/check_cwd_relative_repo_reads.py"], "self_test": true, "ci": {"file": "fast-gate.yml", "text": "scripts/check_cwd_relative_repo_reads.py"}},
+    {"id": "changelog-history", "cmd": ["{py}", "scripts/check_changelog_history.py"], "self_test": true, "base_env": "CHANGELOG_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_changelog_history.py"}},
+    {"id": "decisions-history", "cmd": ["{py}", "scripts/check_decisions_history.py"], "self_test": true, "base_env": "DECISIONS_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_decisions_history.py"}},
+    {"id": "focus-cue", "cmd": ["{py}", "scripts/check_focus_cue.py"], "self_test": true, "base_env": "FOCUS_CUE_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_focus_cue.py"}},
+    {"id": "memory-store-seam", "cmd": ["{py}", "scripts/check_memory_store_seam.py"], "self_test": true, "base_env": "MEMSTORE_BASE_REF", "ci": {"file": "fast-gate.yml", "text": "scripts/check_memory_store_seam.py"}},
+    {"id": "docs-lint", "cmd": ["bash", "scripts/docs-lint.sh"], "self_test": ["{py}", "scripts/docs_lint.py", "--test"], "os": ["linux", "darwin"], "tool": "bash", "ci": {"file": "fast-gate.yml", "text": "./scripts/docs-lint.sh"}},
+    {"id": "vendor-manifest", "cmd": ["{py}", "scripts/verify_vendor_manifest.py"], "ci": {"file": "fast-gate.yml", "text": "scripts/verify_vendor_manifest.py"}}
+  ],
+  "ci_only": [
+    {"id": "backend-tests", "needle": "scripts/leaf_test_scope.py", "reason": "the full suites are CI's job; scripts/local-gate.py runs the tests related to a diff"},
+    {"id": "frontend", "needle": "website/node_modules", "reason": "eslint, tsc, i18n, bundle size and the frontend tests need website/node_modules, which most checkouts lack"},
+    {"id": "semgrep", "needle": "semgrep scan", "reason": "needs semgrep or uv; SKILL.md Phase 2 runs it on the diff"},
+    {"id": "cfn-lint", "needle": "cfn-lint", "reason": "needs uv and network to fetch the pinned version"},
+    {"id": "per-file-coverage", "needle": "scripts/check_per_file_coverage.py", "reason": "reads coverage data from a full test run"},
+    {"id": "integration-route-coverage", "needle": "scripts/check_integration_route_coverage.py", "reason": "reads the output of the integration test run"},
+    {"id": "python-audit", "needle": "scripts/check_python_audit.py", "reason": "queries a vulnerability database over the network"},
+    {"id": "npm-audit", "needle": "scripts/check_npm_audit.py", "reason": "queries a vulnerability database over the network"},
+    {"id": "feed-advance", "needle": "scripts/check_feed_advance.py", "reason": "runs against release artifacts"},
+    {"id": "merge-queue-ruleset", "needle": "scripts/check_merge_queue_ruleset.py", "reason": "reads repository settings through the GitHub API"},
+    {"id": "playwright-cli-banner", "needle": "scripts/check_playwright_cli_banner.py", "reason": "needs the Playwright CLI installed"}
+  ]
+}

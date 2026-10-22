@@ -77,6 +77,25 @@ describe('CommentThreadPopover dismissal', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it('stays open when a code-block thread chip inside a shadow root is pressed', () => {
+    // Pierre portals the chip into its shadow DOM; the event target the
+    // document sees is the shadow HOST, so only the composed path names it.
+    const onClose = renderPopover()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const shadow = host.attachShadow({ mode: 'open' })
+    const chip = document.createElement('button')
+    chip.setAttribute('data-mc-code-chip', '')
+    const plain = document.createElement('span')
+    shadow.append(chip, plain)
+    chip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }))
+    expect(onClose).not.toHaveBeenCalled()
+    // Anything else in that shadow root is still an outside click.
+    plain.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    host.remove()
+  })
+
   it('still closes on a plain Escape and on an outside click', () => {
     const onClose = renderPopover()
     fireEvent.keyDown(screen.getByTestId('outside'), { key: 'Escape' })

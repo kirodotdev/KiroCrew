@@ -10,6 +10,7 @@ import { timeAgo } from '../utils/timeAgo'
 import { lastActivityEpoch, localDaysAgo } from './chat/sessionOrder'
 import { relativeLuminance } from '../lib/iconContrast'
 import { errMessage } from '../utils/thunkError'
+import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { PageHeader, Btn, SearchInput, Badge, EmptyState, FilteredEmpty } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import type { ChatSlot, ChatTag } from '../types'
@@ -294,7 +295,7 @@ export default function SessionsPage() {
                     </span>
                     <span className="flex-1 min-w-0">
                       <span className="block text-[13.5px] font-medium text-text-strong truncate">
-                        {s.title || s.key}
+                        {sessionDisplayTitle(s)}
                       </span>
                       <span className="block text-[12px] text-muted truncate">
                         {s.agent}

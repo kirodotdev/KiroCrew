@@ -446,7 +446,9 @@ DASHBOARD_SAVE_SCHEMA = ToolSchema(
         # and a restatement goes stale the day the catalog grows.
         FieldSpec("model", dict, required=True),
         FieldSpec("view", dict, required=True),
-        FieldSpec("theme", dict, required=True),
+        # Optional: a client can drop an empty object, and the package store reads a
+        # missing theme as ``{"tokens": {}}``.
+        FieldSpec("theme", dict),
     ],
 )
 

@@ -930,9 +930,12 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > **Not an in-process sandbox.** Most fields remain advisory for app code loaded
 > inside the gateway. The validator functions in `apps/permissions.py`
 > (`validate_permissions`, `format_permissions_summary`) are still **not wired
-> into the install or runtime path** -- they are only exercised by unit tests, so
-> they carry no `sessionApproval` text. `permissions.sessionApproval` is shown on the app detail
-> page and in the install or enable consent dialog. It is enforced for app-token
+> into the install or runtime path**; `format_permissions_summary` only feeds the
+> `kirocrew app enable` refusal below. `permissions.sessionApproval` is shown on the app detail
+> page and in the install or enable consent dialog, and only the dashboard grants it.
+> `kirocrew app enable` has no consent flag or prompt: for an app whose consent is
+> pending it prints what the app asks for and the app's dashboard link, exits 1 and
+> leaves the app off. It is enforced for app-token
 > user-session calls, in addition to `permissions.api`. The app must be enabled.
 > The grant reaches existing local user-owned sessions only; cron, system, remote,
 > member-mode, and other apps' sessions are denied. Apps retain their pre-existing

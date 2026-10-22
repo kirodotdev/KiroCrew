@@ -684,18 +684,21 @@ class TestTheFieldRendering:
     write that one, and the mistake rows tell it what to write instead.
     """
 
-    def test_a_crewmate_with_no_dashboard_is_sent_to_the_human(self) -> None:
+    def test_a_crewmate_with_no_dashboard_is_sent_to_build_its_own(self) -> None:
         out = _render_fields({"template": None, "fields": []})
 
-        assert "no dashboard yet" in out
-        assert "Ask the human" in out
+        assert "no dashboard page yet" in out
+        # A crewmate's page is one it writes, so it is pointed at writing one rather
+        # than at asking the human to adopt a template.
+        assert "dashboard_save it, then dashboard_apply it" in out
+        assert "Ask the human" not in out
         # No mistake-book line: there is no dashboard for a write to have been
         # refused against, so claiming an empty book would invent a state.
         assert "mistake book" not in out
 
     @pytest.mark.parametrize("bad", [None, "oncall", 42, ["oncall"]])
     def test_a_template_that_is_not_an_object_reads_as_no_dashboard(self, bad: Any) -> None:
-        assert "no dashboard yet" in _render_fields({"template": bad})
+        assert "no dashboard page yet" in _render_fields({"template": bad})
 
     def test_the_header_names_the_template_and_both_versions(self) -> None:
         """The instance version is the crewmate's own copy, which can trail the
@@ -850,7 +853,7 @@ class TestTheFieldRendering:
     def test_no_budget_leaves_out_the_retry_advice(self) -> None:
         out = _render_fields({"template": None, "retry_budget": 0})
 
-        assert "Ask the human" in out, "the no-dashboard advice stands on its own"
+        assert "dashboard_save it" in out, "the no-dashboard advice stands on its own"
         assert "tries" not in out
 
 

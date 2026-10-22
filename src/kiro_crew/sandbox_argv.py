@@ -54,6 +54,7 @@ from kiro_crew.sandbox_staging import (
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
     _md_notebook_degraded_mask_dirs,
+    _migrate_md_notebook_legacy_state,
     _reconcile_auth_store_staging_links,
     _sweep_legacy_auth_store_temps,
     _sweep_legacy_md_notebook_temps,
@@ -563,6 +564,10 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
+    # The Notes move runs BEFORE the stubs below: it reads real state at the bare names
+    # (and empties the legacy PAT in place), and the materialiser then plants the stub
+    # the launcher masks at any bare name left absent. A failed move is logged, not raised.
+    _migrate_md_notebook_legacy_state()
     # And the ``sensitive_files`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
@@ -768,6 +773,7 @@ def sandbox_exec_argv(
     # stays on the namespace path — a Seatbelt deny is a path rule that holds for a name
     # that does not exist yet — but an orphan already on disk needs sweeping here too.
     _sweep_legacy_md_notebook_temps()
+    _migrate_md_notebook_legacy_state()
     _sweep_legacy_auth_store_temps()
     # Reconciled here as well. The stale name is a second name for the signing key either
     # way, and leaving it to accumulate on a macOS host means the first Linux spawn on a

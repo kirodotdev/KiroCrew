@@ -483,7 +483,7 @@ def test_the_post_rpc_regate_warms_the_config_first():
     the RPC again.
     """
     send = inspect.getsource(sc.send_to_target)
-    rpc_at = send.index("await steer_into_running_turn(")
+    rpc_at = send.index("session_deliver.peer(steer=True)")
     regate_at = send.index("regated = authorize_target(")
     warm_at = send.index("await prewarm_enabled_check()", rpc_at)
     assert rpc_at < warm_at < regate_at, (

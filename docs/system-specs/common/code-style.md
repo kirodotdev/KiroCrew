@@ -296,7 +296,8 @@ does not collect it); basenames stay unique across `test/`, which is not a packa
   is imported by name, so each part imports the ones its tests relied on. Copy the
   module-level `pytestmark`, `importorskip` and conftest flags (`ENFORCE_LAUNCH_APPROVAL`)
   into every part, and add each part wherever a conftest names the original module
-  (`_HOST_SERVICE_EXEC_ALLOWED_MODULES`, `_REAL_MCP_POST_MODULES`).
+  (`_HOST_SERVICE_EXEC_ALLOWED_MODULES` in `test/conftest_floor_services.py`,
+  `_REAL_MCP_POST_MODULES` in `test/conftest.py`).
 - Node ids move with their tests: rewrite their rows in the `test/` lists
   `windows-expected-failures.txt`, `macos-expected-failures.txt`,
   `codebuild-expected-failures.txt` and `requires-real-symlinks.txt` (nothing audits the

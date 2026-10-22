@@ -49,8 +49,8 @@ async function main() {
   await page.goto(base + '/capabilities', { waitUntil: 'domcontentloaded' })
   await page.locator('[data-testid="crew-card"]').first().waitFor({ timeout: 15000 })
 
-  await page.getByRole('button', { name: 'Edit crewmate default' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Edit crewmate default' })
+  await page.getByRole('button', { name: 'Edit mate default' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Edit mate default' })
   await dialog.waitFor({ timeout: 15000 })
 
   // THE interaction under test: a Radix Select opened and committed from inside

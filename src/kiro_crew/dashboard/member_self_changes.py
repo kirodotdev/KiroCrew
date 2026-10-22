@@ -151,7 +151,7 @@ def take_for_undo(change_id: str, *, slug: str, slot_key: str) -> dict[str, Any]
             )
         if rec["slug"] != slug or rec["slot_key"] != slot_key:
             raise SelfChangeUnavailable(
-                "undo_unavailable", "that change was made in another crewmate's chat"
+                "undo_unavailable", "that change was made in another mate's chat"
             )
         if rec["status"] != STATUS_APPLIED:
             raise SelfChangeUnavailable("already_undone", "this change was already undone")

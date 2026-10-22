@@ -3385,7 +3385,11 @@
         "untitled": "Reunión sin título",
         "renameFailed": "No se pudo cambiar el nombre de la reunión.",
         "minutesSaveFailed": "No se pudieron guardar tus cambios.",
-        "minutesRevertFailed": "No se pudieron descartar tus cambios."
+        "minutesRevertFailed": "No se pudieron descartar tus cambios.",
+        "anotherMeetingActiveNamed": "«{{title}}» sigue en marcha. Ábrela en Reuniones y elige primero «Terminar y revisar».",
+        "anotherMeetingReviewing": "«{{title}}» sigue en revisión. Ábrela en Reuniones y elige primero «Cerrar la reunión».",
+        "sttStreamingDisabled": "La transcripción en vivo está desactivada. En Ajustes → Voz, comprueba que la entrada de voz esté activada, que el proveedor admita streaming y que Streaming esté activado.",
+        "openVoiceSettings": "Abrir ajustes de voz"
       },
       "settings": {
         "addTerm": "Añadir",
@@ -5670,6 +5674,9 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "Conductor"
+    },
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
       "consent_required": "«{{speak}}» necesita que confirmes Amazon Polly para este perfil de AWS y esta región. Confírmalo en los ajustes de texto a voz y vuelve a intentarlo.",
@@ -6569,6 +6576,8 @@
       "use_starting_directory_hint": "Abre un shell nuevo en el directorio de terminal configurado en el servidor (dashboard.terminal.cwd o, si no existe, el directorio personal del servidor). El comando fallido no se vuelve a enviar."
     },
     "codeBlock": {
+      "add_comment": "Añadir comentario",
+      "comment_thread": "Hilo de comentarios ({{count}})",
       "copied": "¡Copiado!",
       "copy": "Copiar",
       "generating": "generando…"
@@ -7289,6 +7298,9 @@
       "chat_folder_retrying": "Reintentando…",
       "chat_folder_none_yet": "Aún no hay carpetas. Guarda esta tarea ahora; crea una carpeta en la barra lateral del chat y vuelve a abrir la tarea para elegirla.",
       "chat_folder_was_deleted": "La carpeta en la que archivaba esta tarea se eliminó. Elige otra o guarda para dejar las ejecuciones sin archivar.",
+      "auto_pause_after_failures": "Pausar automáticamente tras N fallos seguidos",
+      "auto_pause_after_failures_description": "0 significa no pausar nunca. A partir del 5.º fallo seguido, una tarea con 0 o más de 5 espera 5 minutos antes de la siguiente ejecución, y el tiempo se duplica hasta una hora.",
+      "auto_pause_after_failures_invalid": "El límite de pausa automática debe ser un número entero de 0 a 10000.",
       "runs_as": "Se ejecuta como",
       "runs_as_custom_agent": "Agente personalizado",
       "runs_as_crewmate": "Compañero",
@@ -7375,7 +7387,6 @@
       "check_again": "Comprobar de nuevo",
       "check_again_for_kiro_cli": "Comprobar Kiro CLI de nuevo",
       "check_sign_in_again": "Comprobar el inicio de sesión de nuevo",
-      "complete": "Completado",
       "copied": "Copiado",
       "copy_command": "Copiar comando",
       "copy_failed": "No se pudo copiar. Selecciona el texto del comando y cópialo a mano.",
@@ -7413,7 +7424,6 @@
       "remedy_spec_rejected_update": "Actualiza {{productName}}. Es la solución cuando Kiro CLI espera un formato de especificación que esta versión no sabe escribir.",
       "remedy_userns_denied": "El kernel se negó a crear el espacio de nombres de usuario. En hosts de la familia Debian, comprueba este ajuste heredado y conserva el valor en /etc/sysctl.d/ para que sobreviva a un reinicio. Dentro de un contenedor, normalmente es el propio filtro seccomp del contenedor el que deniega unshare, algo que se corrige con las opciones de ejecución del contenedor y no con ajustes del host.",
       "repair_rewrites_the_specs_kiro_crew_owns": "«Comprobar de nuevo» pide a Kiro CLI que vuelva a cargar las especificaciones. No las reescribe: sobrescribir un archivo que ya existe descartaría los permisos de herramientas MCP que hayas cambiado. Si comprobar no lo resuelve, una de las dos soluciones de abajo sí.",
-      "required": "Requerido",
       "retry_the_gateway_check_before_starting_a_sessio": "Vuelve a intentar la comprobación del gateway antes de iniciar una sesión.",
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "Ejecuta esto en el host del gateway para obtener un informe completo de los requisitos previos, incluido qué paso del sandbox falló.",
       "sandbox_unavailable": "Sandbox no disponible",
@@ -7450,7 +7460,6 @@
       "update_kiro_cli": "Actualizar Kiro CLI",
       "update_kiro_cli_runs_on_host": "Ejecuta <0>{{command}}</0> por ti en el host del gateway.",
       "updating_kiro_cli": "Actualizando Kiro CLI…",
-      "waiting": "Esperando",
       "we_could_not_check_kiro_cli": "No pudimos comprobar Kiro CLI.",
       "your_crew_is_almost_ready": "Tu crew está casi listo.",
       "your_kiro_cli_is_out_of_date": "Tu Kiro CLI está desactualizado",
@@ -7903,7 +7912,11 @@
         "all": "Todas",
         "approve": "Aprobar",
         "clear": "Borrar",
-        "clear_all_notifications": "¿Borrar todas las notificaciones?",
+        "clear_all": "Borrar todo",
+        "clear_all_notifications": "Borrar todas las notificaciones",
+        "clear_failed": "No se pudieron borrar algunas notificaciones. Inténtalo de nuevo.",
+        "clear_group": "Borrar {{group}}",
+        "clear_this_group": "Borrar este grupo",
         "dismiss_notification": "Descartar notificación",
         "expand_grouped_notifications": "Expandir {{count}} notificaciones agrupadas: {{title}}",
         "first_notification_from": "Primera notificación de",
@@ -7915,6 +7928,7 @@
         "muted_2": "silenciada",
         "no_notifications": "Sin notificaciones",
         "open_notification": "Abrir la notificación: {{title}}",
+        "press_again_to_clear": "Pulsa de nuevo para borrar",
         "reject": "Rechazar",
         "search": "Buscar…",
         "show_less": "Mostrar menos",
@@ -8224,7 +8238,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Esto autoriza la fusión en cuanto se cumplan los requisitos, con squash si este repositorio lo permite (si no, un commit de fusión y luego rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Esto autoriza la fusión cuando el pipeline se complete correctamente.",
       "untitled_commit": "Commit sin título",
-      "updated": "Actualizado"
+      "updated": "Actualizado",
+      "checks_failed_others_still_running": "Comprobaciones fallidas; otras siguen en ejecución",
+      "checks_count_running_failed": "En ejecución: {{running}} · Fallidas: {{failed}}",
+      "waiting_on_checks_detail": "Todavía hay comprobaciones en ejecución. La fusión se desbloquea cuando pasen las comprobaciones obligatorias y se aprueben las revisiones requeridas.",
+      "checks_failed_still_running_detail": "De {{total}} comprobaciones: fallidas {{failed}}, aún en ejecución {{running}}. La fusión sigue bloqueada hasta que pasen las comprobaciones obligatorias y se aprueben las revisiones requeridas."
     },
     "questionCard": {
       "custom_answer": "Respuesta personalizada",
@@ -8476,8 +8494,8 @@
       "undo": "Deshacer",
       "undone": "deshecho",
       "undo_failed": "No se pudo deshacer este cambio: {{message}}",
-      "undo_unavailable": "Este cambio ya no se puede deshacer aquí. Ajusta el valor en el perfil de {{name}}: abre Crewmates, elige {{name}} y luego el lápiz junto a su nombre.",
-      "undo_stale": "Este valor se cambió de nuevo después, así que deshacer ya no aplica. Ajústalo en el perfil de {{name}}: abre Crewmates, elige {{name}} y luego el lápiz junto a su nombre.",
+      "undo_unavailable": "Este cambio ya no se puede deshacer aquí. Ajusta el valor en el perfil de {{name}}: abre Compañeros, elige {{name}} y luego el lápiz junto a su nombre.",
+      "undo_stale": "Este valor se cambió de nuevo después, así que deshacer ya no aplica. Ajústalo en el perfil de {{name}}: abre Compañeros, elige {{name}} y luego el lápiz junto a su nombre.",
       "field_display_name": "nombre",
       "field_description": "descripción",
       "field_avatar": "cara",
@@ -10021,7 +10039,7 @@
       "result_undone": "Restaurado: {{title}}",
       "retry": "Reintentar",
       "risk_code_exec": "Esto ejecuta código de terceros en esta máquina.",
-      "risk_widen": "Esto permite que los crewmates hagan más sin preguntarte.",
+      "risk_widen": "Esto permite que los compañeros hagan más sin preguntarte.",
       "risk_widen_import": "Este compañero usará {{servers}} sin preguntarte.",
       "risk_widen_ack": "Entiendo que esto amplía los permisos",
       "schedule_next_run": "Próxima ejecución",
@@ -12525,7 +12543,7 @@
       "comments_refused_overlay": "{{name}} no ha recibido estos comentarios — vuelve a abrir el panel lateral y envíalos de nuevo. Siguen en el documento.",
       "comments_sent_other": "{{count}} comentarios enviados",
       "comments_sent_many": "{{count}} comentarios enviados",
-      "your_crewmate": "Tu crewmate"
+      "your_crewmate": "Tu compañero"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
@@ -16591,6 +16609,8 @@
         "show_thinking_inline": "Mostrar el razonamiento en línea",
         "show_timestamps": "Mostrar marcas de tiempo",
         "show_token_usage": "Mostrar los tokens de contexto",
+        "sidebar_click_opens_tab": "Abrir las sesiones de la barra lateral en una pestaña de sesión",
+        "sidebar_click_opens_tab_desc": "Al hacer clic en una sesión, se abre en su propia pestaña de sesión en lugar de reemplazar la sesión de la pestaña activa.",
         "simplified_tool_call_names": "Nombres simplificados de las llamadas de herramientas",
         "tool_calls_start_expanded": "Mostrar las llamadas a herramientas expandidas",
         "tool_calls_start_expanded_desc": "Abre las filas de llamadas a herramientas con su entrada y salida visibles, en lugar de contraídas. Las filas que abras o cierres a mano conservan tu elección.",
@@ -18173,10 +18193,11 @@
         "plugin_refused_found": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: {{reason}}.",
         "plugin_refused_guide": "Abrir los pasos de solución de problemas de la guía Remote Crew on EC2",
         "plugin_refused_next": "Corrige el propietario o los permisos del archivo y vuelve a comprobar. Si no sabes cómo, usa «Preguntar al agente».",
+        "plugin_refused_next_other_owner": "Instala una copia con el instalador propio de AWS y vuelve a comprobar. {{productName}} solo ejecuta esa copia si ella y cada carpeta superior pertenecen a root o a la cuenta con la que se ejecuta {{productName}}. Si una carpeta como /usr/local/bin pertenece a la otra cuenta, un administrador debe hacer primero que root sea su propietario. La guía explica cómo.",
         "plugin_refused_next_root_gateway": "Inicia {{productName}} desde una cuenta normal en lugar de root y vuelve a comprobar.",
         "plugin_refused_next_strict_policy": "Instálalo donde solo root pueda modificar el archivo y sus carpetas, en una ruta sin enlaces simbólicos, y vuelve a comprobar. Si no sabes cómo, usa «Preguntar al agente».",
-        "plugin_refused_other_owner": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: el archivo o una carpeta superior pertenece a otra cuenta ({{owner}}, ID de usuario {{uid}}). {{productName}} solo ejecuta programas que pertenecen a su propia cuenta o a la cuenta de administrador del sistema (root).",
-        "plugin_refused_other_owner_uid": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: el archivo o una carpeta superior pertenece a otra cuenta (ID de usuario {{uid}}, sin nombre en el equipo donde se ejecuta {{productName}}). {{productName}} solo ejecuta programas que pertenecen a su propia cuenta o a la cuenta de administrador del sistema (root).",
+        "plugin_refused_other_owner": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: el archivo o una carpeta superior pertenece a otra cuenta de usuario ({{owner}}, ID de usuario {{uid}}). {{productName}} solo ejecuta programas que pertenecen a su propia cuenta o a la cuenta de administrador del sistema (root).",
+        "plugin_refused_other_owner_uid": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: el archivo o una carpeta superior pertenece a otra cuenta de usuario (ID de usuario {{uid}}, sin nombre en el equipo donde se ejecuta {{productName}}). {{productName}} solo ejecuta programas que pertenecen a su propia cuenta o a la cuenta de administrador del sistema (root).",
         "plugin_refused_root_gateway": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: {{productName}} se ejecuta como root y no ejecuta programas auxiliares como root.",
         "plugin_refused_strict_policy": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: la comprobación estricta (KIROCREW_PROVIDER_BIN_STRICT) está activada y solo acepta un archivo y carpetas que únicamente root puede modificar, en una ruta sin enlaces simbólicos.",
         "plugin_refused_world_writable": "Encontrado en {{path}}, pero {{productName}} no lo ejecutará: cualquier cuenta puede modificar el archivo o una carpeta superior.",
@@ -18726,8 +18747,6 @@
       "close": "Cerrar",
       "driving_none": "No está dirigiendo ninguna sesión ahora mismo.",
       "driving_idle": "Inactivo",
-      "driving_show_all": "Mostrar todas ({{count}})",
-      "driving_show_less": "Mostrar menos",
       "patrol_error_roster": "No se pudo cargar el estado de patrulla de la lista.",
       "loop_on": "De guardia",
       "profile_monitor": "Monitor",
@@ -18775,7 +18794,7 @@
       "filters_clear": "Borrar filtros",
       "star": "Destacar {{name}}",
       "unstar": "Quitar destacado de {{name}}",
-      "all_hidden_hint": "Los crewmates que aún no has usado están ocultos. Busca para encontrarlos.",
+      "all_hidden_hint": "Los compañeros que aún no has usado están ocultos. Busca para encontrarlos.",
       "hidden_named_hint_many": "{{names}} están ocultos porque aún no los has usado y no se cuentan arriba. Busca para encontrarlos.",
       "hidden_named_hint_one": "{{names}} está oculto porque aún no lo has usado y no se cuenta arriba. Busca para encontrarlo.",
       "hidden_named_hint_other": "{{names}} están ocultos porque aún no los has usado y no se cuentan arriba. Busca para encontrarlos.",

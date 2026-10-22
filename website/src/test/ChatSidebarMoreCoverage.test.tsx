@@ -925,11 +925,27 @@ describe('ChatSidebar — surfaces that exist only during a drag', () => {
     await waitFor(() => expect(screen.getAllByText('Loose work')).toHaveLength(1))
   })
 
-  it('falls back to the session key when the dragged slot has no distinct title', async () => {
+  it('labels a dragged untitled slot "Untitled session", never its key (#22049)', async () => {
     renderSidebar({ slots: [{ key: SLOT_LOOSE, title: SLOT_LOOSE, running: false, messages: 1 }] })
     await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
     dragStart({ type: 'session', key: SLOT_LOOSE }, SLOT_LOOSE)
-    await waitFor(() => expect(screen.getAllByText(SLOT_LOOSE).length).toBeGreaterThan(1))
+    // The row and its drag preview both read the label.
+    await waitFor(() => expect(screen.getAllByText('Untitled session').length).toBeGreaterThan(1))
+    expect(screen.queryByText(SLOT_LOOSE)).toBeNull()
+    // The row keeps the key in its tooltip, where it tells untitled rows apart.
+    const rowTitle = document.querySelector('.sidebar-inner [data-session-title]')
+    expect(rowTitle?.getAttribute('title')).toBe(`Untitled session · ${SLOT_LOOSE}`)
+  })
+
+  it('keeps a titled row\'s name and tooltip unchanged', async () => {
+    renderSidebar({ slots: [SLOTS[1]] })
+    const rowTitle = await waitFor(() => {
+      const el = document.querySelector('.sidebar-inner [data-session-title]')
+      if (!el) throw new Error('row title not rendered')
+      return el
+    })
+    expect(rowTitle.textContent).toContain('Loose work')
+    expect(rowTitle.getAttribute('title')).toBe('Loose work')
   })
 
   it('renders the preview OUTSIDE the sidebar, where the drawer clip cannot hide it', async () => {

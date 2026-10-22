@@ -237,12 +237,23 @@ export interface DispatchResponse {
 export class MeetingsApiError extends Error {
   readonly status: number
   readonly code: string
+  /** Human-readable title of the meeting blocking a 409 start, when the server supplied it. */
+  readonly blockingMeetingTitle: string
+  /** Status of the meeting blocking a 409 start ('active', 'reviewing', …), when supplied. */
+  readonly blockingMeetingStatus: string
 
-  constructor(message: string, status: number, code = '') {
+  constructor(
+    message: string,
+    status: number,
+    code = '',
+    context: { blocking_meeting_title?: string; blocking_meeting_status?: string } = {},
+  ) {
     super(message)
     this.name = 'MeetingsApiError'
     this.status = status
     this.code = code
+    this.blockingMeetingTitle = context.blocking_meeting_title ?? ''
+    this.blockingMeetingStatus = context.blocking_meeting_status ?? ''
   }
 }
 
@@ -256,14 +267,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // status text when the body is not JSON (a proxy error page, say).
     let detail = res.statusText
     let code = ''
+    let context: { blocking_meeting_title?: string; blocking_meeting_status?: string } = {}
     try {
       const body = await res.json()
       if (body?.error) detail = String(body.error)
       if (body?.code) code = String(body.code)
+      // Extract only the two named fields the 409 start-refusal supplies.
+      if (typeof body?.blocking_meeting_title === 'string' || typeof body?.blocking_meeting_status === 'string') {
+        context.blocking_meeting_title = typeof body.blocking_meeting_title === 'string' ? body.blocking_meeting_title : ''
+        context.blocking_meeting_status = typeof body.blocking_meeting_status === 'string' ? body.blocking_meeting_status : ''
+      }
     } catch {
       /* non-JSON body */
     }
-    throw new MeetingsApiError(detail, res.status, code)
+    throw new MeetingsApiError(detail, res.status, code, context)
   }
   if (res.status === 204) return undefined as T
   const text = await res.text()

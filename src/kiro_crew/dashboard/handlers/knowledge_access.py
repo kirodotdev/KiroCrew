@@ -12,7 +12,10 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (  # noqa: F401 -- the knowledge facade serves both
+    require_owner_dashboard_request,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
@@ -55,7 +58,10 @@ async def _audited_write(fn, *, event: str, fields=None):
 
 
 async def _require_knowledge_owner(request: web.Request, operation: str) -> web.Response | None:
-    """Owner gate for the mutating knowledge routes, or ``None`` to proceed.
+    """Owner gate for the knowledge routes, reads and writes alike, or ``None`` to proceed.
+
+    The library is the owner's: its items, sources, graph and exports. A read is
+    gated like a write, because a disclosed document cannot be taken back.
 
     Owner identity is a property of a dashboard-user request: ``app == ""`` is
     the class ``is_owner_dashboard_request`` can rule on at all, so only that
@@ -69,9 +75,7 @@ async def _require_knowledge_owner(request: web.Request, operation: str) -> web.
       person, and sets ``app`` to the owning app's id for a caller it resolves
       to an app; neither arm runs ``_enforce_app_scope``.
     """
-    if request.get("app") != "":
-        return None
-    return await require_owner_dashboard_request(request, operation)
+    return await require_owner_for_dashboard_caller(request, operation)
 
 
 def _store(request: web.Request):

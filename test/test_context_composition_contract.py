@@ -24,7 +24,6 @@ lives in ``context_composition_contract_helpers.py``.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
 import threading
@@ -41,6 +40,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context_blocks import measure_prompt
 from kiro_crew.hooks import HookManager, HookResult
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import finished
 
 pytestmark = [
     pytest.mark.xdist_group("context_composition_contract"),
@@ -106,8 +106,8 @@ _STABLE_TEXT_SHA256 = {
     "critical_rules": "16827ce030089653769a3f16a6fb96e6c9fcda799ef4750630080011b5ac1647",
     "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
-    "member_how_you_work": "aecaa26113f1d8909cc3188cece6f3455c02354fefe72b4ed5f6fa9d2db68f14",
-    "member_how_you_work_unavailable": "d7e0fda68e64a84f1bc17dc3a8b2fa0fbbeec42a352dc0ea06d0808eadb04f3d",
+    "member_how_you_work": "03f1d12b27c745a8e5ad263241a5d210d08c2cfe381c38fc165f442fcebff8fe",
+    "member_how_you_work_unavailable": "db94e8346130ec40fd9a5202b5bda83e2b2f719b61336feb7cebf08db28cd24d",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",
@@ -1156,6 +1156,8 @@ async def test_session_routing_is_read_off_the_event_loop(monkeypatch) -> None:
 
     monkeypatch.setattr(ctx, "store_of_session", _store_of_session)
     monkeypatch.setattr(ctx, "prepare_store_vectors", _prepare)
-    store = await asyncio.wait_for(ctx.session_store_for_turn(object(), "dashboard:k"), 10)
+    store = await finished(
+        ctx.session_store_for_turn(object(), "dashboard:k"), "the turn's store lookup", timeout=10
+    )
     assert store == ""
     assert seen and all(thread != loop_thread for thread in seen)

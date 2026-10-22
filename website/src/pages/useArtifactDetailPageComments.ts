@@ -360,7 +360,7 @@ export function useArtifactDetailPageComposer({
   return {
     selectionComposer, iframeSelection, clearSelectionState, guardCommentDraft, onSidebarDraftDirtyChange,
     onThreadDraftDirtyChange, sidebarDiscardSignal, composerResetNonce, guardSendToSession, selectionActions,
-    handleIframeSelect, openThread, setOpenThread,
+    handleIframeSelect, stageIframeSelection, openThread, setOpenThread,
   }
 }
 

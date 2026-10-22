@@ -54,6 +54,7 @@ from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack.channel_crew import resolve_channel_crew
 from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
     _get_default_agent,
@@ -648,8 +649,24 @@ async def handle_message_transport(
             or _get_default_agent()
             or _DEFAULT_KIROCREW_AGENT
         )
+        # A channel bound to a Crew agent RECORD runs as that record: its
+        # kiro_agent as the mode, its name as crew_agent, its workspace as cwd
+        # (slack/channel_crew.py). Only when the selected agent IS the channel's
+        # binding -- a thread value equal to it is that binding restored from the
+        # transcript header by ``_hydrate_thread_overrides`` -- and the session is
+        # Slack's own: a dashboard-linked session keeps its slot's project.
+        # ``_agent`` stays the record's name for the transcript header and the
+        # context builder.
+        _channel_crew = (
+            await asyncio.to_thread(resolve_channel_crew, agent_override)
+            if agent_override and _agent == agent_override and is_slack_born(session_key)
+            else None
+        )
+        _alloc: dict[str, Any] = (
+            _channel_crew.allocation_kwargs() if _channel_crew else {"agent": _agent}
+        )
         client, is_new, resumed = await sessions.get_or_create(
-            session_key, agent=_agent, channel_id=channel, start_priority=start_priority
+            session_key, channel_id=channel, start_priority=start_priority, **_alloc
         )
         _acquired = True
         # Authorize the outbound-image root, which only exists once the provider
@@ -1451,3 +1468,9 @@ async def handle_message_transport(
                 )
         if _acquired:
             sessions.release(session_key)
+            # The release is what ends the turn for an open dashboard tab bound to
+            # this thread (it reads the lease as the turn running), and a release
+            # raises no slots push of its own. Refresh once more AFTER it, or the
+            # tab keeps showing the finished turn as running until the next
+            # background pass. Best-effort; never raises.
+            await _refresh_dashboard_tab(session_key)

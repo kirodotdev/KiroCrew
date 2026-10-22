@@ -313,6 +313,34 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     expect(sendChat.mock.calls[0][1]).toBe('slot-b')
   })
 
+  it('puts the bubble in the new session when the user went away and back during the create', async () => {
+    // A->B->A while the create is in flight: `forkMayOpen` refuses the
+    // activation, so slot-a stays on screen. The bubble belongs to slot-c,
+    // the session the turn is posted to, never to slot-a's transcript.
+    let resolveCreate: (v: unknown) => void = () => {}
+    createChatSlot.mockImplementation(() => new Promise(res => { resolveCreate = res }))
+    const store = makeStore()
+    await renderPage(store)
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalled())
+
+    await act(async () => {
+      store.dispatch(setActiveSlot('slot-b'))
+      store.dispatch(setActiveSlot('slot-a'))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      resolveCreate({ key: 'slot-c', title: 'slot-c', messages: 0, running: false })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    expect(sendChat.mock.calls[0][1]).toBe('slot-c')
+    const chat = store.getState().chat
+    expect(chat.activeSlot).toBe('slot-a')
+    expect(chat.messages.filter(m => m.role === 'user')).toHaveLength(0)
+    expect((chat.slotMessages['slot-c'] ?? []).map(m => m.content)).toContain('do not lose me')
+  })
+
   it('does not double the payload when the composer already holds it', async () => {
     // Pins the already-restored branch: the composer (restored from the slot's
     // draft) is byte-identical to the auto-send payload, which is what a

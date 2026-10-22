@@ -47,6 +47,10 @@ registered spec. Discovery leaves the copies out of every roster
 drops an agent from its manifest, remove them (:func:`remove_app_agent_launches`).
 The name is fixed per home, app and agent, and the file is rewritten only when its
 content changed, so concurrent sessions of one app agent share one copy.
+
+KAS takes no agent name, so it gets no copy. Its projection of a session bound to an
+app's own agent (:func:`bind_session_app_agent`) reads the registered file by its path
+instead of resolving the name (:func:`read_bound_app_spec`).
 """
 
 from __future__ import annotations
@@ -474,3 +478,59 @@ def remove_app_agent_launches(app_name: str, *, keep_agents: Collection[str] = (
     if removed:
         logger.info("Removed %d app agent launch copy(ies) for app %s", removed, app_name)
     return removed
+
+
+# ── KAS: the projection bound to the registered file ────────────────────────
+
+#: Session key -> (app, agent) of the app's own agent the session runs as. The gateway
+#: sets it before an admitted app-owned turn claims its session, and removes it before
+#: any other turn of the key claims one (a slot switched to another agent, or a new
+#: slot created under a deleted one's name), so only an app-owned turn's session is
+#: ever bound. Read by the KAS projection (``acp.harness.kas``). Process-local, like
+#: the sessions it binds. Read under :data:`_KAS_BINDING_LOCK`.
+_KAS_BINDINGS: dict[str, tuple[str, str]] = {}
+_KAS_BINDING_LOCK = threading.Lock()
+
+
+def bind_session_app_agent(session_key: str, app_name: str, agent: str) -> None:
+    """Bind *session_key*'s agent *agent* to *app_name*'s registered spec.
+
+    KAS takes no agent name: Crew reads the spec it sends. A name the user level
+    declares resolves there whatever the checkout holds, but a name the user level
+    stops declaring -- the app switched off between the turn's check and the session
+    start -- would fall back to the checkout. A bound session's projection reads the
+    registered file by its path instead, and refuses when it is gone
+    (:func:`read_bound_app_spec`).
+    """
+    if not (session_key and app_name and agent):
+        return
+    with _KAS_BINDING_LOCK:
+        _KAS_BINDINGS[session_key] = (app_name, agent)
+
+
+def unbind_session_app_agent(session_key: str) -> None:
+    """Remove *session_key*'s binding, for a turn of the key not bound to an app's agent."""
+    if not session_key:
+        return
+    with _KAS_BINDING_LOCK:
+        _KAS_BINDINGS.pop(session_key, None)
+
+
+def read_bound_app_spec(session_key: str, agent: str) -> dict[str, Any] | None:
+    """The registered spec *session_key*'s *agent* is bound to, or ``None`` when unbound.
+
+    Read by its path through the screened, hardened reader and proven to declare
+    *agent*, never looked up by name. Raises :class:`AppAgentLaunchError` when the
+    bound file is missing, unverifiable or declares another agent: the session must
+    not start rather than run a checkout's same-named spec. Does filesystem I/O.
+    """
+    if not (session_key and agent):
+        return None
+    with _KAS_BINDING_LOCK:
+        bound = _KAS_BINDINGS.get(session_key)
+    if bound is None or bound[1] != agent:
+        return None
+    from kiro_crew.apps import bridges
+
+    app_name, _ = bound
+    return _read_registered_spec(app_name, agent, bridges._kiro_agents_dir())

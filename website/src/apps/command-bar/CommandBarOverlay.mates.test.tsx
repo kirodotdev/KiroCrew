@@ -181,9 +181,9 @@ const type = (text: string) => {
  */
 const openMatesView = async () => {
   const mounted = mount()
-  await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
-  fireEvent.mouseDown(rowByText('Search Crewmates'))
-  await waitFor(() => expect(screen.getByPlaceholderText('Search all crewmates…')).toBeTruthy())
+  await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
+  fireEvent.mouseDown(rowByText('Search Mates'))
+  await waitFor(() => expect(screen.getByPlaceholderText('Search all mates…')).toBeTruthy())
   return mounted
 }
 
@@ -199,8 +199,8 @@ beforeEach(() => {
   storeState.chat = { slotStatusDetail: {}, activeSlot: null }
 })
 
-describe('command bar — the crewmates preview gate', () => {
-  it('advertises NOTHING about crewmates while the preview is off', async () => {
+describe('command bar — the mates preview gate', () => {
+  it('advertises NOTHING about mates while the preview is off', async () => {
     // This bar is an INGRESS to `/members`, and that page is registered with
     // `previewFlag: PREVIEW_CREW`, so every other door applies this gate. The app ships
     // `defaultEnabled: true`, so without it a DEFAULT install advertises a page the
@@ -208,11 +208,11 @@ describe('command bar — the crewmates preview gate', () => {
     localStorage.removeItem(PREVIEW_CREW)
     mount()
     await waitFor(() => expect(hasRow('Search Sessions')).toBe(true))
-    expect(hasRow('Search Crewmates')).toBe(false)
+    expect(hasRow('Search Mates')).toBe(false)
     // All three rows, because each is independently reachable.
     type('oncall')
     await waitFor(() => expect(hasRow('Search sessions for')).toBe(true))
-    expect(hasRow('Search crewmates for')).toBe(false)
+    expect(hasRow('Search mates for')).toBe(false)
     // And nothing fetched the roster to decide any of that.
     expect(agentCatalog).not.toHaveBeenCalled()
   })
@@ -220,18 +220,18 @@ describe('command bar — the crewmates preview gate', () => {
   it('offers them once the operator turns the preview on', async () => {
     localStorage.setItem(PREVIEW_CREW, '1')
     mount()
-    await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
     type('oncall')
-    await waitFor(() => expect(hasRow('Search crewmates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
   })
 })
 
 describe('command bar — the root', () => {
-  it('lists Search Crewmates as a view row on an empty query', async () => {
+  it('lists Search Mates as a view row on an empty query', async () => {
     mount()
-    await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
     // A `view` row states that it opens a surface rather than acting.
-    expect(rowByText('Search Crewmates').textContent).toContain('View')
+    expect(rowByText('Search Mates').textContent).toContain('View')
   })
 
   it('offers one row for the corpus and never the roster itself', async () => {
@@ -239,7 +239,7 @@ describe('command bar — the root', () => {
     type('oncall')
     // A corpus is entered here, not flattened into the first page — so even an exact
     // crew name must not produce a crewmate row in the root.
-    await waitFor(() => expect(hasRow('Search crewmates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
     expect(hasRow('Watches the pager')).toBe(false)
   })
 
@@ -248,12 +248,12 @@ describe('command bar — the root', () => {
     // rows were added last, so this is the assertion that would catch them landing on
     // top of a row that was already there.
     mount()
-    await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
     expect(hasRow('Search Sessions')).toBe(true)
     expect(hasRow('Search Artifacts')).toBe(true)
     expect(hasRow('Search Folders')).toBe(true)
     type('oncall')
-    await waitFor(() => expect(hasRow('Search crewmates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
     expect(hasRow('Search sessions for')).toBe(true)
     expect(hasRow('Search artifacts for')).toBe(true)
     expect(hasRow('Search folders for')).toBe(true)
@@ -264,14 +264,14 @@ describe('command bar — the root', () => {
     // Crewmates page reaches for "agent", and the row has to answer to it.
     mount()
     type('agent')
-    await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
   })
 
-  it('carries a typed query into the crewmates view instead of dead-ending', async () => {
+  it('carries a typed query into the mates view instead of dead-ending', async () => {
     mount()
     type('acc')
-    await waitFor(() => expect(hasRow('Search crewmates for')).toBe(true))
-    fireEvent.mouseDown(rowByText('Search crewmates for'))
+    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
+    fireEvent.mouseDown(rowByText('Search mates for'))
     // The query survives the hand-off: the view opens already narrowed, so the reader
     // does not retype what they just typed. The count is what says "narrowed" — the
     // view arriving on its full listing would also show `accountant`.
@@ -282,9 +282,9 @@ describe('command bar — the root', () => {
 
   it('builds the root WITHOUT fetching the catalog, which is the launcher invariant', async () => {
     mount()
-    await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
     type('oncall')
-    await waitFor(() => expect(hasRow('Search crewmates for')).toBe(true))
+    await waitFor(() => expect(hasRow('Search mates for')).toBe(true))
     // The whole reason the roster is a view and not a root group: `useAgents` fetches
     // this endpoint on mount, and the root promises never to issue a request.
     expect(agentCatalog).not.toHaveBeenCalled()
@@ -296,7 +296,7 @@ describe('command bar — the root', () => {
   })
 })
 
-describe('command bar — crewmates view, listing and search', () => {
+describe('command bar — mates view, listing and search', () => {
   it('lands on the whole roster, alphabetically, and pays for exactly one fetch', async () => {
     await openMatesView()
     await waitFor(() => expect(hasRow('oncall')).toBe(true))
@@ -358,7 +358,7 @@ describe('command bar — crewmates view, listing and search', () => {
     )
   })
 
-  it('shows a working crewmate as working, read off the live slot frames', async () => {
+  it('shows a working mate as working, read off the live slot frames', async () => {
     // A member slot is born with its crew pinned to `agent`, which is why the running
     // set is keyed on the name rather than on a slot key the catalog cannot rebuild.
     storeState.dashboard = {
@@ -440,10 +440,10 @@ describe('command bar — crewmates view, listing and search', () => {
     // looks like a link", so the one thing they came to do had no affordance.
     agentCatalog.mockResolvedValue({ agents: [], default_agent: '' })
     await openMatesView()
-    await waitFor(() => expect(hasRow('No crewmates yet')).toBe(true))
+    await waitFor(() => expect(hasRow('No mates yet')).toBe(true))
     // A ROW, so the keyboard reaches it without leaving the list.
     expect(rowCount()).toBe(1)
-    fireEvent.mouseDown(rowByText('No crewmates yet'))
+    fireEvent.mouseDown(rowByText('No mates yet'))
     // No `?member=`: there is no crewmate to open.
     expect(navigate).toHaveBeenCalledWith('/members')
   })
@@ -458,7 +458,7 @@ describe('command bar — crewmates view, listing and search', () => {
     // away on its own. A deliberate fresh Enter still goes where the row says.
     agentCatalog.mockResolvedValue({ agents: [], default_agent: '' })
     await openMatesView()
-    await waitFor(() => expect(hasRow('No crewmates yet')).toBe(true))
+    await waitFor(() => expect(hasRow('No mates yet')).toBe(true))
     const input = screen.getByRole('combobox')
     fireEvent.change(input, { target: { value: 'anyone' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -482,21 +482,21 @@ describe('command bar — crewmates view, listing and search', () => {
     await waitFor(() => expect(rowCount()).toBe(3))
     const input = screen.getByRole('combobox')
     fireEvent.change(input, { target: { value: 'zzzznope' } })
-    await waitFor(() => expect(hasRow('No crewmates match')).toBe(true))
+    await waitFor(() => expect(hasRow('No mates match')).toBe(true))
     fireEvent.change(input, { target: { value: 'zzzznopq' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect((input as HTMLInputElement).value).toBe('zzzznopq')
   })
 
-  it('shows the skeleton, not "no crewmates", while the roster is still loading', async () => {
+  it('shows the skeleton, not "no mates", while the roster is still loading', async () => {
     // The empty row is a CLAIM about the reader's crew. Made before the catalog answers,
     // it is a claim about nothing, and it would flash on every cold open.
     let release: (v: unknown) => void = () => {}
     agentCatalog.mockReturnValue(new Promise(r => { release = r }))
     await openMatesView()
-    expect(hasRow('No crewmates yet')).toBe(false)
+    expect(hasRow('No mates yet')).toBe(false)
     release({ agents: [], default_agent: '' })
-    await waitFor(() => expect(hasRow('No crewmates yet')).toBe(true))
+    await waitFor(() => expect(hasRow('No mates yet')).toBe(true))
   })
 
   it('EXCLUDES templates from the view, since they have no chat thread', async () => {
@@ -565,12 +565,12 @@ describe('command bar — crewmates view, listing and search', () => {
     await openMatesView()
     await waitFor(() => expect(hasRow('oncall')).toBe(true))
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Backspace' })
-    await waitFor(() => expect(hasRow('Search Crewmates')).toBe(true))
+    await waitFor(() => expect(hasRow('Search Mates')).toBe(true))
     expect(hasRow('Watches the pager')).toBe(false)
   })
 })
 
-describe('command bar — crewmates view, selection', () => {
+describe('command bar — mates view, selection', () => {
   it('navigates into the mate\'s own chat thread and closes the bar', async () => {
     const { onClose } = await openMatesView()
     await waitFor(() => expect(hasRow('oncall')).toBe(true))
@@ -579,7 +579,7 @@ describe('command bar — crewmates view, selection', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('navigates by the crewmate\'s IDENTITY even when a display label hides it', async () => {
+  it('navigates by the mate\'s IDENTITY even when a display label hides it', async () => {
     // The page resolves `?member=` against the immutable name, so routing by the
     // label would open the page on a crew that does not exist.
     await openMatesView()
@@ -596,7 +596,7 @@ describe('command bar — crewmates view, selection', () => {
     expect(navigate).toHaveBeenCalledWith('/members?member=Review%20%26%20QA')
   })
 
-  it('latches a debounce-window Enter and opens the crewmate on the live rows', async () => {
+  it('latches a debounce-window Enter and opens the mate on the live rows', async () => {
     // The view ranks from the DEBOUNCED query, so for 150ms after a keystroke the rows
     // answer the previous one. Typing `onc` and pressing Enter immediately opened
     // `accountant` -- the row selected against the older query. The Enter is held until
@@ -633,7 +633,7 @@ describe('command bar — crewmates view, selection', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
-  it('still opens the crewmate a POINTER pressed inside that same window', async () => {
+  it('still opens the mate a POINTER pressed inside that same window', async () => {
     // A pointer names its own target: the reader pressed the row they could read, and it
     // opens the mate it says. Only Enter names an INDEX, and only an index means a
     // different crewmate once the rows move under it — so the guard is on the keyboard

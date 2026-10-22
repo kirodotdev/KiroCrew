@@ -124,3 +124,75 @@ def test_the_reply_says_the_page_ran_over_a_synthetic_copy():
     assert "your crewmate's data and raised" not in failed
     # A verdict that does not say what it ran over does not claim a copy.
     assert "synthetic" not in plain
+
+
+def test_dashboard_save_describes_a_page_written_as_view_html() -> None:
+    """A crewmate's page is view.html only: the tool must not teach a block layout."""
+    from kiro_crew import mcp_panel
+
+    (tool,) = [t for t in mcp_panel._list_tools() if t["name"] == "dashboard_save"]
+    view = tool["inputSchema"]["properties"]["view"]["description"]
+    assert '{"html": "..."}' in view and "data-dashboard-field" in view
+    assert "using host or custom variables" in view
+    assert "window.kirocrew.subscribe" in view and "needs no text cell" in view
+    model = tool["inputSchema"]["properties"]["model"]["description"]
+    assert "`array`" in model and "`object`" in model
+    text = (tool["description"] + view).lower()
+    assert "blocks" not in text and "block type" not in text and "block catalog" not in text
+
+
+def test_the_crewmate_is_told_its_page_is_view_html() -> None:
+    """The member protocol's page item names the same three parts the save tool takes."""
+    from kiro_crew.context_assembly import member
+
+    item = member._MEMBER_DASHBOARD_ITEM
+    assert "fields, view.html and theme" in item
+    assert "blocks" not in item
+
+
+def test_the_tool_reply_carries_field_types_and_both_warnings() -> None:
+    """The crewmate reads the MCP text, so the gateway's checks must reach it."""
+    from kiro_crew import mcp_panel
+
+    reply = {
+        "saved": {"fields": 2},
+        "verification": {
+            "status": "skipped",
+            "reason": "no browser on this host",
+            "note": "The page was NOT run: no browser on this host.",
+        },
+        "fields": [
+            {"field": "open_prs", "source": "manual", "type": "array"},
+            {"field": "spend", "source": "fold:usage.total", "type": "number"},
+        ],
+        "manual_fields": ["open_prs"],
+        "manual_note": "These fields change only when you write them.",
+        "shape_warnings": ["open_prs is array but a data-dashboard-field cell shows it"],
+        "theme_warnings": ["Your theme sets fixed colours for one scheme only"],
+    }
+    text = mcp_panel._render_saved(reply["saved"], reply["verification"], reply=reply)
+    assert "The page was NOT run" in text
+    assert "open_prs (array) -- manual" in text
+    assert "spend (number) -- fold:usage.total" in text
+    assert "These fields change only when you write them." in text
+    assert "Shape warnings:\n  - open_prs is array" in text
+    assert "Theme warnings:\n  - Your theme sets fixed colours" in text
+    # The warnings come before the next step, which is still last.
+    assert text.index("Theme warnings") < text.index("Next: call dashboard_apply")
+
+
+def test_the_types_and_fields_replies_carry_the_rendering_advice() -> None:
+    from kiro_crew import mcp_panel
+    from kiro_crew.dashboard.handlers.dashboard_page_checks import page_rendering
+
+    advice = page_rendering()
+    types_text = mcp_panel._render_types(
+        {"types": [{"name": "work", "keyed_by": "slot", "folded_through": 3}], "rendering": advice}
+    )
+    fields_text = mcp_panel._render_fields({"template": None, "rendering": advice})
+    for text in (types_text, fields_text):
+        assert "Drawing a type a data-dashboard-field cell shows raw:" in text
+        assert f"  array: {advice['array']}" in text
+    # With no page yet the crewmate is pointed at writing its own, not at a template.
+    assert "dashboard_save it, then dashboard_apply it" in fields_text
+    assert "adopt a template" not in fields_text

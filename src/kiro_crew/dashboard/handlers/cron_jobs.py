@@ -22,11 +22,13 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone, parse_time_string
+from kiro_crew.cron_service.model import validate_auto_pause_after_failures
 from kiro_crew.dashboard.cron_inject import chat_folder_exists, move_cron_job_tab
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.cron_shared import (
     _CRON_BUSY_BODY,
     _CRON_BUSY_STATUS,
+    _app_caller,
     _cron_unreadable_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
@@ -839,6 +841,32 @@ async def api_cron_update(request: web.Request) -> web.Response:
             safe_tz, _ = redact_credentials(redact_exfiltration_urls(tz_val)[0])
             return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
         kwargs["timezone"] = tz_val
+    # Checked here, before the store is touched, so a bad value is a 400 the
+    # form can name rather than a ValueError from the write. ``null`` is refused
+    # too: the store reads ``None`` as "leave unchanged", which would turn a
+    # malformed request into a silent no-op.
+    if "auto_pause_after_failures" in body:
+        try:
+            kwargs["auto_pause_after_failures"] = validate_auto_pause_after_failures(
+                body["auto_pause_after_failures"]
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_auto_pause_after_failures"}, status=400
+            )
+        # The store files the limit-change audit row under this name, so it
+        # names who made the write: an app token's write is filed under
+        # ``app:<name>``, the name ``_refuse_foreign_app_job`` records for the
+        # same request, and an owner write keeps the forwarded marker
+        # ``audit_actor`` adds. A fixed "dashboard" would file an app turning
+        # off its own job's breaker as the person's action.
+        # Function-local, as for ``_apply_security_headers`` in portability.py:
+        # ``audit_actor``'s module reads its helpers from ``dashboard.server``,
+        # which imports the handlers.
+        from kiro_crew.dashboard.server import audit_actor
+
+        app = _app_caller(request)
+        kwargs["audit_actor"] = f"app:{app}" if app else audit_actor(request, "dashboard")
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:

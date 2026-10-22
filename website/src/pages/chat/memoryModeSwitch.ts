@@ -7,7 +7,7 @@
  * budget. The caller holds the composer lock for the whole call, so nothing in
  * either session can change while this runs.
  */
-import { createSlot, deleteSlot, switchSlot } from '../../store/chatSlice'
+import { captureForkOrigin, createSlot, deleteSlot, forkMayOpen, switchSlot } from '../../store/chatSlice'
 import type { AppDispatch, AppStore } from '../../store'
 import { handOverComposerUploads, landComposerAttachments, takeComposerArrivals } from '../../utils/composerSendHolds'
 import { errMessage } from '../../utils/thunkError'
@@ -79,6 +79,7 @@ export async function runMemorySwitch(
   // draft, which for a fresh slot is empty, and the old slot (where the
   // draft lives) is deleted afterwards.
   let created: { key?: string } | undefined
+  const origin = captureForkOrigin(c.store.getState())
   try { created = await c.dispatch(createSlot({ ...opts, activate: false })).unwrap() } catch (error) {
     c.showActionError(errMessage(error) || unknownError())
     return false
@@ -99,11 +100,15 @@ export async function runMemorySwitch(
       if (report) c.showActionError(errMessage(error) || unknownError())
     })
   }
-  // The user moved to another session while the create was in flight: the
-  // switch is abandoned. Switching to `next` would pull them out of where
+  // The user moved to another session while the create was in flight, or
+  // went to one and came back: the switch is abandoned, by the rule every
+  // create follows (`forkMayOpen`). Switching to `next` would undo where
   // they went, and deleting the old slot would destroy the draft it still
-  // holds. Drop the unused replacement instead.
-  if (activeNow() !== from || c.composerSlotRef.current !== from) {
+  // holds. Drop the unused replacement instead. The switch also requires
+  // that the active slot and the composer still show `from`, because it
+  // carries the composer of `from` and deletes `from`: an automatic move off
+  // `from`, which `forkMayOpen` allows, leaves no composer of `from` to carry.
+  if (!forkMayOpen(c.store.getState(), origin) || activeNow() !== from || c.composerSlotRef.current !== from) {
     dropReplacement(true)
     return false
   }

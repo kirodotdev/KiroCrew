@@ -40,7 +40,9 @@ interface SessionsSidebarChromeProps {
   topbarTrailSlot: HTMLElement | null
   vv: VisualViewport
   activityOpen: boolean
-  clearSplitOnSelect: () => void
+  /** ChatSidebar's `onSelectSlot`: leaves split view and, with "Open Sidebar
+   *  Sessions in a Session Tab" on, gives the session its own tab. */
+  selectFromSidebar: (key: string) => void
   history: SessionInfo[]
   historyHasMore: boolean
   navigateToEmbeddedSlot: (key: string) => void | Promise<void>
@@ -106,7 +108,7 @@ interface SessionsSidebarChromeProps {
  */
 export default function SessionsSidebarChrome({
   embedMode, mode, activeSlot, connected, creatingSlot, dispatch, filteredSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
-  activityOpen, clearSplitOnSelect, history, historyHasMore, navigateToEmbeddedSlot, openEmbeddedCrewWindow, splitMode, defaultAgent, installedAgents, sidebarAgents, sidebarChoices, setActionError, showActionError,
+  activityOpen, selectFromSidebar, history, historyHasMore, navigateToEmbeddedSlot, openEmbeddedCrewWindow, splitMode, defaultAgent, installedAgents, sidebarAgents, sidebarChoices, setActionError, showActionError,
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
   winW, closeSidebar, containerH, drawerDragging, drawerMounted, drawerPanelRef, drawerScrim, drawerScrimRef, drawerX, expandFrom, expandSidebar, flyout, flyoutEligible, flyoutSurfaceRef,
@@ -275,7 +277,7 @@ export default function SessionsSidebarChrome({
           fillsHost={isMobile}
           collapsible={!isMobile}
           staticRows={isMobile}
-          onSelectSlot={clearSplitOnSelect}
+          onSelectSlot={selectFromSidebar}
           onOpenSlotInNewTab={ownsSessionTabs ? openSlotInNewTab : undefined}
           onOpenSource={revealSourceLink}
           // Only offer the pane as a drop target when a composer exists to show

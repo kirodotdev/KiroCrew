@@ -414,7 +414,7 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
     })
 
-    it('lands on the remembered crewmate like a wide window, with the roster waiting in a closed drawer', async () => {
+    it('lands on the remembered mate like a wide window, with the roster waiting in a closed drawer', async () => {
       localStorage.setItem(LAST_MEMBER_KEY, 'beta')
       await renderPage(alphaBeta())
       expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
@@ -430,7 +430,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(toggle.querySelector('.pi-pane')).not.toBeNull()
       expect(toggle.querySelector('.lucide-arrow-left')).toBeNull()
       // A screen reader hears a toggle too, not "Back", in either state.
-      expect(toggle).toHaveAccessibleName('Toggle crewmates')
+      expect(toggle).toHaveAccessibleName('Toggle mates')
       expect(toggle).toHaveAttribute('aria-expanded', 'false')
       fireEvent.click(toggle)
       await screen.findByTestId('roster-drawer')
@@ -492,7 +492,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
     })
 
-    it('Back with the drawer open closes it and stays on the crewmate; one more Back leaves the page', async () => {
+    it('Back with the drawer open closes it and stays on the mate; one more Back leaves the page', async () => {
       ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
       ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
       function Elsewhere() {
@@ -572,7 +572,7 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(scopeOpen('members.roster-phone')).toBe(true))
     })
 
-    it('a New crewmate card takes the whole screen below md and its close returns to the originating chat', async () => {
+    it('a New mate card takes the whole screen below md and its close returns to the originating chat', async () => {
       await renderPage([row({ name: 'alpha', slug: 'alpha' }), defaultRow()], 'kirocrew', { route: '/members?member=alpha' })
       expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
       // The roster's "+" lives in the drawer below md.
@@ -654,7 +654,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(currentUrl()).toBe('/members?member=alpha')
     })
 
-    it('the first crewmate created from an empty roster opens on a replace, so one Back still leaves the page', async () => {
+    it('the first mate created from an empty roster opens on a replace, so one Back still leaves the page', async () => {
       // A pushed open would leave a bare /members under the chat, and the phone
       // lands a bare /members on a crewmate by itself: Back would bounce back in.
       const membersMock = api.members as ReturnType<typeof vi.fn>
@@ -680,7 +680,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
     })
 
-    it('switching from the drawer with Profile open does not carry the card to the next crewmate', async () => {
+    it('switching from the drawer with Profile open does not carry the card to the next mate', async () => {
       await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
       await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
       fireEvent.click(await screen.findByTestId('member-identity-pill'))
@@ -737,7 +737,7 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(report).toHaveBeenLastCalledWith('roster'), PANE_READY)
     })
 
-    it('looks the shell bar slot up only once a crewmate is open, so a bar swapped during a slow read is not kept', async () => {
+    it('looks the shell bar slot up only once a mate is open, so a bar swapped during a slow read is not kept', async () => {
       // The shell may re-render its bar while the roster read is pending,
       // replacing its slot; the crewmate's header must land in the slot that is
       // there once it opens. A slot latched while pending would be the detached

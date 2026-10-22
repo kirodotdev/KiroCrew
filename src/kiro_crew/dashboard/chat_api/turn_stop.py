@@ -581,6 +581,7 @@ async def stop_slot_turn(
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
             slot._steer_act_now.discard(_discarded)
+            slot._steer_automation.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)
             slot._steer_possibly_delivered.discard(_discarded)
         slot._pending_steers.clear()
@@ -617,6 +618,53 @@ async def stop_slot_turn(
             metadata={"slot": name, "via": source, "force": force, "escalated": True},
         )
         return {"ok": True}
+
+    # A turn another path runs on this slot's linked session (the Slack thread a
+    # channel-born tab is bound to) reads as running on the dashboard but owns no
+    # task here, so the stop machine below has nothing to drive. Hand the press
+    # to the session it runs on, keeping the queue (it holds the channel's other
+    # messages); the row settles when the channel path ends the turn and
+    # releases the lease. ``stop_turn`` owns the session-side rules (it records
+    # the Stop so a replay stays dropped, escalates a cancel that is never
+    # acked, and declines while the session compacts); the dashboard half of the
+    # compaction decline is mirrored here: a decline arms the marker, and the
+    # next press -- or an explicit force -- is the hard stop.
+    if slot._stop_state == "idle" and not slot.running and slot.linked_turn_running:
+        # Same escape rules as the dashboard's own turn above: a hard stop is
+        # only the way out of a compaction decline (the armed second press, or
+        # an explicit force), and a marker for a compaction that has ended is
+        # dropped, so a force re-sent after a lost reply stays cooperative.
+        compacting = _compaction_in_flight(state, cancel_key)
+        if not compacting:
+            slot._stop_declined_at = 0.0
+        hard = escalate and compacting and (force or stop_declined_armed(slot))
+        logger.info(
+            "Stop: %s cancel for the linked turn on slot %s",
+            "hard" if hard else "cooperative",
+            name,
+        )
+        outcome = await state.sessions.stop_turn(cancel_key, force=hard, preserve_queue=True)
+        if hard:
+            slot._stop_declined_at = 0.0
+        elif outcome == "compacting" and escalate:
+            slot._stop_declined_at = time.monotonic()
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_stop",
+            tool_kind="command",
+            outcome=f"linked_{outcome}",
+            metadata={"slot": name, "via": source, "session": cancel_key, "force": hard},
+        )
+        if outcome == "compacting":
+            state.push_slots_update()
+            return {"ok": True, "info": "compacting", "compacting": True}
+        if outcome == "idle":
+            # The lease is held but the provider has no turn to cancel yet (the
+            # window before the prompt is sent). Named, like the main path's.
+            return {"ok": True, "info": "no active turn"}
+        return {"ok": True, "info": "stopping linked turn", "already_stopping": True}
 
     # Already stopping or not running — no-op (idempotent repeat press guard)
     if slot._stop_state != "idle" or not slot.running:
@@ -815,6 +863,33 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     denied = _app_cancel_denied(request, slot, "chat_interrupt", cancel_key)
     if denied is not None:
         return denied
+    # The turn to interrupt may run on the channel path (the Slack thread this
+    # tab is bound to): no task here to stop, so it is cancelled on the session
+    # it runs on, keeping the queue -- but only once the request has passed every
+    # check that could still refuse it, so a refused interrupt never kills a
+    # live turn (possibly someone else's, in a shared thread).
+    linked_turn = not slot.running and slot.linked_turn_running
+
+    async def _cancel_linked_turn() -> str:
+        outcome = await state.sessions.stop_turn(cancel_key, preserve_queue=True)
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_interrupt",
+            tool_kind="command",
+            outcome=f"linked_{outcome}",
+            metadata={"slot": name, "session": cancel_key},
+        )
+        return outcome
+
+    if linked_turn and not slot._queue:
+        outcome = await _cancel_linked_turn()
+        if outcome == "compacting":
+            return web.json_response({"ok": True, "info": "compacting", "compacting": True})
+        if outcome == "idle":
+            return web.json_response({"ok": True, "info": "no active turn"})
+        return web.json_response({"ok": True, "info": "stopping linked turn"})
     if not slot.running:
         if not slot._queue:
             return web.json_response({"ok": True, "info": "not running"})
@@ -844,6 +919,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
                 {"error": "queue_id required for idle interrupt", "code": "invalid_queue_id"},
                 status=400,
             )
+        if linked_turn:
+            # Validated: cancel the channel-path turn, then dispatch the selected
+            # card below, which starts once the channel path releases the session.
+            await _cancel_linked_turn()
         async with slot._lock:
             # The request body and lock acquisition both yield. A close followed
             # by same-name recreation during either await must not let this stale

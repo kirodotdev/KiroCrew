@@ -1569,6 +1569,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the owner family, from their homes
+    from kiro_crew import (  # noqa: F401
+        md_notebook_state,
+    )
     from kiro_crew.apps.proxy_auth import (  # noqa: F401
         raw_request_target,
         verify_proxy_request,

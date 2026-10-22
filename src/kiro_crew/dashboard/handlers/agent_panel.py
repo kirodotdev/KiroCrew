@@ -129,6 +129,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _template_matches,
         _templates_for_agent,
         _writer_key,
+        field_sources,
         read_instance,
     )
     from kiro_crew.dashboard.handlers.agent_panel_publish import (  # noqa: F401
@@ -170,6 +171,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.crew_log.entry_types import PANEL_FOLD_NAME  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import _is_restricted_session  # noqa: F401
     from kiro_crew.dashboard.handlers.cron import _recognize_session  # noqa: F401
+    from kiro_crew.dashboard.handlers.dashboard_page_checks import (  # noqa: F401
+        MANUAL_FIELDS_NOTE,
+        page_rendering,
+        shape_warnings,
+        skipped_note,
+        theme_warnings,
+    )
     from kiro_crew.dashboard.handlers.members import (  # noqa: F401
         _deny_app_caller,
         _member_names_for_slug,

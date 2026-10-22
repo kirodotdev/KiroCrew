@@ -1,0 +1,66 @@
+name: PR Size
+
+# A pull request that touches very many files, or has stayed open a week, is the
+# kind that loops on rebases: 3.3% of the studied pull requests hold 26.9% of the
+# rebase loops (docs/request-for-change/rfc-review-loop-and-escaped-bug-reduction.md,
+# D6). This check measures the file count and the hours open, prints a notice at
+# the thresholds, and, once enforced, is red at the limit until an owner approves.
+#
+# SHADOW. `PR_SIZE_ENFORCED` in `.github/scripts/pr_size.py` is False, so this job
+# never fails: at the limit it prints a warning that says "this would be red".
+# The rollout is shadow first, then enforced after about 14 days of the warning list
+# being read. Enforcing is a one-line change to that constant, plus adding `PR Size`
+# to the lane list in `pr-readiness.yml` so a red reds the one required status.
+#
+# This does NOT replace `PR Scope` (pr-scope.yml), which stays advisory by design:
+# that one judges whether the changes are related; this one counts files. Different
+# question, separate workflow, so the test that pins PR Scope advisory is untouched.
+#
+# The owner override is a comment, `/pr-size approve: <reason>`, handled by
+# `pr-size-override.yml`; it records a bot comment with a hidden marker that this
+# check reads back. See docs/ci/ci-and-reviews.md, "pr-size.yml".
+#
+# Cost: one `GET pulls/<n>` and, only at the limit, one comment listing. The job
+# checks out the DEFAULT branch to run the script, never the pull request's code,
+# so a pull request cannot edit the check that judges it.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-size-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-size:
+    name: PR Size
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          persist-credentials: false
+
+      - name: Measure files and hours open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # BOOTSTRAP GUARD (shadow only). The pull request that adds this
+          # workflow runs it before the script exists on the default branch.
+          # Enforcing PR_SIZE_ENFORCED removes this guard (a test pins that),
+          # because a missing script must then be a red check, not a pass.
+          if [ ! -f base/.github/scripts/pr_size.py ]; then
+            echo "::notice::PR Size is not on the default branch yet; nothing measured."
+            exit 0
+          fi
+          python3 base/.github/scripts/pr_size.py check

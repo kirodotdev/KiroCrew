@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import kiro_crew
 
 
@@ -69,18 +71,19 @@ def test_shutdown_event_survives_multiple_asyncio_runs() -> None:
 
 
 def test_shutdown_event_wait_for_timeout() -> None:
-    """``asyncio.wait_for(shutdown_event.wait(), timeout=...)`` must work."""
+    """``asyncio.wait_for(shutdown_event.wait(), timeout=...)`` must work.
+
+    The timeout IS the assertion: the event is never set, so the proxy's ``wait()``
+    must be a real awaitable that ``wait_for`` can abandon at its deadline.
+    """
     kiro_crew.shutdown_event.clear()
 
-    async def main() -> str:
-        try:
+    async def main() -> None:
+        with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(kiro_crew.shutdown_event.wait(), timeout=0.05)
-        except asyncio.TimeoutError:
-            return "timed_out"
-        return "set"
 
-    result = asyncio.run(main())
-    assert result == "timed_out"
+    asyncio.run(main())
+    assert not kiro_crew.shutdown_event.is_set()
 
 
 def test_shutdown_event_does_not_bind_to_default_loop_via_get_event_loop() -> None:

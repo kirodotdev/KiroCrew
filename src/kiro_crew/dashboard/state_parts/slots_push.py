@@ -354,8 +354,19 @@ def _schedule_trailing_flush(self: DashboardState, delay: float) -> None:
 
 
 def _trailing_slots_flush(self: DashboardState) -> None:
-    """Trailing-edge callback: broadcast whatever the state is now."""
+    """Trailing-edge callback: broadcast whatever the state is now.
+
+    A timer armed before a ``suspend_slots_push()`` block can expire while that
+    block awaits. Publishing then would show the block's half-built state, so
+    the owed push moves to the block's exit instead.
+    """
     lock = self._slots_broadcast_lock
+    if self._slots_push_suspend:
+        if lock is not None:
+            with lock:
+                self._slots_broadcast_timer = None
+        self._slots_push_pending = True
+        return
     if lock is not None:
         with lock:
             self._slots_broadcast_timer = None

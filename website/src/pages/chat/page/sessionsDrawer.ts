@@ -38,6 +38,8 @@ interface SessionsDrawerOptions {
   location: Location
   isMobile: boolean
   filteredSlots: ChatSlot[]
+  /** True once a slot list has landed; before that an empty `filteredSlots` is not "no sessions". */
+  slotsLoaded: boolean
   activeSlot: string | null
   splitMode: boolean
   crewWindow: { instanceId: string; key: string; } | null
@@ -70,7 +72,7 @@ interface SessionsDrawerOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useSessionsDrawer({
-  embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
+  embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
   hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
@@ -600,9 +602,11 @@ export function useSessionsDrawer({
   // The no-sessions force-open yields to expand mode: with an empty list no
   // sessions toggle is rendered, so suppressing it makes nothing inert, and the
   // preview would otherwise stay covered by a list that cannot be dismissed.
+  // It also waits for the first slot list: on a page load the list is empty
+  // until then, and opening there flashes the list a user chose to hide.
   const sidebarOpen = isMobile
     ? mobileSessions
-    : (sidebarPinned || (filteredSlots.length === 0 && !previewExpanded))
+    : (sidebarPinned || (slotsLoaded && filteredSlots.length === 0 && !previewExpanded))
   // Whether the sidebar -- and with it the banner that says a failed
   // folder-order read -- is on this screen right now. The same facts that mount
   // it in SessionsSidebarChrome's render: embed-chat never mounts one, embed-sessions always does, and

@@ -105,7 +105,7 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
-        "Interrupted work in a crewmate reply",
+        "Interrupted work in a mate reply",
         "dashboard/responsive_chat.py",
         "The bounded interrupted-turn reference passed to the next model prompt. "
         "Structural markers are neutralized, then exfiltration URLs and "
@@ -137,16 +137,16 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Change-card details shown before Apply",
-        "change_card_catalog.py",
+        "change_card_catalog_plans.py",
         "Values a change card shows in full so the user sees what Apply runs: an "
         "MCP server's launch line, environment values and request headers. Each "
         "value passes the credential redactor before it reaches the card.",
     ),
     (
-        "Crewmate goals",
+        "Mate goals",
         "member_goals.py",
-        "The goals, key results and their readings a crewmate may write "
-        "about itself, on their way to the Goals tab, the crewmate's tools and its "
+        "The goals, key results and their readings a mate may write "
+        "about itself, on their way to the Goals tab, the mate's tools and its "
         "saved goal reports. Each string passes the "
         "exfiltration-URL then the credential redactor before it leaves the record.",
     ),
@@ -192,7 +192,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "than emitting it unredacted.",
     ),
     (
-        "Fold values filled into a crewmate's dashboard page",
+        "Fold values filled into a mate's dashboard page",
         "dashboard/handlers/member_dashboard.py",
         "Every string a template's fold paths resolve to, on its way into the page's "
         "own data island. A fold value is whatever a conductor wrote into the crew "
@@ -903,8 +903,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Reply-thread stream and store",
         "dashboard/chat_threads.py",
-        "Three boundaries of a reply thread on a crewmate chat message: the "
-        "StreamRedactor on the crewmate's live reply (as the side panel's), the "
+        "Three boundaries of a reply thread on a mate chat message: the "
+        "StreamRedactor on the mate's live reply (as the side panel's), the "
         "thread envelope (parent, surrounding chat and prior replies, which "
         "kiro-cli persists into its own session file), and every stored reply "
         "and quoted parent on its way out of the sidecar to the browser.",
@@ -1768,9 +1768,9 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "so raw launch values do not enter durable operator-facing state.",
     ),
     (
-        "Crewmate-written dashboard field values",
+        "Mate-written dashboard field values",
         "dashboard_agentic.py",
-        "Every string a crewmate writes into its own dashboard's agentic fields, on "
+        "Every string a mate writes into its own dashboard's agentic fields, on "
         "its way to the rendered page. The scrub runs on the way IN, so what the "
         "registry stores is already redacted and no later reader has to remember to "
         "scrub it. Both shared redactors run, exfiltration URLs first, and the walk "
@@ -1783,7 +1783,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "cap after it.",
     ),
     (
-        "Field values pushed to a crewmate's dashboard page",
+        "Field values pushed to a mate's dashboard page",
         "dashboard/handlers/member_dashboard_fields.py",
         "Every subscribed field's value on its way to the owner's socket and into the "
         "page's data island. This is the ONE place such a value is produced -- the "
@@ -1847,7 +1847,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "context_assembly/session_start.py",
-        "agent.py",
+        "agent_parts/spec_build.py",
         # Capture-side, not egress: redacts a Slack thread's first message as it
         # is READ from Slack, before the text is kept for the model's fenced
         # thread-context block and for the transcript's display-only notice row.
@@ -1913,6 +1913,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # path carries no home directory into the log ring / /api/logs stream.
         # It is an operational log line, not an output boundary of its own.
         "dashboard/stall_enrichment.py",
+        # Builds a crewmate's "waiting on you" list from its own thread, redacted the
+        # way the sidebar preview is. It returns data and serves nothing: the list
+        # leaves through `dashboard/crewmate_feed.py` into the crewmate's crew log,
+        # and is shown only through the Dashboard page's data island.
+        "dashboard/member_waiting.py",
+        # Redacts a crewmate's goal and milestone text the same way before appending
+        # it as a snapshot to that crewmate's own crew log. It serves nothing; the
+        # snapshot is shown only through the Dashboard page's data island.
+        "dashboard/crewmate_feed.py",
         # Gate-side log hygiene, same shape: the declared-name spec scan redacts
         # an agent name and the spec filenames it read from the user-writable
         # agents directory before naming them in the twin-specs WARNING in the
@@ -2830,6 +2839,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # this app's panel, not a core egress path.
         "apps/builtins/code_review_sage/sage_lib/followup.py",
         "apps/builtins/code_review_sage/backend/routes.py",
+        # `backend/routes_parts/publishing` scrubs a dismissed finding's reason before
+        # the run record stores it. Same classification as `backend/routes` above.
+        "apps/builtins/code_review_sage/backend/routes_parts/publishing.py",
         # Dev Fleet's redactor wrapper and the cohesive owners that apply it to
         # the app's own API/state/worktree surfaces, all carrying the same
         # non-core-egress classification. `gateway_routes` is the same surface

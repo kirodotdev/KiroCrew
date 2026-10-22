@@ -42,7 +42,7 @@ Three decisions:
 - **Session tools.** `session_create`, `session_send`, `session_read_message`,
   `session_stop` and `session_close` (`_session_tools` in
   `src/kiro_crew/mcp_dashboard_session_tools.py`) call `/api/session-control/*` on this
-  gateway. Those routes are MCP-only and strict (`server.py`, the
+  gateway. Those routes are MCP-only and strict (`dashboard/server_internal_paths.py`, the
   *Session control* block of the internal-secret path set). No argument names
   another machine.
 - **The proxy.** `api_instances_proxy` (`src/kiro_crew/dashboard/handlers_instances_peer.py`)

@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk import host_auth, native_allow_stores
 
 from .paths_lists import (
     _CREW_HOME_PREFIXES,
@@ -105,37 +105,35 @@ class _BuiltTargets(set[str]):
     RESOLVED come back spelled differently from the path it was asked about.
 
     WHICH paths those are is the entire scope of the flag, so they are named here
-    rather than left to be read as "every target". The build resolves five classes
-    of path and no others: ``$HOME``, ``KIROCREW_OS_HOME``, each entry of the
-    CALLER'S ``home_dirs`` list that carries a crew prefix, re-anchored under
-    ``KIROCREW_HOME``, each kiro-cli path in ``_KIRO_CLI_WRITE_TIER_LEAVES`` -- the
-    agents dir and the MCP registry leaf, resolved under ``$HOME`` AND re-anchored
-    under ``KIRO_HOME``, one class because they share one rule -- and each harness
-    credential leaf re-anchored under its own home override. Every
-    other member of the set comes from ``_anchor`` or
-    ``_anchor_both_separators``, neither of which touches the filesystem, so the
-    bulk of the set cannot report a traversal at all.
+    rather than left to be read as "every target". The build resolves six classes
+    of path and no others: ``$HOME``, ``KIROCREW_OS_HOME``, every entry of the
+    CALLER'S ``home_dirs`` list anchored under ``$HOME``, each such entry that
+    carries a crew prefix, re-anchored under ``KIROCREW_HOME``, each kiro-cli path
+    in ``_KIRO_CLI_WRITE_TIER_LEAVES`` -- the agents dir and the MCP registry leaf
+    -- re-anchored under ``KIRO_HOME``, and each harness credential leaf
+    re-anchored under its own home override. Every other member of the set -- the
+    copies re-anchored under the logical home, the home's realpath and
+    ``KIROCREW_OS_HOME`` -- comes from ``_anchor`` or ``_anchor_both_separators``,
+    neither of which touches the filesystem, so those copies cannot report a
+    traversal at all.
 
-    An ordinary symlinked dotfile under ``$HOME`` can set this flag, and a
-    dotfile-managed home is therefore a case to look for. The trigger is the union
-    this build already resolves: a crew-prefixed entry of the caller's
-    ``home_dirs`` under ``KIROCREW_HOME``, a kiro-cli path under ``$HOME`` or under
-    ``KIRO_HOME``, or a DECLARED credential leaf under whichever harness variable
-    relocates it. The kiro-cli arm is why a dotfile-managed ``~/.kiro`` reports a
-    traversal on the write tier: that is the case it exists to cover. So a
-    symlinked ``sessions`` or ``models`` leaf under a ``KIROCREW_HOME`` that sits
-    below ``$HOME`` pins the write tier, and a symlinked ``goose`` directory under
-    whatever ``XDG_CONFIG_HOME`` resolves to pins the tier handed that leaf. Read
-    that second one literally: the leaf resolved is
-    ``$XDG_CONFIG_HOME/goose/secrets.yaml``, so it is the exported root that has to
-    contain the symlink. A host whose ``XDG_CONFIG_HOME`` points somewhere other
-    than ``~/.config`` can symlink ``~/.config/goose`` all it likes and no build
-    will resolve it. What CANNOT set it is a dotfile in none of those classes,
-    because the bulk targets are never resolved. The roots themselves cannot
-    either: ``_resolve_root_anchors`` canonicalises every root first, so the
-    symlink has to sit BELOW the resolved root -- which is why relocating the
-    exported config root alone does not trip it while a symlinked ``goose``
-    directory under it does.
+    A symlinked dotfile under ``$HOME`` sets this flag whenever it is a protected
+    entry or sits on the path to one, so a dotfile-managed home is a case to look
+    for, and the commonest one. The trigger is the union this build resolves: a
+    ``home_dirs`` entry under ``$HOME`` (a linked ``~/.ssh``, ``~/.aws`` or
+    ``~/.kiro`` pins every tier whose list carries an entry under it), a
+    crew-prefixed entry of the caller's ``home_dirs`` under ``KIROCREW_HOME``, a
+    kiro-cli path under ``KIRO_HOME``, or a DECLARED credential leaf under whichever
+    harness variable relocates it. So a symlinked ``sessions`` or ``models`` leaf
+    under a ``KIROCREW_HOME`` that sits below ``$HOME`` pins the write tier, and a
+    symlinked ``goose`` directory pins the tier handed that leaf whether it sits
+    under ``~/.config`` or under whatever ``XDG_CONFIG_HOME`` resolves to, because
+    the leaf is resolved under each root. What CANNOT set it is a dotfile that is
+    neither a protected entry nor on the path to one: no build resolves it. The
+    roots themselves cannot either: ``_resolve_root_anchors`` canonicalises every
+    root first, so the symlink has to sit BELOW the resolved root -- which is why
+    relocating the exported config root alone does not trip it while a symlinked
+    ``goose`` directory under it does.
 
     The LEAF-BEARING override roots are ``KIROCREW_HOME``, ``KIRO_HOME``, and every
     variable in ``host_auth.home_override_env_vars()``. That table is the
@@ -195,7 +193,8 @@ def _home_dir_targets_uncached(
     for why); only direct callers and tests run it inline.
 
     Two passes over the same anchoring logic (:func:`_anchor_targets`) so the
-    ~130 per-leaf ``realpath`` calls travel as ONE child round trip instead of one
+    per-leaf ``realpath`` calls -- one per entry plus the override re-anchors, a
+    few hundred -- travel as ONE child round trip instead of one
     each: the first pass runs with no answers and only records which paths it asks
     for (every anchor derives from *roots* and *home_dirs*, never from an earlier
     answer, so the set is complete), then the batch is resolved and the second pass
@@ -337,28 +336,23 @@ def _anchor_targets(
                     if full_real is not None:
                         sensitive_targets.add(full_real.casefold())
                     break
-    # Both kiro-cli leaves are RESOLVED under the default home as well, not only
-    # under the override below. Anchoring them lexically is not enough: ``home``
-    # arrives already resolved and ``home_real`` covers a symlinked ``$HOME``
-    # ITSELF, but neither follows a symlink further down the path. A
-    # dotfile-managed ``~/.kiro`` or ``~/.kiro/settings`` -- the case
-    # :class:`_BuiltTargets` names as one to look for -- therefore leaves the real
-    # file outside the fence while the ``~``-spelled path inside it stays
-    # protected, and the agent simply writes the destination instead. What it wins
-    # there is what each leaf is fenced for: a planted spec the MCP gateway execs
-    # unsandboxed, or an ``autoApprove`` that skips the tool gate.
+    # Every entry is RESOLVED under the default home as well, not only anchored
+    # lexically. ``home`` arrives already resolved and ``home_real`` covers a
+    # symlinked ``$HOME`` ITSELF, but neither follows a symlink further down the
+    # path. A protected entry that is itself a link, or sits below one -- a
+    # dotfile-managed ``~/.aws``, ``~/.ssh`` or ``~/.kiro``, the case
+    # :class:`_BuiltTargets` names as one to look for -- leaves the store it points
+    # at outside every lexical anchor. The ``~``-spelled path stays protected, but a
+    # caller that checks the ``realpath`` of a path inside it, as most do, would
+    # match nothing, and the store would be read or written through its real path.
     #
-    # Same shape as the crew-prefix arm above (add the lexical form, then its
-    # resolved spelling when they differ) and guarded on *home_dirs* membership for
-    # the same reason as the overrides below: both leaves are write-tier only, so a
-    # target must not leak into the read gate.
-    for _cli_leaf in _KIRO_CLI_WRITE_TIER_LEAVES:
-        if _cli_leaf not in home_dirs:
-            continue
-        _cli_full = os.path.join(home, *_leaf_segments(_cli_leaf))
-        _cli_real = resolve_target(_cli_full)
-        if _cli_real is not None and _cli_real.casefold() != _cli_full.casefold():
-            sensitive_targets.add(_cli_real.casefold())
+    # Same shape as the crew-prefix arm above: the lexical form is already in the
+    # set, and its resolved spelling joins it. Driven from the caller's own
+    # *home_dirs*, so a write-tier leaf never reaches the read gate's set.
+    for d in home_dirs:
+        full_real = resolve_target(os.path.join(home, *_leaf_segments(d)))
+        if full_real is not None:
+            sensitive_targets.add(full_real.casefold())
     # Both kiro-cli leaves follow ``KIRO_HOME`` — kiro-cli's own home override,
     # honoured by ``kiro_agents_dir()`` and by the registry's own resolver. When it
     # is set, the specs the gateway execs live at ``<KIRO_HOME>/agents`` and the
@@ -369,10 +363,10 @@ def _anchor_targets(
     # ``KIROCREW_HOME`` expansion directly above (the ~/-rooted default forms stay,
     # so every location is always covered).
     #
-    # Driven from the SAME tuple as the ``$HOME`` loop rather than one arm per leaf:
-    # the two halves are the tuple's whole contract, so a third kiro-cli leaf is one
-    # tuple entry and not a third arm someone has to remember to add. The tail comes
-    # off the leaf spec (``_leaf_segments(leaf)[1:]`` drops the ``.kiro`` the override
+    # Driven from the tuple rather than one arm per leaf, so a third kiro-cli leaf is
+    # one tuple entry and not a third arm someone has to remember to add; its
+    # ``$HOME``-rooted half is the every-entry loop above. The tail comes off the
+    # leaf spec (``_leaf_segments(leaf)[1:]`` drops the ``.kiro`` the override
     # replaces), so no leaf's path is spelled twice and the two spellings cannot
     # drift apart.
     #
@@ -412,13 +406,14 @@ def _anchor_targets(
             if _full_real is not None:
                 sensitive_targets.add(_full_real.casefold())
     # Did any path this build resolved come through a symlink? Read off the memo
-    # this build already filled -- the five classes named on ``_BuiltTargets``, so
-    # one entry on a host with no home override set and about eighty with every one
-    # set -- which costs one pass over that dict and no extra filesystem work: the
-    # resolutions themselves are the expense and they have already happened. The
-    # bulk of the set never appears here, because ``_anchor`` and
-    # ``_anchor_both_separators`` build it without resolving anything. Normalised
-    # on both sides so a separator or case
+    # this build already filled -- the six classes named on ``_BuiltTargets``, so
+    # ``$HOME`` plus one entry per *home_dirs* entry on a host with no home override
+    # set, and about eighty more with every one set -- which costs one pass over
+    # that dict and no extra filesystem work: the resolutions themselves are the
+    # expense and they have already happened. The copies re-anchored under the
+    # logical home, the home's realpath and ``KIROCREW_OS_HOME`` never appear here,
+    # because ``_anchor`` and ``_anchor_both_separators`` build them without
+    # resolving anything. Normalised on both sides so a separator or case
     # difference cannot read as a symlink; a false positive here is merely the
     # short expiry, a false negative would be the stale window this bounds.
     differed = any(
@@ -640,15 +635,16 @@ def _home_targets_ttl(rebuild_secs: float, *, resolution_differed: bool = True) 
 
     *resolution_differed* is what keeps the long expiry off the one class of
     install it could hurt.  True means one of the paths the build RESOLVED came
-    back spelled differently -- in practice a symlinked leaf under a home-override
-    root, which is the whole population :class:`_BuiltTargets` enumerates -- and
-    that resolution-derived entry is exactly what a repoint can move out from
-    under a cached set, the deeper-leaf residual.  There the expiry is
-    pinned to the floor, so that window stays at 0.1s and does not grow.  False
-    means nothing resolved differently, so the set holds nothing a repoint can
-    stale WITHOUT first creating a symlink inside the crew home, which is a write
-    the write gate refuses; the adaptive expiry applies.  It defaults to True so
-    every caller that cannot prove otherwise gets the short expiry.
+    back spelled differently -- in practice a protected entry under ``$HOME`` that
+    is, or sits below, a symlink, or a symlinked leaf under a home-override root,
+    the population :class:`_BuiltTargets` enumerates -- and that
+    resolution-derived entry is exactly what a repoint can move out from under a
+    cached set, the deeper-leaf residual.  There the expiry is pinned to the
+    floor, so that window stays at 0.1s and does not grow.  False means nothing
+    resolved differently, so the set holds nothing a repoint can stale WITHOUT
+    first creating a symlink at a protected entry or inside the crew home, which
+    is a write the write gate refuses; the adaptive expiry applies.  It defaults
+    to True so every caller that cannot prove otherwise gets the short expiry.
 
     A STALLED rebuild never reaches here -- it raises and no entry is written --
     so a dead mount cannot inflate the expiry.  A zero or negative duration (a
@@ -701,29 +697,29 @@ def _report_expiry_pin(home_dirs: list[str], pinned: bool) -> None:
     """Say once per tier, on each transition, which expiry that build selects.
 
     Without this the availability half self-disables in silence. On an install
-    whose RESOLVED leaf under a home-override root is a symlink -- a crew-prefixed
-    entry of the caller's ``home_dirs`` under ``KIROCREW_HOME``, a kiro-cli path
-    under ``$HOME`` or ``KIRO_HOME``, or a declared harness credential leaf under any
-    variable in
+    where a path the build RESOLVED came through a symlink -- a ``home_dirs`` entry
+    under ``$HOME``, a crew-prefixed entry of the caller's ``home_dirs`` under
+    ``KIROCREW_HOME``, a kiro-cli path under ``KIRO_HOME``, or a declared harness
+    credential leaf under any variable in
     ``host_auth.home_override_env_vars()`` --
     the build that was handed that leaf reports a traversal, ITS expiry is
     therefore the floor, and both knobs read as no-ops for that tier to whoever
     tunes them. The refusals then come back with nothing in the log to say why the
     fix did not apply to this host.
 
-    A dotfile-managed home IS a case to look for. The trigger is narrower than
-    "any symlinked dotfile" but not exotic: the symlinked path has to fall in one
-    of the three classes above -- a crew-prefixed entry of the caller's
-    ``home_dirs`` under ``KIROCREW_HOME``, a kiro-cli path under ``$HOME`` or
-    ``KIRO_HOME``, or a declared harness credential leaf -- and it has to sit BELOW the resolved
-    root, since ``_resolve_root_anchors`` canonicalises each root first. A
-    symlinked ``sessions`` leaf under a ``KIROCREW_HOME`` below ``$HOME`` is that
-    shape, and so is a ``goose`` directory symlinked into a store underneath
-    whatever ``XDG_CONFIG_HOME`` resolves to -- the leaf resolved is
-    ``$XDG_CONFIG_HOME/goose/secrets.yaml``, so the symlink has to be under the
-    exported root and not under ``~/.config`` unless that is the same directory. A
-    dotfile in none of those classes cannot report
-    a traversal, because the bulk targets are never resolved.
+    A dotfile-managed home IS a case to look for, and the commonest one. The
+    trigger is narrower than "any symlinked dotfile" but not exotic: the symlinked
+    path has to be a protected entry or sit on the path to one -- a ``home_dirs``
+    entry under ``$HOME`` such as a linked ``~/.ssh`` or ``~/.aws``, a
+    crew-prefixed entry under ``KIROCREW_HOME``, a kiro-cli path under
+    ``KIRO_HOME``, or a declared harness credential leaf under its override -- and
+    it has to sit BELOW the resolved root, since ``_resolve_root_anchors``
+    canonicalises each root first. A symlinked ``sessions`` leaf under a
+    ``KIROCREW_HOME`` below ``$HOME`` is that shape, and so is a ``goose`` directory
+    symlinked into a store under ``~/.config`` or under whatever
+    ``XDG_CONFIG_HOME`` resolves to. A dotfile that is neither a protected entry
+    nor on the path to one cannot report a traversal, because no build resolves
+    it.
 
     The dedup is per ``home_dirs`` list, because that list is what decides the
     answer. The gates hand the builder three different ones -- the read gate passes
@@ -754,7 +750,7 @@ def _report_expiry_pin(home_dirs: list[str], pinned: bool) -> None:
     if pinned:
         logger.info(
             "sensitive-path anchor cache (%s tier): expiry pinned to the %.1fs floor "
-            "because a path under a home-override root resolved through a symlink, so "
+            "because a protected path resolved through a symlink, so "
             "the cost-tracking expiry and both of its knobs do not apply to this tier "
             "while that holds",
             tier,
@@ -837,7 +833,11 @@ class _ResolvedRoots(NamedTuple):
 #: Read once at import, like the leaf list itself: the declarations are static
 #: data, and re-projecting per gate call would put a table walk on the hot path.
 _OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    host_auth.override_anchored_leaves()
+    host_auth.override_anchored_leaves() + native_allow_stores.override_anchored_leaves()
+)
+#: Every variable an anchored leaf names; each root is resolved and keys the cache.
+_ADAPTER_ROOT_ENVS: tuple[str, ...] = tuple(
+    dict.fromkeys(host_auth.home_override_env_vars() + native_allow_stores.override_env_vars())
 )
 
 
@@ -917,7 +917,7 @@ def _resolve_root_anchors(logical_home: str) -> _ResolvedRoots:
     and it is the one the crash dumps named.
     """
     overrides = {field: _expanded_env_root(env) for field, env in _OVERRIDE_ROOT_ENVS}
-    adapters = tuple((env, _expanded_env_root(env)) for env in host_auth.home_override_env_vars())
+    adapters = tuple((env, _expanded_env_root(env)) for env in _ADAPTER_ROOT_ENVS)
     wanted = [logical_home, *overrides.values(), *(root for _env, root in adapters)]
     distinct = list(dict.fromkeys(p for p in wanted if p is not None))
     answers = dict(zip(distinct, _realpaths_or_none(distinct)))
@@ -1103,7 +1103,7 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     anchor ordinarily lives under and the one the crash dumps named.
 
     It carries its OWN budget (``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS``) because that
-    single job does ~130 ``realpath`` calls where a candidate resolution does one or
+    single job does a few hundred ``realpath`` calls where a candidate resolution does one or
     two: sharing the candidate's budget sized the wait to the wrong work and let an
     ordinarily-slow rebuild on a loaded host read as a stalled mount.
 

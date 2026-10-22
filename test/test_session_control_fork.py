@@ -722,9 +722,12 @@ class TestTheRoute:
         assert owners, "expected the server_runtime owners beside server.py"
         routes = source + "".join(path.read_text(encoding="utf-8") for path in owners)
         assert '_deferred("session_control", "api_session_control_fork")' in routes
-        # The strict set is the only one left in server.py, so its segment ends at the
-        # mixed set that follows it.
-        strict = source.split("_STRICT_INTERNAL_API_PATHS")[1].split("_MIXED_INTERNAL_API_PATHS")[0]
+        # The strict set is defined in the internal-paths data module, so its segment
+        # ends at the mixed set that follows it there.
+        paths = (Path(server_mod.__file__).parent / "server_internal_paths.py").read_text(
+            encoding="utf-8"
+        )
+        strict = paths.split("_STRICT_INTERNAL_API_PATHS")[1].split("_MIXED_INTERNAL_API_PATHS")[0]
         assert '"/api/session-control/fork",' in strict
 
 

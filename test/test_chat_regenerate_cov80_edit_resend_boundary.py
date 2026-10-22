@@ -22,6 +22,7 @@ from chat_regenerate_cov80_helpers import state_fixture  # noqa: F401
 from chat_regenerate_cov80_helpers import _client, _make_regen_app
 
 from kiro_crew.dashboard.chat_regenerate import api_chat_slot_edit_resend
+from kiro_crew.testing.wait import async_wait_until
 
 # ── edit-resend: the prospective copy must not touch the live slot ──
 # ``copy.copy`` is shallow, so reassigning ``messages`` alone leaves every other
@@ -388,11 +389,9 @@ async def test_edit_resend_abort_hands_a_diverted_send_to_the_queue_drain(state)
                 "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
             )
             assert resp.status == 503
-            for _ in range(50):
-                if drain.await_count:
-                    break
-                # flake-ok: pre-existing 20 ms pacing of a 50-pass poll for the queue-drain hand-off, whose assert below fails loudly, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.02)
+            await async_wait_until(
+                lambda: drain.await_count, describe=lambda: "the queue drain was never handed off"
+            )
 
     drain.assert_awaited_once()
     run.assert_not_awaited()

@@ -18,8 +18,8 @@ cost seconds instead of milliseconds.
 
 It answers exactly one kind of question, in two shapes: "what are the
 symlink-resolved spellings of this path" (one candidate), and "what is the
-``realpath`` of each of these paths" (the anchor rebuild, ~130 paths in one
-frame so the parent pays one round trip rather than one per anchor).  It does not
+``realpath`` of each of these paths" (the anchor rebuild, a few hundred paths in
+one frame so the parent pays one round trip rather than one per anchor).  It does not
 execute, compile, import or evaluate anything derived from the request; the only
 thing it does with the bytes it is handed is hand them to ``os.path.realpath`` and
 ``pathlib.Path.resolve``.  That is the trust boundary: the child is strictly less
@@ -128,7 +128,7 @@ def realpath_many(raw_paths: list[bytes]) -> list[bytes]:
     """``os.path.realpath`` of every path, in order; ``b""`` where it raised.
 
     Mirrors ``security.paths._realpath_or_none`` (same swallowed exceptions) for
-    the anchor rebuild, which asks about ~130 paths per build: one frame each way
+    the anchor rebuild, which asks about a few hundred paths per build: one frame each way
     instead of one round trip per anchor.  The empty answer is unambiguous because
     the parent absolutizes before sending, so a real answer is never empty.
     """

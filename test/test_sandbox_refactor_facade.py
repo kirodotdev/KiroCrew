@@ -155,6 +155,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _POLICY_CACHE_LEAF _VOICE_RUNTIME_LEAF _CREW_HOME_DEFAULT _CREW_HOME_PREFIXES
         _LIVE_TARGET_LEAF _LIVE_TARGET_STAGING_LEAF _AUTH_STORE_STAGING_LEAF MD_NOTEBOOK_APP_NAME
         _MD_NOTEBOOK_STATE_LEAVES _MD_NOTEBOOK_STAGING_LEAF _CREW_HIDDEN_LEAVES
+        _MD_NOTEBOOK_STATE_FILES _MD_NOTEBOOK_RETIRED_STATE_LEAVES
         _CREW_UNREADABLE_MASK_LEAVES _RELOCATED_CREW_HIDDEN_LEAVES _CREW_READONLY_LEAVES
         _CREW_SANDBOX_VISIBLE_LEAVES _crew_home_entries _CREW_HIDDEN_DIRS _CREW_READONLY_TARGETS
         _CREW_CHILD_WITHHELD_LEAVES _CREW_CHILD_READABLE_LEAVES crew_host_runtime_leaves
@@ -206,6 +207,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _live_target_multilink_detail _live_target_symlink_detail _refuse_unless_sole_regular_link
         live_target_pointer_unfitness _md_notebook_degraded_mask_dirs
         _sweep_legacy_md_notebook_temps _MD_NOTEBOOK_STATE_COMPONENTS _open_dir_anchored
+        _migrate_md_notebook_legacy_state
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
@@ -348,9 +350,7 @@ _CARVED_IMPORTS: dict[str, frozenset[str]] = {
     "kiro_crew.sandbox_tiers": frozenset({"kiro_crew.sandbox_leaves"}),
     "kiro_crew.sandbox_precreate": frozenset({"kiro_crew.sandbox_leaves"}),
     "kiro_crew.sandbox_seals": frozenset({"kiro_crew.sandbox_precreate"}),
-    "kiro_crew.sandbox_aliases": frozenset(
-        {"kiro_crew.sandbox_leaves", "kiro_crew.sandbox_precreate", "kiro_crew.sandbox_seals"}
-    ),
+    "kiro_crew.sandbox_aliases": frozenset({"kiro_crew.sandbox_leaves", "kiro_crew.sandbox_seals"}),
     "kiro_crew.sandbox_staging": frozenset(
         {
             "kiro_crew.sandbox_aliases",

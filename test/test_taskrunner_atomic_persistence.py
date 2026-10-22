@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
+from kiro_crew.testing.wait import await_until
 
 
 def _make_runner(work_dir: Path) -> TaskRunner:
@@ -442,7 +443,7 @@ class TestBackgroundStartAdmission:
 
         async def exercise() -> None:
             first = asyncio.create_task(runner.start_background(spec))
-            await asyncio.wait_for(first_persist_entered.wait(), timeout=2)
+            await await_until(first_persist_entered, timeout=2, what="the first persist entering")
             second = asyncio.create_task(runner.start_background(spec))
             await asyncio.sleep(0)
 

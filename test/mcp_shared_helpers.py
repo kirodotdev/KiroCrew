@@ -19,6 +19,7 @@ import json
 import pytest
 
 import kiro_crew.mcp_shared as mcp_shared
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -106,17 +107,14 @@ class _LoopHarness:
         writer.join(timeout)
         assert not writer.is_alive(), "the loop stopped reading stdin"
 
-    def wait_for(self, predicate, timeout: float = 5.0) -> bool:
-        import time
-
-        # flake-ok: pre-existing bounded condition poll; the caller asserts what it returns at the deadline; moved verbatim
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            # flake-ok: the 50 ms interval of that bounded poll, which re-reads the state each pass; moved verbatim
-            time.sleep(0.05)
-        return predicate()
+    def wait_for(self, predicate, timeout: float | None = None) -> bool:
+        """Wait until ``predicate`` holds; raises by name, with the responses read so
+        far, when it never does. Returns ``True`` so an ``assert`` at the caller reads
+        as the barrier it is."""
+        wait_until(
+            predicate, timeout=timeout, describe=lambda: f"responses so far: {self.responses!r}"
+        )
+        return True
 
     def close(self) -> None:
         self._os.close(self._wfd)

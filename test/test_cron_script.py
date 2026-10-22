@@ -1375,6 +1375,131 @@ class TestMcpToolClient:
         assert "AKIA1234567890123456" not in tail
         assert "boom" in tail
 
+    def test_stderr_tail_redacts_credential_straddling_the_slice_boundary(self, tmp_path):
+        """A key straddling the tail cut must not leak a fragment.
+
+        Sized so slicing FIRST would open ten characters INTO the access
+        key, leaving a digit fragment the key regex cannot match. The whole
+        capture is redacted before the tail slice cuts, so redaction sees
+        the key whole.
+        """
+        import re
+
+        from kiro_crew.cron_script import McpToolClient
+        stderr_path = tmp_path / "stderr.log"
+        filler = "x" * 1000
+        # Synthetic key id: deliberately well-formed so the redaction regex has
+        # a real target; it is not a credential.
+        secret = "AKIA" + "1234567890123456"
+        stderr_path.write_text(filler + secret + "x" * 1006 + " failure")
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert len(tail) <= 1024
+        assert secret not in tail
+        assert "AKIA" not in tail
+        assert re.search(r"\d{4,}", tail) is None
+        assert "failure" in tail
+
+    def test_stderr_tail_redacts_url_longer_than_any_window(self, tmp_path):
+        """A URL longer than any read window must not leak its query tail.
+
+        The URL itself spans ~6 KiB, so its scheme sits thousands of
+        characters from EOF while the query tail lands inside the served
+        tail; only a full-capture redaction pass sees the scheme and scrubs
+        the match whole. A windowed read would scan the tail without its
+        scheme and serve the raw query.
+        """
+        from kiro_crew.cron_script import McpToolClient
+        stderr_path = tmp_path / "stderr.log"
+        # Long query triggers redact_exfiltration_urls' length-based
+        # heuristic, as in the test below; here it is long enough that no
+        # fixed window reaches back to the scheme.
+        long_query = "data=" + ("a" * 6000)
+        url = f"https://evil.example.com/leak?{long_query}"
+        stderr_path.write_text("x" * 100 + url + "\nfailure")
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert len(tail) <= 1024
+        assert "evil.example.com/leak" not in tail
+        assert "a" * 100 not in tail
+        assert "failure" in tail
+
+    def test_stderr_tail_of_a_large_capture_is_still_served_redacted(self, tmp_path):
+        """A capture far past the read span still yields a redacted tail.
+
+        Only the last ``_STDERR_TAIL_READ_SPAN`` bytes are read, so a long
+        session's stderr costs a fixed amount, and its diagnostic is kept.
+        """
+        from kiro_crew import cron_script
+        from kiro_crew.cron_script import McpToolClient
+
+        stderr_path = tmp_path / "stderr.log"
+        noise = ("log line\n" * (4 * cron_script._STDERR_TAIL_READ_SPAN // 9))
+        # Synthetic key id, split so no scanner reads it as a credential.
+        payload = noise + "key " + "AKIA" + "1234567890123456" + "\nfailure"
+        stderr_path.write_text(payload)
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert len(tail) <= 1024
+        assert "AKIA" not in tail
+        assert tail.endswith("failure")
+
+    def test_stderr_tail_drops_the_line_severed_by_the_read_start(self, tmp_path):
+        """A line cut by the bounded read's start is never served."""
+        from kiro_crew import cron_script
+        from kiro_crew.cron_script import McpToolClient
+
+        stderr_path = tmp_path / "stderr.log"
+        span = cron_script._STDERR_TAIL_READ_SPAN
+        # One line longer than the whole read: its anchor is gone.
+        stderr_path.write_text("Bearer " + "q" * (2 * span))
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert "q" * 16 not in tail
+
+    def test_stderr_tail_masks_a_key_block_opened_before_the_read(self, tmp_path):
+        """A private-key body whose BEGIN sits before the read stays masked."""
+        from kiro_crew import cron_script
+        from kiro_crew.cron_script import McpToolClient
+
+        stderr_path = tmp_path / "stderr.log"
+        span = cron_script._STDERR_TAIL_READ_SPAN
+        body = "\n".join("K" * 64 for _ in range(span // 32))
+        label = "RSA " + "PRIVATE KEY"
+        stderr_path.write_text(
+            f"-----BEGIN {label}-----\n" + body + f"\n-----END {label}-----\nfailure"
+        )
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert "K" * 64 not in tail
+        assert tail.endswith("failure")
+
+    def test_stderr_tail_masks_an_unterminated_key_block_opened_before_the_read(
+        self, tmp_path
+    ):
+        """A key block that opened before the read and never closes stays masked.
+
+        No marker is left inside the read, so only a scan of the skipped
+        prefix knows the block is open.
+        """
+        from kiro_crew import cron_script
+        from kiro_crew.cron_script import McpToolClient
+
+        stderr_path = tmp_path / "stderr.log"
+        span = cron_script._STDERR_TAIL_READ_SPAN
+        body = "\n".join("K" * 64 for _ in range(span // 32))
+        label = "RSA " + "PRIVATE KEY"
+        stderr_path.write_text(f"-----BEGIN {label}-----\n" + body + "\nfailure")
+        client = object.__new__(McpToolClient)
+        client._stderr_file = SimpleNamespace(name=str(stderr_path))
+        tail = client._stderr_tail()
+        assert "K" * 16 not in tail
+
     def test_stderr_tail_redacts_exfiltration_urls(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"

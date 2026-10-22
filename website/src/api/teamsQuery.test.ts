@@ -10,7 +10,7 @@ describe('withSavedTeam', () => {
   const triage: CrewTeam = { id: 'aaaaaaaaaaaa', name: 'Triage', members: ['oncall', 'scribe'] }
   const release: CrewTeam = { id: 'bbbbbbbbbbbb', name: 'Release', members: ['fixer'] }
 
-  it('takes a moved crewmate off every other cached team, in place', () => {
+  it('takes a moved mate off every other cached team, in place', () => {
     const saved: CrewTeam = { ...release, members: ['fixer', 'scribe'] }
     expect(withSavedTeam([triage, release], saved)).toEqual([
       { ...triage, members: ['oncall'] },

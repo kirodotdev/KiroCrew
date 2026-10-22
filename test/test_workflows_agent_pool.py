@@ -15,6 +15,7 @@ import asyncio
 import pytest
 from overload_fakes import settle_dependency_park, settle_store_writes
 
+from kiro_crew.testing.wait import async_wait_until
 from kiro_crew.workflows.agent_pool import _WorkflowSessionWorker, build_pooled_agent_fn
 
 
@@ -425,14 +426,14 @@ async def _run_service(pool_agents: bool, sessions) -> None:
     svc = WorkflowService(sessions=sessions, persist=False, pool_agents=pool_agents)
     out = await svc.start(_SIX_AGENTS, name="six")
     rid = out["run_id"]
-    # Poll to terminal (mirrors test_workflows_service._wait_terminal).
-    for _ in range(200):
+
+    # Wait for a terminal status (mirrors test_workflows_service._wait_terminal).
+    def _terminal():
         snap = svc.status(rid)
-        if snap and snap["status"] != "running":
-            assert snap["status"] == "finished", snap
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError("run did not finish")
+        return snap if snap and snap["status"] != "running" else None
+
+    snap = await async_wait_until(_terminal, describe=lambda: f"status: {svc.status(rid)}")
+    assert snap["status"] == "finished", snap
 
 
 @pytest.mark.asyncio

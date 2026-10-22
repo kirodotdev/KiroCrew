@@ -518,7 +518,35 @@ def render_package_page(
     # validator's answer is about the page that was written.
     if not scripts:
         html = dashboard_frame.fill_bindings_as_text(html, read)
-    return dashboard_frame.compose_body(html, read)
+    return dashboard_frame.compose_body(_theme_style(package) + html, read)
+
+
+def _theme_style(package: Mapping[str, Any]) -> str:
+    """The package's ``theme`` as a ``<style>`` element ahead of its page, or ``""``.
+
+    After the host's own stylesheet, which :func:`~kiro_crew.dashboard_frame.compose_body`
+    puts first, so a token the package sets wins over the host's default for it. A theme
+    the gate would refuse draws nothing, so the page still renders in the host's look.
+    Redacted the way the page's markup is (``member_dashboard._template_text_safe``).
+    """
+    from kiro_crew.artifact_store.dashboard_package import theme_stylesheet
+    from kiro_crew.artifact_store.model import ArtifactValidationError
+
+    raw = package.get("theme")
+    if raw is None:
+        return ""
+    try:
+        sheet = theme_stylesheet(raw)
+    except ArtifactValidationError:
+        logger.warning("dashboard package theme refused at render; drawing the page without it")
+        return ""
+    if not sheet:
+        return ""
+    # Scrubbed like the page's own markup: the crewmate wrote the tokens and the css,
+    # and this text leaves in the page the read route returns.
+    from kiro_crew.dashboard.handlers.member_dashboard import _template_text_safe
+
+    return _template_text_safe(f"<style>{sheet}</style>\n")
 
 
 #: What the script-grant audit calls a page that is staged and has no artifact of its own.

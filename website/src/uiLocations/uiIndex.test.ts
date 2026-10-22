@@ -287,6 +287,10 @@ const FORWARDING_PROVEN = [
   // ContextMenuItem, which spreads its props onto the Radix item the same way
   // (src/components/ui/context-menu.tsx); the row menu draws the dropdown one.
   'Item',
+  // Proven in src/test/NotificationFeed.senderStacks.test.tsx: the feed's
+  // two-press clear forwards its ref to its <button>, and both clear-all
+  // call sites register their location.
+  'NotificationClearButton',
 ]
 
 describe('a marker must register the element it sits on', () => {
@@ -1382,11 +1386,11 @@ describe('the committed index', () => {
     expect(preview.placements[0].parent_ids).toEqual(['page.settings', 'settings.tab.chat', 'settings.sub.chat.transcript'])
   })
 
-  it('keeps Crewmates behind its preview, naming the switch that shows it', () => {
+  it('keeps Mates behind its preview, naming the switch that shows it', () => {
     expect(byId.get('page.members')!.placements[0].requires).toEqual([
-      { kind: 'preview_flag', flag: 'mc-preview-crew', location: 'setting:developer.crewmates' },
+      { kind: 'preview_flag', flag: 'mc-preview-crew', location: 'setting:developer.mates' },
     ])
-    expect(byId.has('setting:developer.crewmates')).toBe(true)
+    expect(byId.has('setting:developer.mates')).toBe(true)
   })
 
   it('resolves every parent, prerequisite and label it references', () => {

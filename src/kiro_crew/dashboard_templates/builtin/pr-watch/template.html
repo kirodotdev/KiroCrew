@@ -69,6 +69,7 @@
   <div class="sub" style="margin-top: 7px;">
     <span data-dashboard-field="items">-</span> <span data-i18n="on_board">on the board,</span>
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown">not shown (list truncated)</span>
+    <span data-dashboard-field="forgotten" hidden></span>
   </div>
 
   <script>
@@ -87,18 +88,18 @@
           on_board: 'on the board,', not_shown: 'not shown (list truncated)',
           lane_fail: 'red', lane_skipped: 'did not run', lane_running: 'running', lane_pass: 'green',
           owner_not_said: 'owner not said',
-          lanes_all_green: 'Every lane the crewmate read came back green.',
-          lanes_none: 'No lane reading yet. The crewmate has not written one.',
+          lanes_all_green: 'Every lane the mate read came back green.',
+          lanes_none: 'No lane reading yet. The mate has not written one.',
           asks_none: 'Nothing is waiting on a person right now.',
           no_lane_read: 'no lane read', items_no_pr: 'No item on this board carries a PR number.',
           v_no_word: 'No word yet', v_still_red: 'Still red', v_needs_you: 'Needs you',
           v_checks_green: 'Checks green',
-          v_say_none: 'The crewmate has not written a lane reading, so this page cannot say.',
+          v_say_none: 'The mate has not written a lane reading, so this page cannot say.',
           v_say_red: '{n} lane(s) in the way', v_say_red_asks: ', and {n} ask(s) waiting on a person.',
           v_say_needs: 'Every lane is green; {n} ask(s) are waiting on a person.',
-          v_say_green: 'Every lane the crewmate read came back green. Green is not merged.',
+          v_say_green: 'Every lane the mate read came back green. Green is not merged.',
           kpi_waiting: 'waiting on you', unit_lanes: 'lane(s)', unit_asks: 'ask(s)',
-          wrote: 'crewmate wrote this',
+          wrote: 'mate wrote this',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
           state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown'
         },
@@ -177,6 +178,14 @@
       function arr(name) {
         var v = fields()[name];
         return Array.isArray(v) ? v.filter(function (e) { return e && typeof e === 'object'; }) : [];
+      }
+      // The closed items the work fold no longer holds. The fold keeps only the open
+      // items and the newest closed ones, so "on the board" adds these to `items`.
+      // A missing or malformed value reads as zero, the way goal-board reads it.
+      function forgottenItems() {
+        var f = fields().forgotten;
+        var v = f && typeof f === 'object' ? f.items : null;
+        return typeof v === 'number' && isFinite(v) && v > 0 ? Math.floor(v) : 0;
       }
       function laneRow(state) {
         for (var i = 0; i < LANE_STATES.length; i++) if (LANE_STATES[i][0] === state) return LANE_STATES[i];
@@ -434,7 +443,7 @@
 
         // Each array cell gets a count: the host binds by textContent, so left alone
         // it reads as dumped JSON.
-        var counts = { lanes: lanes.length, items: items.length, pending_requests: requests.length };
+        var counts = { lanes: lanes.length, items: items.length + forgottenItems(), pending_requests: requests.length };
         for (var key in counts) {
           if (!Object.prototype.hasOwnProperty.call(counts, key)) continue;
           var cell = document.querySelector('[data-dashboard-field="' + key + '"]');

@@ -635,10 +635,16 @@ Two views behind one route:
   narrow rail, and that collapsed flag persists. The PDF column is capped at
   `PDF_MAX_VIEWPORT_SHARE` (half the viewport), and the co-author panel's ceiling
   yields to the tree and PDF so the editor keeps at least `MIN_EDITOR_WIDTH`
-  (280px). Whether the co-author panel is open persists too (`CHAT_OPEN_KEY`),
-  read and written only on a desktop viewport: on a narrow viewport the panel
-  covers the pane, so it opens closed and closing it there does not rewrite the
-  desktop layout.
+  (280px). Whenever Papyrus uses that desktop layout, the editor row also keeps
+  a 180px minimum. The editor row and co-author column are size-contained, so
+  editor content and a long transcript cannot enlarge the shared row. The status
+  bar and diagnostics remain non-shrinking siblings:
+  diagnostics are capped at 224px and scroll internally, while the shell's page
+  scroller keeps the lower workspace reachable when the window is shorter than
+  the combined stack. Whether the co-author panel is open persists too
+  (`CHAT_OPEN_KEY`), read and written only on a desktop viewport: on a narrow
+  viewport the panel covers the pane, so it opens closed and closing it there
+  does not rewrite the desktop layout.
 
 Dependency decisions, both deliberate:
 

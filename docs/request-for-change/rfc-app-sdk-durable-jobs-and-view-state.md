@@ -67,8 +67,8 @@ query. That reattachment is AWS Control's own code, not an SDK hook.
 
 Code Review Sage implements its own durable review-run registry. Its backend
 stores lightweight run descriptors in `_RUNS`, writes the registry to
-`runs.json`, and reloads it at startup (`src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py`,
-`_RUNS`, `_runs_file`, `_save_runs`, and `_load_runs`). On load,
+`runs.json`, and reloads it at startup (`_RUNS` in `src/kiro_crew/apps/builtins/code_review_sage/backend/routes.py`;
+`_runs_file`, `_save_runs`, and `_load_runs` in `src/kiro_crew/apps/builtins/code_review_sage/backend/routes_parts/registry.py`). On load,
 `_load_runs` marks a persisted `running` review as `interrupted` because the
 in-process driver did not survive the restart. The test
 `test_orphaned_running_becomes_interrupted_on_load` enforces that recovery

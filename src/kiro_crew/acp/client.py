@@ -268,6 +268,7 @@ from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rule
 from kiro_crew.acp.skill_reads import SkillReadTracker  # noqa: F401
 from kiro_crew.acp.transport_errors import (  # noqa: F401
     AcpAuthRequired,
+    AcpDelegateLaunchFailed,
     AcpError,
     AcpModelUnavailable,
     AcpProcessDied,
@@ -277,6 +278,7 @@ from kiro_crew.acp.transport_errors import (  # noqa: F401
     _raise_acp_error,
     compaction_failure_detail,
     compaction_failure_is_transient,
+    is_delegate_launch_failure_output,
     is_sandbox_init_failure_output,
     registration_rate_limited_error,
     registration_throttle_line,

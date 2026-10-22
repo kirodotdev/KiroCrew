@@ -296,7 +296,7 @@ async def _handle_incidents(request: web.Request) -> web.StreamResponse:
     # single-incident ``GET /incident`` route cannot be admitted to
     # internal-secret callers without prefix-admitting the human-only
     # ``/incident/proposal/decide`` (see ``_MIXED_INTERNAL_API_PATHS`` in
-    # dashboard/server.py), so SOP-driven agents read one incident here.
+    # dashboard/server_internal_paths.py), so SOP-driven agents read one incident here.
     id_filter = request.query.get("id", "").strip()
     # Off-loop: full index parse on a polled endpoint.
     index = await asyncio.to_thread(store.read_index)

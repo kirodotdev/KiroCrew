@@ -193,7 +193,9 @@ class TestConsolidationCannotResurrectADeletedNamespace(unittest.IsolatedAsyncio
         `create_task`, or releases it in the handler instead, the refusal above
         stops covering the window it exists to cover.
         """
-        with open(self.mod.__file__, encoding="utf-8") as fh:
+        with open(
+            Path(self.mod.__file__).with_name("routes_parts") / "namespaces.py", encoding="utf-8"
+        ) as fh:
             src = fh.read()
 
         handler = src.split("async def _handle_consolidate", 1)
@@ -225,7 +227,9 @@ class TestConsolidationCannotResurrectADeletedNamespace(unittest.IsolatedAsyncio
         offloaded helper under `_NS_OPS_LOCK`, so no 409 can be returned after a
         prune has been applied.
         """
-        with open(self.mod.__file__, encoding="utf-8") as fh:
+        with open(
+            Path(self.mod.__file__).with_name("routes_parts") / "namespaces.py", encoding="utf-8"
+        ) as fh:
             src = fh.read()
         handler = src.split("async def _handle_namespaces", 1)[1]
         body = handler.split("\nasync def ", 1)[0]

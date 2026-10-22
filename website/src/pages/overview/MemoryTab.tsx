@@ -9,6 +9,7 @@ import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { esc } from '../../api/helpers'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import VectorMemoryCard, { SEMANTIC_CARD_ID } from './VectorMemoryCard'
 import EmbeddingModelCard from './EmbeddingModelCard'
 import MemoryStoreCard, {
@@ -533,14 +534,14 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
             report={findReport(consolidateFailure.raw)}
             footer={<>
               {consolidateFailure.session !== undefined && (
-                /* The session by its TITLE, as the sidebar names it (the key only when
-                   it has none), and a way to act on it: the same guarded navigation as
+                /* The session by its TITLE, as the sidebar names it ("Untitled session"
+                   when it has none), and a way to act on it: the same guarded navigation as
                    the tab's other exits, since a click leaves the drafts this tab holds. */
                 <span className="block text-[12px]" data-testid="consolidate-failed-session">
                   <Trans
                     i18nKey="pages.overview.memoryTab.consolidate_failed_session"
                     count={consolidateFailure.count}
-                    values={{ session: consolidateFailure.session.title || consolidateFailure.session.key }}
+                    values={{ session: sessionDisplayTitle(consolidateFailure.session) }}
                     // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the control's label is the session title `Trans` renders inside it
                     components={{ session: <button
                       type="button"

@@ -104,7 +104,7 @@ from kiro_crew.agent_sdk.backends import (
 # no kiro agent spec at all. A side turn on it therefore runs ``REJECT_ALL`` until a
 # read-only posture is expressed in the harness's own permission vocabulary.
 #
-# goose is a member on measurement, on goose 1.50.1. With the user's own
+# goose is a member on measurement, measured on goose 1.50.1. With the user's own
 # ``permission.yaml`` listing ``shell``, ``tree``, ``analyze`` and ``read_image``
 # under ``always_allow``, a session on the separate home raised
 # ``session/request_permission`` for every tool the model called (``tree``,
@@ -129,7 +129,8 @@ from kiro_crew.agent_sdk.backends import (
 # ``glob``, ``write``, ``bash`` and an unknown ``mcp__probe__read`` all asked;
 # rejected writes and commands left no file. The gate may approve only stock
 # dsh-owned ``read``, ``grep`` and ``glob`` calls with absolute targets. Unknown,
-# shadowed, MCP and command tools fail closed.
+# shadowed, MCP and command tools fail closed. The capture is
+# ``test/fixtures/acp_frames/deepseek/side-read-only-live.jsonl``.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
     {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK}
 )
@@ -238,6 +239,10 @@ ACP_BACKENDS_OPEN_EXTERNAL_URL = frozenset({ACP_BACKEND_KAS})
 #:
 #: Membership authorizes the ROUTE only. The handshake does not announce the
 #: channel (``KAS_CLIENT_CAPABILITIES``), so a member asks nothing yet.
+#:
+#: kiro-cli is not a member: it runs the spec's hooks itself
+#: (see ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``, which excludes it) and sends no
+#: ``_kiro/hooks/*`` request.
 ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 
 #: Backends whose session never runs the agent spec's own ``hooks``, so Crew's turn

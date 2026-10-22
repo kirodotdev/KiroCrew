@@ -227,6 +227,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, sid: 'str', *, undecided: 'bool | None' = None, "
         "from_mapping: 'bool' = False) -> 'None'",
     ),
+    "linked_turn_running": ("property", False, False, "(self) -> 'bool'"),
     "load_window": ("function", False, False, "(self, *prefetched: 'Any') -> 'None'"),
     "loaded_messages": ("function", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "mark_permission_resolved": (
@@ -486,6 +487,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lazy_tail": ("value", "None"),
     "_lazy_window": ("value", "None"),
     "_lineage_minted": ("value", "False"),
+    "_linked_session_busy": ("value", "None"),
     "_lock": ("type", "asyncio.locks.Lock"),
     "_mcp_report": ("value", "None"),
     "_mcp_report_session_id": ("value", "''"),
@@ -559,6 +561,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_attachment_meta": ("value", "{}"),
     "_steer_audience_fence_holders": ("value", "{}"),
     "_steer_audience_fences": ("value", "{}"),
+    "_steer_automation": ("value", "{}"),
     "_steer_channel_origin": ("value", "{}"),
     "_steer_confirmed": ("value", "set()"),
     "_steer_decision_strips": ("value", "{}"),

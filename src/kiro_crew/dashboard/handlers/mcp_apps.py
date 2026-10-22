@@ -26,13 +26,10 @@ from aiohttp import web
 
 from kiro_crew import security
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard import session_control
+from kiro_crew.dashboard import session_control, session_deliver
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
-from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import (
-    MCP_APP_MESSAGE_KIND,
     _history_key_for,
-    app_inject_row,
     dashboard_slot_key,
     effective_session_key,
 )
@@ -41,9 +38,7 @@ from kiro_crew.dashboard.handlers._shared import (
     _read_session_key,
     require_owner_dashboard_request,
 )
-from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
 from kiro_crew.dashboard.state import load_window_off_loop
-from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.mcp_apps_render import load_spool
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.backend import _mcp_apps_enabled
@@ -650,68 +645,25 @@ async def api_mcp_apps_message(request: web.Request) -> web.Response:
         # Queue while a turn is live — same predicate as the cron
         # origin-injection and user-typed paths, for the same reason: an
         # injection must never start a concurrent turn.
-        if slot.running:
-            if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
-                return web.json_response(
-                    {"error": "session queue is full", "code": "queue_full"}, status=429
-                )
-            # Admission containment stamp: app messages are NOT structurally exempt
-            # from `_drop_stale_admissions` the way cron/subagent entries are (those
-            # are runner-minted; this text is app-authored). Stamping the snapshot
-            # that held at admission means the drain delivers under unchanged
-            # containment and correctly DROPS the entry when a channel or mirror
-            # link appeared while it waited — and an unstamped entry would fail
-            # closed against the full constraint set on any linked session.
-            _adm.commit()
-            qid = slot.queue_append(
-                wrapped,
-                kind=MCP_APP_MESSAGE_KIND,
-                # The label rides the ENTRY meta beside the containment stamp: the
-                # drain builds the inject row from it and the slot-detail queue
-                # view lifts it onto the wire — without it a reload or a drained
-                # row falls back to the generic "app" attribution.
-                meta={"appLabel": label, **session_control.containment_meta(state, slot)},
+        # The session decides idle (an app inject row and a turn) vs running (a
+        # queued card); the app names only itself. Admission containment stamp:
+        # app messages are NOT structurally exempt from `_drop_stale_admissions`
+        # the way cron/subagent entries are (this text is app-authored), so a
+        # queued entry carries the snapshot that held at admission and the drain
+        # DROPS it when a channel or mirror link appeared while it waited.
+        delivery = await session_deliver.deliver(
+            state,
+            slot,
+            wrapped,
+            session_deliver.app(label),
+            admission=session_control.containment_meta(state, slot),
+        )
+        if delivery == session_deliver.QUEUE_FULL:
+            return web.json_response(
+                {"error": "session queue is full", "code": "queue_full"}, status=429
             )
-            # Plain CSS cls — the same trap app_inject_row's docstring names: a
-            # JSON cls makes _prepare_messages REPLACE the stored meta on HTTP
-            # rebuild, dropping `kind`. Identity (kind, appLabel, queueId — the
-            # hydration spelling) rides only in meta.
-            slot.append(
-                "queued",
-                wrapped,
-                "msg msg-queued",
-                meta={"kind": MCP_APP_MESSAGE_KIND, "appLabel": label, "queueId": qid},
-            )
-            state.push_slots_update()
-            delivery = "queued"
-        else:
-            _adm.commit()
-            row_role, row_cls, row_meta = app_inject_row(label)
-            slot.append(row_role, wrapped, row_cls, meta=row_meta)
-            task = spawn_guarded_turn(
-                state,
-                slot,
-                _run_chat(
-                    state,
-                    slot,
-                    wrapped,
-                    _directive_user_origin=False,
-                    # App-authored, not user speech: this is what suppresses the
-                    # linked-thread mirror that would otherwise post the text to a
-                    # channel as the human's own words (the queued twin gets the
-                    # same treatment structurally, via its kind in
-                    # `is_synthetic_payload_item`).
-                    _synthetic_payload=True,
-                    # Structural provenance for the session ledger: the queued twin
-                    # above carries MCP_APP_MESSAGE_KIND, and this branch is the
-                    # same injector dispatching directly. "app" is the crew-log
-                    # actor for app-authored turns (crew_log.emit.ACTORS).
-                    _turn_actor="app",
-                ),
-            )
-            slot.task = task
-            state.push_slots_update()
-            delivery = "turn"
+        _adm.commit()
+        state.push_slots_update()
 
         try:
             SecurityEventLog().log_api_access(

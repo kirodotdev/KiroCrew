@@ -13,7 +13,6 @@ never imports the facade.
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import logging
 import time
@@ -30,6 +29,13 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection
 from kiro_crew.dashboard.handlers.agent_panel_publish import _resolve_publishing_crew
 from kiro_crew.dashboard.handlers.agent_panel_read import _panel_slot
+from kiro_crew.dashboard.handlers.dashboard_page_checks import (
+    MANUAL_FIELDS_NOTE,
+    page_rendering,
+    shape_warnings,
+    skipped_note,
+    theme_warnings,
+)
 from kiro_crew.dashboard.handlers.members import _member_names_for_slug
 from kiro_crew.dashboard.handlers.session_ledger import _session_unit
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
@@ -249,27 +255,30 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
     strict-internal prefix with the publish routes because it reports a crewmate's
     own refused writes, which is state about that crewmate and nobody else's to
     read.
+
+    The reads after the gate run in ONE worker hop. Each ``asyncio.to_thread`` call
+    queues on the gateway's shared default executor, so a busy gateway charges every
+    hop its queue wait before the work starts. The reads are sequential anyway --
+    each later one needs the instance the first returns -- so one hop pays that
+    wait once instead of once per read.
     """
     resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_fields")
     if refusal is not None:
         return refusal
     assert resolved is not None
     slug, crew_name, slot = resolved
-    instance = await asyncio.to_thread(read_instance, slug, crew_name)
-    mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
-    # The version history rides along on THIS read rather than having a tool of its
-    # own. An agent that is about to answer "go back" already has to make this call to
-    # know its fields, the rows are capped at ten, and a second round trip for ten rows
-    # is a cycle spent on a payload that fits in this one.
-    rows, retained = await asyncio.to_thread(_instance_history, slug, slot)
-    values, written_at = await asyncio.to_thread(
-        _current_values, slug, crew_name, instance, "" if crew_name else slot
-    )
-    # Off the loop: the upkeep rows read the shipped catalog (every built-in
-    # directory), the same scan `_templates_for_agent` already runs on a thread.
-    payload = await asyncio.to_thread(
-        functools.partial(
-            dashboard_agentic.fields_for_agent,
+
+    def _read() -> dict[str, Any]:
+        instance = read_instance(slug, crew_name)
+        mistakes = _mistake_book(slot) if slot else {}
+        # The version history rides along on THIS read rather than having a tool of
+        # its own. An agent about to answer "go back" already has to make this call to
+        # know its fields, the rows are capped at ten, and a second round trip for ten
+        # rows is a cycle spent on a payload that fits in this one.
+        rows, retained = _instance_history(slug, slot)
+        values, written_at = _current_values(slug, crew_name, instance, "" if crew_name else slot)
+        # The upkeep rows read the shipped catalog (every built-in directory).
+        return dashboard_agentic.fields_for_agent(
             instance,
             mistakes,
             history=rows,
@@ -278,8 +287,10 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
             written_at=written_at,
             slug=slug,
         )
-    )
-    return web.json_response(payload)
+
+    # How a page draws the types a text cell shows raw, on the read an agent makes
+    # before it writes or rebuilds a page.
+    return web.json_response({**await asyncio.to_thread(_read), "rendering": page_rendering()})
 
 
 async def api_dashboard_types(request: web.Request) -> web.Response:
@@ -308,7 +319,7 @@ async def api_dashboard_types(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     unit = _session_unit(state, request.headers.get("X-Session-Key", ""))
     reached = await asyncio.to_thread(_folded_through, slot, unit)
-    return web.json_response(dashboard_types.describe(reached))
+    return web.json_response({**dashboard_types.describe(reached), "rendering": page_rendering()})
 
 
 def _folded_through(slot: str, unit: str) -> dict[str, int | None]:
@@ -830,6 +841,16 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
 
     # After saving, so a page that throws is still saved and one more save fixes it.
     verification = await _page_check(slug, crew_name, slot, saved_package)
+    if isinstance(verification, dict) and verification.get("status") == "skipped":
+        # A skipped run checked nothing: said in so many words, so the crewmate does not
+        # read "verification" as a pass on a host with no browser.
+        verification["note"] = skipped_note(str(verification.get("reason") or ""))
+    sources = field_sources(saved_package)
+    manual = [row["field"] for row in sources if row["source"] == "manual"]
+    # Off the loop: both checks read the page text the crewmate wrote, up to the view cap.
+    shapes, themes = await asyncio.to_thread(
+        lambda: (shape_warnings(saved_package), theme_warnings(saved_package))
+    )
 
     # NO BROADCAST: the page in force has not changed. `dashboard_apply` puts it live.
     return web.json_response(
@@ -838,9 +859,39 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
             "saved": {"package": art.slug, "package_version": int(art.version), **counts},
             # What the page raised over a synthetic copy of the record; None for a block layout.
             "verification": verification,
+            # Every field with its type and where its value comes from, and the
+            # hand-written ones named, so the crewmate sees which cells stay current only
+            # while it keeps writing them.
+            "fields": sources,
+            "manual_fields": manual,
+            **({"manual_note": MANUAL_FIELDS_NOTE} if manual else {}),
+            # Checked here, by the gateway, because the page run above is skipped on a
+            # host with no browser: a list bound to a text cell, a theme for one scheme.
+            **({"shape_warnings": shapes} if shapes else {}),
+            **({"theme_warnings": themes} if themes else {}),
             "next": "dashboard_apply puts this page live on your Dashboard as a new version",
         }
     )
+
+
+def field_sources(package: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Each field the model declares: its type and source (``fold:<fold>.<path>`` or ``manual``).
+
+    ``manual`` is a field the crewmate fills itself (``{"agentic": true}``); everything
+    else names the crew-log fold the gateway pushes it from.
+    """
+    types = ((package.get("model") or {}).get("types")) or {}
+    out: list[dict[str, str]] = []
+    for name, spec in types.items():
+        source = spec.get("source") if isinstance(spec, Mapping) else None
+        if isinstance(source, Mapping) and source.get("fold") and not source.get("agentic"):
+            path = str(source.get("path") or "")
+            where = f"fold:{source['fold']}" + (f".{path}" if path else "")
+        else:
+            where = "manual"
+        kind = spec.get("type") if isinstance(spec, Mapping) else None
+        out.append({"field": str(name), "source": where, "type": str(kind or "")})
+    return out
 
 
 def _apply_own_package(slug: str, crew_name: str, slot: str) -> Any:

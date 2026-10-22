@@ -38,6 +38,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import CompactionCoordinator
 from kiro_crew.task_executor import check_context
+from kiro_crew.testing.wait import async_wait_until
 
 KEY = "taskrunner:t1:runtime"
 
@@ -252,10 +253,10 @@ class TestConcurrentTriggerDedup:
             mgr.release(KEY)
 
             first = asyncio.create_task(mgr.compact_if_needed(KEY))
-            for _ in range(100):
-                if KEY in mgr._compacting:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: KEY in mgr._compacting,
+                describe=lambda: f"compacting: {sorted(mgr._compacting)}",
+            )
             assert KEY in mgr._compacting, "first attempt is in flight"
 
             # Second awaited trigger collapses...

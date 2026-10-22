@@ -37,6 +37,12 @@ from kiro_crew.agent_sdk.backends import (
 # (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``): the
 # server the mirror projected out of a saved spec ran in the session. Codex and
 # DeepSeek rest on unit tests only.
+# kiro-cli and KAS are captured live on kiro-cli 2.32.0 / KAS 0.66.43 with one probe
+# spec whose only tool is an MCP server it declares:
+# ``test/fixtures/acp_frames/kiro/saved-spec-live.jsonl`` (``--agent probe``) and
+# ``test/fixtures/acp_frames/kas/saved-spec-live.jsonl`` (``customAgents`` plus
+# ``session/set_mode``). kiro-cli reported ``probe`` as the current mode, KAS accepted
+# ``set_mode probe``, and on both the model called the spec's server tool.
 #
 # pi is NOT a member, though it holds a member session key
 # (``ACP_BACKENDS_MEMBER_DISPATCH``) and a panel (``ACP_BACKENDS_MEMBER_PANEL``).
@@ -168,7 +174,7 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
 #
 #   * the per-session mount exists, on a RECORDED ROUND TRIP rather than on an
 #     advertisement -- ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl``
-#     (goose 1.50.1) carries one ``session/new`` element shaped as
+#     (measured on goose 1.50.1) carries one ``session/new`` element shaped as
 #     ``acp.session_mcp`` emits, and the named child is asked ``initialize``,
 #     ``notifications/initialized``, ``tools/list`` and ``tools/call`` with the tool's
 #     own result coming back. So the element is MOUNTED and its tools are REACHABLE,
@@ -274,6 +280,11 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
 # fires. Reading the flag for a harness whose mirror documents it as
 # accepted-and-ignored would withhold every member's tools on a condition that
 # cannot describe that backend.
+#
+# KAS is captured live on KAS 0.66.43: ``test/fixtures/acp_frames/kas/member-dispatch-live.jsonl``.
+# With the member entry on ``session/new`` and the ``member_dispatch=True`` projection, the
+# model called ``@kirocrew-dashboard/session_status`` with no permission request, and the
+# server answered it (``identity_unattested``, as the probe key names no live session).
 ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
     {
         ACP_BACKEND_CLAUDE,

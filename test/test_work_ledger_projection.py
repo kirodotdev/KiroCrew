@@ -36,6 +36,7 @@ from work_ledger_projection_helpers import (
 from kiro_crew import work_ledger as wl
 from kiro_crew.crew_log import projection
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.testing.wait import until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _isolated = work_ledger_projection_helpers._isolated
@@ -1406,8 +1407,14 @@ async def test_a_read_never_publishes_a_mutation_the_record_then_rolls_back(reco
     ledger = asyncio.ensure_future(
         routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=CONDUCTOR))
     )
-    for _ in range(20):
-        await asyncio.sleep(0.005)
+    # Both reads reach the board lock the write holds and park on it: the barrier
+    # before asserting that neither ran inside the window.
+    board_lock, _ = routes._BOARD_LOCKS._locks[CONDUCTOR]
+    await until_parked(
+        board_lock,
+        count=2,
+        describe=lambda: f"brief done={brief.done()}, ledger done={ledger.done()}",
+    )
     assert not brief.done() and not ledger.done(), "a read ran inside the write's window"
 
     release.set()

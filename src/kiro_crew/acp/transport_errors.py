@@ -268,6 +268,31 @@ class AcpSandboxInitFailed(AcpError):  # noqa: N818
         )
 
 
+class AcpDelegateLaunchFailed(AcpError):  # noqa: N818
+    """The ``kiro-cli-chat`` delegate failed to launch, so the agent child never started.
+
+    Non-retryable, for the reason :class:`AcpSandboxInitFailed` is: a stale or
+    version-skewed Kiro CLI install reproduces on every respawn, so the reconnect
+    ladder would only pay a spawn and a teardown to report the same wall.
+
+    A DISTINCT ``AcpError`` subclass, deliberately NOT an ``AcpProcessDied``: the
+    chat surfaces dispatch process deaths by TYPE into their respawn-and-requeue
+    arms without reading ``transient``, so an ``AcpProcessDied`` here would loop
+    into "Connection lost -- retrying..." and end at "Session stuck" instead of
+    ever showing the install repair. As a plain non-transient ``AcpError`` it
+    takes their terminal error arm, which shows this fixed, curated message
+    (``user_worded``).
+
+    Deliberately NOT tagged ``session_start_failed``, as
+    :class:`AcpSandboxInitFailed` is not: that tag renders the start-failure
+    card, whose Resume and repeat-start "restart the gateway" affordances cannot
+    fix an install and would contradict the repair this message names.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(DELEGATE_LAUNCH_FAILURE_MESSAGE, transient=False, user_worded=True)
+
+
 class AcpRegistrationRateLimited(AcpProcessDied):  # noqa: N818
     """The runtime died after its dynamic registration was throttled (HTTP 429).
 
@@ -461,6 +486,7 @@ for _raised in (
     AcpProcessDied,
     AcpAuthRequired,
     AcpSandboxInitFailed,
+    AcpDelegateLaunchFailed,
     AcpRegistrationRateLimited,
     AcpToolGateUnroutable,
     PiGateExtensionTampered,
@@ -709,6 +735,49 @@ def is_sandbox_init_failure_output(haystack: str) -> bool:
         if classified is not None and classified[0] == "no_backend":
             return True
     return False
+
+
+# The POSIX ``kiro-cli`` launcher execs a SIBLING ``kiro-cli-chat`` for ``acp``
+# and ``chat``; when that sibling is absent, empty or version-skewed (a stale
+# symlink pointing at a removed binary is the field case) the launcher
+# itself answers ``--version``/``whoami`` but the exec fails with this line and
+# the child never starts. Classified for the same reason as the sandbox-init and
+# auth signatures: the condition is DETERMINISTIC, so the reconnect ladder's
+# respawn reproduces it exactly, and without this the operator gets the generic
+# "process exited (rc=None/rc=1)" card -- which points at retry or model-switch,
+# neither of which can fix an install problem -- instead of the one line that
+# names the fix (reinstall/repair Kiro CLI).
+#
+# Anchored on the ``kiro-cli-chat`` launch token specifically. A bare
+# ``failed to launch`` or a generic spawn error is ordinary output for an
+# unrelated death a respawn legitimately fixes, so matching either alone would
+# latch a permanent wrong verdict; requiring the delegate name costs no coverage
+# because the launcher always names the sibling it could not exec.
+_RE_DELEGATE_LAUNCH_FAILURE = re.compile(
+    r"failed\s+to\s+launch\s+kiro-cli-chat",
+    re.IGNORECASE,
+)
+
+
+def is_delegate_launch_failure_output(haystack: str) -> bool:
+    """True when *haystack* (a child's stderr) shows the ``kiro-cli-chat`` delegate failing to launch.
+
+    Shared by both ACP transports for the same anti-drift reason
+    :func:`is_sandbox_init_failure_output` and :func:`is_auth_failure_output`
+    are each a single function: the two transports must not come to disagree
+    about what the signature IS.
+    """
+    return bool(_RE_DELEGATE_LAUNCH_FAILURE.search(haystack))
+
+
+#: Actionable, non-retryable message for a ``kiro-cli-chat`` delegate that would
+#: not launch. Fixed recovery wording (``user_worded``), naming the install
+#: repair rather than a retry or model switch.
+DELEGATE_LAUNCH_FAILURE_MESSAGE = (
+    "The Kiro CLI chat delegate (kiro-cli-chat) failed to launch. This usually "
+    "means a stale or partial Kiro CLI install (for example a stale symlink "
+    "pointing at a removed binary). Reinstall or repair Kiro CLI and try again."
+)
 
 
 async def sandbox_init_failure(

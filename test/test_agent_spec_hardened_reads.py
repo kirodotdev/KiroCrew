@@ -1041,8 +1041,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("session_mcp_servers", "unknown"),
         ("spec_hooks_project_agent", "unknown"),
     ],
-    "kiro_crew/agent.py": [
-        ("agent_spec_lookup", "unknown"),
+    "kiro_crew/agent_parts/spec_lookup.py": [("agent_spec_lookup", "unknown")],
+    "kiro_crew/agent_parts/spec_upgrades.py": [
         ("migrate_agent_specs", "unknown"),
         ("migrate_relocated_skill_uris", "unknown"),
     ],
@@ -1195,7 +1195,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # absent by design: it is a pure in-memory lookup that performs no filesystem
 # work and can never reach the denial log line.
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
+    "kiro_crew/agent_parts/spec_rebuild.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery_parts/project_agents.py": [
         ("forward:operation", "forward:source"),
     ],
@@ -1205,20 +1205,20 @@ _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 # The file scan under the name scan: most surfaces want the FILES, so they reach
-# the refusal directly and must name themselves the same way. ``agent.py`` holds
+# the refusal directly and must name themselves the same way. ``agent_parts/spec_lookup.py`` holds
 # two lookups with different user-facing meanings (resolving a markdown spec for
 # an agent, and deciding whether a checkout shadows a managed agent), so they are
 # labelled apart. The in-module hop inside ``project_agent_names`` is pinned as
 # forwarding: a literal there would erase the surface that asked.
 _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/session_mcp.py": [("session_mcp_project_agent", "unknown")],
-    "kiro_crew/agent.py": [
+    "kiro_crew/agent_parts/spec_lookup.py": [
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],
-    # No ``kiro_crew/apps/manager_lookup.py`` entry: the app-command guard scans the
-    # checkout through ``acp.managed_agent_shadow.project_claims_agent_name``,
-    # the screened recursive walk, not through these roster helpers.
+    # No ``kiro_crew/apps/manager_lookup.py`` entry: the app-command guard scans no
+    # checkout, and reads the user level through the screened walk in
+    # ``acp.managed_agent_shadow``, not through these roster helpers.
     # No ``kiro_crew/agent_discovery_parts/`` entry on purpose. The two in-family
     # readers (``list_agents``, ``project_agent_names``) decide this scope's
     # sensitivity THEMSELVES -- pinned in

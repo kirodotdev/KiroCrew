@@ -382,6 +382,28 @@ describe('ChatMessageList', () => {
       expect(turnBlocks.length).toBeGreaterThanOrEqual(1)
     })
 
+    it('wraps a one-tool turn (tool call + answer) in TurnBlock (#23017)', () => {
+      const msgs: ChatMessage[] = [
+        msg('user', 'Go'),
+        msg('tool', '🔧 Running: read'),
+        msg('assistant', 'done'),
+        msg('user', 'Next'),
+      ]
+      render(<ChatMessageList messages={msgs} running={false} />)
+      expect(screen.getAllByTestId('turn-block')).toHaveLength(1)
+    })
+
+    it('does not wrap a reasoning + answer turn with no tool call', () => {
+      const msgs: ChatMessage[] = [
+        msg('user', 'Go'),
+        msg('thinking', 'hm'),
+        msg('assistant', 'done'),
+        msg('user', 'Next'),
+      ]
+      render(<ChatMessageList messages={msgs} running={false} />)
+      expect(screen.queryByTestId('turn-block')).toBeNull()
+    })
+
     it('does not wrap short sequences in TurnBlock', () => {
       const msgs: ChatMessage[] = [
         msg('user', 'Hi'),

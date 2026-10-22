@@ -698,15 +698,17 @@ class AcpClient:
 
     @property
     def spec_zero_tools(self) -> bool:
-        """True once this session's CONSUMED mirror projection confirms the spec's ``"tools": []``.
+        """True once this session's CONSUMED projection confirms the spec's ``"tools": []``.
 
         Set from :attr:`_spec_zero_tools`, which only becomes True after the session's
         projection has been parsed and reports the agent spec actually in force declares
         an empty tool list, so :meth:`_deny_zero_tools` refuses every permission request
-        the session raises. Stays False for the lifetime of a session whose spec is
-        missing, malformed, or shadowed by another one, and always False on a backend
-        with no mirror at all, where the harness itself reads the spec and enforces the
-        ban natively rather than through this client.
+        the session raises. The projection is the mirror's, or for a mirror-less host
+        whose array Crew composes (pi) the parse :meth:`_mirrorless_member_mounts`
+        reads. Stays False for the lifetime of a session whose spec is missing,
+        malformed, or shadowed by another one, and always False on kiro-cli, where the
+        harness itself reads the spec and enforces the ban natively rather than through
+        this client.
         """
         return self._spec_zero_tools
 
@@ -1125,6 +1127,7 @@ class AcpClient:
     _classify_failed_start = _client_lifecycle._classify_failed_start
     _settle_stderr = _client_lifecycle._settle_stderr
     _sandbox_init_failure = _client_lifecycle._sandbox_init_failure
+    _delegate_launch_failure = _client_lifecycle._delegate_launch_failure
     _registration_throttle_line = _client_lifecycle._registration_throttle_line
     shutdown = _client_lifecycle.shutdown
     _retire_liveness_state = _client_lifecycle._retire_liveness_state

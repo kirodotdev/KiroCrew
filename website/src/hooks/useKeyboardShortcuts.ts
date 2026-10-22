@@ -1007,7 +1007,12 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // collapsed, which outlives a reload.
         'focus-input': () => queryComposerOrExpand(focusComposerElement),
         // ⌘N / Ctrl+N (alias Option/Alt+Shift+N): new session.
-        'new-chat': () => onNewChat(),
+        // A held chord's auto-repeat is not another press: without this
+        // filter, holding the keys creates one session per repeat tick. The
+        // repeat is still claimed (preventDefault below), so the browser's own
+        // binding does not fire either. Two separate presses are two requests
+        // and still make two sessions.
+        'new-chat': () => { if (!e.repeat) onNewChat() },
         // ⌘W / Ctrl+W (alias Option/Alt+Shift+W): close the current session —
         // same semantics as the header-menu / sidebar close (gated by
         // confirmCloseSession, dispatches deleteSlot, and a session with live work

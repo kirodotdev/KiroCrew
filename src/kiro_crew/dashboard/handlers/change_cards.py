@@ -704,9 +704,15 @@ async def api_cards_dismiss(request: web.Request) -> web.Response:
         rec = store.get(request.match_info["card_id"])
         revert = store.snapshot(rec)
         store.dismiss(rec)
-        return web.json_response(await _publish(request, rec, revert))
+        public = await _publish(request, rec, revert)
     except CardError as exc:
         return _refusal(exc)
+    # A dismissed failed card leaves the waiting list, and the dismiss writes no log
+    # entry (its status stays ``failed``): tell a crewmate page's feed directly.
+    from kiro_crew.dashboard import crewmate_feed
+
+    crewmate_feed.question_retired(str(rec.get("slot_key") or ""))
+    return web.json_response(public)
 
 
 # ── the route hook ──

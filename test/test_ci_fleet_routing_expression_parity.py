@@ -135,6 +135,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("fast-gate.yml", "memory-store-seam"),
     ("fast-gate.yml", "docs-lint"),
     ("fast-gate.yml", "static-ratchets"),
+    ("fast-gate.yml", "flake-pattern-ratchet"),
     ("build.yml", "build-wheel"),
     ("build.yml", "desktop-matrix"),
     ("main-ratchet-audit.yml", "ratchet-gates"),

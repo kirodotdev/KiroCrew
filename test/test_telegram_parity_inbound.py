@@ -28,6 +28,7 @@ from test_telegram import FakeClient, _dispatcher, _prime_live
 
 from kiro_crew.telegram.client import TelegramClient, TelegramInbound
 from kiro_crew.telegram.transport import TelegramInboundMessage
+from kiro_crew.testing.wait import finished
 
 
 class TestPromptSafeHandle:
@@ -269,7 +270,7 @@ class TestPollingLoopAck:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(client, "_notify_status", lambda *a, **k: None)
-            await asyncio.wait_for(client._polling_loop(), timeout=5)
+            await finished(client._polling_loop(), "the polling loop exiting", timeout=5)
         assert dispatched == [4], "the batch must be dispatched"
         assert calls == [5], "the loop must ack once, after the batch is dispatched"
 

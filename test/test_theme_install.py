@@ -62,6 +62,7 @@ from kiro_crew.dashboard.theme_validate import (
     _validate_persona,
     _validate_theme_dir,
 )
+from kiro_crew.testing.wait import wait_until
 
 
 def _allow_pinned_source_rename_on_windows(
@@ -1357,7 +1358,6 @@ class TestDeleteLock:
 
     def test_delete_blocks_while_install_lock_held(self, tmp_path, monkeypatch):
         import asyncio
-        import time
         import types
 
         import kiro_crew.dashboard.theme_validate as tv_mod
@@ -1389,9 +1389,11 @@ class TestDeleteLock:
             lock.release()
 
         # Once the lock is free, the already-dispatched remove proceeds.
-        deadline = time.time() + 5.0
-        while dir_target.exists() and time.time() < deadline:
-            time.sleep(0.05)
+        wait_until(
+            lambda: not dir_target.exists(),
+            timeout=5.0,
+            describe=lambda: f"{dir_target} still exists",
+        )
         assert not dir_target.exists()
 
 

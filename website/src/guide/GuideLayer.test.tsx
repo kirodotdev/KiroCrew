@@ -152,7 +152,7 @@ describe('offer and consent', () => {
     renderGuide('/chat/slot-A')
     expect(await screen.findByTestId('guide-start')).toBeTruthy()
     // The gateway's internal reason token is never painted as copy.
-    expect(screen.queryByText('You asked for a crewmate.')).toBeNull()
+    expect(screen.queryByText('You asked for a mate.')).toBeNull()
     // Offered is not accepted: no claim, no navigation, no pre-fill.
     await tickTracker(1)
     expect(calls).toHaveLength(0)
@@ -174,7 +174,7 @@ describe('offer and consent', () => {
     expect(screen.queryByTestId('guide-pending-error')).toBeNull()
   })
 
-  it('Start claims first, then navigates to the Crewmates hand-off with the draft', async () => {
+  it('Start claims first, then navigates to the Mates hand-off with the draft', async () => {
     pending = [guide()]
     onWrite = (name, b) => (name === 'claim' ? claimed({ ...guide(), revision: b.revision as number }) : null)
     renderGuide('/chat/slot-A')
@@ -185,7 +185,7 @@ describe('offer and consent', () => {
     expect(claim.body).not.toHaveProperty('take_over')
   })
 
-  it('reads the Crewmates page thread, not a stale chat activeSlot', async () => {
+  it('reads the Mates page thread, not a stale chat activeSlot', async () => {
     pending = [guide({ status: 'active', owner_tab: 'other-tab' })]
     // activeSlot is still slot-A from an earlier chat visit, but on /members
     // the thread on screen is whatever the page registered.
@@ -198,7 +198,7 @@ describe('offer and consent', () => {
     expect(await screen.findByText(L('other_tab'))).toBeTruthy()
   })
 
-  it('keeps the members address when entering from the Crewmates page', () => {
+  it('keeps the members address when entering from the Mates page', () => {
     const r = resolveGuideAction({ id: 'crewmate.create', params: { goal: 'g' } })
     if (!r.ok || r.action.enter.kind !== 'navigate') throw new Error('expected navigate')
     expect(r.action.enter.to({ pathname: '/members', search: '?member=default' })).toBe('/members?member=default&create=1&goal=g')

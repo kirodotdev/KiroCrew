@@ -14,10 +14,14 @@ from kiro_crew.crew_log.entry_types import (
     DASHBOARD_AGENTIC_ENTRY_TYPE,
     DASHBOARD_FOLD_NAME,
     DASHBOARD_REFUSED_ENTRY_TYPE,
+    GOAL_ENTRY_TYPE,
+    GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
     PANEL_ENTRY_TYPE,
     PANEL_FOLD_NAME,
     RADAR_ENTRY_TYPE,
+    WAITING_ENTRY_TYPE,
+    WAITING_FOLD_NAME,
     WORK_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.projection_catalogue import (
@@ -30,6 +34,16 @@ from kiro_crew.crew_log.projection_catalogue import (
     WORKSTREAMS_FOLD_NAME,
     WORKTREE_FOLD_NAME,
     _Fold,
+)
+from kiro_crew.crew_log.projection_crewmate import (
+    _goal_render,
+    _goal_rows,
+    _goal_start,
+    _goal_step,
+    _waiting_render,
+    _waiting_rows,
+    _waiting_start,
+    _waiting_step,
 )
 from kiro_crew.crew_log.projection_dashboard import (
     _agentic_render,
@@ -660,6 +674,28 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=WORKSTREAMS_TYPES,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
+    ),
+    # A crewmate's own record, the two folds its Dashboard page binds for the goal and
+    # for what waits on the person. Each entry is a whole snapshot the gateway appends
+    # when the fact changes, so the step replaces top-level keys only and a flat copy
+    # covers it.
+    GOAL_FOLD_NAME: _Fold(
+        GOAL_FOLD_NAME,
+        _goal_start,
+        _goal_step,
+        _goal_render,
+        affects=frozenset({GOAL_ENTRY_TYPE}),
+        copy_state=_flat_copy,
+        count_rows=_goal_rows,
+    ),
+    WAITING_FOLD_NAME: _Fold(
+        WAITING_FOLD_NAME,
+        _waiting_start,
+        _waiting_step,
+        _waiting_render,
+        affects=frozenset({WAITING_ENTRY_TYPE}),
+        copy_state=_flat_copy,
+        count_rows=_waiting_rows,
     ),
     # The TREE-keyed fold, the third key kind, argued where
     # :data:`TREE_PROJECTION_NAMES` names it. ``affects`` is the one work entry type:

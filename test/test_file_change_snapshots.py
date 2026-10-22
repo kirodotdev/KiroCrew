@@ -3,7 +3,8 @@
 Covers:
   * ``_truncate_snapshot`` — caps content at 200KB.
   * ``_safe_read_snapshot`` — reads through the descriptor gate; rejects sensitive
-    paths and hardlink/symlink aliases of them.
+    paths, hardlink/symlink aliases of them, and a protected directory that is
+    itself a symlink.
   * ``_snapshot_write_target`` — captures before-content for write tools only.
   * ``_flush_file_changes`` — dedups, scrubs credentials, attaches to last assistant message
     or creates a synthetic one when the turn aborts before any assistant text.
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -40,10 +42,12 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     AcpEvent,
 )
+from kiro_crew.dashboard.chat_persistence import _build_message_entry
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
     _flush_file_changes,
     _note_reply_row,
+    _record_turn_snapshot,
     _run_chat,
     _safe_read_snapshot,
     _snapshot_write_target,
@@ -1227,3 +1231,77 @@ class TestContentBlockRedactionAndTruncation:
         # If redact_exfiltration_urls masks the URL, it should differ from raw
         # The entry should still exist (before != after)
         assert "file_changes" in meta
+
+
+# ── a protected directory that is itself a symlink ─────────────────────────
+
+#: An ordinary line no credential pattern recognises, so redaction cannot be what
+#: keeps it out of a chip: only the path refusal can.
+_PRIVATE_NOTE = "private-note-marker-7f3a"
+
+
+@pytest.fixture(params=[(".aws", "credentials"), (".ssh", "id_ed25519")], ids=["aws", "ssh"])
+def symlinked_secret(request, tmp_path: Path, monkeypatch) -> list[str]:
+    """Spellings of a dummy secret reached through a protected dir that is a SYMLINK.
+
+    ``<home>/.aws`` points at a directory OUTSIDE the home, so the store sits
+    outside every lexical anchor: only the target that protected entry resolves
+    to, which the target set carries, fences it by its real path. Returns the
+    absolute, ``~`` and real-path spellings.
+    """
+    protected_dir, leaf = request.param
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / leaf).write_text(f"[default]\n# {_PRIVATE_NOTE}\n", encoding="utf-8")
+    (home / protected_dir).symlink_to(outside, target_is_directory=True)
+    # Path.home() reads USERPROFILE on Windows and never HOME; pin both.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    spelled = home / protected_dir / leaf
+    assert not spelled.resolve().is_relative_to(home), "precondition: the target is outside"
+    return [str(spelled), f"~/{protected_dir}/{leaf}", os.path.realpath(spelled)]
+
+
+@requires_symlinks
+class TestSymlinkedProtectedDirectory:
+    """``~/.aws`` may itself be a symlink to a directory outside the home. The
+    store is refused on every surface that feeds a file chip, through its
+    protected spelling and through its real path alike."""
+
+    def test_write_target_refuses_the_protected_spelling(self, symlinked_secret):
+        for spelling in symlinked_secret:
+            for command in ("create", "strReplace", "insert"):
+                assert _snapshot_write_target({"command": command, "path": spelling}) is None
+            # The content block's own before-text does not get past the refusal.
+            assert (
+                _snapshot_write_target(
+                    {"command": "strReplace", "path": spelling},
+                    diff_old_text="[default]\n",
+                    diff_path=spelling,
+                )
+                is None
+            )
+
+    def test_snapshot_read_refuses_the_protected_spelling(self, symlinked_secret):
+        for spelling in symlinked_secret:
+            assert _safe_read_snapshot(spelling) is None
+
+    def test_flush_keeps_the_contents_out_of_live_meta_and_history(self, symlinked_secret):
+        """The write chain records nothing for the protected spelling, and the flush
+        reads each AFTER through the same gate, so an entry that reached the
+        accumulator anyway adds nothing either -- not even the line redaction cannot
+        recognise -- to the live meta or to the history entry built from it."""
+        slot = _make_slot_with_assistant_message()
+        for spelling in symlinked_secret:
+            snapshot = _snapshot_write_target({"command": "strReplace", "path": spelling})
+            if snapshot is not None:
+                _record_turn_snapshot(slot, snapshot)
+        # Hand-built, so the flush's own after-read is under test as well.
+        for spelling in symlinked_secret:
+            slot._file_changes.append({"path": spelling, "content": ""})
+        _flush_file_changes(slot)
+        message = slot.messages[-1]
+        assert _PRIVATE_NOTE not in json.dumps(message.get("meta", {}))
+        assert _PRIVATE_NOTE not in json.dumps(_build_message_entry(message))

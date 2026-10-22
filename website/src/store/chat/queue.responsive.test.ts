@@ -72,7 +72,7 @@ it.each([null, ['mine'], 42, '', 'x'.repeat(129), 'bad id'])('ignores malformed 
   expect(rows(state)[1].meta?.sendId).toBeUndefined()
 })
 
-describe.each([true, false])('a crewmate send keeps its place through queue and drain (active=%s)', (active) => {
+describe.each([true, false])('a mate send keeps its place through queue and drain (active=%s)', (active) => {
   const later = { role: 'assistant', content: 'reply to earlier', cls: '', ts: '2026-10-14T08:12:05Z' } as const
   function sentThenReplied() {
     let state = initial(active)

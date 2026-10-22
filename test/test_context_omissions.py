@@ -30,6 +30,7 @@ from kiro_crew.lesson_validation import render_lesson_tier, render_withheld_tier
 from kiro_crew.memory import MemoryStore
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import finished
 
 _RULE_NOTICE = re.compile(r"omitted (\d+) of (\d+) retained rules above the (\d+)-character")
 
@@ -256,7 +257,7 @@ class TestTheTurnWritesTheRecord:
         slot = state.get_or_create_slot("omissions-chat")
         slot.append("user", "plan it")
         await asyncio.wait_for(chat_runner._run_chat(state, slot, "plan it"), 30)
-        await asyncio.wait_for(drain_background_tasks(state), 10)
+        await finished(drain_background_tasks(state), "draining the background tasks", timeout=10)
 
         composed.assert_called_once()
         assert composed.call_args.kwargs["omitted"] == {

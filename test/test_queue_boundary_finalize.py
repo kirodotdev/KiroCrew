@@ -41,6 +41,7 @@ from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -323,7 +324,7 @@ async def test_two_turn_frame_sequence_has_finalize_between_chunks(tmp_path):
     await cr._run_chat(state, slot, "first prompt")
     successor = slot.task
     assert successor is not None, "the tail-drain must have dispatched the queued turn"
-    await asyncio.wait_for(successor, timeout=10)
+    await await_until(successor, what="the queued turn the tail-drain dispatched")
 
     kinds = [t for t, _ in frames]
     assert kinds.count("chat_segment") == 1, kinds

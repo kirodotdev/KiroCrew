@@ -16,7 +16,8 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
 ``_has_reader_flag``,
 ``_hook_continuation_depth``, ``_last_enqueue_ts``, ``_last_turn_auth_required``,
-``_last_turn_awaiting_permission``, ``_last_turn_children_announced``, ``_lock``,
+``_last_turn_awaiting_permission``, ``_last_turn_children_announced``,
+``_linked_session_busy``, ``_lock``,
 ``_member_approval_seeded``, ``_on_card_event``, ``_on_message``,
 ``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_pending_consumers``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
@@ -329,6 +330,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # registry, never on _approval_futures, so the projection has to ask
     # the state to learn that this slot is waiting.
     self._coordinator_approvals = None
+    # The linked session's turn-lease probe (``SessionManager.is_busy``), wired
+    # by DashboardState like _coordinator_approvals. A channel-born slot's
+    # turns usually run on the channel path, which holds that lease and never
+    # sets this slot's task; ``linked_turn_running`` reads it through this.
+    self._linked_session_busy = None
     self._has_reader_flag = False  # True when HTTP SSE stream is draining
     # True while the session manager runs an automatic compaction on this
     # slot's session. Written by the compacting observer wired in

@@ -34,6 +34,8 @@ from kiro_crew.apps.manager_records import (
     _write_installed,
     app_dir,
     apps_dir,
+    hold_app_record_lock,
+    holds_app_record_locks,
     refresh_app_config_keys,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety, gateway_data_dir_obstruction
@@ -116,6 +118,7 @@ _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
 _DEFAULT_ON_BACKFILL: frozenset[str] = frozenset({"command-bar"})
 
 
+@holds_app_record_locks
 def backfill_default_on_builtins() -> list[str]:
     """Deliver a default-on PROMOTION to installs that predate it. One-shot per app.
 
@@ -154,6 +157,7 @@ def backfill_default_on_builtins() -> list[str]:
     """
     flipped: list[str] = []
     for name in sorted(_DEFAULT_ON_BACKFILL):
+        hold_app_record_lock(name)
         existing = _read_installed(name)
         if existing is None:
             # Not registered on this install (an older wheel does not ship the
@@ -495,6 +499,7 @@ def _app_declares_backend(app_data: dict[str, Any]) -> bool:
     return resolve_mcp_backend_url(app_data.get("mcpServers")) is not None
 
 
+@holds_app_record_locks
 def register_builtin_apps() -> int:
     """Register built-in dashboard features as app entries.
 
@@ -727,6 +732,7 @@ def register_builtin_apps() -> int:
                     migrated_to_effective,
                 )
 
+        hold_app_record_lock(name)
         existing = _read_installed(name)
 
         dest = app_dir(name)

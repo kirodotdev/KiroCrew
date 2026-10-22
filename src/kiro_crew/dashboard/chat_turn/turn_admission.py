@@ -57,7 +57,6 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.account_identity import _retire_sessions_on_identity_change
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _app_agent_host_allowed,
-        _app_agent_start_dirs,
         _app_agent_turn_backend,
         _provider_backend,
         _recover_app_agent_binding,
@@ -157,16 +156,14 @@ def _check_owner(turn) -> tuple[str | None, str]:
 
     _owner_backend = turn._owner_backend
     _owner_host_allowed = turn._owner_host_allowed
-    _owner_project = turn._owner_project
     owner_agent = turn.owner_agent
     owner_app = turn.owner_app
-    session_key = turn.session_key
-    state = turn.state
     if not _owner_host_allowed:
         return app_agent_backend_refusal(owner_app), ""
-    # Both halves touch the filesystem (the work-dir root, the specs).
-    dirs = _app_agent_start_dirs(state, session_key, _owner_project)
-    refused = app_command_agent_refusal(owner_app, owner_agent, *dirs)
+    # Reads the user-level specs. No checkout is consulted: on both allowed
+    # backends the turn runs the app's registered file, never a checkout's
+    # same-named spec (apps.manager.app_command_agent_refusal).
+    refused = app_command_agent_refusal(owner_app, owner_agent)
     if refused:
         return refused, ""
     if _owner_backend == ACP_BACKEND_KIRO:
@@ -457,11 +454,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             "msg msg-err",
         )
         return _Flow.END
-    # A session a palette command opened to run as its app's OWN agent resolves
-    # that agent by bare name, project-first. Refuse the turn -- before any
-    # app-authored prompt reaches the provider -- unless that name still means
-    # the app's registered spec; otherwise the prompt would run with another
-    # spec's tools and auto-approvals.
+    # A session a palette command opened to run as its app's OWN agent runs the
+    # app's registered spec and nothing else. Refuse the turn -- before any
+    # app-authored prompt reaches the provider -- when that spec is not the one
+    # the turn can run; otherwise the prompt would run with another spec's tools
+    # and auto-approvals.
     owner_app, _, owner_agent = (slot.app_agent_owner or "").partition("/")
     turn.owner_app = owner_app
     turn.owner_agent = owner_agent
@@ -470,13 +467,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # (apps.agent_launch). Empty on every other turn.
     _app_launch_agent = ""
     # The spec file this turn's session is pinned to (``skill_scope_pin``): the
-    # app's registered file for a turn that runs the launch copy, else none.
+    # app's registered file for an admitted app-owned turn, on kiro-cli and KAS
+    # alike, else none. A pinned session's skill scope and injected prompt are
+    # read from that file by path, so a checkout's same-named spec sets neither.
     # Published only once this turn holds the session's lease, so a sibling turn
     # waiting for it cannot clear the pin from under the turn that is running.
     _pinned_spec = None
+    if not app_agent_binding_applies(slot):
+        from kiro_crew.apps.agent_launch import unbind_session_app_agent
+
+        # This turn's session is not the app's: a binding left by an earlier
+        # app-owned turn of the key (the slot switched agents, or was deleted and
+        # recreated under the same name) must not decide what it projects.
+        unbind_session_app_agent(session_key)
     if app_agent_binding_applies(slot):
-        _owner_project = selected_binding[1] or None
-        turn._owner_project = _owner_project
         _owner_backend = await _app_agent_turn_backend(state, session_key, loaded_cfg)
         turn._owner_backend = _owner_backend
         _owner_host_allowed = (
@@ -485,10 +489,13 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         turn._owner_host_allowed = _owner_host_allowed
 
         refusal, _app_launch_agent = await asyncio.to_thread(_check_owner, turn)
-        if not refusal and _app_launch_agent:
-            from kiro_crew.apps.agent_launch import registered_spec_path
+        if not refusal:
+            from kiro_crew.apps.agent_launch import bind_session_app_agent, registered_spec_path
 
             _pinned_spec = registered_spec_path(owner_app, owner_agent)
+            # Before the claim, so a KAS session started for this turn projects the
+            # registered file by its path (acp.harness.kas), never the bare name.
+            bind_session_app_agent(session_key, owner_app, owner_agent)
         if not refusal and _app_launch_agent:
             # A session already registered under the key was started as
             # something other than the copy (the bare name, before this turn

@@ -43,7 +43,7 @@ const configuredDefaultMemoryMode = () =>
 export const createSlot = createAsyncThunk<
   ChatSlot,
   { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; prefill?: string } | string | undefined,
-  { fulfilledMeta: { originActiveSlot: string | null; activate: boolean; prefillStaged?: boolean } }
+  { fulfilledMeta: { originActiveSlot: string | null; originActiveSlotMoves: number; originActiveSlotAutoMoves: number; activate: boolean; prefillStaged?: boolean } }
 >(
   'chat/createSlot',
   async (opts, { getState, fulfillWithValue }) => {
@@ -82,12 +82,13 @@ export const createSlot = createAsyncThunk<
     // folder or project named on the same call still wins over the default.
     const useDefaultFolder = typeof opts === 'object' && opts.defaultFolder === true
       && opts.folder_id === undefined && !project
-    // Capture the active slot BEFORE the (potentially slow) create round-trip.
-    // The fulfilled reducer compares this against the active slot at resolution
-    // time: if the user switched to a different session while the create was
-    // pending (e.g. New Chat spun on "Creating" under memory pressure and they
-    // moved to another tab), the new slot must NOT hijack the view.
-    const originActiveSlot = (getState() as RootState).chat.activeSlot
+    // Capture the active slot and its move count BEFORE the (potentially slow)
+    // create round-trip. The fulfilled reducer checks both with `forkMayOpen`:
+    // if the user opened another session while the create was pending (e.g.
+    // New Chat spun on "Creating" under memory pressure and they moved to
+    // another tab), or went to one and came back, the new slot must NOT
+    // take the view.
+    const origin = captureForkOrigin(getState() as RootState)
     // An explicit Incognito/Temporary menu choice wins. All other dashboard chat
     // entry points resolve the persisted preference here, before the first turn
     // can read or write memory.
@@ -167,8 +168,8 @@ export const createSlot = createAsyncThunk<
     // scope) has already been awaited above.
     // Carry the origin slot in the action meta (fulfillWithValue) rather than on
     // the payload, so it can never leak into the persisted slot object. The
-    // fulfilled reducer reads action.meta.originActiveSlot to decide whether
-    // activating the new slot is safe.
+    // fulfilled reducer reads action.meta.originActiveSlot and the two move
+    // counts to decide whether activating the new slot is safe.
     //
     // `prefill` seeds the new session's composer. It is staged HERE, before the
     // fulfilled action, because the composer's slot-restore effect reads
@@ -178,7 +179,7 @@ export const createSlot = createAsyncThunk<
     // caller can fall back to another channel.
     const prefill = typeof opts === 'string' ? undefined : opts?.prefill
     const prefillStaged = !!prefill && writePrefill(slot.key, prefill)
-    return fulfillWithValue(slot, { originActiveSlot, activate, prefillStaged })
+    return fulfillWithValue(slot, { originActiveSlot: origin.activeSlot, originActiveSlotMoves: origin.moves, originActiveSlotAutoMoves: origin.autoMoves, activate, prefillStaged })
   },
 )
 
@@ -211,23 +212,24 @@ export function listForkedSlot(d: Pick<ChatSlot, 'key'> & Partial<Pick<ChatSlot,
   return addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode, ...(d.pinned ? { pinned: true } : {}) })
 }
 
-/** Where the user stood when a fork started; see `forkMayOpen`. */
+/** Where the user stood when a fork or create started; see `forkMayOpen`. */
 export interface ForkOrigin { activeSlot: string | null; moves: number; autoMoves: number }
 
 export function captureForkOrigin(state: Pick<RootState, 'chat'>): ForkOrigin {
   return { activeSlot: state.chat.activeSlot, moves: state.chat.activeSlotMoves ?? 0, autoMoves: state.chat.activeSlotAutoMoves ?? 0 }
 }
 
-/** Whether a fork that just resolved may open its child. Every fork caller
- *  captures the origin when the fork starts and asks this before it switches:
- *  a fork can take seconds, and a session the user opened in that time is a
- *  choice the late response must not undo. Stricter than `createSlot`'s
- *  equality guard: the move count also refuses a user who went to another
- *  session and came back, since coming back is a choice too. A move the chat
- *  page made on its own, after it lost the source from its list, is not a
- *  choice, and the fork still opens. The child is
- *  listed in the sidebar either way; only the switch, and what the caller does
- *  on opening it, is skipped. */
+/** Whether a fork or create that just resolved may open its new session.
+ *  Every fork caller and `createSlot` capture the origin when the request
+ *  starts and ask this before they switch: the request can take seconds, and
+ *  a session the user opened in that time is a choice the late response must
+ *  not undo. The move count also refuses a user who went to another session
+ *  and came back, since coming back is a choice too; an equal `activeSlot`
+ *  alone cannot tell that apart from never moving. A move the chat page made
+ *  on its own, after it lost the origin from its list, is not a choice, and
+ *  the new session still opens. The new session is listed in the sidebar
+ *  either way; only the switch, and what the caller does on opening it, is
+ *  skipped. */
 export function forkMayOpen(state: Pick<RootState, 'chat'>, origin: ForkOrigin): boolean {
   if ((state.chat.activeSlotMoves ?? 0) !== origin.moves) return false
   return state.chat.activeSlot === origin.activeSlot || (state.chat.activeSlotAutoMoves ?? 0) !== origin.autoMoves
@@ -374,13 +376,13 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       // would strand the "Creating…" spinner on forever.
       state.creatingSlot = false
       if (state.foregroundCreateId === action.meta.requestId) state.foregroundCreateId = null
-      // Switched-away guard: if the user moved to a different
-      // session while this create was pending (a slow "Creating…" under memory
-      // pressure), do NOT hijack the view. The new slot is registered by
-      // dashboardSlice on this same action; just leave the user where they are. Mirrors the
-      // guard switchSlot/refreshSlot/warmSlotCache already have. `send()`'s
-      // forceNew path and welcome-screen New Chat both leave activeSlot equal
-      // to the origin, so they still activate normally.
+      // Switched-away guard, the same rule forks follow (`forkMayOpen`): if
+      // the user opened another session while this create was pending (a slow
+      // "Creating…" under memory pressure), do NOT hijack the view, even when
+      // they have since come back to the origin. The new slot is registered by
+      // dashboardSlice on this same action; just leave the user where they
+      // are. `send()`'s forceNew path and welcome-screen New Chat both leave
+      // the user on the origin with no move, so they still activate normally.
       //
       // Conscious edge: a rapid double New Chat from the same slot makes both
       // creates capture the same origin; the first fulfilled activates its
@@ -391,8 +393,8 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       // Caller asked for a background create (see `activate` above): the slot
       // is registered but focus stays put until the caller switches to it.
       if (action.meta.activate === false) return
-      const origin = action.meta.originActiveSlot ?? null
-      if (state.activeSlot !== origin) return
+      const origin = { activeSlot: action.meta.originActiveSlot ?? null, moves: action.meta.originActiveSlotMoves ?? 0, autoMoves: action.meta.originActiveSlotAutoMoves ?? 0 }
+      if (!forkMayOpen({ chat: state }, origin)) return
       if (state.activeSlot) {
         state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
         state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)

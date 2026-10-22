@@ -84,12 +84,20 @@ class MockWorkletNode {
 }
 
 let workletFails = false
+/** When set, the next addModule() returns this promise (for ordering tests). */
+let nextWorkletLoad: Promise<void> | null = null
 
 class MockAudioContext {
   static closed = 0
   audioWorklet = {
-    addModule: () =>
-      workletFails ? Promise.reject(new Error('no worklet')) : Promise.resolve(),
+    addModule: () => {
+      if (nextWorkletLoad) {
+        const p = nextWorkletLoad
+        nextWorkletLoad = null
+        return p
+      }
+      return workletFails ? Promise.reject(new Error('no worklet')) : Promise.resolve()
+    },
   }
   createMediaStreamSource() { return { connect() {}, disconnect() {} } }
   close() { MockAudioContext.closed += 1; return Promise.resolve() }
@@ -115,6 +123,7 @@ beforeEach(() => {
   nodes.length = 0
   stoppedTracks.length = 0
   workletFails = false
+  nextWorkletLoad = null
   MockSocket.failNextOpen = false
   MockAudioContext.closed = 0
   getUserMedia = vi.fn().mockResolvedValue(makeStream())
@@ -192,6 +201,7 @@ describe('useMeetingTranscription — starting up', () => {
   it('opens the STT socket, arms capture and reports itself active', async () => {
     const h = await mount()
     const ws = await startCapture(h)
+    await act(async () => { ws.becomeReady() })
 
     expect(ws.url).toBe(`ws://${window.location.host}/api/ws/stt`)
     expect(ws.binaryType).toBe('arraybuffer')
@@ -277,6 +287,7 @@ describe('useMeetingTranscription — starting up', () => {
   it('surfaces a post-open transport error without tearing capture down', async () => {
     const h = await mount()
     const ws = await startCapture(h)
+    await act(async () => { ws.becomeReady() })
 
     await act(async () => { ws.onerror?.() })
     expect(h.errors()).toEqual(['connection'])
@@ -420,6 +431,99 @@ describe('useMeetingTranscription — server frames', () => {
     expect(h.errors()).toEqual(['model unavailable', 'error'])
   })
 
+  it.each(['start-before-close', 'close-before-start'] as const)(
+    'stays down after an error frame before ready (%s)',
+    async order => {
+      const h = await mount()
+      const ws = await startCapture(h)
+
+      await act(async () => { ws.emit({ type: 'error', code: 'stt_streaming_disabled' }) })
+      expect(h.errors()).toEqual(['stt_streaming_disabled'])
+      expect(h.hook.result.current.active).toBe(false)
+      expect(h.hook.result.current.connecting).toBe(false)
+      expect(h.hook.result.current.halted).toBe(true)
+
+      // The caller's effect re-runs on the connecting edge and calls start();
+      // the server's close can land before or after it. Neither order reopens.
+      if (order === 'close-before-start') await act(async () => { ws.close() })
+      await act(async () => { await h.hook.result.current.start() })
+      if (order === 'start-before-close') await act(async () => { ws.close() })
+      await act(async () => { await h.hook.result.current.start() })
+      await flush()
+
+      expect(sockets).toHaveLength(1)
+      // The server's own close is not reported as a second, generic error.
+      expect(h.errors()).toEqual(['stt_streaming_disabled'])
+
+      // stop() (pause or end) clears the halt; the next start retries once.
+      await act(async () => { h.hook.result.current.stop() })
+      expect(h.hook.result.current.halted).toBe(false)
+      await startCapture(h)
+      expect(sockets).toHaveLength(2)
+    },
+  )
+
+  it.each([
+    ['after ready', true],
+    ['before ready', false],
+  ] as const)('reconnects after a retryable error frame (%s)', async (_label, readyFirst) => {
+    const h = await mount()
+    const ws = await startCapture(h)
+    if (readyFirst) await act(async () => { ws.becomeReady() })
+
+    // The 5-minute stream cap: the server sends this frame, then closes.
+    await act(async () => { ws.emit({ type: 'error', code: 'stt_max_duration_exceeded' }) })
+    expect(h.hook.result.current.halted).toBe(false)
+    // `connecting`/`active` stay up until the close, so the caller's effect
+    // re-runs only once the old socket is gone.
+    expect(h.hook.result.current.active || h.hook.result.current.connecting).toBe(true)
+
+    await act(async () => { ws.close() })
+    expect(h.hook.result.current.active).toBe(false)
+    expect(h.hook.result.current.connecting).toBe(false)
+    // No second, generic error for the server's own close.
+    expect(h.errors()).toEqual(['stt_max_duration_exceeded'])
+
+    await startCapture(h)
+    expect(sockets).toHaveLength(2)
+  })
+
+  it('never reports active when ready arrives before a worklet load that fails', async () => {
+    const h = await mount()
+    let rejectLoad: (e: Error) => void = () => {}
+    nextWorkletLoad = new Promise<void>((_, reject) => { rejectLoad = reject })
+    const seen: boolean[] = []
+    await act(async () => { void h.hook.result.current.start() })
+    await flush()
+    const ws = lastSocket()
+
+    await act(async () => { ws.becomeReady() })
+    seen.push(h.hook.result.current.active)
+    await act(async () => { rejectLoad(new Error('404')) })
+    await flush()
+    seen.push(h.hook.result.current.active)
+
+    // `active` never flips true→false, so the session effect sees no drop.
+    expect(seen).toEqual([false, false])
+    expect(h.errors()).toContain('worklet')
+  })
+
+  it('reports active once the worklet is set up even if ready came first', async () => {
+    const h = await mount()
+    let resolveLoad: () => void = () => {}
+    nextWorkletLoad = new Promise<void>(resolve => { resolveLoad = resolve })
+    await act(async () => { void h.hook.result.current.start() })
+    await flush()
+    const ws = lastSocket()
+
+    await act(async () => { ws.becomeReady() })
+    expect(h.hook.result.current.active).toBe(false)
+    await act(async () => { resolveLoad() })
+    await flush()
+    expect(h.hook.result.current.active).toBe(true)
+    expect(h.hook.result.current.connecting).toBe(false)
+  })
+
   it('reports an unexpected close as a disconnect', async () => {
     const h = await mount()
     const ws = await startCapture(h)
@@ -440,6 +544,7 @@ describe('useMeetingTranscription — server frames', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(25_000) })
     await flush()
     expect(sockets).toHaveLength(2)
+    await act(async () => { lastSocket().becomeReady() })
     const errorsBefore = h.errors().length
 
     await act(async () => { staleClose?.() })
@@ -457,6 +562,7 @@ describe('useMeetingTranscription — watchdog and stop', () => {
     await flush()
 
     expect(sockets).toHaveLength(2)
+    await act(async () => { lastSocket().becomeReady() })
     expect(h.hook.result.current.active).toBe(true)
   })
 
@@ -513,6 +619,7 @@ describe('useMeetingTranscription — watchdog and stop', () => {
     await act(async () => { first.close() })
     const second = await startCapture(h)
     expect(second).not.toBe(first)
+    await act(async () => { second.becomeReady() })
 
     await act(async () => { await vi.advanceTimersByTimeAsync(8_000) })
     expect(second.readyState).toBe(MockSocket.OPEN)

@@ -979,3 +979,37 @@ def test_send_refuses_an_empty_or_oversized_message(tmp_path):
             )
         )
     assert long_exc.value.code == "message_too_long"
+
+
+@pytest.mark.asyncio
+async def test_a_send_names_its_peer_origin_to_the_session_entry_point(tmp_path, monkeypatch):
+    """The peer path hands its text to `session_deliver.deliver` with a `peer` origin.
+
+    A steer that the client cannot take asks for a steer first, then falls back
+    to the queue arm with `steer=False` and the sender's address on the entry.
+    """
+    from kiro_crew.dashboard import session_deliver
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    real = session_deliver.deliver
+    calls: list[tuple[str, bool, bool]] = []
+
+    async def _recording(st, slot, text, origin, **kwargs):
+        calls.append((origin.kind, origin.steer, kwargs.get("queue_meta") is not None))
+        return await real(st, slot, text, origin, **kwargs)
+
+    monkeypatch.setattr(session_deliver, "deliver", _recording)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="route me",
+        steer=True,
+    )
+
+    assert out["steered"] is False and out["started"] is False
+    assert calls == [("peer", True, False), ("peer", False, True)]
+    assert any("route me" in q.get("content", "") for q in target._queue)

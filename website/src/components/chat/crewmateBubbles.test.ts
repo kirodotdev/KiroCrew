@@ -26,7 +26,7 @@ const spawn = (ts: string): ChatMessage => ({
 })
 
 describe('filterCrewmateChat', () => {
-  it('drops the machinery and keeps what the crewmate says plus the user', () => {
+  it('drops the machinery and keeps what the mate says plus the user', () => {
     const rows: ChatMessage[] = [
       user(at('2026-09-20T09:12:00Z')),
       tool(at('2026-09-20T09:12:06Z')),
@@ -178,7 +178,7 @@ describe('crewmateRunPosition', () => {
     expect(crewmateRunPosition(rows, 1)).toBe('single')
   })
 
-  it("a change card joins the reply that explains it, so it sits under the crewmate's avatar", () => {
+  it("a change card joins the reply that explains it, so it sits under the mate's avatar", () => {
     const card: ChatMessage = { role: 'card', content: 'Shorter replies', cls: 'msg msg-card', ts: iso(5_000) }
     // Drawn: user, card, reply. The tool step that proposed the card is filtered.
     const transcript = [user(iso(-60_000)), tool(iso(1_000)), card, said(iso(9_000))]
@@ -420,7 +420,7 @@ describe('withQueuedAsBubbles', () => {
 describe('awaitingCrewmateReply', () => {
   const sent = (meta: Record<string, unknown> = {}): ChatMessage => ({ ...user('2026-10-14T08:00:00Z', 'ping'), meta: { sendId: 's1', ...meta } })
 
-  it('waits from the send until the crewmate answers', () => {
+  it('waits from the send until the mate answers', () => {
     expect(awaitingCrewmateReply([sent({ optimistic: true })], 's1')).toBe(true)
     expect(awaitingCrewmateReply([sent(), tool('2026-10-14T08:00:01Z')], 's1')).toBe(true)
     expect(awaitingCrewmateReply([sent(), said('2026-10-14T08:00:02Z')], 's1')).toBe(false)

@@ -390,6 +390,8 @@ def _glob_fullmatch(value: str, pattern: str) -> bool:
 def _opencode_wildcard_match(value: str, pattern: str) -> bool:
     """The harness's own wildcard test, transcribed from opencode 1.18.30.
 
+    The pin the Real Adapter Contract lane runs is in ``test/real_adapters/package.json``.
+
     Both sides have ``\\`` turned into ``/``; in the pattern, ``*`` matches any run
     and ``?`` any one character, everything else is literal, and a trailing `` *``
     also matches nothing after the space. Anchored at both ends.

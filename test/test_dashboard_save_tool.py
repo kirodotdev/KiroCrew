@@ -44,6 +44,22 @@ SLUG = "fleet-crew"
 OTHER_SLUG = "other-crew"
 
 
+#: A crewmate's page is view.html only; two orders of the same two cells, so a save
+#: that swaps them is a layout change.
+_PAGE_LEAD_FIRST = (
+    '<p data-dashboard-field="open_prs"></p>\n<p data-dashboard-field="headline"></p>'
+)
+_PAGE_NOTE_FIRST = (
+    '<p data-dashboard-field="headline"></p>\n<p data-dashboard-field="open_prs"></p>'
+)
+
+
+def _flip(package: dict[str, Any]) -> None:
+    """Swap the page's two cells: the html counterpart of reordering the layout."""
+    view = package["view"]
+    view["html"] = _PAGE_NOTE_FIRST if view["html"] == _PAGE_LEAD_FIRST else _PAGE_LEAD_FIRST
+
+
 def _package_body() -> dict[str, Any]:
     """The three declarations a save takes. No ``kind``, and no ``bound_to``."""
     return {
@@ -57,12 +73,7 @@ def _package_body() -> dict[str, Any]:
                 "headline": {"type": "text", "source": {"agentic": True}},
             }
         },
-        "view": {
-            "blocks": [
-                {"id": "lead", "type": "stat", "fields": ["open_prs"], "title": "Open"},
-                {"id": "note", "type": "list", "fields": ["headline"]},
-            ]
-        },
+        "view": {"html": _PAGE_LEAD_FIRST},
         "theme": {"tokens": {"--accent": "oklch(0.7 0.15 150)"}},
     }
 
@@ -216,7 +227,7 @@ async def test_a_save_stores_the_page_and_apply_puts_it_live(monkeypatch, store)
         reply = await applied.json()
 
     saved = payload["saved"]
-    assert (saved["fields"], saved["blocks"]) == (2, 2)
+    assert (saved["fields"], saved["blocks"]) == (2, 0)
     [record] = store.records.values()
     assert record.kind == DASHBOARD_KIND
     assert parse_package(record.content)["bound_to"] == f"crewmate:{SLUG}"
@@ -229,7 +240,7 @@ async def test_a_save_stores_the_page_and_apply_puts_it_live(monkeypatch, store)
 async def test_a_second_save_updates_the_same_package_under_its_read(monkeypatch, store):
     """One package per crewmate: a second save updates it, fenced on the read."""
     second = _package_body()
-    second["view"]["blocks"].reverse()
+    _flip(second)
     async with _client(monkeypatch) as client:
         await _save_and_apply(client, _package_body())
         await _save_and_apply(client, second)
@@ -245,7 +256,7 @@ async def test_one_rollback_goes_back_to_a_package_or_to_the_template(monkeypatc
     """Every apply is a version, and the version restores its own page in force."""
     instance_store = _instance()
     second = _package_body()
-    second["view"]["blocks"].reverse()
+    _flip(second)
     async with _client(monkeypatch) as client:
         await _save_and_apply(client, _package_body())  # v1: package v1
         await _save_and_apply(client, second)  # v2: package v2
@@ -295,7 +306,7 @@ async def test_the_pinned_page_survives_whatever_happens_to_the_artifact(monkeyp
     saved = store.records[slug].content
     # Deleted, and a different page saved under the same slug and version.
     other = _package_body()
-    other["view"]["blocks"].reverse()
+    _flip(other)
     other.update({"kind": DASHBOARD_KIND, "bound_to": f"crewmate:{SLUG}"})
     store.records.clear()
     store.create(name="again", content=json.dumps(other), kind=DASHBOARD_KIND)
@@ -308,7 +319,7 @@ async def test_only_pinned_pages_are_kept_after_a_save(monkeypatch, store):
     from kiro_crew.agent_panel import panel_dir
 
     second = _package_body()
-    second["view"]["blocks"].reverse()
+    _flip(second)
     async with _client(monkeypatch) as client:
         await _save_and_apply(client, _package_body())
         await _save_and_apply(client, second)
@@ -341,7 +352,7 @@ async def test_an_older_locked_record_checks_writes_against_its_template(monkeyp
     # A package bound to the crewmate, with a version a person cut.
     pkg = {**_package_body(), "kind": DASHBOARD_KIND, "bound_to": f"crewmate:{SLUG}"}
     art = real.create(name="page", content=json.dumps(pkg), kind=DASHBOARD_KIND)
-    pkg["view"]["blocks"].reverse()
+    _flip(pkg)
     read = real.get(art.slug, assign_token=True)
     real.update(art.slug, content=json.dumps(pkg), actor="user", snapshot_token=read.content_token)
 
@@ -423,7 +434,7 @@ async def test_a_scan_that_cannot_read_a_kept_version_prunes_nothing(monkeypatch
 
     instance_store = _instance()
     second = _package_body()
-    second["view"]["blocks"].reverse()
+    _flip(second)
     async with _client(monkeypatch) as client:
         await _save_and_apply(client, _package_body())
         stray = panel_dir() / f"{SLUG}.dashboard-page.{'0' * 32}.json"
@@ -565,14 +576,18 @@ async def test_the_binding_comes_from_the_caller_and_the_body_cannot_carry_one(m
 # --------------------------------------------------------------------------- #
 
 
-async def test_an_unknown_block_type_is_refused(monkeypatch, store):
+async def test_a_block_layout_is_refused_for_a_crewmate_page(monkeypatch, store):
+    """A crewmate's page is drawn from view.html only, so a view of blocks is refused
+    at the save, before anything is stored, with the field-binding rule to follow."""
     body = _package_body()
-    body["view"]["blocks"][0]["type"] = "hologram"
+    body["view"] = {"blocks": [{"id": "lead", "type": "stat", "fields": ["open_prs"]}]}
     async with _client(monkeypatch) as client:
         resp = await _save(client, body)
         assert resp.status == 400
         payload = await resp.json()
-    assert "hologram" in payload["error"]
+    assert payload["code"] == "invalid_package"
+    assert "view.html only" in payload["error"]
+    assert "data-dashboard-field" in payload["error"]
     assert store.records == {}
 
 
@@ -589,14 +604,14 @@ async def test_an_oversized_package_is_refused(monkeypatch, store):
 
 
 def _lone_surrogate_body() -> bytes:
-    """A package whose block title is an unpaired ``\\ud800``, as raw JSON bytes.
+    """A package whose page text holds an unpaired ``\\ud800``, as raw JSON bytes.
 
     Raw rather than through ``json=``: the escape has to reach the handler AS
     JSON, because it is six ASCII characters until the decoder turns it into the
     single code point no UTF-8 encoder accepts.
     """
     body = _package_body()
-    body["view"]["blocks"][0]["title"] = "LONE"
+    body["view"]["html"] += "<p>LONE</p>"
     return json.dumps(body).replace("LONE", "\\ud800").encode("utf-8")
 
 
@@ -665,7 +680,7 @@ async def test_artifact_update_refuses_a_surrogate_the_same_way(tmp_path):
     # and pass whatever ``_validate_content`` does. ``ensure_ascii=False`` is what
     # keeps the code point itself in the output, and is what the save route uses.
     surrogate = dict(pkg)
-    surrogate["view"] = {"blocks": [dict(pkg["view"]["blocks"][0], title="\ud800")]}
+    surrogate["view"] = {"html": pkg["view"]["html"] + "<p>\ud800</p>"}
     bad = json.dumps(surrogate, ensure_ascii=False)
     assert "\ud800" in bad
     # UNDER THE RECORD'S OWN TOKEN, the way an owner write reaches a dashboard
@@ -720,7 +735,7 @@ async def test_a_credential_shaped_field_name_is_refused_at_save(monkeypatch, st
 
     body = _package_body()
     body["model"]["types"][token_name] = {"type": "number", "source": {"agentic": True}}
-    body["view"]["blocks"][0]["fields"] = [token_name]
+    body["view"]["html"] += f'<p data-dashboard-field="{token_name}"></p>'
 
     async with _client(monkeypatch) as client:
         resp = await _save(client, body)
@@ -749,32 +764,6 @@ async def test_an_ordinary_field_name_still_saves(monkeypatch, store):
         assert resp.status == 200, await resp.text()
 
     assert len(store.records) == 1
-
-
-async def test_a_credential_shaped_block_id_is_refused_too(monkeypatch, store):
-    """The other name set the page counts: a view block's id.
-
-    Both reach a page as keys -- a field name through the read and the manifest, a
-    block id through the frame's ``blocks`` mapping -- so a check catching only one
-    would leave the same hole one key away.
-    """
-    from kiro_crew.platform import redact_via_context
-
-    token_id = "ghp_" + "f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1"
-    assert redact_via_context(token_id) != token_id, "not credential-shaped here"
-
-    body = _package_body()
-    body["view"]["blocks"][0]["id"] = token_id
-
-    async with _client(monkeypatch) as client:
-        resp = await _save(client, body)
-        assert resp.status == 400, await resp.text()
-        payload = await resp.json()
-
-    assert payload["code"] == "unsafe_declared_name"
-    assert "view block #" in payload["error"]
-    assert token_id not in payload["error"]
-    assert store.records == {}
 
 
 async def test_a_credential_shaped_theme_token_is_refused_too(monkeypatch, store):
@@ -880,7 +869,8 @@ def test_the_tool_is_on_the_panel_server_and_takes_no_target():
     tool = next(t for t in mcp_panel._tool_definitions() if t["name"] == "dashboard_save")
     props = tool["inputSchema"]["properties"]
     assert set(props) == {"model", "view", "theme"}
-    assert sorted(tool["inputSchema"]["required"]) == ["model", "theme", "view"]
+    # Theme is optional: an MCP client can drop an empty object before it arrives.
+    assert sorted(tool["inputSchema"]["required"]) == ["model", "view"]
     assert not (set(props) & {"bound_to", "session", "session_key", "slot", "target", "kind"})
 
 
@@ -1038,22 +1028,6 @@ async def test_a_page_written_as_html_comes_back_with_its_verification(monkeypat
     assert on_the_loop and not any(on_the_loop), "a package was parsed on the event loop"
     # STILL SAVED: a failed verdict does not undo the save, and nothing goes live.
     assert len(store.records) == 1
-
-
-async def test_a_block_layout_has_no_script_to_run(monkeypatch, store):
-    """``verification`` is null for blocks, and nothing starts to find that out."""
-    from kiro_crew import dashboard_verify
-
-    monkeypatch.setattr(
-        dashboard_verify, "verify_page", lambda *_a, **_k: pytest.fail("ran a block layout")
-    )
-
-    async with _client(monkeypatch) as client:
-        resp = await _save(client, _package_body())
-        payload = await resp.json()
-
-    assert resp.status == 200, payload
-    assert payload["verification"] is None
 
 
 async def test_a_refused_page_is_not_run(monkeypatch, store):
@@ -1907,3 +1881,80 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_page_check"
     }
     assert starters == {"api_dashboard_save"}
+
+
+async def test_a_skipped_run_says_so_and_the_gateway_checks_shapes_and_schemes(monkeypatch, store):
+    """No browser on the host: the reply says the page was NOT run, and the two checks
+    the gateway does itself still come back -- a list bound to a text cell, and a theme
+    that fixes the text colour for one scheme only."""
+    from kiro_crew.dashboard.handlers import member_dashboard_fields
+
+    skipped = _verdict("skipped", reason="no browser on this host", data=None)
+    monkeypatch.setattr(member_dashboard_fields, "verify_package_page", lambda *_a, **_k: skipped)
+    body = _html_body()
+    body["model"]["types"]["open_prs"] = {"type": "array", "source": {"agentic": True}}
+    body["theme"] = {"tokens": {"--panel-fg": "#eeeeee"}}
+
+    async with _client(monkeypatch) as client:
+        resp = await _save(client, body)
+        payload = await resp.json()
+
+    assert resp.status == 200, payload
+    note = payload["verification"]["note"]
+    assert "NOT run" in note and "no browser on this host" in note
+    assert [w.split(" ", 3)[:3] for w in payload["shape_warnings"]] == [["open_prs", "is", "array"]]
+    assert len(payload["theme_warnings"]) == 1
+    assert {"field": "open_prs", "source": "manual", "type": "array"} in payload["fields"]
+    assert "open_prs" in payload["manual_fields"] and payload["manual_note"]
+
+
+async def test_a_clean_page_carries_no_warning_keys(monkeypatch, store):
+    """A text field in a text cell and a theme left to the host's variables: no warnings."""
+    from kiro_crew.dashboard.handlers import member_dashboard_fields
+
+    passed = _verdict("passed", data="synthetic")
+    monkeypatch.setattr(member_dashboard_fields, "verify_package_page", lambda *_a, **_k: passed)
+
+    async with _client(monkeypatch) as client:
+        resp = await _save(client, _html_body())
+        payload = await resp.json()
+
+    assert resp.status == 200, payload
+    assert "shape_warnings" not in payload and "theme_warnings" not in payload
+    assert "note" not in (payload["verification"] or {})
+    assert all(row["type"] for row in payload["fields"])
+
+
+@pytest.mark.parametrize(
+    "theme",
+    [None, {}, {"css": ".x{color:var(--text)}"}],
+    ids=["no-theme", "theme-empty", "css-no-tokens"],
+)
+async def test_a_save_with_no_theme_or_no_tokens_stores_empty_tokens(monkeypatch, store, theme):
+    """The route takes the body an MCP client sends after dropping an empty object."""
+    body = _html_body()
+    if theme is None:
+        body.pop("theme")
+    else:
+        body["theme"] = theme
+    async with _client(monkeypatch) as client:
+        resp = await _save(client, body)
+        payload = await resp.json()
+    assert resp.status == 200, payload
+    (rec,) = store.records.values()
+    assert json.loads(rec.content)["theme"]["tokens"] == {}
+
+
+def test_the_tool_sends_the_empty_theme_when_the_client_dropped_it(monkeypatch):
+    from kiro_crew import mcp_panel
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(mcp_panel, "_strict_session_key", lambda: ("sk", None))
+
+    def _post(path: str, body: dict[str, Any], session_key: Any = None) -> dict[str, Any]:
+        sent.append(body)
+        return {"saved": {}}
+
+    monkeypatch.setattr(mcp_panel, "_post", _post)
+    mcp_panel._call_tool_inner("dashboard_save", {"model": {"types": {}}, "view": {"html": "x"}})
+    assert sent and sent[0]["theme"] == {"tokens": {}}

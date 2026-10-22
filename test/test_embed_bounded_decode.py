@@ -435,9 +435,14 @@ class TestGateAgainstThePolicy:
             policy = embeddings_mod._model_context_policy(path)
         assert "Could not read GGUF metadata" in caplog.text
         assert policy.n_ubatch < policy.n_batch
-        # A bound set from those sizes alone would cut a 600-token input in two.
-        _, sizes = _run([_text(600, 4)], bound=policy.n_ubatch, n_batch=policy.n_batch)
-        assert sizes == [policy.n_ubatch, 600 - policy.n_ubatch]
+        # A bound set from those sizes alone would cut an input between one and
+        # two micro-batches long in two. Its length comes from the shipped
+        # micro-batch, so the shape holds whatever _N_UBATCH is.
+        assert policy.n_ubatch == embeddings_mod._N_UBATCH
+        tokens = policy.n_ubatch + policy.n_ubatch // 2
+        assert tokens <= policy.n_batch
+        _, sizes = _run([_text(tokens, 4)], bound=policy.n_ubatch, n_batch=policy.n_batch)
+        assert sizes == [policy.n_ubatch, tokens - policy.n_ubatch]
         # The loaded runtime still knows what the model is, so no bound is set.
         llm = _fake_llm(memory=memory, metadata=metadata, n_ubatch=policy.n_ubatch)
         assert embeddings_mod._install_bounded_decode(llm) is False

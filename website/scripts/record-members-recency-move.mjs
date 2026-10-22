@@ -118,7 +118,7 @@ check('starts in Recent order, not alphabetical', initial.join() === 'gamma-writ
 await page.getByText('beta-lead', { exact: true }).first().click()
 await page.waitForTimeout(1600)
 const afterOpen = await names()
-check('opening a crewmate does not reorder', afterOpen.join() === initial.join(), afterOpen.join(' '))
+check('opening a mate does not reorder', afterOpen.join() === initial.join(), afterOpen.join(' '))
 const fetchesBefore = rosterFetches
 
 // A background crewmate advances QUIETLY first, outranking everyone. This is the
@@ -149,7 +149,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(2600)
 const afterSend = await names()
-check('the open crewmate is now first', afterSend[0] === 'beta-lead', afterSend.join(' '))
+check('the open mate is now first', afterSend[0] === 'beta-lead', afterSend.join(' '))
 // ONE row moved: the other two keep their order relative to each other, which a
 // re-sort would not have left alone now that gamma-writer outranks both.
 check('only the open row moved', afterSend.join() === 'beta-lead,gamma-writer,alpha-scout', afterSend.join(' '))

@@ -116,7 +116,7 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
   can also write (`change_card_catalog.MEMORY_ROUTES`), made through a card or
   by hand on the Settings page, appends one `Dashboard: <what changed> (via ...)`
   line to Global memory history (`dashboard/handlers/change_cards.py`
-  `_record_memory`). It is how a crewmate asked "why did this change?" can answer
+  `_record_memory`). It is how a mate asked "why did this change?" can answer
   from `diagnose_settings`' `recent_changes`, and why a hand edit is recorded too:
   a card-only log would miss the change the user is asking about. A line names
   what changed, never a secret, environment or token value
@@ -348,7 +348,7 @@ re-adds, once:
    briefing and permanent rules back, not the pre-compaction copy;
 5. `[AGENT SYSTEM PROMPT]` — the managed spec prompt is a stub pointing at this
    block, so a compaction that drops it leaves the session with no contract.
-   The stub (`agent.py` → `_NATIVE_PROMPT_STUB`) is also the system-role text
+   The stub (`agent_parts/spec_build.py` → `_NATIVE_PROMPT_STUB`) is also the system-role text
    that tells the model the block is gateway-written, arrives inside the first
    user turn and again here, and is not a prompt injection — without it, the
    harness's own rule against identity claims in non-system content applies to

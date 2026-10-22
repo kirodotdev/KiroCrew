@@ -659,9 +659,9 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
 @pytest.mark.parametrize(
     ("change", "outcome"),
     [
-        ("turn", "skipped: the crewmate is busy"),
-        ("queue", "skipped: the crewmate is busy"),
-        ("reopen", "skipped: the crewmate's thread is not open"),
+        ("turn", "skipped: the mate is busy"),
+        ("queue", "skipped: the mate is busy"),
+        ("reopen", "skipped: the mate's thread is not open"),
     ],
     ids=["a-turn-started", "a-message-queued", "the-thread-was-reopened"],
 )
@@ -1292,6 +1292,57 @@ def test_the_reminder_fires_one_hidden_turn_in_the_crewmates_own_thread(_floor_m
     assert "Keep docs current" in prompt
     assert "pages reviewed" in prompt and "key_result_progress" in prompt
     assert "short_goal" not in prompt and "next task" in prompt
+
+
+@pytest.mark.parametrize("has_page", [False, True], ids=["no-page", "own-page"])
+def test_the_daily_reminder_asks_for_a_page_only_while_there_is_none(
+    _floor_monkeypatch, has_page: bool
+) -> None:
+    """A crewmate whose tab shows nothing of its own, with a goal and milestones, is told
+    to write a page; once it has one, not."""
+    from kiro_crew import dashboard_agentic
+
+    _seed()
+    slug = _slug(ORDINARY)
+    state = FakeState()
+    slot = _thread(state, ORDINARY)
+    slot.task = None
+    slot._turn_user_sent = False
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    seen: list[str] = []
+
+    def _bound(s: str) -> str:
+        seen.append(s)
+        return "own-page" if has_page else ""
+
+    _floor_monkeypatch.setattr(dashboard_agentic, "bound_package", _bound)
+    _floor_monkeypatch.setattr(dashboard_agentic, "tab_shows_suggestions", lambda _s: True)
+
+    class Job:
+        managed_by = goal_reminder.managed_key(slug)
+
+    member_goals.set_goal(slug, ORDINARY, "Keep docs current", by="user")
+    member_goals.set_key_results(slug, ORDINARY, [{"text": "pages reviewed", "target": "40"}])
+    member_goals.set_schedules(slug, ORDINARY, {"daily": True})
+    assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
+    ((args, _kwargs),) = sent
+    assert seen == [slug]
+    assert (goal_reminder.DASHBOARD_BUILD_LINE in args[2]) is not has_page
+    # The weekly report never carries it: the line rides the daily wake only.
+    assert goal_reminder.DASHBOARD_BUILD_LINE not in goal_reminder.reminder_prompt(
+        member_goals.read_goals(slug, ORDINARY), "weekly", dashboard="x"
+    )
+
+
+def test_the_build_line_is_an_html_page_saved_and_applied() -> None:
+    line = goal_reminder.DASHBOARD_BUILD_LINE
+    assert "view.html" in line and "dashboard_save" in line and "dashboard_apply" in line
+    # Crewmate wording: "your work items", never "your worker".
+    assert "your worker" not in line and "conductor" not in line
+    assert goal_reminder.dashboard_line("", {"goals": [{"text": "x"}], "key_results": [{}]}) == ""
 
 
 def _ledger_item(title: str, state: str, closed_at: str | None, summary: str = ""):

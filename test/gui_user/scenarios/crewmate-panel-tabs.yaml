@@ -1,11 +1,11 @@
-# Nightly: the crewmate's side panel opens with two standing tabs -- the leading
+# Nightly: the mate's side panel opens with two standing tabs -- the leading
 # Dashboard tab and pinned Files -- and none of the retired Notes / Work log /
-# Crew summary tabs (crew-mode.md, "Crewmate conversation layout"). A DOM test
+# Crew summary tabs (crew-mode.md, "Mate conversation layout"). A DOM test
 # pins the tab ids; this scenario checks what a first-time user actually sees:
 # the two labels, Dashboard first, each tab body reachable by clicking its
 # label, and no settings copy in the panel.
 #
-# The Crewmates page sits behind a feature-preview switch (per-device
+# The Mates page sits behind a feature-preview switch (per-device
 # localStorage), so the tester turns it on first, exactly as members-dm-hello
 # does, and the member card is hedged the same way (it may render as the id
 # "nova-sky"). On a wide window the panel is docked beside the conversation;
@@ -15,19 +15,19 @@ name: crewmate-panel-tabs
 tier: nightly
 feature: members
 user_story: >-
-  As a person managing a crewmate, I want its panel to open on the page it
+  As a person managing a mate, I want its panel to open on the page it
   published and its workspace files -- Dashboard, Files -- so that I read its
   work instead of its settings.
 docs_url: docs/system-specs/modules/crew-mode.md
-summary: Open a crewmate's conversation and check its panel shows Dashboard / Files and no retired Notes, Work log or Crew summary tab
+summary: Open a mate's conversation and check its panel shows Dashboard / Files and no retired Notes, Work log or Crew summary tab
 preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /settings
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
-  - Turn on the preview whose title starts with "Crewmates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
-  - Open the Crewmates page. After the preview is on, a "Crewmates" item appears in the left rail, directly under Sessions; click it.
+  - Turn on the preview whose title starts with "Mates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
+  - Open the Mates page. After the preview is on, a "Mates" item appears in the left rail, directly under Sessions; click it.
   - Click the member named Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) to open its conversation.
   - Look at the side panel beside the conversation. If no panel is showing, click the "Details" button in the conversation header to open it.
   - Read the tab labels at the top of the panel, left to right.
@@ -36,7 +36,7 @@ steps:
 expectations:
   - The panel's tabs include "Dashboard" and "Files", and "Dashboard" is the leftmost tab.
   - No tab in the panel is labelled "Notes", "Work log" or "Crew summary", and the panel shows no "Wake sources", "Built from" or "Memory store" text on either tab.
-  - The Dashboard tab shows either the crewmate's published page or a sentence that it has not published one yet -- never an error.
+  - The Dashboard tab shows either the mate's published page or a sentence that it has not published one yet -- never an error.
   - The Files tab shows a file browser (a list of files or folders, or an empty-folder message) -- never an error.
 max_steps: 18
 max_seconds: 480

@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 
+from kiro_crew.testing.wait import finished
 from kiro_crew.workflows.dsl import parallel, pipeline
 
 pytestmark = pytest.mark.asyncio
@@ -143,8 +144,8 @@ async def test_pipeline_no_inter_stage_barrier_deadlock_proof() -> None:
         return prev
 
     # If pipeline imposed a stage barrier, item 0 would block stage1 forever and
-    # item 1 could never reach stage2 → deadlock → wait_for times out.
-    out = await asyncio.wait_for(pipeline([0, 1], stage1, stage2), timeout=2.0)
+    # item 1 could never reach stage2 → deadlock → the bound fails by name.
+    out = await finished(pipeline([0, 1], stage1, stage2), "the pipeline without a barrier", timeout=2.0)
     assert out == [0, 1]
 
 

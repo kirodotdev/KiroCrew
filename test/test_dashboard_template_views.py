@@ -353,7 +353,7 @@ def test_an_empty_board_and_an_undrawable_one_say_different_things(
     """Both end in no bars and they are not the same fact: one means there is no crew,
     the other means the crew's work carries no usable stamps."""
     _, page = pages["timeline"]
-    assert "No board has reached this crewmate" in page
+    assert "No board has reached this mate" in page
     assert "No task carries a start stamp" in page
 
 

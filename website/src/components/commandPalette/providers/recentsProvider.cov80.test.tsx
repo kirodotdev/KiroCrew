@@ -251,6 +251,22 @@ describe('useRecentsProvider — Current group', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/chat')
   })
 
+  it('labels an untitled live row "Untitled session" and still switches to its key (#20880)', async () => {
+    const { result } = harness([
+      slot({ key: 'zzq-keyonly', last_activity_ts: 3_000 }),
+      slot({ key: 'zzq-keytitled', title: 'zzq-keytitled', last_activity_ts: 2_000 }),
+      slot({ key: 'zzq-named', title: 'zzq Named', last_activity_ts: 1_000 }),
+    ])
+    const current = (await result.current.search('')).filter((r) => r.id.startsWith('recents:cur:'))
+    expect(current.map((r) => [r.id, r.title])).toEqual([
+      ['recents:cur:zzq-keyonly', 'Untitled session'],
+      ['recents:cur:zzq-keytitled', 'Untitled session'],
+      ['recents:cur:zzq-named', 'zzq Named'],
+    ])
+    current[0].onActivate?.()
+    expect(thunks.switchSlot).toHaveBeenCalledWith({ key: 'zzq-keyonly', announceOnMissing: true })
+  })
+
   it('synthesizes a create row when no empty untitled slot exists', async () => {
     const { result } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
     const rows = await result.current.search('')
@@ -349,11 +365,21 @@ describe('useRecentsProvider — Older group', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/chat')
   })
 
-  it('falls back to the key when a history row has no title', async () => {
-    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-keyonly', preview: 'zzq body' }] })
+  it('labels an untitled history row "Untitled session" and resumes its key (#20881)', async () => {
+    apiMock.sessions.mockResolvedValue({
+      sessions: [
+        { key: 'zzq-keyonly', preview: 'zzq body' },
+        { key: 'zzq-keytitled', title: 'zzq-keytitled', preview: 'zzq more' },
+        { key: 'zzq-named', title: 'zzq Named', preview: 'zzq text' },
+      ],
+    })
     const { result } = harness([])
     const older = (await result.current.search('')).filter((r) => r.id.startsWith('recents:old:'))
-    expect(older[0].title).toBe('zzq-keyonly')
+    expect(older.map((r) => r.title)).toEqual(['Untitled session', 'Untitled session', 'zzq Named'])
+    expect(older[0].subtitle).toBe('zzq body')
+    older[0].onActivate?.()
+    // The resume payload keeps its old `title || key` value.
+    expect(thunks.resumeFromHistory).toHaveBeenCalledWith({ key: 'zzq-keyonly', title: 'zzq-keyonly' })
   })
 })
 

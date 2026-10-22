@@ -18,8 +18,10 @@ import asyncio
 import importlib
 import json
 import sys
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 from kiro_crew import app_lifecycle_client
 from kiro_crew.apps.backend import recorded_backend_port
@@ -95,6 +97,8 @@ def _apply_through_gateway(
         print(f"⏳ {exc}", file=sys.stderr)
         sys.exit(1)
     except app_lifecycle_client.AppGatewayError as exc:
+        if action == "enable" and exc.code == _SESSION_APPROVAL_CONSENT_REQUIRED:
+            _refuse_session_approval_from_cli(subject)
         print(f"❌ gateway refused: {exc}. {hint}", file=sys.stderr)
         sys.exit(1)
     if result is None:
@@ -114,6 +118,45 @@ def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
         "shells the CLI always uses this path). If a gateway is running now, apply "
         "it live from the dashboard."
     )
+
+
+_SESSION_APPROVAL_CONSENT_REQUIRED = "session_approval_consent_required"
+# Same sentence the dashboard's app detail page shows for ``permissions.sessionApproval``
+# (``pages.appDetailPage.session_approval_desc``), so both surfaces disclose the same grant.
+_SESSION_APPROVAL_DESC = (
+    "Can send messages and choose response options in your chats, approve or deny "
+    "tool prompts, and switch a chat's approval mode."
+)
+
+
+def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
+    """Say what *app_name* asks for and where a person allows it, then exit 1.
+
+    The CLI never gives this consent: there is no flag and no prompt, and it never
+    sends ``sessionApprovalConsent``. An agent with a shell could pass a flag or
+    answer a prompt itself, so only the dashboard can grant control of the owner's
+    chats. The app stays off.
+    """
+    from kiro_crew.apps.permissions import format_permissions_summary
+    from kiro_crew.dashboard.urls import resolve_dashboard_host
+    from kiro_crew.port_resolution import resolve_client_port
+
+    shown = safe_terminal_line(app_name)
+    print(f"❌ {shown} asks to control your chats. Nothing was enabled.", file=sys.stderr)
+    print(f"   Chats:     {_SESSION_APPROVAL_DESC}", file=sys.stderr)
+    try:
+        manifest = get_app_manifest(app_name)
+    except Exception:  # noqa: BLE001 - an unreadable manifest must not hide the link
+        manifest = None
+    if manifest is not None:
+        # Manifest text is app-authored, so every line goes through the sanitizer.
+        for line in format_permissions_summary(manifest).splitlines():
+            print(f"   {safe_terminal_line(line.strip())}", file=sys.stderr)
+    host = resolve_dashboard_host(local_only=True)
+    port = resolve_client_port(None)
+    link = f"http://{host}:{port}/apps/detail/{urllib.parse.quote(app_name, safe='')}"
+    print(f"   To allow it, open the app in the dashboard: {link}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _app_declares_backend(app_name: str) -> bool:
@@ -484,6 +527,8 @@ def _handle_app(args: argparse.Namespace) -> None:
                 print(f"   Skills registered: {len(reg.skills)}")
             _register_app_crons_to_scheduler(args.name)
             _warn_hooks_need_restart(args.name)
+        elif getattr(result, "error_code", "") == _SESSION_APPROVAL_CONSENT_REQUIRED:
+            _refuse_session_approval_from_cli(args.name)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)

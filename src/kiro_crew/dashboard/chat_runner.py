@@ -181,7 +181,6 @@ from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.app_agent_binding import (
     _app_agent_host_allowed,
-    _app_agent_start_dirs,
     _app_agent_turn_backend,
     _provider_backend,
     _recover_app_agent_binding,
@@ -1420,6 +1419,60 @@ async def _persist_abnormal_turn_usage(
     except Exception:
         logger.debug("Failed to persist abnormal-turn usage for slot %s", slot.key, exc_info=True)
         return False
+
+
+def _turn_full_reply_text(turn: "_ChatTurn") -> tuple[str, str]:
+    """The turn's COMPLETE answer and its FINAL segment, as the transcript shows.
+
+    Returns ``(full_body, final_segment)``. ``full_body`` is everything to
+    mirror; ``final_segment`` is the newest reply row's text, the one an OPTIONS
+    control must be built from (and only from).
+
+    ``turn.assistant_text`` holds only the segment since the last tool call: a
+    tool boundary flushes the text so far to a finalized assistant row and
+    resets the accumulator (``_on_tool_call``), so a turn that answers and then
+    calls one more tool leaves only the trailing fragment -- or nothing -- in
+    it. Mirroring that fragment would publish a truncated reply, or none, on a
+    turn whose answer precedes its last tool call, while the dashboard keeps the
+    whole thing from the transcript. Reading the final segment from the newest
+    row rather than from ``turn.assistant_text`` also keeps a final OPTIONS ask
+    whose row was flushed before a text-less last tool call, which empties
+    ``turn.assistant_text`` -- the dashboard shows those choices from the same
+    row, so the mirror must too.
+
+    The body and the final segment both come from THIS turn's own reply rows
+    (filled by ``_note_reply_row`` at every segment flush including the
+    end-of-turn one), in window order. Identity, not position: a workflow or
+    sub-agent result is appended into the same window by another writer while
+    the turn runs and must not be folded into this reply. The rows are already
+    redacted and OPTIONS-reflow-repaired by ``_flush_segment``, which is what the
+    transcript renders too.
+
+    The ids come from ``turn._reply_mids_snapshot`` when it is set:
+    ``_flush_file_changes`` clears the live ``slot._turn_reply_mids`` on exit and
+    runs BEFORE this leg, so a turn that wrote a file would otherwise find the
+    live list already empty. The snapshot is taken just before that flush. When
+    no snapshot was taken (the flush did not run this turn) the live list is
+    read. Falls back to ``turn.assistant_text`` for both values when neither
+    names a row -- a slot double in a test with no id list, or a turn whose
+    single segment has not been flushed into the window.
+    """
+    slot = turn.slot
+    trailing = turn.assistant_text
+    snapshot = turn._reply_mids_snapshot
+    mids = snapshot if isinstance(snapshot, list) else getattr(slot, "_turn_reply_mids", None)
+    if not isinstance(mids, list) or not mids:
+        return trailing, trailing
+    wanted = set(mids)
+    parts = [
+        row.get("content", "")
+        for row in slot.messages
+        if row_mid(row) in wanted and row.get("role") == "assistant"
+    ]
+    non_empty = [p for p in parts if p]
+    if not non_empty:
+        return trailing, trailing
+    return "\n\n".join(non_empty), non_empty[-1]
 
 
 @_hands_off_queue_on_exit
@@ -4704,6 +4757,10 @@ async def _run_chat(
             )
             # Copied before the flush, which clears the reply ids on exit.
             _note_reply_mids = list(_reply_mids) if isinstance(_reply_mids, list) else []
+            # The Slack mirror leg below runs AFTER this flush, so it reads the
+            # snapshot rather than the cleared live list to publish the whole
+            # answer (see _turn_full_reply_text).
+            turn._reply_mids_snapshot = _note_reply_mids
             _flush_file_changes(
                 slot,
                 turn_boundary=_turn_msg_boundary,
@@ -5109,8 +5166,16 @@ async def _run_chat(
         # busier surface open. The destination is the thread cached at turn start,
         # not the live binding, so it is judged as the room it is
         # (`slack_publication_withheld`) beside the live comparison.
+        #
+        # Publish the turn's WHOLE answer, not the post-last-tool remnant in
+        # `turn.assistant_text`: a tool boundary flushes and resets that
+        # accumulator, so a turn that answers before its last tool call would
+        # otherwise mirror a fragment or nothing. The gate reads the full text
+        # too, so an answer fully flushed before the last tool (empty
+        # `assistant_text`) still publishes.
+        _mirror_reply_text, _mirror_final_segment = _turn_full_reply_text(turn)
         if (
-            turn.assistant_text
+            _mirror_reply_text
             and state.slack_client
             and _mirror_thread
             and _mirror_chan
@@ -5129,7 +5194,26 @@ async def _run_chat(
                 # means whatever conversion did to the tail decides whether the
                 # controls render at all -- and a >39,000-char turn loses the tag
                 # entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(turn.assistant_text)
+                #
+                # Actionable choices come from the FINAL segment alone -- the
+                # newest reply row -- matching the dashboard, which reads only the
+                # last assistant row. Reading the newest row rather than
+                # `turn.assistant_text` keeps a final OPTIONS ask whose row was
+                # flushed before a text-less last tool call, which empties
+                # `turn.assistant_text`. The mirrored BODY joins every reply row,
+                # so a marker in an earlier segment is stripped from it too (a
+                # single extract_options over the join takes the first and leaves
+                # the rest as literal text) -- but it never becomes a control:
+                # minting one for an earlier segment's choices, or for a question
+                # the turn moved past and ended without a marker, puts stale
+                # buttons on the thread whose click sends a superseded answer
+                # back to the session.
+                _, _mirror_options = extract_options(_mirror_final_segment)
+                _mirror_body = _mirror_reply_text
+                while True:
+                    _mirror_body, _these_options = extract_options(_mirror_body)
+                    if not _these_options:
+                        break
 
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
@@ -5187,7 +5271,10 @@ async def _run_chat(
                             # owner recorded meanwhile survives.
                             await expire_slack_options(state, _owner, ts=_mirror_ts)
             except Exception:
-                logger.debug("Failed to mirror response to Slack", exc_info=True)
+                # WARNING, not DEBUG: a swallowed failure here loses the turn's
+                # reply on the linked thread with no other trace, and the lost
+                # reply is user-visible.
+                logger.warning("Failed to mirror response to Slack", exc_info=True)
 
         # Channel-neutral leg: deliver the completed reply to a linked non-Slack
         # proactive channel (e.g. Telegram) via Transport.send_message. Slack is

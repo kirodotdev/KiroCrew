@@ -67,19 +67,16 @@ blocks the calling thread:
   ``scandir`` / ``walk``, ``os.path.realpath`` / ``isfile`` / ``isdir`` /
   ``exists``, the builtin ``open`` as a bare call, and the ``pathlib`` methods
   ``.resolve()`` / ``.stat()`` / ``.lstat()`` / ``.exists()`` / ``.is_file()`` /
-  ``.is_dir()`` with no positional argument (#10517). Each is microseconds on a
+  ``.is_dir()`` with no positional argument (#10517), and the ``pathlib`` reads
+  and writes ``.read_text()`` / ``.read_bytes()`` / ``.open()`` with no
+  positional argument and ``.write_text(data)`` / ``.write_bytes(data)`` with
+  exactly one (#22086). Each is microseconds on a
   healthy disk, and that is the trap: the cost belongs to the mount, not the
   call. On an NFS or FUSE mount that stopped answering, it blocks in the kernel
   for as long as the mount takes. Offload it, or mark a path that cannot hang
   (one under the data home, say). ``security/paths_resolver.py``'s
   ``_resolved_forms_bounded`` is the bounded resolver for the gate that must
   stay callable anywhere; no gated name runs lexically there.
-
-The set is deliberately the high-severity end, not everything that touches a
-descriptor. Pathlib reads and writes (``read_text()``, ``read_bytes()``,
-``write_text()``, ``.open()``) open the file too and can hang on the same
-mount, yet they are not gated here: no stat need precede them, so this is a
-gap, not a guarantee, and gating them is follow-up work.
 
 ## What is NOT a violation, and why
 
@@ -263,17 +260,24 @@ NAME_FUNCS: dict[str, str] = {
 # `self.open()` are not the builtin.
 BUILTIN_FUNCS: dict[str, str] = {"open": "fs"}
 
-# `pathlib.Path` methods that stat or resolve the path, matched on ANY receiver
-# but only with no positional argument. The receiver's type is unknowable to a
-# name-based scan; the arity is what keeps `store.exists(key)` and
-# `cache.stat(name)` out, and every zero-argument receiver in this tree is a path.
-PATH_METHODS: dict[str, str] = {
-    "resolve": "fs",
-    "stat": "fs",
-    "lstat": "fs",
-    "exists": "fs",
-    "is_file": "fs",
-    "is_dir": "fs",
+# `pathlib.Path` methods that stat, resolve, read or write the path, matched on
+# ANY receiver but only with the positional-argument count `Path` itself takes:
+# none for the stats, resolves, reads and `.open()`, exactly one (the data) for
+# the writes. The receiver's type is unknowable to a name-based scan; the arity
+# is what keeps `store.exists(key)`, `cache.stat(name)`, `z.open(name)` and
+# `reader.read_text(blob)` out.
+PATH_METHODS: dict[str, tuple[str, int]] = {
+    "resolve": ("fs", 0),
+    "stat": ("fs", 0),
+    "lstat": ("fs", 0),
+    "exists": ("fs", 0),
+    "is_file": ("fs", 0),
+    "is_dir": ("fs", 0),
+    "read_text": ("fs", 0),
+    "read_bytes": ("fs", 0),
+    "open": ("fs", 0),
+    "write_text": ("fs", 1),
+    "write_bytes": ("fs", 1),
 }
 
 # Verbs that perform a request, checked on a receiver PROVEN to be a synchronous
@@ -590,8 +594,10 @@ def _family(
             and fn.attr in MODULE_FUNCS["os.path"]
         ):
             return MODULE_FUNCS["os.path"][fn.attr], None
-        if fn.attr in PATH_METHODS and not node.args:
-            return PATH_METHODS[fn.attr], None
+        if fn.attr in PATH_METHODS:
+            family, arity = PATH_METHODS[fn.attr]
+            if len(node.args) == arity:
+                return family, None
         if fn.attr in NAME_FUNCS:
             return NAME_FUNCS[fn.attr], None
         if fn.attr in HTTP_VERBS:
@@ -1096,6 +1102,22 @@ _FLAGGED: dict[str, str] = {
     "Path.resolve with a strict keyword is still a resolve": (
         "async def f(path):\n    return path.resolve(strict=True)\n"
     ),
+    "Path.read_text with no argument": ("async def f(p):\n    return p.read_text()\n"),
+    "Path.read_text with an encoding keyword is still a read": (
+        "async def f(p):\n    return p.read_text(encoding='utf-8')\n"
+    ),
+    "Path.read_bytes with no argument": ("async def f(p):\n    return p.read_bytes()\n"),
+    "Path.open with no positional argument": (
+        "async def f(p):\n    with p.open() as fh:\n        return fh.read()\n"
+    ),
+    "Path.open with only a mode keyword": (
+        "async def f(p):\n    with p.open(mode='w') as fh:\n        fh.write('x')\n"
+    ),
+    "Path.write_text with the data": ("async def f(p, s):\n    p.write_text(s)\n"),
+    "Path.write_text with the data and an encoding keyword": (
+        "async def f(p, s):\n    p.write_text(s, encoding='utf-8')\n"
+    ),
+    "Path.write_bytes with the data": ("async def f(p, b):\n    p.write_bytes(b)\n"),
 }
 
 _CLEAN: dict[str, str] = {
@@ -1113,7 +1135,26 @@ _CLEAN: dict[str, str] = {
         "async def f(p):\n"
         "    return await asyncio.to_thread(lambda: p.exists() and p.is_dir())\n"
     ),
-    "a read is not gated": ("async def f(p):\n    return p.read_text()\n"),
+    "a read_text that takes a positional argument is not Path's": (
+        "async def f(reader, blob):\n    return reader.read_text(blob)\n"
+    ),
+    "a read_bytes that takes a positional argument is not Path's": (
+        "async def f(reader, blob):\n    return reader.read_bytes(blob)\n"
+    ),
+    "a write_text with no argument is not Path's": ("async def f(w):\n    w.write_text()\n"),
+    "a write_bytes with two positional arguments is not Path's": (
+        "async def f(w, k, b):\n    w.write_bytes(k, b)\n"
+    ),
+    "a path read handed to to_thread": (
+        "import asyncio\nasync def f(p):\n    return await asyncio.to_thread(p.read_text)\n"
+    ),
+    "a path write inside a nested def": (
+        "import asyncio\n"
+        "async def f(p, s):\n"
+        "    def work():\n"
+        "        p.write_text(s)\n"
+        "    await asyncio.to_thread(work)\n"
+    ),
     "a bounded probe pool takes the function": (
         "from kiro_crew.dashboard.file_api.path_probe import _run_path_probe\n"
         "async def f(check, p):\n"

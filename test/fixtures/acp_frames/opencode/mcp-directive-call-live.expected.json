@@ -1,5 +1,62 @@
 [
   {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.19.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "stub/tool-1",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Stub/tool-1",
+            "value": "stub/tool-1"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "opencode-session-1"
+  },
+  {
     "action": "update",
     "events": [
       {
@@ -47,5 +104,32 @@
     ],
     "frame": "session/update",
     "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      5,
+      1,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
   }
 ]

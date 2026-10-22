@@ -70,7 +70,7 @@ describe('task dashboard host controls', () => {
     expect(screen.queryByTestId('task-dashboard-frame')).not.toBeInTheDocument()
   })
 
-  it('renders a crewmate DM slot\'s MEMBER page, the one its agent writes', async () => {
+  it('renders a mate DM slot\'s MEMBER page, the one its agent writes', async () => {
     renderWithProviders(<CommandCenterPanel slot="mate-dm" active />, { store: taskStore() })
     const page = await screen.findByTestId('session-dynamic-dashboard', {}, LAZY_DASHBOARD_WAIT)
     expect(page).toHaveAttribute('data-kind', 'member')

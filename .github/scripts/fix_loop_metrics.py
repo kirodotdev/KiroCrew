@@ -25,6 +25,16 @@ window of the current branch's history:
                non-adopter. Both are counted separately, leaving `escapes` to
                mean what it says.
 
+Two more groups measure whether the review-loop changes worked (RFC
+docs/request-for-change/rfc-review-loop-and-escaped-bug-reduction.md, D8):
+
+  pr_counters -- size flags (D6). Read from the merged-PR list the harvest
+               already fetches: no API call of its own.
+  ci_waste   -- the CI-waste census (M1 to M3). OPT-IN (`--ci-waste true`), a
+               HARD cap on API calls (`--ci-waste-max-calls`), newest N merged
+               PRs only (`--ci-waste-sample`). Details and the call budget:
+               docs/ci/ci-and-reviews.md, "The weekly fix-loop report".
+
 Needs `git` (full-depth checkout) and `gh` (GH_TOKEN) on PATH. Emits JSON to
 --out and a markdown table to --summary. Pure stdlib by design: the weekly
 action must not grow a dependency install step.
@@ -34,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import statistics
@@ -41,6 +52,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
 
 FIX_SUBJECT_RE = re.compile(r"^(fix|revert)([(!:]|\b)", re.I)
 # Trailing '(#N)' of a squash-merge subject; the LAST number is the PR.
@@ -410,6 +422,12 @@ def _local_pr_evidence(since_iso: str) -> bool | None:
         return None
 
 
+# The fields of the merged-PR search. The D8 counters (`pr_counters`) read size,
+# open time and author from the SAME list the harvest already pays for, so they
+# add scalar fields to an existing GraphQL query and no call of their own.
+PR_LIST_FIELDS = "number,title,body,mergedAt,createdAt,changedFiles,author,baseRefName,headRefOid"
+
+
 def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
     """Every PR merged at or after since_iso, one search per calendar day.
 
@@ -437,7 +455,7 @@ def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
             "--limit",
             "1000",
             "--json",
-            "number,title,body,mergedAt,baseRefName,headRefOid",
+            PR_LIST_FIELDS,
         )
         if len(chunk) >= 1000:
             raise RuntimeError(
@@ -480,11 +498,12 @@ def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
     return window
 
 
-def harvest_metrics(repo: str, since_iso: str) -> dict:
-    """since_iso is the exact UTC timestamp of the window start; the per-day gh
-    searches use its date as a coarse pre-filter and mergedAt enforces the
-    precise boundary, keeping this window identical to the git-history window."""
-    prs = merged_prs_since(repo, since_iso)
+def harvest_metrics(repo: str, since_iso: str, prs: list[dict]) -> dict:
+    """since_iso is the exact UTC timestamp of the window start; *prs* is the
+    window's merged-PR list from `merged_prs_since`, fetched once by `main` and
+    shared with the D8 counters and the census. Its per-day gh searches use the
+    date as a coarse pre-filter and mergedAt enforces the precise boundary,
+    keeping this window identical to the git-history window."""
     fix_prs = [p for p in prs if FIX_SUBJECT_RE.match(p.get("title") or "")]
 
     # Two exclusions, both answering "was this PR ever asked for a section?".
@@ -512,6 +531,524 @@ def harvest_metrics(repo: str, since_iso: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# D8 measures (docs/request-for-change/rfc-review-loop-and-escaped-bug-reduction.md,
+# section 4.8). Two groups, kept apart from the groups above so a change to one
+# cannot move the other:
+#
+#   pr_counters -- size counters read from the merged-PR list the harvest
+#                  already fetched. NO API CALL of their own.
+#   ci_waste    -- the CI-waste census (M1 to M3), opt-in, with a hard cap on API
+#                  calls.
+#
+# Every rate is published beside its raw counts: a measure that turns into a
+# target drifts, and the counts are what let a reader see the denominator move.
+# ---------------------------------------------------------------------------
+
+# D6 thresholds (RFC Appendix F). Files and hours open only: lines are the wrong
+# signal there. A PR is "flagged" at 80 files or 168 h open.
+SIZE_HINT_FILES = 50
+SIZE_FLAG_FILES = 80
+AGE_FLAG_HOURS = 168
+
+LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
+
+
+def ratio_pct(part: int, whole: int) -> float | None:
+    """One-decimal percentage, or None for an empty denominator (never 0.0%)."""
+    return round(100 * part / whole, 1) if whole else None
+
+
+def parse_utc(stamp: object) -> datetime | None:
+    """A GitHub timestamp as an aware UTC datetime, or None when absent or odd."""
+    if not isinstance(stamp, str):
+        return None
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def author_login(pr: dict) -> str:
+    return str((pr.get("author") or {}).get("login") or "").lower()
+
+
+def is_fix_pr(pr: dict) -> bool:
+    return bool(FIX_SUBJECT_RE.match(pr.get("title") or ""))
+
+
+def size_counters(prs: list[dict]) -> dict:
+    """D6: how many merged PRs the size rule would have flagged.
+
+    Computed from changed files and created-to-merged hours, so it needs no
+    comment read. The owner approvals (`/pr-size approve`) are comments and are
+    NOT counted here.
+    """
+    hint = stop = aged = flagged = unknown = 0
+    for pr in prs:
+        files = pr.get("changedFiles")
+        if not isinstance(files, int):
+            unknown += 1
+            files = 0
+        created, merged = parse_utc(pr.get("createdAt")), parse_utc(pr.get("mergedAt"))
+        hours = (merged - created).total_seconds() / 3600 if created and merged else 0.0
+        hint += files >= SIZE_HINT_FILES
+        stop += files >= SIZE_FLAG_FILES
+        aged += hours >= AGE_FLAG_HOURS
+        flagged += files >= SIZE_FLAG_FILES or hours >= AGE_FLAG_HOURS
+    return {
+        "files_ge_hint": hint,
+        "files_ge_flag": stop,
+        "open_ge_flag_hours": aged,
+        "flagged": flagged,
+        "flagged_pct": ratio_pct(flagged, len(prs)),
+        "size_unknown": unknown,
+    }
+
+
+def pr_counters(prs: list[dict]) -> dict:
+    """Counters over the window's merged PRs that need no API call (see above).
+
+    Only D6's size rule is counted today. Adoption counters for D3 (sibling
+    sweep), D4 (`Proof:` line) and D7 (`Gate proof:`, M4, M5) arrive with the
+    change that first writes each line: counting a format nothing emits yet
+    would publish a known zero and fix the format before it is decided.
+    """
+    return {
+        "merged_prs": len(prs),
+        "fix_prs": sum(1 for p in prs if is_fix_pr(p)),
+        "size": size_counters(prs),
+    }
+
+
+# --- The CI-waste census (M1 to M3) ----------------------------------------
+#
+# The logic of the study's `waste.py` (design F section 1), run over the newest
+# merged PRs of the window. A push is AVOIDABLE when every red job on it is a job
+# with a local command (`LOCAL_COMMAND_JOBS`) and the author pushed again later:
+# the whole push re-ran everything, so all of it is waste.
+#
+# Two differences from the study, both stated in docs/ci/ci-and-reviews.md:
+#   * The study dropped 27 of 219 such pushes whose loop record named main,
+#     flaky, infra or rebase. No loop records exist here, so the live M1/M2 are
+#     the 219-push reading (about 14% above the published 192-push baseline).
+#   * Job-minutes are the sum of check-run durations (completed_at - started_at)
+#     of a head's GitHub Actions jobs: not billed minutes, no per-OS multiplier.
+
+# Jobs whose check has a local command (waste.py T1_EXACT). The names are CI's;
+# a rename in a workflow silently shrinks M1, so `test_fix_loop_metrics_d8.py`
+# pins every name here to a `name:` in .github/workflows.
+LOCAL_COMMAND_JOBS = frozenset(
+    {
+        "Backend Lint & Type Check (3.12)",
+        "Backend Lint & Type Check",
+        "Frontend Lint & Type Check",
+        "Comment History Gate",
+        "Brand Name Gate",
+        "Harness Parity Gate",
+        "Feature Map Gate",
+        "Focus Cue Gate",
+        "Changelog History Gate",
+        "Decision Ledger Gate",
+        "Memory Store Seam Gate",
+        "Loop-Bound Locks Gate",
+        "Builtin Skill Scope Gate",
+        "Testpaths Coverage Gate",
+        "Working-Directory Path Gate",
+        "Vendored Tree Integrity",
+        "Docs Lint",
+        "Static Ratchet Gate",
+        "CloudFormation Lint",
+        "PR Hygiene",
+        "Bundle Size Gate",
+    }
+)
+# Jobs that go red only because an upstream job did (waste.py DERIVED).
+DERIVED_JOBS = frozenset(
+    {
+        "Await Fast Gate",
+        "PR Readiness",
+        "Publish readiness signal",
+        "Coverage Gate",
+        "Frontend Coverage Merge",
+        "Coverage Combine",
+    }
+)
+Fetch = Callable[..., Any]  # gh_json's shape: fetch("api", "<path>") -> parsed JSON
+# Census defaults. The workflow's own defaults must equal these (pinned by
+# test_fix_loop_metrics_d8.py); the cap is the number the docs promise.
+CENSUS_DEFAULT_SAMPLE = 100
+CENSUS_DEFAULT_MAX_CALLS = 1000
+CENSUS_DEFAULT_RESERVE = 200
+FORCE_PUSH_EVENT = "head_ref_force_pushed"
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+API_PAGE_SIZE = 100
+# Pages read per endpoint per head or PR. A head with more than this many check
+# runs is counted and reported as truncated, never silently cut.
+API_MAX_PAGES = 3
+ACTIONS_APP_SLUG = "github-actions"
+# A job that timed out is red too: it must stop a lint-only push counting as avoidable.
+RED_CONCLUSIONS = frozenset({"failure", "timed_out"})
+TOP_FAILED_JOBS = 5
+
+
+class BudgetExhausted(Exception):
+    """The census asked for one more API call than its cap allows."""
+
+
+class CallBudget:
+    """A hard cap on API calls. `spend` is called BEFORE each call and raises when
+    the cap is reached, so `used` can never exceed `cap`."""
+
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self.used = 0
+
+    def spend(self) -> None:
+        if self.used >= self.cap:
+            raise BudgetExhausted(f"API call cap of {self.cap} reached")
+        self.used += 1
+
+
+def summarise_head(sha: str, check_runs: list[dict]) -> dict | None:
+    """One pushed head, from its check runs: when it started, what it cost, what
+    was red. None when the head has no GitHub Actions job (nothing ran on it)."""
+    jobs = [
+        c
+        for c in check_runs
+        if isinstance(c, dict) and (c.get("app") or {}).get("slug") == ACTIONS_APP_SLUG
+    ]
+    if not jobs:
+        return None
+    seconds = 0.0
+    starts: list[float] = []
+    failed: list[tuple[str, float]] = []
+    for job in jobs:
+        began, ended = parse_utc(job.get("started_at")), parse_utc(job.get("completed_at"))
+        duration = max(0.0, (ended - began).total_seconds()) if began and ended else 0.0
+        if began:
+            starts.append(began.timestamp())
+        seconds += duration
+        if job.get("conclusion") in RED_CONCLUSIONS:
+            failed.append((str(job.get("name") or "?"), duration))
+    red = [(n, d) for n, d in failed if n not in DERIVED_JOBS]
+    return {
+        "sha": sha,
+        "start": min(starts) if starts else None,
+        "seconds": seconds,
+        "red_local": [(n, d) for n, d in red if n in LOCAL_COMMAND_JOBS],
+        "red_other": [n for n, _ in red if n not in LOCAL_COMMAND_JOBS],
+    }
+
+
+def is_static_only(head: dict) -> bool:
+    """Every red job (derived ones aside) has a local command, and there is one."""
+    return bool(head["red_local"]) and not head["red_other"]
+
+
+def waste_for_pr(heads: list[dict]) -> dict:
+    """The census record of one PR from its observed heads.
+
+    A head is *superseded* when the PR has a later-starting head, i.e. the author
+    had to push again. `avoidable` = static-only red AND superseded. M3 looks at
+    the earliest-starting head only.
+    """
+    timed = sorted((h for h in heads if h["start"] is not None), key=lambda h: h["start"])
+    last_start = timed[-1]["start"] if timed else None
+    avoidable = [
+        h for h in timed if is_static_only(h) and last_start is not None and h["start"] < last_start
+    ]
+    return {
+        "pushes": len(heads),
+        "avoidable": len(avoidable),
+        "avoidable_seconds": sum(h["seconds"] for h in avoidable),
+        "avoidable_floor_seconds": sum(d for h in avoidable for _, d in h["red_local"]),
+        "first_push_red_local": bool(timed and timed[0]["red_local"]),
+        "failed_jobs": [n for h in avoidable for n, _ in h["red_local"]],
+    }
+
+
+def mean_ci95_per_100(counts: list[int]) -> tuple[float, float] | None:
+    """95% interval of the mean count per PR, scaled to 100 PRs; None under 2 PRs.
+
+    Plain normal approximation. Design F measured mean 0.097 and sd 0.386 per PR,
+    so 200 PRs give about +-55%: the interval is published to say so.
+    """
+    n = len(counts)
+    if n < 2:
+        return None
+    mean = sum(counts) / n
+    sd = math.sqrt(sum((c - mean) ** 2 for c in counts) / (n - 1))
+    half = 1.96 * sd / math.sqrt(n)
+    return round(max(0.0, mean - half) * 100, 1), round((mean + half) * 100, 1)
+
+
+def aggregate_waste(records: list[dict]) -> dict:
+    """M1 to M3 over the PRs whose census finished (every head read)."""
+    n = len(records)
+    with_push = [r for r in records if r["pushes"]]
+    avoidable = sum(r["avoidable"] for r in records)
+    seconds = sum(r["avoidable_seconds"] for r in records)
+    floor = sum(r["avoidable_floor_seconds"] for r in records)
+    first_red = sum(1 for r in with_push if r["first_push_red_local"])
+    jobs: dict[str, int] = {}
+    for r in records:
+        for name in r["failed_jobs"]:
+            jobs[name] = jobs.get(name, 0) + 1
+    top = sorted(jobs.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_FAILED_JOBS]
+    return {
+        "prs": n,
+        "prs_with_push": len(with_push),
+        "pushes": sum(r["pushes"] for r in records),
+        "avoidable_pushes": avoidable,
+        "prs_with_avoidable": sum(1 for r in records if r["avoidable"]),
+        "m1_per_100_prs": round(100 * avoidable / n, 1) if n else None,
+        "m1_ci95": mean_ci95_per_100([r["avoidable"] for r in records]),
+        "avoidable_job_minutes": round(seconds / 60, 1),
+        "avoidable_floor_job_minutes": round(floor / 60, 1),
+        "m2_job_minutes_per_pr": round(seconds / 60 / n, 1) if n else None,
+        "m3_first_push_red_prs": first_red,
+        "m3_pct": ratio_pct(first_red, len(with_push)),
+        "failed_local_jobs": dict(top),
+    }
+
+
+def pushed_heads(final_head: object, commits: list[dict], events: list[dict]) -> list[str]:
+    """Every head sha a PR is known to have had, de-duplicated, in discovery order.
+
+    PR commits cover plain pushes. Force pushes (the agent flow amends and
+    force-pushes) leave only the event `head_ref_force_pushed`, whose commit_id
+    is the head it created. The final head comes from the PR list. Anything that
+    is not a 40-hex sha is dropped: the value goes into an API path.
+    """
+    found: list[str] = []
+
+    def add(sha: object) -> None:
+        if isinstance(sha, str) and SHA_RE.match(sha.lower()) and sha.lower() not in found:
+            found.append(sha.lower())
+
+    for c in commits:
+        add(c.get("sha") if isinstance(c, dict) else None)
+    for e in events:
+        if isinstance(e, dict) and e.get("event") == FORCE_PUSH_EVENT:
+            add(e.get("commit_id"))
+    add(final_head)
+    return found
+
+
+def _pages(
+    budget: CallBudget, fetch: Fetch, path: str, key: str | None = None
+) -> tuple[list[dict], int]:
+    """Read up to API_MAX_PAGES pages of *path*; every page is one budgeted call.
+
+    -> (items, total). With *key* (check-runs) `total` is the server's
+    total_count, so a caller can tell the read was cut; for a plain list it is
+    just the item count.
+    """
+    items: list[dict] = []
+    total = 0
+    for page in range(1, API_MAX_PAGES + 1):
+        budget.spend()
+        payload = fetch("api", f"{path}?per_page={API_PAGE_SIZE}&page={page}")
+        chunk = payload.get(key, []) if key and isinstance(payload, dict) else payload
+        chunk = chunk if isinstance(chunk, list) else []
+        if key and isinstance(payload, dict):
+            total = int(payload.get("total_count") or 0)
+        items.extend(c for c in chunk if isinstance(c, dict))
+        if len(chunk) < API_PAGE_SIZE or (key and len(items) >= total):
+            break
+    return items, (total if key else len(items))
+
+
+def census_one_pr(repo: str, pr: dict, budget: CallBudget, fetch: Fetch) -> tuple[dict, dict]:
+    """Read one PR's heads and their check runs -> (record, notes).
+
+    Two calls find the heads, then 1-3 per head. A head GitHub no longer serves
+    (404/422) is skipped and counted, as is one with no GitHub Actions job (a
+    force-pushed head whose runs are gone). Both make the push count a lower
+    bound, which the report states. Any other failure raises, per this module's
+    contract.
+    """
+    number = int(pr["number"])
+    commits, _ = _pages(budget, fetch, f"repos/{repo}/pulls/{number}/commits")
+    events, _ = _pages(budget, fetch, f"repos/{repo}/issues/{number}/events")
+    heads: list[dict] = []
+    notes = {"heads_unreadable": 0, "heads_truncated": 0, "heads_without_jobs": 0}
+    for sha in pushed_heads(pr.get("headRefOid"), commits, events):
+        try:
+            runs, total = _pages(
+                budget, fetch, f"repos/{repo}/commits/{sha}/check-runs", "check_runs"
+            )
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc) or "HTTP 422" in str(exc):
+                notes["heads_unreadable"] += 1
+                continue
+            raise
+        if total > len(runs):
+            notes["heads_truncated"] += 1
+        summary = summarise_head(sha, runs)
+        if summary:
+            heads.append(summary)
+        else:
+            notes["heads_without_jobs"] += 1
+    return waste_for_pr(heads), notes
+
+
+def rate_limit_remaining(fetch: Fetch) -> int | None:
+    """Remaining REST calls of this token, or None when the probe cannot say.
+
+    The probe is a guard, not a number the report publishes, so a failure here
+    degrades to the configured cap instead of failing the run.
+    """
+    try:
+        payload = fetch("api", "rate_limit")
+        return int(payload["resources"]["core"]["remaining"])
+    except (RuntimeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def ci_waste_census(
+    repo: str,
+    prs: list[dict],
+    *,
+    sample: int,
+    max_calls: int,
+    reserve: int,
+    agent_logins: frozenset[str] = frozenset(),
+    fetch: Fetch | None = None,
+) -> dict:
+    """M1 to M3 over the newest *sample* merged PRs, within *max_calls* API calls.
+
+    The cap is hard: `CallBudget` refuses the call that would pass it, and the PR
+    being read at that moment is dropped whole, so a half-read PR never enters a
+    rate. The effective cap is also held below the token's remaining hourly
+    allowance minus *reserve*, because GITHUB_TOKEN's pool is shared with
+    pr-readiness.yml. Spent calls are reported either way.
+    """
+    fetch = fetch or gh_json
+    budget = CallBudget(max_calls)
+    budget.spend()  # the rate-limit probe is a call too
+    remaining = rate_limit_remaining(fetch)
+    configured = budget.cap
+    if remaining is not None:
+        budget.cap = min(budget.cap, max(budget.used, remaining - reserve))
+    newest = sorted(prs, key=lambda p: p.get("mergedAt") or "", reverse=True)[:sample]
+    done: list[tuple[dict, dict]] = []
+    totals = {"heads_unreadable": 0, "heads_truncated": 0, "heads_without_jobs": 0}
+    truncated = False
+    for pr in newest:
+        try:
+            record, notes = census_one_pr(repo, pr, budget, fetch)
+        except BudgetExhausted:
+            truncated = True
+            break
+        record["author"] = author_login(pr)
+        done.append((record, notes))
+        for key in totals:
+            totals[key] += notes[key]
+    records = [r for r, _ in done]
+    agents = [r for r in records if agent_logins and r["author"] in agent_logins]
+    return {
+        "enabled": True,
+        "sample_requested": sample,
+        "prs_in_window": len(prs),
+        "prs_sampled": len(records),
+        "truncated_by_budget": truncated,
+        "calls_used": budget.used,
+        "calls_cap_configured": configured,
+        "calls_cap_effective": budget.cap,
+        "rate_limit_remaining_before": remaining,
+        "rate_limit_reserve": reserve,
+        **totals,
+        "all_authors": aggregate_waste(records),
+        "agents": aggregate_waste(agents) if agent_logins else None,
+    }
+
+
+def d8_table_rows(counters: dict, waste: dict) -> list[str]:
+    """Markdown rows for the summary table. Every rate sits beside its counts."""
+
+    def num(value: object) -> str:
+        return "n/a" if value is None else str(value)
+
+    def pct(value: object) -> str:
+        return "n/a" if value is None else f"{value}%"
+
+    size = counters["size"]
+    fixes = counters["fix_prs"]
+    rows = [
+        f"| Merged PRs in window / fix or revert titles | {counters['merged_prs']} / {fixes} |",
+        f"| Size: flagged (>= {SIZE_FLAG_FILES} files or >= {AGE_FLAG_HOURS} h open) | "
+        f"{size['flagged']} ({pct(size['flagged_pct'])}); >= {SIZE_HINT_FILES} files: "
+        f"{size['files_ge_hint']}, >= {SIZE_FLAG_FILES} files: {size['files_ge_flag']}, "
+        f">= {AGE_FLAG_HOURS} h: {size['open_ge_flag_hours']} |",
+    ]
+    if not waste.get("enabled"):
+        rows.append("| CI-waste census (M1 to M3) | off (opt-in; see docs/ci/ci-and-reviews.md) |")
+        return rows
+    rows.append(
+        f"| CI-waste census: PRs read / requested / in window | {waste['prs_sampled']} / "
+        f"{waste['sample_requested']} / {waste['prs_in_window']} |"
+    )
+    rows.append(
+        f"| CI-waste census: API calls used / cap "
+        f"{'(CUT SHORT by the cap)' if waste['truncated_by_budget'] else '(finished)'} | "
+        f"{waste['calls_used']} / {waste['calls_cap_effective']} "
+        f"(configured {waste['calls_cap_configured']}) |"
+    )
+    rows.append(
+        f"| CI-waste census: heads with no jobs / unreadable / listing cut (push counts are "
+        f"lower bounds) | {waste['heads_without_jobs']} / {waste['heads_unreadable']} / "
+        f"{waste['heads_truncated']} |"
+    )
+    for label, group in (("all authors", waste["all_authors"]), ("agent logins", waste["agents"])):
+        if not group:
+            continue
+        ci = group["m1_ci95"]
+        interval = f"; 95% interval {ci[0]} to {ci[1]}" if ci else ""
+        rows += [
+            f"| M1 Avoidable pushes per 100 merged PRs ({label}) | {num(group['m1_per_100_prs'])} "
+            f"({group['avoidable_pushes']} pushes in {group['prs_with_avoidable']} of "
+            f"{group['prs']} PRs; {group['pushes']} pushes seen{interval}) |",
+            f"| M2 Avoidable job-minutes per merged PR ({label}) | {num(group['m2_job_minutes_per_pr'])} "
+            f"({group['avoidable_job_minutes']} min over {group['prs']} PRs; failed jobs alone "
+            f"{group['avoidable_floor_job_minutes']} min) |",
+            f"| M3 PRs whose first push is red on a local-command job ({label}) | "
+            f"{pct(group['m3_pct'])} ({group['m3_first_push_red_prs']}/{group['prs_with_push']}) |",
+        ]
+    return rows
+
+
+def cli_bool(text: str) -> bool:
+    """`true`/`false` only: a typo must not switch an API-spending step on or off."""
+    value = text.strip().lower()
+    if value not in ("true", "false"):
+        raise argparse.ArgumentTypeError(f"expected true or false, got {text!r}")
+    return value == "true"
+
+
+def cli_int(minimum: int) -> Callable[[str], int]:
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}") from None
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"must be at least {minimum}, got {value}")
+        return value
+
+    return parse
+
+
+def cli_logins(text: str) -> frozenset[str]:
+    """Comma-separated GitHub logins, lowercase. Empty means none configured."""
+    logins = [part.strip() for part in text.split(",") if part.strip()]
+    for login in logins:
+        if not LOGIN_RE.match(login):
+            raise argparse.ArgumentTypeError(f"not a GitHub login: {login!r}")
+    return frozenset(login.lower() for login in logins)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", required=True, help="git --since expression, e.g. '7 days ago'")
@@ -527,6 +1064,32 @@ def main() -> int:
         help="optional path: dump the ANALYZED fix commits (hash, subject, full "
         "body) so a later model step can classify exactly the set these metrics "
         "count, without needing git access of its own",
+    )
+    ap.add_argument(
+        "--ci-waste",
+        type=cli_bool,
+        default=False,
+        help="true to run the CI-waste census (M1 to M3). Opt-in: it spends API calls "
+        "up to --ci-waste-max-calls. Default false.",
+    )
+    ap.add_argument(
+        "--ci-waste-sample",
+        type=cli_int(1),
+        default=CENSUS_DEFAULT_SAMPLE,
+        help=f"census the newest N merged PRs of the window (default {CENSUS_DEFAULT_SAMPLE})",
+    )
+    ap.add_argument(
+        "--ci-waste-max-calls",
+        type=cli_int(1),
+        default=CENSUS_DEFAULT_MAX_CALLS,
+        help=f"HARD cap on census API calls per run (default {CENSUS_DEFAULT_MAX_CALLS})",
+    )
+    ap.add_argument(
+        "--agent-logins",
+        type=cli_logins,
+        default=frozenset(),
+        help="comma-separated GitHub logins that are agents. Unset means the census "
+        "rates cover all authors only; nothing is guessed",
     )
     args = ap.parse_args()
 
@@ -564,6 +1127,10 @@ def main() -> int:
             culprit_votes[culprit_pr] = culprit_votes.get(culprit_pr, 0) + 1
 
     top_culprits = sorted(culprit_votes.items(), key=lambda kv: -kv[1])[:10]
+    deferrals = deferral_metrics(args.repo)
+    # ONE set of per-day searches serves the harvest, the D8 counters and the
+    # census: the counters are only "free" if nothing fetches the list twice.
+    merged = merged_prs_since(args.repo, args.since_iso)
     result = {
         "window_since": args.since,
         "volume": {
@@ -579,9 +1146,22 @@ def main() -> int:
             "median_age_days": statistics.median(ages) if ages else None,
         },
         "top_culprit_prs": [{"pr": f"#{n}", "fixes": c} for n, c in top_culprits],
-        "deferrals": deferral_metrics(args.repo),
+        "deferrals": deferrals,
         "overrides": override_metrics(args.repo, args.since_iso),
-        "harvest": harvest_metrics(args.repo, args.since_iso),
+        "harvest": harvest_metrics(args.repo, args.since_iso, merged),
+        "pr_counters": pr_counters(merged),
+        "ci_waste": (
+            ci_waste_census(
+                args.repo,
+                merged,
+                sample=args.ci_waste_sample,
+                max_calls=args.ci_waste_max_calls,
+                reserve=CENSUS_DEFAULT_RESERVE,
+                agent_logins=args.agent_logins,
+            )
+            if args.ci_waste
+            else {"enabled": False}
+        ),
     }
 
     with open(args.out, "w", encoding="utf-8") as f:
@@ -635,6 +1215,7 @@ def main() -> int:
         f"| Harvest escapes (default-branch fix PRs with no section) | {hrv['escapes']} |",
         f"| Excluded: another base / gate never ran | "
         f"{hrv['excluded_other_base']} / {hrv['excluded_gate_never_ran']} |",
+        *d8_table_rows(result["pr_counters"], result["ci_waste"]),
     ]
     with open(args.summary, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

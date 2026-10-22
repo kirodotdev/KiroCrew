@@ -95,6 +95,9 @@ async def search_for_context(request: web.Request) -> web.Response:
     Returns top results formatted for chat injection cards.
     Each result includes token count so frontend can show budget.
     """
+    owner_denied = await _require_knowledge_owner(request, "knowledge.search_for_context.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     q = request.query.get("q", "").strip()
     if not q:

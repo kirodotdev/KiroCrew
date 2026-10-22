@@ -258,7 +258,7 @@ class TestWaitLoopEarlyEnd:
             """Simulates pytest-xdist or any other background thread."""
             leaked.set()
             while not stop.is_set():
-                _time.sleep(0.001)
+                _time.sleep(0.001)  # flake-ok: stimulus; this thread's real sleeps are the subject
 
         bg = threading.Thread(target=_background_sleeper, daemon=True)
         bg.start()

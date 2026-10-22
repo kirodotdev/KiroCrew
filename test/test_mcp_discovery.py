@@ -16,6 +16,7 @@ import pytest
 from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _clear_cache,
     _passthrough_sandbox,
+    _stub_remote_probe_ssrf_vet,
 )
 
 from kiro_crew import mcp_cleanup

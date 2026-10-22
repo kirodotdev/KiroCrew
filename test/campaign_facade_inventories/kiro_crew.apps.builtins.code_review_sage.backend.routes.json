@@ -1,0 +1,21 @@
+{
+ "base_public_names": [
+  "LoopBoundLock",
+  "atomic_write",
+  "hooks",
+  "is_app_enabled",
+  "logger",
+  "model_registry",
+  "register_routes",
+  "require_owner_dashboard_request"
+ ],
+ "note": "S68: code_review_sage/backend/routes.py composes its handlers from backend/routes_parts through kiro_crew._facade_compose; it keeps its import header, its process state, the follow-up endpoints and register_routes, and binds every name a part defines. These are the public names it bound before the split.",
+ "rebound": {
+  "LoopBoundLock": "kiro_crew.loop_lock",
+  "atomic_write": "kiro_crew.atomic_write",
+  "hooks": "kiro_crew",
+  "is_app_enabled": "kiro_crew.apps.manager",
+  "model_registry": "kiro_crew",
+  "require_owner_dashboard_request": "kiro_crew.dashboard.handlers._shared"
+ }
+}

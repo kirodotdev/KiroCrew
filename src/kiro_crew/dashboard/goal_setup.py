@@ -58,14 +58,20 @@ def changed_enough(before: str, after: str) -> bool:
 
 
 def kickoff_prompt(
-    rec: dict[str, Any], goal_id: str = "", *, has_mate_tools: bool = True
+    rec: dict[str, Any],
+    goal_id: str = "",
+    *,
+    has_mate_tools: bool = True,
+    dashboard_line: str = "",
 ) -> str | None:
     """The hidden turn's text, built from the goal record as stored.
 
     Names the goal *goal_id* that was just added or changed (``None`` when it is
     gone by the time the turn would run) and shows the whole list. Without the
     ``kirocrew-mate`` tools (*has_mate_tools*) the milestones are written in
-    the chat for the user to add on the Goals tab.
+    the chat for the user to add on the Goals tab. *dashboard_line* is the
+    gateway's build-your-page line (``goal_reminder.dashboard_line``), added last
+    while the crewmate has no Dashboard page of its own.
     """
     numbers = member_goals.goal_numbers(rec)
     if goal_id not in numbers:
@@ -124,6 +130,8 @@ def kickoff_prompt(
         "user decides."
     )
     lines.append("Ask the user about one thing at a time.")
+    if dashboard_line:
+        lines.extend(["", dashboard_line])
     return "\n".join(lines)
 
 
@@ -157,7 +165,8 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
             from kiro_crew.member_mate_tools import member_has_mate_tools
 
             has_tools = await asyncio.to_thread(member_has_mate_tools, member)
-            prompt = build(rec, has_tools)
+            # Off the loop: the goal-setup build reads the crewmate's dashboard binding.
+            prompt = await asyncio.to_thread(build, rec, has_tools)
             if prompt is None:
                 return "skipped: nothing left to talk about"
             # The read ran off the loop: a turn may have started meanwhile.
@@ -165,13 +174,20 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
             if again is slot:
                 dispatch_hidden_turn(state, slot, prompt, human_seen=True)
                 return "started"
-        if skip == "skipped: the crewmate's thread is not open" or loop.time() >= deadline:
+        if skip == "skipped: the mate's thread is not open" or loop.time() >= deadline:
             return skip or "skipped: timed out"
         await asyncio.sleep(POLL_SECS)
 
 
-def _goal_prompt(goal_id: str) -> Build:
-    return lambda rec, tools: kickoff_prompt(rec, goal_id, has_mate_tools=tools)
+def _goal_prompt(goal_id: str, slug: str = "") -> Build:
+    def build(rec: dict[str, Any], tools: bool) -> str | None:
+        from kiro_crew.dashboard.goal_reminder import dashboard_line
+
+        return kickoff_prompt(
+            rec, goal_id, has_mate_tools=tools, dashboard_line=dashboard_line(slug, rec)
+        )
+
+    return build
 
 
 #: The Heartbeat in the check-ins offer. It is off by default and only a check-ins
@@ -183,11 +199,15 @@ _HEARTBEAT_OFFER = (
 )
 
 
-def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> str | None:
+def milestones_prompt(
+    rec: dict[str, Any], *, has_mate_tools: bool = True, dashboard_line: str = ""
+) -> str | None:
     """The hidden turn after the user confirms the crewmate's milestones card.
 
     Without the ``kirocrew-mate`` tools (*has_mate_tools*) the check-ins are
     described and left to the user's Goals tab instead of ``set_check_ins``.
+    *dashboard_line* is ``goal_reminder.dashboard_line``, added last: confirming the
+    milestones is the moment a crewmate with no page first knows what one is about.
     """
     krs = rec.get("key_results") or []
     if not krs:
@@ -227,6 +247,8 @@ def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> st
             + " Suggest the ones that fit this goal, and tell the user they turn them on "
             "on your Goals tab."
         )
+    if dashboard_line:
+        lines.extend(["", dashboard_line])
     return "\n".join(lines)
 
 
@@ -267,7 +289,7 @@ def schedule_nudge(state: Any, slug: str, member: str, goal_id: str) -> None:
     One waiting nudge per crewmate: a newer save, of this goal or another,
     replaces it.
     """
-    _schedule(state, slug, slug, member, _goal_prompt(goal_id), "goal setup")
+    _schedule(state, slug, slug, member, _goal_prompt(goal_id, slug), "goal setup")
 
 
 def schedule_milestones_nudge(state: Any, slug: str, member: str) -> None:
@@ -277,9 +299,20 @@ def schedule_milestones_nudge(state: Any, slug: str, member: str) -> None:
         f"{slug}:milestones",
         slug,
         member,
-        lambda rec, tools: milestones_prompt(rec, has_mate_tools=tools),
+        _milestones_build(slug),
         "milestones confirmed",
     )
+
+
+def _milestones_build(slug: str) -> Build:
+    def build(rec: dict[str, Any], tools: bool) -> str | None:
+        from kiro_crew.dashboard.goal_reminder import dashboard_line
+
+        return milestones_prompt(
+            rec, has_mate_tools=tools, dashboard_line=dashboard_line(slug, rec)
+        )
+
+    return build
 
 
 def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = True) -> str | None:

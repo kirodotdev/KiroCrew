@@ -42,7 +42,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir, read_local_secret
@@ -52,6 +52,7 @@ from kiro_crew.github_runner import prevalidated_gh_env
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.mcp_gateway.backend_tmp import tmp_env
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
@@ -113,6 +114,63 @@ def _clean_cron_env() -> dict[str, str]:
         for k in present:
             env[k] = temp_dir
     return env
+
+
+def _allocate_cron_scratch(job_id: str | None) -> Path | None:
+    """A fresh per-run temp dir for one script/command cron child, or None.
+
+    Without it the child inherits the gateway's own temp dir, which under the
+    shipped systemd unit is ``/tmp`` -- a tmpfs on many distributions, so a
+    large clone or venv a cron leaves there is charged to RAM. The
+    directory lives under the managed ``agent_scratch`` root on the data home's
+    disk and is reclaimed by the existing sweep once the child's process group
+    is dead and the tree has gone idle, exactly like an agent process's.
+
+    Scratch is hygiene, not a spawn prerequisite: an allocation failure (disk
+    full, a link planted at the managed root) is logged and the run proceeds
+    with the inherited temp dir, the same degradation the agent spawners take.
+    """
+    try:
+        # A command run with no job id (preview, a direct call) still gets one.
+        return agent_scratch.allocate_scratch(f"cron-{job_id or 'adhoc'}")
+    except (OSError, agent_scratch.ScratchBoundaryError):
+        logger.warning(
+            "agent-scratch: could not allocate for cron %s; running with inherited temp",
+            job_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _record_cron_scratch_owner(scratch: Path | None, proc: subprocess.Popen) -> bool:
+    """Hand *scratch*'s owner marker to the live child; False means reap it.
+
+    ``refused`` (a link where the marker belongs: the child is steering this
+    unsandboxed write) and ``stale`` (the marker still names the gateway, which
+    the sweep would read as a dead owner over a live child) both fail the run,
+    as they fail an agent spawn. ``unwritable`` is fail-open: an unowned dir is
+    kept, never swept.
+    """
+    if scratch is None:
+        return True
+    outcome = agent_scratch.record_owner(scratch, proc.pid)
+    if outcome in ("refused", "stale"):
+        logger.warning("agent-scratch: cron child %s owner record %s; reaping", proc.pid, outcome)
+        return False
+    return True
+
+
+def _discard_unused_cron_scratch(scratch: Path | None) -> None:
+    """Remove a scratch dir no child ever got.
+
+    Its marker still names the gateway, which is alive, so the sweep would
+    keep it for the gateway's whole life.
+    """
+    if scratch is not None:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+_SCRATCH_OWNER_ERROR = "❌ Cron run stopped: its temp dir owner marker could not be recorded safely"
 
 
 def _default_temp_dir() -> str:
@@ -1056,6 +1114,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How many bytes of an MCP server's captured stderr ``_stderr_tail`` reads,
+# taken from the END. The capture grows for the whole session, so reading it
+# whole would make error reporting cost O(session output). The read only has
+# to reach far enough back for ``_safe_tail_redaction_window`` to see its
+# window plus the context before it (PEM markers, the severed line).
+_STDERR_TAIL_READ_SPAN = 64 * 1024
+
 
 class SkipError(Exception):
     """Abort this tick silently. Cron fires again next interval."""
@@ -1558,22 +1623,44 @@ class McpToolClient:
         return {} if msg is None else msg
 
     def _stderr_tail(self, limit: int = 1024) -> str:
-        """Return the last `limit` bytes of the subprocess's captured stderr.
+        """Return the last `limit` characters of the subprocess's captured stderr.
 
-        Credentials and exfiltration URLs are redacted before the tail is
-        surfaced in an error so a failing spawn (e.g. an auth dump or an
-        attacker-controlled MCP server) can't leak secrets or beacon URLs
-        into logs, Slack, or the dashboard.
+        Credentials and exfiltration URLs are redacted BEFORE the tail is cut,
+        so a secret straddling the cut cannot survive as an unredacted
+        fragment. This uses the same rule as the script-stderr tail:
+        ``redact`` runs over ``_safe_tail_redaction_window`` (the kept slice
+        plus ``_REDACT_STRADDLE_MARGIN``, with severed lines and open
+        private-key blocks masked), and only then is the tail sliced.
+
+        Only the last ``_STDERR_TAIL_READ_SPAN`` bytes are read. When that
+        read starts mid-file, its first line is dropped (it was cut, so a
+        credential on it may have lost its anchor), and a private-key block
+        that opened before the read is treated as still open.
         """
         path = getattr(self, "_stderr_file", None)
         if path is None:
             return ""
         try:
-            with open(path.name, errors="replace") as fh:
+            span = max(_STDERR_TAIL_READ_SPAN, 4 * (limit + _REDACT_STRADDLE_MARGIN))
+            with open(path.name, "rb") as fh:
                 fh.seek(0, os.SEEK_END)
-                size = fh.tell()
-                fh.seek(max(0, size - limit))
-                return redact(fh.read().strip())
+                start = max(0, fh.tell() - span)
+                open_label, carry = _pem_state_before(fh, start) if start > 0 else (None, "")
+                fh.seek(start)
+                text = fh.read(span).decode("utf-8", errors="replace")
+            if start > 0:
+                newline = text.find("\n")
+                if newline == -1:
+                    return _REDACTED_CREDENTIAL_TAG
+                severed = carry + text[: newline + 1]
+                open_label = _pem_open_label(severed, 0, len(severed), open_label)
+                text = text[newline + 1 :]
+                if open_label is not None:
+                    # The block opened before the read. Restore its BEGIN so
+                    # the window helper sees it open and masks its body.
+                    text = f"-----BEGIN {open_label}-----\n" + text
+            text = text.strip()
+            return redact(_safe_tail_redaction_window(text, limit))[-limit:]
         except Exception as exc:
             # Defensive — _stderr_tail runs inside error reporting itself, so we
             # never raise here. We DO log the exception type at debug so that a
@@ -2152,6 +2239,43 @@ def _pem_open_label(text: str, pos: int, endpos: int, open_label: str | None = N
     return open_label
 
 
+#: Chunk size and marker carry for ``_pem_state_before``'s streaming scan.
+_PEM_SCAN_CHUNK = 64 * 1024
+_PEM_SCAN_CARRY = 256
+
+
+def _pem_state_before(fh: Any, end: int) -> tuple[str | None, str]:
+    """Return the private-key block open at byte ``end`` of ``fh``, and a carry.
+
+    Streams ``fh[0:end]`` in fixed chunks, so memory stays bounded however
+    large the file is. Markers are ASCII, so latin-1 decoding keeps byte
+    offsets and cannot fail. The carry is the unscanned tail (at most
+    ``_PEM_SCAN_CARRY`` chars past the last marker); the caller prepends it
+    to the text after ``end`` so a marker split by ``end`` is still seen.
+    """
+    open_label: str | None = None
+    carry = ""
+    fh.seek(0)
+    pos = 0
+    while pos < end:
+        chunk = fh.read(min(_PEM_SCAN_CHUNK, end - pos))
+        if not chunk:
+            break
+        pos += len(chunk)
+        buf = carry + chunk.decode("latin-1")
+        last_end = 0
+        for m in _PEM_KEY_MARKER_RE.finditer(buf):
+            kind, label = m.group(1), m.group(2)
+            if open_label is None:
+                if kind == "BEGIN":
+                    open_label = label
+            elif kind == "END" and label == open_label:
+                open_label = None
+            last_end = m.end()
+        carry = buf[max(last_end, len(buf) - _PEM_SCAN_CARRY) :]
+    return open_label, carry
+
+
 def _mask_from_open_block(window: str, label: str) -> str:
     """Mask ``window`` through the labelled END line of an open PEM block."""
     close = window.find(f"-----END {label}-----")
@@ -2457,6 +2581,10 @@ def run_script_sandboxed(
     from kiro_crew.session_token_sig import retract_session_token
 
     script_session_token = ""
+    # Per-run temp dir; ``cron_scratch_used`` turns True once a child
+    # exists, after which the sweep -- not this function -- reclaims it.
+    cron_scratch: Path | None = None
+    cron_scratch_used = False
     try:
         try:
             # Tighten the DACL BEFORE writing the secret bytes so the file is
@@ -2538,8 +2666,15 @@ def run_script_sandboxed(
         # is cc-only), so sealing their stand-in read-only is safe: a stray write now
         # fails loudly with EROFS instead of being lost. The seal is opt-in per mask, so
         # nothing else this spawn hides is affected.
+        # The scratch ROOT is masked for every sandboxed process, so this run's
+        # own directory is carved back out as a private read-write window.
+        cron_scratch = _allocate_cron_scratch(job_id)
         sandboxed_argv, sandbox_cleanup = wrap_argv(
-            argv, mode=sandbox_mode, extra_hidden_dirs=hidden, seal_hidden_dirs=True
+            argv,
+            mode=sandbox_mode,
+            extra_hidden_dirs=hidden,
+            seal_hidden_dirs=True,
+            extra_private_dirs=(str(cron_scratch),) if cron_scratch is not None else (),
         )
         if stdin_payload is not None and sandboxed_argv == argv:
             # On a host with no OS sandbox backend, the unsandboxed-exec
@@ -2560,6 +2695,10 @@ def run_script_sandboxed(
         # Build clean env: secrets (Slack tokens, owner id, internal secret)
         # are never inherited; the internal secret is passed via the 0600 file.
         clean_env = _clean_cron_env()
+        if cron_scratch is not None:
+            # The whole temp triple, not only the keys the gateway carried, so
+            # a child under a unit with no TMPDIR stops defaulting to /tmp.
+            clean_env.update(tmp_env(cron_scratch))
         # Operator-granted vault secrets are NOT placed in the child's execve
         # environment: /proc/<pid>/environ is the startup-env snapshot and is
         # readable by any same-UID process, so they travel in the stdin
@@ -2655,6 +2794,7 @@ def run_script_sandboxed(
             if _abandon_spawn(job_id):
                 return {"status": "cancelled", "error": "Cancelled by user"}
             raise
+        cron_scratch_used = True
         if _finish_spawn(job_id, proc):
             # The cancel raced the successful spawn, so the child is live and was
             # never registered: this is the only place that can still stop it.
@@ -2662,8 +2802,18 @@ def run_script_sandboxed(
             # stopped while it ran on and mutated state.
             _kill_proc_group(proc)
             _drain_after_kill(proc, job_id)
+            # Reaped before its owner was recorded: the marker still names this
+            # gateway, so the sweep would keep the dir. Nothing uses it now.
+            cron_scratch_used = False
             return {"status": "cancelled", "error": "Cancelled by user"}
         try:
+            if not _record_cron_scratch_owner(cron_scratch, proc):
+                _kill_proc_group(proc)
+                _drain_after_kill(proc, job_id)
+                # The sweep skips a gateway-named or linked marker; the child is
+                # reaped, so remove the dir here (rmtree never follows a link).
+                cron_scratch_used = False
+                return {"status": "error", "error": _SCRATCH_OWNER_ERROR}
             try:
                 stdout, stderr = proc.communicate(
                     input=(stdin_payload + "\n") if stdin_payload is not None else None,
@@ -2760,6 +2910,8 @@ def run_script_sandboxed(
         Path(secret_path).unlink(missing_ok=True)
         if pinned_dir:
             shutil.rmtree(pinned_dir, ignore_errors=True)
+        if not cron_scratch_used:
+            _discard_unused_cron_scratch(cron_scratch)
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
 
@@ -3056,6 +3208,9 @@ def run_command_sandboxed(
     # this function entirely — the scheduler's caller saw a bare exception
     # instead of a job it could mark failed, so the remedy never reached the user.
     sandbox_cleanup: str | None = None
+    # Per-run temp dir, as in run_script_sandboxed.
+    cron_scratch: Path | None = None
+    cron_scratch_used = False
     try:
         # Inside the claim (see above) AND inside the try: the probe can raise on
         # a host with no OS sandbox backend, and that has to reach the handlers
@@ -3064,9 +3219,18 @@ def run_command_sandboxed(
         if shell is None:
             return {"status": "error", "output": _no_command_shell_message(), "exit_code": -1}
         argv = _command_argv(shell, command)
-        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        cron_scratch = _allocate_cron_scratch(job_id)
+        sandboxed_argv, sandbox_cleanup = wrap_argv(
+            argv,
+            mode="cc",
+            extra_private_dirs=(str(cron_scratch),) if cron_scratch is not None else (),
+        )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
+        if cron_scratch is not None:
+            # The whole temp triple, not only the keys the gateway carried, so
+            # a child under a unit with no TMPDIR stops defaulting to /tmp.
+            clean_env.update(tmp_env(cron_scratch))
         if _spawn_cancelled(job_id):
             # Cancelled while the probe above sat in its interpreter-ENOENT
             # backoff. Report it WITHOUT spawning: not launching is the entire
@@ -3112,12 +3276,14 @@ def run_command_sandboxed(
                 }
             raise
         spawn_claimed = False
+        cron_scratch_used = True
         if _finish_spawn(job_id, proc):
             # Cancel raced the successful spawn; the child is live and
             # unregistered, so kill it rather than report a stop that never
             # happened.
             _kill_proc_group(proc)
             _drain_after_kill(proc, job_id)
+            cron_scratch_used = False  # owner never recorded; see the script path
             # Same shape as the post-communicate cancellation below: a cancelled
             # command cron reports the CHILD's returncode (the signal that
             # stopped it), not a synthetic -1. Reporting -1 here diverged from
@@ -3129,6 +3295,11 @@ def run_command_sandboxed(
             }
         cancelled = False
         try:
+            if not _record_cron_scratch_owner(cron_scratch, proc):
+                _kill_proc_group(proc)
+                _drain_after_kill(proc, job_id)
+                cron_scratch_used = False  # see the script path
+                return {"status": "error", "output": _SCRATCH_OWNER_ERROR, "exit_code": -1}
             try:
                 output, stderr_out = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -3179,5 +3350,7 @@ def run_command_sandboxed(
             # _abandon_spawn -- an early return or a raised error. Release the
             # claim, or _begin_spawn refuses every future wake of this job.
             _abandon_spawn(job_id)
+        if not cron_scratch_used:
+            _discard_unused_cron_scratch(cron_scratch)
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)

@@ -140,6 +140,31 @@ def test_the_kickoff_names_the_goal_that_changed_and_lists_them_all() -> None:
     assert goal_setup.kickoff_prompt({**rec, "goals": [GOAL_A]}, GOAL_B["id"]) is None
 
 
+def test_the_kickoff_ends_with_the_build_your_page_line_while_there_is_no_page(
+    monkeypatch,
+) -> None:
+    from kiro_crew import dashboard_agentic
+    from kiro_crew.dashboard import goal_reminder
+
+    kr = {"id": "k00000001", "text": "Pages", "target": "5", "goal_ids": [GOAL_A["id"]]}
+    rec = {"goals": [GOAL_A], "key_results": [kr], "schedules": {}}
+    plain = goal_setup.kickoff_prompt(rec, GOAL_A["id"])
+    assert plain is not None and goal_reminder.DASHBOARD_BUILD_LINE not in plain
+    monkeypatch.setattr(dashboard_agentic, "bound_package", lambda _slug: "")
+    monkeypatch.setattr(dashboard_agentic, "tab_shows_suggestions", lambda _slug: True)
+    text = goal_setup._goal_prompt(GOAL_A["id"], "scout")(rec, True)
+    assert text is not None and text.endswith(goal_reminder.DASHBOARD_BUILD_LINE)
+    # A goal with no confirmed milestones yet: the page has nothing to be about.
+    bare = goal_setup._goal_prompt(GOAL_A["id"], "scout")({**rec, "key_results": []}, True)
+    assert bare is not None and goal_reminder.DASHBOARD_BUILD_LINE not in bare
+    # Confirming the milestones is the first wake that knows what the page is about.
+    confirmed = goal_setup._milestones_build("scout")(rec, True)
+    assert confirmed is not None and confirmed.endswith(goal_reminder.DASHBOARD_BUILD_LINE)
+    monkeypatch.setattr(dashboard_agentic, "bound_package", lambda _slug: "page")
+    text = goal_setup._goal_prompt(GOAL_A["id"], "scout")(rec, True)
+    assert text is not None and goal_reminder.DASHBOARD_BUILD_LINE not in text
+
+
 def test_the_milestones_nudge_offers_check_ins_only_when_none_is_on() -> None:
     rec = {
         "goals": [GOAL_A],

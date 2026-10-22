@@ -65,6 +65,7 @@ from typing import Any
 
 from kiro_crew import member_goals
 from kiro_crew import members as members_mod
+from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,7 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
         await crons.add_managed_job_async(
             managed_key(slug, cadence),
             name=name,
-            message=f"{_NAMES[cadence]} for {label}. It runs in the crewmate's own chat.",
+            message=f"{_NAMES[cadence]} for {label}. It runs in the mate's own chat.",
             cron_expr=cron_expr_for(cadence, schedules),
             timezone=tz,
             silent=True,
@@ -272,15 +273,81 @@ def _finished_lines(tasks: list[dict[str, str]]) -> str:
     )
 
 
+#: Added to a crewmate's daily reminder and goal-setup wake while it has no Dashboard
+#: page of its own (:func:`dashboard_line`).
+DASHBOARD_BUILD_LINE: str = (
+    "Kiro Crew notes: your Dashboard tab has no page of your own yet. Build one with "
+    "the dashboard skill: dashboard_save stores your HTML page (view.html), and "
+    "dashboard_apply puts it live. Read dashboard_types for paths and row keys: "
+    "work and workstreams for progress, hourly history and "
+    "project spend, goal for relevant milestones, waiting for things needing the "
+    "person, timeline for recent events, tools and usage for the live session's "
+    "activity. Bind values through the model. A verified project snapshot can be "
+    "agentic, with its source and observation time visible. "
+    + PAGE_LOOK
+    + " After apply, one short message says what changed and that the page is on your "
+    "Dashboard tab."
+)
+
+
+def knows_its_page(rec: dict[str, Any]) -> bool:
+    """Whether a crewmate knows what its page is about: a goal and confirmed milestones.
+
+    Milestones are stored only once the person confirms them (the
+    ``crewmate.key_results`` card or the Goals tab), so a stored one is a confirmed one.
+    """
+    return member_goals.has_goal(rec) and bool(rec.get("key_results"))
+
+
+def dashboard_line(slug: str, rec: dict[str, Any]) -> str:
+    """The build-your-page line for crewmate *slug*, or ``""``.
+
+    Only while its Dashboard tab shows nothing of its own: no package bound to it
+    (:func:`kiro_crew.dashboard_agentic.bound_package`) and the suggestions page
+    (:func:`kiro_crew.dashboard_agentic.tab_shows_suggestions`, the read route's own
+    answer), so a template page the person picked, or the page named for the
+    crewmate, is never replaced on a wake. And only once *rec* holds a goal and
+    confirmed milestones (:func:`knows_its_page`), so the page has something to be
+    about. With ``agent.crew_panel`` off (:func:`kiro_crew.members.crew_panel_enabled`)
+    no DM session mounts ``kirocrew-panel``, so there are no ``dashboard_save`` /
+    ``dashboard_apply`` tools and no line. An empty *slug*, or a lookup that fails,
+    gets no line. Blocking IO.
+    """
+    if not slug or not knows_its_page(rec):
+        return ""
+    from kiro_crew import dashboard_agentic
+
+    try:
+        from kiro_crew.dashboard_templates import instance as template_instance
+        from kiro_crew.members import crew_panel_enabled
+
+        if not crew_panel_enabled():
+            return ""
+        if template_instance.is_locked(slug):
+            # The person locked the layout: an apply would be refused, so no wake
+            # asks for a page.
+            return ""
+        if dashboard_agentic.bound_package(slug):
+            return ""
+        if not dashboard_agentic.tab_shows_suggestions(slug):
+            return ""
+    except Exception:
+        logger.debug("dashboard line for %s: page lookup failed", slug, exc_info=True)
+        return ""
+    return DASHBOARD_BUILD_LINE
+
+
 def reminder_prompt(
     rec: dict[str, Any],
     cadence: str = member_goals.CADENCE_DAILY,
     *,
     finished: list[dict[str, str]] | None = None,
+    dashboard: str = "",
 ) -> str:
     """The hidden turn's text for *cadence*, built from the current goal record.
 
     *finished* is :func:`finished_tasks` for the weekly and monthly prompts.
+    *dashboard* is :func:`dashboard_line`, added last to the daily prompt.
     """
     block = member_goals.progress_block(rec)
     done = _finished_lines(finished or [])
@@ -292,7 +359,7 @@ def reminder_prompt(
             "number or a short note. Lead your message with those readings and say "
             "briefly where things stand toward each goal, then continue "
             "with your next task. Ask the user something only when you are blocked."
-        )
+        ) + (f"\n\n{dashboard}" if dashboard else "")
     if cadence == member_goals.CADENCE_WEEKLY:
         return (
             "[Weekly report] "
@@ -459,9 +526,9 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
         or getattr(slot, "agent", "") != member
         or getattr(slot, "executor", "") == "remote"
     ):
-        return None, "skipped: the crewmate's thread is not open"
+        return None, "skipped: the mate's thread is not open"
     if slot.running or getattr(slot, "_queue", None):
-        return None, "skipped: the crewmate is busy"
+        return None, "skipped: the mate is busy"
     return slot, ""
 
 
@@ -479,12 +546,12 @@ async def fire(state: Any, job: Any) -> str:
         members_mod.validate_slug(slug)
         binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
     except (members_mod.MemberSlugError, OSError):
-        return "skipped: no crewmate thread"
+        return "skipped: no mate thread"
     if not binding:
-        return "skipped: no crewmate thread"
+        return "skipped: no mate thread"
     member = binding.get("member")
     if not isinstance(member, str) or not member:
-        return "skipped: no crewmate thread"
+        return "skipped: no mate thread"
     try:
         rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
     except member_goals.GoalsUnreadable:
@@ -497,6 +564,15 @@ async def fire(state: Any, job: Any) -> str:
     if skip:
         return skip
     finished: list[dict[str, str]] = []
+    dashboard = ""
+    if cadence == member_goals.CADENCE_DAILY:
+        dashboard = await asyncio.to_thread(dashboard_line, slug, rec)
+        # The binding read ran off the loop: a turn may have started meanwhile.
+        again, skip = _idle_thread(state, slot_key, member)
+        if skip:
+            return skip
+        if again is not slot:
+            return "skipped: the crewmate's thread is not open"
     if cadence in member_goals.REPORT_KINDS:
         finished = await asyncio.to_thread(finished_tasks, slot_key, cadence)
         # A turn (a cron notification, a user message) can start while the
@@ -505,7 +581,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the crewmate's thread is not open"
+            return "skipped: the mate's thread is not open"
     if cadence == member_goals.CADENCE_HEARTBEAT:
         has_tools = await asyncio.to_thread(member_has_session_tools, member)
         waiting = await milestones_card_waiting(state, slot_key)
@@ -517,12 +593,12 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the crewmate's thread is not open"
+            return "skipped: the mate's thread is not open"
         if _monitor_loop_drives(slot_key):
             return LOOP_SKIP
         prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones_waiting=waiting)
     else:
-        prompt = reminder_prompt(rec, cadence, finished=finished)
+        prompt = reminder_prompt(rec, cadence, finished=finished, dashboard=dashboard)
     dispatch_hidden_turn(state, slot, prompt, human_seen=False)
     return "started"
 

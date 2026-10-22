@@ -33,8 +33,8 @@ silently fails to act.
   world-readable.
 * **Trust reuses the session's own approval policy** rather than adding a
   second trust store. ``slack/handler.py`` keeps an in-memory
-  ``_trusted_sessions`` set that ``dashboard/server.py`` already reaches across
-  a circular-import boundary to clear; a third copy of "is this session
+  ``_trusted_sessions`` set that ``dashboard/server_runtime/inherited_trust.py`` already
+  reaches across a circular-import boundary to clear; a third copy of "is this session
   trusted" would be one more thing to keep in sync. ``SessionManager``'s
   approval policy is durable, already SEL-audited on write, and already what
   spawned subagents inherit.
@@ -51,7 +51,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -419,6 +419,7 @@ class TextReplyApprovalDecider:
                 "approval: no prompt was delivered for %s; denying immediately",
                 request_id,
             )
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
             return False
         verdict = await entry.wait(self._timeout_s)
         if verdict == TRUST:

@@ -257,7 +257,7 @@ class TestIncidentsPayloadIsBounded(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("truncated", payload)
 
     async def test_id_filter_narrows_to_one_incident(self):
-        """``?id=`` exists for the agent surface (see dashboard/server.py).
+        """``?id=`` exists for the agent surface (see dashboard/server_internal_paths.py).
 
         The single-incident ``GET /incident`` route cannot be admitted to
         internal-secret callers without prefix-admitting the human-only

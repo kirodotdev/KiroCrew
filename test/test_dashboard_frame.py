@@ -988,3 +988,32 @@ class TestMappingAPageByKind:
         dashboard_frame.map_page_text(html, markup, code)
         assert code_seen == ["a", "b"]
         assert all(markup_seen), markup_seen
+
+
+#: The CSS generic families a role variable may be built from.
+_GENERIC_FAMILIES = frozenset(
+    {"system-ui", "sans-serif", "ui-sans-serif", "ui-serif", "serif", "ui-monospace", "monospace"}
+)
+
+
+def _roles(css: str) -> dict[str, list[str]]:
+    return {
+        name: [part.strip() for part in value.split(",")]
+        for name, value in re.findall(r"(--font-(?:sans|serif|mono))\s*:\s*([^;}]+)", css)
+    }
+
+
+def test_type_comes_from_three_role_variables_of_generic_families_only() -> None:
+    """Each OS draws its own face: the frame names no typeface, only roles."""
+    css = dashboard_frame._HOST_CSS
+    roles = _roles(css)
+    assert set(roles) == {"--font-sans", "--font-serif", "--font-mono"}
+    for name, families in roles.items():
+        assert families and set(families) <= _GENERIC_FAMILIES, (name, families)
+    assert roles["--font-sans"] == ["system-ui", "sans-serif"]
+    assert roles["--font-serif"] == ["ui-serif", "serif"]
+    assert roles["--font-mono"] == ["ui-monospace", "monospace"]
+    body = re.search(r"body\s*\{([^}]*)\}", css)
+    assert body and "var(--font-sans)" in body.group(1)
+    for face in ("apple-system", "BlinkMacSystemFont", "Segoe UI"):
+        assert face not in body.group(1)

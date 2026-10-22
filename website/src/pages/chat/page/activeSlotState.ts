@@ -177,7 +177,7 @@ export function useActiveSlotState({
   // tip + record it as shown, silently burning the 6h cadence.
   const [splitMode, setSplitMode] = useState(false)
   /**
-   * Passed to ChatSidebar as `onSelectSlot`. Stable BY CONTRACT, not by
+   * Run by ChatSidebar's `onSelectSlot`. Stable BY CONTRACT, not by
    * convenience: `ChatSidebar` is wrapped in `memo`, and an inline arrow here
    * makes that memo bail on EVERY ChatPage render. ChatPage re-renders once per
    * frame while anything is streaming (`useWebSocket` batches chunks per rAF

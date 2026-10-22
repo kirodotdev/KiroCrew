@@ -38,6 +38,7 @@ import pytest
 
 from kiro_crew import sandbox, security
 from kiro_crew.apps.builtins.papyrus.backend import latex, procio, store
+from kiro_crew.testing.wait import await_until
 
 
 def _spawn_mode(wrap: mock.Mock) -> str:
@@ -912,7 +913,7 @@ class TestCapturedOutputIsBounded:
         stdout.feed_data(b"from stdout")
         stdout.feed_eof()
 
-        out, err = await asyncio.wait_for(task, timeout=5)
+        out, err = await await_until(task, what="read_capped finishing both pipes")
         assert out == b"from stdout"
         assert err == b"from stderr"
 

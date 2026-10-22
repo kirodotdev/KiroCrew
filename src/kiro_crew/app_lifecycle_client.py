@@ -31,11 +31,14 @@ _ACTION_TIMEOUT_SECS = 300
 class AppGatewayError(RuntimeError):
     """A running gateway refused or could not complete an app lifecycle request."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, code: str = "") -> None:
         # This exception is rendered by cli_commands_app on ONE prefixed line, so the
         # terminal boundary is here even when the message came from an HTTP error
         # or response payload, and a line break in it must not start a new line.
         super().__init__(safe_terminal_line(message))
+        # The gateway's machine-readable ``code`` when it sent one, so the CLI can
+        # act on a refusal (``session_approval_consent_required``) without parsing prose.
+        self.code = code
 
 
 class AppGatewayTimeout(AppGatewayError):
@@ -57,15 +60,16 @@ def _read_json(response: object) -> object:
         raise AppGatewayError("gateway returned a malformed response") from exc
 
 
-def _gateway_error_detail(exc: urllib.error.HTTPError) -> str:
-    """Return the gateway's structured error text, falling back to its status."""
+def _gateway_error(exc: urllib.error.HTTPError) -> AppGatewayError:
+    """Return the gateway's structured error text and code, falling back to its status."""
     try:
         body = json.loads(exc.read())
         if isinstance(body, dict) and isinstance(body.get("error"), str):
-            return body["error"]
+            code = body.get("code")
+            return AppGatewayError(body["error"], code=code if isinstance(code, str) else "")
     except Exception:
         pass
-    return f"{exc.code} {exc.reason}"
+    return AppGatewayError(f"{exc.code} {exc.reason}")
 
 
 def _socket_unavailable(exc: OSError) -> bool:
@@ -148,7 +152,7 @@ def _post_lifecycle_action(
     except AppGatewayError:
         raise
     except urllib.error.HTTPError as exc:
-        raise AppGatewayError(_gateway_error_detail(exc)) from exc
+        raise _gateway_error(exc) from exc
     except Exception as exc:  # noqa: BLE001 — peer bytes must not crash the CLI
         if isinstance(exc, OSError) and _socket_unavailable(exc):
             return None
@@ -180,7 +184,7 @@ def _post_lifecycle_action(
     except AppGatewayError:
         raise
     except urllib.error.HTTPError as exc:
-        raise AppGatewayError(_gateway_error_detail(exc)) from exc
+        raise _gateway_error(exc) from exc
     except Exception as exc:  # noqa: BLE001 — peer bytes must not crash the CLI
         if deadline_expired(exc):
             raise AppGatewayTimeout(
@@ -197,10 +201,14 @@ def _post_lifecycle_action(
         raise AppGatewayError("gateway returned an invalid app lifecycle response")
     if result.get("ok") is False:
         response_detail = result.get("error")
+        response_code = result.get("code")
         raise AppGatewayError(
-            str(response_detail)
-            if response_detail
-            else "gateway rejected the app lifecycle request"
+            (
+                str(response_detail)
+                if response_detail
+                else "gateway rejected the app lifecycle request"
+            ),
+            code=response_code if isinstance(response_code, str) else "",
         )
     return result
 

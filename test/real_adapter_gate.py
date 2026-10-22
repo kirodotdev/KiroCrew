@@ -70,6 +70,13 @@ LOCKFILE = MANIFEST_DIR / "package-lock.json"
 #: The npm package each guarded file's adapter ships as.
 CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp"
 OPENCODE_PACKAGE = "opencode-ai"
+#: pi is TWO packages, and both are pinned: the third-party ACP adapter, and the
+#: agent it spawns. Either can break the session on its own -- the adapter if it
+#: ignores ``PI_ACP_PI_COMMAND`` or drops a confirm dialog, the agent if it omits
+#: an extension's command from its registry or does not load the extension -- so
+#: a pin on one alone would let the other drift unmeasured.
+PI_ACP_PACKAGE = "pi-acp"
+PI_PACKAGE = "@earendil-works/pi-coding-agent"
 
 
 def pinned_version(package: str) -> str:
@@ -94,6 +101,12 @@ MEASURED_CODEX_ACP_VERSION = pinned_version(CODEX_ACP_PACKAGE)
 #: The ``opencode-ai`` release the live measurements in
 #: ``test_opencode_session_mcp.py`` were taken against.
 MEASURED_OPENCODE_VERSION = pinned_version(OPENCODE_PACKAGE)
+
+#: The ``pi-acp`` and ``@earendil-works/pi-coding-agent`` releases the live
+#: measurements in ``test_pi_real_adapter.py`` were taken against. Both must sit at
+#: or above ``acp.harness.pi.PI_MIN_VERSION``'s floor for pi; that test asserts it.
+MEASURED_PI_ACP_VERSION = pinned_version(PI_ACP_PACKAGE)
+MEASURED_PI_VERSION = pinned_version(PI_PACKAGE)
 
 
 def real_adapters_required() -> bool:

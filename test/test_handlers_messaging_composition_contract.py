@@ -463,7 +463,6 @@ def test_the_seams_other_modules_import_keep_their_identity() -> None:
 #: and must keep importing from there (not from a re-route).
 _IMPORTED_BY_NAME = {
     "_resolve_channel_target": "kiro_crew.dashboard.chat_runner",
-    "_run_chat": "kiro_crew.dashboard.chat_runner",
     "_get_config_lock": "kiro_crew.dashboard.handlers.agents",
     "is_allowed_user": "kiro_crew.slack.handler",
     "is_tracked_channel": "kiro_crew.slack.handler",
@@ -1330,18 +1329,11 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
 #: Constructs repository guards read by path, each with the owners that hold it beside
-#: ``dashboard/handlers/messaging.py``: the cron origin-session dispatch the
-#: turn-timeout scan counts, the slot task publish the slot-reader inventory keys by
-#: ``api_send_message``, and the two bounded body reads the JSON-body register keys
+#: ``dashboard/handlers/messaging.py``: the two bounded body reads the JSON-body register keys
 #: by function -- the Teams activity route's in the facade, the agent push's in
 #: ``agent_push``, a row the register names by that path. An owner that grew one would
 #: move it out of the guard's sight, so each stays in exactly these files.
-_STAYS_IN_THE_FACADE = (
-    (r"spawn_guarded_turn\(", ()),
-    (r"\b_run_chat\(", ()),
-    (r"\bslot\.task = task\b", ()),
-    (r"await read_bounded_json\(", ("agent_push",)),
-)
+_STAYS_IN_THE_FACADE = ((r"await read_bounded_json\(", ("agent_push",)),)
 
 
 @pytest.mark.parametrize(

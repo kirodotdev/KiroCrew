@@ -921,14 +921,20 @@ _STALE_BAND = (
     "</div>"
 )
 
+#: The frame's base styles. Type comes from three ROLE variables built only from CSS
+#: generic families, never a named typeface, so each system draws its own face:
+#: ``--font-sans`` (the default, for reading), ``--font-serif`` and ``--font-mono``
+#: (code, ids and aligned figures).
 _HOST_CSS = """
-:root { color-scheme: light dark; }
-body { margin: 0; padding: 12px; font: 13px/1.5 -apple-system, BlinkMacSystemFont,
-  'Segoe UI', sans-serif; color: var(--text, #e6e6e6); background: var(--bg, #12141a); }
+:root { color-scheme: light dark; --font-sans: system-ui, sans-serif;
+  --font-serif: ui-serif, serif; --font-mono: ui-monospace, monospace; }
+body { margin: 0; padding: 12px; font: 13px/1.5 var(--font-sans);
+  color: var(--text, light-dark(#1f2328, #e6e6e6));
+  background: var(--bg, light-dark(#ffffff, #12141a)); }
 #kirocrew-stale-band { margin: 0 0 10px; padding: 6px 9px; border-radius: 6px;
-  font-size: 11px; color: var(--warn, #ffd230);
+  font-size: 11px; color: var(--warn, light-dark(#9a6700, #ffd230));
   background: var(--warn-subtle, rgba(255, 210, 48, 0.1));
-  border: 1px solid var(--warn, #ffd230); }
+  border: 1px solid var(--warn, light-dark(#9a6700, #ffd230)); }
 html[data-dashboard-stale='true'] #kirocrew-stale-band { display: block; }
 [data-dashboard-agentic='true'] { border-bottom: 1px dotted var(--muted, #8b8b8b); }
 [data-dashboard-missing='true'] { opacity: 0.55; }

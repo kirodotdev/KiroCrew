@@ -226,6 +226,37 @@ def _status_render(state: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+#: The keys a timeline moment copies from its entry when the entry carries one.
+TIMELINE_DETAIL_KEYS: tuple[str, ...] = (
+    "turn",
+    "attempt",
+    "actor",
+    "stop_reason",
+    "reason",
+    "model",
+    "source",
+    "duration_ms",
+    # Both spellings of a measured duration: ``duration_ms`` is the turn entry's,
+    # ``ms`` is what the subagent closers and steps call theirs. Copying only one
+    # of the two keeps that half of the log's durations out of the timeline.
+    "ms",
+    "credits",
+    "freed_pct",
+    "dropped_count",
+    "agent_id",
+    "agent",
+    "resumed",
+    "count",
+    "approval_id",
+    "decision",
+    "by",
+    "tool",
+)
+#: Every key a ``timeline.moments`` row can carry: ``type`` is the crew-log entry type,
+#: which is what names the moment, and ``time`` its epoch-millisecond stamp.
+TIMELINE_MOMENT_KEYS: tuple[str, ...] = ("seq", "time", "type", *TIMELINE_DETAIL_KEYS)
+
+
 def _timeline_start() -> dict[str, Any]:
     # ``last_seq`` is the seq of the newest moment folded so far, or 0 before the
     # first. A crew log's seq is strictly increasing within one succession unit and
@@ -255,31 +286,7 @@ def _timeline_step(state: dict[str, Any], entry: Entry) -> None:
     state["last_seq"] = entry.seq
     moment: dict[str, Any] = {"seq": entry.seq, "time": entry.time, "type": entry.type}
     data = entry.data
-    for key in (
-        "turn",
-        "attempt",
-        "actor",
-        "stop_reason",
-        "reason",
-        "model",
-        "source",
-        "duration_ms",
-        # Both spellings of a measured duration: ``duration_ms`` is the turn entry's,
-        # ``ms`` is what the subagent closers and steps call theirs. Copying only one
-        # of the two keeps that half of the log's durations out of the timeline.
-        "ms",
-        "credits",
-        "freed_pct",
-        "dropped_count",
-        "agent_id",
-        "agent",
-        "resumed",
-        "count",
-        "approval_id",
-        "decision",
-        "by",
-        "tool",
-    ):
+    for key in TIMELINE_DETAIL_KEYS:
         value = data.get(key)
         if isinstance(value, str):
             # Retained in a bounded window, so its SIZE is part of that bound.

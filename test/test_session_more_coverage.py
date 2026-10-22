@@ -47,6 +47,7 @@ from kiro_crew.session import (
     SessionManager,
     _Session,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture
@@ -469,10 +470,7 @@ class TestDiscardPoolProvider:
             with pytest.raises(_Bang):
                 await mgr._discard_pool_provider(provider, "unit")
         # Dispatched to the executor; wait for the worker to pick it up.
-        for _ in range(200):
-            if killer.call_count:
-                break
-            await asyncio.sleep(0.001)
+        await async_wait_until(lambda: killer.call_count)
         assert killer.call_args.args[0] is provider
 
     @pytest.mark.asyncio

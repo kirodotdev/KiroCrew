@@ -319,6 +319,8 @@ def test_the_guard_is_reached_from_the_one_pytest_configure() -> None:
     of that name, and this pins that: a module-level redefinition is not an error, so
     nothing else would report a guard that stopped running.
     """
-    source = (_REPO_ROOT / "conftest.py").read_text(encoding="utf-8")
+    # The rootdir conftest binds most of its hooks from test/conftest_floor_*.py.
+    floor = sorted((_REPO_ROOT / "test").glob("conftest_floor_*.py"))
+    source = "\n".join(p.read_text(encoding="utf-8") for p in (_REPO_ROOT / "conftest.py", *floor))
     assert source.count("\ndef pytest_configure(") == 1
     assert "_refuse_a_real_data_home()" in source

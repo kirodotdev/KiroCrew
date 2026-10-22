@@ -137,8 +137,7 @@ async def _tick_until(flag) -> None:
     holding the loop, this coroutine never runs and the probe's own wait times out.
     """
     for _ in range(500):
-        # flake-ok: progress probe; it yields every 10 ms so a blocked loop shows as no progress, moved verbatim
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.01)  # flake-ok: progress probe; the 10 ms yield is the measurement
         flag.set()
 
 

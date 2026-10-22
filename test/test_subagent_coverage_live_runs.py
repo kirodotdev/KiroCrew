@@ -19,6 +19,7 @@ from subagent_coverage_helpers import _info, _manager
 
 from kiro_crew import subagent as sa
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import async_wait_until
 
 # ── Manager: session sharing / provider probes ────────────────────────────
 
@@ -372,12 +373,12 @@ async def _reaper_ticks(mgr: SubagentManager, clock: _SteppedClock) -> tuple[Asy
     ):
         task = asyncio.ensure_future(mgr._reaper_loop())
         # The pump runs once per tick, before that tick's reap checks, so its
-        # second call means a whole tick has run. Bounded at 30 s.
-        for _ in range(3000):
-            if pump.call_count >= 2 or task.done():
-                break
-            # flake-ok: bounded poll (3000 x 10 ms) until the reaper's pump has ticked twice; moved verbatim
-            await asyncio.sleep(0.01)
+        # second call means a whole tick has run.
+        await async_wait_until(
+            lambda: pump.call_count >= 2 or task.done(),
+            timeout=30,
+            describe=lambda: f"pump calls={pump.call_count}, reaper done={task.done()}",
+        )
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=30)

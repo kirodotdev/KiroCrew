@@ -434,7 +434,25 @@ def _url_payload_command(n: int) -> str:
 #: Raised by four, from 32,056, for the ``app-agent-launch`` entry on the file-tool write
 #: fence and its three-line comment: the empty directory an app agent's launch copy runs
 #: kiro-cli from, which the sandbox seals read-only too.
-_PACKAGE_LINE_BUDGET = 32_060
+#:
+#: Raised again, from 32,060, by 37 lines for ``exfil_url_rules._heavy_percent_encoding``
+#: and its manifest entry: words percent-encoded in a URL path (a Chinese headline) do not trip the heavy
+#: percent-encoding rule. It is new rule logic, not glue; nothing else moved.
+#:
+#: Raised by 14, from 32,097, for each harness's own permission files on the write
+#: tier: the leaf splice and the project-file matcher alias in ``paths_lists``; the
+#: leaves joining the override arm, and the resolved-root list it reads, in
+#: ``paths_targets``; and one ``or`` clause, its import and three ``TYPE_CHECKING``
+#: lines in ``paths``. The registry lives in ``agent_sdk``.
+#:
+#: Raised again, from 32,111, for the host-set snapshot on
+#: ``exfil.redact_exfiltration_urls_with_records`` and its two-tuple wrapper: one
+#: optional ``exempt_hosts`` keyword that REPLACES the live platform read and the
+#: scoped override when a caller supplies the set it keyed a cache on, so the display
+#: cache stores output computed under exactly the set its key names. Fourteen lines:
+#: the keyword on both signatures, a two-branch read and the docstrings saying why.
+#: No rule widened or narrowed; the default path is the live read.
+_PACKAGE_LINE_BUDGET = 32_125
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

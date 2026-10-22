@@ -1229,3 +1229,112 @@ class TestForkScopeLaneHonoursTheOverride:
         assert outputs["override"] == "${{ steps.human_override.outputs.active }}"
         # The read needs the comment feed and nothing more.
         assert doc["jobs"]["generate"]["permissions"]["pull-requests"] == "read"
+
+
+class TestForkScopeLaneNamesAnUnresolvedScope:
+    """A `generate` job that dies before `Resolve review scope` leaves `in_scope`
+    empty. The run is unmeasured, so it must stay red, with a title that names the
+    unresolved scope rather than the generic "no leg reported" sentence. A PR that
+    DID resolve as in scope and got no leg must stay red with the generic sentence,
+    and a resolved `in_scope=false` must keep its "nothing to scope" success.
+    """
+
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+
+    def _decide(self, tmp_path: Path, **env: str) -> "dict[str, str]":
+        bash = _bash()
+        if bash is None or os.name == "nt":
+            pytest.skip("the publish steps are Bash with a stubbed gh; POSIX only")
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        # The per-head floor reads this head's prior check-runs: a fresh head has none.
+        _write_stub(stub_dir / "gh", "printf '%s\\n' '{\"total_count\":0,\"check_runs\":[]}'\n")
+        _write_stub(stub_dir / "python3", f'exec "{sys.executable}" "$@"\n')
+        out = tmp_path / "github-output"
+        script = tmp_path / "step.sh"
+        script.write_text(
+            _step_script(
+                _workflow("fork-security-scope-review.yml"), "Decide the lane's conclusion"
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        base = dict(
+            HUMAN_OVERRIDE="false",
+            ADJUDICATE="",
+            VALIDATE_RC="",
+            FOLD_RC="skipped",
+            MODEL_VERDICT="",
+            REVIEW=str(tmp_path / "absent.md"),
+            BODY=str(tmp_path / "absent-body.md"),
+        )
+        base.update(env)
+        result = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            env=_fork_child_env(
+                tmp_path,
+                stub_dir,
+                HEAD=self.HEAD,
+                PR="7",
+                REPO="example/repo",
+                GITHUB_OUTPUT=str(out),
+                **base,
+            ),
+        )
+        assert result.returncode == 0, _proc_log(result)
+        return _github_outputs(out)
+
+    def test_a_generate_that_never_resolved_scope_is_red_and_names_why(
+        self, tmp_path: Path
+    ) -> None:
+        outputs = self._decide(tmp_path, IN_SCOPE="")
+        assert outputs["conclusion"] == "failure", outputs
+        # Unsettled, so it sets no per-head floor and a re-run clears it.
+        assert outputs["settled"] == "no", outputs
+        assert "review scope was never resolved" in outputs["title"], outputs
+        assert "no leg reported" not in outputs["title"], outputs
+
+    def test_an_in_scope_change_that_got_no_leg_still_fails(self, tmp_path: Path) -> None:
+        outputs = self._decide(tmp_path, IN_SCOPE="true")
+        assert outputs["conclusion"] == "failure", outputs
+        assert outputs["settled"] == "no", outputs
+        assert outputs["title"] == (
+            "no leg reported, and this was not the nothing-to-adjudicate short circuit"
+        ), outputs
+
+    def test_a_resolved_out_of_scope_change_keeps_the_short_circuit(self, tmp_path: Path) -> None:
+        outputs = self._decide(tmp_path, IN_SCOPE="false")
+        assert outputs["conclusion"] == "success", outputs
+        assert outputs["title"] == "nothing to scope — no security-surface path touched", outputs
+
+
+class TestForkScopeGenerateStepsFailFast:
+    """The steps before `Resolve review scope` can hang until the 30-minute job
+    timeout. Each carries its own short timeout so the hang ends
+    sooner -- and none may retry, so a timed-out step cannot become a measured
+    answer.
+    """
+
+    _STEPS = (
+        "Resolve and validate PR (authoritative from GitHub)",
+        "Resolve human override",
+        "Checkout base (trusted)",
+        "Fetch authentic diff (data only — never applied to the tree)",
+        "Resolve review scope",
+    )
+
+    def test_each_pre_scope_step_has_a_short_timeout_and_no_soft_failure(self) -> None:
+        doc = yaml.safe_load(_workflow("fork-security-scope-review.yml"))
+        job = doc["jobs"]["generate"]
+        steps = {s.get("name"): s for s in job["steps"]}
+        for name in self._STEPS:
+            step = steps[name]
+            assert 0 < step.get("timeout-minutes", 0) <= 10, name
+            assert step["timeout-minutes"] < job["timeout-minutes"], name
+            # A soft failure would let the job reach later steps with no scope.
+            assert not step.get("continue-on-error"), name

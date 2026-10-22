@@ -221,7 +221,7 @@ def _load_mcp_json() -> dict[str, Any]:
     by_source = _load_mcp_json_by_source()
     # Iteration order = priority (setdefault is a no-op once populated):
     # kirocrew-specific file > kiro global > any seam provider globals.
-    # Matches rebuild_agent_config's merge order in agent.py.
+    # Matches rebuild_agent_config's merge order in agent_parts/spec_rebuild.py.
     for scope in _scope_priority(by_source):
         for name, spec in by_source.get(scope, {}).items():
             merged.setdefault(name, spec)

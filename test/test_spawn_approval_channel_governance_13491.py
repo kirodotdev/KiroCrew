@@ -38,6 +38,7 @@ from test_telegram import _dispatcher  # noqa: E402
 
 from kiro_crew.messaging import spawn_approval_delivery as seam
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -114,10 +115,10 @@ def _ceiling(monkeypatch: pytest.MonkeyPatch):
 async def _press(dispatcher, session_key: str, flag: str) -> None:
     """Press an inline button in the DM, exactly as the real callback path does."""
     key = TelegramApprovalDecider.key(session_key, _RID)
-    for _ in range(50):
-        if key in TelegramApprovalDecider._REGISTRY:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: key in TelegramApprovalDecider._REGISTRY,
+        describe=lambda: f"registered keys: {sorted(TelegramApprovalDecider._REGISTRY)}",
+    )
     nonce = TelegramApprovalDecider._NONCES[key]
     await dispatcher.on_callback(
         SimpleNamespace(

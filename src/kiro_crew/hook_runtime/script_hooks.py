@@ -41,6 +41,8 @@ if TYPE_CHECKING:
         _read_capped_stream,
         _script_hooks_capability_denied,
         _tool_matches,
+        current_context,
+        effective_denied_regexes_from_config,
         logger,
         platform_compat,
         redact_via_context,
@@ -137,6 +139,45 @@ async def run_script_hook(
             exit_code=2,  # PreToolUse "block tool" convention
             duration_ms=int((time.monotonic() - start) * 1000),
         )
+    # Shell deny-list: the command runs via ``/bin/sh -c`` (``cmd /c`` on Windows)
+    # below, OUTSIDE the ACP tool-permission/hook flow -- the same out-of-band
+    # position a cron ``command`` runs in -- so the deny gate ``hooks.on_tool_call``
+    # applies to a bash tool call never sees it. ``hooks.json`` stays writable
+    # in-sandbox for ``register_hook`` (``sandbox._CREW_SANDBOX_VISIBLE_LEAVES``), so a
+    # command a bash tool call would be REFUSED for must be refused here too rather
+    # than running because it was spelled as a hook. Vetted against the SAME effective
+    # deny set the tool gate and cron fire-time vet resolve -- the enabled built-ins
+    # plus the user's own rules, honoring the Settings>Security opt-out with governance
+    # pins force-re-added (``effective_denied_regexes_from_config``) -- through the
+    # active context's PolicyAuthority so a companion edition's ADD-only overlay applies
+    # too. A benign command matches nothing and runs unchanged; this is the fire-time
+    # twin of cron's ``vet_job_at_fire_time``. ``is_denied`` emits the SEL ``deny_event``
+    # itself, so no extra audit here. Off the loop like the governance check above: the
+    # resolve reads the keystone file and the match runs regexes, neither of which
+    # belongs on the gateway's shared event loop.
+    if hook.command:
+
+        def _shell_deny_reason() -> str | None:
+            reason = current_context().security.is_denied(
+                hook.command, denied_regexes=effective_denied_regexes_from_config()
+            )
+            return redact_via_context(reason) if reason else None
+
+        deny_reason = await asyncio.to_thread(_shell_deny_reason)
+        if deny_reason:
+            hook.last_run = time.time()
+            hook.last_status = "blocked"
+            hook.last_error = deny_reason[:500]
+            hook.run_count += 1
+            return ScriptHookResult(
+                hook_id=hook.id,
+                hook_name=hook.name,
+                event=hook.event,
+                error=deny_reason,
+                # PreToolUse "block tool" convention, as the governance deny above.
+                exit_code=2,
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
     # Build hook event JSON for STDIN
     if hook_event is None:
         hook_event = {"hook_event_name": hook.event, "cwd": os.getcwd()}

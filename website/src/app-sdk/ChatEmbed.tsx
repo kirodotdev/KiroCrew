@@ -79,8 +79,14 @@ import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
 import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
 
-/** The `meta` a send with attachments carries (see `onSend`). */
+/** The `meta` every host `onSend` send carries (see `onSend`). */
 export interface ChatEmbedSendMeta {
+  /** This send's client-minted id. A host that forwards it as `meta.sendId`
+   *  on its own chat POST lets the embed prove delivery by id, as a default
+   *  send does (#22061): a rejected `onSend` whose message did land then
+   *  clears its notice and takes the handed-back text out of the composer.
+   *  Optional so a host-built meta still type-checks; the embed always sets it. */
+  sendId?: string
   /** Non-image attachments; `[attached_file N]` in the message names `files[N-1]`. */
   files?: string[]
   /** The collapsed pastes the message expanded, as the main chat sends them:
@@ -119,10 +125,12 @@ export interface ChatEmbedProps {
    * passes its own endpoint here, which can carry the app's identity checks and
    * refuse a stale send. Omitted, behaviour is unchanged.
    *
-   * A send with non-image attachments passes a second `meta` argument whose
-   * `files` the message's `[attached_file N]` markers name; a host forwards it
-   * as `meta` on its own chat POST. A send without attachments passes only the
-   * message, as before.
+   * Every send passes a second `meta` argument: its `sendId`, plus the
+   * `files` the message's `[attached_file N]` markers name and the collapsed
+   * `pastes` it expanded, when it has any. A host forwards it as `meta` on its
+   * own chat POST; forwarding `sendId` lets the embed prove by id that a send
+   * whose `onSend` rejected did land. A host that ignores `meta` keeps the
+   * text-match fallback (#21686).
    */
   onSend?: (message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> | void
   /**
@@ -238,7 +246,8 @@ interface PendingSend {
 
 /** Whether the poll shows THIS optimistic send. The default path stamps
  *  `sendId` on the wire, so identity is the proof. A host `onSend` posts on
- *  its own endpoint and no `sendId` comes back, so its fallback is a user row
+ *  its own endpoint and gets the same id proof only if it forwards
+ *  `meta.sendId` (#22061); otherwise its fallback is a user row
  *  with the same text, ignoring surrounding whitespace, that was not in the
  *  transcript when the send went out. */
 function isPendingAcked(
@@ -643,10 +652,10 @@ function ChatEmbed({
   // directly on a dispatched send's row, carried through the queue entry onto the drained
   // row when the slot was busy (#8853) -- so a same-text resend or injection
   // can never be mistaken for it, and there is no text-matching fallback to
-  // false-retire on. The one exception is a host `onSend` send, which never
-  // puts a `sendId` on the wire: its text arriving as a user row after the
-  // anchor row (`HostSendProof`, #21686) turns its warning into a calm line
-  // and touches nothing else,
+  // false-retire on. The one exception is a host `onSend` send whose host did
+  // not forward `meta.sendId` (#22061), so no id reaches the wire: its text
+  // arriving as a user row after the anchor row (`HostSendProof`, #21686)
+  // turns its warning into a calm line and touches nothing else,
   // because text cannot say which send landed. Only the id proof also takes
   // back the text it handed back -- and only if the composer still holds exactly what
   // the restore produced; anything typed or edited since stays. Transcript
@@ -663,8 +672,8 @@ function ChatEmbed({
   // rebuilds the composer around the second's (`retireSendTail`).
   useEffect(() => {
     // Server rows only: a pending optimistic row is this embed's own copy,
-    // not proof. A host `onSend` send carries no `sendId` to the server, so
-    // its proof is its text (`hostProof`, #21686) -- and text cannot say
+    // not proof. A host `onSend` send whose host dropped `meta.sendId` carries
+    // no id to the server, so its proof is its text (`hostProof`, #21686) -- and text cannot say
     // which send landed, so that proof never touches the composer: the
     // warning becomes a calm line saying the message is in the conversation
     // and its text is kept, so the user sees why the text is still there.
@@ -864,10 +873,13 @@ function ChatEmbed({
       }
       if (onSend) {
         try {
-          await (meta ? onSend(msg, meta) : onSend(msg))
+          // The id rides along so a host that forwards it gets the id proof
+          // (`isOwnUserRow`) a default send has (#22061).
+          await onSend(msg, { ...meta, sendId })
         } catch {
-          // A rejection proves nothing either way, so the notice carries the
-          // only proof a host send can have: its text arriving as a new row.
+          // A rejection proves nothing either way. The id proof covers a host
+          // that forwarded `meta.sendId`; for one that did not, the notice
+          // also carries the text proof: its text arriving as a new row.
           deliver({ role: 'notice', content: deliveryUnconfirmedCopy(!override), sendId, hostProof })
         }
         return

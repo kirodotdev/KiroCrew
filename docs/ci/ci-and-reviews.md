@@ -68,6 +68,7 @@ pull_request
   |-- issue-gate.yml    "Issue Gate"   PR names a sized issue, blocking once enabled (paused)
   |-- dependency-review.yml            license allowlist
   |-- pr-scope.yml      "PR Scope"     PR breadth across areas, advisory
+  |-- pr-size.yml       "PR Size"      file count and hours open; owner approval at 80 files (shadow)
   |-- cross-platform.yml
   |                     "Cross-Platform Portability"  added-line POSIX-only scan, blocking
   |-- docker-smoke.yml                 container contract (paths-filtered)
@@ -491,6 +492,7 @@ See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md).
 | `memory-store-seam` | `scripts/check_memory_store_seam.py`, self-test first, with `MEMSTORE_BASE_REF` resolved to the diff base. Enforces explicit store selection on added memory-context calls. The kirocrew-prepare-pr floor runs both commands; the main ratchet lane classifies this as a diff-only gate because its whole-tree backlog is a non-failing report |
 | `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, every bare harness `H<n>` ID in a source comment names a row in `docs/system-specs/modules/harness-parity.md`, and no doc whose filename is hardcoded in code has been renamed out from under its consumer. Four trees are walked: `docs/`, the packaged `src/kiro_crew/docs/`, `website/docs/`, and the markdown a builtin app ships under `src/kiro_crew/apps/builtins/`. Plus the fact checks below, behind a shrink-only baseline |
 | `static-ratchets` | The seven source-only exact-set / exact-count ratchets (error codes, crew-log `exc_info` sites, PID readers, fleet-routing parity, security posture, backend cards, fold catalogue), run with `-n 4 --no-cov`. They also stay in the backend shards; this job only returns the verdict in about a minute instead of after a 20-40 min shard |
+| `flake-pattern-ratchet` | `test/test_flake_pattern_ratchet.py`, its detector and base-resolver self-tests first. Holds every test file a change touches to its own count of flake-shaped sites at the change's merge-base (see the [Determinism contract](../system-specs/common/testing-conventions.md#determinism-contract-read-this-first)). The ratchet also runs in the backend shards (depth-2 checkout), but that verdict arrives after a 20-40 min shard and a shard with an unreadable base warns `compared nothing` and passes. This job checks out depth 2 so the merge commit's first parent, the base this tree was merged onto, is readable to the ratchet's own resolver, answers in about a minute ahead of the matrix, and turns a `compared nothing` run into a red: a gate that compared nothing is not a pass |
 
 Each of these runs its own self-test in the same step, ahead of the real check. A
 gate that has silently stopped matching reads as a green signal, which is worse than
@@ -539,6 +541,12 @@ A triple that no longer fires is **reported, not fatal**. That is a concession t
 several changes consolidating the doc trees at once, so an entry graduates in a file
 the current change never touched; it is not a claim that a triple is fragile, since
 the recorded identity omits the line number and a reflow keeps it.
+
+CI and the tests see one script, `scripts/docs_lint.py`. It keeps the scanned trees,
+the finding shapes, the walk helpers, the structural checks, the run, the report and
+the entry point, and re-exports every name of its two owners beside it. New work on a
+fact check or on the baseline goes to `scripts/docs_lint_fact_checks.py`, and a new
+self-test probe goes to `scripts/docs_lint_selftest.py`.
 
 ## `ci.yml`: correctness
 
@@ -605,7 +613,7 @@ yet decided: install from a committed constraints file, or set
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one whose conclusion is a decided non-success. `action_required` is not one of them: GitHub reports a fork run still awaiting maintainer approval as `completed`/`action_required`, so the barrier polls it as pending under the 720s budget rather than letting approval order decide whether the matrix runs. A listing read that errors is not a run that never appeared: the error is logged, it spends only the 720s budget, and the barrier fails closed there with a message saying the code was never judged. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One exception concludes `cancelled` rather than `failure`: on a push to `main`, a Fast Gate run evicted from its concurrency group before it started judged nothing, so when the barrier proves that (the run's attempt has no jobs, and another Fast Gate push run on the branch started between its creation and its cancellation) it waits up to 150s while `cancel-superseded-run` cancels the CI run, the outcome a CI run evicted from its own group gets. It never releases the matrix on that path, and a failed read, an unproven eviction or a cancel that does not land still fails closed. It holds only `actions: read`. One extra ~1-minute job buys the whole matrix the right to not start |
 | `lint-gate` | "Lint Gate". Aggregates `backend-lint` and `frontend-lint` for the heavy jobs (see [Lint first](#lint-first)). Runs when both ended `success` or `skipped`; SKIPPED when either failed or was cancelled, so the lint job is the one red and the heavy jobs skip behind it |
 | `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and only while `MERGE_QUEUE_ENABLED` is unset, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
-| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml` — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed. All five baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
+| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml` — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin, zero-argument `.read_text()` / `.read_bytes()` / `.open()`, one-argument `.write_text()` / `.write_bytes()`) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed. All five baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback |
 | `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
@@ -1976,6 +1984,58 @@ revert; an issue-side revalidation lane (a reverse index from issue to the open
 PRs declaring it, plus a write path to re-dispatch their gate runs) would exist for
 this path alone and is not built.
 
+## `pr-size.yml`: very wide or long-open pull requests (SHADOW)
+
+A pull request that touches very many files, or stays open a week, is the one that
+loops on rebases. Over 1,980 studied pull requests, `files >= 80 or open >= 168 h`
+flags 3.3% of them and holds 26.9% of the rebase loops. Lines are not used: of the
+106 pull requests with 5,000 or more lines that merged fast, 94 are splits. The
+numbers and the decision are in
+[the RFC](../request-for-change/rfc-review-loop-and-escaped-bug-reduction.md), D6.
+
+| Level | Rule | Effect |
+|---|---|---|
+| Hint | 50 or more files | a notice; locally `diff_signals.py` prints `! SIZE` |
+| Stop | 80 or more files | red once enforced, until an owner approves |
+| Age | 168 h open | a notice; never red, because a wait for review is not the author's fault |
+
+The numbers are named constants in `.github/scripts/pr_size.py`
+(`FILES_HINT`, `FILES_STOP`, `HOURS_AGING`), repeated in `diff_signals.py` and kept
+equal by `test/test_prepare_pr_diff_signals_size.py`.
+
+**Shadow.** `PR_SIZE_ENFORCED` in `pr_size.py` is `False`. The `PR Size` job never
+fails: at the stop level it prints a warning that says "this would be red" and
+names the approval command. The rollout is shadow first, then red after about 14
+days of reading that list. To enforce, set the constant to `True`, delete the
+bootstrap guard in `pr-size.yml` (a test requires that), and add `PR Size` to the
+lane list in `pr-readiness.yml` so a red reds the one required status. An
+unreadable pull request is a warning in shadow and a red check when enforced.
+
+**The owner override.** A comment whose first line is
+`/pr-size approve: <reason, 12 to 500 characters>` on the pull request.
+`pr-size-override.yml` runs from the default branch on `issue_comment`, reads the
+commenter's collaborator permission with the same three tries and fail-closed rule as
+`ai-review-human-override.yml`, and accepts `admin`, `maintain` or `write`. The
+author of the pull request may approve only as an `admin`. A pull request under 80
+files has nothing to approve. The handler posts a bot comment whose first line is a
+hidden marker, `<!-- pr-size-override actor=<login> files=<n> head=<sha> source=<id>
+at=<time> -->`, with the quoted reason, then re-runs the `PR Size` run for that head.
+The check reads a marker only from a comment by `github-actions[bot]`, so a marker
+typed by hand does nothing. The comment body reaches the script through the
+environment only, never inside a `run:` expression.
+
+An approval holds while the file count stays at or below the recorded count plus 25%
+plus 10 (approved at 90 covers 122). More than that needs a new decision. Every
+approved run prints a warning naming who approved and at how many files, and the
+bot comment is the permanent record. A run of approvals means the limit needs
+retuning.
+
+**What it does not do.** It does not touch `PR Scope` (`pr-scope.yml`), which stays
+advisory and judges whether changes are related; this one counts files. It adds no
+labels or comments of its own. The measure is one `GET pulls/<n>` per run, and one
+comment listing only at the stop level. The job checks out the default branch, never
+the pull request's code.
+
 ## `code-review.yml`: the deterministic pre-gate
 
 No model, no secrets, so it is safe on forks and always runs. It is the grep-half
@@ -2043,9 +2103,12 @@ unvetted dependency cannot ride in on a stale override.
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
-`dashboard/origin.py`, the probe Host-barrier exemption that both chains in
-`dashboard/server.py` build from `dashboard/server_runtime/security_middleware.py`
-(the filter takes `src/kiro_crew/dashboard/server_runtime/**` with `server.py`),
+`dashboard/origin.py`, the probe Host-barrier exemption that both chains build
+from `dashboard/server_runtime/security_middleware.py`, the dashboard's in
+`dashboard/server.py` and the headless one in
+`dashboard/server_runtime/api_entrypoint.py` (the filter takes
+`src/kiro_crew/dashboard/server_runtime/**` and `src/kiro_crew/dashboard/server_*.py`
+with `server.py`),
 and the liveness payload in `dashboard/handlers/core.py`). It builds the image from
 a locally-built wheel and proves, across a real container boundary, that
 `KIROCREW_BIND=0.0.0.0` makes the gateway reachable from the host, that token auth
@@ -2733,7 +2796,7 @@ ends before the cut is judged on its text.
 The same-repo lane runs the PR's own copy of the prompt (`pull_request`), the fork
 lane the default branch's (`workflow_run`), so only a same-repo prompt change
 reviews itself under its own edit. #13273 (apps tree hidden from app
-crons) and #12798 (crewmate rows pruned under chat resume and subagents) are why:
+crons) and #12798 (mate rows pruned under chat resume and subagents) are why:
 both passed every lane on an unchecked compatibility claim.
 
 **Design Review owns the long-term / one-way-door lens** as its gate 8, "LONG-TERM
@@ -3648,6 +3711,136 @@ Two subtleties:
   the verdict was whatever the `pull_request_target` run saw *before* the monitored
   workflows existed, and the lookup independently reported already-green workflows as
   `(not started)`.
+
+## The weekly fix-loop report (`fix-loop-analysis.yml`)
+
+Every Monday 17:00 UTC the `metrics` job runs
+`.github/scripts/fix_loop_metrics.py` and files the numbers as an issue labeled
+`fix-loop-report`; the `analyze` job adds a model-written narrative. Every number
+comes from the script, never from the model. The script writes
+`fix-loop-metrics.json` (the artifact) and `fix-loop-metrics.md` (the summary
+table that becomes the issue body and the job summary). Its older groups are
+`volume`, `szz`, `deferrals`, `overrides` and `harvest`.
+
+The measures from decision D8 of
+[the review-loop RFC](../request-for-change/rfc-review-loop-and-escaped-bug-reduction.md)
+add two groups. Both print every rate beside its raw counts, so a reader sees the
+denominator move.
+
+### `pr_counters`: no API call of their own
+
+These read the merged-PR list that the `harvest` group already fetches (three more
+scalar fields on the same `gh pr list` search: `createdAt`, `changedFiles`,
+`author`). Nothing is fetched twice.
+
+| Counter | What it counts | Source |
+|---|---|---|
+| `size` | PRs with `>= 50` files, `>= 80` files, `>= 168` hours from creation to merge, and the flagged union (80 files or 168 h) | D6 thresholds; `changedFiles`, `createdAt`, `mergedAt` |
+
+Only the D6 size rule is counted today. The adoption counters for D3 (the
+`## Sibling sweep` section), D4 (the `Proof:` line) and D7 (the `Gate proof:` line,
+measures M4 and M5) are added by the change that first writes each line. Counting
+a format that nothing produces yet would publish a known zero and fix the format
+before it is decided. The push-level skip log of D7 lives in the author's git
+directory and CI cannot read it, so M4 and M5 will be per PR, read from the merged
+PR body.
+
+**Not counted here, because the existing data does not carry them.** Loops per
+PR, PASS and BLOCK counts per lane, BLOCKs overridden, owner approvals of a size
+flag and the D5 sweep counters all live in PR comments or in files that are never
+committed. Reading comments costs at least one call per PR, so they need their own
+call budget and are not part of this change. The override-record counters of D1
+are the separate `overrides` group.
+
+### `ci_waste`: the CI-waste census (M1 to M3), opt-in
+
+It is **off** unless asked for. It runs the logic of the study's `waste.py`
+(design F, section 1) over the newest merged PRs of the window.
+
+| Measure | Definition |
+|---|---|
+| M1 | Avoidable pushes per 100 merged PRs. A push is *avoidable* when every red job on it has a local command (the `LOCAL_COMMAND_JOBS` list in the script) and the PR has a later push |
+| M2 | Avoidable job-minutes per merged PR: the summed durations of every job on those pushes. The report also prints the minutes of the red jobs alone |
+| M3 | Share of PRs whose first push is red on a local-command job |
+
+Job-minutes are `completed_at - started_at` of each GitHub Actions check run of
+the head, summed. They are not billed minutes: no per-minute rounding, no
+Windows or macOS multiplier, and a cancelled job counts the time it ran. Dollar
+cost per runner-minute is unknown here; the billing owner has to supply it.
+
+**How to turn it on.** Run the workflow by hand with `ci_waste` ticked, or set the
+repository variable `FIX_LOOP_CI_WASTE` to `true` so the Monday run does it.
+Nothing else changes in the schedule or in who can run the workflow.
+
+| Setting | Dispatch input | Repository variable | Default |
+|---|---|---|---|
+| Run the census | `ci_waste` | `FIX_LOOP_CI_WASTE` | off |
+| PRs to read (newest first) | `ci_waste_sample` | `FIX_LOOP_CI_WASTE_SAMPLE` | 100 |
+| Hard cap on API calls | `ci_waste_max_calls` | `FIX_LOOP_CI_WASTE_MAX_CALLS` | 1000 |
+| Agent logins, comma-separated | none | `FIX_LOOP_AGENT_LOGINS` | unset |
+
+`FIX_LOOP_AGENT_LOGINS` is configuration, not a guess: the repository has no
+author-type field, so until someone lists the logins the census prints only the
+all-authors rows. With logins set, M1 to M3 are also printed for those authors.
+
+**Call budget.** For each PR the census makes two calls to find its pushed heads
+(`pulls/<n>/commits`, and `issues/<n>/events` for the heads that force-pushes
+replaced), then one to three calls per head for
+`commits/<sha>/check-runs`. Pages are 100 items and every page is a call. A trial
+on 40 merged PRs took 223 calls: about 5.6 per PR and 2.1 pushes per PR. At that
+rate the default cap of 1,000 reads about 180 PRs.
+
+- The cap is hard. A counter refuses the call that would pass it. The PR being
+  read at that moment is dropped whole, so a half-read PR never enters a rate. The
+  table says `CUT SHORT by the cap` and shows calls used against the cap.
+- A full census of a week (about 950 PRs) is several thousand calls, which
+  does not fit one run. The RFC estimated 10,000 a week. Sampling the newest PRs
+  is the default for that reason, and the report prints a 95% interval for M1.
+  Design F measured the spread: 200 PRs give about plus or minus 55%.
+- `GITHUB_TOKEN` allows 1,000 REST requests per hour per repository
+  ([GitHub docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)),
+  and `pr-readiness.yml` shares that pool. So the census reads the token's
+  remaining allowance first (one call) and lowers its cap to the remaining count
+  minus a reserve of 200. The table shows the configured and the effective cap.
+  Only a different token or a higher-limit plan lifts this, and the job uses
+  neither: it runs on the same `github.token`.
+- `checks: read` is added to the workflow's permissions (and restated in the
+  `analyze` job, which has its own block) because
+  `commits/<sha>/check-runs` needs it and `test_fix_loop_discipline.py` requires
+  every endpoint the script names to have its grant. It is read-only. The
+  schedule and every other permission are unchanged.
+- A head that GitHub no longer serves, or that has no Actions job, is skipped and
+  counted in the table. Push counts are therefore lower bounds, as in the study.
+  Any other API error stops the run and files the usual failure issue: a census
+  that quietly read less would publish a false low.
+
+**Differences from the study.** The study dropped 27 of 219 avoidable pushes
+because their loop record named main, a flake, infrastructure or a rebase. No loop
+records exist in this job, so the live M1 and M2 are the 219-push reading and sit
+about 14% above the published 192-push baseline when nothing has changed. A job
+rename in a workflow shrinks M1 silently; `test_fix_loop_metrics_d8.py` fails if a
+name in `LOCAL_COMMAND_JOBS` no longer matches a `name:` in `.github/workflows/`.
+
+**Baselines** (the study window, 1,980 PRs merged 2026-10-07 to 10-18; design F
+section 1 and RFC section 4.8):
+
+| Measure | Baseline | Read it against |
+|---|---|---|
+| M1 | 9.7 per 100 PRs (6.9 with author-owned loops only). 11.1 per 100 on the 219-push reading this job computes | M1 of the same kind |
+| M2 | 29.1 job-minutes per PR (19.5 author-owned) | M2, with the two caveats below |
+| M3 | 17.4% of 1,878 PRs (a lower bound) | M3 |
+| M4, M5 | 0%; none yet | Not in the report yet; added with D7 |
+| D3 / D4 adoption | 0 (no template section) | Not in the report yet; added with D3 and D4 |
+| D6 flagged | 65 PRs, 3.3% (80 files or 168 h) | `size.flagged_pct` |
+
+Two caveats on M2. The 219-push reading above makes it about 14% higher than the
+baseline on unchanged behaviour. And lint-first ([Lint first](#lint-first)) is
+merged: a lint-red push now stops before the heavy jobs, so M2 falls by design
+and the baseline overstates what an avoidable push costs today. M1 and M3 count
+pushes, not minutes, and do not move for that reason.
+
+A rate is a lead, not a verdict. Other changes land at the same time, and a
+measure that becomes a target drifts.
 
 ## Fork PRs
 

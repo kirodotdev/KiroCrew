@@ -57,7 +57,7 @@ beforeEach(() => {
 })
 
 describe('TeamDialog create mode', () => {
-  it('lists every crewmate with the team it is on, names the one-team rule, and says it creates', async () => {
+  it('lists every mate with the team it is on, names the one-team rule, and says it creates', async () => {
     renderCreate([TRIAGE])
     const body = await screen.findByTestId('team-dialog-body')
     const rows = within(body).getAllByTestId('team-dialog-row')
@@ -71,7 +71,7 @@ describe('TeamDialog create mode', () => {
     expect(screen.getByTestId('team-dialog-save')).toHaveTextContent('Create team')
   })
 
-  it('gates Create on a name, then posts the picked crewmates in roster order and reports the saved team', async () => {
+  it('gates Create on a name, then posts the picked mates in roster order and reports the saved team', async () => {
     const created: CrewTeam = { id: 'def456def456', name: 'Release', members: ['oncall', 'docs'] }
     teamsCreate.mockResolvedValue({ team: created })
     const { onSaved } = renderCreate()

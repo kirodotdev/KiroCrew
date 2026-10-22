@@ -25,6 +25,7 @@ from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.session import SessionManager
 from kiro_crew.session_pid_sig import verify_session_pid
 from kiro_crew.subagent import SubagentInfo
+from kiro_crew.testing.wait import finished
 from kiro_crew.testing.workflow_memory_scenario import (
     spawn_progress_summary,
     wait_for_spawn_result,
@@ -129,7 +130,7 @@ async def test_stream_publishes_each_dedicated_attempt_not_shared(tmp_path, monk
 
             manager._create_shared_session = shared_provider
         monkeypatch.setattr("kiro_crew.subagent.transient_retry_delay", lambda _attempt: 0)
-        await asyncio.wait_for(manager._run_inner(info, key), 10)
+        await finished(manager._run_inner(info, key), "the run completing", timeout=10)
         assert calls == [first.pid, first.pid, replacement.pid]
         assert Path(info.result_path).read_text(encoding="utf-8") == payload
         assert json.loads(Path(info.result_path).read_text(encoding="utf-8")) == json.loads(payload)

@@ -3404,7 +3404,11 @@
         "untitled": "Besprechung ohne Titel",
         "renameFailed": "Die Besprechung konnte nicht umbenannt werden.",
         "minutesSaveFailed": "Deine Änderungen konnten nicht gespeichert werden.",
-        "minutesRevertFailed": "Deine Änderungen konnten nicht verworfen werden."
+        "minutesRevertFailed": "Deine Änderungen konnten nicht verworfen werden.",
+        "anotherMeetingActiveNamed": "„{{title}}“ läuft noch. Öffne sie in Besprechungen und wähle zuerst „Beenden und prüfen“.",
+        "anotherMeetingReviewing": "„{{title}}“ ist noch in der Prüfung. Öffne sie in Besprechungen und wähle zuerst „Besprechung abschließen“.",
+        "sttStreamingDisabled": "Live-Transkription ist aus. Prüfe unter Einstellungen → Sprache, dass die Spracheingabe aktiviert ist, der Anbieter Streaming kann und Streaming an ist.",
+        "openVoiceSettings": "Spracheinstellungen öffnen"
       },
       "settings": {
         "addTerm": "Hinzufügen",
@@ -5569,6 +5573,9 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "Conductor"
+    },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",
       "consent_required": "„{{speak}}“ braucht deine Bestätigung für Amazon Polly mit diesem AWS-Profil und dieser Region. Bestätige sie in den Text-zu-Sprache-Einstellungen und versuche es dann erneut.",
@@ -6457,6 +6464,8 @@
       "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet."
     },
     "codeBlock": {
+      "add_comment": "Kommentar hinzufügen",
+      "comment_thread": "Kommentar-Thread ({{count}})",
       "copied": "Kopiert!",
       "copy": "Kopieren",
       "generating": "wird erstellt…"
@@ -7165,6 +7174,9 @@
       "chat_folder_retrying": "Wird wiederholt…",
       "chat_folder_none_yet": "Noch keine Ordner. Speichere diesen Auftrag jetzt; lege in der Chat-Seitenleiste einen Ordner an und öffne den Auftrag dann erneut, um ihn zu wählen.",
       "chat_folder_was_deleted": "Der Ordner, in den dieser Auftrag ablegte, wurde gelöscht. Wähle einen anderen, oder speichere, damit die Ausführungen nicht abgelegt werden.",
+      "auto_pause_after_failures": "Nach N Fehlschlägen in Folge automatisch pausieren",
+      "auto_pause_after_failures_description": "0 bedeutet: nie pausieren. Ab dem 5. Fehlschlag in Folge wartet ein Auftrag mit 0 oder mehr als 5 vor dem nächsten Lauf 5 Minuten, verdoppelt bis zu einer Stunde.",
+      "auto_pause_after_failures_invalid": "Das Limit für automatisches Pausieren muss eine ganze Zahl von 0 bis 10000 sein.",
       "runs_as": "Läuft als",
       "runs_as_custom_agent": "Eigener Agent",
       "runs_as_crewmate": "Crew-Kamerad",
@@ -7251,7 +7263,6 @@
       "check_again": "Erneut prüfen",
       "check_again_for_kiro_cli": "Erneut auf Kiro CLI prüfen",
       "check_sign_in_again": "Anmeldung erneut prüfen",
-      "complete": "Abgeschlossen",
       "copied": "Kopiert",
       "copy_command": "Befehl kopieren",
       "copy_failed": "Kopieren fehlgeschlagen. Markiere den Befehlstext und kopiere ihn von Hand.",
@@ -7289,7 +7300,6 @@
       "remedy_spec_rejected_update": "{{productName}} aktualisieren. Das ist die Lösung, wenn Kiro CLI ein Spezifikationsformat erwartet, das diese Version nicht schreiben kann.",
       "remedy_userns_denied": "Der Kernel hat das Erstellen des User-Namespace verweigert. Prüfen Sie auf Hosts der Debian-Familie diesen veralteten Schalter und hinterlegen Sie den Wert dauerhaft in /etc/sysctl.d/, damit er einen Neustart übersteht. In einem Container verweigert meist der seccomp-Filter des Containers selbst unshare — das wird über die Startoptionen des Containers behoben, nicht über Host-Einstellungen.",
       "repair_rewrites_the_specs_kiro_crew_owns": "„Erneut prüfen“ bittet Kiro CLI, die Spezifikationen erneut zu laden. Es schreibt sie nicht neu, denn eine bereits vorhandene Datei zu überschreiben würde geänderte MCP-Tool-Berechtigungen verwerfen. Hilft erneutes Prüfen nicht, dann hilft eine der beiden Abhilfen unten.",
-      "required": "Erforderlich",
       "retry_the_gateway_check_before_starting_a_sessio": "Wiederholen Sie die Gateway-Prüfung, bevor Sie eine Sitzung starten.",
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "Führen Sie dies auf dem Gateway-Host aus, um einen vollständigen Bericht zu den Voraussetzungen zu erhalten, einschließlich des fehlgeschlagenen Sandbox-Schritts.",
       "sandbox_unavailable": "Sandbox nicht verfügbar",
@@ -7326,7 +7336,6 @@
       "update_kiro_cli": "Kiro CLI aktualisieren",
       "update_kiro_cli_runs_on_host": "Führt <0>{{command}}</0> für dich auf dem Gateway-Host aus.",
       "updating_kiro_cli": "Kiro CLI wird aktualisiert…",
-      "waiting": "Wartet",
       "we_could_not_check_kiro_cli": "Wir konnten Kiro CLI nicht prüfen.",
       "your_crew_is_almost_ready": "Ihre Crew ist fast bereit.",
       "your_kiro_cli_is_out_of_date": "Ihr Kiro CLI ist veraltet",
@@ -7778,7 +7787,11 @@
         "all": "Alle",
         "approve": "Genehmigen",
         "clear": "Leeren",
-        "clear_all_notifications": "Alle Benachrichtigungen löschen?",
+        "clear_all": "Alle löschen",
+        "clear_all_notifications": "Alle Benachrichtigungen löschen",
+        "clear_failed": "Einige Benachrichtigungen konnten nicht gelöscht werden. Versuch es erneut.",
+        "clear_group": "{{group}} löschen",
+        "clear_this_group": "Diese Gruppe löschen",
         "dismiss_notification": "Benachrichtigung schließen",
         "expand_grouped_notifications": "{{count}} gruppierte Benachrichtigungen aufklappen: {{title}}",
         "first_notification_from": "Erste Benachrichtigung von",
@@ -7790,6 +7803,7 @@
         "muted_2": "stummgeschaltet",
         "no_notifications": "Keine Benachrichtigungen",
         "open_notification": "Benachrichtigung öffnen: {{title}}",
+        "press_again_to_clear": "Zum Löschen erneut drücken",
         "reject": "Ablehnen",
         "search": "Suchen…",
         "show_less": "Weniger anzeigen",
@@ -8094,7 +8108,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Dies autorisiert das Zusammenführen, sobald die Anforderungen erfüllt sind — mit Squash, wenn dieses Repository es zulässt (andernfalls ein Merge-Commit, dann Rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Dies autorisiert das Zusammenführen, wenn die Pipeline erfolgreich ist.",
       "untitled_commit": "Commit ohne Titel",
-      "updated": "Aktualisiert"
+      "updated": "Aktualisiert",
+      "checks_failed_others_still_running": "Prüfungen fehlgeschlagen; andere laufen noch",
+      "checks_count_running_failed": "Laufend: {{running}} · Fehlgeschlagen: {{failed}}",
+      "waiting_on_checks_detail": "Es laufen noch Prüfungen. Das Zusammenführen ist möglich, sobald die erforderlichen Prüfungen bestanden und alle erforderlichen Reviews genehmigt sind.",
+      "checks_failed_still_running_detail": "Von {{total}} Prüfungen: fehlgeschlagen {{failed}}, noch laufend {{running}}. Das Zusammenführen bleibt blockiert, bis die erforderlichen Prüfungen bestanden und alle erforderlichen Reviews genehmigt sind."
     },
     "questionCard": {
       "custom_answer": "Benutzerdefinierte Antwort",
@@ -16324,6 +16342,8 @@
         "show_thinking_inline": "Denkprozess inline anzeigen",
         "show_timestamps": "Zeitstempel anzeigen",
         "show_token_usage": "Kontext-Token anzeigen",
+        "sidebar_click_opens_tab": "Sitzungen aus der Seitenleiste in einem Sitzungs-Tab öffnen",
+        "sidebar_click_opens_tab_desc": "Ein Klick auf eine Sitzung öffnet sie in einem eigenen Sitzungs-Tab, statt die Sitzung im aktiven Tab zu ersetzen.",
         "simplified_tool_call_names": "Vereinfachte Werkzeugaufrufnamen",
         "tool_calls_start_expanded": "Tool-Aufrufe ausgeklappt anzeigen",
         "tool_calls_start_expanded_desc": "Zeilen von Tool-Aufrufen mit sichtbarer Eingabe und Ausgabe öffnen statt eingeklappt. Zeilen, die du von Hand öffnest oder schließt, behalten deine Wahl.",
@@ -17902,10 +17922,11 @@
         "plugin_refused_found": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: {{reason}}.",
         "plugin_refused_guide": "Schritte zur Fehlerbehebung im Remote Crew on EC2-Leitfaden öffnen",
         "plugin_refused_next": "Korrigiere Eigentümer oder Berechtigungen der Datei und prüfe dann erneut. Wenn du nicht weißt, wie, nutze „Agent fragen“.",
+        "plugin_refused_next_other_owner": "Installiere eine Kopie mit dem eigenen Installationsprogramm von AWS und prüfe dann erneut. {{productName}} führt diese Kopie nur aus, wenn sie und jeder Ordner darüber root oder dem Konto gehören, unter dem {{productName}} läuft. Gehört ein Ordner wie /usr/local/bin dem anderen Konto, muss ein Administrator zuerst root zu seinem Eigentümer machen. Die Anleitung zeigt, wie.",
         "plugin_refused_next_root_gateway": "Starte {{productName}} mit einem normalen Konto statt als root und prüfe dann erneut.",
         "plugin_refused_next_strict_policy": "Installiere es dort, wo nur root die Datei und ihre Ordner ändern kann, unter einem Pfad ohne symbolische Links, und prüfe dann erneut. Wenn du nicht weißt, wie, nutze „Agent fragen“.",
-        "plugin_refused_other_owner": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: Die Datei oder ein Ordner darüber gehört einem anderen Konto ({{owner}}, Benutzer-ID {{uid}}). {{productName}} führt nur Programme aus, die seinem eigenen Konto oder dem Systemadministrator-Konto (root) gehören.",
-        "plugin_refused_other_owner_uid": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: Die Datei oder ein Ordner darüber gehört einem anderen Konto (Benutzer-ID {{uid}}, ohne Namen auf dem Computer, auf dem {{productName}} läuft). {{productName}} führt nur Programme aus, die seinem eigenen Konto oder dem Systemadministrator-Konto (root) gehören.",
+        "plugin_refused_other_owner": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: Die Datei oder ein Ordner darüber gehört einem anderen Benutzerkonto ({{owner}}, Benutzer-ID {{uid}}). {{productName}} führt nur Programme aus, die seinem eigenen Konto oder dem Systemadministrator-Konto (root) gehören.",
+        "plugin_refused_other_owner_uid": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: Die Datei oder ein Ordner darüber gehört einem anderen Benutzerkonto (Benutzer-ID {{uid}}, ohne Namen auf dem Computer, auf dem {{productName}} läuft). {{productName}} führt nur Programme aus, die seinem eigenen Konto oder dem Systemadministrator-Konto (root) gehören.",
         "plugin_refused_root_gateway": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: {{productName}} läuft als root und führt keine Hilfsprogramme als root aus.",
         "plugin_refused_strict_policy": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: Die strenge Prüfung (KIROCREW_PROVIDER_BIN_STRICT) ist aktiv und akzeptiert nur eine Datei und Ordner, die nur root ändern kann, unter einem Pfad ohne symbolische Links.",
         "plugin_refused_world_writable": "Gefunden unter {{path}}, aber {{productName}} führt es nicht aus: jedes Konto kann die Datei oder einen Ordner darüber ändern.",
@@ -18441,8 +18462,6 @@
       "close": "Schließen",
       "driving_none": "Steuert derzeit keine Sitzungen.",
       "driving_idle": "Inaktiv",
-      "driving_show_all": "Alle anzeigen ({{count}})",
-      "driving_show_less": "Weniger anzeigen",
       "patrol_error_roster": "Patrouillenstatus für die Liste konnte nicht geladen werden.",
       "loop_on": "Hält Wache",
       "profile_monitor": "Monitor",

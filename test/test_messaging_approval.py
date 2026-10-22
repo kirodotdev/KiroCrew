@@ -38,6 +38,7 @@ from kiro_crew.messaging.approval import (
     pending_for,
     reset_for_tests,
 )
+from kiro_crew.testing.wait import await_until
 
 SESSION = "whatsapp:kirocrew:direct:447700900000"
 
@@ -140,7 +141,7 @@ class TestDeciderSafety:
         # registry looks identical whether the decider parked on an entry it
         # minted or never made one.
         minted = claim_approval(SESSION, "req-1")
-        approved = await asyncio.wait_for(task, timeout=1.0)
+        approved = await await_until(task, what="the decider's verdict")
         assert approved is False
         assert minted is None, (
             "the decider minted its own pending entry; with SilentRenderer that "

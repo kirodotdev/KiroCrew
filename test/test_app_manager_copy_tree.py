@@ -154,8 +154,9 @@ class TestCopyAppTree:
         async def heartbeat():
             prev = time.monotonic()
             while True:
-                # flake-ok: the heartbeat's sampling interval, pre-existing shape, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(
+                    0.01
+                )  # flake-ok: sampling interval; the measured gaps are the data
                 now = time.monotonic()
                 gaps.append(now - prev)
                 prev = now

@@ -126,8 +126,9 @@ it, ahead of any staged since, so a retry needs no new upload; the files ride
 the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
 the composer, as it takes the text back, so they are not sent twice. That
-proof is the send's own `sendId`. A host `onSend` send carries none, so its
-only proof is its text arriving as a user row after the send's anchor row,
+proof is the send's own `sendId`. A host `onSend` gets it as `meta.sendId`
+and has the same id proof when it forwards it on its chat POST. A host
+`onSend` send whose host drops it carries none, so its only proof is its text arriving as a user row after the send's anchor row,
 compared with edge whitespace trimmed since a host may strip what it stores;
 text cannot say which send landed, so that proof never touches the composer:
 the warning becomes a calm line saying the message is in the conversation and
@@ -935,7 +936,7 @@ launch the agent from its spec. Any other backend would run the app-authored pro
 without the app's spec, so `dashboard/chat_turn/turn_admission.py` (`_turn_admit`) refuses the turn before the
 claim (the selected backend) and again after it (the claimed provider's
 capabilities), with `apps.manager.app_agent_backend_refusal` as the message and the
-`app_agent_refused` row kind. The bare-name check `app_command_agent_refusal` runs
+`app_agent_refused` row kind. The registration check `app_command_agent_refusal` runs
 only on an allowed backend.
 
 On Kiro the turn does not hand kiro-cli the bare name, which kiro-cli resolves
@@ -1000,7 +1001,19 @@ exactly that copy is refused and reset. Rosters (`list_agents`,
 `is_internal_agent_spec`) leave the copies out, and the copy spawns under its own
 reserved name, never through a view built by a name lookup; `_deregister_agents` and an update that drops the agent
 remove an app's copies. KAS keeps the bare
-name: Crew reads the spec it sends. The bare-name check still runs on both.
+name: Crew reads the spec it sends, and a name the user level declares resolves to the
+user-level spec whatever the checkout holds (`acp.harness.kas.resolve_projected_spec`).
+Before the claim an admitted turn binds its session to the app's agent
+(`apps.agent_launch.bind_session_app_agent`), and the KAS projection of a bound session
+reads the registered file by its path (`read_bound_app_spec`): a file gone by then (the
+app switched off after the check) refuses the session instead of falling back to a
+checkout spec of the same name. A KAS turn pins its session's skill scope and injected prompt to the registered file
+the same way, so a checkout's same-named spec sets neither on either backend.
+
+No checkout is consulted for an app-owned turn, so a checkout spec of the agent's bare
+name does not refuse it. `app_command_agent_refusal` refuses only what no checkout can
+fix: a reserved name (a skill-view alias or the launch-copy prefix), and a registered
+spec that is missing, unverifiable, or not the only user-level spec declaring the name.
 
 A `contributes.commands[].agent` that no checked agent path declares is an install
 error. When an agent path was unchecked, that miss is reported as unchecked too, so
@@ -1009,11 +1022,7 @@ agent, so the agent prune removes every `<app>--*.json` config it had registered
 
 The root is screened once per pass, so each declared path costs one screen call.
 The app listing's command-agent containment (`contain_command_agents`, which runs on
-every `GET /api/apps`) uses the same `_app_path_refusal`. The command-agent home-directory
-exemption compares only canonical paths returned by the same screen; a refused
-directory has no identity key and cannot qualify, and project scanning then
-supplies its link-refusal reason. Ordinary local aliases of the installed agents
-directory keep the exemption.
+every `GET /api/apps`) uses the same `_app_path_refusal`.
 
 A manifest is portable data validated on whichever host installs the app, so all
 three must reach the same verdict everywhere. Both lexical checks are therefore
@@ -1787,7 +1796,7 @@ with it), so it is a trust-scale indicator, not a live metric. Absence means
 
 Writers: `apps/manager_builtins.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
 `_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
-`agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
+`agent_parts/kirocrew_launcher.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
 `apps/registry_pipeline/catalog.py::_apply_trust_fields`;
 consumers: `website/src/pages/apps/useAppsData.ts` (`pickFeatured`),
 `website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).
@@ -1997,6 +2006,18 @@ and pending and audits `session_approval_widened` with SEL caller `app_boot`.
 It rebuilds the agent spec once when it disabled anything. Nothing waits for
 it, because the read-side refusal already holds; the owner re-enables through
 the same consent step.
+
+Writers of one app's `installed.json` never overlap. Each one (install, update,
+external registration, enable, disable, dev mode, provenance, the builtin sync
+and the consent reconcile) is decorated `@holds_app_record_locks` and calls
+`hold_app_record_lock(name)` before it first reads the record, so the lock
+spans its read, its checks and its replace; `_write_installed` also takes it.
+`app_record_lock` is a cross-process `platform_compat.file_lock` on a sidecar,
+`<data home>/app-record-locks/<name>.lock`, never on `installed.json` (replaced
+via `os.replace`) nor inside the app tree (moved aside by an update). It is
+reentrant within one thread, bounded, and fails closed: a lock that cannot be
+taken raises, so no writer runs unserialized. On the event-loop thread the
+acquire is single-shot, as `file_lock` is everywhere.
 
 `permissions.api` and `permissions.events` are read live as well, and an update
 that adds any entry to either is held back rather than disabled. Each app stores

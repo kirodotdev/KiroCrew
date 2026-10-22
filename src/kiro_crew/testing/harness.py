@@ -1039,7 +1039,7 @@ def harness_environment(
         # ``kirocrew gateway`` boot runs ``rebuild_agent_config``, which writes the
         # managed MCP specs into ``kiro_agents_dir()``. Left at the default that
         # resolves the operator's real machine-wide ``~/.kiro/agents`` -- and the
-        # spawned gateway is an ordinary (non-worktree) install, so ``agent.py``'s
+        # spawned gateway is an ordinary (non-worktree) install, so ``agent_parts/shared_home.py``'s
         # write guard takes the "writing its own shared home" branch and does NOT
         # decline. It would then stamp this throwaway checkout's venv + tmp data
         # home into the real install's specs, breaking every managed MCP call on

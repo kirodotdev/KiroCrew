@@ -3333,7 +3333,11 @@
         "taskAddFailed": "해당 액션 아이템을 추가할 수 없습니다.",
         "taskFileFailed": "해당 액션 아이템을 등록할 수 없습니다.",
         "taskFiled": "액션 아이템을 등록했습니다.",
-        "untitled": "제목 없는 회의"
+        "untitled": "제목 없는 회의",
+        "anotherMeetingActiveNamed": "‘{{title}}’이(가) 아직 진행 중입니다. 회의에서 열고 먼저 ‘종료하고 검토’를 선택하세요.",
+        "anotherMeetingReviewing": "‘{{title}}’이(가) 아직 검토 중입니다. 회의에서 열고 먼저 ‘회의 마감’을 선택하세요.",
+        "sttStreamingDisabled": "실시간 전사가 꺼져 있습니다. 설정 → 음성에서 음성 입력이 켜져 있는지, 제공자가 스트리밍을 지원하는지, 스트리밍이 켜져 있는지 확인하세요.",
+        "openVoiceSettings": "음성 설정 열기"
       },
       "settings": {
         "addTerm": "용어 추가",
@@ -5468,6 +5472,9 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "지휘자"
+    },
     "voicePlaybackNotice": {
       "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",
       "consent_required": "‘{{speak}}’에서 이 AWS 프로필과 리전의 Amazon Polly 사용을 확인해야 합니다. 텍스트 음성 변환 설정에서 확인한 다음 다시 시도하세요.",
@@ -6345,6 +6352,8 @@
       "use_starting_directory_hint": "서버에 설정된 터미널 디렉터리(dashboard.terminal.cwd, 없으면 서버의 홈 디렉터리)에서 새 셸을 엽니다. 실패한 명령은 다시 보내지 않습니다."
     },
     "codeBlock": {
+      "add_comment": "댓글 추가",
+      "comment_thread": "댓글 스레드 ({{count}})",
       "copied": "복사했습니다!",
       "copy": "복사",
       "generating": "생성 중…"
@@ -7041,6 +7050,9 @@
       "chat_folder_retrying": "다시 시도 중…",
       "chat_folder_none_yet": "아직 폴더가 없습니다. 이 작업을 먼저 저장한 뒤, 채팅 사이드바에서 폴더를 만들고 작업을 다시 열어 선택하세요.",
       "chat_folder_was_deleted": "이 작업이 정리하던 폴더가 삭제되었습니다. 다른 폴더를 선택하거나, 저장해 실행을 정리하지 않도록 하세요.",
+      "auto_pause_after_failures": "연속 N회 실패 후 자동 일시 중지",
+      "auto_pause_after_failures_description": "0은 일시 중지하지 않는다는 뜻입니다. 0 또는 5보다 큰 값으로 설정된 작업은 연속 5번째 실패부터 다음 실행 전에 5분을 기다리며, 대기 시간은 최대 1시간까지 두 배로 늘어납니다.",
+      "auto_pause_after_failures_invalid": "자동 일시 중지 한도는 0에서 10000 사이의 정수여야 합니다.",
       "runs_as": "실행 방식",
       "runs_as_custom_agent": "커스텀 에이전트",
       "runs_as_crewmate": "크루메이트",
@@ -7127,7 +7139,6 @@
       "check_again": "다시 확인",
       "check_again_for_kiro_cli": "Kiro CLI 다시 확인",
       "check_sign_in_again": "로그인 다시 확인",
-      "complete": "완료",
       "copied": "복사됨",
       "copy_command": "명령 복사",
       "copy_failed": "복사하지 못했습니다. 명령 텍스트를 선택해 직접 복사하세요.",
@@ -7165,7 +7176,6 @@
       "remedy_spec_rejected_update": "{{productName}}을(를) 업데이트하세요. Kiro CLI가 이 버전에서 쓸 수 없는 스펙 형식으로 바뀐 경우의 해결책입니다.",
       "remedy_userns_denied": "커널이 사용자 네임스페이스 생성을 거부했습니다. Debian 계열 호스트에서는 이 레거시 설정을 확인하고, 재부팅 후에도 유지되도록 값을 /etc/sysctl.d/에 저장하세요. 컨테이너 내부라면 대개 컨테이너 자체의 seccomp 필터가 unshare를 거부하는 것이며, 호스트 설정이 아니라 컨테이너 실행 플래그로 해결합니다.",
       "repair_rewrites_the_specs_kiro_crew_owns": "'다시 확인'은 Kiro CLI에 스펙을 다시 불러오도록 요청합니다. 스펙을 다시 쓰지는 않습니다. 디스크에 이미 있는 파일을 덮어쓰면 변경한 MCP 도구 권한이 사라질 수 있기 때문입니다. 다시 확인해도 해결되지 않으면 아래 두 가지 방법 중 하나로 해결됩니다.",
-      "required": "필수",
       "retry_the_gateway_check_before_starting_a_sessio": "세션을 시작하기 전에 게이트웨이 확인을 다시 시도하세요.",
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "어떤 샌드박스 단계가 실패했는지를 포함한 전체 사전 요구 사항 보고서를 보려면 게이트웨이 호스트에서 이 명령을 실행하세요.",
       "sandbox_unavailable": "샌드박스를 사용할 수 없음",
@@ -7202,7 +7212,6 @@
       "update_kiro_cli": "Kiro CLI 업데이트",
       "update_kiro_cli_runs_on_host": "게이트웨이 호스트에서 <0>{{command}}</0>을(를) 대신 실행합니다.",
       "updating_kiro_cli": "Kiro CLI 업데이트 중…",
-      "waiting": "대기 중",
       "we_could_not_check_kiro_cli": "Kiro CLI를 확인할 수 없었습니다.",
       "your_crew_is_almost_ready": "크루가 거의 준비되었습니다.",
       "your_kiro_cli_is_out_of_date": "Kiro CLI가 오래되었습니다",
@@ -7653,7 +7662,11 @@
         "all": "전체",
         "approve": "승인",
         "clear": "지우기",
-        "clear_all_notifications": "모든 알림을 지우시겠습니까?",
+        "clear_all": "모두 지우기",
+        "clear_all_notifications": "모든 알림 지우기",
+        "clear_failed": "일부 알림을 지우지 못했어요. 다시 시도해 주세요.",
+        "clear_group": "{{group}} 지우기",
+        "clear_this_group": "이 그룹 지우기",
         "dismiss_notification": "알림 닫기",
         "expand_grouped_notifications": "그룹화된 알림 {{count}}건 펼치기: {{title}}",
         "first_notification_from": "다음에서 온 첫 알림:",
@@ -7665,6 +7678,7 @@
         "muted_2": "음소거됨",
         "no_notifications": "알림 없음",
         "open_notification": "알림 열기: {{title}}",
+        "press_again_to_clear": "지우려면 다시 누르세요",
         "reject": "거부",
         "search": "검색…",
         "show_less": "간략히 보기",
@@ -7964,7 +7978,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "이렇게 하면 요구 사항이 통과하는 즉시 병합이 승인되며, 이 저장소에서 허용하는 경우 스쿼시합니다 (허용하지 않으면 병합 커밋, 그다음 리베이스).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "이렇게 하면 파이프라인이 성공할 때 병합이 승인됩니다.",
       "untitled_commit": "제목 없는 커밋",
-      "updated": "업데이트됨"
+      "updated": "업데이트됨",
+      "checks_failed_others_still_running": "검사 실패, 다른 검사는 아직 실행 중",
+      "checks_count_running_failed": "실행 중: {{running}} · 실패: {{failed}}",
+      "waiting_on_checks_detail": "검사가 아직 실행 중입니다. 필수 검사가 통과하고 필수 리뷰가 승인되면 병합할 수 있습니다.",
+      "checks_failed_still_running_detail": "검사 {{total}}개 중 실패 {{failed}}개, 실행 중 {{running}}개. 필수 검사가 통과하고 필수 리뷰가 승인될 때까지 병합할 수 없습니다."
     },
     "questionCard": {
       "custom_answer": "직접 입력한 답변",
@@ -8206,8 +8224,8 @@
       "undo": "실행 취소",
       "undone": "취소됨",
       "undo_failed": "이 변경을 취소할 수 없습니다: {{message}}",
-      "undo_unavailable": "이 변경은 여기서 더 이상 되돌릴 수 없습니다. {{name}}의 프로필에서 값을 설정하세요. Crewmates를 열고 {{name}}을(를) 선택한 뒤 이름 옆 연필을 누르세요.",
-      "undo_stale": "이 값은 그 뒤에 다시 바뀌어서 이 되돌리기는 더 이상 적용되지 않습니다. {{name}}의 프로필에서 설정하세요. Crewmates를 열고 {{name}}을(를) 선택한 뒤 이름 옆 연필을 누르세요.",
+      "undo_unavailable": "이 변경은 여기서 더 이상 되돌릴 수 없습니다. {{name}}의 프로필에서 값을 설정하세요. 크루메이트를 열고 {{name}}을(를) 선택한 뒤 이름 옆 연필을 누르세요.",
+      "undo_stale": "이 값은 그 뒤에 다시 바뀌어서 이 되돌리기는 더 이상 적용되지 않습니다. {{name}}의 프로필에서 설정하세요. 크루메이트를 열고 {{name}}을(를) 선택한 뒤 이름 옆 연필을 누르세요.",
       "field_display_name": "이름",
       "field_description": "설명",
       "field_avatar": "얼굴",
@@ -16057,6 +16075,8 @@
         "show_thinking_inline": "사고 과정 인라인 표시",
         "show_timestamps": "타임스탬프 표시",
         "show_token_usage": "컨텍스트 토큰 표시",
+        "sidebar_click_opens_tab": "사이드바 세션을 세션 탭에서 열기",
+        "sidebar_click_opens_tab_desc": "세션을 클릭하면 활성 탭의 세션을 바꾸지 않고 별도의 세션 탭에서 엽니다.",
         "simplified_tool_call_names": "간소화된 도구 호출 이름",
         "tool_calls_start_expanded": "도구 호출을 펼친 상태로 시작",
         "tool_calls_start_expanded_desc": "도구 호출 행을 접지 않고 입력과 출력이 보이는 상태로 엽니다. 직접 펼치거나 접은 행은 그 선택을 유지합니다.",
@@ -17631,10 +17651,11 @@
         "plugin_refused_found": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다({{reason}}).",
         "plugin_refused_guide": "Remote Crew on EC2 가이드의 문제 해결 단계 열기",
         "plugin_refused_next": "파일의 소유자나 권한을 수정한 뒤 다시 확인하세요. 방법을 모르면 '에이전트에게 질문'을 사용하세요.",
+        "plugin_refused_next_other_owner": "AWS 자체 설치 프로그램으로 사본을 설치한 뒤 다시 확인하세요. {{productName}}은(는) 그 사본과 상위의 모든 폴더가 root 또는 {{productName}}을(를) 실행하는 계정의 소유일 때만 실행합니다. /usr/local/bin 같은 폴더가 다른 계정의 소유라면 먼저 관리자가 소유자를 root로 바꿔야 합니다. 방법은 가이드를 참고하세요.",
         "plugin_refused_next_root_gateway": "{{productName}}을(를) root가 아닌 일반 계정으로 시작한 뒤 다시 확인하세요.",
         "plugin_refused_next_strict_policy": "파일과 그 폴더를 root만 변경할 수 있는 위치에, 심볼릭 링크가 없는 경로로 설치한 뒤 다시 확인하세요. 방법을 모르면 '에이전트에게 질문'을 사용하세요.",
-        "plugin_refused_other_owner": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. 파일 또는 상위 폴더의 소유자가 다른 계정({{owner}}, 사용자 ID {{uid}})입니다. {{productName}}은(는) 자신의 계정이나 시스템 관리자 계정(root)이 소유한 프로그램만 실행합니다.",
-        "plugin_refused_other_owner_uid": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. 파일 또는 상위 폴더의 소유자가 다른 계정(사용자 ID {{uid}}, {{productName}}이(가) 실행되는 컴퓨터에 이름 없음)입니다. {{productName}}은(는) 자신의 계정이나 시스템 관리자 계정(root)이 소유한 프로그램만 실행합니다.",
+        "plugin_refused_other_owner": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. 파일 또는 상위 폴더의 소유자가 다른 사용자 계정({{owner}}, 사용자 ID {{uid}})입니다. {{productName}}은(는) 자신의 계정이나 시스템 관리자 계정(root)이 소유한 프로그램만 실행합니다.",
+        "plugin_refused_other_owner_uid": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. 파일 또는 상위 폴더의 소유자가 다른 사용자 계정(사용자 ID {{uid}}, {{productName}}이(가) 실행되는 컴퓨터에 이름 없음)입니다. {{productName}}은(는) 자신의 계정이나 시스템 관리자 계정(root)이 소유한 프로그램만 실행합니다.",
         "plugin_refused_root_gateway": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. {{productName}}이(가) root로 실행 중이며, 보조 프로그램은 root로 실행하지 않습니다.",
         "plugin_refused_strict_policy": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. 엄격한 검사(KIROCREW_PROVIDER_BIN_STRICT)가 켜져 있어 root만 변경할 수 있는 파일과 폴더를 심볼릭 링크 없는 경로로만 허용합니다.",
         "plugin_refused_world_writable": "{{path}}에서 찾았지만 {{productName}}은(는) 이 파일을 실행하지 않습니다. 어떤 계정이든 파일 또는 상위 폴더를 변경할 수 있습니다.",
@@ -18156,8 +18177,6 @@
       "close": "닫기",
       "driving_none": "현재 구동 중인 세션이 없습니다.",
       "driving_idle": "유휴",
-      "driving_show_all": "모두 보기({{count}})",
-      "driving_show_less": "접기",
       "patrol_error_roster": "멤버 목록의 순찰 상태를 불러오지 못했습니다.",
       "loop_on": "지켜보는 중",
       "profile_monitor": "모니터",

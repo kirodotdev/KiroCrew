@@ -79,7 +79,7 @@ async def test_load_status_counts_does_not_block_the_loop():
     async def _ticker():
         nonlocal ticks
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01)  # flake-ok: measurement; the ticker counts free-loop turns
             ticks += 1
 
     def slow_count():

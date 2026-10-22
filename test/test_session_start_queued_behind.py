@@ -103,14 +103,20 @@ async def _settle(rt: AcpRuntime, reader: asyncio.StreamReader, proc: MagicMock)
     is answered too, or the teardown waits out its own timeout.
     """
     answered: set[int] = set()
+    # Every frame the runtime writes wakes the responder; set up front so the
+    # frames already written are scanned before any new one lands.
+    written = asyncio.Event()
+    written.set()
+    proc.stdin.write.side_effect = lambda _data: written.set()
 
     async def _answer_terminates() -> None:
         while True:
+            await written.wait()
+            written.clear()
             for req_id in _sent_ids(proc, METHOD_SESSION_TERMINATE):
                 if req_id not in answered:
                     answered.add(req_id)
                     _feed(reader, {"jsonrpc": "2.0", "id": req_id, "result": {}})
-            await asyncio.sleep(0.01)
 
     responder = asyncio.ensure_future(_answer_terminates())
     try:

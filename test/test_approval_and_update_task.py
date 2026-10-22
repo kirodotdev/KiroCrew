@@ -323,7 +323,8 @@ class TestApprovalCancelledError:
 
         async def _wait():
             try:
-                return await asyncio.wait_for(fut, timeout=1.0)
+                # The task is cancelled at once, so the ceiling is never reached.
+                return await asyncio.wait_for(fut, timeout=1.0)  # flake-ok: the cancelled wait_for is the shape under test
             except asyncio.CancelledError:
                 return False
 

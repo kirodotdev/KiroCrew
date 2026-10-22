@@ -1025,8 +1025,8 @@ class TestDeliverScriptResult:
         result = {"status": "report", "message": "green again"}
         spawn = MagicMock(return_value=turn)
         with (
-            patch.object(gw, "spawn_guarded_turn", spawn),
-            patch.object(gw, "_run_chat", MagicMock(return_value=MagicMock())),
+            patch("kiro_crew.dashboard.turn_dispatch.spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", MagicMock(return_value=MagicMock())),
         ):
             async with _cron_cb(orch, script_result=result) as cb:
                 assert await cb(job) == "green again"

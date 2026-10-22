@@ -563,6 +563,7 @@ def get_or_create_slot(
     slot._on_card_event = self.notify_dashboard_card
     slot._on_question_retired = self._broadcast_question_retired
     slot._coordinator_approvals = self.pending_coordinator_approvals
+    slot._linked_session_busy = self.linked_session_busy
     slot._app = app
     # ``origin`` must be declared by the layer that actually knows it, and
     # an undeclared non-app slot stays UNTAGGED ("") rather than being

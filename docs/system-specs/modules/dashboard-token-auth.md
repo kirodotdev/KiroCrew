@@ -126,7 +126,7 @@ graph LR
 6. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
    until the workflow service is ready, and `_crewmate_prune_gate`
    (`_register_crewmate_prune_gate`, dashboard only) holds every mutating request,
-   and any request under `/api/members`, until the crewmate prune settles, 503
+   and any request under `/api/members`, until the mate prune settles, 503
    past its timeout.
    Both RETURN their refusal, inner to `sel_audit`.
 
@@ -635,7 +635,8 @@ compressed body is never inflated synchronously on the event loop; without the
 middleware such a body would reach a handler as raw bytes.
 
 The two internal-path sets passed to `token_auth_middleware` are the module-level
-`_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` in `server.py`, the
+`_STRICT_INTERNAL_API_PATHS` and `_MIXED_INTERNAL_API_PATHS` that `server.py` binds
+from `dashboard/server_internal_paths.py`, the
 second read through `_mixed_internal_api_paths()` so an edition's mixed paths join
 it — so the headless server (below) binds to the **same** sets and the two
 entrypoints cannot drift.

@@ -453,9 +453,12 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
 
 
 # Every ``api_session*`` handler is an owner surface, so a private member's
-# internal call is refused before it runs (audit label = handler name).
+# internal call is refused before it runs (audit label = handler name). Deleting
+# the owner's history is the owner's call, so a non-owner dashboard session is
+# refused too.
 guard_owner_surface_routes(
     globals(),
     prefix="api_session",
     member_scoped=frozenset(),
+    dashboard_owner_only=True,
 )

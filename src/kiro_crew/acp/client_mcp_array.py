@@ -59,7 +59,7 @@ from kiro_crew.mcp_gateway.session_servers import (
     injection_server_names,
     pooled_session_servers,
 )
-from kiro_crew.providers.mirrors import MIRRORS, mirror_for
+from kiro_crew.providers.mirrors import MIRRORS, ProjectionKind, mirror_for, projection_for
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -297,9 +297,28 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
 
     Fail-closed: a spec that cannot be read mounts nothing, and the thread runs
     as plain chat.
+
+    The same parse also answers the spec's ``"tools": []`` for a mirror-less host
+    whose declared MCP projection is ``ProjectionKind.BROKER_ONLY`` (pi): no spec
+    projection is written for it and the harness reads no spec of Crew's, so no
+    mirror reports :attr:`SessionMcpProjection.zero_tools` there and nothing else
+    could know the agent claims zero tools. Read here, beside the mounts, rather
+    than by a second parse: a spec edited between two reads could otherwise mount
+    by one generation and ban by another. It only RECORDS the answer;
+    :attr:`_enforces_zero_tool_ban` decides whether this backend's permission
+    requests are refused on it. kiro-cli's projection is ``NATIVE`` -- it reads its
+    spec itself through ``--agent`` -- so it never reaches this record. An
+    unreadable spec records False, the same as a mirror that could not parse.
+
+    Who reads the spec is asked of the declared projection
+    (``registry.PROJECTIONS``), the record that states it per backend, rather
+    than of a membership set: the caller has already resolved that record
+    through ``mirror_for``, so an undeclared backend raised before this point.
     """
+    records_zero_tools = projection_for(self.backend).kind is ProjectionKind.BROKER_ONLY
     if (
-        self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
+        not records_zero_tools
+        and self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
         and self.backend not in ACP_BACKENDS_MEMBER_PANEL
     ):
         return []
@@ -316,6 +335,15 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             self._session_key,
             exc_info=True,
         )
+        if records_zero_tools:
+            self._spec_zero_tools = False
+        return []
+    if records_zero_tools:
+        self._spec_zero_tools = projection.zero_tools
+    if (
+        self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
+        and self.backend not in ACP_BACKENDS_MEMBER_PANEL
+    ):
         return []
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     self._session_mcp_unhonoured = narrowed

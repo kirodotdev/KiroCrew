@@ -13,7 +13,8 @@
  * fallback component is a real surface here rather than a loading state.
  */
 import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
+import type { BaseCodeOptions, FileContents, LineAnnotation } from '@pierre/diffs'
+import type { FileOptions } from '@pierre/diffs/react'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
 import { PlainCodeFallback, PlainFilePairFallback, PlainFilePairHeader } from './PlainCodeFallback'
@@ -291,9 +292,12 @@ function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisi
   )
 }
 
-export const PierreCode = memo(function PierreCode({ file, options, className, langHint, scrollClassName }: {
+export const PierreCode = memo(function PierreCode({ file, options, className, langHint, scrollClassName, lineAnnotations, renderAnnotation, renderGutterUtility }: {
   file: FileContents
-  options?: BaseCodeOptions
+  /** Accepts Pierre's full `FileOptions` surface (interaction callbacks like
+   *  `enableLineSelection` / `onLineSelected` / `enableGutterUtility`
+   *  included) — the impl merges it over the shared code-view defaults. */
+  options?: FileOptions<unknown>
   className?: string
   /** Markdown fence tag, resolved to a safe highlight language in the impl. */
   langHint?: string
@@ -301,13 +305,23 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
    *  renders a window of rows instead of one per line. The caller's own box
    *  must then NOT scroll. */
   scrollClassName?: string
+  /** Line-pinned annotation rows, rendered by Pierre inside its own surface
+   *  (virtualization-correct). Payload type is the caller's; `renderAnnotation`
+   *  narrows it back. Dashboard stylesheets do NOT reach Pierre's shadow DOM,
+   *  so render-prop content must style itself inline (theme custom properties
+   *  DO inherit through the boundary). */
+  lineAnnotations?: LineAnnotation<unknown>[]
+  renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
+  /** Hover gutter slot (e.g. a comment button). Same inline-style rule as
+   *  `renderAnnotation`. */
+  renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
 }) {
   // Whole-file surfaces own their scroll container and cannot be wrapped in
   // an invisible measurement box, so they retain a direct Suspense fallback.
   if (scrollClassName) {
     return (
       <Suspense fallback={<div className={scrollClassName}><PlainCodeFallback text={file.contents} /></div>}>
-        <CodeImpl file={file} options={options} className={className} langHint={langHint} scrollClassName={scrollClassName} />
+        <CodeImpl file={file} options={options} className={className} langHint={langHint} scrollClassName={scrollClassName} lineAnnotations={lineAnnotations} renderAnnotation={renderAnnotation} renderGutterUtility={renderGutterUtility} />
       </Suspense>
     )
   }
@@ -318,7 +332,7 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
   return (
     <WarmSwap warmKey={warmKeyOf(file.contents)} fallback={fallback}>
       <StagedSuspense fallback={fallback}>
-        <CodeImpl file={file} options={options} className={className} langHint={langHint} />
+        <CodeImpl file={file} options={options} className={className} langHint={langHint} lineAnnotations={lineAnnotations} renderAnnotation={renderAnnotation} renderGutterUtility={renderGutterUtility} />
       </StagedSuspense>
     </WarmSwap>
   )

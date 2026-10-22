@@ -122,10 +122,13 @@ _ENCODER_ARCHITECTURES = frozenset(
 # instead (see _model_context_policy).
 _N_CTX = 2048
 # Physical decode micro-batch. Keeping this below the logical batch bounds the
-# compute scratch arena without reducing the accepted context. Qwen3's
-# 6,000-char maximum input produces byte-identical vectors at 512 and 2048,
-# while 512 avoids roughly 419 MiB of peak RSS on the shipped Linux runtime.
-_N_UBATCH = 512
+# compute scratch arena and llama.cpp's per-token output buffer (one row per
+# micro-batch token, 610,772 bytes each for the shipped model) without reducing
+# the accepted context. On the shipped Qwen3 file and the vendored Linux CPU
+# runtime, 256, 512 and 2048 produce byte-identical vectors under last-token
+# pooling; 256 holds 317 MiB less anonymous memory than 512 once a long input
+# has run, at the same embed latency.
+_N_UBATCH = 256
 # Safety truncation (chars) before inference, sized under _N_CTX at a
 # conservative ~4 chars/token so a clipped input always fits the context
 # window. Only pathological un-chunked blobs exceed this; mirrors the

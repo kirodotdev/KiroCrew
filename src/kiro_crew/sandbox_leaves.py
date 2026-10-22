@@ -107,26 +107,28 @@ _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
 #: gives it a mount target cannot drift apart on a literal.
 MD_NOTEBOOK_APP_NAME: str = "md-notebook"
-_MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json",
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json",
-)
-#: The backend's write-staging directory, masked as a WHOLE DIRECTORY like ``whatsapp``.
-#: Every md-notebook state writer stages its temp file HERE and renames onto its target,
-#: because a temp staged BESIDE the target carries the real PAT bytes under a name the
-#: three leaf masks do not cover — and a SIGKILL between write and rename leaves that
-#: unmasked sibling readable by a same-uid sandboxed agent forever. A directory mask
-#: covers every name inside it, present and future, so the staging window and any crash
-#: orphan both stay masked.
+#: The backend's state DIRECTORY, masked as a WHOLE DIRECTORY like ``whatsapp``. The three
+#: state files live inside it, and every writer stages its temp inside it and renames onto
+#: a name inside it. The mount point is the directory, so a rename of a name inside it
+#: never crosses a mount (the cause of the ``EXDEV`` the old file-per-mount layout hit) and
+#: never detaches the mask in a live agent's namespace. A directory mask covers every name
+#: inside it, present and future, so the staging window and any crash orphan stay masked.
 #:
 #: A TOP-LEVEL leaf, for the same reason ``aws-control-staging`` is one: a mask covers the
-#: leaf, not its ancestors, so a staging dir under the agent-writable
-#: ``workspace/md-notebook`` could be renamed out from under its own mask and a later PAT
-#: write would publish through the replacement, unmasked, into a live agent's view. It
-#: stays on the same filesystem as the state files (both under the crew data home), so the
-#: publish rename is still atomic.
+#: leaf, not its ancestors, so a directory under the agent-writable
+#: ``workspace/md-notebook`` could be renamed out from under its own mask.
 _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
+_MD_NOTEBOOK_STATE_FILES: tuple[str, ...] = ("pat", "vaults.json", "settings.json")
+#: The live state files, inside the state directory.
+_MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = tuple(
+    f"{_MD_NOTEBOOK_STAGING_LEAF}/{name}" for name in _MD_NOTEBOOK_STATE_FILES
+)
+#: Where an older build kept the same files. Nothing writes them now, but a copy the
+#: gateway's one-time move (``md_notebook_state``) has not moved yet can hold the PAT, so
+#: they stay masked in every mode and are NOT carved back to the backend.
+_MD_NOTEBOOK_RETIRED_STATE_LEAVES: tuple[str, ...] = tuple(
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/{name}" for name in _MD_NOTEBOOK_STATE_FILES
+)
 
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
@@ -226,16 +228,13 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``security.paths`` so the file tools refuse it too. All three, because each
     # one alone leaves a different path open.
     "work",
-    # The Notes state files below are OWNED by the md-notebook backend, which is itself
-    # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
-    # registry write's final rename gets EPERM and attach/clone always fails.
-    # The backend spawn therefore passes them back as ``extra_visible_dirs`` via
-    # :func:`app_backend_visible_targets` — the mask still applies to every OTHER
-    # sandboxed process, which is the population it exists to fence.
-    *_MD_NOTEBOOK_STATE_LEAVES,
-    # The staging directory those three writers publish through. Masked as a whole
-    # DIRECTORY so the in-flight temp — which holds the same bytes as the leaves above,
-    # PAT included — and any crash orphan are covered at every name, present and future.
+    # The Notes state files' old bare spellings: kept masked for a copy not yet moved,
+    # and never carved back (the backend reads only the state directory).
+    *_MD_NOTEBOOK_RETIRED_STATE_LEAVES,
+    # The Notes state DIRECTORY, masked whole. It is OWNED by the md-notebook backend,
+    # itself a sandboxed spawn (`apps/backend.py`), which gets it back through
+    # :func:`app_backend_visible_targets`; the mask still applies to every OTHER
+    # sandboxed process.
     _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material. The extension token reaches the CLI through the
     # environment, never by ``open()``, so masking the file costs nothing; the other

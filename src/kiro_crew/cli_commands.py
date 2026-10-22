@@ -724,6 +724,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_store_or_exit,
     )
     from kiro_crew.cli_commands_app import (  # noqa: F401
+        _SESSION_APPROVAL_CONSENT_REQUIRED,
+        _SESSION_APPROVAL_DESC,
         _app_already_gone,
         _app_declares_backend,
         _apply_through_gateway,
@@ -733,6 +735,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _install_app_through_gateway,
         _print_file_only_app_result,
         _print_pointer_cleanup,
+        _refuse_session_approval_from_cli,
         _register_app_crons_to_scheduler,
         _run_app_action_through_gateway,
         _run_app_mcp_server,

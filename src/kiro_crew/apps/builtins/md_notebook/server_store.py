@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew import md_notebook_state
 from kiro_crew.atomic_write import refuse_linked_parent, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import restrict_to_owner
@@ -31,12 +32,9 @@ logger = logging.getLogger("kiro_crew.apps.builtins.md_notebook.server")
 
 APP_NAME = os.environ.get("KIROCREW_APP_NAME", "md-notebook")
 
-#: The state writers' staging directory, a TOP-LEVEL leaf in the crew data home. Must stay
-#: byte-identical to ``sandbox._MD_NOTEBOOK_STAGING_LEAF``, which is what masks it from the
-#: agent and hands it back to this backend's own spawn — a mismatch would silently stage
-#: PAT bytes outside the mask. Spelled here rather than imported so this app backend does
-#: not pull the sandbox module into its own process; a test pins the two together.
-_STAGING_LEAF = "md-notebook-staging"
+#: The state directory (state files and their staged temps), a TOP-LEVEL leaf in the crew
+#: data home. ``md_notebook_state`` owns the spelling; a test pins it to the sandbox's mask.
+_STAGING_LEAF = md_notebook_state.STATE_DIR_LEAF
 
 
 # Data-home paths are resolved LAZILY, never at import time: the
@@ -66,11 +64,9 @@ def _crew_data_home() -> Path:
     """The app's data root under the Kiro Crew data home, IGNORING
     ``MD_NOTEBOOK_HOME``.
 
-    The PAT is stored here (never under ``MD_NOTEBOOK_HOME``) so it always sits
-    behind ``is_sensitive_path()``'s floor, which protects
-    ``<crew-home>/workspace/md-notebook/pat``. A user pointing
-    ``MD_NOTEBOOK_HOME`` at an unprotected directory must not be able to relocate
-    the live GitHub credential out from behind that floor.
+    The clone tree's default root. The state files are NOT here: they live in
+    :func:`_staging_dir`, a top-level masked directory. An older build kept them at
+    ``<crew-home>/workspace/md-notebook/<name>``; ``md_notebook_state`` moves them out.
     """
     # config_dir is imported at module scope but CALLED here (lazily) — issue
     # #874 forbids resolving the data home at import time, not importing the
@@ -90,33 +86,26 @@ def _home() -> Path:
 def _vaults_json() -> Path:
     # The vault REGISTRY carries each vault's remoteUrl/gitDir, which the
     # unattended auto-sync loop trusts as the `git push` target and its anti-tamper
-    # pins. Like the PAT and the sync settings it therefore MUST live under the
-    # protected crew data home, never under MD_NOTEBOOK_HOME — otherwise an
-    # operator's (or a prompt-injected agent's) MD_NOTEBOOK_HOME could relocate the
-    # registry outside is_sensitive_path()'s fence and repoint the push. The clone
-    # DATA (`_clone_root`) stays under _home(): it is bulk per-instance content, not
-    # an authorization surface. The _HOME test hook still applies for tmp isolation.
-    base = _HOME if _HOME is not None else _crew_data_home()
-    return base / "vaults.json"
+    # pins. Like the PAT and the sync settings it therefore MUST live in the masked
+    # state directory, never under MD_NOTEBOOK_HOME — otherwise an operator's (or a
+    # prompt-injected agent's) MD_NOTEBOOK_HOME could relocate the registry outside
+    # is_sensitive_path()'s fence and repoint the push. The clone DATA
+    # (`_clone_root`) stays under _home(): it is bulk per-instance content, not an
+    # authorization surface.
+    return _staging_dir() / "vaults.json"
 
 
 def _settings_json() -> Path:
-    # Like the PAT, the sync settings MUST live under the protected crew data
-    # home, never under MD_NOTEBOOK_HOME, so the `autoSync` bit — which authorizes
-    # the background loop's unattended `git push` — always sits behind
-    # is_sensitive_path()'s floor. Resolving via `_home()` would let an operator's
-    # MD_NOTEBOOK_HOME relocate it outside the fence, where an agent could flip it.
-    # The _HOME test hook still applies so tests keep their tmp isolation.
-    base = _HOME if _HOME is not None else _crew_data_home()
-    return base / "settings.json"
+    # Like the PAT, the sync settings MUST live in the masked state directory, so
+    # the `autoSync` bit — which authorizes the background loop's unattended
+    # `git push` — always sits behind the mask and is_sensitive_path()'s floor.
+    return _staging_dir() / "settings.json"
 
 
 def _pat_file() -> Path:
-    # The PAT MUST live under the protected crew data home, never under
-    # MD_NOTEBOOK_HOME, so it stays behind is_sensitive_path()'s floor. The
-    # _HOME test hook still applies so tests keep their tmp isolation.
-    base = _HOME if _HOME is not None else _crew_data_home()
-    return base / "pat"
+    # The PAT MUST live in the masked state directory, never under
+    # MD_NOTEBOOK_HOME, so it stays behind the mask and is_sensitive_path()'s floor.
+    return _staging_dir() / "pat"
 
 
 def _clone_root() -> Path:
@@ -150,27 +139,21 @@ def _read_vaults_sync() -> list[dict[str, Any]]:
 
 
 def _staging_dir() -> Path:
-    """The masked write-staging directory every STATE writer publishes through.
+    """The masked state directory: the three state files live, and are staged, HERE.
 
-    Every state writer (vaults/settings/PAT) stages its temp file HERE and renames onto
-    its target. A temp staged beside the target — the previous shape — carries the real PAT
-    bytes under a name the OS sandbox's three leaf masks do not cover, and a SIGKILL
-    between write and rename left that unmasked sibling readable by a same-uid sandboxed
-    agent forever.
+    ``<crew-home>/md-notebook-staging`` (``sandbox._MD_NOTEBOOK_STAGING_LEAF``). The OS
+    sandbox masks it as one DIRECTORY and hands it back to this backend alone. A writer
+    stages its temp in it and renames onto a name in it, so the publish stays on one mount
+    point. The earlier layout kept the files at ``workspace/md-notebook/<name>`` and staged
+    here, so under the Linux sandbox the rename crossed from one bind mount to another and
+    failed with ``EXDEV``.
 
-    A TOP-LEVEL directory in the crew data home (``sandbox._MD_NOTEBOOK_STAGING_LEAF``),
-    NOT a child of the state directory, for the reason the sibling ``aws-control-staging``
-    leaf records: a mask covers the leaf, not its ancestors, so a staging dir under the
-    agent-writable ``workspace/md-notebook`` could be renamed out from under its own mask
-    and a later PAT write would publish through the replacement, unmasked, into a live
-    agent's view. It stays on the same filesystem as the targets, so the publish rename is
-    still atomic. NOTE saves are deliberately untouched — they stage beside the note inside
-    the vault, which may be a different filesystem, and hold no secret.
+    A TOP-LEVEL directory, for the reason ``aws-control-staging`` records: a mask covers
+    the leaf, not its ancestors, so a directory under the agent-writable
+    ``workspace/md-notebook`` could be renamed out from under its own mask. NOTE saves are
+    untouched; they stage beside the note inside the vault and hold no secret.
     """
-    # Mirrors ``_crew_data_home``'s resolution, minus the app subdirectory: the staging
-    # directory is a sibling of ``workspace``, not of the state files. Under the ``_HOME``
-    # test hook it sits beside that hook's directory, which keeps it on the same
-    # filesystem as the targets — the only property the rename depends on.
+    # Under the ``_HOME`` test hook it sits beside that hook's directory.
     if _HOME is not None:
         return _HOME.parent / _STAGING_LEAF
     try:
@@ -182,31 +165,20 @@ def _staging_dir() -> Path:
 
 
 def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = False) -> None:
-    """Stage *content* in the masked staging dir, then rename onto *target*.
+    """Publish *content* onto *target*, a name inside :func:`_staging_dir`.
 
-    ``mkstemp`` opens the temp 0600 on POSIX before any payload byte;
-    ``restrict_to_owner`` adds the owner-only DACL on Windows (chmod is a no-op
-    there), warn-not-fail per the original PAT policy — losing the credential
-    write is worse than a permissions warning. On failure the temp is removed;
-    a removal that itself fails leaves the orphan inside the mask, not beside
-    the target.
+    It stages the temp in the same directory
+    (0600 from ``mkstemp`` before any byte; owner-only DACL on Windows, warn-not-fail)
+    and renames it onto *target*. On failure the temp is removed; a removal that itself
+    fails leaves the orphan inside the mask.
     """
-    staging = _staging_dir()
-    # The planted-link refusal atomic_write enforces:
-    # atomic_write(restrict_to_owner=True)
-    # refuses a secret write whose parent chain passes through a planted
-    # symlink/junction — otherwise mkdir(parents=True), mkstemp and the rename
-    # all follow the link and the token lands OUTSIDE the sensitive-path fence
-    # while the caller sees success. Moving the staging off atomic_write must
-    # not shed that guard. Both chains this write walks, checked BEFORE the
-    # mkdirs (mkdir walks THROUGH a planted link and would build the tree
-    # under its target); the probe name is never created, only its chain is
-    # judged.
+    state = target.parent
+    # The planted-link refusal atomic_write(restrict_to_owner=True) enforces, checked
+    # BEFORE any mkdir (mkdir walks THROUGH a planted link and would build the tree under
+    # its target), so the token cannot land outside the sensitive-path fence.
     refuse_linked_parent(target)
-    refuse_linked_parent(staging / ".chain-probe")
-    staging.mkdir(parents=True, exist_ok=True)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(staging), suffix=".tmp")
+    state.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(state), suffix=".tmp")
     tmp = Path(tmp_name)
     try:
         try:

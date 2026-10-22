@@ -5,6 +5,7 @@ created or forked child gets.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -21,8 +22,10 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import (
     DEFAULT_MODEL,
+    AutocompactPctError,
     KiroCrewAgentConfig,
     coerce_effort,
+    parse_autocompact_pct,
     worker_session_defaults,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
@@ -32,7 +35,12 @@ from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_project_dir,
     _unhide_folder,
 )
-from kiro_crew.dashboard.chat_utils import _normalize_model, drained_to_thread, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    _normalize_model,
+    drained_to_thread,
+    effective_session_key,
+    slot_history_key,
+)
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create, has_create_budget
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
@@ -96,6 +104,7 @@ async def create_session(
     folder_id: str = "",
     model: str = "",
     reasoning_effort: str | None = None,
+    autocompact_pct: float | None = None,
     caller_fenced: bool | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -153,6 +162,17 @@ async def create_session(
     profile pin, the child remains unpinned and its own agent's or the global
     default decides. An explicit argument always wins, and the inherited model
     runs the same guard an explicit one does.
+
+    ``autocompact_pct`` gives the child its own compaction threshold, the same
+    per-session override a person sets with "Auto-compact at" in the context
+    meter (``POST /api/chat/slots/{slot}/autocompact``). ``None`` leaves the slot
+    following its agent's default, else the global ``session.autocompact_pct``,
+    exactly as before. A non-number, NaN, or a value outside
+    ``AUTOCOMPACT_PCT_MIN`` to ``AUTOCOMPACT_PCT_MAX`` refuses the whole create
+    before anything is allocated. The override rides in the persist-at-birth
+    metadata, so an idle child keeps it across a restart, and the live gate is
+    seeded once that write has landed. Both run under the slider's own
+    per-transcript lock, so a slider move on the newborn orders after them.
 
     ``caller_fenced`` is the ownership-fence verdict the HTTP gate already settled
     on the caller's VERIFIED scope, carried in for the same reason
@@ -528,6 +548,18 @@ async def create_session(
             inherited_fields.remove("reasoning_effort")
             reasoning_effort = ""
     effort_name = reasoning_effort or ""
+
+    # The child's own compaction threshold, checked here for the reason the model
+    # is: the HTTP route reaches this without the MCP schema. The finite and range
+    # check is the slider route's own (`parse_autocompact_pct`).
+    pct_override: float | None = None
+    if autocompact_pct is not None:
+        if isinstance(autocompact_pct, bool) or not isinstance(autocompact_pct, (int, float)):
+            raise SessionControlError("autocompact_pct must be a number", code="invalid_field_type")
+        try:
+            pct_override = parse_autocompact_pct(autocompact_pct, name="autocompact_pct")
+        except AutocompactPctError as exc:
+            raise SessionControlError(str(exc), code=exc.code) from None
 
     # Capture the child route once. Inherited member/store identity survives
     # renamed aliases or changed config; an explicit member selection is resolved
@@ -1072,6 +1104,10 @@ async def create_session(
             # relies on. One of the five canonical levels (checked above), so
             # the restore allowlist always admits it without a marker.
             slot.reasoning_effort = effort_name
+        if pct_override is not None:
+            # On the slot, so the birth record below and every later save write
+            # it. The live gate is seeded after that record lands.
+            slot.autocompact_pct = pct_override
         if clean_title:
             slot.title = clean_title
             slot._titled = True
@@ -1115,97 +1151,121 @@ async def create_session(
             log.update_metadata(session_key, metadata)
             birth_persisted = True
 
-        try:
-            await drained_to_thread(
-                _persist_birth,
-                {
-                    "_type": "metadata",
-                    # The slot's OWN durable identity, and its origin, both of which
-                    # the normal save path writes -- but a slot created here may never
-                    # reach that path: `_save_slot_to_history` runs a full save only
-                    # when the window has messages, so for a session that is created
-                    # and then sits idle THIS dict is the only record on disk.
-                    # Omitting `origin` is silently destructive on the next restart:
-                    # rehydrate falls back to the fail-closed empty sentinel, so a
-                    # session opened as USER comes back unattributed and `slots:user`
-                    # subscribers stop seeing it. Checked field-by-field against the
-                    # save path; these are the only fields a slot carries at birth
-                    # that it does not already write.
-                    "tab_id": slot._tab_id,
-                    "origin": slot._origin,
-                    "created_at": metadata_now_iso(),
-                    "workspace": slot.workspace,
-                    "agent": slot.agent or "",
-                    "project": slot.project or "",
-                    "title": slot.title or "",
-                    "memory_mode": getattr(slot, "memory_mode", "persistent"),
-                    # The committed selection namespace, only when the caller
-                    # stated one -- the metadata codec writes `agent_kind` the same
-                    # way (truthy only), and for an idle newborn this dict is the
-                    # only record, so without it a restart would rehydrate a
-                    # template child of a shadowed name as a bare name.
-                    **({"agent_kind": slot.agent_kind} if slot.agent_kind else {}),
-                    # Only when filed, mirroring the normal save path, which omits
-                    # `folder_id` from the metadata line when empty. Without this
-                    # the filing would not survive a restart: for an idle newborn
-                    # THIS dict is the only record of the placement on disk.
-                    **({"folder_id": slot.folder_id} if slot.folder_id else {}),
-                    # The pinned model, only when one was asked for -- the normal
-                    # save path writes `model` too, but for an idle newborn this
-                    # dict is the only record, and without it a restart would
-                    # bring the session back on the default model.
-                    **({"model": slot.model} if model_name else {}),
-                    # The pinned effort, on the same grounds: the metadata codec
-                    # restores `reasoning_effort` from this line, and a canonical
-                    # level needs no validated-effort marker to come back.
-                    **({"reasoning_effort": slot.reasoning_effort} if effort_name else {}),
-                    # Creator attribution, only when this entry point set it. The
-                    # member ownership boundary in `authorize_target` reads it, so
-                    # losing it on restart would strand every worker a member
-                    # dispatched — controllable in memory, orphaned after reboot.
-                    **({"created_by": slot._created_by} if slot._created_by else {}),
-                    # `created_by_sid` is deliberately NOT written: the transcript
-                    # is agent-editable, so nothing read back from it may become
-                    # crew-log lineage. The sid lives on the slot for this process
-                    # only (see `_lineage_minted`).
-                    # The agent's memory silo, recorded ONLY when it is not the
-                    # default. This is what lets the consolidator write an agent's
-                    # semantic, episodic and lesson rows into its own store
-                    # instead of the global one, and this dict is the only record
-                    # for a session that is created and then sits idle.
-                    #
-                    # Omitted for the default store on purpose: absence is the
-                    # signal for "global", so a default user's metadata line stays
-                    # byte-identical and a session written before crews had stores
-                    # reads the same as one written now.
-                    **(
-                        {"memory_store": _named_store}
-                        if (_named_store := named_store_or_empty(slot.memory_store))
-                        else {}
-                    ),
-                },
-            )
-        except (Exception, asyncio.CancelledError):
-            # Retract, but never at the cost of work already in flight. The slot is
-            # addressable from the moment `get_or_create_slot` publishes it, which is
-            # before this await, so a turn can have started on it while the write was
-            # in the worker thread. Popping the slot then would leave that turn running
-            # with nothing pointing at it -- unreachable, unstoppable, and invisible to
-            # the stop verb. A phantom session that vanishes on the next restart is the
-            # lesser harm, so liveness wins over tidiness and the slot stays.
-            # Drain before deciding: cancellation cannot leave a worker writing
-            # identity/history after this handler retracts its slot. A completed
-            # birth survives cancellation just as a turn already in flight does.
-            # A completed identity record remains available to a concurrent turn.
-            if (
-                not birth_persisted
-                and not slot.running
-                and not slot.messages
-                and state._slots.get(slot.key) is slot
-            ):
-                state._slots.pop(slot.key, None)
-            state.push_slots_update()
-            raise
+        def _seed_live_pct() -> None:
+            # The birth record landed, so the live gate follows it, keyed the way
+            # the slider route and restore key it. A slot that left the table
+            # during the write takes no gate entry.
+            if state._slots.get(slot.key) is slot:
+                state.sessions.set_autocompact_pct(effective_session_key(slot), pct_override)
+
+        # The slider route's per-transcript lock, held across the birth write and
+        # the gate seed: a slider POST on the newborn then orders after both, so
+        # the birth value cannot overwrite a threshold the person just set.
+        pct_lock: Any = contextlib.nullcontext()
+        if pct_override is not None:
+            # Lazy for the reason `_model_rejected_reason` is (see below).
+            from kiro_crew.dashboard.chat_handlers import _autocompact_txn_lock
+
+            pct_lock = _autocompact_txn_lock(session_key)
+        async with pct_lock:
+            try:
+                await drained_to_thread(
+                    _persist_birth,
+                    {
+                        "_type": "metadata",
+                        # The slot's OWN durable identity, and its origin, both of which
+                        # the normal save path writes -- but a slot created here may never
+                        # reach that path: `_save_slot_to_history` runs a full save only
+                        # when the window has messages, so for a session that is created
+                        # and then sits idle THIS dict is the only record on disk.
+                        # Omitting `origin` is silently destructive on the next restart:
+                        # rehydrate falls back to the fail-closed empty sentinel, so a
+                        # session opened as USER comes back unattributed and `slots:user`
+                        # subscribers stop seeing it. Checked field-by-field against the
+                        # save path; these are the only fields a slot carries at birth
+                        # that it does not already write.
+                        "tab_id": slot._tab_id,
+                        "origin": slot._origin,
+                        "created_at": metadata_now_iso(),
+                        "workspace": slot.workspace,
+                        "agent": slot.agent or "",
+                        "project": slot.project or "",
+                        "title": slot.title or "",
+                        "memory_mode": getattr(slot, "memory_mode", "persistent"),
+                        # The committed selection namespace, only when the caller
+                        # stated one -- the metadata codec writes `agent_kind` the same
+                        # way (truthy only), and for an idle newborn this dict is the
+                        # only record, so without it a restart would rehydrate a
+                        # template child of a shadowed name as a bare name.
+                        **({"agent_kind": slot.agent_kind} if slot.agent_kind else {}),
+                        # Only when filed, mirroring the normal save path, which omits
+                        # `folder_id` from the metadata line when empty. Without this
+                        # the filing would not survive a restart: for an idle newborn
+                        # THIS dict is the only record of the placement on disk.
+                        **({"folder_id": slot.folder_id} if slot.folder_id else {}),
+                        # The pinned model, only when one was asked for -- the normal
+                        # save path writes `model` too, but for an idle newborn this
+                        # dict is the only record, and without it a restart would
+                        # bring the session back on the default model.
+                        **({"model": slot.model} if model_name else {}),
+                        # The pinned effort, on the same grounds: the metadata codec
+                        # restores `reasoning_effort` from this line, and a canonical
+                        # level needs no validated-effort marker to come back.
+                        **({"reasoning_effort": slot.reasoning_effort} if effort_name else {}),
+                        # The compaction override, on the same grounds: restore reads
+                        # this key and re-seeds the live gate from it.
+                        **({"autocompact_pct": pct_override} if pct_override is not None else {}),
+                        # Creator attribution, only when this entry point set it. The
+                        # member ownership boundary in `authorize_target` reads it, so
+                        # losing it on restart would strand every worker a member
+                        # dispatched — controllable in memory, orphaned after reboot.
+                        **({"created_by": slot._created_by} if slot._created_by else {}),
+                        # `created_by_sid` is deliberately NOT written: the transcript
+                        # is agent-editable, so nothing read back from it may become
+                        # crew-log lineage. The sid lives on the slot for this process
+                        # only (see `_lineage_minted`).
+                        # The agent's memory silo, recorded ONLY when it is not the
+                        # default. This is what lets the consolidator write an agent's
+                        # semantic, episodic and lesson rows into its own store
+                        # instead of the global one, and this dict is the only record
+                        # for a session that is created and then sits idle.
+                        #
+                        # Omitted for the default store on purpose: absence is the
+                        # signal for "global", so a default user's metadata line stays
+                        # byte-identical and a session written before crews had stores
+                        # reads the same as one written now.
+                        **(
+                            {"memory_store": _named_store}
+                            if (_named_store := named_store_or_empty(slot.memory_store))
+                            else {}
+                        ),
+                    },
+                )
+            except (Exception, asyncio.CancelledError):
+                # Retract, but never at the cost of work already in flight. The slot is
+                # addressable from the moment `get_or_create_slot` publishes it, which is
+                # before this await, so a turn can have started on it while the write was
+                # in the worker thread. Popping the slot then would leave that turn running
+                # with nothing pointing at it -- unreachable, unstoppable, and invisible to
+                # the stop verb. A phantom session that vanishes on the next restart is the
+                # lesser harm, so liveness wins over tidiness and the slot stays.
+                # Drain before deciding: cancellation cannot leave a worker writing
+                # identity/history after this handler retracts its slot. A completed
+                # birth survives cancellation just as a turn already in flight does.
+                # A completed identity record remains available to a concurrent turn.
+                if (
+                    not birth_persisted
+                    and not slot.running
+                    and not slot.messages
+                    and state._slots.get(slot.key) is slot
+                ):
+                    state._slots.pop(slot.key, None)
+                if birth_persisted and pct_override is not None:
+                    _seed_live_pct()
+                state.push_slots_update()
+                raise
+            if pct_override is not None:
+                _seed_live_pct()
         if slot.folder_id:
             # Model-B un-hide, applied only NOW that the filing has actually
             # landed -- running it any earlier persists `hidden = False` for a
@@ -1270,6 +1330,7 @@ async def create_session(
         "title": slot.title or slot.key,
         **({"model": model_name} if model_name else {}),
         **({"reasoning_effort": effort_name} if effort_name else {}),
+        **({"autocompact_pct": pct_override} if pct_override is not None else {}),
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
     }

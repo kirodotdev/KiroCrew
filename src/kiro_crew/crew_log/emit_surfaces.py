@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from kiro_crew.crew_log.emit_runtime import _handle, _submit, _write, live_turn
@@ -472,6 +472,36 @@ def on_card_finished(session_id: str, *, card_id: str, status: str, revision: in
         "revision": int(revision) if isinstance(revision, int) and revision > 0 else 1,
     }
     _write(session_id, "card/finished", data, src=_SRC_GATEWAY)
+
+
+def on_goal_recorded(
+    session_id: str,
+    data: dict[str, Any],
+    *,
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
+    """A crewmate's goal record changed: append its snapshot to the crewmate's DM log.
+
+    *data* is ``{goals, milestones}`` as ``dashboard.crewmate_feed`` builds it. The
+    ``goal`` fold keeps the newest one whole, which is what a Dashboard page binds.
+    *on_settled* is handed True only once the append committed.
+    """
+    _write(session_id, "dashboard/goal_recorded", data, src=_SRC_GATEWAY, on_settled=on_settled)
+
+
+def on_waiting_changed(
+    session_id: str,
+    data: dict[str, Any],
+    *,
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
+    """What a crewmate waits on the person for changed: append the new list.
+
+    *data* is ``{items}`` from ``dashboard.member_waiting.waiting_items``. The
+    ``waiting`` fold keeps the newest one whole. *on_settled* is handed True only
+    once the append committed.
+    """
+    _write(session_id, "dashboard/waiting_changed", data, src=_SRC_GATEWAY, on_settled=on_settled)
 
 
 def on_guide_offered(

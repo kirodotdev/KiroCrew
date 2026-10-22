@@ -4,7 +4,7 @@
  * publish panel, the artifact body beside the comments sidebar or the companion
  * chat column, the meta line, the thread popover and the activity timeline.
  */
-import { memo, type ComponentType, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+import { memo, useMemo, type ComponentType, type ReactNode, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { AlertCircle, AlertTriangle } from 'lucide-react'
 import { Btn } from '../components/ui'
@@ -33,6 +33,93 @@ import type {
 } from './useArtifactDetailPageComments'
 import type { ArtifactDetailPageCompanionRead } from './useArtifactDetailPageCompanion'
 import type { ArtifactDetailPageMenuRead } from './ArtifactDetailPageHeader'
+import {
+  CodeCommentContext, codeFenceSpans, routeCodeComments, buildCodeCommentAnchor, type CodeCommentContextValue,
+} from '../components/codeComments'
+import type { PendingAnchor } from './useArtifactDetailPageComments'
+import type { ExternalSelectionState } from '../hooks/useSelectionComposerAnchor'
+
+/** Line-anchored code-block comments. Code fences render in Pierre's shadow
+ *  DOM, which the light-DOM selection capture and the highlight overlay's text
+ *  walk cannot reach, so code comments ride Pierre's own line-selection /
+ *  gutter / annotation primitives instead (see codeComments.ts for the anchor
+ *  convention and the routing rules). Returns the context a rendered CodeBlock
+ *  consumes (null unless the markdown body is commentable) and the comments
+ *  the light-DOM overlay should still paint. */
+function useArtifactCodeComments({
+  commentable, isMarkdown, sourceContent, durableComments, unreadRootIds, activeCommentId,
+  openThreadHandler, stageSelection,
+}: {
+  commentable: boolean
+  isMarkdown: boolean
+  sourceContent: string
+  durableComments: ArtifactComment[]
+  unreadRootIds: Set<string>
+  activeCommentId: string | null
+  openThreadHandler: (id: string, rect?: { x: number; y: number; w: number; h: number }) => void
+  stageSelection: (anchor: PendingAnchor, sel: ExternalSelectionState) => void
+}): { codeCommentCtx: CodeCommentContextValue | null; overlayComments: ArtifactComment[] } {
+  // Routed for every markdown view, commentable or not: a code thread that a
+  // fence does not claim falls to the light-DOM overlay, whose quote match
+  // would paint an incidental prose copy of the code line (a historical
+  // version shows no chips, but must not mis-highlight either).
+  const codeSpans = useMemo(
+    () => (isMarkdown ? codeFenceSpans(sourceContent) : []),
+    [isMarkdown, sourceContent],
+  )
+  const codeRouting = useMemo(
+    () => routeCodeComments(sourceContent, codeSpans, durableComments, unreadRootIds),
+    [sourceContent, codeSpans, durableComments, unreadRootIds],
+  )
+  // Threads a fence claimed are excluded from the light-DOM overlay: a short
+  // code quote (`}` and friends) could otherwise mis-highlight an incidental
+  // prose occurrence of the same text.
+  const overlayComments = useMemo(
+    () => (codeRouting.claimedThreadIds.size === 0
+      ? durableComments
+      : durableComments.filter(c => !codeRouting.claimedThreadIds.has(c.thread_id))),
+    [durableComments, codeRouting],
+  )
+  const codeCommentCtx = useMemo<CodeCommentContextValue | null>(() => {
+    if (!commentable || !isMarkdown) return null
+    return {
+      annotationsFor: fenceStartLine => codeRouting.byFence.get(fenceStartLine) ?? [],
+      activeId: activeCommentId,
+      onActivate: openThreadHandler,
+      onCommentRange: ({ blockStartLine, start, end, x, y }) => {
+        const span = codeSpans.find(s => s.contentStartLine === blockStartLine)
+        if (!span) return
+        const anchor = buildCodeCommentAnchor(sourceContent, span, start, end)
+        if (!anchor) return
+        // A stale prose selection would otherwise win over the staged code
+        // anchor when the composer opens (it resolves the live DOM range first).
+        window.getSelection()?.removeAllRanges()
+        // Same composer + post path as a prose selection, opened through the
+        // toolbar's external-selection channel. The offsets are SOURCE offsets
+        // (the code-comment anchor convention): the post stores them verbatim,
+        // and routeCodeComments' slice equality routes the comment back here.
+        stageSelection(
+          {
+            anchor: anchor.quote, line: anchor.line, column: 1, prefix: anchor.prefix, suffix: anchor.suffix,
+            startOffset: anchor.startOffset, endOffset: anchor.endOffset,
+          },
+          { text: anchor.quote, x, y, start: anchor.startOffset },
+        )
+      },
+    }
+  }, [commentable, isMarkdown, codeRouting, codeSpans, sourceContent, activeCommentId, openThreadHandler, stageSelection])
+  return { codeCommentCtx, overlayComments }
+}
+
+/** Mounts the code-comment context over the native body and hands it the
+ *  comments the light-DOM overlay should paint. A component of its own so the
+ *  hooks register here, not in the page view's hook sequence. */
+function CodeCommentsScope({ children, ...args }: Parameters<typeof useArtifactCodeComments>[0] & {
+  children: (overlayComments: ArtifactComment[]) => ReactNode
+}) {
+  const { codeCommentCtx, overlayComments } = useArtifactCodeComments(args)
+  return <CodeCommentContext.Provider value={codeCommentCtx}>{children(overlayComments)}</CodeCommentContext.Provider>
+}
 
 /** Format an ISO timestamp into a short human-readable string for the
  * activity timeline ('5/25/26, 10:31 PM'). Falls back to the raw string
@@ -201,7 +288,8 @@ export function ArtifactDetailPageBody({
   } = commentsRead
   const {
     selectionComposer, iframeSelection, onSidebarDraftDirtyChange, onThreadDraftDirtyChange,
-    sidebarDiscardSignal, composerResetNonce, selectionActions, handleIframeSelect, openThread, setOpenThread,
+    sidebarDiscardSignal, composerResetNonce, selectionActions, handleIframeSelect, stageIframeSelection,
+    openThread, setOpenThread,
   } = composerRead
   const {
     sendNav, boundSlot, chatCreating, connected, newCompanionChat, pendingComments, pendingCommentIds,
@@ -418,22 +506,29 @@ export function ArtifactDetailPageBody({
               className="relative"
               style={contentWidthStyle}
             >
-              <ArtifactBodyNative
-                kind={artifact.kind}
-                content={editing ? editedContent : (artifact.content ?? '')}
-                // SVG shows preview AND source together while editing, so the
-                // preview toggle does not apply to it — and must not gate it:
-                // the toggle is hidden for SVG, so honoring a stale `true`
-                // here would strand the editor with no control to restore it.
-                editing={editing && (artifact.kind === 'svg' || !previewDuringEdit)}
-                onChange={setEditedContent}
-                previewRef={previewRef}
-                comments={durableComments}
-                activeCommentId={activeCommentId}
-                scrollNonce={bodyScrollNonce}
-                onActivateComment={openThreadHandler}
-                unreadRootIds={unreadRootIds}
-              />
+              <CodeCommentsScope
+                commentable={commentable} isMarkdown={artifact.kind === 'markdown'}
+                sourceContent={artifact.content ?? ''} durableComments={durableComments}
+                unreadRootIds={unreadRootIds} activeCommentId={activeCommentId}
+                openThreadHandler={openThreadHandler} stageSelection={stageIframeSelection}
+              >{overlayComments => (
+                <ArtifactBodyNative
+                  kind={artifact.kind}
+                  content={editing ? editedContent : (artifact.content ?? '')}
+                  // SVG shows preview AND source together while editing, so the
+                  // preview toggle does not apply to it — and must not gate it:
+                  // the toggle is hidden for SVG, so honoring a stale `true`
+                  // here would strand the editor with no control to restore it.
+                  editing={editing && (artifact.kind === 'svg' || !previewDuringEdit)}
+                  onChange={setEditedContent}
+                  previewRef={previewRef}
+                  comments={overlayComments}
+                  activeCommentId={activeCommentId}
+                  scrollNonce={bodyScrollNonce}
+                  onActivateComment={openThreadHandler}
+                  unreadRootIds={unreadRootIds}
+                />
+              )}</CodeCommentsScope>
               {/* Selecting text opens the type-first comment box; mounted only
                   while an anchored comment can be made (current version, not
                   editing, a kind whose renderer attaches `previewRef`). It
@@ -443,7 +538,9 @@ export function ArtifactDetailPageBody({
               {/* Keyed per artifact: the route element is reused across a
                   param-only navigation, and a toolbar that survived it would
                   submit the previous artifact's draft through this one's callbacks. */}
-              {commentable && <SelectionToolbar key={`${slug}:${composerResetNonce}`} containerRef={previewRef} actions={selectionActions} composer={selectionComposer} suspended={narrowPanelOpen} />}
+              {/* `externalSelection` carries a code-block line range (Pierre's
+                  shadow DOM holds no light-DOM selection to read). */}
+              {commentable && <SelectionToolbar key={`${slug}:${composerResetNonce}`} containerRef={previewRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} suspended={narrowPanelOpen} />}
             </div>
           )}
         </div>

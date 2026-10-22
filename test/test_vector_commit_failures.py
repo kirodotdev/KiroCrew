@@ -8,6 +8,7 @@ from test_embedding_rebuild_generation import rebuild_home as _rebuild_home
 
 from kiro_crew import embeddings as emb
 from kiro_crew.dashboard.handlers import memory
+from kiro_crew.testing.wait import wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 rebuild_home = _rebuild_home
@@ -356,4 +357,5 @@ def test_config_wait_does_not_hold_database_lock(rebuild_home, monkeypatch, kind
             finally:
                 if acquired:
                     store._db_lock.release()
-        future.result(timeout=5)
+        wait_until(future.done, timeout=5, describe=lambda: "the writer is still inside publish()")
+        future.result()

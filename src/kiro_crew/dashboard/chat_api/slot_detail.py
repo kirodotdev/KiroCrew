@@ -1258,6 +1258,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     turn_running = slot.turn_running
     verdict_key = slot_history_key(slot)
     running = slot.running
+    # A turn another path runs on this slot's linked session (the Slack thread a
+    # channel-born tab is bound to) has no task here but IS in flight: the same
+    # read the slots summary makes, so the open pane and the sidebar agree and
+    # the pane does not offer Resume on a turn that is still answering.
+    if not running and slot.linked_turn_running:
+        running = True
     # Admission-only running has no numbered turn yet. Omitting the pair keeps
     # this response from naming the preceding turn as the one currently running.
     turn_identity: dict[str, object] = (

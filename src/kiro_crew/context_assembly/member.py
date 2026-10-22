@@ -362,7 +362,7 @@ _MEMBER_DASHBOARD_ITEM = """
    `dashboard` skill and follow it: `dashboard_templates` to search, `dashboard_apply`
    with a `template_id` to put one live, `dashboard_rollback` to go back.
    `dashboard_preview` is only a look, when the person asks to see one first. To put a
-   page you composed live, `dashboard_save` it — fields, blocks and theme — then
+   page you composed live, `dashboard_save` it — fields, view.html and theme — then
    `dashboard_apply` with no arguments; `dashboard_write` keeps filling its fields. Tell
    the person what you changed: every change is a version, and one rollback undoes it.
    A long page job may go to the `kirocrew-dashboard-manager` subagent, which holds the

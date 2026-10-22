@@ -33,6 +33,7 @@ import pytest
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.wait import await_until
 
 # Far larger than any wall-clock this test spends, so every reap asserted below
 # is on the terminated-owner axis and never on the idle clock.
@@ -692,9 +693,9 @@ class TestConcurrency:
         mgr.set_active_dashboard_slots({finished})
         mgr.set_active_dashboard_slots(set())
 
-        await asyncio.wait_for(
+        await await_until(
             asyncio.gather(mgr._expire_idle(NEVER_IDLE), mgr._expire_idle(NEVER_IDLE)),
-            timeout=10,
+            what="two concurrent idle sweeps both finishing",
         )
 
         assert finished not in mgr._sessions

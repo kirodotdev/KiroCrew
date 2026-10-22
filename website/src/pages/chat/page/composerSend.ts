@@ -595,7 +595,12 @@ export function useComposerSend({
     // below read this so none of them describes a row that was never rendered.
     const bubbleMinted = !_busy || forceNew
     if (bubbleMinted) {
-      dispatch(appendMessage({ role: 'user', content: turn.bubble, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
+      const bubble: ChatMessage = { role: 'user', content: turn.bubble, cls: '', ts: new Date().toISOString(), meta: metaPayload }
+      // A create whose activation `forkMayOpen` refused (the user moved away
+      // and back while it was in flight) leaves another session on screen, so
+      // the bubble goes to the slot this send targets, not the active mirror.
+      if (slot && slot !== store.getState().chat.activeSlot) dispatch(appendSlotMessage({ slot, message: bubble }))
+      else dispatch(appendMessage(bubble))
     }
     if (!isolated) window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false

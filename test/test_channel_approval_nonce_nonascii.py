@@ -20,19 +20,13 @@ from kiro_crew.messaging.approval import PendingApprovals
 from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.teams.approvals import TeamsApprovalDecider, registry_key
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
+from kiro_crew.testing.wait import async_wait_until
 from kiro_crew.webex.cards import LiveChoices
 
 #: Any non-ASCII character raises inside a bare ``str``/``str`` compare.
 _NON_ASCII = "é"
 #: Built at runtime: a lone-surrogate literal in this file breaks pytest collection.
 _LONE_SURROGATE = chr(0xDCFF)
-
-
-async def _until(predicate, timeout: float = 1.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        assert asyncio.get_running_loop().time() < deadline, "condition never met"
-        await asyncio.sleep(0.01)
 
 
 def _event(request_id: str | int = 1) -> SimpleNamespace:
@@ -121,7 +115,7 @@ class TestChannelPressPaths:
     async def test_shared_widget_resolve_refuses_a_non_ascii_nonce(self) -> None:
         pending = PendingApprovals("webex")
         task = asyncio.create_task(pending.decide_with_cause("s1-nonascii", _event()))
-        await _until(lambda: pending.has_pending("s1-nonascii"))
+        await async_wait_until(lambda: pending.has_pending("s1-nonascii"))
         pending.reserve("s1-nonascii", 1)
 
         assert (

@@ -650,6 +650,10 @@ class VectorMemoryStore:
     _restrict_memory_files = _lifecycle._restrict_memory_files
     init = _lifecycle.init
     _init_database = _lifecycle._init_database
+    _schema_steps = _lifecycle._schema_steps
+    _apply_migration = _lifecycle._apply_migration
+    _crew_stamps_missing = _lifecycle._crew_stamps_missing
+    _stamp_crew_lineage = _lifecycle._stamp_crew_lineage
     close = _lifecycle.close
     _release_store_use_lock = _lifecycle._release_store_use_lock
 

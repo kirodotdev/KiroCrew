@@ -12,11 +12,10 @@ population instead of letting it become the whole gate.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from kiro_crew.acp.runtime import SessionStartGate
+from kiro_crew.testing.wait import finished
 
 
 @pytest.mark.asyncio
@@ -58,7 +57,7 @@ async def test_a_denied_permit_still_frees_its_slot_for_a_new_start():
     assert denied.hold_for_collector() is False
     denied.release()
 
-    fresh = await asyncio.wait_for(gate.acquire(), timeout=1.0)
+    fresh = await finished(gate.acquire(), "a fresh start acquiring the released headroom")
 
     assert fresh.queue_wait_ms >= 0.0
     assert gate.active == 2  # the parked collector plus this new start

@@ -20,7 +20,7 @@ raise a permission request now, which the READ_ONLY gate judges.
 
 Where the file lives, and why: kiro-cli discovers its selectable agents ONLY from
 ``~/.kiro/agents/*.json`` (user scope) and ``$PWD/.kiro/agents/*.json`` (the
-session's project), at process start (``acp/runtime.py``, ``agent.py``
+session's project), at process start (``acp/runtime.py``, ``agent_parts/spec_rebuild.py``
 ``ensure_agent_materialized``). There is no private directory it can be pointed
 at, and the project scope is the user's checkout — a tracked directory Kiro Crew
 must not write into. So the derived spec is published into the user-level kiro

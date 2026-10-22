@@ -16,6 +16,7 @@ import pytest
 from kiro_crew import mcp_grant
 from kiro_crew.connections import get_provider, l1_smoke
 from kiro_crew.mcp_discovery import McpServerInfo
+from kiro_crew.testing.wait import wait_until
 
 MCP_URL = "https://mcp.example.com/mcp"
 SESSION_ID = "sess-abc123"
@@ -770,9 +771,7 @@ def test_the_report_is_written_before_the_loop_joins_leaked_workers(tmp_path, mo
     )
     worker.start()
     try:
-        deadline = time.monotonic() + 5
-        while not report_path.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(report_path.exists, describe=lambda: "the report was never written")
         # main is still blocked joining the worker, yet the report is on disk.
         assert worker.is_alive() and report_path.exists()
     finally:

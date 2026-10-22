@@ -344,7 +344,7 @@ beforeEach(() => {
 // React Query's microtask scheduler).
 afterEach(realCreateClock)
 
-describe('MembersPage create links open the New crewmate card', () => {
+describe('MembersPage create links open the New mate card', () => {
   // `default` rides along untouched: the Assistant is its own member.
   const assistantAndAlpha = () => [defaultRow(), assistantRow(), row({ name: 'alpha', slug: 'alpha' })]
   /** True when the element, or an ancestor, is hidden by an inline display:none. */
@@ -389,7 +389,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
   }
 
-  it('a create link in Mate\'s chat opens the New crewmate card as a modal, prefilled: name in Name, goal in What it looks after; the chat stays MOUNTED and VISIBLE behind it; nothing is sent', async () => {
+  it('a create link in Mate\'s chat opens the New mate card as a modal, prefilled: name in Name, goal in What it looks after; the chat stays MOUNTED and VISIBLE behind it; nothing is sent', async () => {
     await openAssistant()
     const through = passedThrough()
     try {
@@ -459,7 +459,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
-  it('Create on a prefilled card posts that name and goal, asks for the first greeting, and opens the new crewmate', async () => {
+  it('Create on a prefilled card posts that name and goal, asks for the first greeting, and opens the new mate', async () => {
     await openAssistant()
     fireEvent.click(screen.getByTestId('chat-link-proposal'))
     await waitFor(() => expect(cardOpen()).toBe(true))
@@ -495,7 +495,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     }
   })
 
-  it('only Mate\'s chat intercepts: a crewmate chat\'s create link is left to the chat', async () => {
+  it('only Mate\'s chat intercepts: a mate chat\'s create link is left to the chat', async () => {
     await renderPage(assistantAndAlpha(), 'kirocrew', { route: '/members?member=alpha' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     const through = passedThrough()
@@ -593,7 +593,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     expect(chatPaneMounts.count).toBe(mountsBefore)
   })
 
-  it('the header shows only the display name, for Mate and for any labelled crewmate', async () => {
+  it('the header shows only the display name, for Mate and for any labelled mate', async () => {
     const utils = await renderPage([defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', display_name: 'Oncall Sentinel' })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     const title = screen.getByTestId('member-title-row')
@@ -638,7 +638,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       // The user picks alpha mid-create and agrees to leave the card.
       fireEvent.click(await rosterRow('alpha'))
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the mate is being created\?/))
       const membersMock = api.members as ReturnType<typeof vi.fn>
       membersMock.mockResolvedValue({
         members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -658,7 +658,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     }
   })
 
-  it('New crewmate pressed again while a left create still runs does not reopen a card that create would then close', async () => {
+  it('New mate pressed again while a left create still runs does not reopen a card that create would then close', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     try {
       let finish: (v: unknown) => void = () => {}
@@ -697,7 +697,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       await act(async () => { fail(new ApiError(500, 'boom')) })
       const notice = await screen.findByTestId('member-left-create-failed', undefined, PANE_READY)
-      expect(notice).toHaveTextContent("Couldn't create the crewmate.")
+      expect(notice).toHaveTextContent("Couldn't create the mate.")
       expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
       fireEvent.click(within(notice).getByRole('button'))
       await waitFor(() => expect(screen.queryByTestId('member-left-create-failed')).toBeNull())
@@ -739,7 +739,7 @@ describe('MembersPage create links open the New crewmate card', () => {
     }
   })
 
-  it('New crewmate again over a typed blank card, once the user agrees to leave, starts empty', async () => {
+  it('New mate again over a typed blank card, once the user agrees to leave, starts empty', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     try {
       await openAssistant()

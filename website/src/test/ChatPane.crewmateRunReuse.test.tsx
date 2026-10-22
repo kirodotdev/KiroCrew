@@ -126,7 +126,7 @@ beforeEach(() => {
   })
 })
 
-describe("a crewmate's run while a reply streams", () => {
+describe("a mate's run while a reply streams", () => {
   it('regroups the settled bubbles and moves the footer as the reply joins, streams and settles', async () => {
     const store = renderCrewmate()
     await screen.findByText(A2.content)

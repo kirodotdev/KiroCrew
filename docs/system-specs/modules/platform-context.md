@@ -650,7 +650,7 @@ Wired sites:
   through the shared `redact_via_context` shim.
 - Credential redaction — all egress scrubs route through the single
   `kiro_crew.platform.redact_via_context` shim (the one canonical
-  fail-closed-aware shim; modules import it as `redact`). Covers: `agent.py`
+  fail-closed-aware shim; modules import it as `redact`). Covers: `agent_parts/spec_build.py`
   SEL-audit callers, `mcp_core_parts/` chat-history/crew output, `mcp_cron_vet.py`
   deny-reason + script-vet and `mcp_cron.py` timezone messages, and the file-content egress the
   `dashboard/handlers/files.py` facade serves (the outbox's slot append in
@@ -793,7 +793,7 @@ Wired sites:
   module-load time (only at call time). v1 method addition to the existing
   `CredentialPolicy` Protocol; no `CONTRACT_VERSION` bump; `DefaultCredentialPolicy`
   returns `frozenset()` so standalone redaction is byte-identical.
-- `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
+- `agent_parts/spec_build.py` and `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively into the agent config build; the dynamic refresh also re-pins an
   existing entry's `command`/`args` and keeps its other keys.
 - `slack/events.py` / `slack/handler_runtime/dispatch.py` / `dashboard/handlers_system.py` —

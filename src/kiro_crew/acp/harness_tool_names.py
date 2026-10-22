@@ -15,14 +15,15 @@ backend by :data:`HARNESS_TOOL_ID_SEPARATOR` (``goose#shell``). A KAS id never
 contains that character (``_dispatch._HARNESS_TOOL_ID_RE``), so a KAS id can never
 be read through these tables, and a goose id never through KAS's.
 
-Most ids below are tools the live harness offered: goose 1.50.1's tool list as its
-request log sent it to the model, and opencode 1.18.30's as ``opencode debug agent
-build`` resolved it. opencode also has writers and a lister it offers only to some
-models or versions (``apply_patch``, whose name its binary carries, plus ``patch``,
-``multiedit`` and ``list``); they get rows too, because a row for a name that is
-never stated matches nothing, and a missing row lets that tool past an
-``fs_write`` or ``fs_read`` deny. A tool with no row (opencode's ``todowrite``) is
-met only by a matcher that names it as written.
+Most ids below are tools the live harness offered, measured on goose 1.50.1 (its
+tool list as its request log sent it to the model) and on opencode 1.18.30 (as
+``opencode debug agent build`` resolved it; the lane's pin is in
+``test/real_adapters/package.json``). opencode also has writers and a lister it
+offers only to some models or versions (``apply_patch``, whose name its binary
+carries, plus ``patch``, ``multiedit`` and ``list``); they get rows too, because a
+row for a name that is never stated matches nothing, and a missing row lets that
+tool past an ``fs_write`` or ``fs_read`` deny. A tool with no row (opencode's
+``todowrite``) is met only by a matcher that names it as written.
 
 An MCP tool needs one more step on opencode. goose states the server in its
 ``_meta`` block, so the ``@server/tool`` form is built from that. opencode states
@@ -116,8 +117,8 @@ CLAUDE_READ_ONLY_BUILTINS: dict[str, str] = {
 #: does the same job, named on the permission event as ``harness_builtin_tool``.
 #: The pair is the ownership proof. goose names an MCP or config extension's tool
 #: ``<extension>__<tool>``, so a server called ``developer`` that serves ``tree``
-#: arrives as ``("developer", "developer__tree")`` and matches nothing here (captured
-#: live on goose 1.50.1). Only the builtin ``developer`` extension Crew loads with
+#: arrives as ``("developer", "developer__tree")`` and matches nothing here (measured
+#: on goose 1.50.1). Only the builtin ``developer`` extension Crew loads with
 #: ``--with-builtin`` states a bare name. ``analyze`` is not listed: goose serves it
 #: from an extension named ``analyze``, which the identity-drift refusal turns down
 #: on every goose session. No tool that returns a file's text is listed, because

@@ -1,17 +1,18 @@
 """The repository guards keyed to ``dashboard/server.py`` keep reaching its owners.
 
-This file pins that each construct a guard reads in ``server.py`` by path stays there,
-that every review rule on the server also covers its owners (with the globstar
+This file pins that each construct a guard reads by path stays in the file the guard
+reads, that every review rule on the server also covers its owners (with the globstar
 matcher read as the reviewers read it), that the container smoke lane fires on the
 owners, that the async config-dir guard scans every owner coroutine, that the
-redaction census classifies the owners, and that ``server.py`` keeps the line range
-the RFCs cite. The suite is described in
+redaction census classifies the owners, and that each route symbol the RFCs cite
+resolves at its home. The suite is described in
 ``test_dashboard_server_composition_contract.py``.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 
 import pytest
@@ -24,47 +25,69 @@ from source_corpus import repo_root
 
 # ── the guards keep their reach ───────────────────────────────────────────────
 
-#: Constructs repository guards read in ``dashboard/server.py`` by path, with the count
-#: each guard asserts: the strict internal-path literal, the single heap-trim
-#: maintainer after the serving bind, the diag recorder's off switch, the channel
-#: manager's broadcast hand-off, the inherited-trust teardown and its wiring, the
-#: crew-log and browser-view drains, both runner constructions, both Kiro
-#: prerequisite seeds, both skill-read observers, the migrated-builtin sweep, the
-#: browser CLI override, the per-boot secret mint, the dashboard contributor seam and
-#: both cron-folder loads. An owner that grew one would move it out of the guard's
-#: sight, so each stays here.
-_STAYS_IN_THE_FACADE = (
-    (r"^_STRICT_INTERNAL_API_PATHS = frozenset\($", 1),
-    (r"platform_compat\.HeapTrimMaintainer\(\)", 1),
-    (r'os\.environ\.get\("KIROCREW_DIAG_RECORDER", ""\)\.strip\(\)\.lower\(\) in \(', 1),
-    (r"broadcast_fn=state\.broadcast_ws", 1),
-    (r"clear_trusted_sessions\(keep_policy=standing_trust\)", 1),
-    (r"functools\.partial\(_clear_override_derived_trust, state\)$", 1),
-    (r"functools\.partial\(_suspend_override_derived_trust, state\)$", 1),
-    (r"^    def _on_override_expired\(source: str\) -> None:$", 1),
-    (r"app\.on_cleanup\.append\(_crew_log_drain\)", 1),
-    (r"app\.on_cleanup\.append\(_browser_view_shutdown\)", 1),
-    (r"build_hardened_runner\(app", 2),
-    (r"KiroPrerequisiteService,$", 2),
-    (r"register_skill_read_observer\(", 2),
-    (r"^    from kiro_crew\.apps\.builtins import _MIGRATED_BUILTINS$", 1),
-    (r"asyncio\.to_thread\(browser_cli_launch\.cli_env_overrides\)", 1),
-    (r"_internal_secret = os\.urandom\(16\)\.hex\(\)$", 2),
-    (r"current_context\(\)\.dashboard\.contribute_routes\(app\)", 1),
-    (r"await asyncio\.to_thread\(state\.load_cron_folders\)", 2),
+#: Constructs repository guards read by path, with the count each guard asserts and
+#: the file that holds each (``server`` is ``dashboard/server.py``, the other stems are
+#: its ``server_runtime`` owners and its two pure-data modules): the strict
+#: internal-path literal, the single heap-trim maintainer after the serving bind, the
+#: diag recorder's off switch, the channel manager's broadcast hand-off, the
+#: inherited-trust teardown and its wiring, the crew-log and browser-view drains, both
+#: runner constructions, both Kiro prerequisite seeds, both skill-read observers, the
+#: migrated-builtin sweep, the browser CLI override, the per-boot secret mint, the
+#: dashboard contributor seam and both cron-folder loads. Each guard reads the file
+#: named here, so a construct that moved anywhere else would leave the guard's sight.
+_GUARDED_CONSTRUCTS = (
+    (r"^_STRICT_INTERNAL_API_PATHS = frozenset\($", 1, {"server_internal_paths": 1}),
+    (r"platform_compat\.HeapTrimMaintainer\(\)", 1, {"server": 1}),
+    (
+        r'os\.environ\.get\("KIROCREW_DIAG_RECORDER", ""\)\.strip\(\)\.lower\(\) in \(',
+        1,
+        {"server": 1},
+    ),
+    (r"broadcast_fn=state\.broadcast_ws", 1, {"server": 1}),
+    (r"clear_trusted_sessions\(keep_policy=standing_trust\)", 1, {"inherited_trust": 1}),
+    (r"functools\.partial\(_clear_override_derived_trust, state\)$", 1, {"server": 1}),
+    (r"functools\.partial\(_suspend_override_derived_trust, state\)$", 1, {"server": 1}),
+    (r"^    def _on_override_expired\(source: str\) -> None:$", 1, {"server": 1}),
+    (r"app\.on_cleanup\.append\(_crew_log_drain\)", 1, {"instances_lifecycle": 1}),
+    (r"app\.on_cleanup\.append\(_browser_view_shutdown\)", 1, {"browser_lifecycle": 1}),
+    (r"build_hardened_runner\(app", 2, {"server": 1, "api_entrypoint": 1}),
+    (r"KiroPrerequisiteService,$", 2, {"server": 1, "api_entrypoint": 1}),
+    (r"register_skill_read_observer\(", 2, {"server": 1, "api_entrypoint": 1}),
+    (r"^    from kiro_crew\.apps\.builtins import _MIGRATED_BUILTINS$", 1, {"server": 1}),
+    (r"asyncio\.to_thread\(browser_cli_launch\.cli_env_overrides\)", 1, {"server": 1}),
+    (r"_internal_secret = os\.urandom\(16\)\.hex\(\)$", 2, {"server": 1, "api_entrypoint": 1}),
+    (r"current_context\(\)\.dashboard\.contribute_routes\(app\)", 1, {"server": 1}),
+    (
+        r"await asyncio\.to_thread\(state\.load_cron_folders\)",
+        2,
+        {"server": 1, "api_entrypoint": 1},
+    ),
 )
 
 
-@pytest.mark.parametrize(("pattern", "count"), _STAYS_IN_THE_FACADE)
-def test_a_construct_a_guard_reads_in_the_facade_stays_there(pattern: str, count: int) -> None:
-    facade = _FACADE_PATH.read_text(encoding="utf-8")
-    assert len(re.findall(pattern, facade, re.MULTILINE)) == count
-    holders = [
-        stem
-        for stem, source in _owner_sources().items()
-        if re.search(pattern, source, re.MULTILINE)
-    ]
-    assert holders == []
+#: The server's two pure-data modules, beside it in ``dashboard/``.
+_DATA_STEMS = ("server_internal_paths", "server_response_headers")
+
+
+def _guarded_sources() -> dict[str, str]:
+    """The server, its owners and its two pure-data modules, by stem."""
+    data = {
+        stem: (_FACADE_PATH.parent / f"{stem}.py").read_text(encoding="utf-8")
+        for stem in _DATA_STEMS
+    }
+    return {"server": _FACADE_PATH.read_text(encoding="utf-8"), **_owner_sources(), **data}
+
+
+@pytest.mark.parametrize(("pattern", "count", "homes"), _GUARDED_CONSTRUCTS)
+def test_a_construct_a_guard_reads_stays_where_the_guard_reads_it(
+    pattern: str, count: int, homes: dict[str, int]
+) -> None:
+    assert sum(homes.values()) == count
+    found = {
+        stem: len(re.findall(pattern, source, re.MULTILINE))
+        for stem, source in _guarded_sources().items()
+    }
+    assert {stem: n for stem, n in found.items() if n} == homes
 
 
 def _globstar(pattern: str) -> re.Pattern[str]:
@@ -84,8 +107,11 @@ def _globstar(pattern: str) -> re.Pattern[str]:
 
 
 def _owner_paths() -> list[str]:
+    """The owner files and the server's two pure-data modules: every file the server's
+    one-module body now lives in besides ``server.py`` itself."""
     root = repo_root()
-    return sorted(path.relative_to(root).as_posix() for path in _OWNER_DIR.glob("*.py"))
+    data = [_FACADE_PATH.parent / f"{stem}.py" for stem in _DATA_STEMS]
+    return sorted(path.relative_to(root).as_posix() for path in [*_OWNER_DIR.glob("*.py"), *data])
 
 
 def _rules_missing_owners(rules: list[dict]) -> tuple[set[str], dict[str, list[str]]]:
@@ -190,7 +216,40 @@ def test_the_redaction_census_classifies_the_owners() -> None:
     assert "dashboard/server.py" not in security_posture.NON_EGRESS_REDACTION_MODULES
 
 
-def test_the_entrypoints_keep_the_cited_line_range() -> None:
-    """Request-for-change documents cite ``dashboard/server.py`` by line, and the docs
-    linter refuses a citation past the end of every file it can match."""
-    assert len(_FACADE_PATH.read_text(encoding="utf-8").splitlines()) >= 1660
+#: Route symbols the request-for-change documents cite by name rather than by line,
+#: with the file each resolves in and a route the symbol registers there.
+_RFC_CITED_SYMBOLS = (
+    (
+        "docs/request-for-change/rfc-resumable-subagent-sessions.md",
+        "kiro_crew.dashboard.server_runtime.mcp_routes",
+        "_register_mcp_routes",
+        ("POST", "/api/spawn"),
+    ),
+    (
+        "docs/request-for-change/rfc-resumable-subagent-sessions.md",
+        "kiro_crew.dashboard.routes.chat",
+        "register",
+        ("POST", "/api/chat"),
+    ),
+)
+
+
+@pytest.mark.parametrize(("doc", "module", "symbol", "route"), _RFC_CITED_SYMBOLS)
+def test_a_route_symbol_an_rfc_cites_resolves_at_its_home(
+    doc: str, module: str, symbol: str, route: tuple[str, str]
+) -> None:
+    """The cited name stands in the document beside its file, the file defines it, and
+    it registers the route the document cites it for. The document cites no line of
+    ``dashboard/server.py``, whose length the docs linter would otherwise hold it to."""
+    from aiohttp import web
+
+    text = (repo_root() / doc).read_text(encoding="utf-8")
+    path = module.replace(".", "/").removeprefix("kiro_crew/") + ".py"
+    assert f"`{symbol}` in `{path}`" in text
+    assert re.search(r"dashboard/server\.py:\d", text) is None
+    register = getattr(importlib.import_module(module), symbol, None)
+    assert callable(register)
+    app = web.Application()
+    register(app)
+    routes = {(r.method, r.resource.canonical) for r in app.router.routes() if r.resource}
+    assert route in routes

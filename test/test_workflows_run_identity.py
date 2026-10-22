@@ -638,8 +638,8 @@ async def test_admission_errors_name_the_member_binding_reason_and_its_remedy(re
     error = result["error"]
     assert error.startswith(f"Workflow memory is unavailable: {reason}. ")
     assert "No Global fallback was used." in error
-    assert "start a chat with no crewmate picked" in error
-    assert "pick a crewmate that has its own memory" in error
+    assert "start a chat with no mate picked" in error
+    assert "pick a mate that has its own memory" in error
     # The shared wrapper is stripped, so neither half of it appears twice.
     assert error.count("memory is unavailable") == 1
     assert "Global was not used" not in error
@@ -685,7 +685,7 @@ async def test_admission_errors_name_a_wrapped_memory_cause_but_not_an_os_cause(
         "Workflow memory is unavailable: malformed execution context "
         "(a member cannot use the Global store). No Global fallback was used. "
     )
-    assert "start a chat with no crewmate picked" in binding["error"]
+    assert "start a chat with no mate picked" in binding["error"]
     hidden = await os_cause()
     assert hidden["error"] == "Workflow memory is unavailable; no Global fallback was used."
     assert "/private/path" not in hidden["error"]

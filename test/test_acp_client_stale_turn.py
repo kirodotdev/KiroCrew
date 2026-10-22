@@ -1089,7 +1089,10 @@ class TestToolStallKeepalive:
         async def keepalive_pinger():
             while not stop.is_set():
                 client.touch_activity()
-                await asyncio.sleep(0.1)
+                # Pings well inside the stall window are what keep the watchdog quiet.
+                await asyncio.sleep(
+                    0.1
+                )  # flake-ok: the keepalive cadence is the stimulus under test
 
         pinger = asyncio.create_task(keepalive_pinger())
 

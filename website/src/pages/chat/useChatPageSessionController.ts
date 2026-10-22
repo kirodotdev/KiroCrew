@@ -41,6 +41,14 @@ export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | nul
 // so it may only retire the notice, never move them.
 const SID_RECOVERY_WINDOW_MS = 30_000
 
+/** The key of the history entry the browser stands on, which can be ahead of
+ *  the rendered `location.key` while a router transition is uncommitted. The
+ *  fallback mirrors react-router's own for an entry it never wrote state to. */
+function liveHistoryKey(): string {
+  const state = window.history.state as { key?: unknown } | null
+  return typeof state?.key === 'string' && state.key ? state.key : 'default'
+}
+
 interface UseChatPageSessionControllerArgs {
   activeSlot: string | null
   activeSlotRef: MutableRefObject<string | null>
@@ -199,6 +207,23 @@ export function useChatPageSessionController({
     // itself dep-free, so this identity is genuinely stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionTabs.openInNewTab, dispatch, activeSlotRef])
+  // Read at click time, like `connectedRef`: the callback below is memoized.
+  const tabsRef = useRef(sessionTabs.tabs)
+  tabsRef.current = sessionTabs.tabs
+  /**
+   * Give `key` its own tab beside the active one, unless it has one. Backs
+   * "Open Sidebar Sessions in a Session Tab": a sidebar or flyout click calls it
+   * right after dispatching `switchSlot`. The hook replaces the active tab's
+   * session only from an effect that runs after this update is queued, and
+   * that effect's functional update then finds `key` in the set, so the tab
+   * the user was on keeps its session. An existing tab gets no cue, unlike
+   * `openSlotInNewTab`: the switch is the response.
+   */
+  const ensureSlotTab = useCallback((key: string) => {
+    if (!tabsRef.current.includes(key)) sessionTabs.openInNewTab(key)
+    // Same stable-identity reason as `openSlotInNewTab` above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionTabs.openInNewTab])
   const selectSessionTab = useCallback((key: string) => {
     if (key === activeSlotRef.current || !connectedRef.current) return
     // Tab-strip select is a user gesture on a session reference: the announced
@@ -300,6 +325,27 @@ export function useChatPageSessionController({
   /** A push has been issued and its destination key is not minted yet — the sync
    *  effect records it on the commit that push lands in. */
   const pushedEntryPending = useRef(false)
+  /**
+   * The sync effect's last URL write while the router has not committed it.
+   *
+   * `<BrowserRouter>` commits location changes inside `startTransition`, so
+   * after `navigate()` the browser is already on the new entry while the
+   * rendered `locationKey` and `searchParams` still describe `fromKey`, the
+   * entry the write left. Until a commit moves `locationKey` off `fromKey`, the
+   * rendered URL is stale: a re-run must compare against `url`, not decide a
+   * second push from the old `?sid=`. `sid` is the session the write named, so
+   * a re-run can tell a same-session amend from a further session switch.
+   */
+  const inFlightWriteRef = useRef<{ fromKey: string; url: string; sid: string; pushed: boolean } | null>(null)
+  /**
+   * Set when Back lands on `fromKey` before the push off it committed. The
+   * router then commits the key it already showed, which the POP reader would
+   * otherwise treat as a re-render it has already honoured, and no URL input of
+   * the sync effect changes. The reader consumes it; the sync effect holds
+   * while it is set, because its rendered `?sid=` still looks like the switch.
+   */
+  const poppedToOriginKeyRef = useRef<string | null>(null)
+  const [popOverWriteTick, setPopOverWriteTick] = useState(0)
   /** The one URL write a close holds back while its DELETE is unanswered: the
    *  entry naming the closing `sid`, standing under the `landing` session the
    *  close switched to. Per-mount, cleared once the URL moves off that sid. */
@@ -557,6 +603,27 @@ export function useChatPageSessionController({
   // `activeSlot`. A mismatch on that same entry is a switch made in this
   // frame (a fork, a new chat), not a host request; see the reader below.
   const embedAgreedSidRef = useRef<{ locationKey: string; sid: string } | null>(null)
+  // Back that lands before our push committed. The browser reports it at once;
+  // the router reports it only when its transition commits, and then with the
+  // entry key it was already showing. Read the live entry here, because nothing
+  // the reader sees in render can tell this POP from a stale re-render. The embed
+  // chat popout also records writes, so it drops the stale record here; only the
+  // main dashboard's POP reader honours the mark.
+  useEffect(() => {
+    if (embedMode === 'sessions' || noUrlSync) return
+    const onPopState = () => {
+      const write = inFlightWriteRef.current
+      if (!write?.pushed) return
+      if (liveHistoryKey() !== write.fromKey) return
+      inFlightWriteRef.current = null
+      pushedEntryPending.current = false
+      if (embedMode) return
+      poppedToOriginKeyRef.current = write.fromKey
+      setPopOverWriteTick(n => n + 1)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [embedMode, noUrlSync])
   // Main dashboard: react ONLY to a genuine Back/Forward (navigationType POP).
   // Our own activeSlot→URL writes are PUSH/REPLACE, so they never re-enter here
   // — that is what avoids the activeSlot↔URL ping-pong. A session switch pushes
@@ -623,7 +690,17 @@ export function useChatPageSessionController({
     // arm on the first non-POP nav and only honor POP once armed — this ignores
     // the mount POP (deep-link load, owned by initialSidRef) so it can't wrongly
     // arm popInFlightRef and freeze the next switch.
-    if (!embedMode) {
+    // A Back the browser took off our uncommitted push (see `poppedToOriginKeyRef`)
+    // is honoured whatever the router has committed so far: the entry we stand on
+    // is the one the push left, and it names the session to return to. The mark
+    // is consumed before the `connected` gate, as any POP is, so an offline Back
+    // cannot leave it set and hold URL sync on this entry.
+    const poppedOverWrite = !embedMode && poppedToOriginKeyRef.current === locationKey
+    if (poppedOverWrite) {
+      poppedToOriginKeyRef.current = null
+      popReadyRef.current = true
+      lastLocKeyRef.current = locationKey
+    } else if (!embedMode) {
       if (navigationType !== 'POP') { popReadyRef.current = true; lastLocKeyRef.current = locationKey; return }
       if (!popReadyRef.current) return
       // navigationType stays 'POP' after a Back/Forward until our own navigate()
@@ -680,7 +757,7 @@ export function useChatPageSessionController({
     if (!rewriteEligible(urlSid)) return
     popInFlightRef.current = true
     repairPoppedSid()
-  }, [searchParams, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile])
+  }, [searchParams, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile, popOverWriteTick])
 
   // Timeout: if slot never appears after 5s, show an error. Keep the denied key
   // so a later authoritative slots frame can revoke that verdict; keeping
@@ -884,10 +961,17 @@ export function useChatPageSessionController({
     // entry the push created — the Forward target. Placed ahead of every early
     // return: the run that lands here is exactly the one where the URL already
     // agrees with `activeSlot`, which is the earliest bail.
-    if (pushedEntryPending.current) {
+    // A run still standing on the entry our last write left is a re-run before
+    // that write committed, not the landing.
+    if (inFlightWriteRef.current && inFlightWriteRef.current.fromKey !== locationKey) inFlightWriteRef.current = null
+    const inFlight = inFlightWriteRef.current
+    if (pushedEntryPending.current && !inFlight) {
       pushedEntryPending.current = false
       pushedSessionEntryKeys.current.add(locationKey)
     }
+    // Back already took the browser off our uncommitted push; the POP reader owns
+    // this entry, and the stale `?sid=` here would push the URL forward again.
+    if (poppedToOriginKeyRef.current === locationKey) return
     const sp = searchParamsRef.current
     // Back/Forward (POP) activation in flight: the browser already set the URL to
     // the target session and activeSlot is catching up via the switchSlot the
@@ -907,21 +991,19 @@ export function useChatPageSessionController({
       popInFlightRef.current = false
     }
     if (!activeSlot) {
+      // A popout's `?sid=` names the session it was opened for. Dropping it
+      // would leave a reload with no sid of its own, and PopoutFrame would
+      // register the window for whatever chat it picked next.
+      if (popout) return
       if (sp.has('sid') && !initialSidRef.current && !pendingSidRef.current) {
         navigate(basePath, { replace: true })
       }
       return
     }
     pendingSidRef.current = false
-    // `current` is the key the URL names, legacy `?slot=` included, so close
-    // eligibility below reads the same key as the POP reader. The no-op bail
-    // compares the canonical `?sid=` alone: a legacy URL naming the active
-    // session still falls through and is rewritten to `?sid=`.
-    const current = sp.get('sid') || sp.get('slot')
     const slot = filteredSlots.find(s => s.key === activeSlot)
     const slug = slot?.title && slot.title !== slot.key ? toSlug(slot.title) : ''
     const expectedPath = `${basePath}${slug ? '/' + slug : ''}`
-    if (sp.get('sid') === activeSlot && locationPathname === expectedPath) return
     const next = new URLSearchParams(sp)
     next.set('sid', activeSlot)
     next.delete('slot')
@@ -932,6 +1014,26 @@ export function useChatPageSessionController({
     // Never re-write a credential the token effect already stripped
     // (session deep links arrive as `/chat?sid=…&token=…`).
     next.delete('token')
+    const url = `${expectedPath}?${next}`
+    // Our last write has not committed, so `sp` and `locationPathname` name the
+    // entry it left and cannot decide anything. The browser is on the written
+    // entry: leave it if it already says this, and amend it in place when the
+    // session is the same, as when the title lands and the slug changes. A
+    // different session is a further switch, decided below against the written
+    // entry.
+    if (inFlight) {
+      if (inFlight.url === url) return
+      if (inFlight.sid === activeSlot) {
+        inFlight.url = url
+        navigate(url, { replace: true })
+        return
+      }
+    } else if (sp.get('sid') === activeSlot && locationPathname === expectedPath) return
+    // `current` is the key the entry we stand on names, legacy `?slot=` included,
+    // so close eligibility below reads the same key as the POP reader. The no-op
+    // bail above compares the canonical `?sid=` alone: a legacy URL naming the
+    // active session still falls through and is rewritten to `?sid=`.
+    const current = inFlight ? inFlight.sid : (sp.get('sid') || sp.get('slot'))
     // Push vs replace — see `shouldReplaceSessionUrl` for why mobile never
     // pushes. Kept as a named predicate rather than an inline boolean so the
     // reasoning has somewhere to live and a test can pin it.
@@ -983,11 +1085,16 @@ export function useChatPageSessionController({
     // commit the push lands in. Recording only the entry left behind made Forward
     // read as stale, and the reader REPAIRS what it declines, so Forward
     // overwrote the very session it should have restored.
+    //
+    // A push on top of an uncommitted write leaves the written entry behind, so
+    // its live key is recorded too. `fromKey` stays the rendered key, because
+    // only a commit off it ends the in-flight window.
     if (!replace) {
-      pushedSessionEntryKeys.current.add(locationKey)
+      pushedSessionEntryKeys.current.add(inFlight ? liveHistoryKey() : locationKey)
       pushedEntryPending.current = true
     }
-    navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace })
+    inFlightWriteRef.current = { fromKey: locationKey, url, sid: activeSlot, pushed: !replace }
+    navigate(url, { replace })
     // `locationKey` and not just `locationPathname`: consuming the mobile
     // drawer's history entry lands on a DIFFERENT entry whose pathname is
     // IDENTICAL (the entry was a duplicate), so pathname alone reports no change
@@ -997,7 +1104,7 @@ export function useChatPageSessionController({
     // POPs are still funnelled through the `popInFlightRef` bail above, so this
     // adds a re-check, not a new writer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, navigate, basePath, locationPathname, locationKey, embedded, noUrlSync, isMobile])
+  }, [activeSlot, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, navigate, basePath, locationPathname, locationKey, embedded, noUrlSync, isMobile, popout])
 
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
@@ -1022,12 +1129,22 @@ export function useChatPageSessionController({
   // If no slots exist at all, auto-create one so the user lands in a ready chat
   const autoCreatedRef = useRef(false)
   const hadActiveSlotRef = useRef(false)
+  // The last chat THIS window showed. A popout is bound to it.
+  const lastShownSlotRef = useRef<string | null>(null)
+  // This window's own recency stack (activeSlot is never in it). The stored
+  // key is shared by every tab and popout of the origin, so it cannot say
+  // what this window was doing.
+  // Read through a ref: `switchSlot` rewrites the array on every dispatch, so
+  // as an effect dependency it would re-run the pick it just made.
+  const slotHistory = useAppSelector(s => s.chat.slotHistory)
+  const slotHistoryRef = useRef(slotHistory); slotHistoryRef.current = slotHistory
   // The hub's record of this pane's last chat (#16009), used for the first
   // pick only. A soft hint, unlike ?sid=: a chat that is gone falls through.
   const slotHintRef = useRef(embedded ? null : searchParams.get(PANE_SLOT_HINT_PARAM))
   useEffect(() => {
     if (activeSlot) {
       hadActiveSlotRef.current = true
+      lastShownSlotRef.current = activeSlot
       slotHintRef.current = null
       return
     }
@@ -1036,7 +1153,14 @@ export function useChatPageSessionController({
     // a different slot and orphan the linked one (breaking Slack mirroring).
     if (tokenConsumingRef.current) return
     if (newSessionRef.current || newSlotFailed) return
-    if (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current) return
+    const listed = new Set(filteredSlots.map(s => s.key))
+    // A popout only ever opens its own chat: the one it showed last, which its
+    // `?sid=` still names (the URL writer keeps it). With that chat unlisted it
+    // shows no chat and creates none, also after a reload, and it reopens the
+    // chat when a later frame lists it again.
+    const bound = popout && hadActiveSlotRef.current ? lastShownSlotRef.current : null
+    if (popout && !(bound && listed.has(bound))) return
+    if (!bound && (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current)) return
     // A crash-recovery reload opens nothing. The remembered chat -- or the first
     // one, which is often the same busy chat -- may be what froze the renderer,
     // and reopening it would freeze and kill it again (#12907). The user picks.
@@ -1044,11 +1168,16 @@ export function useChatPageSessionController({
     // closing it moves to a sibling as usual.
     if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
     if (filteredSlots.length > 0) {
-      const saved = localStorage.getItem(slotStorageKey)
+      // The stored key is a refresh memory, read for the first pick only. Every
+      // tab and popout rewrites it on each slots frame, so once this window has
+      // shown a chat, its own recency stack decides where it lands.
+      const recent = hadActiveSlotRef.current ? (slotHistoryRef.current ?? []).filter(k => listed.has(k)).pop() : undefined
+      const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
-      const target = hint && filteredSlots.some(s => s.key === hint) ? hint
-        : saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key
+      const target = bound ? bound
+        : hint && listed.has(hint) ? hint
+        : recent ?? (saved && listed.has(saved) ? saved : filteredSlots[0].key)
       dispatch(switchSlot({ key: target, automatic: true }))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one
@@ -1057,7 +1186,7 @@ export function useChatPageSessionController({
       // never the default crewmate alias.
       dispatch(createSlot({ mode }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a
@@ -1089,6 +1218,7 @@ export function useChatPageSessionController({
   return {
     closeSessionTab,
     drawerPopRef,
+    ensureSlotTab,
     handleResumeSession,
     appSlotLaunch,
     setAppSlotLaunch,

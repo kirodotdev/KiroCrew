@@ -1,16 +1,20 @@
-# Smoke: the Crewmates tab of Customize -- the roster of crewmates read in both
-# of its layouts, then one crewmate's editor opened. The `rich` seed ships no crews; the one card is the member
-# `boot.sh` adds (`GUI_MEMBERS`, default `nova-sky`), so the roster is exactly
-# one card named `nova-sky` built from the `kirocrew` custom agent and the `default`
-# workspace, with the description seed_home.py writes.
+# Smoke: the Mates tab of Customize -- the roster of mates read in both
+# of its layouts, then one mate's editor opened. The `rich` seed ships no
+# crews of its own, so the roster is the built-in `default` mate (its
+# "Default" badge, "Used for all new chats") and the member `boot.sh` adds
+# (`GUI_MEMBERS`, default `nova-sky`), both built from the `kirocrew` custom
+# agent and the `default` workspace; nova-sky carries the description
+# seed_home.py writes.
 #
 # The tab rail remembers its last tab per browser session, so the first step
-# selects "Agents" explicitly rather than assuming it is showing. The
-# Cards / List switcher persists too: attempt 2 of a failed run finds "List"
-# already selected and is told to leave it. Opening the editor writes nothing,
-# so both attempts read the same target. The editor's rail lands on Overview,
-# whose diagram names the template and workspace the card showed, which is
-# what the final expectations read; the create / delete paths are nightly work.
+# selects "Mates" explicitly rather than assuming it is showing. The
+# Cards / List switcher persists too, so each step names the view it needs and
+# says to leave it when it is already showing. Opening the editor writes
+# nothing, so both attempts read the same target. The editor is the shared
+# mate editor: a flat rail that lands on "General", whose form shows the
+# avatar's "Edit avatar" button and the "Built from" and "Workspace" fields
+# the card showed, which is what the final expectations read; the create /
+# delete paths are nightly work.
 name: capabilities-agents-list-and-open-editor
 tier: smoke
 feature: capabilities
@@ -19,22 +23,22 @@ user_story: >-
   workspace with a custom avatar, so that I can pick the right worker per
   task.
 docs_url: docs/feature-map/README.md
-summary: Read the one seeded agent as a card and as a table row, then open its editor from the row
+summary: Read the seeded mates as cards and as table rows, then open nova-sky's editor from its row
 preconditions:
   seed: rich
   members: [nova-sky]
   start_url: /capabilities
   fresh_target: true
 steps:
-  - You are on the Customize page. It has a rail of tabs on the left, grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Crewmates" (people icon, first under "Agent") is not already highlighted, click it.
-  - The pane shows one card named "nova-sky" whose description reads "Nova Sky -- seeded crew member for the GUI user test." and whose binding grid has small-capital labels with values, among them BUILT FROM "kirocrew" and WORKSPACE "default". Above the cards is a filter box ("Filter crewmates…"), a "Cards | List" switcher and an "Add crewmate" button. Do not click the card yet.
-  - Click "List" in the "Cards | List" switcher (if "List" is already highlighted, leave it). The cards are replaced by a table with the columns Crewmate, Built from, Workspace, Memory Store and Model, and one row for nova-sky.
-  - Click the "nova-sky" row to open its editor. A dialog opens whose title is the name "nova-sky" in a monospace font.
+  - You are on the Customize page. It has a rail of tabs on the left, grouped under "Agent", "Knowledge & instructions" and "Automation". If the tab labelled "Mates" (people icon, first under "Agent") is not already highlighted, click it.
+  - Above the roster are a "Filter mates…" box, a "Cards | List" switcher and a "New mate" button. If "Cards" is not highlighted, click it. Two cards show, "default" (with a "Default" badge) and "nova-sky", whose description reads "Nova Sky -- seeded crew member for the GUI user test." and whose BUILT FROM is "kirocrew" and WORKSPACE "default". Do not click a card.
+  - Click "List" in the "Cards | List" switcher (if "List" is already highlighted, leave it). The cards are replaced by a table with the columns Mate, Built from, Workspace, Memory Store and Model, with one row for default and one for nova-sky.
+  - Click the "nova-sky" row to open its editor. A dialog opens whose title is the name "nova-sky".
   - Wait a second for the dialog to finish loading.
 expectations:
-  - A dialog is open whose title reads "nova-sky", with two buttons beside the title labelled "Edit avatar" and "Chat with this crewmate".
-  - The dialog has a rail on its left with grouped entries ("Who it is", "What it can do", "Where it works", "How work arrives"); the entry "Overview" under "Who it is" is highlighted.
-  - The Overview pane shows a diagram whose "What it works with" side lists "Built from" with the value "kirocrew" and "Workspace" with the value "default".
+  - A dialog is open whose title reads "nova-sky".
+  - The dialog has a rail on its left listing "General", "Built From", "Approvals", "Schedules", "Webhooks", "Memory" and "Danger Zone", and "General" is highlighted.
+  - The General pane shows an "Edit avatar" button beside the mate's avatar, a field labelled BUILT FROM whose value is "kirocrew" and a field labelled WORKSPACE whose value is "default" (the labels may be drawn in small capitals).
   - No red error notice is visible in the dialog or behind it.
 max_steps: 12
 max_seconds: 300

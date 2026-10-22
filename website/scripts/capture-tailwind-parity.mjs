@@ -173,10 +173,10 @@ async function shootAgents(page, base, out, theme) {
   await freezeMotion(page)
   await page.screenshot({ path: join(out, `${theme}-agents.png`) })
 
-  const card = page.getByRole('button', { name: /Edit (crew|agent|crewmate) atlas/i })
+  const card = page.getByRole('button', { name: /Edit (crew|agent|mate) atlas/i })
   await card.waitFor({ state: 'visible', timeout: 15000 })
   await card.click()
-  const sheet = page.getByRole('dialog', { name: /edit (crew|agent|crewmate)/i })
+  const sheet = page.getByRole('dialog', { name: /edit (crew|agent|mate)/i })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(800)
   await assertPainted(sheet, 'edit-crew dialog')

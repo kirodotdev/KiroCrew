@@ -45,7 +45,7 @@ in the **same commit** when you change what it documents.
 | `acp/`, kiro-cli transport, providers | [acp-client](docs/system-specs/modules/acp-client.md) + [providers](docs/system-specs/modules/providers.md) |
 | picking or defaulting a model anywhere | [model-selection](docs/system-specs/common/model-selection.md) + [model-fallback](docs/system-specs/modules/model-fallback.md) |
 | adding or adapting an agent harness (BYO, KAS, claude) | [harness-parity](docs/system-specs/modules/harness-parity.md) (invariants) + [harness-parity-gate](docs/ci/harness-parity-gate.md) (CI) |
-| an agent spec: `agent_discovery.py` and its `agent_discovery_parts/` owners, `agent_spec_format.py`, `agent.py`'s spec writers and `agent_materialization/`, `acp/kas_agents.py`, or any field a spec carries | [agent-spec-fields](src/kiro_crew/docs/agent-spec-fields.md) (what each field does, per backend) + [agent-host-contract](docs/system-specs/modules/agent-host-contract.md) (the per-harness table) |
+| an agent spec: `agent_discovery.py` and its `agent_discovery_parts/` owners, `agent_spec_format.py`, `agent.py`'s spec writers, its `agent_parts/` owners and `agent_materialization/`, `acp/kas_agents.py`, or any field a spec carries | [agent-spec-fields](src/kiro_crew/docs/agent-spec-fields.md) (what each field does, per backend) + [agent-host-contract](docs/system-specs/modules/agent-host-contract.md) (the per-harness table) |
 | the publicly selectable Claude backend | [claude-code-provider](docs/system-specs/modules/claude-code-provider.md) |
 | sessions, slots, session keys, PIDs | [session](docs/system-specs/modules/session.md) + [history](docs/system-specs/modules/history.md) |
 | killing a runtime, leases and tenancies, sweeps and reapers, `runtime_ownership.py`, `runtime_reconcile.py`, the kill paths of `session_pid.py` and its `session_pid_*.py` owners | [runtime-ownership](docs/system-specs/modules/runtime-ownership.md) |
@@ -179,8 +179,8 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
 fallback fails at runtime for anyone not entitled to it, silently until the first
 prompt. The default is `"auto"`; resolve a substitute choice through
 `acp.client.resolve_usable_model`; pin a cheaper model for the worker roles only
-via `agent.role_models.<role>` (and, for one crewmate's dispatched sessions, via
-that crewmate's `worker_model`). `code-review.yml` fails on a newly added hardcoded
+via `agent.role_models.<role>` (and, for one mate's dispatched sessions, via
+that mate's `worker_model`). `code-review.yml` fails on a newly added hardcoded
 literal. Rules and the one exception:
 [model-selection](docs/system-specs/common/model-selection.md).
 
@@ -286,6 +286,10 @@ bounded worker count; the full suite is CI's job and never runs locally unless a
 human passes `--full`. See
 [kirocrew-prepare-pr](src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/references/gate-floor.md).
 
+To run the cheap CI gates in one go and record that you did, use the optional
+[pre-push gate](src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/references/pre-push-gate.md).
+It is advisory: nothing refuses a push without it.
+
 - **On macOS, run `mypy --platform linux src/kiro_crew`.** Without it a local run
   reports errors you did not cause and MISSES the Linux-only errors CI fails on, so
   a clean local run is a false green.
@@ -323,8 +327,9 @@ job's `semgrep/test-determinism.yaml` refuses the commonest on a new line, and
 `test/test_flake_pattern_ratchet.py` counts per file the clock, wait, port, environment
 and module-cache shapes those patterns miss, failing a change that adds one to a file
 (measured against its merge-base; a deliberate one carries `# flake-ok: <reason>`).
-It is a local, pre-push gate (why: testing-conventions.md "Determinism contract"):
-run `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing.
+Fast Gate's `flake-pattern-ratchet` job runs it on every pull request and fails when it
+compares nothing (why: testing-conventions.md "Determinism contract"); run
+`python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing to see it first.
 Contract:
 [testing-conventions § Determinism contract](docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
 

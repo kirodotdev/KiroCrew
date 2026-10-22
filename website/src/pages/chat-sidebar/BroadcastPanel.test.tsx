@@ -36,7 +36,7 @@ beforeEach(() => {
 afterEach(() => { vi.clearAllMocks() })
 
 describe('BroadcastPanel', () => {
-  it('defaults to looping sessions with crewmates excluded', () => {
+  it('defaults to looping sessions with mates excluded', () => {
     setup()
     expect(screen.getByTestId('broadcast-crew-exclude').getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByTestId('broadcast-row-loop-busy')).toBeTruthy()
@@ -52,7 +52,7 @@ describe('BroadcastPanel', () => {
     expect(screen.getByTestId('broadcast-row-loop-idle').textContent).toContain('Starts new turn')
   })
 
-  it('brings crewmates in when included', () => {
+  it('brings mates in when included', () => {
     setup()
     fireEvent.click(screen.getByTestId('broadcast-crew-include'))
     expect(screen.getByTestId('broadcast-row-crew-loop')).toBeTruthy()

@@ -166,4 +166,12 @@ describe('ChatPage embedded mode', () => {
     // URL should stay unchanged — embedded mode doesn't consume these params
     expect(currentUrl).toBe('/apps/workbench?autoSend=1&prefill=hello')
   })
+
+  it('keeps the chat pane background, since embedding hosts paint their own surface under it', async () => {
+    const { container } = renderEmbedded({ route: '/apps/workbench', slots, activeSlot: 'chat-1-100' })
+    await waitFor(() => {
+      expect(container.querySelector('div.relative.flex.flex-col.min-w-0.min-h-0.h-full')).not.toBeNull()
+    })
+    expect(container.querySelector('div.relative.flex.flex-col.min-w-0.min-h-0.h-full')!.classList).toContain('bg-bg')
+  })
 })

@@ -40,7 +40,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +52,7 @@ import pytest
 from kiro_crew.loopback_http import build_loopback_opener
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.pod import provision as prov
+from kiro_crew.testing.wait import wait_until
 
 # The pod plane these scenarios run on is hermetic: its own roots, its own unit
 # prefix and its own port band, so a run can never collide with (or reclaim) a
@@ -473,19 +473,30 @@ def _resolve_backend(scratch: Path) -> Path | None:
 def _wait_for(deadline_secs: float, probe, want) -> Any:
     """Poll ``probe`` until it returns a value ``want`` accepts, or the deadline.
 
-    Probe first, test the deadline after -- a do-while. A pre-test loop reads a
-    clock that may already have passed a deadline computed a fork earlier and
-    skips its only body, reporting a timeout on a question nobody asked.
+    Returns the LAST value probed either way: ``wait_until`` reads the probe once
+    before its first deadline check, so a deadline computed a fork earlier still
+    gets one real answer, and the caller reports that answer when it is not the
+    wanted one.
     """
-    deadline = time.monotonic() + deadline_secs
     last: Any = None
-    while True:
+    probed = False
+
+    def _accepted() -> bool:
+        nonlocal last, probed
+        probed = False
         last = probe()
-        if want(last):
-            return last
-        if time.monotonic() >= deadline:
-            return last
-        time.sleep(POLL_INTERVAL)
+        probed = True
+        return bool(want(last))
+
+    try:
+        wait_until(_accepted, timeout=deadline_secs, interval=POLL_INTERVAL)
+    except AssertionError:
+        # Only the deadline is swallowed: the caller owns that failure, reading
+        # ``last`` and failing with the pod's own logs. An assertion the probe
+        # itself raised leaves ``probed`` False and propagates with its message.
+        if not probed:
+            raise
+    return last
 
 
 @pytest.fixture(scope="session")

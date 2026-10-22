@@ -25,6 +25,7 @@ from session_usage_helpers import (
 )
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestPollNeverRefreshesInsideTheInterval:
@@ -229,11 +230,7 @@ class TestUsageRefreshRoute:
             with patch("asyncio.create_subprocess_exec", spawn):
                 first = asyncio.ensure_future(c.post("/api/sessions/usage/refresh"))
                 # Let the first click reach the scrape and block inside it.
-                for _ in range(200):
-                    if spawn.await_count:
-                        break
-                    # flake-ok: pre-existing 10 ms interval of a bounded 200-step poll for the first spawn, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(0.01)
+                await async_wait_until(lambda: spawn.await_count)
                 assert spawn.await_count == 1
                 second = await c.post("/api/sessions/usage/refresh")
                 assert second.status == 409, await second.text()

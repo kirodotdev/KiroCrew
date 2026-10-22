@@ -30,6 +30,7 @@ import time
 import pytest
 
 from kiro_crew import platform_compat, sandbox
+from kiro_crew.testing.wait import wait_until
 
 _WINDOWS_ONLY = pytest.mark.skipif(
     not platform_compat.IS_WINDOWS, reason="Job objects are Windows-only"
@@ -653,9 +654,11 @@ class TestPythonLauncherHops:
             assert outcome.failure == "timeout", outcome
             assert pid_file.is_file(), "the interpreter never started, so the test measured nothing"
             child_pid = int(pid_file.read_text())
-            deadline = time.monotonic() + 10
-            while platform_compat.pid_exists(child_pid) and time.monotonic() < deadline:
-                time.sleep(0.1)
+            wait_until(
+                lambda: not platform_compat.pid_exists(child_pid),
+                timeout=10,
+                describe=lambda: f"interpreter {child_pid} is still alive",
+            )
             assert not platform_compat.pid_exists(
                 child_pid
             ), f"interpreter {child_pid} outlived its redirector"

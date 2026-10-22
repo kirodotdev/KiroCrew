@@ -71,6 +71,10 @@ _SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
     # a workstreams task with title and summary at their clamps, beside the hourly
     # buckets a board and a spender each keep (measured below, see the test)
     "workstreams": 1_150,
+    # a milestone row: text, target, current and its stamp at CREWMATE_TEXT_LIMIT
+    "goal": 1_700,
+    # a waiting row: kind, text, stamp and its options, each at CREWMATE_TEXT_LIMIT
+    "waiting": 11_000,
 }
 
 #: Default ceiling on the bytes EVERY warm slot cell may hold together, across every

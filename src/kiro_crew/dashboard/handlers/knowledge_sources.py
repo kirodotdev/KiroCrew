@@ -113,6 +113,9 @@ async def list_sources(request: web.Request) -> web.Response:
     sweep after sweep at idle, so without them here the only place the ongoing
     cost surfaces is a credit balance after the fact.
     """
+    owner_denied = await _require_knowledge_owner(request, "knowledge.sources.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     rows = await asyncio.to_thread(_source_rows, store, request.query.get("uri"))
     sources = [dict(r) for r in rows]
@@ -698,6 +701,9 @@ def _folder_file_rows(store, source_id: str) -> list:
 
 async def list_source_files(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources/{id}/files -- list files with scan status."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.source.files.read")
+    if owner_denied is not None:
+        return owner_denied
     store = _store(request)
     source_id = request.match_info["id"]
     rows = await asyncio.to_thread(_folder_file_rows, store, source_id)
@@ -786,6 +792,9 @@ async def skip_file(request: web.Request) -> web.Response:
 
 async def get_config(request: web.Request) -> web.Response:
     """GET /api/knowledge/config -- returns supported formats and status."""
+    owner_denied = await _require_knowledge_owner(request, "knowledge.config.read")
+    if owner_denied is not None:
+        return owner_denied
     pipeline = request.app.get("knowledge_pipeline")
     # ``FileReader.SUPPORTED`` contains '' (the empty suffix) to mark that
     # extensionless files (e.g. ``README``, ``Makefile``) are ingestable as

@@ -6,20 +6,26 @@ interface Props {
   className?: string
   title?: string
   onDoubleClick?: () => void
+  /** The current text is a placeholder (e.g. "Untitled session"), not a real title. */
+  placeholder?: boolean
 }
 
-export default function TypewriterText({ text, speed = 30, className, title, onDoubleClick }: Props) {
+export default function TypewriterText({ text, speed = 30, className, title, onDoubleClick, placeholder = false }: Props) {
   const [displayed, setDisplayed] = useState(text)
   const prevRef = useRef(text)
+  const prevPlaceholderRef = useRef(placeholder)
   const timerRef = useRef<number | null>(null)
 
   useEffect(() => {
     const prev = prevRef.current
+    const prevWasPlaceholder = prevPlaceholderRef.current || prev.includes('chat-')
     prevRef.current = text
+    prevPlaceholderRef.current = placeholder
 
-    // Only animate if the text actually changed to something different
-    // and the previous value looked like a slot key (contains "chat-")
-    if (text === prev || !prev.includes('chat-') || text.includes('chat-')) {
+    // Only animate when the text changed from a placeholder (a flagged label
+    // or a raw slot key containing "chat-") to a real title.
+    const isPlaceholder = placeholder || text.includes('chat-')
+    if (text === prev || !prevWasPlaceholder || isPlaceholder) {
       setDisplayed(text)
       return
     }
@@ -38,7 +44,7 @@ export default function TypewriterText({ text, speed = 30, className, title, onD
     }, speed)
 
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [text, speed])
+  }, [text, speed, placeholder])
 
   // Presentational text label; onDoubleClick is an optional mouse-only
   // enhancement layered over a keyboard-reachable parent control (the real

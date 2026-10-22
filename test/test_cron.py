@@ -1523,7 +1523,7 @@ class TestTimezoneScheduling:
 
     def test_job_tz_invalid_falls_back_to_utc(self) -> None:
         job = CronJob(id="j1", name="t", message="m", timezone="Fake/Zone")
-        assert _job_tz(job) == ZoneInfo("UTC")
+        assert _job_tz(job) is timezone.utc
 
     def test_compute_next_run_ts_with_timezone(self) -> None:
         """Job at 1pm Toronto should compute next fire at 17:00 UTC (EDT = UTC-4)."""

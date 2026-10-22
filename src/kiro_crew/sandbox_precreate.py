@@ -12,6 +12,7 @@ from __future__ import annotations
 from kiro_crew.sandbox_leaves import (
     _AUTH_STORE_STAGING_LEAF,
     _LIVE_TARGET_STAGING_LEAF,
+    _MD_NOTEBOOK_RETIRED_STATE_LEAVES,
     _MD_NOTEBOOK_STAGING_LEAF,
     _MD_NOTEBOOK_STATE_LEAVES,
     MD_NOTEBOOK_APP_NAME,
@@ -552,12 +553,26 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
 #: The STALE-read criterion that excludes most hidden leaves does not arise: the agent's
 #: view is the pinned empty MASK file either way, never this document, which is exactly
 #: the mask's intent.
+#:
+#: The files now sit INSIDE the wholly-masked state directory, which gets its own mount
+#: target from :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`. Each still gets a regular-file
+#: stub, so a link or special file at a state name is refused before launch, and the
+#: gateway's legacy move (``md_notebook_state``) treats these exact bytes as "no state".
+#:
+#: The retired bare names get the same stubs, so their masks always mount: an absent bare
+#: name would let an agent create a file or a link there, and a link at a masked leaf
+#: refuses every later spawn. The legacy move skips a stub source, so a stub is never moved.
 _MD_NOTEBOOK_PRECREATE_CONTENT: dict[str, bytes] = {
+    f"{_MD_NOTEBOOK_STAGING_LEAF}/pat": b"",
+    f"{_MD_NOTEBOOK_STAGING_LEAF}/vaults.json": b"[]\n",
+    f"{_MD_NOTEBOOK_STAGING_LEAF}/settings.json": b"{}\n",
     f"workspace/{MD_NOTEBOOK_APP_NAME}/pat": b"",
     f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json": b"[]\n",
     f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json": b"{}\n",
 }
-assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
+assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES) | set(
+    _MD_NOTEBOOK_RETIRED_STATE_LEAVES
+)
 
 #: The masked live-target pointer materialised before a namespace spawn, and what it
 #: holds. Same gap as :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` closes, arrived at from the

@@ -57,9 +57,9 @@ async function stills(browser, theme) {
   const pill = await openMember(page)
 
   check(`[${theme}] the pill is a Glass pane`, await pill.evaluate(el => el.classList.contains('liquid-glass')))
-  check(`[${theme}] the pill is a button named by the crewmate, described "Edit crewmate"`,
+  check(`[${theme}] the pill is a button named by the mate, described "Edit mate"`,
     (await pill.evaluate(el => el.tagName)) === 'BUTTON' && (await pill.getAttribute('aria-label')) === null
-      && (await pill.innerText()).includes(CREW) && (await pill.getAttribute('title')) === 'Edit crewmate')
+      && (await pill.innerText()).includes(CREW) && (await pill.getAttribute('title')) === 'Edit mate')
   check(`[${theme}] the pill holds the face and the name`,
     await pill.evaluate(el => !!el.querySelector('img') && !!el.querySelector('[data-testid="member-title-row"]')))
   check(`[${theme}] no pencil anywhere in the header`, (await page.getByTestId('member-edit-name-button').count()) === 0)

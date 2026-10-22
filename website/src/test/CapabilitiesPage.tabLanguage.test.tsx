@@ -49,7 +49,7 @@ describe('CapabilitiesPage — the tab rail follows the active language', () => 
     await i18next.changeLanguage('en')
     wrap(<CapabilitiesPage />)
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Crewmates' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Mates' })).toBeTruthy(),
     )
 
     await i18next.changeLanguage('ja')
@@ -59,6 +59,6 @@ describe('CapabilitiesPage — the tab rail follows the active language', () => 
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'クルーメイト' })).toBeTruthy(),
     )
-    expect(screen.queryByRole('button', { name: 'Crewmates' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Mates' })).toBeNull()
   })
 })

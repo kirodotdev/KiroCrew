@@ -165,6 +165,31 @@ class TestRuleFamilies:
         source = "async def f(p, store, key):\n    p.exists()\n    store.exists(key)\n"
         assert gate._violations_in_source(source) == [(2, "fs", None)]
 
+    def test_pathlib_reads_and_writes_are_matched_by_their_own_arity(self) -> None:
+        # Reads and `.open()` take no positional argument on a Path, the
+        # writes take exactly one (the data). Any other count is some other API.
+        source = (
+            "async def f(p, s, b, r, k):\n"
+            "    p.read_text()\n"
+            "    p.read_bytes()\n"
+            "    p.open()\n"
+            "    p.write_text(s)\n"
+            "    p.write_bytes(b)\n"
+            "    r.read_text(k)\n"
+            "    r.read_bytes(k)\n"
+            "    r.open(k)\n"
+            "    r.write_text()\n"
+            "    r.write_bytes()\n"
+            "    r.write_text(k, s)\n"
+        )
+        assert gate._violations_in_source(source) == [
+            (2, "fs", None),
+            (3, "fs", None),
+            (4, "fs", None),
+            (5, "fs", None),
+            (6, "fs", None),
+        ]
+
     def test_only_a_bare_open_is_the_builtin(self) -> None:
         source = "async def f(p, z):\n    open(p)\n    z.open(p)\n"
         assert gate._violations_in_source(source) == [(2, "fs", None)]

@@ -542,9 +542,10 @@ describe('a slot activated during a switch keeps its own cursor', () => {
     store.dispatch({ type: switchSlot.pending.type, meta: { requestId: 'r1', arg: 'A' } })
     expect(store.getState().chat.slotCursorKey).toBeNull()
 
+    // The create started on A with no move since, so it carries A's move count.
     store.dispatch({
       type: 'chat/createSlot/fulfilled',
-      meta: { requestId: 'c1', activate: true, originActiveSlot: 'A' },
+      meta: { requestId: 'c1', activate: true, originActiveSlot: 'A', originActiveSlotMoves: store.getState().chat.activeSlotMoves },
       payload: { key: 'NEW' },
     })
     expect(store.getState().chat.activeSlot).toBe('NEW')

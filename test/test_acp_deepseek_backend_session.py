@@ -183,8 +183,30 @@ def test_the_argv_is_the_host_binary_plus_the_shipped_profile() -> None:
     # The installer names the HOST binary. The ACP package is a plugin with no
     # executable of its own, so advice naming it would not produce a runnable
     # harness -- which is the whole reason this fact is data rather than prose.
-    assert record.install_command == "npm i -g @deepseek-ai/dsh"
+    assert record.install_command == "npm i -g @deepseek-ai/dsh@0.2.0-rc.2"
     assert "dsh" in record.missing_hint or "plugin" in record.missing_hint
+
+
+def test_the_install_pins_the_exact_dsh_build_the_routing_was_measured_on() -> None:
+    """A bare name, a dist-tag or a range would install whatever upstream ships next.
+
+    Upstream publishes only prereleases, so an rc is allowed; what is refused is any
+    spec that is not one exact version, or one that differs from the build the
+    ``ACP_BACKENDS_SIDE_READONLY`` capture names. A bump has to update both.
+    """
+    import re
+
+    from kiro_crew.agent_sdk import backends_routing
+    from kiro_crew.agent_sdk.backends import launch_for
+
+    spec = launch_for(ACP_BACKEND_DEEPSEEK).install_command.removeprefix("npm i -g ")
+    match = re.fullmatch(r"@deepseek-ai/dsh@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)", spec)
+    assert match, f"install spec is not an exact version pin: {spec!r}"
+    measured = re.findall(
+        r"Captured on dsh (\S+) with",
+        pathlib.Path(backends_routing.__file__).read_text(encoding="utf-8"),
+    )
+    assert measured == [match.group(1)]
 
 
 def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_path) -> None:

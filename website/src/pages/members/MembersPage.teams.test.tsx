@@ -585,7 +585,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(['hidden', 'sm:inline']))
   })
 
-  it('a team with no crewmates keeps its header and opens an empty team view', async () => {
+  it('a team with no mates keeps its header and opens an empty team view', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Release', members: [] }] })
     await renderPage([row({ name: 'oncall', slug: 'oncall' })])
     await rosterRow('oncall')
@@ -594,14 +594,14 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Edit team, so it stays -- at "0 crewmates" -- above the No-team group.
     expect(headers.map((h) => h.dataset.team)).toEqual(['abc123abc123', 'no-team'])
     expect(headers[0]).toHaveTextContent('Release')
-    expect(headers[0]).toHaveTextContent('0 crewmates')
+    expect(headers[0]).toHaveTextContent('0 mates')
     fireEvent.click(headers[0])
     const view = await screen.findByTestId('team-view')
     expect(within(view).getByTestId('team-empty')).toBeInTheDocument()
     expect(within(view).getByTestId('team-edit')).toBeInTheDocument()
   })
 
-  it('a crewmate waiting on the user with no question in its tail gets a plain waiting card', async () => {
+  it('a mate waiting on the user with no question in its tail gets a plain waiting card', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
     vi.mocked(api.chatSlotDetail).mockResolvedValue({
       messages: [{ role: 'assistant', content: 'Running the approval now.', ts: '2026-09-22T10:05:00Z' }],
@@ -689,7 +689,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getAllByTestId('team-group-header')[0]).toHaveTextContent('Release')
   })
 
-  it('a crewmate moved between teams leaves its old team in the cache too, so a failed refetch cannot show it twice', async () => {
+  it('a mate moved between teams leaves its old team in the cache too, so a failed refetch cannot show it twice', async () => {
     const triage = { id: 'aaaaaaaaaaaa', name: 'Triage', members: ['oncall', 'scribe'] }
     const release = { id: 'bbbbbbbbbbbb', name: 'Release', members: ['fixer'] }
     // First read answers; the refetch the save starts fails, so what the
@@ -730,7 +730,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { route: '/members?team=abc123abc123' },
     )
     const notice = await screen.findByTestId('team-view-roster-error')
-    expect(notice).toHaveTextContent(/Could not load your crewmates/i)
+    expect(notice).toHaveTextContent(/Could not load your mates/i)
     // The roster column stands beside a team view from md up and carries its
     // own copy of the notice, so the pane's copy is the below-md one.
     expect(notice.closest('.md\\:hidden')).not.toBeNull()
@@ -814,7 +814,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(update).toHaveBeenCalledWith('abc123abc123', { add: ['scribe'], remove: ['oncall'] })
   })
 
-  it('the team view confirms a bound crewmate\'s thread once per open and never again on a window focus', async () => {
+  it('the team view confirms a bound mate\'s thread once per open and never again on a window focus', async () => {
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
     vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages: [] } as never)
     await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
@@ -898,10 +898,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(JSON.parse(localStorage.getItem('mc-members-teams-collapsed') ?? '[]')).toEqual(['abc123abc123'])
   })
 
-  it('the empty-state hero\'s "New crewmate" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
+  it('the empty-state hero\'s "New mate" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
     await renderPage([])
     const [cta] = await screen.findAllByTestId('crewmate-empty-cta')
-    expect(cta).toHaveTextContent('New crewmate')
+    expect(cta).toHaveTextContent('New mate')
     fireEvent.click(cta)
     expect(await screen.findByTestId('crewmate-create-look')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')

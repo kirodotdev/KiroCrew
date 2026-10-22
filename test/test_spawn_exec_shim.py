@@ -43,6 +43,7 @@ from kiro_crew.sandbox import (
     spawn_shim_argv,
 )
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import finished
 
 # The shim exists to deliver POSIX rlimits, and `spawn_shim_argv` returns an empty
 # prefix on Windows, so there is nothing here to exercise there. Skipping at import
@@ -288,7 +289,7 @@ class TestShimRetryEndToEnd:
                 await asyncio.to_thread(timer.join, 5)
             if proc.returncode is None:
                 proc.kill()
-                await asyncio.wait_for(proc.wait(), timeout=5)
+                await finished(proc.wait(), "the killed shim exiting", timeout=5)
         assert not timer.is_alive(), "the executable publisher survived cleanup"
         assert not publication_errors, f"executable publication failed: {publication_errors}"
         assert rc == 0

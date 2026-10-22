@@ -3333,7 +3333,11 @@
         "taskAddFailed": "そのアクションアイテムを追加できませんでした。",
         "taskFileFailed": "そのアクションアイテムをファイルできませんでした。",
         "taskFiled": "アクションアイテムがファイルされました。",
-        "untitled": "無題のミーティング"
+        "untitled": "無題のミーティング",
+        "anotherMeetingActiveNamed": "「{{title}}」はまだ実行中です。会議で開き、先に「終了して確認」を選んでください。",
+        "anotherMeetingReviewing": "「{{title}}」はまだ確認中です。会議で開き、先に「ミーティングを終了」を選んでください。",
+        "sttStreamingDisabled": "ライブ文字起こしがオフです。設定 → 音声 で、音声入力が有効か、プロバイダーがストリーミングに対応しているか、ストリーミングがオンかを確認してください。",
+        "openVoiceSettings": "音声設定を開く"
       },
       "settings": {
         "addTerm": "追加",
@@ -5468,6 +5472,9 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "コンダクター"
+    },
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
       "consent_required": "「{{speak}}」を使うには、この AWS プロファイルとリージョンで Amazon Polly の利用を確認する必要があります。テキスト音声変換の設定で確認してから、もう一度お試しください。",
@@ -6345,6 +6352,8 @@
       "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。"
     },
     "codeBlock": {
+      "add_comment": "コメントを追加",
+      "comment_thread": "コメントスレッド（{{count}}）",
       "copied": "コピーしました！",
       "copy": "コピー",
       "generating": "生成中…"
@@ -7041,6 +7050,9 @@
       "chat_folder_retrying": "再試行中…",
       "chat_folder_none_yet": "フォルダーはまだありません。まずこのジョブを保存し、チャットサイドバーでフォルダーを作成してから、ジョブを開き直して選んでください。",
       "chat_folder_was_deleted": "このジョブが振り分けていたフォルダーは削除されました。別のフォルダーを選んでください。保存すれば振り分けなくなります。",
+      "auto_pause_after_failures": "連続 N 回失敗したら自動で一時停止",
+      "auto_pause_after_failures_description": "0 は一時停止しないという意味です。0 または 5 より大きい値のジョブは、連続 5 回目の失敗から次の実行まで 5 分待ち、待ち時間は 1 時間まで倍になります。",
+      "auto_pause_after_failures_invalid": "自動一時停止の上限は 0 から 10000 までの整数にしてください。",
       "runs_as": "実行方法",
       "runs_as_custom_agent": "カスタムエージェント",
       "runs_as_crewmate": "クルーメイト",
@@ -7127,7 +7139,6 @@
       "check_again": "再度確認",
       "check_again_for_kiro_cli": "Kiro CLI を再度確認",
       "check_sign_in_again": "サインインを再確認",
-      "complete": "完了",
       "copied": "コピーしました",
       "copy_command": "コマンドをコピー",
       "copy_failed": "コピーできませんでした。コマンドのテキストを選択して手動でコピーしてください。",
@@ -7165,7 +7176,6 @@
       "remedy_spec_rejected_update": "{{productName}} を更新します。Kiro CLI がこのバージョンでは書き出せない仕様形式に移行した場合の対処です。",
       "remedy_userns_denied": "カーネルがユーザー名前空間の作成を拒否しました。Debian 系のホストではこのレガシー設定を確認し、再起動後も維持されるように /etc/sysctl.d/ に永続化してください。コンテナ内では通常、コンテナ自身の seccomp フィルターが unshare を拒否しています。これはホストの設定ではなく、コンテナの実行フラグで解決します。",
       "repair_rewrites_the_specs_kiro_crew_owns": "「再確認」は Kiro CLI に仕様の再読み込みを求めます。仕様は書き直しません。すでにあるファイルを上書きすると、変更した MCP ツールの許可が失われるためです。再確認で解消しない場合は、下の二つの対処のいずれかで解消します。",
-      "required": "必須",
       "retry_the_gateway_check_before_starting_a_sessio": "セッションを開始する前に、ゲートウェイチェックを再試行してください。",
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "ゲートウェイホストでこれを実行すると、どのサンドボックス手順が失敗したかを含む、前提条件の完全なレポートが得られます。",
       "sandbox_unavailable": "サンドボックスは利用できません",
@@ -7202,7 +7212,6 @@
       "update_kiro_cli": "Kiro CLI を更新",
       "update_kiro_cli_runs_on_host": "ゲートウェイホストで <0>{{command}}</0> を代わりに実行します。",
       "updating_kiro_cli": "Kiro CLI を更新しています…",
-      "waiting": "待機中",
       "we_could_not_check_kiro_cli": "Kiro CLI を確認できませんでした。",
       "your_crew_is_almost_ready": "クルーの準備がほぼ完了しました。",
       "your_kiro_cli_is_out_of_date": "お使いの Kiro CLI は古くなっています",
@@ -7653,7 +7662,11 @@
         "all": "すべて",
         "approve": "承認",
         "clear": "クリア",
-        "clear_all_notifications": "すべての通知をクリアしますか？",
+        "clear_all": "すべてクリア",
+        "clear_all_notifications": "すべての通知をクリア",
+        "clear_failed": "一部の通知をクリアできませんでした。もう一度お試しください。",
+        "clear_group": "{{group}}をクリア",
+        "clear_this_group": "このグループをクリア",
         "dismiss_notification": "通知を閉じる",
         "expand_grouped_notifications": "グループ化された通知 {{count}} 件を展開：{{title}}",
         "first_notification_from": "最初の通知",
@@ -7665,6 +7678,7 @@
         "muted_2": "ミュート済み",
         "no_notifications": "通知がありません",
         "open_notification": "通知を開く：{{title}}",
+        "press_again_to_clear": "もう一度押すとクリアします",
         "reject": "却下",
         "search": "検索…",
         "show_less": "少なく表示",
@@ -7964,7 +7978,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "これは要件が合格した直後にマージを認可します。このリポジトリで許可されている場合はスカッシュします(そうでない場合はマージコミット、その後リベース)。",
       "this_authorizes_the_merge_when_the_pipeline_succ": "これはパイプラインが成功したときにマージを認可します。",
       "untitled_commit": "タイトルなしコミット",
-      "updated": "更新済み"
+      "updated": "更新済み",
+      "checks_failed_others_still_running": "チェック失敗。他のチェックはまだ実行中です",
+      "checks_count_running_failed": "実行中: {{running}} · 失敗: {{failed}}",
+      "waiting_on_checks_detail": "チェックはまだ実行中です。必須チェックが成功し、必須レビューが承認されるとマージできます。",
+      "checks_failed_still_running_detail": "{{total}} 件のチェックのうち、失敗 {{failed}} 件、実行中 {{running}} 件。必須チェックが成功し、必須レビューが承認されるまでマージできません。"
     },
     "questionCard": {
       "custom_answer": "カスタム回答",
@@ -8206,8 +8224,8 @@
       "undo": "元に戻す",
       "undone": "元に戻しました",
       "undo_failed": "この変更を元に戻せませんでした: {{message}}",
-      "undo_unavailable": "この変更はここでは元に戻せなくなりました。{{name}} のプロフィールで設定してください。Crewmates を開き、{{name}} を選んで、名前の横の鉛筆を押します。",
-      "undo_stale": "この値はその後また変更されたため、この取り消しは適用されません。{{name}} のプロフィールで設定してください。Crewmates を開き、{{name}} を選んで、名前の横の鉛筆を押します。",
+      "undo_unavailable": "この変更はここでは元に戻せなくなりました。{{name}} のプロフィールで設定してください。クルーメイトを開き、{{name}} を選んで、名前の横の鉛筆を押します。",
+      "undo_stale": "この値はその後また変更されたため、この取り消しは適用されません。{{name}} のプロフィールで設定してください。クルーメイトを開き、{{name}} を選んで、名前の横の鉛筆を押します。",
       "field_display_name": "名前",
       "field_description": "説明",
       "field_avatar": "顔",
@@ -16057,6 +16075,8 @@
         "show_thinking_inline": "インライン思考を表示",
         "show_timestamps": "タイムスタンプを表示",
         "show_token_usage": "コンテキストトークンを表示",
+        "sidebar_click_opens_tab": "サイドバーのセッションをセッションタブで開く",
+        "sidebar_click_opens_tab_desc": "セッションをクリックすると、アクティブなタブのセッションを置き換えずに、専用のセッションタブで開きます。",
         "simplified_tool_call_names": "簡略化されたツール呼び出し名",
         "tool_calls_start_expanded": "ツール呼び出しを展開して表示",
         "tool_calls_start_expanded_desc": "ツール呼び出しの行を折りたたまず、入力と出力を表示した状態で開きます。手動で開閉した行はその状態を保ちます。",
@@ -17631,10 +17651,11 @@
         "plugin_refused_found": "{{path}} で見つかりましたが、{{productName}} は実行しません（{{reason}}）。",
         "plugin_refused_guide": "Remote Crew on EC2 ガイドのトラブルシューティング手順を開く",
         "plugin_refused_next": "ファイルの所有者または権限を修正してから、もう一度確認してください。方法がわからない場合は、「エージェントに質問」を使ってください。",
+        "plugin_refused_next_other_owner": "AWS 独自のインストーラーでコピーをインストールしてから、もう一度確認してください。{{productName}} がそのコピーを実行するのは、ファイルとその上位のすべてのフォルダーが root または {{productName}} を実行しているアカウントの所有である場合だけです。/usr/local/bin などのフォルダーが別のアカウントの所有になっている場合は、先に管理者が所有者を root に変更する必要があります。手順はガイドを参照してください。",
         "plugin_refused_next_root_gateway": "{{productName}} を root ではなく通常のアカウントで起動してから、もう一度確認してください。",
         "plugin_refused_next_strict_policy": "ファイルとそのフォルダーを root だけが変更できる場所に、シンボリックリンクを含まないパスでインストールしてから、もう一度確認してください。方法がわからない場合は、「エージェントに質問」を使ってください。",
-        "plugin_refused_other_owner": "{{path}} で見つかりましたが、{{productName}} は実行しません。ファイルまたは上位フォルダーが別のアカウント（{{owner}}、ユーザー ID {{uid}}）の所有になっています。{{productName}} が実行するのは、自身のアカウントまたはシステム管理者アカウント（root）が所有するプログラムだけです。",
-        "plugin_refused_other_owner_uid": "{{path}} で見つかりましたが、{{productName}} は実行しません。ファイルまたは上位フォルダーが別のアカウント（ユーザー ID {{uid}}、{{productName}} が動いているコンピューター上に名前なし）の所有になっています。{{productName}} が実行するのは、自身のアカウントまたはシステム管理者アカウント（root）が所有するプログラムだけです。",
+        "plugin_refused_other_owner": "{{path}} で見つかりましたが、{{productName}} は実行しません。ファイルまたは上位フォルダーが別のユーザーアカウント（{{owner}}、ユーザー ID {{uid}}）の所有になっています。{{productName}} が実行するのは、自身のアカウントまたはシステム管理者アカウント（root）が所有するプログラムだけです。",
+        "plugin_refused_other_owner_uid": "{{path}} で見つかりましたが、{{productName}} は実行しません。ファイルまたは上位フォルダーが別のユーザーアカウント（ユーザー ID {{uid}}、{{productName}} が動いているコンピューター上に名前なし）の所有になっています。{{productName}} が実行するのは、自身のアカウントまたはシステム管理者アカウント（root）が所有するプログラムだけです。",
         "plugin_refused_root_gateway": "{{path}} で見つかりましたが、{{productName}} は実行しません。{{productName}} は root として動いており、補助プログラムを root として実行しません。",
         "plugin_refused_strict_policy": "{{path}} で見つかりましたが、{{productName}} は実行しません。厳格なチェック（KIROCREW_PROVIDER_BIN_STRICT）が有効で、root だけが変更できるファイルとフォルダーを、シンボリックリンクを含まないパスでのみ受け付けます。",
         "plugin_refused_world_writable": "{{path}} で見つかりましたが、{{productName}} は実行しません。どのアカウントでもファイルまたは上位フォルダーを変更できます。",
@@ -18156,8 +18177,6 @@
       "close": "閉じる",
       "driving_none": "現在操作中のセッションはありません。",
       "driving_idle": "アイドル",
-      "driving_show_all": "すべて表示（{{count}}）",
-      "driving_show_less": "折りたたむ",
       "patrol_error_roster": "メンバー一覧のパトロール状態を読み込めませんでした。",
       "loop_on": "見守り中",
       "profile_monitor": "モニター",

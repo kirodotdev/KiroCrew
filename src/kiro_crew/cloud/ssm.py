@@ -268,7 +268,8 @@ def session_manager_plugin_refusal() -> Optional[PluginRefusal]:
 
     None when the resolver accepted a plugin, and None when it found none at all
     (the "not installed" case, whose remedy is the install command). Otherwise the
-    first refused candidate: reporting that as "not installed" would send the user
+    first refused candidate with a known fix, else the first refused candidate:
+    reporting that as "not installed" would send the user
     to an install command that reinstalls the same refused file.
 
     Reads the same walk :func:`session_manager_plugin_installed` performs and
@@ -289,12 +290,16 @@ def aws_cli_refusal() -> Optional[PluginRefusal]:
 
 
 def _tool_refusal(name: str, remedy_for: Callable[[str, str], str]) -> Optional[PluginRefusal]:
-    """The first candidate for *name* the resolver refused, or None (accepted or absent)."""
+    """The candidate for *name* to report, or None (accepted or absent): the first
+    refused one *remedy_for* has a fix for, else the first refused one."""
     resolved, refusals = resolve_aws_tool_bin_with_refusals(name)
     if os.path.isabs(resolved) or not refusals:
         return None
-    first = refusals[0]
-    remedy = remedy_for(first.path, first.reason)
+    # Prefer a candidate with a known fix: with a refused copy in an earlier
+    # install dir (a second account's Homebrew), reporting that one would hide
+    # the command that clears the copy AWS's installer put in a later dir.
+    remedies = [(r, remedy_for(r.path, r.reason)) for r in refusals]
+    first, remedy = next(((r, m) for r, m in remedies if m), remedies[0])
     code, owner_uid = _classify_refusal(first.reason)
     # With a remedy, name the resolved file: the candidate is often a link from a
     # bin directory, and the command targets the folder the real file sits in.

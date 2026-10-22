@@ -417,7 +417,7 @@ def parse_codex_compaction_update(
     codex-acp reports compaction as an ordinary ``tool_call`` pair rather than an
     out-of-band notification, and unlike the claude adapter it stamps the pair:
     ``_meta.contextCompaction`` is a MARKER, so this is a structural match rather
-    than a guess about prose. Captured off codex-acp 1.11.0 driven over stdio::
+    than a guess about prose. Measured on codex-acp 1.11.0, driven over stdio::
 
         tool_call        kind=think  status=in_progress  title="Compact conversation"
                          _meta={"contextCompaction": {"version": 1}}
@@ -440,7 +440,7 @@ def parse_codex_compaction_update(
     ``think`` call titled
     ``CODEX_COMPACTION_TITLE`` starts it, and the update completes it only when its
     ``toolCallId`` is *pending* -- the id the caller kept from that start. A marked
-    frame never needs *pending*, so the 1.11.0 path is unchanged.
+    frame never needs *pending*, so the marked path is unchanged.
 
     Two arms rather than three, because there is no third frame to read:
 

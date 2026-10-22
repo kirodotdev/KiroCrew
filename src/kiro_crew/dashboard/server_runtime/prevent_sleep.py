@@ -1,11 +1,13 @@
 """Keeping the host awake while a turn is in flight or the dashboard is on the tailnet.
 
-The decision, the poll that applies it, and the release at shutdown.
+The decision, the TTL-cached tailnet publish probe it reads, the poll that
+applies it, and the release at shutdown.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -13,13 +15,18 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _PREVENT_SLEEP_POLL_INTERVAL_SECS,
+        _TAILNET_AWAKE_TTL_SECS,
         DashboardState,
         KiroCrewConfig,
         SleepInhibitor,
-        _tailnet_publish_keeps_awake,
         logger,
         register_pre_exec_stop,
+        tailnet_serve,
     )
+
+    # The server's module state this owner's functions rebind through
+    # ``global`` on the server's namespace; declared for the type checker only.
+    _tailnet_awake_cache: tuple[float, bool]
 
 
 async def _should_prevent_sleep(state: DashboardState, port: int) -> bool:
@@ -186,3 +193,25 @@ def _arm_prevent_sleep_poll(state: DashboardState, port: int) -> None:
     # block for the new image. The hook `_register_prevent_sleep_shutdown`
     # installs unregisters this stop.
     state._prevent_sleep_unregister = register_pre_exec_stop("Sleep inhibitor", _stop_before_exec)
+
+
+async def _tailnet_publish_keeps_awake(port: int) -> bool:
+    """Whether serve is currently fronting *port*, TTL-cached. Never raises."""
+    global _tailnet_awake_cache
+    if not port:
+        return False
+    now = time.monotonic()
+    expiry, cached = _tailnet_awake_cache
+    if expiry > now:
+        return cached
+    try:
+        serve = await asyncio.to_thread(tailnet_serve.serve_state, port)
+        # ``published is None`` means we could not tell. Treated as NOT published,
+        # because the fail-closed direction for this decision is letting the host
+        # sleep — an unresolvable probe must not pin a laptop awake indefinitely.
+        published = serve.published is True
+    except Exception:
+        logger.debug("prevent-sleep tailnet probe failed", exc_info=True)
+        published = False
+    _tailnet_awake_cache = (now + _TAILNET_AWAKE_TTL_SECS, published)
+    return published

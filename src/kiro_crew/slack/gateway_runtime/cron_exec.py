@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import asyncio
-    import json
 
     from kiro_crew.slack.gateway import (
         CronClaimTimeDenied,
@@ -33,7 +32,6 @@ if TYPE_CHECKING:
         _claim_backstop,
         _ClaimHandoff,
         _defer_cron_before_dispatch,
-        _run_chat,
         _vet_at_claim_then,
         delivery_fingerprint,
         load_window_off_loop,
@@ -45,7 +43,6 @@ if TYPE_CHECKING:
         run_script_sandboxed,
         runtime_death,
         sel,
-        spawn_guarded_turn,
     )
 
 
@@ -456,39 +453,15 @@ async def _deliver_script_result(
             label = redact(job.name)
             if slot:
                 wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
-                inject_cls = json.dumps({"cronLabel": label})
-                if slot.running:
-                    # Imported here: this function runs on the facade's globals,
-                    # which a module-level import in this owner never reaches.
-                    from kiro_crew.dashboard.cron_inject import queue_cron_notification
+                # Imported here: this function runs on the facade's globals,
+                # which a module-level import in this owner never reaches.
+                from kiro_crew.dashboard import session_deliver
 
-                    queue_cron_notification(slot, wrapped, label)
-                else:
-                    # `cls` is not persisted for role `inject`, so the label
-                    # must also ride in `meta`, which is — otherwise the row
-                    # loses its identity on the next rehydrate.
-                    slot.append(
-                        "inject",
-                        wrapped,
-                        inject_cls,
-                        meta={"injectKind": "cron", "cronLabel": label},
-                    )
-                    task = spawn_guarded_turn(
-                        self.dashboard_state,
-                        slot,
-                        _run_chat(
-                            self.dashboard_state,
-                            slot,
-                            wrapped,
-                            _directive_user_origin=False,
-                            # Structural provenance for the session
-                            # crew log: the queued twin above carries
-                            # CRON_NOTIFICATION_KIND, and this branch is
-                            # the same injector dispatching directly.
-                            _turn_actor="cron",
-                        ),
-                    )
-                    slot.task = task
+                # The session decides idle (a cron row and a turn) vs running
+                # (a queued card); the cron names only itself.
+                await session_deliver.deliver(
+                    self.dashboard_state, slot, wrapped, session_deliver.cron(label)
+                )
                 self.dashboard_state.push_slots_update()
             else:
                 self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})

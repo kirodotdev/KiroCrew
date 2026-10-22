@@ -50,7 +50,7 @@ export function useAgentSync() {
     .sort((a, b) => recencyEpoch(b) - recencyEpoch(a))
     .map(sl => ({
     id: 'slot-' + sl.key, name: shortName(sl.title || sl.key),
-    label: agentOrDefaultLabel(sl.agent, defaultAgent), kind: 'slot' as const,
+    label: agentOrDefaultLabel(sl.agent, defaultAgent, sl.agent_kind), kind: 'slot' as const,
     running: sl.running, detail: sl.messages + ' msgs',
     lastMessage: sl.last_message || '',
     waitingForInput: !!sl.waiting_for_input,

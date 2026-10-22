@@ -225,7 +225,7 @@ def test_comment_aware_recipes_are_finite_gated_with_the_judge_off_and_keep_repa
     legacy, _ = json.JSONDecoder().raw_decode(babysit.split("monitor_start(", 1)[1])
     prepare_recipe = next(
         textwrap.dedent(block).strip()
-        for block in _text(PREPARE).split("```")
+        for block in _text(PREPARE.parent / "references" / "monitor-loop.md").split("```")
         if textwrap.dedent(block).strip().startswith("monitor_start(")
     )
     call = ast.parse(prepare_recipe, mode="eval").body
@@ -253,3 +253,7 @@ def test_comment_aware_recipes_are_finite_gated_with_the_judge_off_and_keep_repa
     assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (288, 86400)
     assert (legacy["max_cycles"], legacy["max_runtime_secs"]) == (48, 14400)
     assert "`max_cycles=288` and `max_runtime_secs=86400`" in _text(PREPARE)
+    # SKILL.md keeps the fixed arguments and points at the call that carries them.
+    skill = " ".join(_text(PREPARE).split())
+    assert "references/monitor-loop.md" in skill
+    assert "interval_secs=300, max_cycles=288, max_runtime_secs=86400, judge=False" in skill

@@ -847,6 +847,19 @@ _VALIDATE_REFUSALS: "dict[str, tuple[str, str]]" = {
 }
 
 
+#: The ``why`` for a run whose ``generate`` job never resolved the review scope --
+#: it timed out, failed or was cancelled before ``Resolve review scope`` wrote
+#: ``in_scope``. Nothing measured whether the change touches the security surface,
+#: so this is an UNMEASURED run and stays unsettled: it is never the "nothing to
+#: scope" success, which only a resolved ``in_scope=false`` earns. The generic
+#: "no leg reported" sentence is true of such a run too, but it points at the
+#: author's diff instead of at a lane that did not finish.
+_SCOPE_UNRESOLVED_WHY = (
+    "the review scope was never resolved: the generate job did not finish (it timed "
+    "out, failed or was cancelled), so no leg ran; its log names the step that stopped"
+)
+
+
 def validate_refusal_remedy(refusal: "str | None") -> str:
     """The full author-facing remedy for a named ``validate`` refusal, or ``""``.
 
@@ -889,6 +902,7 @@ def conclude_lane(
     gap_script: bool,
     gap_model: bool,
     refusal: "str | None" = None,
+    scope_unresolved: bool = False,
 ) -> "tuple[str, str]":
     """Fold the lane signals into one ``(conclusion, why)`` -- the shared table.
 
@@ -902,6 +916,11 @@ def conclude_lane(
     conclusion: an unmeasured run fails closed either way, and a lane that
     published a softer verdict because it could explain itself would be a hole.
     It is keyed by exact match, so an unrecognized code reads as no refusal.
+
+    ``scope_unresolved`` says the review scope was never resolved (``generate``
+    died before writing ``in_scope``). Like ``refusal`` it only names the cause of
+    an unmeasured ``no-report`` run, and it outranks every other ``no-report`` row,
+    the green ``nothing-new`` one included.
     """
     # gap_model is MODEL-AUTHORED input to a merge-blocking gate, so it is
     # UNTRUSTED. It is OR-ed in here and read ONLY inside the BLOCK branch below,
@@ -923,7 +942,10 @@ def conclude_lane(
     if fold == "redacted":
         return _UNSETTLED_CONCLUSION, "a confirmed row was redacted, so it names no operation"
     if fold == "unscrubbable":
-        return _UNSETTLED_CONCLUSION, "the folded verdict could not be scrubbed, so it was not published"
+        return (
+            _UNSETTLED_CONCLUSION,
+            "the folded verdict could not be scrubbed, so it was not published",
+        )
     if fold == "error":
         return _UNSETTLED_CONCLUSION, "the per-platform reports could not be folded"
 
@@ -940,7 +962,12 @@ def conclude_lane(
     #    same-repo already held and the fork did not. Every other no-report is an
     #    unmeasured run.
     if fold == "no-report":
-        # FIRST, ahead of the two `nothing_new` rows below. A refusal and the exit-3
+        # An unresolved scope is the first answer: no scope means nothing upstream
+        # of the legs ran, so no other no-report reading -- least of all the green
+        # `nothing-new` one -- describes this run.
+        if scope_unresolved:
+            return _UNSETTLED_CONCLUSION, _SCOPE_UNRESOLVED_WHY
+        # Next, ahead of the two `nothing_new` rows below. A refusal and the exit-3
         # short circuit cannot both happen -- `validate` refuses only on the rc=0
         # path -- so this reorders nothing that the lane can reach. Were they ever
         # to arrive together, the refusal is the half that must win: the green
@@ -966,9 +993,18 @@ def conclude_lane(
         return "pass", "adjudicated, zero confirmed regressions"
     if model == "BLOCK":
         if gap:
-            return "block", f"the reviewer's BLOCK stands on a demonstrated platform gap ({gap_src})"
-        return "pass", "the reviewer wrote BLOCK with no confirmed regression and no demonstrated gap, which is read as PASS"
-    return _UNSETTLED_CONCLUSION, "no parseable Scope-Verdict header carrying a marker for this head"
+            return (
+                "block",
+                f"the reviewer's BLOCK stands on a demonstrated platform gap ({gap_src})",
+            )
+        return (
+            "pass",
+            "the reviewer wrote BLOCK with no confirmed regression and no demonstrated gap, which is read as PASS",
+        )
+    return (
+        _UNSETTLED_CONCLUSION,
+        "no parseable Scope-Verdict header carrying a marker for this head",
+    )
 
 
 def _checkrun_severity(conclusion: "str | None") -> "int | None":
@@ -1028,7 +1064,9 @@ def _row_belongs_to(row: "dict[str, Any]", *, lane: str, pr: str) -> bool:
             "a completed check-run for this head names no pull request, so whether "
             "it is this pull request's prior verdict cannot be decided"
         )
-    return any(str((entry or {}).get("number")) == str(pr) for entry in numbers if isinstance(entry, dict))
+    return any(
+        str((entry or {}).get("number")) == str(pr) for entry in numbers if isinstance(entry, dict)
+    )
 
 
 def _fork_row_is_unsettled(row: "dict[str, Any]") -> bool:
@@ -1075,18 +1113,28 @@ def select_prior_conclusions(payload_text: str, *, lane: str, pr: str) -> "list[
     if lane not in ("fork", "same-repo"):
         raise CandidateError(f"unknown lane {lane!r} -- expected 'fork' or 'same-repo'")
     if not payload_text.strip():
-        raise PriorReadError("the prior check-run response is empty, so it names no check-runs either way")
+        raise PriorReadError(
+            "the prior check-run response is empty, so it names no check-runs either way"
+        )
     try:
         payload = json.loads(payload_text)
     except (ValueError, TypeError) as exc:
         raise PriorReadError(f"the prior check-run response is not readable JSON ({exc})") from exc
     if not isinstance(payload, dict):
-        raise PriorReadError("the prior check-run response is not an object, so its envelope cannot be read")
-    if not isinstance(payload.get("total_count"), int) or isinstance(payload.get("total_count"), bool):
-        raise PriorReadError("the prior check-run response carries no numeric total_count, so it is not a check-run listing")
+        raise PriorReadError(
+            "the prior check-run response is not an object, so its envelope cannot be read"
+        )
+    if not isinstance(payload.get("total_count"), int) or isinstance(
+        payload.get("total_count"), bool
+    ):
+        raise PriorReadError(
+            "the prior check-run response carries no numeric total_count, so it is not a check-run listing"
+        )
     rows = payload.get("check_runs")
     if not isinstance(rows, list):
-        raise PriorReadError("the prior check-run response carries no check_runs list, so it is not a check-run listing")
+        raise PriorReadError(
+            "the prior check-run response carries no check_runs list, so it is not a check-run listing"
+        )
     total = payload["total_count"]
     if total != len(rows):
         raise PriorReadError(
@@ -1130,10 +1178,16 @@ def monotonic_conclusion(
     cur = str(current or "").strip().lower()
     cur_sev = _checkrun_severity(cur)
     if cur_sev is None:
-        return unsettled, f"this run computed no ranked conclusion ({current!r}), so it fails closed"
+        return (
+            unsettled,
+            f"this run computed no ranked conclusion ({current!r}), so it fails closed",
+        )
     if not prior_readable:
         harder = unsettled if (_checkrun_severity(unsettled) or 0) > cur_sev else cur
-        return harder, "the prior conclusion for this head could not be read, so the lane fails closed"
+        return (
+            harder,
+            "the prior conclusion for this head could not be read, so the lane fails closed",
+        )
     hardest = ""
     hardest_sev = -1
     for candidate in priors:
@@ -1142,7 +1196,10 @@ def monotonic_conclusion(
             hardest = str(candidate).strip().lower()
             hardest_sev = sev
     if hardest_sev > cur_sev:
-        return hardest, f"a prior run of this head stands at {hardest!r}, harder than this run's {cur!r}"
+        return (
+            hardest,
+            f"a prior run of this head stands at {hardest!r}, harder than this run's {cur!r}",
+        )
     return cur, f"this run's {cur!r} is at least as hard as any prior conclusion for this head"
 
 
@@ -1155,6 +1212,7 @@ def _cmd_conclude(args: argparse.Namespace) -> int:
         gap_script=_truthy(args.gap_script),
         gap_model=_truthy(args.gap_model),
         refusal=args.refusal,
+        scope_unresolved=_truthy(args.scope_unresolved),
     )
     # Printed as GitHub ``key=value`` lines so the caller can redirect stdout
     # straight into ``$GITHUB_OUTPUT``. Both the vocabulary and the why are
@@ -1254,7 +1312,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     h = sub.add_parser("harvest", help="append confirmed rows to a golden-paths corpus file")
-    h.add_argument("--rows", required=True, type=Path, help="the rows file verdict --out-rows wrote")
+    h.add_argument(
+        "--rows", required=True, type=Path, help="the rows file verdict --out-rows wrote"
+    )
     h.add_argument(
         "--corpus", required=True, type=Path, help="the golden-paths corpus to extend, in place"
     )
@@ -1289,6 +1349,15 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "the validate return code; the codes that name their own cause select that "
             "cause as the why and print a remedy= line, and any other value is ignored"
+        ),
+    )
+    c.add_argument(
+        "--scope-unresolved",
+        dest="scope_unresolved",
+        default="false",
+        help=(
+            "true when the generate job never wrote in_scope (it timed out, failed or "
+            "was cancelled); names that cause on an unsettled no-report run"
         ),
     )
     c.add_argument(

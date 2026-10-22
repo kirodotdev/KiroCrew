@@ -3385,7 +3385,11 @@
         "untitled": "Riunione senza titolo",
         "renameFailed": "Non è stato possibile rinominare la riunione.",
         "minutesSaveFailed": "Non è stato possibile salvare le tue modifiche.",
-        "minutesRevertFailed": "Non è stato possibile scartare le tue modifiche."
+        "minutesRevertFailed": "Non è stato possibile scartare le tue modifiche.",
+        "anotherMeetingActiveNamed": "«{{title}}» è ancora in corso. Aprila in Riunioni e scegli prima «Termina e passa in revisione».",
+        "anotherMeetingReviewing": "«{{title}}» è ancora in revisione. Aprila in Riunioni e scegli prima «Chiudi la riunione».",
+        "sttStreamingDisabled": "La trascrizione dal vivo è disattivata. In Impostazioni → Voce, verifica che l'input vocale sia attivo, che il provider supporti lo streaming e che Streaming sia attivo.",
+        "openVoiceSettings": "Apri impostazioni voce"
       },
       "settings": {
         "addTerm": "Aggiungi",
@@ -5670,6 +5674,9 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "agentLabel": {
+      "builtin_conductor": "Conductor"
+    },
     "voicePlaybackNotice": {
       "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",
       "consent_required": "«{{speak}}» ha bisogno che tu confermi Amazon Polly per questo profilo AWS e questa regione. Confermalo nelle impostazioni «Da testo a voce», poi riprova.",
@@ -6569,6 +6576,8 @@
       "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato."
     },
     "codeBlock": {
+      "add_comment": "Aggiungi commento",
+      "comment_thread": "Discussione commenti ({{count}})",
       "copied": "Copiato!",
       "copy": "Copia",
       "generating": "generazione…"
@@ -7289,6 +7298,9 @@
       "chat_folder_retrying": "Nuovo tentativo…",
       "chat_folder_none_yet": "Nessuna cartella per ora. Salva questa attività adesso; crea una cartella nella barra laterale della chat, poi riapri l'attività per sceglierla.",
       "chat_folder_was_deleted": "La cartella in cui questa attività archiviava è stata eliminata. Scegline un'altra, o salva per lasciare le esecuzioni non archiviate.",
+      "auto_pause_after_failures": "Metti in pausa dopo N errori consecutivi",
+      "auto_pause_after_failures_description": "0 significa non mettere mai in pausa. Dal 5° errore consecutivo, un'attività impostata a 0 o a più di 5 attende 5 minuti prima della prossima esecuzione, raddoppiando fino a un'ora.",
+      "auto_pause_after_failures_invalid": "Il limite di pausa automatica deve essere un numero intero da 0 a 10000.",
       "runs_as": "Viene eseguito come",
       "runs_as_custom_agent": "Agente personalizzato",
       "runs_as_crewmate": "Compagno",
@@ -7375,7 +7387,6 @@
       "check_again": "Controlla di nuovo",
       "check_again_for_kiro_cli": "Controlla di nuovo Kiro CLI",
       "check_sign_in_again": "Controlla di nuovo l'accesso",
-      "complete": "Completato",
       "copied": "Copiato",
       "copy_command": "Copia comando",
       "copy_failed": "Copia non riuscita. Seleziona il testo del comando e copialo a mano.",
@@ -7413,7 +7424,6 @@
       "remedy_spec_rejected_update": "Aggiorna {{productName}}. È la soluzione quando Kiro CLI si aspetta un formato di specifica che questa versione non sa scrivere.",
       "remedy_userns_denied": "Il kernel ha rifiutato di creare il namespace utente. Sugli host della famiglia Debian controlla questo parametro legacy e rendi persistente il valore in /etc/sysctl.d/ così da conservarlo dopo un riavvio. All'interno di un container è di solito il filtro seccomp del container stesso che nega unshare, e si risolve con i flag di esecuzione del container anziché con le impostazioni dell'host.",
       "repair_rewrites_the_specs_kiro_crew_owns": "«Controlla di nuovo» chiede a Kiro CLI di ricaricare le specifiche. Non le riscrive: sovrascrivere un file già presente scarterebbe le autorizzazioni degli strumenti MCP modificate. Se il controllo non risolve, una delle due soluzioni qui sotto sì.",
-      "required": "Obbligatorio",
       "retry_the_gateway_check_before_starting_a_sessio": "Riprova il controllo del gateway prima di avviare una sessione.",
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "Esegui questo comando sull'host del gateway per un report completo dei prerequisiti, incluso quale passaggio della sandbox non è riuscito.",
       "sandbox_unavailable": "Sandbox non disponibile",
@@ -7450,7 +7460,6 @@
       "update_kiro_cli": "Aggiorna Kiro CLI",
       "update_kiro_cli_runs_on_host": "Esegue <0>{{command}}</0> per te sull'host del gateway.",
       "updating_kiro_cli": "Aggiornamento di Kiro CLI…",
-      "waiting": "In attesa",
       "we_could_not_check_kiro_cli": "Non è stato possibile controllare Kiro CLI.",
       "your_crew_is_almost_ready": "La tua crew è quasi pronta.",
       "your_kiro_cli_is_out_of_date": "Il tuo Kiro CLI è obsoleto",
@@ -7903,7 +7912,11 @@
         "all": "Tutti",
         "approve": "Approva",
         "clear": "Cancella",
-        "clear_all_notifications": "Cancellare tutte le notifiche?",
+        "clear_all": "Cancella tutto",
+        "clear_all_notifications": "Cancella tutte le notifiche",
+        "clear_failed": "Non è stato possibile cancellare alcune notifiche. Riprova.",
+        "clear_group": "Cancella {{group}}",
+        "clear_this_group": "Cancella questo gruppo",
         "dismiss_notification": "Ignora la notifica",
         "expand_grouped_notifications": "Espandi {{count}} notifiche raggruppate: {{title}}",
         "first_notification_from": "Prima notifica da",
@@ -7915,6 +7928,7 @@
         "muted_2": "silenziato",
         "no_notifications": "Nessuna notifica",
         "open_notification": "Apri la notifica: {{title}}",
+        "press_again_to_clear": "Premi di nuovo per cancellare",
         "reject": "Rifiuta",
         "search": "Cerca…",
         "show_less": "Mostra meno",
@@ -8224,7 +8238,11 @@
       "this_authorizes_the_merge_as_soon_as_requirement": "Autorizza il merge appena i requisiti sono soddisfatti, con squash se questo repository lo consente (altrimenti un commit di merge, poi rebase).",
       "this_authorizes_the_merge_when_the_pipeline_succ": "Autorizza il merge quando la pipeline riesce.",
       "untitled_commit": "Commit senza titolo",
-      "updated": "Aggiornato"
+      "updated": "Aggiornato",
+      "checks_failed_others_still_running": "Controlli non riusciti; altri ancora in corso",
+      "checks_count_running_failed": "In corso: {{running}} · Non riusciti: {{failed}}",
+      "waiting_on_checks_detail": "Alcuni controlli sono ancora in corso. Il merge si sblocca quando i controlli richiesti passano e le revisioni richieste sono approvate.",
+      "checks_failed_still_running_detail": "Su {{total}} controlli: non riusciti {{failed}}, ancora in corso {{running}}. Il merge resta bloccato finché i controlli richiesti non passano e le revisioni richieste non vengono approvate."
     },
     "questionCard": {
       "custom_answer": "Risposta personalizzata",
@@ -8476,8 +8494,8 @@
       "undo": "Annulla",
       "undone": "annullato",
       "undo_failed": "Impossibile annullare questa modifica: {{message}}",
-      "undo_unavailable": "Questa modifica non può più essere annullata qui. Imposta il valore nel profilo di {{name}}: apri Crewmates, scegli {{name}}, poi la matita accanto al nome.",
-      "undo_stale": "Questo valore è stato cambiato di nuovo nel frattempo, quindi l’annullamento non vale più. Impostalo nel profilo di {{name}}: apri Crewmates, scegli {{name}}, poi la matita accanto al nome.",
+      "undo_unavailable": "Questa modifica non può più essere annullata qui. Imposta il valore nel profilo di {{name}}: apri Compagni, scegli {{name}}, poi la matita accanto al nome.",
+      "undo_stale": "Questo valore è stato cambiato di nuovo nel frattempo, quindi l’annullamento non vale più. Impostalo nel profilo di {{name}}: apri Compagni, scegli {{name}}, poi la matita accanto al nome.",
       "field_display_name": "nome",
       "field_description": "descrizione",
       "field_avatar": "faccia",
@@ -10021,7 +10039,7 @@
       "result_undone": "Ripristinato: {{title}}",
       "retry": "Riprova",
       "risk_code_exec": "Questo esegue codice di terze parti su questa macchina.",
-      "risk_widen": "Questo permette ai crewmate di fare di più senza chiederti.",
+      "risk_widen": "Questo permette ai compagni di fare di più senza chiederti.",
       "risk_widen_import": "Questo compagno userà {{servers}} senza chiederti.",
       "risk_widen_ack": "Ho capito che questo amplia i permessi",
       "schedule_next_run": "Prossima esecuzione",
@@ -10067,7 +10085,7 @@
       "approval_mode_hint_normal": "Ti chiede prima di fare qualsiasi cosa.",
       "approval_mode_hint_trust_reads": "Esegue da solo solo i comandi shell di sola lettura, per tutto il resto ti chiede.",
       "approval_mode_hint_trust": "Lavora nella sua chat senza chiederti prima.",
-      "kind_crewmate_goal": "Obiettivo del crewmate",
+      "kind_crewmate_goal": "Obiettivo del compagno",
       "primary_crewmate_goal": "Imposta obiettivo",
       "kind_crewmate_key_results": "Traguardi",
       "primary_crewmate_key_results": "Usa questi traguardi",
@@ -12525,7 +12543,7 @@
       "comments_refused_overlay": "{{name}} non ha ricevuto questi commenti — riapri il pannello laterale e inviali di nuovo. Sono ancora nel documento.",
       "comments_sent_other": "{{count}} commenti inviati",
       "comments_sent_many": "{{count}} commenti inviati",
-      "your_crewmate": "Il tuo crewmate"
+      "your_crewmate": "Il tuo compagno"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",
@@ -16591,6 +16609,8 @@
         "show_thinking_inline": "Mostra il ragionamento inline",
         "show_timestamps": "Mostra i timestamp",
         "show_token_usage": "Mostra i token di contesto",
+        "sidebar_click_opens_tab": "Apri le sessioni della barra laterale in una scheda di sessione",
+        "sidebar_click_opens_tab_desc": "Un clic su una sessione la apre in una scheda di sessione dedicata invece di sostituire la sessione della scheda attiva.",
         "simplified_tool_call_names": "Nomi semplificati delle chiamate agli strumenti",
         "tool_calls_start_expanded": "Mostra le chiamate agli strumenti espanse",
         "tool_calls_start_expanded_desc": "Apri le righe delle chiamate agli strumenti con input e output visibili, invece che compresse. Le righe che apri o chiudi a mano mantengono la tua scelta.",
@@ -18173,10 +18193,11 @@
         "plugin_refused_found": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: {{reason}}.",
         "plugin_refused_guide": "Apri i passaggi per la risoluzione dei problemi nella guida Remote Crew on EC2",
         "plugin_refused_next": "Correggi il proprietario o i permessi del file, poi ricontrolla. Se non sai come fare, usa «Chiedi all'agente».",
+        "plugin_refused_next_other_owner": "Installa una copia con il programma di installazione di AWS, poi ricontrolla. {{productName}} esegue quella copia solo se essa e ogni cartella superiore appartengono a root o all'account con cui gira {{productName}}. Se una cartella come /usr/local/bin appartiene all'altro account, un amministratore deve prima renderne proprietario root. La guida spiega come.",
         "plugin_refused_next_root_gateway": "Avvia {{productName}} da un account normale invece che come root, poi ricontrolla.",
         "plugin_refused_next_strict_policy": "Installalo dove solo root può modificare il file e le sue cartelle, in un percorso senza collegamenti simbolici, poi ricontrolla. Se non sai come fare, usa «Chiedi all'agente».",
-        "plugin_refused_other_owner": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: il file o una cartella superiore appartiene a un altro account ({{owner}}, ID utente {{uid}}). {{productName}} esegue solo programmi di proprietà del proprio account o dell'account amministratore di sistema (root).",
-        "plugin_refused_other_owner_uid": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: il file o una cartella superiore appartiene a un altro account (ID utente {{uid}}, senza nome sul computer su cui gira {{productName}}). {{productName}} esegue solo programmi di proprietà del proprio account o dell'account amministratore di sistema (root).",
+        "plugin_refused_other_owner": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: il file o una cartella superiore appartiene a un altro account utente ({{owner}}, ID utente {{uid}}). {{productName}} esegue solo programmi di proprietà del proprio account o dell'account amministratore di sistema (root).",
+        "plugin_refused_other_owner_uid": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: il file o una cartella superiore appartiene a un altro account utente (ID utente {{uid}}, senza nome sul computer su cui gira {{productName}}). {{productName}} esegue solo programmi di proprietà del proprio account o dell'account amministratore di sistema (root).",
         "plugin_refused_root_gateway": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: {{productName}} gira come root e non esegue programmi di supporto come root.",
         "plugin_refused_strict_policy": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: il controllo rigoroso (KIROCREW_PROVIDER_BIN_STRICT) è attivo e accetta solo un file e cartelle che solo root può modificare, in un percorso senza collegamenti simbolici.",
         "plugin_refused_world_writable": "Trovato in {{path}}, ma {{productName}} non lo eseguirà: qualsiasi account può modificare il file o una cartella superiore.",
@@ -18726,8 +18747,6 @@
       "close": "Chiudi",
       "driving_none": "Al momento non guida nessuna sessione.",
       "driving_idle": "Inattivo",
-      "driving_show_all": "Mostra tutte ({{count}})",
-      "driving_show_less": "Mostra meno",
       "patrol_error_roster": "Impossibile caricare lo stato di pattuglia dell'elenco.",
       "loop_on": "Di guardia",
       "profile_monitor": "Monitor",
@@ -18775,7 +18794,7 @@
       "filters_clear": "Cancella filtri",
       "star": "Aggiungi {{name}} ai preferiti",
       "unstar": "Rimuovi {{name}} dai preferiti",
-      "all_hidden_hint": "I crewmate che non hai ancora usato sono nascosti. Cercali per trovarli.",
+      "all_hidden_hint": "I compagni che non hai ancora usato sono nascosti. Cercali per trovarli.",
       "hidden_named_hint_many": "{{names}} sono nascosti perché non li hai ancora usati e non sono contati sopra. Cercali per trovarli.",
       "hidden_named_hint_one": "{{names}} è nascosto perché non l'hai ancora usato e non è contato sopra. Cercalo per trovarlo.",
       "hidden_named_hint_other": "{{names}} sono nascosti perché non li hai ancora usati e non sono contati sopra. Cercali per trovarli.",

@@ -267,7 +267,7 @@ describe('ChatEmbed send receipt policy', () => {
     await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
     await typeAndSend('hello')
     await settle()
-    expect(onSend).toHaveBeenCalledWith('hello')
+    expect(onSend).toHaveBeenCalledWith('hello', { sendId: expect.any(String) })
     expect(mockPost).not.toHaveBeenCalled()
     expect(errorRows()).toHaveLength(0)
     expect(noticeRows()).toHaveLength(1)
@@ -509,6 +509,37 @@ describe('ChatEmbed send receipt policy', () => {
     expect(noticeRows()).toHaveLength(1)
     expect(noticeRows()[0].textContent).toMatch(/^Delivery not confirmed/)
     expect(input().value).toBe('hello')
+  })
+
+  it('#22061: a host onSend that forwards meta.sendId is proven by id: the notice retires and the text is taken back', async () => {
+    // The host rewrites the text it stores, so no text match can fire. Only
+    // the id the embed handed it, stored on the row, can prove this send.
+    mockGet.mockResolvedValue({ messages: [], running: false, title: '' })
+    let reject!: (e: Error) => void
+    let forwarded: unknown
+    const onSend = vi.fn((_msg: string, meta?: { sendId?: string }) => {
+      forwarded = meta?.sendId
+      return new Promise((_, rj) => { reject = rj })
+    })
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" onSend={onSend} />) })
+    await settle()
+    await typeAndSend('hello')
+    expect(typeof forwarded).toBe('string')
+    await act(async () => { reject(new Error('stream cut')) })
+    await settle()
+    expect(noticeRows()).toHaveLength(1)
+    expect(input().value).toBe('hello')
+    mockGet.mockResolvedValue({
+      messages: [
+        { role: 'user', content: '[spec] hello', cls: '', ts: 't-new', meta: { sendId: forwarded } },
+        { role: 'assistant', content: 'done', cls: '' },
+      ],
+      running: false,
+      title: '',
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    expect(noticeRows()).toHaveLength(0)
+    expect(input().value).toBe('')
   })
 
   it("a follow-up chip's send that times out says to tap the suggestion again, not that the text is back", async () => {

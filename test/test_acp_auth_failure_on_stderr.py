@@ -71,6 +71,9 @@ def _runtime(lines):
     # not raise -- it ends the drain after one line, and every assertion below
     # then fails on a precondition instead of on what it is about.
     runtime._saw_sandbox_init_failure = False
+    # The same sink also latches a kiro-cli-chat delegate-launch failure, on the
+    # same startup-window guard; seeded for the same drain-safety reason as above.
+    runtime._saw_delegate_launch_failure = False
     # Read by the sandbox latch's startup-window guard, on the same sink. That
     # window runs to the first session handle, so both flags have to be present:
     # the drain guards itself with a broad `except Exception`, and a missing

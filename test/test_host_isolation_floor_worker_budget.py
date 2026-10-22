@@ -70,7 +70,12 @@ class TestTheWorkerBudgetIsMemoryBounded:
         ``test/`` even after a regression put the hook back in the wrong file.
         """
         root_conftest = (_REPO_ROOT / "conftest.py").read_text(encoding="utf-8")
-        suite_conftest = (_REPO_ROOT / "test" / "conftest.py").read_text(encoding="utf-8")
+        # test/conftest.py binds most of its definitions from plain modules beside it.
+        floor = set((_REPO_ROOT / "test").glob("conftest_floor_*.py"))
+        parts = sorted(set((_REPO_ROOT / "test").glob("conftest_*.py")) - floor)
+        suite_conftest = "\n".join(
+            p.read_text(encoding="utf-8") for p in (_REPO_ROOT / "test" / "conftest.py", *parts)
+        )
         hook = "def pytest_xdist_auto_num_workers"
 
         assert hook in root_conftest, (

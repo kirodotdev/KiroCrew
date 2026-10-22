@@ -21,6 +21,7 @@ import type { SlotApprovalMode } from '../../../utils/slotApprovalMode'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../../../hooks/useSettingHighlight'
 import { settingsPath } from '../../../components/settingsPath'
 import { agentOrDefaultLabel } from '../../../utils/agentLabel'
+import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
 import { Input } from '../../../components/ui'
@@ -388,8 +389,15 @@ export default function ComposerDockView({
                         onKeyDown={(e) => { if (e.key === 'Enter') handleResumeSession(s.key, s.title || s.key) }}
                       >
                         <div className="flex-1 min-w-0">
-                          <div className="font-mono text-[13px] text-text truncate">{s.title || s.key}</div>
-                          {s.created && <div className="text-[11px] text-muted font-mono mt-0.5">{fmtDateFields(s.created, { year: 'numeric', month: 'short', day: 'numeric' })}</div>}
+                          <div className="font-mono text-[13px] text-text truncate">{sessionDisplayTitle(s)}</div>
+                          {/* An untitled row's name does not say which session it is, so its
+                              key leads the second line: two untitled rows stay distinct, and a
+                              query typed as part of a key shows why the row matched. */}
+                          {(isUntitledSession(s) || s.created) && (
+                            <div className="text-[11px] text-muted font-mono mt-0.5 truncate">
+                              {[isUntitledSession(s) ? s.key : '', s.created ? fmtDateFields(s.created, { year: 'numeric', month: 'short', day: 'numeric' }) : ''].filter(Boolean).join(' · ')}
+                            </div>
+                          )}
                         </div>
                         <Undo2 size={14} className="text-accent shrink-0" />
                       </div>
@@ -523,7 +531,7 @@ export default function ComposerDockView({
               // Uses the SLOT's stored agent (not `activeAgentName`, which has
               // already collapsed empty->default) so an agent-less slot reads
               // `<default> · default` and a pinned one reads the bare alias (#8770).
-              agentLabel={agentOrDefaultLabel(currentSlot?.agent, defaultAgent)}
+              agentLabel={agentOrDefaultLabel(currentSlot?.agent, defaultAgent, currentSlot?.agent_kind)}
               agentIsInheritedDefault={!currentSlot?.agent && !!defaultAgent}
               // Read from the same rows the picker lists, so the chip marks a
               // session exactly when the picker shows a same-name pair.

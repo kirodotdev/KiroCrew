@@ -1,4 +1,5 @@
 import { isChatPageSurface } from './channelOrigin'
+import { sessionDisplayTitle } from './sessionDisplayTitle'
 
 /**
  * The roster a session chip may be offered against.
@@ -16,8 +17,9 @@ import { isChatPageSurface } from './channelOrigin'
  * crewmate DM, whose chips navigate to that same page. Two independent copies of
  * "which slots may chip" is how the affordance and the destination drift apart.
  *
- * The value is the display title (falling back to the key), used for the chip's
- * tooltip only.
+ * The value is the display title ("Untitled session" for an untitled slot,
+ * never its key: the chip's own text already shows the key), used for the
+ * chip's tooltip only.
  */
 export type RosterSlot = { key: string; title?: string; surface?: string; mode?: string }
 
@@ -25,6 +27,6 @@ export function sessionTitleRoster(slots: readonly RosterSlot[]): Map<string, st
   return new Map(
     slots
       .filter(s => isChatPageSurface(s.surface ?? s.mode))
-      .map(s => [s.key, s.title || s.key] as const),
+      .map(s => [s.key, sessionDisplayTitle(s)] as const),
   )
 }

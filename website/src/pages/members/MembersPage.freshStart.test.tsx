@@ -64,7 +64,7 @@ async function openAlpha() {
 async function pressAndAsk(button: HTMLElement) {
   fireEvent.click(button)
   const dialog = await screen.findByRole('dialog')
-  expect(within(dialog).getByText('Give this crewmate a fresh start?')).toBeTruthy()
+  expect(within(dialog).getByText('Give this mate a fresh start?')).toBeTruthy()
   expect(within(dialog).getByText(/messages stay here/i)).toBeTruthy()
   return dialog
 }
@@ -133,7 +133,7 @@ describe('MembersPage — Fresh start', () => {
     expect(api.memberFreshStart).toHaveBeenCalledTimes(1)
   })
 
-  it('the header has no Fresh start; the Profile card carries it under the crewmate\'s name', async () => {
+  it('the header has no Fresh start; the Profile card carries it under the mate\'s name', async () => {
     const link = await openAlpha()
     expect(screen.queryByTestId('member-fresh-start')).toBeNull()
     expect(within(screen.getByTestId('member-thread-header')).queryByText(/Fresh start/)).toBeNull()

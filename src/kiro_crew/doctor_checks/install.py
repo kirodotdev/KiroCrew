@@ -565,7 +565,8 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
 # ── timezone data ─────────────────────────────────────────────────────────────
 # Cron expressions and clock-time ``at_time`` values resolve through stdlib
 # ``zoneinfo``, which uses whatever data it finds: a system zoneinfo tree on
-# macOS and Linux, the ``tzdata`` package where no tree exists (Windows). Stale
+# macOS and most Linux hosts, the ``tzdata`` package where no tree exists
+# (Windows, and Linux hosts without the OS tzdata package). Stale
 # data still resolves every zone name, so nothing at save or fire time can tell
 # it apart from current data; a job just runs at the hour the old rule gives.
 #

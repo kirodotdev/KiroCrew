@@ -210,6 +210,95 @@ _OPAQUE: Final[dict[str, str]] = {
 }
 
 
+def _row_keys() -> dict[str, dict[str, Any]]:
+    """Public row metadata for script readers; paths still stop at an array.
+
+    Leaf keys come from the fold's vocabulary. Nested workstream keys are pinned
+    against its real renderer by tests, so the catalog describes public rows rather
+    than the fold's private state. Notes state units and missing-value semantics.
+    """
+    from kiro_crew.crew_log.projection_crewmate import _MILESTONE_TEXT_KEYS, _WAITING_TEXT_KEYS
+    from kiro_crew.crew_log.projection_side_panel import TIMELINE_MOMENT_KEYS
+    from kiro_crew.crew_log.projection_subagents import SUBAGENT_ROW_KEYS
+
+    series = {
+        "row_keys": ["hour", "credits", "accepted"],
+        "names_the_row": "hour",
+        "row_note": "UTC hourly buckets, oldest first; accepted is per bucket, not cumulative",
+    }
+    tasks = {
+        "row_keys": [
+            "item_id",
+            "title",
+            "state",
+            "status",
+            "summary",
+            "verdict",
+            "pr",
+            "round",
+            "spender",
+            "credits",
+            "credits_reported",
+            "duration_ms",
+            "last_report_at",
+            "created_at",
+            "closed_at",
+            "decision",
+            "events",
+            "events_seen",
+        ],
+        "names_the_row": "title",
+        "row_note": "created_at/closed_at are ISO times; an empty end is unknown or still open",
+        "nested_rows": {
+            "events": {"row_keys": ["at", "kind", "status", "text"], "names_the_row": "text"},
+        },
+    }
+    return {
+        "timeline.moments": {
+            "row_keys": list(TIMELINE_MOMENT_KEYS),
+            "names_the_row": "type",
+            "row_note": "time is epoch milliseconds; event-specific keys can be absent",
+        },
+        "subagents.by_id": {
+            "row_keys": list(SUBAGENT_ROW_KEYS),
+            "names_the_row": "task",
+        },
+        "goal.goals": {"row_keys": ["text"], "names_the_row": "text"},
+        "goal.milestones": {
+            "row_keys": list(_MILESTONE_TEXT_KEYS),
+            "names_the_row": "text",
+            "row_note": "target/current are text; current is the crewmate's own latest reading; latest snapshot, not history",
+        },
+        "waiting.items": {
+            "row_keys": [*_WAITING_TEXT_KEYS, "options", "options_omitted"],
+            "names_the_row": "text",
+            "row_note": "options is a list of strings; asked_at is the recorded time string",
+        },
+        "workstreams.series": series,
+        "workstreams.items": {
+            "row_keys": [
+                "id",
+                "goal",
+                "round",
+                "parent",
+                "total",
+                "accepted",
+                "open",
+                "needs_you",
+                "credits",
+                "credits_reported",
+                "last_activity_at",
+                "tasks",
+                "tasks_omitted",
+                "series",
+            ],
+            "names_the_row": "goal",
+            "row_note": "accepted/total measures work; credits_reported=false means unmeasured",
+            "nested_rows": {"tasks": tasks, "series": series},
+        },
+    }
+
+
 @dataclass(frozen=True)
 class FoldType:
     """One data type a dashboard block can bind to.
@@ -309,12 +398,14 @@ def _node(fold: str, path: str, value: Any) -> dict[str, Any]:
         # FIELD_TYPES` and ``integer`` is not one of them -- a validator comparing types
         # must keep matching ``number``.
         return {"type": jtype, "integer": isinstance(value, int)}
+    rows = _row_keys().get(key, {})
     if jtype != "object":
         # An array is a LEAF: a fold path cannot index one, so an element shape here
-        # would describe something no Model field can name.
-        return {"type": jtype}
+        # would describe something no Model field can name. Its row keys are still
+        # named, for a script that draws the rows.
+        return {"type": jtype, **rows}
     if key in _OPAQUE:
-        opaque: dict[str, Any] = {"type": "object", "opaque": True}
+        opaque: dict[str, Any] = {"type": "object", "opaque": True, **rows}
         keyed_by = _OPAQUE[key]
         if keyed_by:
             opaque["keyed_by"] = keyed_by

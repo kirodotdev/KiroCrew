@@ -29,6 +29,7 @@ from apps_routes_coverage_helpers import (
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
+from kiro_crew.testing.wait import await_until
 
 # ---------------------------------------------------------------------------
 # Enable / disable warning + rollback branches
@@ -497,8 +498,7 @@ class TestRepeatedToggleIsIdempotent:
         async def _script(*args: Any, **kwargs: Any) -> dict[str, Any]:
             scripts.append("onDisable")
             # Hold the lock until the second request has read its pre-lock metadata.
-            # flake-ok: pre-existing 5 s bounded wait for the second request's pre-lock read -- moved verbatim; tracked for a de-flake pass
-            await asyncio.wait_for(both_read.wait(), timeout=5)
+            await await_until(both_read, what="the second request's pre-lock read")
             return {"output": "", "failed": False}
 
         monkeypatch.setattr(routes_mod, "get_app", _get_app)
@@ -582,3 +582,42 @@ async def test_enable_does_not_re_register_after_the_backend_starts(
         assert resp.status == 200
 
     assert called == [], "enable re-registered after start; the adoption path owns that"
+
+
+class TestRecordWritersRunOffTheLoop:
+    """The enable and disable routes write the record from a worker thread.
+
+    The record lock is single-shot on the event-loop thread, so a writer called
+    there would fail on ordinary contention with another writer of the app.
+    """
+
+    @pytest.mark.asyncio
+    async def test_enable_and_disable_write_off_the_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        on_loop: list[tuple[str, bool]] = []
+        real_enable, real_disable = routes_mod.enable_app, routes_mod.disable_app
+
+        def _running_on_loop() -> bool:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return False
+            return True
+
+        def _enable(*args: Any, **kwargs: Any) -> AppResult:
+            on_loop.append(("enable", _running_on_loop()))
+            return real_enable(*args, **kwargs)
+
+        def _disable(*args: Any, **kwargs: Any) -> AppResult:
+            on_loop.append(("disable", _running_on_loop()))
+            return real_disable(*args, **kwargs)
+
+        monkeypatch.setattr(routes_mod, "enable_app", _enable)
+        monkeypatch.setattr(routes_mod, "disable_app", _disable)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            assert (await client.post(f"/api/apps/{APP}/enable")).status == 200
+            assert (await client.post(f"/api/apps/{APP}/disable")).status == 200
+        assert on_loop == [("enable", False), ("disable", False)]

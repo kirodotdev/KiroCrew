@@ -80,10 +80,20 @@ describe('SessionTabStrip rendering', () => {
     expect(screen.getByTestId('session-tab-chat-1').getAttribute('aria-selected')).toBe('false')
   })
 
-  it('falls back to the session key when a session has no title yet', () => {
-    const slots = [{ key: 'chat-1' }, { key: 'chat-2' }] as unknown as Slots
-    renderStrip({ tabs: ['chat-1', 'chat-2'], slots })
-    expect(screen.getByText('chat-1')).toBeTruthy()
+  it('labels an untitled tab "Untitled session" and keeps its key in the hover title (#22049)', () => {
+    const slots = [{ key: 'chat-1' }, { key: 'chat-2', title: 'chat-2' }, { key: 'chat-3', title: 'Named work' }] as unknown as Slots
+    renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'], slots })
+    for (const key of ['chat-1', 'chat-2']) {
+      const tab = screen.getByTestId(`session-tab-${key}`)
+      expect(tab.textContent).toContain('Untitled session')
+      expect(tab.textContent).not.toContain(key)
+      expect(tab.getAttribute('aria-label')).toBe('Untitled session')
+      // The key tells untitled tabs apart on hover.
+      expect(tab.getAttribute('title')).toBe(`Untitled session · ${key}`)
+    }
+    const named = screen.getByTestId('session-tab-chat-3')
+    expect(named.textContent).toContain('Named work')
+    expect(named.getAttribute('title')).toBe('Named work')
   })
 
   it('ellipsizes a long title rather than widening the strip', () => {

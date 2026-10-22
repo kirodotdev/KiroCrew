@@ -356,14 +356,15 @@ async def _fire_dashboard_nudge(
     # in the appended row: identical unless the loop opted into a ``banner``,
     # in which case this transcript row is the only thing shortened while the
     # full ``tagged`` prompt still reaches ``_run_chat``.
-    nudge_meta: dict[str, Any] = {
-        "nudge": {
-            "cycle": loop.cycle_count + 1,
-            "loop_id": loop.id,
-        }
-    }
+    # The row's role and ``meta.nudge`` come from the wake's origin
+    # (``session_deliver.origin_row``), the same mapping a steered wake uses.
+    # Deferred import for the cycle the steer path documents.
+    from kiro_crew.dashboard import session_deliver
+
+    wake_origin = session_deliver.automation(loop.cycle_count + 1, loop.id)
+    monitor_meta: dict[str, Any] = {}
     if wake_message is not None and loop.monitor is not None:
-        nudge_meta["monitor"] = {
+        monitor_meta["monitor"] = {
             "id": loop.id,
             "fingerprint": loop.monitor.last_wake_fingerprint,
             "classification": (
@@ -380,12 +381,7 @@ async def _fire_dashboard_nudge(
     assert dashboard_state is not None and turn_slot is not None
 
     def _append_nudge() -> None:
-        turn_slot.append(
-            "nudge",
-            visible,
-            "msg msg-nudge",
-            meta=nudge_meta,
-        )
+        session_deliver.write_origin_row(turn_slot, visible, wake_origin, extra_meta=monitor_meta)
 
     if completion_hook is None:
         _append_nudge()
@@ -677,11 +673,7 @@ async def _steer_work_ledger_wake(
         return False
     # Deferred import for the cycle the sibling fire path documents: gateway ->
     # dashboard.chat_delivery -> gateway.
-    from kiro_crew.dashboard.chat_delivery import (
-        STEER_REQUEUED,
-        STEER_STEERED,
-        steer_into_running_turn,
-    )
+    from kiro_crew.dashboard import session_deliver
     from kiro_crew.dashboard.session_control import containment_meta
 
     try:
@@ -702,8 +694,15 @@ async def _steer_work_ledger_wake(
     # turn would also be the wrong promise -- the teardown clears it, and a
     # requeued steer's successor would run without it.
     try:
-        outcome = await steer_into_running_turn(
-            state, slot, text, user_origin=False, admission=admission
+        # The wake names itself as this loop's automation; the session turns
+        # that into the steer and the nudge row. The cycle is the one this
+        # delivery charges.
+        outcome = await session_deliver.deliver(
+            state,
+            slot,
+            text,
+            session_deliver.automation(loop.cycle_count + 1, loop.id),
+            admission=admission,
         )
     except Exception:
         logger.warning(
@@ -712,7 +711,7 @@ async def _steer_work_ledger_wake(
             exc_info=True,
         )
         return False
-    if outcome == STEER_REQUEUED:
+    if outcome == session_deliver.DELIVERED_REQUEUED:
         # The turn ended while the RPC was suspended, so the teardown degraded
         # the text to a queue card at the HEAD of the slot queue. It runs, as
         # its own turn, and the drain's own notice covers the one case it does
@@ -727,7 +726,7 @@ async def _steer_work_ledger_wake(
             loop.slot_key,
         )
         return True
-    if outcome != STEER_STEERED:
+    if outcome != session_deliver.DELIVERED_STEERED:
         logger.info(
             "AutoNudge: loop %s could not steer its work-ledger wake into the "
             "running turn (%s); the wake stays owed",

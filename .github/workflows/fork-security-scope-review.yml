@@ -172,8 +172,16 @@ jobs:
             claude.ai:443
             downloads.claude.ai:443
 
+      # STEP TIMEOUTS, here and on the four steps after it. Each of these steps
+      # takes seconds (checkout about two minutes), yet a run can hang in one of
+      # them until the 30-minute JOB timeout kills it (the hang itself is tracked
+      # in issue 23063). A step timeout only makes that hang
+      # end sooner: the job still fails before `Resolve review scope` writes
+      # `in_scope`, and `publish` still fails closed on the empty value. No retry,
+      # so a timed-out step can never turn into a measured answer.
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -282,6 +290,7 @@ jobs:
       # that second read and the check-run's POST.
       - name: Resolve human override
         id: human_override
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -338,6 +347,8 @@ jobs:
       # Trusted BASE tree for review CONTEXT only. NEVER the fork head.
       - name: Checkout base (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history takes 83-187 s on a healthy runner; 10 is ample headroom.
+        timeout-minutes: 10
         with:
           ref: ${{ steps.pr.outputs.base_sha }}
           fetch-depth: 0
@@ -349,6 +360,7 @@ jobs:
       # cannot mislead the review. It is read as a DATA file only: never applied
       # to or overlaid on the tree, and nothing runs it.
       - name: Fetch authentic diff (data only — never applied to the tree)
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -409,6 +421,7 @@ jobs:
       # what "the security surface" means, and only one of them gates a fork.
       - name: Resolve review scope
         id: scope
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -1709,6 +1722,14 @@ jobs:
             if [ "${ADJUDICATE:-}" != "true" ] && [ "${VALIDATE_RC:-}" = "3" ]; then
               nothing_new="true"
             fi
+            # An EMPTY in_scope: `generate` died (timed out, failed, cancelled)
+            # before `Resolve review scope` wrote it. Still unmeasured and still
+            # red -- this only lets the table name that cause instead of the
+            # generic "no leg reported" sentence, which points at the author's diff.
+            scope_unresolved="false"
+            if [ -z "${IN_SCOPE:-}" ]; then
+              scope_unresolved="true"
+            fi
             # THE CONCLUSION LADDER lives in scope_candidates.py so this lane and
             # the same-repo lane cannot drift. This publish job runs the
             # DEFAULT-branch harness (the trusted copy `adjudicate` judged with),
@@ -1717,7 +1738,7 @@ jobs:
             conc="$(python3 scripts/scope_candidates.py conclude \
               --fold "$fold" --model "${MODEL_VERDICT:-UNKNOWN}" --marker "$marker" \
               --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model" \
-              --refusal "${VALIDATE_RC:-}")"
+              --refusal "${VALIDATE_RC:-}" --scope-unresolved "$scope_unresolved")"
             token="$(printf '%s\n' "$conc" | sed -n 's/^conclusion=//p')"
             title="$(printf '%s\n' "$conc" | sed -n 's/^why=//p')"
             # The actionable half of a NAMED validate refusal, which the check-run

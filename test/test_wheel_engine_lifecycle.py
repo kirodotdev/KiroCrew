@@ -820,7 +820,7 @@ def drip_server(tmp_path: Path) -> Iterator[str]:
             end = time.monotonic() + 5.0
             while time.monotonic() < end and not stop.is_set():
                 tls.sendall(b"x")
-                time.sleep(0.2)
+                time.sleep(0.2)  # flake-ok: stimulus pacing; the server trickles a byte per 200 ms
         except OSError:
             pass
         finally:

@@ -79,7 +79,7 @@ DEFAULT_BACKUP_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
 #:   counter); requiring at least one digit between ``.json.`` and ``.tmp`` is
 #:   what distinguishes a stranded temp from a legitimately-named file ending in
 #:   ``.tmp``.
-#: * ``tmp<alnum>.tmp`` — Kiro Crew's OWN atomic-write residue. ``agent.py``'s
+#: * ``tmp<alnum>.tmp`` — Kiro Crew's OWN atomic-write residue. ``agent_parts/spec_files.py``'s
 #:   ``_atomic_json_write`` calls ``tempfile.mkstemp(suffix=".tmp")``, which
 #:   emits ``tmp`` + random alphanumerics + ``.tmp`` (never the dotted
 #:   ``.json.<digits>.tmp`` shape), so without this pattern the project's own

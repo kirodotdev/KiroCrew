@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:e0f6df8512b839ae1e9016979df75b829952c83367b1849acb155c7bb960bab9"
+export const GUIDE_BUILD_DIGEST = "sha256:99de0a46e570074d3de396e71b96172b8a233d8d22714a85c8e4035441b8ce96"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -1743,7 +1743,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:members.switcher",
@@ -1777,7 +1777,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "mobile:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "mobile:members.back",
@@ -1811,7 +1811,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:members.switcher",
@@ -1851,7 +1851,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "mobile:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "mobile:members.back",
@@ -1891,7 +1891,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "mobile:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "mobile:select:crewmate_selected",
@@ -1922,7 +1922,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "any:select:crewmate_selected",
@@ -1954,7 +1954,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:select:crewmate_selected",
@@ -1986,7 +1986,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:select:crewmate_selected",
@@ -2024,7 +2024,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:select:crewmate_selected",
@@ -2062,7 +2062,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:select:crewmate_selected",
@@ -2094,7 +2094,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:gate:preview_flag:mc-preview-crew",
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
+            "setting_id": "developer.mates"
           },
           {
             "id": "desktop:select:crewmate_selected",

@@ -313,9 +313,14 @@ class TestSpawnIdentityStamp:
         wiring is spelled identically at both sites.
         """
 
-        source = (
-            Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard" / "server.py"
-        ).read_text(encoding="utf-8")
+        dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
+        source = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                dashboard / "server.py",
+                dashboard / "server_runtime" / "api_entrypoint.py",
+            )
+        )
         seeds = source.count("seed_sessions_baseline()")
         wirings = source.count("spawn_identity_reader = ")
         assert seeds >= 2, "expected both startup sites to seed"

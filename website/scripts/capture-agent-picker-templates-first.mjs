@@ -83,8 +83,8 @@ for (const theme of ['light', 'dark']) {
   // The assertions the frame is meant to carry, checked before it is written:
   // the two group headers in the new order, and the templates hint under the first.
   const groups = await picker.getByRole('group').evaluateAll(els => els.map(e => e.getAttribute('aria-label')))
-  if (JSON.stringify(groups) !== JSON.stringify(['Custom agents', 'Crewmates'])) {
-    throw new Error(`group order ${JSON.stringify(groups)} != ['Custom agents', 'Crewmates']`)
+  if (JSON.stringify(groups) !== JSON.stringify(['Custom agents', 'Mates'])) {
+    throw new Error(`group order ${JSON.stringify(groups)} != ['Custom agents', 'Mates']`)
   }
   const options = await picker.getByRole('option').allInnerTexts()
   const names = options.map(t => t.split('\n')[0].trim())

@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -32,14 +33,13 @@ _QUEUED_EMIT_CEILING_SECS = 5.0
 async def _await_queued_event(events: list[dict[str, Any]], reason: str | None = None) -> None:
     """Wait for a ``subagent_queued`` extra (one carrying *reason*, when given);
     RAISE, naming what was read, at the ceiling."""
-    deadline = time.monotonic() + _QUEUED_EMIT_CEILING_SECS
-    while not any(reason is None or e.get("reason") == reason for e in events):
-        assert time.monotonic() < deadline, (
-            f"no subagent_queued{f' with reason {reason!r}' if reason else ''} within "
-            f"{_QUEUED_EMIT_CEILING_SECS}s; events={events!r}"
-        )
-        # flake-ok: pre-existing bounded poll interval, moved verbatim; it raises at its deadline
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: any(reason is None or e.get("reason") == reason for e in events),
+        timeout=_QUEUED_EMIT_CEILING_SECS,
+        describe=lambda: (
+            f"no subagent_queued{f' with reason {reason!r}' if reason else ''}; events={events!r}"
+        ),
+    )
 
 
 async def _wait_for(predicate, timeout=5.0, interval=0.05, message="predicate"):

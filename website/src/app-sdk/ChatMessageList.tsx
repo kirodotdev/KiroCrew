@@ -24,7 +24,7 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
-import { createDisplayItemReconciler } from '../pages/chat/groupDisplayItems'
+import { createDisplayItemReconciler, hasToolStep } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import {
   type MessageRenderer,
@@ -256,7 +256,8 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
 
     const flushTurn = (complete: boolean) => {
       if (!turnItems.length) return
-      if (hasWorkingSteps(turnItems) && turnItems.length > 2) {
+      // A tool call wraps at any length, so a one-tool turn folds (#23017).
+      if (hasToolStep(turnItems) || (hasWorkingSteps(turnItems) && turnItems.length > 2)) {
         turns.push({ kind: 'turn', items: turnItems, complete })
       } else {
         turns.push(...turnItems)

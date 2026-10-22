@@ -37,6 +37,7 @@ from session_scope_reap_helpers import (  # noqa: F401 -- the autouse fixture re
 )
 
 from kiro_crew import session_scope_reap as r
+from kiro_crew.testing.wait import finished
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Agent scope reaping is Linux-only")
 
@@ -604,8 +605,10 @@ async def test_periodic_ticks_reclaim_successive_runtime_trees_without_gateway_r
     monkeypatch.setattr(cleanup, "_sweep_untracked_mcps", record_tick)
     with ThreadPoolExecutor(max_workers=1) as executor:
         monkeypatch.setattr(session, "maintenance_executor", lambda: executor)
-        # flake-ok: pre-existing 10 s ceiling over a real one-worker executor hop; moved verbatim, tracked for a de-flake pass
-        await asyncio.wait_for(cleanup._run_cleanup_ticks(cleanup._adopt_idle_policy()), 10)
+        await finished(
+            cleanup._run_cleanup_ticks(cleanup._adopt_idle_policy()),
+            "ten cleanup ticks over the one-worker executor",
+        )
     assert ticks == list(range(5)) * 2
     assert summaries == [0, 0, 1, 0] * 2
     assert rec.killed == rec.slept == []

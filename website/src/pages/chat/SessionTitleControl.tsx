@@ -13,6 +13,7 @@ import { api } from '../../api/client'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
+import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 /**
  * SessionTitleControl — the session title as ONE editable control: the
@@ -343,7 +344,12 @@ export default function SessionTitleControl({
       {glyphIcon && <span role="img" aria-label={modeText} title={modeText}>{glyphIcon}</span>}
     </>
   )
-  const renameLabel = i18nT('pages.chatPage.rename_session_title', { title })
+  // What the header SHOWS: "Untitled session" for an untitled slot, never its
+  // key (#20871). `title` itself stays the raw value every rename, rollback and
+  // Undo comparison above works on.
+  const untitled = isUntitledSession({ key: slotKey, title })
+  const shownTitle = sessionDisplayTitle({ key: slotKey, title })
+  const renameLabel = i18nT('pages.chatPage.rename_session_title', { title: shownTitle })
   const triggerLabel = [renameLabel, pinnedText, modeText].filter(Boolean).join(', ')
   // The SAME element in both renders (last child of a fragment in each), so
   // React keeps it mounted across the editor opening and closing: a live
@@ -375,7 +381,9 @@ export default function SessionTitleControl({
         <div className={compact ? "@container flex min-w-0 flex-1 items-center gap-1" : "flex min-w-0 flex-1 items-center gap-1"}>
           {glyphs}
           <TitleEditor
-            initial={title}
+            // An untitled session opens the editor empty, as the sidebar's
+            // rename does, so neither the key nor the label is saved as a name.
+            initial={untitled ? '' : title}
             compact={!!compact}
             className={compact
               ? 'text-[13px] font-semibold text-text-strong font-body rounded-l-[2px] rounded-r-md border-accent px-[5px] py-px m-0 min-w-0 flex-1'
@@ -420,7 +428,8 @@ export default function SessionTitleControl({
         {pinIcon && <span aria-hidden="true" title={pinnedText} data-testid="session-pinned-glyph">{pinIcon}</span>}
         {glyphIcon && <span aria-hidden="true" title={modeText} data-testid="memory-mode-glyph">{glyphIcon}</span>}
         <TypewriterText
-          text={title}
+          text={shownTitle}
+          placeholder={untitled}
           className={compact
             ? 'text-[13px] font-semibold text-text-strong font-body truncate min-w-0'
             : 'session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]'}
@@ -435,8 +444,11 @@ export default function SessionTitleControl({
              generated title is the one on screen: the way back must be seen
              without knowing to hover. */
           <Btn
-            aria-label={`${i18nT('pages.chatPage.undo_auto_title')}: ${undo.previous}`}
-            title={undo.previous}
+            // Named by the label the header showed, "Untitled session" when the
+            // previous name was empty or the key (#20871); the commit below still
+            // restores the raw previous value.
+            aria-label={`${i18nT('pages.chatPage.undo_auto_title')}: ${sessionDisplayTitle({ key: slotKey, title: undo.previous })}`}
+            title={sessionDisplayTitle({ key: slotKey, title: undo.previous })}
             className={`shrink-0 flex items-center gap-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 ${compact ? 'text-[11px]' : 'text-xs'} leading-none whitespace-nowrap`}
             onClick={(e) => { e.stopPropagation(); commit(undo.previous) }}
           >

@@ -71,7 +71,7 @@ await notes.waitFor({ state: 'visible', timeout: 15000 })
 const line = page.getByTestId('member-notes-agent-only')
 await line.waitFor({ state: 'visible', timeout: 15000 })
 const text = (await line.textContent()) ?? ''
-check('the agent-only line names the crewmate and says it is read-only here',
+check('the agent-only line names the mate and says it is read-only here',
   text.includes(CREW) && /writes these notes for itself/.test(text) && /not change them/.test(text), text)
 check('no edit control anywhere in the tab',
   (await notes.locator('button', { hasText: /edit/i }).count()) === 0
@@ -100,7 +100,7 @@ const empty = page.getByTestId('member-notes-empty')
 await empty.waitFor({ state: 'visible', timeout: 15000 })
 check('this is the EMPTY state, not a read', !(await page.getByTestId('member-notes-body').isVisible().catch(() => false)))
 const text3 = (await line3.textContent()) ?? ''
-check('the line is there with nothing to read, and names THIS crewmate',
+check('the line is there with nothing to read, and names THIS mate',
   text3.includes(BLANK_CREW) && /writes these notes for itself/.test(text3), text3)
 // The removed sentence: the empty state used to repeat what the line now says.
 const emptyText = (await empty.textContent()) ?? ''

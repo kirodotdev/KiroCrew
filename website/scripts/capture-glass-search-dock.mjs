@@ -31,9 +31,9 @@ const TITLES = [
   'GUI user-test standing reds fix', 'Talos review kiro-drive', 'Remove Cloud button from Members header',
   'Kiro Drive phone Details bottom sheet', 'Identity-sweep livelock fix', 'Haptic feedback (phone taps)',
   'Liquid glass composer dock', 'Settings capsule search on mobile', 'Members page filters parity',
-  'Crewmate chat autoscroll', 'Shelf fade under the composer', 'File card type icons', 'Cron template picker',
+  'Mate chat autoscroll', 'Shelf fade under the composer', 'File card type icons', 'Cron template picker',
   'Effort back in model picker', 'Fake ACP list models', 'Agent plugins std MCP', 'Cron store fsync',
-  'Customize page crewmate vocab', 'Portability warning for agent templates', 'Watchdog orphan queue read',
+  'Customize page mate vocab', 'Portability warning for agent templates', 'Watchdog orphan queue read',
 ]
 const slots = TITLES.map((title, i) => ({
   key: `chat-${i}`, title, running: i === 0 || i === 6, last_message: 'Latest turn.', messages: 4 + i,
@@ -60,7 +60,7 @@ const MATES = [
   ['Tester', 'Writes the missing test first', 'Coverage up 0.4%.'],
   ['Painter', 'Keeps the themes in step', 'Ocean theme retinted.'],
   ['Historian', 'Summarises long sessions', 'Three summaries queued.'],
-  ['Dispatcher', 'Routes work to crewmates', 'Idle.'],
+  ['Dispatcher', 'Routes work to mates', 'Idle.'],
   ['Sentinel', 'Watches the security invariants', 'All green.'],
   ['Cartographer', 'Maps the feature surface', 'Feature map current.'],
   ['Herald', 'Posts the release notes', 'rc1 notes drafted.'],

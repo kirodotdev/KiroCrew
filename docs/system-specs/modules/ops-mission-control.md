@@ -2852,7 +2852,7 @@ than left to review:
   `signal.SIGKILL`), no `/bin/sh`, no `shell=True`, no hardcoded `/tmp`.
 - **Timezone lookup degrades to UTC.** `rotation.yaml` may name an IANA zone, and Windows
   ships no system tz database, so `ZoneInfo(...)` can raise. `tzdata` is a declared
-  Windows dependency, but an install missing it must still resolve a rotation rather than
+  dependency, but an install missing it must still resolve a rotation rather than
   crash the 5-minute cron. Verified by making the `zoneinfo` **import itself** fail — the
   real failure shape — and asserting the shift still resolves definitively
   (`on_shift=True, unknown=False`, correct `who`), just in UTC.

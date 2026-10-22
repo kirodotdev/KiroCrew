@@ -223,7 +223,7 @@ describe('ChatEmbed attachments with the upload grant', () => {
     const sendBtn = screen.getByLabelText('Send message')
     await waitFor(() => expect(sendBtn).not.toBeDisabled())
     await act(async () => { fireEvent.click(sendBtn) })
-    expect(onSend).toHaveBeenCalledWith(expect.stringContaining('[attached_file 1]'), { files: ['/up/spec.pdf'] })
+    expect(onSend).toHaveBeenCalledWith(expect.stringContaining('[attached_file 1]'), { files: ['/up/spec.pdf'], sendId: expect.any(String) })
   })
 
   it('keeps the text of a paste that carries text and an image of it', async () => {
@@ -349,7 +349,7 @@ describe('shared Attach integration', () => {
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Send message' })))
     await waitFor(() => expect(screen.getByLabelText('Chat message')).toHaveValue('my draft'))
     expect(screen.getByRole('group', { name: '/up/spec.pdf' })).toBeInTheDocument()
-    expect(onSend).toHaveBeenCalledWith(expect.stringContaining('[attached_file 1]'), { files: ['/up/spec.pdf'] })
+    expect(onSend).toHaveBeenCalledWith(expect.stringContaining('[attached_file 1]'), { files: ['/up/spec.pdf'], sendId: expect.any(String) })
     expect(mockPost).not.toHaveBeenCalled()
   })
 })

@@ -24,7 +24,7 @@ beforeEach(() => {
 // same `data-setting-key` anchor the real row does.
 vi.mock('../pages/overview', () => ({
   KiroCrewCfgTab: () => (
-    <div data-testid="default-crewmate-row" data-setting-key="default-crewmate" data-setting-label="Default crewmate" />
+    <div data-testid="default-crewmate-row" data-setting-key="default-crewmate" data-setting-label="Default mate" />
   ),
   AgentCfgTab: () => <div />,
 }))
@@ -42,7 +42,7 @@ vi.mock('../pages/settings/McpManagement', () => ({ McpManagement: () => <div />
 import DeveloperPage from '../pages/DeveloperPage'
 
 describe('DeveloperPage default-crewmate deep link', () => {
-  it('rings the Default crewmate row when the config tab carries its highlight', async () => {
+  it('rings the Default mate row when the config tab carries its highlight', async () => {
     const { getByTestId } = render(
       <MemoryRouter initialEntries={['/developer?tab=config&highlight=key:default-crewmate']}>
         <DeveloperPage />

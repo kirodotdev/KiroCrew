@@ -136,7 +136,7 @@ def _install_bounded_decode(llm: object) -> bool:
     model unloads. The vendored ``Llama.embed`` is told to decode a longer batch
     as consecutive slices of at most ``n_ubatch`` tokens (its
     ``kiro_crew_max_decode_tokens`` divergence), so the buffer never holds more
-    than ``n_ubatch`` rows: 298 MiB for the shipped model's 512.
+    than ``n_ubatch`` rows: 149 MiB for the shipped model's 256.
 
     ``n_ubatch`` and not anything smaller, because a unified-cache decode splits a
     batch into consecutive ``n_ubatch`` slices in batch order (``split_simple``):
@@ -597,7 +597,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # against input length. Both are
                 # clamped to the trained position count the GGUF declares, at
                 # most 2,048 (see _model_context_policy). Decoder models keep the
-                # lower-RSS 512-token micro-batch, bounded by that batch; non-causal
+                # lower-RSS 256-token micro-batch, bounded by that batch; non-causal
                 # models (cache-less encoder architectures, or a GGUF declaring
                 # `.attention.causal = false`) need one physical micro-batch to
                 # hold every token, so all three coincide. So does any model
@@ -605,7 +605,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # its own and keeps only the last one's result, which would store
                 # the mean, or the first token, of a longer input's tail. The
                 # token last-token pooling reads is always in the last micro-batch,
-                # so only a last-token decoder keeps the 512.
+                # so only a last-token decoder keeps the 256.
                 n_ctx=policy.n_ctx,
                 n_batch=policy.n_batch,
                 n_ubatch=(

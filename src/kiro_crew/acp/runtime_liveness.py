@@ -10,7 +10,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
 ``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
-``_saw_sandbox_init_failure``, ``_stall_turn_sessions``, ``_stderr_lines``,
+``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
+``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
 Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
@@ -32,6 +33,7 @@ from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.acp.transport_errors import (
     is_auth_failure_output,
+    is_delegate_launch_failure_output,
     is_sandbox_init_failure_output,
     registration_throttle_line,
 )
@@ -345,6 +347,19 @@ def saw_sandbox_init_failure(self: AcpRuntime) -> bool:
     ring buffer.
     """
     return self._saw_sandbox_init_failure
+
+
+def saw_delegate_launch_failure(self: AcpRuntime) -> bool:
+    """True if this runtime's child died because ``kiro-cli-chat`` would not launch.
+
+    Lets callers translate the death into a non-retryable, actionable error
+    naming the install fix instead of the generic "process exited" card the
+    retry ladder then reproduces on a host whose delegate will fail to launch
+    identically. Parity with :meth:`saw_sandbox_init_failure` and
+    :meth:`saw_not_logged_in`, including reading the latch rather than the ring
+    buffer.
+    """
+    return self._saw_delegate_launch_failure
 
 
 def redacted_stderr_tail(self: AcpRuntime) -> str:
@@ -876,6 +891,17 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     and is_sandbox_init_failure_output(text)
                 ):
                     self._saw_sandbox_init_failure = True
+                # Same sink and the SAME pre-initialize window as the sandbox-init
+                # latch, for the same reason: a delegate that will not exec fails
+                # before startup completes, and a ``failed to launch kiro-cli-chat``
+                # line after a healthy start would belong to some later unrelated
+                # death, not to the agent process's own startup.
+                if (
+                    not self._first_session_ready
+                    and not self._saw_delegate_launch_failure
+                    and is_delegate_launch_failure_output(text)
+                ):
+                    self._saw_delegate_launch_failure = True
                 if self.recording_allowed:
                     logger.debug("stderr: %s", text[:200])
     except asyncio.CancelledError:

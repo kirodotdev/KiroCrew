@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Any
 
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 
@@ -64,6 +64,11 @@ class DiscordApprovalDecider:
     #: per-turn sweep would otherwise drop a prompt the user is still looking at.
     _DETACHED: set[str] = set()
 
+    #: Keys whose recorded refusal came from :meth:`refuse_undelivered`, so the
+    #: adopting ``__call__`` can name the cause instead of reading it as a
+    #: human's Deny. Cleared on every exit that drops the key.
+    _UNDELIVERED: set[str] = set()
+
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
         #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
@@ -107,6 +112,7 @@ class DiscordApprovalDecider:
         reserved = cls._REGISTRY.get(key)
         if reserved is None or reserved.done():
             cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
+            cls._UNDELIVERED.discard(key)
         return nonce
 
     @classmethod
@@ -127,6 +133,7 @@ class DiscordApprovalDecider:
         cls._NONCES.pop(key, None)
         cls._REGISTRY.pop(key, None)
         cls._DETACHED.discard(key)
+        cls._UNDELIVERED.discard(key)
 
     @classmethod
     def refuse_undelivered(cls, key: str) -> None:
@@ -146,6 +153,7 @@ class DiscordApprovalDecider:
         reserved = cls._REGISTRY.get(key)
         if reserved is not None and not reserved.done():
             reserved.set_result(False)
+            cls._UNDELIVERED.add(key)
 
     @classmethod
     def discard_session(cls, session_key: str) -> None:
@@ -175,6 +183,7 @@ class DiscordApprovalDecider:
         ]:
             cls._REGISTRY.pop(k, None)
             cls._NONCES.pop(k, None)
+            cls._UNDELIVERED.discard(k)
 
     async def __call__(self, event: Any) -> bool:
         self.last_deny_cause = ""
@@ -192,8 +201,13 @@ class DiscordApprovalDecider:
                 reserved = None
             else:
                 try:
-                    return bool(reserved.result())
+                    answer = bool(reserved.result())
+                    if not answer and k in DiscordApprovalDecider._UNDELIVERED:
+                        # The prompt never reached the channel; nobody refused.
+                        self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+                    return answer
                 finally:
+                    DiscordApprovalDecider._UNDELIVERED.discard(k)
                     DiscordApprovalDecider._REGISTRY.pop(k, None)
                     DiscordApprovalDecider._NONCES.pop(k, None)
                     # Every exit that drops this key drops its detached mark with
@@ -207,6 +221,9 @@ class DiscordApprovalDecider:
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
             answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
+            if not answer and k in DiscordApprovalDecider._UNDELIVERED:
+                self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+                return False
             # A button was pressed: a loop paused for approval in this session resumes.
             from kiro_crew.autonudge import release_approval_hold_for
 
@@ -233,6 +250,7 @@ class DiscordApprovalDecider:
                 logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
             return False  # deny-by-default on timeout
         finally:
+            DiscordApprovalDecider._UNDELIVERED.discard(k)
             DiscordApprovalDecider._REGISTRY.pop(k, None)
             # Retire the prompt's nonce with the decision window: a press on
             # the (now stale) buttons can never resolve a future request.

@@ -1,16 +1,73 @@
 [
   {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.19.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "local/model-1",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Local/model-1",
+            "value": "local/model-1"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "opencode-session-1"
+  },
+  {
     "action": "update",
     "events": [
       {
         "is_shell": true,
         "kind": "tool_call",
         "raw_tool_params": {
-          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+          "cwd": "<cwd>"
         },
         "title": "bash",
-        "tool_call_id": "call_hixtdbkj",
-        "tool_input": "{\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "tool_call_id": "call_tkctdm9o",
+        "tool_input": "{\n  \"cwd\": \"<cwd>\"\n}",
         "tool_kind": "execute",
         "wire_title": "bash"
       }
@@ -25,14 +82,14 @@
         "is_shell": true,
         "kind": "tool_call_update",
         "raw_tool_params": {
-          "command": "echo kirocrew-op encode-live",
-          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+          "command": "echo kirocrew-opencode-live",
+          "cwd": "<cwd>"
         },
-        "title": "echo kirocrew-op encode-live",
-        "tool_call_id": "call_hixtdbkj",
-        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_tkctdm9o",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"cwd\": \"<cwd>\"\n}",
         "tool_kind": "execute",
-        "wire_title": "echo kirocrew-op encode-live"
+        "wire_title": "echo kirocrew-opencode-live"
       }
     ],
     "frame": "session/update",
@@ -61,13 +118,13 @@
         ],
         "raw_params_trusted": true,
         "raw_tool_params": {
-          "command": "echo kirocrew-op encode-live",
-          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+          "command": "echo kirocrew-opencode-live",
+          "cwd": "<cwd>"
         },
         "shell_classified": true,
-        "title": "echo kirocrew-op encode-live",
-        "tool_call_id": "call_hixtdbkj",
-        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_tkctdm9o",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"cwd\": \"<cwd>\"\n}",
         "tool_kind": "execute"
       }
     ],
@@ -85,14 +142,14 @@
         "is_shell": true,
         "kind": "tool_call_update",
         "raw_tool_params": {
-          "command": "echo kirocrew-op encode-live",
-          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+          "command": "echo kirocrew-opencode-live",
+          "cwd": "<cwd>"
         },
-        "title": "echo kirocrew-op encode-live",
-        "tool_call_id": "call_hixtdbkj",
-        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_tkctdm9o",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"cwd\": \"<cwd>\"\n}",
         "tool_kind": "execute",
-        "wire_title": "echo kirocrew-op encode-live"
+        "wire_title": "echo kirocrew-opencode-live"
       }
     ],
     "frame": "session/update",
@@ -103,24 +160,24 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_hixtdbkj",
-        "tool_output": "kirocrew-op encode-live\n",
-        "tool_output_bytes": 24,
-        "tool_output_digest": "3053148987abbf3a60c98dfae1fac2099a438f2bbccbeeedf9f763509f0fbc42",
+        "tool_call_id": "call_tkctdm9o",
+        "tool_output": "kirocrew-opencode-live\n",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "38b8f2d49d0a7dbe4e4470c261be27db3cccef718f9b3770949e7e3754780160",
         "tool_status": "in_progress"
       },
       {
         "is_shell": true,
         "kind": "tool_call_update",
         "raw_tool_params": {
-          "command": "echo kirocrew-op encode-live",
-          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+          "command": "echo kirocrew-opencode-live",
+          "cwd": "<cwd>"
         },
-        "title": "echo kirocrew-op encode-live",
-        "tool_call_id": "call_hixtdbkj",
-        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_tkctdm9o",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"cwd\": \"<cwd>\"\n}",
         "tool_kind": "execute",
-        "wire_title": "echo kirocrew-op encode-live"
+        "wire_title": "echo kirocrew-opencode-live"
       }
     ],
     "frame": "session/update",
@@ -131,22 +188,300 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_hixtdbkj",
+        "tool_call_id": "call_tkctdm9o",
         "tool_final": true,
-        "tool_output": "kirocrew-op encode-live\n",
-        "tool_output_bytes": 24,
-        "tool_output_digest": "3053148987abbf3a60c98dfae1fac2099a438f2bbccbeeedf9f763509f0fbc42",
+        "tool_output": "kirocrew-opencode-live\n",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "38b8f2d49d0a7dbe4e4470c261be27db3cccef718f9b3770949e7e3754780160",
         "tool_status": "completed"
       },
       {
         "is_shell": true,
         "kind": "tool_call_update",
-        "title": "echo kirocrew-op encode-live",
-        "tool_call_id": "call_hixtdbkj",
-        "wire_title": "echo kirocrew-op encode-live"
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_tkctdm9o",
+        "wire_title": "echo kirocrew-opencode-live"
       }
     ],
     "frame": "session/update",
     "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "/user"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "/user",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " wants"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " wants",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " to"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " to",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " know"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " know",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " how"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " how",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " to"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " to",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " run"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " run",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " `"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " `",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "echo",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": " k"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " k",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "iro"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "iro",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "crew"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "crew",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "-op"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-op",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "encode"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "encode",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-live",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "`"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "`",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      2170,
+      16384
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      19,
+      17,
+      2151,
+      0
+    ],
+    "stop_reason": "end_turn"
   }
 ]

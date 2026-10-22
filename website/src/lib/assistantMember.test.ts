@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ASSISTANT_MEMBER_NAME, hideMateWithoutPreview, isAssistantMember } from './assistantMember'
 
-describe('the first crewmate', () => {
+describe('the first mate', () => {
   it('is identified by its key alone, whatever template it runs', () => {
     expect(isAssistantMember({ name: ASSISTANT_MEMBER_NAME, kiro_agent: 'kirocrew' })).toBe(true)
     expect(isAssistantMember({ name: ASSISTANT_MEMBER_NAME, kiro_agent: 'my-template' })).toBe(true)

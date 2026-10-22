@@ -367,18 +367,18 @@ the apps, behind a separator. The decision reads `stableRailHeight` — the tall
 height seen at the current window width — so the on-screen keyboard or a browser
 toolbar shrinking the rail at the same width never moves the tiles.
 
-**The Crewmates page hosts the same drawer.** On a phone `/members` lands on a
-crewmate exactly as a wide window does, and its roster is a left drawer over the
+**The Mates page hosts the same drawer.** On a phone `/members` lands on a
+mate exactly as a wide window does, and its roster is a left drawer over the
 open chat: the same rail (App provides `MobileNavRailContext` on this route too)
 beside the roster aside, which is portaled into the drawer while a chat or team
 is open. A rightward drag or the header's back control reveals it, a leftward
 drag reveals the side panel (a full-width overlay that slides on `sidePanelX`),
 and each gesture is off while the other's panel is open. The drawer mints the
 same duplicate history entry, and a roster pick spends it FIRST, then opens the
-crewmate on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
-the crewmate just left. With nothing open the roster is the page, the page
+mate on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
+the mate just left. With nothing open the roster is the page, the page
 binds nothing and claims no side, and the shell's nav-drawer swipe works there.
-With a crewmate or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a crewmate or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its crewmate from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on, so the navigation is one swipe away while the read is out. The page looks up the bar slot only once it reports `open`. In the bar the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it. The rail's Home control navigates with `replace` without closing the drawer
+With a mate or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a mate or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its mate from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on, so the navigation is one swipe away while the read is out. The page looks up the bar slot only once it reports `open`. In the bar the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it. The rail's Home control navigates with `replace` without closing the drawer
 when its host is not the chat page, since that close would pop the entry after
 the replace.
 

@@ -105,6 +105,26 @@ describe('useKeyboardShortcuts — toggle behavior', () => {
     expect(onNewChat).not.toHaveBeenCalled()
   })
 
+  // Holding the chord sends one keydown and then auto-repeat keydowns with
+  // `repeat: true`. Only the first is a press; the repeats are still claimed
+  // so the browser's own binding does not run.
+  it('a held Alt+Shift+N creates one session, not one per auto-repeat', () => {
+    setup()
+    fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
+    const repeats = Array.from({ length: 5 }, () => new KeyboardEvent('keydown', { code: 'KeyN', altKey: true, shiftKey: true, repeat: true, bubbles: true, cancelable: true }))
+    for (const ev of repeats) document.dispatchEvent(ev)
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+    expect(repeats.every(ev => ev.defaultPrevented)).toBe(true)
+  })
+
+  it('two separate Alt+Shift+N presses create two sessions', () => {
+    setup()
+    fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
+    fireEvent.keyUp(document, { code: 'KeyN', altKey: true, shiftKey: true })
+    fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
+    expect(onNewChat).toHaveBeenCalledTimes(2)
+  })
+
   it('Alt+Shift+W closes the active session (handler matches, preventDefault called)', () => {
     const store = createTestStore({
       dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],

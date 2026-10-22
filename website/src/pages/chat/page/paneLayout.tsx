@@ -157,6 +157,8 @@ interface PanelLayoutOptions {
   dispatch: AppDispatch
   isMobile: boolean
   filteredSlots: ChatSlot[]
+  /** True once a slot list has landed, so an empty `filteredSlots` means no sessions rather than not loaded yet. */
+  slotsLoaded: boolean
   activeSlot: string | null
   isWelcomeState: boolean
   showActionError: (message: string, title?: string) => void
@@ -193,7 +195,7 @@ interface PanelLayoutOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function usePanelLayout({
-  mode, dispatch, isMobile, filteredSlots, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
+  mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
   mobileNewSessionInFlightRef, setMobileNewSessionBusy, setSidebarPinned, sidebarPinned, railWidth, winW, effectiveSidebarWidth, mobileSessions, openSidebar, closeSidebar, previewExpanded,
   sidebarOpen, flyout, memorySwitch,
 }: PanelLayoutOptions) {
@@ -231,16 +233,17 @@ export function usePanelLayout({
   }, [dispatch, mode, flyout, showActionError])
 
   // Force the list open when there is nothing in it, so a user with no sessions
-  // still has the surface that creates one. Skipped while expand mode owns the
-  // hidden state: re-pinning there would fight the auto-hide and, worse, persist
-  // 'true' over the user's stored preference, which the restore on exit then
-  // contradicts in the live state.
+  // still has the surface that creates one. Waits for the first slot list to
+  // land: on a page load the list is empty until then, and that is not "no
+  // sessions". The forced open is live only and never persisted, so a stored
+  // 'false' survives it and only a user toggle writes `mc-sidebar-pinned`.
+  // Skipped while expand mode owns the hidden state: re-pinning there would
+  // fight the auto-hide.
   useEffect(() => {
-    if (filteredSlots.length === 0 && !sidebarPinned && !previewExpanded) {
+    if (slotsLoaded && filteredSlots.length === 0 && !sidebarPinned && !previewExpanded) {
       setSidebarPinned(true)
-      safeSetItem('mc-sidebar-pinned', 'true')
     }
-  }, [filteredSlots.length, sidebarPinned, previewExpanded, setSidebarPinned])
+  }, [slotsLoaded, filteredSlots.length, sidebarPinned, previewExpanded, setSidebarPinned])
 
   // Horizontal space (px) the detail panel must keep clear so it never grows
   // past its flex row and collapses the chat pane: the open sidebar's width

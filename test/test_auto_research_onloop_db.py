@@ -359,7 +359,7 @@ class TestContention:
                 nonlocal ticks
                 while True:
                     ticks += 1
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.02)  # flake-ok: tick interval; the tick count is the measurement
 
             hb = asyncio.create_task(heartbeat())
             req = asyncio.create_task(

@@ -96,7 +96,7 @@ beforeEach(() => {
 })
 
 describe('a message prepared outside a turn', () => {
-  it("shows the crewmate's typing bubble while preparing, and drops it with the frame that clears it", async () => {
+  it("shows the mate's typing bubble while preparing, and drops it with the frame that clears it", async () => {
     const store = makeStore(true)
     const view = renderPane(store, true)
     const line = await view.findByTestId('crewmate-live-activity')

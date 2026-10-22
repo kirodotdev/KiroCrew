@@ -8,11 +8,11 @@ shadowing the import.
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
+from kiro_crew.testing.wait import wait_until
 
 
 def _probe_outcome(ok: bool):
@@ -104,21 +104,28 @@ def app_env_fixture(tmp_path, monkeypatch, worker_id):
                 pass
         bmod._processes.clear()
         bmod._allocated_ports.clear()
+
         # Wait for each killed server's port to actually be released so the next test's
         # auto-allocation can't re-pick a still-occupied port (EADDRINUSE).
+        def _bindable(port: int) -> bool:
+            s = _sock.socket()
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+            finally:
+                s.close()
+            return True
+
         for port in ports:
             if not port:
                 continue
-            for _ in range(50):  # up to ~5s
-                s = _sock.socket()
-                try:
-                    s.bind(("127.0.0.1", port))
-                    s.close()
-                    break
-                except OSError:
-                    s.close()
-                    # flake-ok: pre-existing 100 ms poll for a released port, bounded at 50 tries; moved verbatim, tracked for a de-flake pass
-                    time.sleep(0.1)
+            try:
+                wait_until(lambda p=port: _bindable(p), timeout=5)
+            except AssertionError:
+                # Teardown is best effort: a port still held here surfaces as the
+                # next test's own EADDRINUSE, which names the colliding spawn.
+                pass
 
     _reap()  # clean slate before the test
     yield home

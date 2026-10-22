@@ -66,7 +66,7 @@ describe('useMateGreeting', () => {
     expect(crewBoard).toHaveBeenCalledTimes(1)
   })
 
-  it('reads nothing while the crewmate is mid-turn', async () => {
+  it('reads nothing while the mate is mid-turn', async () => {
     const { result } = renderHook(() => useMateGreeting('member-ops', false, null))
     await act(async () => {})
     expect(crewBoard).not.toHaveBeenCalled()
@@ -84,7 +84,7 @@ describe('useMateGreeting', () => {
     expect(result.current.failure).toBeNull()
   })
 
-  it('a crewmate with no ledger has no greeting and no failure without cold data', async () => {
+  it('a mate with no ledger has no greeting and no failure without cold data', async () => {
     crewBoard.mockRejectedValue(noLedger())
     const { result } = renderHook(() => useMateGreeting('member-ops', true, null))
     await waitFor(() => expect(crewBoard).toHaveBeenCalled())
@@ -194,7 +194,7 @@ describe('useMateGreeting cold welcome', () => {
     expect(result.current.greeting).toBeNull()
   })
 
-  it('with no crewmate named for it, only warm greets', async () => {
+  it('with no mate named for it, only warm greets', async () => {
     crewBoard.mockRejectedValue(noLedger())
     const { result } = renderHook(() => useMateGreeting('member-ops', true, null))
     await waitFor(() => expect(crewBoard).toHaveBeenCalled())

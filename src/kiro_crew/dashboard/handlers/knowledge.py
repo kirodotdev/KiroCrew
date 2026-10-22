@@ -190,6 +190,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard import part_stream  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
+        require_owner_for_dashboard_caller,
+    )
     from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS  # noqa: F401
     from kiro_crew.dashboard.handlers.files import _content_matches_ext  # noqa: F401
     from kiro_crew.dashboard.handlers.files import _PathProbeBusy  # noqa: F401

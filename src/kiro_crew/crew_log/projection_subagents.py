@@ -119,6 +119,23 @@ def _subagent_credits(value: Any) -> float | None:
     return charge
 
 
+#: The keys of one ``subagents.by_id`` row: what a page reads to draw a child -- its
+#: ``task``, its ``outcome`` (``None`` while it runs) and how long and how much it took.
+SUBAGENT_ROW_KEYS: tuple[str, ...] = (
+    "agent_id",
+    "seq_spawned",
+    "started_ms",
+    "agent",
+    "model",
+    "task",
+    "outcome",
+    "ms",
+    "credits",
+    "reason",
+    "dismissed",
+)
+
+
 def _subagents_step(state: dict[str, Any], entry: Entry) -> None:
     data = entry.data
     agent_id = _as_id(data.get("agent_id"))

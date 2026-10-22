@@ -327,10 +327,10 @@ file driving `spawn` takes `pytestmark = pytest.mark.usefixtures("healthy_host_m
 and `test_subagent_spawn_host_pin.py` fails when a new one does not. The guard it
 pins, and why it stays transparent for the parser's own tests, are in
 testing-conventions § Determinism 1. Both the fixture and its ratchet are
-`test/`-only — `healthy_host_memory` lives in `test/conftest.py`, and
-`test_subagent_spawn_host_pin.py` scans `test/*.py` non-recursively. An in-package
-app suite cannot request the fixture and is not swept, so a test there that drives
-`SubagentManager.spawn` must pin the floor reading itself.
+`test/`-only — `healthy_host_memory` lives in `test/conftest_opt_in.py`, bound by
+`test/conftest.py`, and `test_subagent_spawn_host_pin.py` scans `test/*.py`
+non-recursively. An in-package app suite cannot request the fixture and is not
+swept, so a test there that drives `SubagentManager.spawn` must pin the floor reading itself.
 
 One more, for tests of a **single-flight or coalescing** path ("N concurrent readers
 share ONE scan"): the property only holds for readers that arrive WHILE the shared

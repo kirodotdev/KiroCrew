@@ -239,6 +239,60 @@ async def test_chip_status_projects_only_ci_and_state(plugin) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        # A plugin is not a provider whose chip read computes the marker, and
+        # the write-through drops it for one too, so the chip read drops it.
+        ({"ci": "failed", "ciPending": "1"}, {"ci": "failed"}),
+        ({"ci": "passed", "ciPending": "1"}, {"ci": "passed"}),
+        ({"ci": "failed", "ciPending": "yes"}, {"ci": "failed"}),
+    ],
+)
+async def test_chip_status_drops_the_still_running_marker_for_a_plugin(
+    plugin, monkeypatch, reply, expected
+) -> None:
+    async def fetch_check_status(_ref):
+        return reply
+
+    monkeypatch.setattr(plugin, "fetch_check_status", fetch_check_status)
+    assert await source._fetch_check_status(CR_URL) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_plugin_returning_only_ci_and_state_stays_steady_while_checks_run(
+    plugin, monkeypatch
+) -> None:
+    """A failed check beside a running one must not make the chip flap.
+
+    The full fetch writes the chip entry through ``status_from_full_payload``;
+    the next chip read must match it, or every refresh reads a change, drops
+    the full payload and refetches it.
+    """
+    from kiro_crew.dashboard.source_providers import chip_status
+
+    monkeypatch.setattr(chip_status, "_check_cache", {})
+    monkeypatch.setattr(chip_status, "_status_delta_sinks", [])
+    monkeypatch.setattr(chip_status, "schedule_visibility_refresh", lambda *a, **k: None)
+    full = await plugin.fetch_full(plugin.parse(CR_URL))
+
+    async def fetch_full(ref, *, refresh: bool = False):
+        return {**full, "checks": [{"bucket": "failed"}, {"bucket": "pending"}]}
+
+    async def fetch_check_status(_ref):
+        return {"ci": "failed", "state": "open"}
+
+    monkeypatch.setattr(plugin, "fetch_full", fetch_full)
+    monkeypatch.setattr(plugin, "fetch_check_status", fetch_check_status)
+
+    await source.fetch_pull_request(CR_URL)
+    written = chip_status._check_cache[CR_URL][1]
+
+    assert written == {"ci": "failed", "state": "open"}
+    assert await source._fetch_check_status(CR_URL) == written
+
+
+@pytest.mark.asyncio
 async def test_plugin_error_text_is_redacted_before_it_reaches_the_client(plugin) -> None:
     """A plugin's EXCEPTION goes through the scrubber its payload goes through.
 

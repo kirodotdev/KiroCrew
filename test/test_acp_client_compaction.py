@@ -492,7 +492,8 @@ class TestCompactionFailureTurnBudget:
                 # The consumer holds this frame past the WHOLE budget — the
                 # shape of a human answering an approval card slowly.
                 parked = True
-                await asyncio.sleep(0.3)
+                # The assertion below measures from the end of this deliberate park.
+                await asyncio.sleep(0.3)  # flake-ok: the consumer's park is the stimulus under test
                 resumed_at = time.monotonic()
         ended_at = time.monotonic()
 

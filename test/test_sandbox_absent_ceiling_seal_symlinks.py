@@ -373,8 +373,13 @@ class TestALinkedComponentBelowTheDataHomeRefuses:
         ), "degrading must not be silent"
 
     def test_the_degrade_set_is_derived_from_the_carveout_leaves(self):
-        """Hand-listing it is how the two would drift apart."""
+        """Hand-listing it is how the two would drift apart.
+
+        Only the retired bare Notes names degrade; the live state directory is a top-level
+        name, so a link at it refuses like any other leaf.
+        """
         assert sandbox._CREW_ALIAS_CHAIN_DEGRADE_LEAVES == frozenset(
-            sandbox._MD_NOTEBOOK_PRECREATE_CONTENT
+            sandbox._MD_NOTEBOOK_RETIRED_STATE_LEAVES
         )
+        assert sandbox._MD_NOTEBOOK_STAGING_LEAF not in sandbox._CREW_ALIAS_CHAIN_DEGRADE_LEAVES
         assert sandbox._CREW_ALIAS_CHAIN_DEGRADE_LEAVES <= set(sandbox._CREW_HIDDEN_LEAVES)

@@ -23,6 +23,7 @@ from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew import session_storage as session_storage_module
 from kiro_crew.dashboard.handlers import session_storage as handler
+from kiro_crew.testing.wait import async_wait_until
 
 _DAY = 86400.0
 
@@ -555,10 +556,7 @@ class TestEmpty:
                 # its executor down and a failed test became a hung run.
                 try:
                     # Let the worker thread report once.
-                    for _ in range(200):
-                        if job.freed_bytes:
-                            break
-                        await asyncio.sleep(0.01)
+                    await async_wait_until(lambda: job.freed_bytes)
 
                     mid = json.loads(
                         (

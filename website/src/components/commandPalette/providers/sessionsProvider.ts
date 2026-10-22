@@ -11,6 +11,7 @@ import { useSelectInstance } from '../../../hooks/useSelectInstance'
 import { focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
 import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import type { Result, ResourceProvider } from '../types'
 
 /**
@@ -171,9 +172,16 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
       const backendIndexById = new Map<string, number>()
 
       const results: Result[] = sessions.map((s, backendIndex) => {
+        // `title` is what the open and copy actions carry, as before; `label`
+        // is what the row shows, so an untitled session reads "Untitled
+        // session" rather than its key (#20879).
         const title = s.title || s.key
-        // Highlight + client-side rank bias; never used to drop backend hits.
+        const label = sessionDisplayTitle(s)
+        // Client-side rank bias, scored on `title` as before so the order is
+        // unchanged; never used to drop backend hits.
         const match = fuzzyMatch(q, title)
+        // Highlights must index the shown text, so re-match when it differs.
+        const shownMatch = label === title ? match : fuzzyMatch(q, label)
         const remote = Boolean(s.instance_id)
         const ref: SessionRef = { key: s.key, title, instanceId: s.instance_id }
         // Body match: show the snippet (why it surfaced) with the query
@@ -181,8 +189,15 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
         // owning instance's raw name so identical titles from two gateways are
         // distinguishable at a glance.
         const snippet = s.snippet?.trim()
-        const subIdx = snippet ? substringIndices(q, snippet) : undefined
-        const baseSubtitle = snippet || s.agent || undefined
+        // An untitled row's name no longer says which session it is, so with
+        // no snippet its key leads the subtitle: it tells two untitled hits
+        // apart and shows a key search why it matched.
+        const keyLine = !snippet && label !== title ? s.key : undefined
+        const subSource = snippet || keyLine
+        const subIdx = subSource ? substringIndices(q, subSource) : undefined
+        const baseSubtitle = keyLine
+          ? [keyLine, s.agent].filter(Boolean).join(' · ')
+          : snippet || s.agent || undefined
         const prefix = remote ? `${s.instance_name || s.instance_id} · ` : ''
         const subtitle = remote
           ? [s.instance_name || s.instance_id, baseSubtitle].filter(Boolean).join(' · ')
@@ -191,11 +206,11 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
         // row's instance-name prefix shifts the snippet within the rendered
         // subtitle, so shift the offsets by the prefix length instead of
         // dropping the highlights (identical-looking rows should behave the
-        // same). Only applicable when the snippet is actually the subtitle
-        // body (subIdx exists only when a snippet does).
+        // same). Only applicable when the snippet or key line leads the
+        // subtitle body (subIdx exists only when one does).
         const shiftedIdx =
           subIdx && subIdx.length
-            ? remote && snippet
+            ? remote && subSource
               ? subIdx.map((i) => i + prefix.length)
               : subIdx
             : undefined
@@ -204,13 +219,13 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
         return {
           id,
           providerId: PROVIDER_ID,
-          title,
+          title: label,
           subtitle,
           subtitleIndices: shiftedIdx,
           folder: folderName(s.folder_id),
           icon: sessionIcon(),
           score: match ? match.score : 0,
-          indices: match ? match.indices : [],
+          indices: shownMatch ? shownMatch.indices : [],
           // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this; for sessions
           // both Enter and ⌘Enter open/switch to the session (no distinct

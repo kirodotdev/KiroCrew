@@ -6,13 +6,13 @@ each module imports them, so every test sees the same autouse set.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, ProcessResult
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -108,4 +108,4 @@ def _agents_dir_never_the_real_home(
 async def _wait_for_operation(service: KiroPrerequisiteService) -> None:
     task = service._task
     assert task is not None
-    await asyncio.wait_for(task, timeout=5)
+    await await_until(task, what="the prerequisite operation")

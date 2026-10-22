@@ -32,6 +32,7 @@ from pathlib import Path
 from types import ModuleType as _ModuleType
 from typing import Any
 
+from kiro_crew import md_notebook_state as _md_notebook_state
 from kiro_crew import platform_compat
 from kiro_crew.apps import deps_boot as _deps_boot_module
 from kiro_crew.apps.execution import (
@@ -57,6 +58,7 @@ from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
+    _md_notebook_degraded_mask_dirs,
     app_backend_visible_targets,
     carveout_shadowed_by_foreign_mask,
     cgroup_scope_argv,
@@ -1167,6 +1169,37 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     _visible: tuple[str, ...] = ()
     if is_builtin_app(app_root=execution_path, app_name=app_name):
         _visible = app_backend_visible_targets(app_name)
+    if _shipped_md_notebook:
+        # Move legacy Notes state into the state directory before the backend reads it.
+        # Spawn prep runs the same move on sandboxed hosts; this call covers a host with no
+        # sandbox wrap (Windows). Marker-gated, so a second call is one stat. Until it is
+        # sealed the backend does not start, so no backend write can race the move.
+        if not _md_notebook_state.sealed_default_legacy_state():
+            logger.error(
+                "App %s: not starting until its one-time state move finishes (see the "
+                "warning above); the next start retries it",
+                app_name,
+            )
+            return None
+        _active_home = str(config_dir())
+
+        def _under_active_home(path: str) -> bool:
+            try:
+                return os.path.commonpath([_active_home, path]) == _active_home
+            except ValueError:  # another drive on Windows: not under this home
+                return False
+
+        if any(_under_active_home(d) for d in _md_notebook_degraded_mask_dirs()):
+            # A link under ``workspace/md-notebook`` makes every spawn mask that whole
+            # directory with a writable, namespace-only stand-in, and without its carve-out
+            # the state directory is one too. Any attach, clone or PAT save would then
+            # succeed and vanish on restart, so the backend does not start at all.
+            logger.error(
+                "App %s: not starting: workspace/md-notebook is reached through a link, so "
+                "its writes would be lost on restart; replace the link with a real directory",
+                app_name,
+            )
+            return None
     if _cache_visible:
         # SECURITY: refuse rather than carve when the cache sits beneath an
         # independently masked directory (a data home relocated under a credential

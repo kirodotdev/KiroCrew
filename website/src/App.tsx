@@ -11,7 +11,7 @@ import { GuideProvider } from './guide/GuideContext'
 import { metricColor } from './utils/metricColor'
 import { railWidthFor } from './hooks/useRailWidth'
 import { FOCUS_INSET } from './hooks/useFocusMode'
-import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorSlot } from './lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot } from './lib/themeDecorLayer'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
@@ -56,6 +56,7 @@ import UpdateModal from './components/UpdateModal'
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
 import { toggleBottomTerminal } from './hooks/useBottomTerminal'
+import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from './shell/runInTerminalShellBridge'
 import { TerminalHostContext } from './hooks/useTerminalCommand'
 // Side effect: closes a terminal tab when its shell exits (main window and popout).
 import './utils/terminalExitClose'
@@ -312,6 +313,8 @@ export default function App() {
     setUpdateError, startupVideo, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
+  // "Run in terminal" from a code block outside every chat, on any route.
+  const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -622,6 +625,16 @@ export default function App() {
         className="fixed inset-0 pointer-events-none"
         style={{ zIndex: OVERLAY_Z_MAX }}
       />
+      {/* Behind-content slot for `layer: "behind"` overlays. z-index -1 inside
+          the shell's stacking context paints over the shell's bg-bg but under
+          the non-positioned nav and content, so bubbles and cards cover it. */}
+      <div
+        id={THEME_DECOR_BEHIND_SLOT_ID}
+        ref={registerThemeDecorBehindSlot}
+        data-testid="theme-decor-slot-behind"
+        className="fixed inset-0 pointer-events-none"
+        style={{ zIndex: -1 }}
+      />
 
       {/* Full-height activity bar slot: ChatSidePanels portals its
           Activity panel here on desktop so it spans the window top-to-bottom
@@ -888,6 +901,7 @@ export default function App() {
       <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
       <Lightbox />
       <ImportSessionOutcomeNotice />
+      <RunInTerminalShellNotice error={runInTerminal.error} onDismiss={runInTerminal.dismiss} />
       </LocalOverlayRoot>
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)

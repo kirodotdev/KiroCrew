@@ -45,7 +45,7 @@ import yarl
 if TYPE_CHECKING:  # `ResolveResult` only exists from aiohttp 3.10; see resolve() below.
     from aiohttp.abc import ResolveResult
 
-from kiro_crew.security import canonicalize_ip
+from kiro_crew.security import _IMDS_IPV6, canonicalize_ip
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +314,50 @@ def _reject_if_internal_ip(candidate: str) -> None:
         raise UnfurlRejected("blocked_url")
 
 
+#: The cloud metadata endpoint that is NOT link-local: dual-stack EC2 serves it from
+#: a ULA address. The IPv4 endpoint sits in the link-local range, refused whole.
+#: Named from the always-on IMDS shell floor's own constant, so the two cannot drift.
+_METADATA_IPV6 = ipaddress.IPv6Address(_IMDS_IPV6)
+
+
+def _literal_is_metadata(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address",
+) -> bool:
+    """Whether a parsed literal is link-local or the cloud metadata endpoint.
+
+    The rule :func:`vet_unfurl_url` applies under ``allow_private``. Tunnel
+    encodings are unwrapped as :func:`_literal_is_not_public` unwraps them, so an
+    IPv4-mapped or 6to4 spelling of a link-local address is refused too.
+    """
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    sixtofour = getattr(ip, "sixtofour", None)
+    if sixtofour is not None and sixtofour.is_link_local:
+        return True
+    # ``.packed`` is the address bytes with no scope id, so a scoped spelling of
+    # the metadata endpoint (``fd00:ec2::254%0``, which ``==`` treats as a
+    # different, non-link-local address) is caught like the bare form. The
+    # version guard keeps an IPv4 literal's 4 bytes from ever matching by length.
+    return ip.is_link_local or (
+        ip.version == _METADATA_IPV6.version and ip.packed == _METADATA_IPV6.packed
+    )
+
+
+def _reject_if_metadata_ip(candidate: str) -> None:
+    """Raise ``blocked_url`` if *candidate* parses as a link-local or metadata IP.
+
+    The ``allow_private`` counterpart of :func:`_reject_if_internal_ip`: same
+    canonicalization, and a non-literal is a hostname still to be resolved.
+    """
+    try:
+        ip = ipaddress.ip_address(canonicalize_ip(candidate))
+    except ValueError:
+        return  # a hostname, not a literal
+    if _literal_is_metadata(ip):
+        raise UnfurlRejected("blocked_url")
+
+
 def _default_resolve(host: str, port: int) -> List[str]:
     """Resolve *host* to every address the OS would connect to."""
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -324,6 +368,8 @@ def vet_unfurl_url(
     url: str,
     *,
     resolve: Optional[Callable[[str, int], Sequence[str]]] = None,
+    allow_any_port: bool = False,
+    allow_private: bool = False,
 ) -> VettedUrl:
     """Vet *url* for fetching and return the address to connect to.
 
@@ -331,6 +377,22 @@ def vet_unfurl_url(
     cheapest rejections happen before the one that costs a DNS round trip.
 
     Blocking: performs one ``getaddrinfo``. Call it from a worker thread.
+
+    *allow_any_port* lifts the ``{80, 443}`` port allowlist for THIS call only.
+    The ADDRESS rules are untouched, so the SSRF protection does not live in the
+    port check. It exists for a caller that legitimately reaches a host on a
+    non-web port: the remote MCP server probe, which commonly runs on ``:8443`` /
+    ``:8000`` / ``:3000``, where the port allowlist (a link-preview concern) is a
+    false positive rather than a safety control.
+
+    *allow_private* narrows the address rule, for THIS call only, to
+    link-local addresses and the cloud metadata endpoint
+    (:func:`_literal_is_metadata`): a loopback, private-network or ``.local``
+    host passes. Everything else holds -- one resolution, every address checked,
+    the same canonical and tunnel encodings, and the approved addresses returned
+    for the pin. It exists for the remote MCP probe, whose targets the operator
+    configures: a local or LAN server (an app backend on ``127.0.0.1``, a dev
+    server on ``10.x``) is a normal setup that kiro-cli itself connects to.
     """
     try:
         parts = urlsplit(url.strip())
@@ -356,7 +418,8 @@ def vet_unfurl_url(
     # so no legitimate caller reaches here with credentials in the URL.
     if parts.username or parts.password:
         raise UnfurlRejected("invalid_url")
-    _reject_if_internal_ip(host)
+    reject_address = _reject_if_metadata_ip if allow_private else _reject_if_internal_ip
+    reject_address(host)
 
     # 4. port — before DNS: a rejected port makes the resolution wasted work.
     #    ``parts.port`` raises on a non-numeric or out-of-range port.
@@ -364,7 +427,7 @@ def vet_unfurl_url(
         explicit_port = parts.port
     except ValueError:
         raise UnfurlRejected("invalid_url") from None
-    if explicit_port is not None and explicit_port not in ALLOWED_PORTS:
+    if explicit_port is not None and not allow_any_port and explicit_port not in ALLOWED_PORTS:
         raise UnfurlRejected("blocked_url")
     if explicit_port is not None:
         port = explicit_port
@@ -372,8 +435,10 @@ def vet_unfurl_url(
         # ALLOWED_SCHEMES is http/https only, so these two defaults cover it.
         port = 443 if scheme == "https" else 80
 
-    # 5. suffixes that cannot name a public host
-    for suffix in BLOCKED_HOST_SUFFIXES:
+    # 5. suffixes that cannot name a public host. Under ``allow_private`` a
+    #    ``.local`` (mDNS) name is a LAN host like any other: it is resolved and
+    #    every address it answers with is checked below.
+    for suffix in () if allow_private else BLOCKED_HOST_SUFFIXES:
         if host.endswith(suffix):
             raise UnfurlRejected("blocked_url")
 
@@ -403,7 +468,7 @@ def vet_unfurl_url(
         if not addresses:
             raise UnfurlRejected("blocked_url")
         for address in addresses:
-            _reject_if_internal_ip(address)
+            reject_address(address)
     else:
         # An IP literal needs no resolution, but the CANONICAL form is what the
         # caller must dial — `host` may still be an alternate encoding

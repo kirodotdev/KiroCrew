@@ -142,6 +142,9 @@ export interface Slot {
     // the gateway it talks to must keep rendering. See `chipLabel`.
     label?: string
     ci?: 'running' | 'passed' | 'failed' | null
+    // `'1'` when `ci` is `failed` but other checks are still running. See
+    // `PullRequestStatus.ciPending`.
+    ciPending?: string
     state?: 'open' | 'draft' | 'merged' | 'closed'
     // Owner-gated chips spread the whole cached chip-status entry, which also
     // carries the settled merge pair. Present only once the provider settled it.

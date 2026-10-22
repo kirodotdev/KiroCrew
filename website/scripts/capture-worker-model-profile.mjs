@@ -140,7 +140,7 @@ const workerSelect = (page) => page.getByRole('combobox', { name: 'Worker model'
   check('effort row shows under a reasoning worker model', /worker reasoning effort/i.test(text), text)
   check('its empty option reads no level set', text.includes('No level set'), text)
   check('and the note names the level that is not copied', text.includes("Workers use their own default, not Kiro's (High)."), text)
-  check('and not the crewmate level', !text.includes('Same level as Kiro'), text)
+  check('and not the mate level', !text.includes('Same level as Kiro'), text)
   await settings.screenshot({ path: join(OUT, '04-settings-other-reasoning.png') })
   console.log('wrote', join(OUT, '04-settings-other-reasoning.png'))
   await context.close()

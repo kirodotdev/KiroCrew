@@ -93,13 +93,18 @@ _STEER_STATE_REQUEUED = "requeued"
 
 
 def _is_steer_row(row: dict) -> bool:
-    """Whether *row* is a mid-turn steer: a ``user`` row whose ``meta.steer`` is True.
+    """Whether *row* is a mid-turn steer: a ``user`` row whose ``meta.steer`` is True,
+    or a ``nudge`` row with it (a monitor loop's wake steered into the turn).
 
     A steer is delivered into a turn that is already running, so it never opens a
-    turn even though its role is ``user``.
+    turn even though its role is one that otherwise does.
     """
     meta = row.get("meta")
-    return row.get("role") == "user" and isinstance(meta, dict) and meta.get("steer") is True
+    return (
+        row.get("role") in ("user", "nudge")
+        and isinstance(meta, dict)
+        and meta.get("steer") is True
+    )
 
 
 def _interrupted_opener_kind(row: dict) -> str:

@@ -137,19 +137,6 @@ def tool_row_text(text: str) -> str:
     return _scrub(text)
 
 
-def project_claims_agent_name(agent: str, work_dir: str | Path | None) -> AgentNameClaim | None:
-    """A checkout claim or unverifiable scan, or ``None`` when no claim is found.
-
-    Scans the checkout's native agents tree the way the backend loads it (nested and
-    linked directories, stem or declared name); application code asks here rather
-    than reaching into the ACP layer.
-    """
-    # Imported lazily for the same reason as fits_tool_result.
-    from kiro_crew.acp.managed_agent_shadow import project_claims_agent_name as _claims
-
-    return _claims(agent, work_dir)
-
-
 def agents_dir_competing_claim(
     agent: str, agents_dir: Path, own_file: Path
 ) -> AgentNameClaim | None:
@@ -172,7 +159,6 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "tool_row_text",
-    "project_claims_agent_name",
     "agents_dir_competing_claim",
     "ContextPromptProvider",
     "ContextStreamEvent",

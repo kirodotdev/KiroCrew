@@ -513,6 +513,14 @@
           "schema": 1,
           "slot_key": "member-dash-demo.memory-member-dash-demo-0b8cb229c0e240c9964e01eaddaf0e57"
         },
+        "forgotten": {
+          "abandoned": 0,
+          "accepted": 0,
+          "created": 20,
+          "in_round": 0,
+          "items": 0,
+          "rejected": 0
+        },
         "items": [
           {
             "acceptance": {

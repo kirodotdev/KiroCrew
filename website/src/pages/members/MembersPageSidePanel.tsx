@@ -35,6 +35,7 @@ import { claimDashboardOnLoad } from './dashboardOnLoad'
 import { suggestPaneDraft } from '../../utils/chatPaneDrafts'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { AnimatePresence, motion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -49,7 +50,7 @@ import { type ChatSlot } from '../../types'
 import { type MembersPageProfileFlight, type MembersPageProfileState } from './MembersPageProfile'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageThreadState } from './MembersPageThread'
-import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, DRIVING_VISIBLE, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_WITHHELD_VIEWS, PANEL_GAPS_W, type ProfileCardOpen } from './membersPageModel'
+import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_WITHHELD_VIEWS, PANEL_GAPS_W, type ProfileCardOpen } from './membersPageModel'
 import { type MembersPageDrawers } from './useMembersPageDrawers'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageNavigation } from './useMembersPageNavigation'
@@ -114,8 +115,7 @@ export function useMembersPageSidePanel({
   // on every WS slots frame and `lastActivityEpoch` advances whenever a worker
   // does anything, so sorting per render moves rows under the cursor mid-click —
   // and each row is a jump into a session, so a shifted row navigates into the
-  // WRONG one. It also decides which rows sit behind the DRIVING_VISIBLE fold,
-  // so a live re-sort can pull a row out from under the pointer entirely.
+  // WRONG one.
   // Row CONTENT still updates from every frame (status dot, title, timestamp);
   // only the positions hold, until the driven set changes (a worker opens or
   // closes) or the member does, either of which re-sorts from scratch by
@@ -254,7 +254,10 @@ export function useMembersPageSidePanel({
   // snapshot has arrived and the socket is up: absent means "this surface does
   // not know which sessions exist", which is the honest answer then, and it
   // leaves the link plain rather than live-looking and dead.
-  const sessionRoster = useMemo(() => sessionTitleRoster(liveSlots), [liveSlots])
+  // Rebuilt on a language switch too: the roster's "Untitled session" label is localized (#23059).
+  const languageGeneration = useLanguageGeneration()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- languageGeneration is the trigger, not an input
+  const sessionRoster = useMemo(() => sessionTitleRoster(liveSlots), [liveSlots, languageGeneration])
   // A foreign slot is NOT hosted in this page's own pane -- it belongs to the
   // chat page, with its sidebar, its history paging and its composer. Same
   // primitive the Driving-sessions rows use.
@@ -435,12 +438,6 @@ export function useMembersPageSidePanel({
     committedDrivingRef.current = { member: activeMemberKey, keys }
     return keys.map((k) => byKey.get(k)).filter((s): s is (typeof mine)[number] => !!s)
   }, [liveSlots, activeMemberKey])
-  // Collapsed past DRIVING_VISIBLE rows. Keyed to the member: the fold is a
-  // reading position in ONE member's list, so switching members starts the
-  // next list folded rather than inheriting the previous member's expansion.
-  const [drivingExpandedFor, setDrivingExpandedFor] = useState('')
-  const drivingExpanded = drivingExpandedFor === activeMemberKey
-  const visibleDriving = drivingExpanded ? drivingSessions : drivingSessions.slice(0, DRIVING_VISIBLE)
   // A PREVIEW LINK -- `?dashboard=preview`, the link `dashboard_preview` hands the
   // crewmate to show the person -- opens the side panel on the Dashboard tab, where
   // the staged page is drawn under its preview label. Once per crewmate and strip
@@ -493,7 +490,7 @@ export function useMembersPageSidePanel({
     setSchedAtStake, schedReleased, schedulesMountedRef, dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
     openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openArtifactGuarded,
-    openSessionGuarded, drivingSessions, setDrivingExpandedFor, drivingExpanded, visibleDriving,
+    openSessionGuarded, drivingSessions,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay,
   }
 }

@@ -551,9 +551,17 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     return 0
 
 
-#: The doctor's next step for a refused ``aws`` CLI, by ``ssm`` refusal code. A
-#: root gateway and the strict policy are not cleared by an ownership change.
+#: The doctor's next step for a refused ``aws`` CLI or plugin with no fix command,
+#: by ``ssm`` refusal code. A root gateway and the strict policy are not cleared
+#: by an ownership change, and another account's file must not be made trusted:
+#: the step for it is a copy from AWS, in folders only root or this account own.
 _REFUSAL_NEXT_STEP = {
+    "other_owner": (
+        "Install a copy with AWS's own installer, then rerun. That copy runs only if "
+        "it and every folder above it belong to root or to the account the gateway "
+        "runs as. If a folder such as /usr/local/bin belongs to the other account, an "
+        "administrator must make root its owner first (see the Remote Crew on EC2 guide)."
+    ),
     "root_gateway": "Start the gateway from a regular account instead of root, then rerun.",
     "strict_policy": (
         "Install it where only root can change the file and its folders, at a path "
@@ -597,7 +605,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
                 f"Then make its install directory root-owned and rerun: {refusal.remedy_command}"
             )
         else:
-            ui.detail("Fix the file's ownership or permissions so the check passes, then rerun.")
+            ui.detail(_REFUSAL_NEXT_STEP.get(refusal.code, _REFUSAL_NEXT_STEP[""]))
     else:
         ui.warn("session-manager-plugin not found — needed to connect over SSM")
         ui.detail(ssm.session_manager_plugin_install_hint())

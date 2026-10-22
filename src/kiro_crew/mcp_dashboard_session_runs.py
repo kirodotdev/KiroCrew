@@ -191,6 +191,10 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         payload["reasoning_effort"] = args["reasoning_effort"]
     if args.get("agent_kind"):
         payload["agent_kind"] = args["agent_kind"]
+    if args.get("autocompact_pct") is not None:
+        # Set before the folder preflight below, so its dry-run probe carries the
+        # value and a refused threshold creates no folder.
+        payload["autocompact_pct"] = args["autocompact_pct"]
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(
@@ -244,6 +248,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
             " (your crewmate profile's worker model is not usable here, so the "
             "session starts on the default model; fix the profile or pass `model`)"
         )
+    if resp.get("autocompact_pct") is not None:
+        on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
         "It is empty and waiting in the user's sidebar; watch it with "
@@ -691,9 +697,24 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact("\n".join(lines))
 
 
+#: Seconds the client gives ONE ``session_status`` read. Its GET does real work: the
+#: route scans the transcript catalog and folds each ended child's crew log on the
+#: gateway's shared default executor, where a busy gateway makes every hop wait its
+#: turn. ``mcp_core._get``'s 10 s default is sized for a telemetry read and its
+#: docstring asks a route like this one to raise it. The value is the write path's:
+#: ``session_send`` reaches the same gateway through ``mcp_core._post``, whose default
+#: is 30 s, so a patrol's roster read is not the call that fails first while its sends
+#: still land.
+SESSION_STATUS_READ_TIMEOUT_SECS = 30.0
+
+
 def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
-        resp = ctx.client.get("/api/session-control/status", session_key=ctx.caller_key)
+        resp = ctx.client.get(
+            "/api/session-control/status",
+            session_key=ctx.caller_key,
+            timeout=SESSION_STATUS_READ_TIMEOUT_SECS,
+        )
     except DashboardError as refused:
         return f"Error: could not read your session roster: {refused.error}"
     rows = resp.get("sessions") or []

@@ -252,8 +252,8 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 # tzdata: Windows has no system IANA tz database, so zoneinfo.ZoneInfo() needs it.
-# (setup.cfg already declares tzdata under a platform_system == "Windows" marker,
-#  so a plain `pip install -e .` pulls it in on Windows.)
+# (setup.cfg already declares tzdata for every platform, so a plain
+#  `pip install -e .` pulls it in.)
 pip install -e ".[voice]"
 # Then stage the build as the served dashboard (a junction to website\dist):
 python -m kiro_crew.frontend stage .

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import constants
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging import approval
 from kiro_crew.messaging.approval import (
     DENY,
@@ -132,12 +132,13 @@ class TestTextReplyDecider:
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
-    async def test_an_undelivered_prompt_is_an_immediate_deny_with_no_cause(self):
-        """No renderer opened the request (muted conversation): denied at once,
-        and NOT as a timeout -- nothing expired."""
+    async def test_an_undelivered_prompt_sets_the_undeliverable_cause(self):
+        """No renderer opened the request (muted conversation): denied at once
+        with the undeliverable cause -- the prompt was host-blocked, not expired,
+        so the driver steers the right attribution."""
         decider = TextReplyApprovalDecider(SESSION, timeout_s=5.0)
         assert await decider(_event()) is False
-        assert decider.last_deny_cause == ""
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
 
 
 class TestSessionDecider:
@@ -243,3 +244,88 @@ class TestButtonDeciders:
         decider._futures["r2"].set_result(False)
         assert await task is False
         assert decider.last_deny_cause == ""
+
+    @pytest.mark.asyncio
+    async def test_teams_abandoned_card_sets_undeliverable_cause(self):
+        """An abandoned Teams card means the prompt never reached the user;
+        the cause must be undeliverable, not timeout, and a subsequent human
+        click records no cause."""
+        from kiro_crew.teams import approvals as teams_approvals
+
+        decider = teams_approvals.TeamsApprovalDecider(session_key="teams:1")
+        decider.abandon("r-aband")
+        assert await decider(_event("r-aband")) is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        # A human button-click after a fresh arm records no cause.
+        decider.arm("r-click", "nonce-1")
+        task = asyncio.create_task(decider(_event("r-click")))
+        await asyncio.sleep(0)
+        decider._futures["r-click"].set_result(False)
+        assert await task is False
+        assert decider.last_deny_cause == ""
+
+    @pytest.mark.asyncio
+    async def test_discord_undelivered_prompt_sets_undeliverable_cause(self):
+        """A prompt the channel refused is denied with the undeliverable cause,
+        whether the refusal lands before or during the wait, and a press on a
+        later prompt that reuses the key records no cause."""
+        from kiro_crew.discord import renderer as discord_renderer
+
+        cls = discord_renderer.DiscordApprovalDecider
+        decider = cls(session_key="discord:1")
+        key = cls.key("discord:1", "r-und")
+        cls.register_nonce(key)
+        cls.refuse_undelivered(key)
+        assert await decider(_event("r-und")) is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        assert key not in cls._UNDELIVERED
+        # Refusal recorded while the wait is already running.
+        cls.register_nonce(key)
+        task = asyncio.create_task(decider(_event("r-und")))
+        await asyncio.sleep(0)
+        cls.refuse_undelivered(key)
+        assert await task is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        # Same key, real Deny press: no cause.
+        nonce = cls.register_nonce(key)
+        task = asyncio.create_task(decider(_event("r-und")))
+        await asyncio.sleep(0)
+        assert cls.resolve_global(key, False, nonce=nonce) is True
+        assert await task is False
+        assert decider.last_deny_cause == ""
+        # A stale mark from an unadopted refusal does not survive a re-arm.
+        cls.register_nonce(key)
+        cls.refuse_undelivered(key)
+        cls.register_nonce(key)
+        assert key not in cls._UNDELIVERED
+        cls.retire(key)
+
+    @pytest.mark.asyncio
+    async def test_telegram_undelivered_prompt_sets_undeliverable_cause(self):
+        from kiro_crew.telegram import renderer as telegram_renderer
+
+        cls = telegram_renderer.TelegramApprovalDecider
+        decider = cls(session_key="telegram:1")
+        key = cls.key("telegram:1", "r-und")
+        cls.arm(key, "n1")
+        cls.refuse_undelivered(key)
+        assert await decider(_event("r-und")) is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        assert key not in cls._UNDELIVERED
+        cls.arm(key, "n2")
+        task = asyncio.create_task(decider(_event("r-und")))
+        await asyncio.sleep(0)
+        cls.refuse_undelivered(key)
+        assert await task is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        cls.arm(key, "n3")
+        task = asyncio.create_task(decider(_event("r-und")))
+        await asyncio.sleep(0)
+        assert cls.resolve_global(key, False, nonce="n3") is True
+        assert await task is False
+        assert decider.last_deny_cause == ""
+        # An unadopted refusal swept at turn end leaves no mark behind.
+        cls.arm(key, "n4")
+        cls.refuse_undelivered(key)
+        cls.discard_session("telegram:1")
+        assert key not in cls._UNDELIVERED

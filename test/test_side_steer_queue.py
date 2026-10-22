@@ -38,6 +38,7 @@ from kiro_crew.dashboard.handlers.side import (
 from kiro_crew.dashboard.side_state import MAX_SIDE_QUEUE, SideState
 from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -150,13 +151,12 @@ def _steerable_provider(state, *, supports: bool = True, live: bool = True) -> l
     return steered
 
 
-async def _settle(state, timeout: float = 5.0) -> None:
+async def _settle(state) -> None:
     """Wait for every side background task (including drained ones) to finish."""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while state._background_tasks:
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError(f"side tasks did not settle: {state._background_tasks}")
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not state._background_tasks,
+        describe=lambda: f"side tasks did not settle: {state._background_tasks}",
+    )
 
 
 @pytest.mark.asyncio

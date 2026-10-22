@@ -452,11 +452,11 @@ test('a legacy configured default member keeps V1 while new members receive inde
     expect(await rows(request, 'default', key)).toEqual(globalBefore)
 
     await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(name)}`)
-    let editor = page.getByRole('dialog', { name: `Edit crewmate ${name}`, exact: true })
+    let editor = page.getByRole('dialog', { name: `Edit mate ${name}`, exact: true })
     await expect(editor).toBeVisible({ timeout: 10000 })
     await editor.getByTestId('next-rail-memory').click()
     const guidance = editor.getByTestId('next-memory-status')
-    await expect(guidance).toHaveText('This crewmate keeps its current memory (V1). Its own memory (V2) is only available when creating a new crewmate.')
+    await expect(guidance).toHaveText('This mate keeps its current memory (V1). Its own memory (V2) is only available when creating a new mate.')
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     await expect(editor.getByText(/This member cannot return to its previous memory/)).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v1-preserved.png'), fullPage: false, animations: 'disabled' })
@@ -470,14 +470,14 @@ test('a legacy configured default member keeps V1 while new members receive inde
     expect(await rows(request, store)).toEqual([])
     expect(await rows(request, 'default', key)).toEqual(globalBefore)
     await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(newOwner.name)}`)
-    editor = page.getByRole('dialog', { name: `Edit crewmate ${newOwner.name}`, exact: true })
+    editor = page.getByRole('dialog', { name: `Edit mate ${newOwner.name}`, exact: true })
     await expect(editor).toBeVisible({ timeout: 10000 })
     // A new member is created on a workspace of its own, named after it
     // (General section, the one the editor opens on).
     const own = `member-${newOwner.name}`
     await expect(editor.getByRole('combobox', { name: 'Workspace', exact: true })).toContainText(own)
     await editor.getByTestId('next-rail-memory').click()
-    await expect(editor.getByTestId('next-memory-status')).toHaveText('This crewmate has its own memory (V2).')
+    await expect(editor.getByTestId('next-memory-status')).toHaveText('This mate has its own memory (V2).')
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toHaveCount(0)
     // The editor's Memory section edits the member's own store in place; the
     // standalone memory page shows the same store.
@@ -558,7 +558,7 @@ test('intentional bad memory configuration shows unavailable, mismatch and a rea
     [fixture.mismatched_member, 'This member’s configured memory store belongs to another member. It cannot be used here.', 'member-memory-mismatched-binding.png'],
   ]) {
     await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(name)}`)
-    const editor = page.getByRole('dialog', { name: `Edit crewmate ${name}`, exact: true })
+    const editor = page.getByRole('dialog', { name: `Edit mate ${name}`, exact: true })
     await expect(editor).toBeVisible({ timeout: 10000 })
     await editor.getByTestId('next-rail-memory').click()
     const diagnostic = editor.getByTestId('next-memory-status')

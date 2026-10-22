@@ -1199,7 +1199,6 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "autonudge_state": frozenset({"nudge_wiring"}),
     "_run_chat": frozenset(
         {
-            "cron_exec",
             "cron_fire",
             "gateway",
             "nudge_dashboard_fire",
@@ -1208,7 +1207,7 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
             "subagent_wiring",
         }
     ),
-    "spawn_guarded_turn": frozenset({"cron_exec", "gateway", "nudge_dashboard_fire"}),
+    "spawn_guarded_turn": frozenset({"gateway", "nudge_dashboard_fire"}),
     "compose_nudge_body": frozenset({"gateway", "nudge_channel_fire", "nudge_dashboard_fire"}),
     "clear_shared_deaths": frozenset({"cron_exec", "runtime_charge"}),
     "run_in_cron_pool(": frozenset({"cron_exec"}),

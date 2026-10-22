@@ -81,13 +81,13 @@ _WELCOME_INTRO = (
 
 #: The crew sentence for a user with no crewmate yet besides this one.
 _FIRST_OF_CREW = (
-    "Explain that you are their first crewmate: a teammate who remembers what you "
+    "Explain that you are the first teammate on their crew, one who remembers what you "
     "work on together and keeps at it over days. "
 )
 
 #: The crew sentence for a user who already has other crewmates.
 _ONE_MORE_OF_CREW = (
-    "They already have other crewmates, so introduce yourself as one more teammate "
+    "They already have other mates, so introduce yourself as one more teammate "
     "on their crew, one who remembers what you work on together and keeps at it "
     "over days. "
 )
@@ -111,7 +111,7 @@ _WELCOME_OFFER = _WELCOME_ASK_NAME + (
 #: (``member_mate_tools``): the user saves the name on its crewmate page.
 _WELCOME_OFFER_NO_TOOLS = _WELCOME_ASK_NAME + (
     "When they answer with a name for you, use it from then on, and say in that "
-    "reply that they can save it as your name on your crewmate page."
+    "reply that they can save it as your name on your mate page."
 )
 
 #: Mate's welcome for a user with no other crewmate. ``{name}`` is its label.

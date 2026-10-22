@@ -37,6 +37,7 @@ from session_control_revive_helpers import (  # noqa: F401 -- the autouse fixtur
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.wait import async_wait_until
 
 # ── Happy path ───────────────────────────────────────────────────────────────
 
@@ -1064,11 +1065,11 @@ def test_a_cancellation_while_waiting_for_the_filing_lock_still_audits_once(tmp_
                 )
             )
             # Let the revive commit and reach the lock wait, then cancel it there.
-            for _ in range(500):  # the resume core's probes run off the loop
-                await asyncio.sleep(0.01)
-                if key in state._slots and lock._bound()._waiters:
-                    break
-            assert key in state._slots and lock._bound()._waiters
+            # The resume core's probes run off the loop, so this is a real wait.
+            await async_wait_until(
+                lambda: key in state._slots and lock._bound()._waiters,
+                describe=lambda: f"slot={key in state._slots} waiters={lock._bound()._waiters}",
+            )
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task

@@ -1,5 +1,104 @@
 [
   {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/memory/list",
+            "_kiro/memory/get",
+            "_kiro/memory/create",
+            "_kiro/memory/update",
+            "_kiro/memory/delete",
+            "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/configuration/getState",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "logging": {
+            "channels": [
+              {
+                "filePath": "~/.kiro/logs/20261020T071237542/kiro.log",
+                "name": "kiro"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T071237542/mcp.log",
+                "name": "mcp"
+              },
+              {
+                "filePath": "~/.kiro/logs/20261020T071237542/powers.log",
+                "name": "powers"
+              }
+            ],
+            "logDir": "~/.kiro/logs/20261020T071237542"
+          },
+          "modelFallbackReporting": true,
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
     "action": "update",
     "events": [
       {
@@ -31,31 +130,21 @@
   },
   {
     "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "session_info_update"
-  },
-  {
-    "frame": "response",
-    "id": 4
-  },
-  {
-    "action": "update",
     "events": [
       {
         "is_shell": true,
         "kind": "tool_call",
         "raw_tool_params": {
           "command": "sleep 12 && echo first-done",
-          "description": "Sleep 12 seconds then print",
+          "description": "Sleep then print a message",
           "run_in_background": false,
           "timeout": 20000
         },
-        "title": "Sleep 12 seconds then print",
-        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
-        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
+        "title": "Sleep then print a message",
+        "tool_call_id": "run_command_toolu_bdrk_01ToL4hgYDWD9SFtYjsF9GNh",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep then print a message\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
         "tool_kind": "execute",
-        "wire_title": "Sleep 12 seconds then print"
+        "wire_title": "Sleep then print a message"
       }
     ],
     "frame": "session/update",
@@ -90,15 +179,15 @@
         "raw_params_trusted": true,
         "raw_tool_params": {
           "command": "sleep 12 && echo first-done",
-          "description": "Sleep 12 seconds then print",
+          "description": "Sleep then print a message",
           "run_in_background": false,
           "timeout": 20000
         },
         "request_id": 1,
         "shell_classified": true,
         "title": "sleep 12 && echo first-done",
-        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
-        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
+        "tool_call_id": "run_command_toolu_bdrk_01ToL4hgYDWD9SFtYjsF9GNh",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep then print a message\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
         "tool_name": "run_command"
       }
     ],
@@ -117,13 +206,13 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "sleep 12 && echo first-done",
-          "description": "Sleep 12 seconds then print",
+          "description": "Sleep then print a message",
           "run_in_background": false,
           "timeout": 20000
         },
-        "title": "Sleep 12 seconds then print",
-        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
-        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}"
+        "title": "Sleep then print a message",
+        "tool_call_id": "run_command_toolu_bdrk_01ToL4hgYDWD9SFtYjsF9GNh",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep then print a message\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}"
       }
     ],
     "frame": "session/update",
@@ -137,13 +226,13 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "sleep 12 && echo first-done",
-          "description": "Sleep 12 seconds then print",
+          "description": "Sleep then print a message",
           "run_in_background": false,
           "timeout": 20000
         },
-        "title": "Sleep 12 seconds then print",
-        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
-        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}"
+        "title": "Sleep then print a message",
+        "tool_call_id": "run_command_toolu_bdrk_01ToL4hgYDWD9SFtYjsF9GNh",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep then print a message\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}"
       }
     ],
     "frame": "session/update",
@@ -151,10 +240,20 @@
   },
   {
     "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
+        "tool_call_id": "run_command_toolu_bdrk_01ToL4hgYDWD9SFtYjsF9GNh",
         "tool_final": true,
         "tool_output": "Output:\nfirst-done\n\n\nExit Code: 0",
         "tool_output_bytes": 33,
@@ -166,14 +265,14 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "sleep 12 && echo first-done",
-          "description": "Sleep 12 seconds then print",
+          "description": "Sleep then print a message",
           "run_in_background": false,
           "timeout": 20000
         },
-        "title": "Sleep 12 seconds then print",
-        "tool_call_id": "run_command_toolu_bdrk_01LH1JDnqH82oM4C63jEawEW",
-        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep 12 seconds then print\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
-        "wire_title": "Sleep 12 seconds then print"
+        "title": "Sleep then print a message",
+        "tool_call_id": "run_command_toolu_bdrk_01ToL4hgYDWD9SFtYjsF9GNh",
+        "tool_input": "{\n  \"command\": \"sleep 12 && echo first-done\",\n  \"description\": \"Sleep then print a message\",\n  \"run_in_background\": false,\n  \"timeout\": 20000\n}",
+        "wire_title": "Sleep then print a message"
       }
     ],
     "frame": "session/update",
@@ -190,13 +289,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "The"
+        "text": "The command"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "The",
+      "text": "The command",
       "thinking": false
     }
   },
@@ -205,13 +304,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " command"
+        "text": " output"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " command",
+      "text": " output",
       "thinking": false
     }
   },
@@ -220,13 +319,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": " output was"
+        "text": " was"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": " output was",
+      "text": " was",
       "thinking": false
     }
   },

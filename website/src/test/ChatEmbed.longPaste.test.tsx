@@ -192,7 +192,7 @@ describe('ChatEmbed long-paste collapse', () => {
     await mount({ onSend })
     await paste(TRAILING)
     await send()
-    expect(onSend).toHaveBeenCalledWith(TRAILING, { pastes: [expect.objectContaining({ seq: 1, content: TRAILING })] })
+    expect(onSend).toHaveBeenCalledWith(TRAILING, { pastes: [expect.objectContaining({ seq: 1, content: TRAILING })], sendId: expect.any(String) })
     mockGet.mockResolvedValue({ messages: [{ role: 'user', content: TRAILING.trim(), cls: 'user', ts: '2026-01-01T00:00:05Z' }], running: true, title: '' })
     await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
     expect(shown.rows.filter(r => r.role === 'user')).toHaveLength(1)

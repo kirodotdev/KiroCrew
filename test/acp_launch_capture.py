@@ -421,6 +421,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             ),
             patch.object(pi_mod, "_resolve_pi_acp_bin", return_value=(_PI_ACP_ARGV, _SEARCH_PATH)),
             patch.object(pi_mod, "_resolve_pi_bin", return_value=(_PI_BIN, _SEARCH_PATH)),
+            patch.object(pi_mod, "_pi_node_choice", return_value=pi_mod.PiNodeChoice()),
             patch.object(claude_mod, "_resolve_claude_code_executable", return_value=""),
             patch.object(AcpClient, "_write_claude_local_settings", return_value=None),
             patch.object(pi_mod, "_seal_pi_gate_extension", return_value=_PI_EXTENSION),

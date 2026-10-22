@@ -154,7 +154,7 @@ def test_a_credential_setting_never_carries_a_guide() -> None:
 
 
 def test_crewmates_page_names_its_preview_switch() -> None:
-    d = ui_index.find_ui("crewmates", "en")
+    d = ui_index.find_ui("mates", "en")
     page = next(r for r in d["results"] if r["id"] == "page.members")
     requires = page["placements"][0]["requires"]
     assert any(r["kind"] == "preview_flag" for r in requires)
@@ -199,7 +199,7 @@ def test_surface_keeps_only_that_surface() -> None:
 
 
 def test_ties_are_ordered_by_id_and_flagged_ambiguous() -> None:
-    d = ui_index.find_ui("crewmates", "en")
+    d = ui_index.find_ui("mates", "en")
     exact = [r["id"] for r in d["results"] if r["match"] == "exact_label"]
     assert exact == sorted(exact) and len(exact) > 1
     assert d["ambiguous"] is True
@@ -1128,7 +1128,7 @@ def _guidable(r: dict[str, Any]) -> bool:
         ("命令栏", "zh-CN", "shell.search"),
         ("where do I search my sessions?", "en", "shell.search"),
         ("搜索会话", "zh-CN", "shell.search"),
-        ("find a crewmate by name", "en", "members.switcher"),
+        ("find a mate by name", "en", "members.switcher"),
         ("按名字找队友", "zh-CN", "members.switcher"),
         ("where do I set up slack?", "en", "settings.sub.channels.slack"),
         ("设置 slack", "zh-CN", "settings.sub.channels.slack"),

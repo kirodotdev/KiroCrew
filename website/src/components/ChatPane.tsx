@@ -1021,7 +1021,7 @@ export default function ChatPane({
           // SLOT's stored agent (not `paneAgentName`, which has already
           // collapsed empty->default) so an agent-less slot reads
           // `<default> · default` and a pinned one reads the bare alias (#8770).
-          agentLabel={agentOrDefaultLabel(paneSlot?.agent, defaultAgent)}
+          agentLabel={agentOrDefaultLabel(paneSlot?.agent, defaultAgent, paneSlot?.agent_kind)}
           agentIsInheritedDefault={!paneSlot?.agent && !!defaultAgent}
           // Same rows the pane's picker lists, so chip and picker agree on when
           // a same-name pair needs telling apart.

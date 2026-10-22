@@ -804,18 +804,33 @@ def _assemble_timeline(
     events: list[dict] = [e for e in (_norm_note(n) for n in notes) if e is not None]
 
     try:
-        labels_by_name = {lab["name"]: lab for lab in list_repo_labels(owner, repo, host=host, timeout=timeout)}
+        label_events = _rows(
+            _glab_api(f"{base}/resource_label_events", host=host, timeout=timeout, paginate=True)
+        )
     except ProviderCliError:
-        labels_by_name = {}
-    for path, normalizer in (
-        (f"{base}/resource_label_events", lambda e: _norm_label_event(e, labels_by_name)),
-        (f"{base}/resource_state_events", _norm_state_event),
-    ):
+        label_events = []
+    # Each label event embeds its label, colour included, so the project's label
+    # set is only read when an event arrived without one (a deleted label, or an
+    # older GitLab), not on every timeline load.
+    labels_by_name: dict[str, dict] = {}
+    if any(not _obj(e.get("label")).get("color") for e in label_events):
         try:
-            raw = _rows(_glab_api(path, host=host, timeout=timeout, paginate=True))
+            labels_by_name = {
+                lab["name"]: lab
+                for lab in list_repo_labels(owner, repo, host=host, timeout=timeout)
+            }
         except ProviderCliError:
-            continue
-        events.extend(e for e in (normalizer(item) for item in raw) if e is not None)
+            labels_by_name = {}
+    events.extend(
+        e for e in (_norm_label_event(item, labels_by_name) for item in label_events) if e is not None
+    )
+    try:
+        state_events = _rows(
+            _glab_api(f"{base}/resource_state_events", host=host, timeout=timeout, paginate=True)
+        )
+    except ProviderCliError:
+        state_events = []
+    events.extend(e for e in (_norm_state_event(item) for item in state_events) if e is not None)
 
     events.sort(key=lambda e: e.get("created_at") or "")
     return events, notes

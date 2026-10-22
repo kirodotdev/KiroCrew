@@ -181,7 +181,7 @@ def _opencode_events(
     result_text: str = "Monitor loop requested.",
     tool_call_id: str = "tc-oc",
 ):
-    """An opencode turn, in the shape CAPTURED off 1.18.30
+    """An opencode turn, in the shape CAPTURED off 1.18.30 and again off 1.19.1
     (``test/fixtures/acp_frames/opencode/mcp-directive-call-live.jsonl``): no
     ``_meta.kiro`` identity anywhere, the tool named ONLY by a single-underscore
     ``<server>_<tool>`` wire title, ``rawInput`` EMPTY on the ``tool_call`` and

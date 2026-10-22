@@ -18,6 +18,8 @@ from kiro_crew.monitoring.pull_request import (
     PullRequestProviderError,
     build_pull_request_probe_result,
     classify_provider_error_text,
+    comment_body_digest,
+    comment_body_fingerprint,
     opaque_provider_check_identity,
     provider_error_result,
     provider_failure_result,
@@ -30,6 +32,17 @@ from kiro_crew.monitoring.targets import (
 _TIMEOUT_SECS = 30.0
 _MAX_OUTPUT_BYTES = 1024 * 1024
 _MAX_EVIDENCE_ITEMS = 100
+# Azure DevOps nests comments inside threads, so the comment count is unbounded
+# even when the thread count is not. This bounds the comment bodies the digest is
+# built over the same way ``_MAX_EVIDENCE_ITEMS`` bounds every other evidence
+# list: a read carrying more than this is treated as incomplete and digests to
+# "" (no wake), rather than silently digesting a truncated view.
+_MAX_EVIDENCE_COMMENTS = 500
+# Azure stamps its own lifecycle narration ("voted", "updated the source branch")
+# as comments with ``commentType == "system"``. They are not review prose, they
+# turn over on their own cadence, and digesting them would wake the watch on
+# activity no reviewer authored. Only author-written comment types are digested.
+_SYSTEM_COMMENT_TYPE = "system"
 _CANONICAL_STATUSES = {"active": "open", "completed": "merged", "abandoned": "closed"}
 # Terminal means "no supplemental read can change the verdict", which is every
 # mapped status except the open one. Deriving it keeps the two from drifting.
@@ -268,6 +281,7 @@ def _facts(
     )
     raw_commit = pr.get("lastMergeSourceCommit")
     commit = {} if raw_commit is None else _object(raw_commit)
+    review_threads_complete = threads_complete and len(threads) <= _MAX_EVIDENCE_ITEMS
     return PullRequestFacts(
         kind="azure_devops_pull_request",
         target=target.identity,
@@ -278,14 +292,55 @@ def _facts(
         review_decision=review_decision,
         checks=tuple(checks),
         unresolved_review_threads=unresolved,
-        review_threads_complete=(threads_complete and len(threads) <= _MAX_EVIDENCE_ITEMS),
+        review_threads_complete=review_threads_complete,
         checks_complete=(
             statuses_complete
             and policies_complete
             and len(statuses) <= _MAX_EVIDENCE_ITEMS
             and len(policies) <= _MAX_EVIDENCE_ITEMS
         ),
+        pr_comment_body_digest=_comment_body_digest(threads, review_threads_complete),
     )
+
+
+def _comment_body_digest(threads: list[object], threads_complete: bool) -> str:
+    """Digest the author-written comment bodies carried inside the PR threads.
+
+    Azure DevOps nests comments in threads, and the adapter already fetched every
+    thread for the unresolved-count, so the bodies are read from that same list
+    rather than through a second request that could observe a different head.
+
+    Fails closed to "" -- which emits no ``review_comment_bodies`` condition and
+    so no wake -- whenever the evidence is not trustworthy: the thread read was
+    incomplete, the comment count passed the bound, or any thread or comment was
+    malformed. A ``system``-type comment (Azure's own lifecycle narration) is
+    skipped, as is an empty body, so neither moves the digest.
+
+    The digest is over BODIES, not timestamps, so a verdict comment edited in
+    place -- same id, same ``publishedDate`` -- still flips it, which is the whole
+    point of a body digest over a count.
+    """
+    if not threads_complete:
+        return ""
+    fingerprints: list[str] = []
+    for raw_thread in threads:
+        thread = _object(raw_thread)
+        comments = thread.get("comments", [])
+        if not isinstance(comments, list):
+            return ""
+        for raw_comment in comments:
+            comment = _object(raw_comment)
+            if str(comment.get("commentType", "")).lower() == _SYSTEM_COMMENT_TYPE:
+                continue
+            body = comment.get("content")
+            if body is None or body == "":
+                continue
+            if not isinstance(body, str):
+                return ""
+            fingerprints.append(comment_body_fingerprint(body))
+            if len(fingerprints) > _MAX_EVIDENCE_COMMENTS:
+                return ""
+    return comment_body_digest(fingerprints)
 
 
 def _status_state(value: object) -> str:

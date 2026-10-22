@@ -17,6 +17,7 @@ import pytest
 from kiro_crew.browser_cli import install as browser_cli_install
 from kiro_crew.browser_cli import install_job as job_mod
 from kiro_crew.dashboard.handlers import messaging as msg
+from kiro_crew.testing.wait import async_wait_until
 
 _JOB_KEYS = {
     "id",
@@ -122,15 +123,6 @@ class _Gate:
         self.entered.set()
         assert self.release.wait(10), "test never released the installer"
         return self.result
-
-
-async def _until(predicate: Any, timeout: float = 5.0) -> None:
-    loop = asyncio.get_running_loop()
-    end = loop.time() + timeout
-    while not predicate():
-        if loop.time() > end:
-            raise AssertionError("condition never became true")
-        await asyncio.sleep(0.01)
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, gate: _Gate) -> None:
@@ -323,7 +315,9 @@ class TestTheRoutes:
             state = _state()
             await msg.api_browser_install_start(_request(state, "/api/browser/install"))
             await asyncio.to_thread(gate.entered.wait, 5)
-            await _until(lambda: state._browser_install_job.stage == "downloading_browser")
+            await async_wait_until(
+                lambda: state._browser_install_job.stage == "downloading_browser"
+            )
             got = _payload(
                 await msg.api_browser_install_get(_request(state, "/api/browser/install"))
             )
@@ -699,11 +693,13 @@ class TestShutdown:
             state = _state()
             try:
                 await msg.api_browser_install_start(_request(state, "/api/browser/install"))
-                await _until(marker.exists, timeout=15)
+                await async_wait_until(marker.exists, timeout=15)
                 started = time.monotonic()
                 await msg.stop_browser_install(state)
                 # The worker thread returns once its child is dead.
-                await _until(lambda: not state._browser_install_scope._children, timeout=15)
+                await async_wait_until(
+                    lambda: not state._browser_install_scope._children, timeout=15
+                )
                 assert time.monotonic() - started < 15
                 return state._browser_install_job.snapshot()
             finally:

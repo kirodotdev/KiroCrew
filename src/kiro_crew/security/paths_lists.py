@@ -15,7 +15,7 @@ gates read these lists, and this module imports no other part of the path floor.
 
 from __future__ import annotations
 
-from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk import host_auth, native_allow_stores
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES, fenced_home_dirs
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 
@@ -1317,16 +1317,21 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 
 #: The kiro-cli-owned entries on the write-only tier, as ONE list because they
 #: share an anchoring rule rather than only an owner: each is re-anchored under
-#: ``KIRO_HOME`` and each has its ``$HOME``-rooted form resolved, so a symlink
-#: anywhere below the home root cannot move the real file out from under the
-#: fence. BOTH halves are driven from this tuple -- the ``$HOME`` resolve loop and
-#: the ``KIRO_HOME`` re-anchoring -- so a third kiro-cli leaf joins both by landing
-#: here, and neither half can be the one somebody forgets.
+#: ``KIRO_HOME``, and like every entry each has its ``$HOME``-rooted form
+#: resolved, so a symlink anywhere below the home root cannot move the real file
+#: out from under the fence. The ``KIRO_HOME`` re-anchoring is driven from this
+#: tuple and the ``$HOME`` half from the entries themselves, so a third kiro-cli
+#: leaf joins both by landing here and in the write tier.
 _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
 )
 
+
+# Other harnesses' own permission files: the same threat, anchored like the leaves above.
+_NATIVE_ALLOW_STORE_LEAVES: tuple[str, ...] = native_allow_stores.home_leaves()
+_WRITE_PROTECTED_HOME_PATHS += list(_NATIVE_ALLOW_STORE_LEAVES)
+_native_store_write = native_allow_stores.matches_store  # a project's claude settings
 
 _WRITE_PROTECTED_HOME_PATHS += [
     # Operator-authored panel templates (agent_panel.py). WRITE-protected rather

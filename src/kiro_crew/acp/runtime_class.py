@@ -212,6 +212,7 @@ class AcpRuntime:
     saw_not_logged_in = _rt_liveness.saw_not_logged_in
     settle_stderr = _rt_liveness.settle_stderr
     saw_sandbox_init_failure = _rt_liveness.saw_sandbox_init_failure
+    saw_delegate_launch_failure = _rt_liveness.saw_delegate_launch_failure
     redacted_stderr_tail = _rt_liveness.redacted_stderr_tail
     _exit_watch_loop = _rt_liveness._exit_watch_loop
     _reader_has_buffered_input = _rt_liveness._reader_has_buffered_input
@@ -586,8 +587,16 @@ class AcpRuntime:
         # See the clear in ``_finish_create_session`` and the arming guard in
         # ``_drain_stderr``.
         self._saw_sandbox_init_failure = False
+        # Latched ``kiro-cli-chat`` delegate-launch-failure observation. Latched
+        # at the same sink and for the same ring-turnover reason as the two above,
+        # and with the SAME narrow lifetime as the sandbox-init latch: whether the
+        # delegate launches is a verdict about THIS CHILD'S STARTUP, spent once a
+        # session handle proves startup succeeded. A delegate that would not exec
+        # fails before ``initialize`` completes, so the pre-``_first_session_ready``
+        # window is where it is caught; see the arming guard in ``_drain_stderr``.
+        self._saw_delegate_launch_failure = False
         # Whether a session handle has ever been produced on this runtime. The
-        # startup window the latch above arms in, and the reason it is a separate
+        # startup window the two latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not
         # its end.
         self._first_session_ready = False

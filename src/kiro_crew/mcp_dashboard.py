@@ -793,6 +793,7 @@ from kiro_crew.mcp_dashboard_references import (  # noqa: E402, F401
 from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _PROFILE_COPY_NOTE,
     GENERATE_TITLE_TIMEOUT_SECS,
+    SESSION_STATUS_READ_TIMEOUT_SECS,
     _closed_at_display,
     _create_refusal_remedy,
     _pending_approval_phrase,
@@ -968,7 +969,12 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
     from kiro_crew.conductor_patrol import reply_line  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
-    from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES  # noqa: F401
+    from kiro_crew.config.sections import (  # noqa: F401
+        AUTOCOMPACT_PCT_MAX,
+        AUTOCOMPACT_PCT_MIN,
+        FOLDER_SORT_DEFAULT,
+        FOLDER_SORT_MODES,
+    )
     from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES  # noqa: F401
     from kiro_crew.dashboard.folder_ownership import (  # noqa: F401
         _folder_owner_app,

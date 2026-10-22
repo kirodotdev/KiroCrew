@@ -485,7 +485,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(stepBoundHolds(uninstall)).toBe(false)
   })
 
-  it('walks to Delete crewmate through the editor and its Danger zone row, which it points at', () => {
+  it('walks to Delete mate through the editor and its Danger zone row, which it points at', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     expect(r.action.steps.map(st => st.complete.kind)).toEqual(['select', 'reach', 'ack'])
@@ -717,7 +717,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     }
   })
 
-  it('the Delete crewmate guide carries the Danger zone notice as its caution text', () => {
+  it('the Delete mate guide carries the Danger zone notice as its caution text', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     const last = r.action.steps[r.action.steps.length - 1]
@@ -1019,7 +1019,7 @@ describe('ui.show phase 3: selection steps, gates and the mid-guide re-plan', ()
     expect(dev.action.steps[0].textVars?.label).toBe(i18nT('pages.settings.developerPanel.developer_mode'))
   })
 
-  it('a crewmate\'s permission picker is its own ceiling: ui.show has no plan for it', () => {
+  it('a mate\'s permission picker is its own ceiling: ui.show has no plan for it', () => {
     expect(resolveGuideAction(show('members.permissions')).ok).toBe(false)
   })
 

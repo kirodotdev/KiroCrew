@@ -514,6 +514,70 @@ class TestGrantEndpointPendingFlow:
                         assert body["code"] == "cron_store_unreadable"
                         assert body["retryable"] is False
 
+    @pytest.mark.asyncio
+    async def test_store_unreadable_on_read_is_409_not_job_not_found(self, cron_home):
+        """An unreadable store loads as an EMPTY job list without raising,
+        so the job lookup misses. Every decision must answer the unreadable 409
+        the other read-decide-write routes answer, never a 404 "job not found"
+        over a corrupt file -- and the records on disk stay untouched."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.config.loader import config_dir as loader_config_dir
+
+        app, svc = self._app_and_svc()
+        SecretVault(loader_config_dir()).set_sync("slack-sandbox", "xoxb-1")
+        jid = self._request_pending(svc, cron_home)
+        store = svc._path
+        corrupt = store.read_bytes() + b"\xff\xfe"
+        store.write_bytes(corrupt)
+        with patch("kiro_crew.dashboard.handlers.cron._sel"):
+            async with TestClient(TestServer(app)) as client:
+                for decision in (_APPROVE, {"deny_pending": True}, {"secret_env": {}}):
+                    resp = await client.put(f"/api/crons/{jid}/secrets", json=decision)
+                    body = await resp.json()
+                    assert resp.status == 409, (decision, body)
+                    assert body["code"] == "cron_store_unreadable", (decision, body)
+                    assert body["retryable"] is False
+        assert store.read_bytes() == corrupt
+
+    @pytest.mark.asyncio
+    async def test_store_unreadable_at_promotion_read_is_409(self, cron_home):
+        """The promotion path re-reads the job on its own. A store that
+        turns unreadable between the route's read and that re-read must answer
+        the unreadable 409, not a 404 "job not found", and promote nothing."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.config.loader import config_dir as loader_config_dir
+
+        app, svc = self._app_and_svc()
+        SecretVault(loader_config_dir()).set_sync("slack-sandbox", "xoxb-1")
+        jid = self._request_pending(svc, cron_home)
+        store = svc._path
+        real_get = svc.get_job_async
+        calls = {"n": 0}
+
+        async def corrupt_after_first_read(job_id):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                store.write_bytes(store.read_bytes() + b"\xff\xfe")
+            return await real_get(job_id)
+
+        with (
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch.object(svc, "get_job_async", side_effect=corrupt_after_first_read),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(f"/api/crons/{jid}/secrets", json=_APPROVE)
+                body = await resp.json()
+        assert calls["n"] == 2, "the promotion path must re-read the job"
+        assert resp.status == 409, body
+        assert body["code"] == "cron_store_unreadable"
+        store.write_bytes(store.read_bytes()[: -len(b"\xff\xfe")])
+        job = CronService(base_dir=svc._dir).get_job(jid)
+        assert job is not None
+        assert job.secret_env == {}
+        assert job.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+
     def test_owner_view_grant_map_is_redacted(self):
         """The store is agent-writable and the read path loads grant dicts
         verbatim, so the owner-view serializer must scan keys AND values —

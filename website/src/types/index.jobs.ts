@@ -68,6 +68,10 @@ export interface CronJob {
   /** False for a job that runs on a fresh session every fire. The form does not
    *  edit it; it only reads it to disable the chat-folder picker. */
   persistent_session?: boolean
+  /** Consecutive failed runs that auto-pause this job (0..10000). 0 never
+   *  pauses; a job at 0 or above 5 backs off from its 5th failure instead.
+   *  Absent on an older gateway. */
+  auto_pause_after_failures?: number
   /** Chat session that owns this job — ownership decides chat-side reachability
    * (cron_list only lists a session its own jobs). Null for an ownerless job,
    * which is invisible to every chat session and manageable only from the

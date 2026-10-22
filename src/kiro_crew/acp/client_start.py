@@ -150,7 +150,7 @@ PROTOCOL_VERSION_OPENCODE = launch_for(ACP_BACKEND_OPENCODE).protocol_version
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
-# goose answers ``initialize`` with an integer ``protocolVersion`` of 1, captured off
+# goose answers ``initialize`` with an integer ``protocolVersion`` of 1, measured on
 # goose 1.50.1's own wire (``test/fixtures/acp_frames/goose/handshake-live.jsonl``);
 # its own literal for the same H10 reason.
 PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
@@ -1266,6 +1266,16 @@ async def ensure_ready(self: AcpClient) -> None:
                     await self._cleanup_failed_live_spawn()
                     self._reset_state()
                     raise sandbox_failure from exc
+                # The ``kiro-cli-chat`` delegate would not launch: deterministic
+                # for the same reason, and fixed by repairing the Kiro CLI
+                # install, so fail fast with the message that says so instead of
+                # a second attempt and then the generic process-exited card.
+                delegate_failure = await self._classify_failed_start(self._delegate_launch_failure)
+                if delegate_failure is not None:
+                    _startup_outcome = "delegate_launch_failed"
+                    await self._cleanup_failed_live_spawn()
+                    self._reset_state()
+                    raise delegate_failure from exc
                 # The harness answered with its OWN "no provider / not signed
                 # in" words (declared in ``host_auth``). Deterministic like the
                 # sandbox refusal above: a fresh process reads the same missing

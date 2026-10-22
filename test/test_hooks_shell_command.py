@@ -424,8 +424,10 @@ class TestSafeReadFile:
         ws.mkdir()
         link = ws / "cfg.ini"
         link.symlink_to(cred)
-        with pytest.raises(PermissionError, match="sensitive path"):
+        with pytest.raises(PermissionError, match="sensitive path") as info:
             safe_read_file(str(link))
+        # Named by the store the link reaches, not by the link's innocuous name.
+        assert ".aws" in str(info.value)
         # bytes variant returns None (rejected) rather than leaking content
         assert safe_read_file_bytes(str(link)) is None
 
@@ -458,6 +460,56 @@ class TestSafeReadFile:
         (ws / "awslink").symlink_to(home / ".aws")
         with pytest.raises(PermissionError, match="sensitive path"):
             safe_read_file(str(ws / "awslink" / "credentials"))
+
+    @requires_symlinks
+    @pytest.mark.parametrize(
+        ("protected_dir", "leaf"),
+        [(".aws", "credentials"), (".ssh", "id_ed25519")],
+        ids=["aws", "ssh"],
+    )
+    def test_blocks_a_protected_dir_that_is_itself_a_symlink(
+        self, tmp_path, monkeypatch, protected_dir, leaf
+    ):
+        """``~/.aws`` can itself be a symlink to a directory OUTSIDE the home. The
+        target set carries the store that entry resolves to, so the store is
+        refused through every spelling -- absolute, ``~``, relative to a working
+        directory of the home, and the ``realpath`` most callers hold -- by the
+        reader, by the path screen every dashboard reader goes through, and by the
+        gate itself on both tiers."""
+        import os
+
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import security
+
+        home = tmp_path / "home"
+        home.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / leaf).write_text("dummy secret\n")
+        (home / protected_dir).symlink_to(outside, target_is_directory=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(home)
+        store = os.path.realpath(home / protected_dir / leaf)
+        assert not (home / protected_dir / leaf).resolve().is_relative_to(home)
+
+        for spelling in (
+            str(home / protected_dir / leaf),
+            f"~/{protected_dir}/{leaf}",
+            f"{protected_dir}/{leaf}",
+            store,
+        ):
+            with pytest.raises(PermissionError, match="sensitive path") as info:
+                safe_read_file(spelling)
+            # Named by the store it reaches: that is the form the fence matched.
+            assert repr(store) in str(info.value)
+            assert hooks_mod.validate_file_path(spelling) is None
+            assert hooks_mod.screen_file_path(spelling) is hooks_mod.PathDecline.REFUSED
+        assert security.is_sensitive_path(store) is True
+        assert security.is_sensitive_write_path(store) is True
+        # The build that fenced the store reports the link, so its cached set keeps
+        # the short expiry and a repointed link is picked up at the floor.
+        assert security._home_dir_targets(security._SENSITIVE_HOME_DIRS).resolution_differed
 
     def test_missing_file_raises_natural_error(self, tmp_path):
         """A missing (non-sensitive) file raises FileNotFoundError, not a

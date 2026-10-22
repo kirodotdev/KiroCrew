@@ -27,7 +27,7 @@ review runs silently.
 
 The executor is async; the (synchronous, threaded) review driver bridges to it
 via ``asyncio.run_coroutine_threadsafe`` on the gateway event loop, and brackets
-each run with ``begin_batch()`` / ``end_batch()``. See ``backend/routes.py``.
+each run with ``begin_batch()`` / ``end_batch()``. See ``backend/routes_parts/review_runs.py``.
 """
 from __future__ import annotations
 

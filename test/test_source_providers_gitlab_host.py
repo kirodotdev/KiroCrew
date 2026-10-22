@@ -14,6 +14,7 @@ from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F
 
 from kiro_crew import github_runner
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.testing.wait import default_timeout
 
 
 @pytest.mark.asyncio
@@ -490,9 +491,9 @@ async def test_concurrent_allowlist_refresh_cannot_restore_a_revoked_host(monkey
         # asyncio.Event is not thread-safe: this runs in a worker thread, so the
         # set() must be marshalled back onto the loop.
         loop.call_soon_threadsafe(started.set)
-        # Block inside the worker thread so a second waiter queues on the lock.
-        # flake-ok: pre-existing 5 s ceiling on the worker thread's hold until the test releases _noop, moved verbatim; tracked for a de-flake pass
-        source.asyncio.run_coroutine_threadsafe(_noop(), loop).result(timeout=5)
+        # Block inside the worker thread so a second waiter queues on the lock. The
+        # hold ends when the test sets ``release``; the timeout is a lost-run bound.
+        source.asyncio.run_coroutine_threadsafe(_noop(), loop).result(timeout=default_timeout())
         return frozenset({"gitlab.acme.internal"}), frozenset(), True, frozenset(), frozenset()
 
     async def _noop() -> None:

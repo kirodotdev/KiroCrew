@@ -436,7 +436,8 @@ async def test_co_tenant_fanout_frames_do_not_defer_the_budget(monkeypatch):
             frame = JsonRpcMessage(method="kiro/subagents/update", params={"subagents": []})
             frame.fanout_no_owner = True
             handle._queue.put_nowait(frame)
-            await asyncio.sleep(0.05)
+            # Frames well inside the budget interval are what must not reset it.
+            await asyncio.sleep(0.05)  # flake-ok: the chatter cadence is the stimulus under test
 
     feeder = asyncio.create_task(_co_tenant_chatter())
     try:

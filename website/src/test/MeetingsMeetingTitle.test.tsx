@@ -70,4 +70,55 @@ describe('MeetingTitle', () => {
     render(<MeetingTitle title="" onRename={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Untitled meeting' })).toBeInTheDocument()
   })
+
+  // Closing the editor unmounts the focused input, and a browser then drops
+  // focus to document.body: Enter and Escape must hand it back to the title
+  // trigger so a keyboard user keeps their place (ARIA edit-in-place). A
+  // pointer blur saves but moves nothing. The restore runs in a rAF, so the
+  // assertions flush one frame first.
+  const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
+
+  it('returns focus to the trigger after a successful save on Enter', async () => {
+    const { input } = openEditor()
+    fireEvent.change(input, { target: { value: 'Retro' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // onRename resolves without changing the title prop, so the closed trigger
+    // keeps its original accessible name; wait for the editor to unmount.
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
+    const trigger = screen.getByRole('button', { name: 'Standup' })
+    await nextFrame()
+    expect(document.activeElement).toBe(trigger)
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('returns focus to the trigger when Enter closes an unchanged draft', async () => {
+    const { onRename, input } = openEditor()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onRename).not.toHaveBeenCalled()
+    const trigger = await screen.findByRole('button', { name: 'Standup' })
+    await nextFrame()
+    expect(document.activeElement).toBe(trigger)
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('returns focus to the trigger after Escape cancels', async () => {
+    const { input } = openEditor()
+    fireEvent.change(input, { target: { value: 'Retro' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    const trigger = await screen.findByRole('button', { name: 'Standup' })
+    await nextFrame()
+    expect(document.activeElement).toBe(trigger)
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('saves on a pointer blur but does not move focus to the trigger', async () => {
+    const { onRename, input } = openEditor()
+    fireEvent.change(input, { target: { value: 'Retro' } })
+    fireEvent.blur(input)
+    expect(onRename).toHaveBeenCalledWith('Retro')
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
+    const trigger = screen.getByRole('button', { name: 'Standup' })
+    await nextFrame()
+    expect(document.activeElement).not.toBe(trigger)
+  })
 })

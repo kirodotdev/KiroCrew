@@ -42,7 +42,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.artifact_store.model import ArtifactValidationError
 
@@ -838,9 +838,11 @@ def _validate_view(raw: Any, declared_fields: Mapping[str, Any]) -> dict[str, An
 def _validate_theme(raw: Any) -> dict[str, Any]:
     theme = _an_object(raw, "theme")
     _check_keys(theme, "theme", ("tokens", "css"))
+    # A missing ``tokens`` is the empty set: an MCP client can drop an empty object
+    # from a tool call, so ``{"tokens": {}}`` may arrive as ``{}``.
     raw_tokens = theme.get("tokens")
     if raw_tokens is None:
-        raise _refuse("theme.tokens", "is required (an empty object is fine)")
+        raw_tokens = {}
     tokens_obj = _an_object(raw_tokens, "theme.tokens")
     if len(tokens_obj) > MAX_THEME_TOKENS:
         raise _refuse(
@@ -877,15 +879,69 @@ def _validate_theme(raw: Any) -> dict[str, Any]:
         # so a fetching construct cannot load -- it would fail silently and read
         # as a style that does not apply. Refusing it here says why instead.
         lowered = css.lower()
-        for construct in ("@import", "url(", "<script", "</style", "javascript:"):
+        for construct in ("@import", "<script", "</style", "javascript:"):
             if construct in lowered:
                 raise _refuse(
                     "theme.css",
                     f"must not contain {construct!r}: the page iframe has no network "
                     "and takes no agent-authored code",
                 )
+        if _theme_fetches(lowered):
+            raise _refuse("theme.css", THEME_URL_REFUSAL)
         out["css"] = css
     return out
+
+
+#: Why ``theme.css`` refuses a ``url()`` that is not an inline ``data:`` URL.
+THEME_URL_REFUSAL: Final[str] = (
+    "must not contain a url() with an address: the page iframe has no network, so it "
+    "would load nothing. A texture, pattern or wallpaper can be an inline data: URL "
+    'instead -- url("data:image/svg+xml,...") or a base64 image -- which needs no '
+    "network"
+)
+
+
+def _theme_fetches(lowered: str) -> bool:
+    """Whether lower-cased theme CSS holds a ``url(`` that is not an inline ``data:`` URL.
+
+    A ``data:`` URL carries its bytes with it, so it reaches no network and the frame's
+    ``img-src data:`` admits it; any other address is a fetch the frame refuses. One
+    linear pass: the text is the agent's, so no backtracking pattern runs over it.
+    """
+    at = 0
+    while True:
+        start = lowered.find("url(", at)
+        if start < 0:
+            return False
+        cursor = start + 4
+        while cursor < len(lowered) and lowered[cursor] in " \t\r\n\f\"'":
+            cursor += 1
+        if not lowered.startswith("data:", cursor):
+            return True
+        # Resume past the whole data URL: its own bytes can hold a ``url(#id)`` (an SVG
+        # gradient or pattern reference), which points inside the data, not at an address.
+        quote = next((c for c in lowered[start + 4 : cursor] if c in "\"'"), "")
+        end = lowered.find(quote, cursor) if quote else lowered.find(")", cursor)
+        if end < 0:
+            return False
+        at = end + 1
+
+
+def theme_stylesheet(raw: Any) -> str:
+    """The package's ``theme`` as one stylesheet: its tokens on ``:root``, then its css.
+
+    Checked by the same validator the write gate runs, so what reaches a ``<style>``
+    element is only what the gate accepts: a token value holds no ``;``, ``{``, ``}``,
+    ``<`` or ``>``, and the css holds no ``</style``, so neither can close the element
+    or open a rule of its own. Raises :class:`~kiro_crew.artifact_store.model.ArtifactValidationError` for a theme the
+    gate would refuse, such as one written under an older validator.
+    """
+    theme = _validate_theme(raw)
+    tokens = "".join(f"{name}:{value};" for name, value in theme["tokens"].items())
+    parts = [f":root{{{tokens}}}"] if tokens else []
+    if theme.get("css"):
+        parts.append(theme["css"])
+    return "\n".join(parts)
 
 
 def validate_package(raw: Any) -> dict[str, Any]:
@@ -908,11 +964,12 @@ def validate_package(raw: Any) -> dict[str, Any]:
         raise _refuse("model", "is required")
     if "view" not in package:
         raise _refuse("view", "is required")
-    if "theme" not in package:
-        raise _refuse("theme", "is required (an empty 'tokens' object is fine)")
     model = _validate_model(package["model"])
     view = _validate_view(package["view"], model["types"])
-    theme = _validate_theme(package["theme"])
+    # A missing theme is the empty one, stored canonically as ``{"tokens": {}}``: an
+    # MCP client can drop ``{"tokens": {}}`` before it reaches the gateway.
+    raw_theme = package.get("theme")
+    theme = _validate_theme({"tokens": {}} if raw_theme is None else raw_theme)
     return {
         "kind": DASHBOARD_KIND,
         "bound_to": bound_to,
@@ -1062,7 +1119,34 @@ def canonical_package_content(content: str) -> str:
     and the version history then read a package the author's whitespace cannot
     perturb.
     """
-    return dump_package(parse_package(content))
+    package = parse_package(content)
+    _require_html_for_a_crewmate(package)
+    return dump_package(package)
+
+
+#: The scope prefix of a crewmate's own page in ``bound_to``.
+_CREWMATE_BINDING_PREFIX = "crewmate:"
+
+
+def _require_html_for_a_crewmate(package: Mapping[str, Any]) -> None:
+    """Refuse a crewmate page whose view is a block layout. Write gate only.
+
+    A crewmate's Dashboard tab frames the package's own ``view.html`` and nothing
+    else (``member_dashboard_fields.render_package_page``), so a block layout would
+    store, apply and then draw as an empty page. Checked on writes and applies,
+    not on reads: a block package already stored still parses, and is told this
+    the next time it is applied.
+    """
+    bound = str(package.get("bound_to") or "")
+    view = package.get("view") or {}
+    if bound.startswith(_CREWMATE_BINDING_PREFIX) and "blocks" in view:
+        raise _refuse(
+            "view",
+            "a crewmate's page is drawn from view.html only, so a view of blocks "
+            'cannot be shown: send view as {"html": "..."} with one '
+            'data-dashboard-field="<name>" element per field the model declares, '
+            "which the host fills as text",
+        )
 
 
 # --------------------------------------------------------------------------- #

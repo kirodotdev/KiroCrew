@@ -127,7 +127,7 @@ describe('RemoteCrewPanel refused plugin row', () => {
     }))
 
     // The diagnosis: translated from the code, not the check's English words.
-    expect(notice).toHaveTextContent(/it, or a folder above it, belongs to another account \(user ID 1501, which has no name on the computer that runs .+\)\. .+ runs only programs owned by its own account or by the system administrator account \(root\)\./)
+    expect(notice).toHaveTextContent(/it, or a folder above it, belongs to another user account \(user ID 1501, which has no name on the computer that runs .+\)\. .+ runs only programs owned by its own account or by the system administrator account \(root\)\./)
     // The check's own words are the notice's smaller monospace second line,
     // and the hand-off carries them (see the report test below).
     const raw = within(notice).getByText(reason)
@@ -162,7 +162,7 @@ describe('RemoteCrewPanel refused plugin row', () => {
       session_manager_plugin_refused_owner: 'alex',
       session_manager_plugin_refused_owner_uid: 502,
     }))
-    expect(notice).toHaveTextContent(/it, or a folder above it, belongs to another account \(alex, user ID 502\)\./)
+    expect(notice).toHaveTextContent(/it, or a folder above it, belongs to another user account \(alex, user ID 502\)\./)
   })
 
   it('falls back to the check’s English reason for a kind it has no words for', async () => {
@@ -228,7 +228,7 @@ describe('pluginRefusalCopy', () => {
     ['root_gateway', /^Start .+ from a regular account instead of root, then re-check\.$/],
     ['strict_policy', /^Install it where only root can change the file and its folders, at a path with no symbolic links, then re-check\./],
     ['world_writable', /^Fix the file’s ownership or permissions, then re-check\./],
-    ['other_owner', /^Fix the file’s ownership or permissions, then re-check\./],
+    ['other_owner', /^Install a copy with AWS’s own installer, then re-check\. .+ runs that copy only if it and every folder above it belong to root or to the account that runs .+\. If a folder such as \/usr\/local\/bin belongs to the other account, an administrator must make root its owner first\. The guide shows how\.$/],
     ['', /^Fix the file’s ownership or permissions, then re-check\./],
   ])('gives the %s refusal a next step that can clear it', (code, step) => {
     const copy = pluginRefusalCopy(refused({ ...base, session_manager_plugin_refused_code: code, session_manager_plugin_refused_owner_uid: 7 }))
@@ -287,13 +287,16 @@ describe('RemoteCrewPanel refused AWS CLI', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
     const notice = (await screen.findByText(/^Your AWS credentials were not checked\. Found at \/opt\/homebrew\/bin\/aws, /)).closest('[role="alert"]') as HTMLElement
-    expect(notice).toHaveTextContent(/belongs to another account \(workbrew, user ID 502\)/)
+    expect(notice).toHaveTextContent(/belongs to another user account \(workbrew, user ID 502\)/)
     expect(within(notice).getByText('executable is owned by another user (uid 502)')).toBeInTheDocument()
     const row = notice.closest('li') as HTMLElement
     // No install link, no helper advice and no command: none clears this refusal.
     expect(row).not.toHaveTextContent(/not found|install it first|credential_process/)
     expect(within(row).queryByRole('button', { name: /Copy command/i })).toBeNull()
-    const next = within(row).getByText(/^Fix the file’s ownership or permissions, then re-check\./)
+    // Not the ownership step: making another account's file trusted is the risk.
+    const next = within(row).getByText(/^Install a copy with AWS’s own installer, then re-check\./)
+    expect(row).not.toHaveTextContent(/Fix the file’s ownership or permissions/)
+    expect(next).toHaveTextContent(/If a folder such as \/usr\/local\/bin belongs to the other account/)
     expect(notice.contains(next)).toBe(false)
     expect(within(row).getByRole('link', { name: 'Open the troubleshooting steps in the Remote Crew on EC2 guide' }))
       .toHaveAttribute('href', REMOTE_CREW_PREFLIGHT_GUIDE_URL)

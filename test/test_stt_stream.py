@@ -50,8 +50,11 @@ class TestGuards:
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get("/api/ws/stt")
-            assert resp.status == 503
+            ws = await client.ws_connect("/api/ws/stt")
+            frame = await _recv_json(ws)
+            assert frame["type"] == "error"
+            assert frame["code"] == "stt_streaming_disabled"
+            await ws.close()
 
     @pytest.mark.asyncio
     async def test_rejects_a_provider_that_cannot_stream(self, monkeypatch):
@@ -71,8 +74,11 @@ class TestGuards:
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get("/api/ws/stt")
-            assert resp.status == 503
+            ws = await client.ws_connect("/api/ws/stt")
+            frame = await _recv_json(ws)
+            assert frame["type"] == "error"
+            assert frame["code"] == "stt_streaming_disabled"
+            await ws.close()
 
     def test_the_default_provider_can_stream(self):
         """Whatever ships as the default must be admitted by this endpoint.
@@ -94,8 +100,11 @@ class TestGuards:
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get("/api/ws/stt")
-            assert resp.status == 503
+            ws = await client.ws_connect("/api/ws/stt")
+            frame = await _recv_json(ws)
+            assert frame["type"] == "error"
+            assert frame["code"] == "stt_streaming_disabled"
+            await ws.close()
 
     @pytest.mark.asyncio
     async def test_rejects_bad_origin(self, monkeypatch):
@@ -143,8 +152,11 @@ class TestGuards:
         fake_sel = MagicMock()
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", lambda: fake_sel)
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get("/api/ws/stt")
-            assert resp.status == 503
+            ws = await client.ws_connect("/api/ws/stt")
+            frame = await _recv_json(ws)
+            assert frame["type"] == "error"
+            assert frame["code"] == "stt_streaming_disabled"
+            await ws.close()
         fake_sel.log_api_access.assert_any_call(
             caller=ANY,
             operation="stt_stream_rejected",

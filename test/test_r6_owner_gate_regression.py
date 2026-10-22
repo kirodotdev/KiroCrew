@@ -620,7 +620,9 @@ async def test_no_other_gated_route_belongs_to_the_strict_internal_set() -> None
 
     from kiro_crew.dashboard import server as server_mod
 
-    with open(server_mod.__file__, encoding="utf-8") as fh:
+    with open(
+        Path(server_mod.__file__).parent / "server_internal_paths.py", encoding="utf-8"
+    ) as fh:
         source = fh.read()
     start = source.index("_STRICT_INTERNAL_API_PATHS = frozenset(")
     end = source.index("\n)\n", start)

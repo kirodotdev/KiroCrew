@@ -136,6 +136,14 @@ _ANSWERS: dict[str, str] = {
         "Every workstream this crewmate is running: each board's goal and counts, each "
         "task's result, and what each task cost its own worker session"
     ),
+    "goal": (
+        "This crewmate's goal record as the gateway last recorded it: its goals, each "
+        "milestone's target and latest reading, whether it is met, and the counts"
+    ),
+    "waiting": (
+        "What this crewmate waits on the person for: its open questions and the cards "
+        "still waiting on a button, newest first, with the count"
+    ),
     "worktree": (
         "The shape of a fleet: every work board the tree reaches, which board each one "
         "hangs under, and which boards are its roots"

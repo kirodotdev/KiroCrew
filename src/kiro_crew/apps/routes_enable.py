@@ -330,7 +330,8 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         # A re-enable repeats every step but the Python hooks: the flag does not prove
         # onEnable ran (a file-only CLI enable skips it), while hook_reconcile loads hooks.
         was_enabled = app_enabled_state(name) is True
-        result = enable_app(
+        result = await asyncio.to_thread(
+            enable_app,
             name,
             session_approval_consent=session_approval_consent,
             grants_consent=grants_consent,
@@ -414,7 +415,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                         subprocess_executor(), stop_app_backend, name
                     )
                     await _deregister_app_off_loop(name)
-                disable_app(name)
+                await asyncio.to_thread(disable_app, name)
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_enable",
@@ -576,7 +577,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         for note in (*teardown.warnings, *teardown.failures):
             warnings.append(_redact_warning(note))
 
-        result = disable_app(name)
+        result = await asyncio.to_thread(disable_app, name)
         if not result.ok:
             sel().log_api_access(
                 caller="dashboard",

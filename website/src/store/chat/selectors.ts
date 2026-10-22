@@ -30,6 +30,9 @@ export const selectSlotTurnFromWake = (state: RootState, slot: string): boolean 
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (!m.content) continue
+    // A wake STEERED into a running turn (`meta.steer`) opened nothing: the
+    // turn is still whoever's row is above it.
+    if (m.role === 'nudge' && m.meta?.steer) continue
     if (m.role === 'nudge' || m.role === 'subagent') return true
     if (m.role === 'user') return false
     if (m.role === 'inject' && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return false

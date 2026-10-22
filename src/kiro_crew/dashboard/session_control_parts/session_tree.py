@@ -11,7 +11,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_fork import (
     _FORK_DIRECTION_HEAD,
     ForkResult,
@@ -369,21 +368,17 @@ async def fork_session(
         audit_operation="session_control.fork",
         stamp=_stamp,
         recheck=_recheck,
+        # Like agent ``session_create``: un-hide only a folder the agent named.
+        # An inherited folder the user hid stays hidden; the sidebar still
+        # draws it while it holds the active session.
+        reveal_folder=bool(folder_id),
     )
     if not isinstance(result, ForkResult):
         raise _fork_refusal(result)
     child = result.slot
 
-    if folder_id:
-        try:
-            await _unhide_folder(state, folder_id)
-        except Exception:
-            logger.warning(
-                "fork_session: filing committed for %s but un-hiding folder %s failed",
-                child.key,
-                folder_id,
-                exc_info=True,
-            )
+    # ``fork_slot`` has already un-hidden a ``folder_id`` named here, before
+    # its own push.
     state.push_slots_update()
     lineage_recorded = await _record_spawn(caller_key, child)
     _audit(

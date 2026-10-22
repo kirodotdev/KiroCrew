@@ -488,7 +488,7 @@ class CodexHarness(MembershipHarness):
         instead, and what it does with it is the fact this policy records.
 
         **What ``session/close`` does, measured.** The adapter drops the session from
-        its local map and unsubscribes the Codex thread. Captured live against
+        its local map and unsubscribes the Codex thread. Measured on
         codex-acp 1.11.0, with ``session/set_config_option`` on the same sessionId as
         the liveness oracle:
 

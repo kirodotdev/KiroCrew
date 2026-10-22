@@ -7,6 +7,7 @@ import { sseSlotTitle } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { generateSlotTitle } from '../../hooks/slotTitleGeneration'
 import { errMessage } from '../../utils/thunkError'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { i18nT } from '../../i18n/t'
 import type { AppDispatch, RootState } from '../../store'
 import type { Store } from '@reduxjs/toolkit'
@@ -222,7 +223,8 @@ export function useSessionAutoTitle({ dispatch, store }: { dispatch: AppDispatch
     if (!run) return
     setAutoTitleError('')
     run.catch(e => {
-      const title = store.getState().dashboard.slots.find(s => s.key === key)?.title || key
+      // "Untitled session" for an untitled slot, never its key (#23059).
+      const title = sessionDisplayTitle({ key, title: store.getState().dashboard.slots.find(s => s.key === key)?.title })
       const reason = errMessage(e) || i18nT('pages.chatPage.unknown_error')
       setAutoTitleError(`${title}: ${reason}`)
     })

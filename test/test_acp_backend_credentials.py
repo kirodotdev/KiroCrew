@@ -26,6 +26,7 @@ import os
 import pytest
 
 from kiro_crew import security
+from kiro_crew.agent_sdk import native_allow_stores
 from kiro_crew.security import _SENSITIVE_HOME_DIRS, is_sensitive_path
 
 #: leaf, the env vars that move it, and the spelling it takes under each of them.
@@ -179,7 +180,13 @@ def test_every_anchored_leaf_is_actually_on_the_floor() -> None:
     ``_SENSITIVE_HOME_DIRS`` while its override anchor stays leaves the table
     describing protection that is not there.
     """
+    # A harness's own permission files are write-tier only (agent_sdk.native_allow_stores).
+    native = {leaf for leaf, _e, _u in native_allow_stores.override_anchored_leaves()}
+    write_tier = set(security.write_protected_home_paths())
     for leaf, _root_fields, _under_root in security._OVERRIDE_ANCHORED_LEAVES:
+        if leaf in native:
+            assert leaf in write_tier, f"{leaf} is override-anchored but not write-protected"
+            continue
         assert (
             leaf in _SENSITIVE_HOME_DIRS
         ), f"{leaf} is override-anchored but absent from _SENSITIVE_HOME_DIRS"

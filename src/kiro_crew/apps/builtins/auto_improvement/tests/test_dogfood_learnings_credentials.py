@@ -304,15 +304,47 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
 
     def test_it_covers_every_write_protected_path(self) -> None:
         """Derived from the platform list, so a newly-protected path cannot drift uncovered."""
+        from kiro_crew.agent_sdk.native_allow_stores import home_leaves
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as P
         from kiro_crew.security import write_protected_home_paths
 
         masked = {Path(t) for t in P._write_protected_targets()}
         home = Path.home()
+        native = set(home_leaves())
         for rel in write_protected_home_paths():
             parent = (home / rel).parent
-            if parent.is_dir():
+            if parent.is_dir() and rel not in native:
                 assert parent in masked, f"{rel} is not covered by any masked directory"
+
+    def test_a_harness_config_dir_is_not_hidden(self, tmp_path, monkeypatch) -> None:
+        """Each harness's own permission files are on the write tier for the file-edit
+        tools only; masking their parents would hide ``~/.claude`` and its siblings from
+        the target repo's pytest, reads included."""
+        from kiro_crew.agent_sdk.native_allow_stores import home_leaves
+        from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as P
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        native_parents = {tmp_path / Path(rel).parent for rel in home_leaves()}
+        for parent in native_parents:
+            parent.mkdir(parents=True, exist_ok=True)
+        crew_dir = tmp_path / ".kiro" / "crew"
+        crew_dir.mkdir(parents=True, exist_ok=True)
+
+        masked = {Path(t) for t in P._write_protected_targets()}
+        assert crew_dir in masked, "Kiro Crew's own config dir must still be hidden"
+        assert not native_parents & masked, sorted(str(p) for p in native_parents & masked)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX home anchoring, as test_native_allow_stores")
+    def test_the_file_edit_guard_still_refuses_harness_files(self, tmp_path, monkeypatch) -> None:
+        """Leaving the harness dirs unmasked here does not loosen the write tier."""
+        from kiro_crew.agent_sdk.native_allow_stores import home_leaves, override_env_vars
+        from kiro_crew.security import is_sensitive_write_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for env in override_env_vars():
+            monkeypatch.delenv(env, raising=False)
+        for rel in home_leaves():
+            assert is_sensitive_write_path(str(tmp_path.joinpath(*Path(rel).parts))), rel
 
     def test_the_run_helper_passes_the_mask_to_the_sandbox(self) -> None:
         """Structural: resolving the targets is useless unless `_run` actually passes them."""

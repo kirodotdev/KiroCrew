@@ -318,8 +318,10 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     TOOL_APPROVAL_TIMEOUT_MIN,
     UPLOAD_MAX_MB_MAX,
     UPLOAD_MAX_MB_MIN,
+    AutocompactPctError,
     ResourceLimitsConfig,
     _limit_int,
+    parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
     DEFAULT_KIRO_TEMPLATE,

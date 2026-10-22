@@ -6,7 +6,7 @@
  * session control.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, act } from '@testing-library/react'
+import { render, act, screen, fireEvent } from '@testing-library/react'
 import { forwardRef, type ReactNode } from 'react'
 
 type Captured = Record<string, (...args: never[]) => unknown> & Record<string, unknown>
@@ -128,5 +128,29 @@ describe('ComposerDockView', () => {
     act(() => { (seen.sessionControl!.onClose as () => void)() })
     expect(setOpenSessionControl).toHaveBeenCalledWith(null)
     expect(refreshSessionControlStatuses).toHaveBeenCalled()
+  })
+
+  it('labels an untitled history suggestion "Untitled session" and resumes its key (#20877)', () => {
+    const handleResumeSession = vi.fn()
+    render(<ComposerDockView {...dockProps({
+      showHistorySuggestions: true,
+      handleResumeSession,
+      historySuggestions: [
+        { key: 'chat-9-1785440411', title: '' },
+        { key: 'chat-8-1785440400', title: 'chat-8-1785440400' },
+        { key: 's-named', title: 'Named work' },
+      ] as never,
+    })} />)
+    const options = screen.getAllByRole('option')
+    // The name line never shows the key; an untitled row's second line does,
+    // so two untitled rows stay distinct.
+    expect(options.map(o => o.querySelector('.text-\\[13px\\]')?.textContent)).toEqual(['Untitled session', 'Untitled session', 'Named work'])
+    expect(options.map(o => o.querySelector('.text-\\[11px\\]')?.textContent ?? null)).toEqual(['chat-9-1785440411', 'chat-8-1785440400', null])
+
+    // Mouse and keyboard resume still send the key and the old `title || key`.
+    fireEvent.mouseDown(options[0])
+    expect(handleResumeSession).toHaveBeenLastCalledWith('chat-9-1785440411', 'chat-9-1785440411')
+    fireEvent.keyDown(options[1], { key: 'Enter' })
+    expect(handleResumeSession).toHaveBeenLastCalledWith('chat-8-1785440400', 'chat-8-1785440400')
   })
 })

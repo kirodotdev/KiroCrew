@@ -36,6 +36,7 @@ from kiro_crew.taskq.adapters.runner import RunnerAdmission
 from kiro_crew.taskq.dependency import dependency_backoff
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskq.waits import WaitLedger
+from kiro_crew.testing.wait import finished
 
 #: The tool a parent blocks in while it waits for its children.
 BLOCKING_TOOL = "@kirocrew-core/spawn_sub_agents"
@@ -141,7 +142,7 @@ async def settle_store_writes(store: TaskStore, rounds: int = 1) -> None:
     """
     for _ in range(rounds):
         await asyncio.sleep(0)
-        await asyncio.wait_for(store.run(_noop), 10)
+        await finished(store.run(_noop), "the store's write barrier", timeout=10)
 
 
 async def settle_depth_emits(mgr: SubagentManager, timeout: float = 5.0) -> None:

@@ -16,6 +16,7 @@ from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.session import SessionManager
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflow_memory import WorkflowScope
 from kiro_crew.workflows.service import WorkflowService
 
@@ -96,7 +97,7 @@ async def test_saved_task_plan_executes_on_real_private_taskrunner(
             session_key="" if author_only else "dashboard:alice",
         )
         assert "task_id" in started, started
-        await asyncio.wait_for(runner._tasks[started["task_id"]], 20)
+        await await_until(runner._tasks[started["task_id"]], timeout=20, what="the workflow task")
         run = runner._runs[started["task_id"]]
         assert run.status == "completed", run.error
         assert providers and any(provider.sent for provider in providers)

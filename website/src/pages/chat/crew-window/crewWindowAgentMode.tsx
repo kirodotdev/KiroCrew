@@ -26,7 +26,7 @@ import { errMessage } from '../../../utils/thunkError'
 import type { RemoteCrewCapabilities } from '../../../types'
 
 /** The agent and approval fields of the peer's slot row. */
-export interface PeerAgentModeFields { agent?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean }
+export interface PeerAgentModeFields { agent?: string; agent_kind?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean }
 
 /** How often the peer's YOLO flag is re-read while the window is
  *  open, so the picker follows YOLO turning on or expiring. */
@@ -103,7 +103,7 @@ export function useCrewWindowAgentMode({ instanceId, slotKey, slotPath, name, sl
 
   const chipProps = {
     agentName: activeAgent,
-    agentLabel: agentOrDefaultLabel(slot?.agent, defaultAgent),
+    agentLabel: agentOrDefaultLabel(slot?.agent, defaultAgent, slot?.agent_kind),
     agentIsInheritedDefault: !slot?.agent && !!defaultAgent,
     agentSource: agents.find(a => a.name === activeAgent)?.source,
     // No roster, no list: an empty menu would read as "this crew has no agents".

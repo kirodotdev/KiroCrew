@@ -128,7 +128,7 @@ describe('refreshDashboardReads: one read at a time per dashboard', () => {
     expect(reads.atlas).toHaveLength(3)
   })
 
-  it('keeps one crewmate\'s reads apart from another\'s', async () => {
+  it('keeps one mate\'s reads apart from another\'s', async () => {
     const { client, reads } = mount('atlas', 'nyx')
     reads.atlas[0]()
     reads.nyx[0]()

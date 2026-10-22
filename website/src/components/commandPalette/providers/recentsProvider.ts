@@ -14,6 +14,7 @@ import type { Result, ResourceProvider } from '../types'
 import { toolStatusLabel, type ToolStatusDetail } from '../../../utils/toolStatusLabel'
 
 import { i18nT } from '../../../i18n/t'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { fmtDateFields, fmtRelative, toDate } from '../../../i18n/format'
 import { slotRecency } from '../slotRecency'
 
@@ -301,7 +302,7 @@ export function useRecentsProvider(): ResourceProvider {
           return {
             id: `recents:cur:${s.key}`,
             providerId: 'recents',
-            title: s.title || s.key,
+            title: sessionDisplayTitle(s),
             subtitle: st.subtitle,
             icon: sessionIcon(),
             score: 0,
@@ -389,7 +390,7 @@ export function useRecentsProvider(): ResourceProvider {
           .map((s) => ({
             id: `recents:old:${s.key}`,
             providerId: 'recents',
-            title: s.title || s.key,
+            title: sessionDisplayTitle(s),
             subtitle: s.preview || undefined,
             icon: sessionIcon(),
             score: 0,

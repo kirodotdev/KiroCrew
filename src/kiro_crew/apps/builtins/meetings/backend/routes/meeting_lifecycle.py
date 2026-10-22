@@ -343,8 +343,24 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
             and not existing.abandoned
         ):
             audit("meetings.start", meeting_id, outcome="denied", error="another meeting is active")
+            # Include the blocking meeting's title and status so the client can
+            # name the blocker in the error toast and say whether it is under review.
+            try:
+                blocking_meta = await asyncio.to_thread(
+                    store.read_meeting_meta, existing.meeting_id, root
+                )
+                blocking_title = str(blocking_meta.get("title", "")) if blocking_meta else ""
+                blocking_status = str(blocking_meta.get("status", "")) if blocking_meta else ""
+            except (OSError, ValueError):
+                blocking_title = ""
+                blocking_status = ""
             return web.json_response(
-                {"error": "another meeting is already active", "code": "meeting_already_active"},
+                {
+                    "error": "another meeting is already active",
+                    "code": "meeting_already_active",
+                    "blocking_meeting_title": blocking_title,
+                    "blocking_meeting_status": blocking_status,
+                },
                 status=409,
             )
 

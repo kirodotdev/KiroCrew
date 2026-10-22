@@ -31,6 +31,7 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.memory import MemoryStore
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import finished
 
 SLOT_NAME = "standards-chat"
 
@@ -79,7 +80,7 @@ def _slot(state, *, folder_id=""):
 async def _turn(state, slot, message="Follow the standards."):
     slot.append("user", message)
     await asyncio.wait_for(chat_runner._run_chat(state, slot, message), 30)
-    await asyncio.wait_for(drain_background_tasks(state), 10)
+    await finished(drain_background_tasks(state), "draining the background tasks", timeout=10)
 
 
 def _passed_dirs(state) -> Any:

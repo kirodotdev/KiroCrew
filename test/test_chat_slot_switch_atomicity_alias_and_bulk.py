@@ -19,6 +19,7 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.chat_handlers import _slot_switch_session_lock
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.testing.wait import finished
 
 _LINKED_KEY = "slack:8442.001"
 
@@ -300,8 +301,9 @@ class TestAliasSlotSwitchSerialization:
                 # Completes WITHOUT the held lock being released. Bounded so a
                 # regression to ONE global switch lock reddens here promptly
                 # instead of hanging: the correct path takes milliseconds.
-                resp = await asyncio.wait_for(
+                resp = await finished(
                     client.post("/api/chat/slots/other/model", json={"model": _MODEL_B}),
+                    "the unrelated slot's model switch",
                     timeout=5,
                 )
                 assert resp.status == 200

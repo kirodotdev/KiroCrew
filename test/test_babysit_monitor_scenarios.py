@@ -78,7 +78,7 @@ def test_babysit_keeps_finite_legacy_path_when_terminal_success_must_report() ->
 
 
 def test_prepare_pr_recipe_covers_its_poll_budget_gated_with_the_judge_off() -> None:
-    skill_path = _BABYSIT_SKILL.parent.parent / "kirocrew-prepare-pr/SKILL.md"
+    skill_path = _BABYSIT_SKILL.parent.parent / "kirocrew-prepare-pr/references/monitor-loop.md"
     skill = skill_path.read_text(encoding="utf-8")
     recipe = next(
         textwrap.dedent(block).strip()

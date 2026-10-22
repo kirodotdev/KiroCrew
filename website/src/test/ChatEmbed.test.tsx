@@ -385,7 +385,7 @@ describe('ChatEmbed', () => {
         fireEvent.click(screen.getByLabelText('Send message'))
       })
 
-      expect(onSend).toHaveBeenCalledWith('hi')
+      expect(onSend).toHaveBeenCalledWith('hi', { sendId: expect.any(String) })
       expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
     })
 

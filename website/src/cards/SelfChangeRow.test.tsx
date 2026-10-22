@@ -72,7 +72,7 @@ describe('reading the row', () => {
 })
 
 describe('the row', () => {
-  it('names the crewmate by its display name and draws the faces for a face change', () => {
+  it('names the mate by its display name and draws the faces for a face change', () => {
     renderRow(row({}))
     const el = screen.getByTestId('self-change-row')
     expect(el).toHaveAttribute('data-self-status', 'applied')
@@ -165,7 +165,7 @@ describe('Undo', () => {
   it('keeps the button on any other failure and shows the message', async () => {
     server.use(
       http.post('/api/members/:slug/self-changes/:id/undo', () =>
-        HttpResponse.json({ error: 'this crewmate was removed', code: 'not_a_crewmate' }, { status: 403 })),
+        HttpResponse.json({ error: 'this mate was removed', code: 'not_a_crewmate' }, { status: 403 })),
     )
     renderRow(row({}))
     fireEvent.click(screen.getByTestId('self-change-undo'))

@@ -29,13 +29,13 @@ beforeEach(() => {
 })
 
 describe('useFirstGreeting', () => {
-  it('asks once the crewmate thread is confirmed', async () => {
+  it('asks once the mate thread is confirmed', async () => {
     renderHook(() => useFirstGreeting('mate', 'member-mate', true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledWith('mate'))
     expect(greet).toHaveBeenCalledTimes(1)
   })
 
-  it('asks for a crewmate the page enabled it for, by that crewmate\'s slug, once', async () => {
+  it('asks for a mate the page enabled it for, by that mate\'s slug, once', async () => {
     const { rerender } = renderHook(({ slot }) => useFirstGreeting('scout', slot, true), {
       wrapper,
       initialProps: { slot: 'member-scout' },

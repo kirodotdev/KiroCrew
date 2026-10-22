@@ -35,6 +35,7 @@ from kiro_crew.slack.sessions_view import (
     _default_session_title,
     sessions_include_ended,
 )
+from kiro_crew.testing.wait import await_until
 
 
 def _write_jsonl(
@@ -1483,7 +1484,7 @@ class TestCollectorEventLoopOffload:
         # This line executing WHILE the collector blocks is only possible if
         # the handler offloaded the collector.
         release.set()
-        await asyncio.wait_for(task, timeout=10)
+        await await_until(task, timeout=10, what="the handler finishing after the release")
 
         assert outcome["released"] is True
         assert outcome["thread"] is not threading.current_thread()

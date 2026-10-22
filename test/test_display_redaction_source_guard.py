@@ -430,6 +430,7 @@ def test_display_battery_never_touches_the_operator_file(monkeypatch: pytest.Mon
         return real()
 
     monkeypatch.setattr(exfil, ALLOWED_MUTABLE_READER, counted)
+    monkeypatch.setattr(chat_utils, ALLOWED_MUTABLE_READER, counted)
     chat_utils._clear_display_redaction_cache()
     consent = (
         "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state="
@@ -439,4 +440,4 @@ def test_display_battery_never_touches_the_operator_file(monkeypatch: pytest.Mon
     )
     for text in (consent, "key AKIAIOSFODNN7EXAMPLE here", "plain prose with no url"):
         chat_utils._redact_for_display(text)
-    assert seen["n"] >= 3, "the cache key and the battery both read the exempt set"
+    assert seen["n"] == 3, "one snapshot read per call feeds both the cache key and the battery"

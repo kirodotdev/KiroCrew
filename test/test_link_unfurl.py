@@ -1130,6 +1130,99 @@ def test_an_ip_literal_records_its_canonical_form_as_the_only_address() -> None:
     assert vetted.ip == "93.184.216.34"
 
 
+def test_allow_any_port_admits_a_public_host_on_a_nonstandard_port() -> None:
+    """A PUBLIC host on a non-web port passes when the caller lifts the port
+    allowlist (the remote MCP probe does; MCP servers use :8443 / :8000 / :3000).
+    Only the port rule is relaxed -- the address is still vetted."""
+    vetted = lu.vet_unfurl_url(
+        "https://mcp.example.com:8443/mcp", resolve=_public, allow_any_port=True
+    )
+    assert vetted.port == 8443
+    assert vetted.addresses == ("93.184.216.34",)
+
+
+def test_the_port_allowlist_still_applies_by_default() -> None:
+    """Without the opt-in, a non-80/443 port is refused, as every other caller
+    (link preview, calendar, WeCom, OAuth discovery) relies on."""
+    with pytest.raises(lu.UnfurlRejected) as exc:
+        lu.vet_unfurl_url("https://mcp.example.com:8443/mcp", resolve=_public)
+    assert exc.value.code == "blocked_url"
+
+
+@pytest.mark.parametrize(
+    "url,answer",
+    [
+        ("http://127.0.0.1:9100/mcp", None),  # loopback literal
+        ("http://[::1]/mcp", None),
+        ("http://10.0.0.5:8000/mcp", None),  # RFC1918 literal
+        ("http://100.64.0.7/mcp", None),  # shared address space (a tailnet)
+        ("http://[fd12:3456::1]/mcp", None),  # ULA other than the metadata endpoint
+        ("http://devbox.internal.example/mcp", "192.168.1.20"),  # private DNS answer
+        ("http://printer.local/mcp", "192.168.1.30"),  # mDNS name
+    ],
+)
+def test_allow_private_admits_loopback_and_private_targets(url: str, answer: str | None) -> None:
+    """The MCP probe's opt-in: a local or LAN target passes, and the resolved
+    addresses still come back for the pin."""
+    vetted = lu.vet_unfurl_url(
+        url, resolve=lambda _h, _p: [answer or "unused"], allow_private=True, allow_any_port=True
+    )
+    assert vetted.addresses
+    if answer:
+        assert vetted.addresses == (answer,)
+
+
+@pytest.mark.parametrize(
+    "url,answer",
+    [
+        ("http://169.254.169.254/latest/meta-data/", None),  # cloud metadata
+        ("http://169.254.170.2/v2/credentials", None),  # container metadata
+        ("http://[fd00:ec2::254]/latest/meta-data/", None),  # IPv6 cloud metadata
+        ("http://[fe80::1]/mcp", None),  # IPv6 link-local
+        ("http://[::ffff:169.254.169.254]/", None),  # IPv4-mapped spelling
+        ("http://[2002:a9fe:a9fe::1]/", None),  # 6to4 spelling
+        ("http://[fd00:ec2::254%0]/", None),  # scoped IPv6 metadata (numeric zone)
+        ("http://[fd00:ec2::254%25eth0]/", None),  # scoped IPv6 metadata (RFC 6874 %25)
+        ("http://[fe80::1%0]/", None),  # scoped IPv6 link-local
+        ("http://2852039166/", None),  # decimal spelling
+        ("http://metadata.example/", "169.254.169.254"),  # a name answering metadata
+        ("http://rebind.example/", "10.0.0.5,169.254.169.254"),  # one bad answer of two
+    ],
+)
+def test_allow_private_still_refuses_link_local_and_metadata(url: str, answer: str | None) -> None:
+    """Only the address rule narrows: link-local and the metadata endpoint are
+    refused by literal, by encoding and by DNS answer, on any port."""
+    with pytest.raises(lu.UnfurlRejected) as exc:
+        lu.vet_unfurl_url(
+            url,
+            resolve=lambda _h, _p: (answer or "93.184.216.34").split(","),
+            allow_private=True,
+            allow_any_port=True,
+        )
+    assert exc.value.code == "blocked_url"
+
+
+def test_allow_private_is_off_by_default() -> None:
+    """Every other caller keeps the public-only rule: loopback and ``.local``
+    are refused without the opt-in."""
+    for url in ("http://127.0.0.1/", "http://printer.local/"):
+        with pytest.raises(lu.UnfurlRejected):
+            lu.vet_unfurl_url(url, resolve=lambda _h, _p: ["192.168.1.30"])
+
+
+def test_allow_any_port_still_refuses_a_non_public_address() -> None:
+    """Lifting the port rule does NOT touch the address rules: an internal
+    target is refused on any port, by literal and by DNS answer alike."""
+    with pytest.raises(lu.UnfurlRejected):
+        lu.vet_unfurl_url("http://169.254.169.254:8443/x", allow_any_port=True)
+    with pytest.raises(lu.UnfurlRejected):
+        lu.vet_unfurl_url(
+            "https://internal.example:8000/mcp",
+            resolve=lambda _h, _p: ["10.0.0.5"],
+            allow_any_port=True,
+        )
+
+
 # --- PinnedResolver: the other half of the vet -------------------------------
 #
 # The vet resolves the host and approves an address; this is what makes the socket

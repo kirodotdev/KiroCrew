@@ -364,7 +364,7 @@ async def send_to_target(
             raise
 
     # Deferred for the same import cycle `stop_target` documents.
-    from kiro_crew.dashboard.chat_runner import _run_chat
+    from kiro_crew.dashboard import session_deliver
 
     caller_key = caller_slot_key(state, caller_session_key)
     # Sanitized on the same grounds as the steer path (``chat_delivery`` sanitizes
@@ -400,14 +400,6 @@ async def send_to_target(
         # an idle slot there is nothing to inject and the queue-or-run arm below is
         # the whole delivery.
         #
-        # Deferred import for the cycle `_run_chat` above documents.
-        from kiro_crew.dashboard.chat_delivery import (
-            STEER_REQUEUED,
-            STEER_STEERED,
-            STEER_UNAVAILABLE,
-            steer_into_running_turn,
-        )
-
         # Captured BEFORE the RPC and synchronous with the gate above -- no await
         # separates `authorize_target` from here -- so this IS the containment the
         # authorization cleared, recorded in the drain's own vocabulary so the
@@ -441,8 +433,8 @@ async def send_to_target(
         # surface. The requeue reads it to decide `directive_user_origin`, and a
         # peer must not inherit the composer's exemption from the LINKED drop.
         async def _steer_delivery() -> str:
-            return await steer_into_running_turn(
-                state, slot, prompt, user_origin=False, admission=admission
+            return await session_deliver.deliver(
+                state, slot, prompt, session_deliver.peer(steer=True), admission=admission
             )
 
         delivery_progress.steer_await_entered = True
@@ -500,11 +492,12 @@ async def send_to_target(
                     slot.key,
                 )
                 return
-            slot.enqueue_or_run_prompt(
-                prompt,
-                _run_chat,
+            await session_deliver.deliver(
                 state,
-                extra_meta=send_origin_meta(state, caller_key),
+                slot,
+                prompt,
+                session_deliver.peer(steer=False),
+                queue_meta=send_origin_meta(state, caller_key),
             )
             logger.info(
                 "session_send: orphaned steer to %s came back unavailable and was "
@@ -519,16 +512,16 @@ async def send_to_target(
             _retain_orphaned_steer_delivery(
                 _steer_task,
                 slot.key,
-                unavailable_outcome=STEER_UNAVAILABLE,
+                unavailable_outcome=session_deliver.NOT_DELIVERED,
                 on_unavailable=_queue_after_orphaned_unavailable,
             )
             raise
-        steered = outcome == STEER_STEERED
+        steered = outcome == session_deliver.DELIVERED_STEERED
         # The turn ended while the steer RPC was suspended and its teardown moved
         # the text onto the queue: it WILL run, and taking the queue arm below
         # would deliver it a second time. Reported as a queued delivery, which is
         # what it now is.
-        requeued = outcome == STEER_REQUEUED
+        requeued = outcome == session_deliver.DELIVERED_REQUEUED
         if requeued and state._slots.get(slot.key) is not slot:
             # The teardown queued this text on THIS slot object, and the key has
             # since stopped resolving to it -- the target was closed and recreated
@@ -674,7 +667,7 @@ async def send_to_target(
         # and a requeued steer waits for the next like any queued message.
         started = False
     else:
-        # `_run_chat` is passed straight through, NOT wrapped in
+        # `deliver` passes `_run_chat` straight through, NOT wrapped in
         # `state.run_background_turn`: that cap is structurally unreachable here.
         # `run_background_turn` returns the coroutine untouched for an attended slot
         # (`state_parts/dashboard_services.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
@@ -683,17 +676,21 @@ async def send_to_target(
         # function can reach is ever unattended, and a wrapper would only add a
         # never-taken timeout arm. The composer's own queued path does the same
         # (`server.py` passes `_run_chat` directly).
-        started = bool(
-            slot.enqueue_or_run_prompt(
-                prompt,
-                _run_chat,
+        # No suspension inside: the non-steer peer arm is the synchronous
+        # queue-or-run call, so no cancellation can enter this await.
+        started = (
+            await session_deliver.deliver(
                 state,
+                slot,
+                prompt,
+                session_deliver.peer(steer=False),
                 # Only the QUEUE arm keeps it (the run arm has no entry): a
                 # delivery that waits is the one a later drain can drop, and this
                 # stamp is what lets that drop be reported back to us instead of
                 # ending at the target's own transcript.
-                extra_meta=send_origin_meta(state, caller_key),
+                queue_meta=send_origin_meta(state, caller_key),
             )
+            == session_deliver.DELIVERED_TURN
         )
         if started:
             _start_auto_tag(state, slot)

@@ -85,7 +85,7 @@ beforeEach(() => {
 })
 
 describe('CrewProfileSettings permission', () => {
-  it('reads Trust when the crewmate never chose a permission', () => {
+  it('reads Trust when the mate never chose a permission', () => {
     setup(member())
     expect(screen.getByTestId('value-Permissions')).toHaveTextContent('Trust')
   })
@@ -102,7 +102,7 @@ describe('CrewProfileSettings permission', () => {
     expect(isTrustRootTarget(screen.getByTestId('select-Permissions'), 'Permissions')).toBe(true)
   })
 
-  it('says under the picker what the chosen mode lets the crewmate do', () => {
+  it('says under the picker what the chosen mode lets the mate do', () => {
     setup(member())
     expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent('oncall runs tools without asking you first, in every chat with it. Pick Normal to approve each step.')
   })
@@ -116,7 +116,7 @@ describe('CrewProfileSettings permission', () => {
     expect(screen.getByTestId('value-Permissions')).toHaveTextContent('Normal')
   })
 
-  it('writes only the record when the crewmate has no thread yet', async () => {
+  it('writes only the record when the mate has no thread yet', async () => {
     setup(member(), null)
     pick('Permissions', 'Reads')
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { approval_mode: 'trust_reads', expected_approval_mode: '' }))
@@ -146,7 +146,7 @@ describe('CrewProfileSettings permission', () => {
   it('saves nothing while the thread is still being confirmed', async () => {
     setup(member(), null, true)
     expect(screen.getByTestId('crew-profile-settings').querySelector('fieldset')).toBeDisabled()
-    expect(screen.getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this crewmate is open.')
+    expect(screen.getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this mate is open.')
     pick('Permissions', 'Normal')
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
     expect(screen.getByTestId('value-Permissions')).toHaveTextContent('Trust')
@@ -227,13 +227,13 @@ describe('CrewProfileSettings model and effort', () => {
  * run on. '' = same as the crewmate; 'auto' is a REAL pin here (cheap workers
  * under a costly conductor). It writes the record only -- no thread follows. */
 describe('CrewProfileSettings worker model and effort', () => {
-  it('reads Same as the crewmate when nothing is set, and names what that runs', async () => {
+  it('reads Same as the mate when nothing is set, and names what that runs', async () => {
     setup(member({ model: 'claude-opus-5' }))
     expect(screen.getByTestId('value-Worker model')).toHaveTextContent('Same as oncall')
     expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent('Workers are the extra chats oncall opens to split up a task. They run on claude-opus-5, the same as oncall.')
   })
 
-  it('names the resolved model when the crewmate itself inherits', async () => {
+  it('names the resolved model when the mate itself inherits', async () => {
     setup(member())
     await waitFor(() => expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent('They run on claude-opus-5, the same as oncall.'))
   })
@@ -292,7 +292,7 @@ describe('CrewProfileSettings worker model and effort', () => {
     expect(screen.getByTestId('crew-profile-settings')).not.toHaveTextContent('the same as oncall.')
   })
 
-  it('names the crewmate\'s own level the empty effort resolves to while the workers run its model', () => {
+  it('names the mate\'s own level the empty effort resolves to while the workers run its model', () => {
     setup(member({ model: 'claude-opus-5', reasoning_effort: 'high' }))
     expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent('Reasoning effort High, the same as oncall.')
   })
@@ -340,7 +340,7 @@ describe('CrewProfileSettings dashboard lock', () => {
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
   })
 
-  it('flips the lock through the owner route, then re-reads every dashboard query for the crewmate', async () => {
+  it('flips the lock through the owner route, then re-reads every dashboard query for the mate', async () => {
     setup(member())
     const sw = await screen.findByRole('switch', { name: SWITCH })
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))

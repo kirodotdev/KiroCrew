@@ -171,13 +171,13 @@ describe('ui.find: point at a control by its name', () => {
   })
 
   it('says there is nothing to act on, not "open a menu", for a control drawn only with something to clear', async () => {
-    const g = findGuide({ label: 'Clear', location_id: 'notifications.page-clear-all' })
+    const g = findGuide({ label: 'Clear all', location_id: 'notifications.page-clear-all' })
     pending = [g]
     walk(g)
     renderGuide('/chat/slot-A', <p>No notifications</p>)
     fireEvent.click(await screen.findByTestId('guide-start'))
     expect(await screen.findByTestId('guide-find-nothing-yet', {}, { timeout: 5000 })).toBeTruthy()
-    expect(screen.getByText(L('find_nothing_yet', { label: 'Clear' }))).toBeTruthy()
+    expect(screen.getByText(L('find_nothing_yet', { label: 'Clear all' }))).toBeTruthy()
     expect(screen.queryByTestId('guide-find-not-found')).toBeNull()
   })
 

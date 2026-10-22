@@ -22,7 +22,7 @@ organized for someone browsing the repository.
 | Doc | Covers |
 |---|---|
 | [agents.md](agents.md) | Switching between specialized agents per conversation, thread, or cron job. |
-| [crew-members.md](crew-members.md) | Named crewmates, their standing DM threads, and routing work to one with `select_crew` / `route_crew`. |
+| [crew-members.md](crew-members.md) | Named mates, their standing DM threads, and routing work to one with `select_crew` / `route_crew`. |
 | [remote-crew.md](remote-crew.md) | Reaching other machines running their own Kiro Crew gateway: the transports, the pane switcher, sessions that run on one, and federated history search. Formerly [remote-instances.md](remote-instances.md), which now points here. |
 | [agent-spec-fields.md](agent-spec-fields.md) | Every agent-spec field, what it does, and how that differs per ACP backend. |
 | [skills.md](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows. |

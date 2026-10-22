@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from kiro_crew.config.sections import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
 from kiro_crew.constants import (
     CHANNEL_OWNER_DM_NAMESPACES,
     MAX_SHORT_STRING,
@@ -354,6 +355,17 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # crewmate's", which an empty string would also read as, so the
         # schema leaves absence to the handler rather than spelling it.
         FieldSpec("reasoning_effort", str, required=False, max_len=32),
+        # The new session's own compaction threshold, the override the context
+        # meter's "Auto-compact at" slider sets. This range check is the early
+        # refusal; create_session repeats it with the NaN guard, because the HTTP
+        # route can be reached without this schema.
+        FieldSpec(
+            "autocompact_pct",
+            (int, float),
+            required=False,
+            min_val=AUTOCOMPACT_PCT_MIN,
+            max_val=AUTOCOMPACT_PCT_MAX,
+        ),
     ],
 )
 

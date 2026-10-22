@@ -30,6 +30,7 @@ from apps_backend_coverage_helpers import (
 )
 
 import kiro_crew.apps.backend as bmod
+from kiro_crew.testing.wait import wait_until
 
 # ---------------------------------------------------------------------------
 # Node / npm binary resolution
@@ -410,16 +411,15 @@ class TestInterpreterResolution:
         watchdog truncates it back to empty, so a flooding child cannot fill
         the host. Drive the watchdog directly against a real temp file."""
         import tempfile as _tf
-        import time as _time
 
         with _tf.TemporaryFile() as f:
             with bmod._capped_spill(f, hard_cap_bytes=4096, poll_secs=0.05) as tripped:
                 f.write(b"x" * (4096 * 4))
                 f.flush()
-                # flake-ok: a bounded 3 s poll for the spill watchdog's trip event, moved verbatim; tracked for a de-flake pass
-                deadline = _time.monotonic() + 3
-                while _time.monotonic() < deadline and not tripped.is_set():
-                    _time.sleep(0.05)
+                wait_until(
+                    tripped.is_set,
+                    describe=lambda: "watchdog must trip on a spill over the cap",
+                )
             assert tripped.is_set(), "watchdog must trip on a spill over the cap"
             import os as _os
 

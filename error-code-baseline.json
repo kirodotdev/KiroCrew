@@ -12,7 +12,7 @@
       "missing_code": 41,
       "opaque_body": 3
     },
-    "apps/builtins/code_review_sage/backend/routes.py": {
+    "apps/builtins/code_review_sage/backend/routes_parts/namespaces.py": {
       "dynamic_status": 2
     },
     "apps/builtins/dev_fleet/http_api.py": {

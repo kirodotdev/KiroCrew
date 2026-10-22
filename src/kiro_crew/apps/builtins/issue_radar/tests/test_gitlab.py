@@ -22,8 +22,10 @@ loud:
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -874,6 +876,54 @@ class TestMrTimelineNotesFetch(unittest.TestCase):
         self.assertNotIn("comment", kinds)
 
 
+class TestTimelineLabelColours(unittest.TestCase):
+    """The timeline reads the project's label set only when an event lacks a colour.
+
+    A project with over a hundred labels pays two requests per full read of the
+    set, a large share of the burst that trips a GitLab rate limit, and each
+    label event already carries its label's colour.
+    """
+
+    LABELS = [{"name": "bug", "color": "#ff0000", "description": ""}]
+
+    def setUp(self):
+        self.calls: list[str] = []
+
+    def _fake_api(self, label_events=()):
+        def fake(path, **kwargs):
+            if kwargs.get("method", "GET") == "GET":
+                self.calls.append(path)
+            endpoint = path.split("?")[0]
+            if endpoint.endswith("/labels"):
+                return list(self.LABELS)
+            if endpoint.endswith("/resource_label_events"):
+                return list(label_events)
+            if endpoint.endswith("/issues/5"):
+                return {"iid": 5, "title": "t", "state": "opened", "labels": ["bug"]}
+            return []
+
+        return fake
+
+    def _label_reads(self) -> int:
+        return sum(1 for p in self.calls if p.split("?")[0].endswith("/labels"))
+
+    def test_timeline_skips_the_label_set_when_events_carry_colours(self):
+        event = {"action": "add", "label": {"name": "bug", "color": "#ff0000"}, "user": {"username": "a"}}
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=self._fake_api([event])):
+            events = gitlab_client.list_pr_timeline("g", "p", 7, host="gitlab.com")
+        self.assertEqual(self._label_reads(), 0, self.calls)
+        labeled = [e for e in events if e["kind"] == "labeled"]
+        self.assertEqual(labeled[0]["label"]["color"], "ff0000")
+
+    def test_timeline_reads_the_label_set_for_a_colourless_event(self):
+        event = {"action": "add", "label": {"name": "bug"}, "user": {"username": "a"}}
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=self._fake_api([event])):
+            events = gitlab_client.list_issue_timeline("g", "p", 5, host="gitlab.com")
+        self.assertEqual(self._label_reads(), 1, self.calls)
+        labeled = [e for e in events if e["kind"] == "labeled"]
+        self.assertEqual(labeled[0]["label"]["color"], "ff0000")
+
+
 class TestInvestigationNamespace(unittest.TestCase):
     """Investigation records must not collide across GitLab's two sequences.
 
@@ -1017,6 +1067,98 @@ class TestListPagination(unittest.TestCase):
             with self.subTest(fn=fn.__name__):
                 path = self._path_for(lambda: fn("g", "p", host="gitlab.com"))
                 self.assertNotIn("per_page", path)
+
+
+class TestRateLimitBackoff(unittest.TestCase):
+    """A GitLab HTTP 429 is waited out, not surfaced on the first refusal.
+
+    Opening a busy project fans out into dozens of ``glab api`` calls, and a
+    self-managed instance's throttle trips on the burst; ``glab`` itself exits on
+    the first 429. Failing there blanks a whole pane (the activity timeline) for
+    a window that clears within seconds.
+    """
+
+    THROTTLED = subprocess.CompletedProcess([], 1, stdout="", stderr="glab: HTTP 429\n")
+
+    def _ok(self, rows):
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps(rows), stderr="")
+
+    def _call(self, responses, *, paginate=False):
+        targets: list[str] = []
+        waits: list[float] = []
+        queue = list(responses)
+
+        def run(argv, **_kwargs):
+            targets.append(argv[2])
+            return queue.pop(0)
+
+        result = gitlab_transport.glab_api(
+            "projects/g%2Fp/merge_requests/1/notes",
+            host="gitlab.com",
+            timeout=5.0,
+            paginate=paginate,
+            method="GET",
+            body=None,
+            run=run,
+            page_size=2,
+            max_pages=10,
+            stderr_tail=lambda proc: (proc.stderr or "").strip(),
+            raise_if_auth_failure=lambda _tail, _host: None,
+            is_forbidden=gitlab_transport.is_forbidden,
+            sleep=waits.append,
+        )
+        return result, targets, waits
+
+    def test_throttled_request_is_resent_after_backing_off(self):
+        result, targets, waits = self._call([self.THROTTLED, self.THROTTLED, self._ok({"id": 1})])
+        self.assertEqual(result, {"id": 1})
+        self.assertEqual(len(targets), 3)
+        self.assertEqual(waits, [1.0, 2.0])
+
+    def test_throttled_page_is_resent_not_skipped(self):
+        result, targets, waits = self._call(
+            [self._ok([1, 2]), self.THROTTLED, self._ok([3])], paginate=True
+        )
+        self.assertEqual(result, [1, 2, 3])
+        self.assertEqual(
+            [re.findall(r"[?&]page=(\d+)", t) for t in targets], [["1"], ["2"], ["2"]]
+        )
+        self.assertEqual(waits, [1.0])
+
+    def test_pages_share_one_retry_budget(self):
+        result, _targets, waits = self._call(
+            [self.THROTTLED, self._ok([1, 2]), self.THROTTLED, self._ok([3])],
+            paginate=True,
+        )
+        self.assertEqual(result, [1, 2, 3])
+        self.assertEqual(waits, [1.0, 2.0])
+
+    def test_a_long_list_waits_at_most_the_budget_in_total(self):
+        with self.assertRaises(ProviderCliError) as ctx:
+            self._call(
+                [self.THROTTLED, self._ok([1, 2]), self.THROTTLED, self.THROTTLED, self.THROTTLED],
+                paginate=True,
+            )
+        self.assertIn("HTTP 429", str(ctx.exception))
+
+    def test_persistent_throttle_fails_with_an_actionable_message(self):
+        with self.assertRaises(ProviderCliError) as ctx:
+            self._call([self.THROTTLED] * 4)
+        message = str(ctx.exception)
+        self.assertIn("HTTP 429", message)
+        self.assertIn("try again in a minute", message)
+
+    def test_other_failures_are_not_retried(self):
+        # One queued response: a retry would pop an empty queue and raise
+        # IndexError instead of the ProviderCliError asserted here.
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="glab: HTTP 500\n")
+        with self.assertRaises(ProviderCliError):
+            self._call([failed])
+
+    def test_rate_limit_classification(self):
+        self.assertTrue(gitlab_transport.is_rate_limited("glab: HTTP 429"))
+        self.assertTrue(gitlab_transport.is_rate_limited("429 Too Many Requests"))
+        self.assertFalse(gitlab_transport.is_rate_limited("glab: HTTP 500"))
 
 
 class TestMergeRequestSearchState(unittest.TestCase):

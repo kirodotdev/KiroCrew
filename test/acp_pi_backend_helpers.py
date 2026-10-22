@@ -83,7 +83,7 @@ class _PiLaunchRig:
     CLEANUP = "/opt/run/kirocrew_sandbox_readback"
     MODE = "standard"
 
-    def __init__(self, monkeypatch, tmp_path, *, routing=("", "")):
+    def __init__(self, monkeypatch, tmp_path, *, routing=("", ""), node_choice=None):
         self.events: list[tuple] = []
         self.loop_thread: int | None = None
         self.plan = None
@@ -107,6 +107,10 @@ class _PiLaunchRig:
             _record("version", pi_bin)
             return ""
 
+        def _node_choice(session, pi_bin, wrap):
+            _record("node", pi_bin, wrap)
+            return node_choice or pi_mod.PiNodeChoice()
+
         async def _preflight(preflight, backend, mode):
             _record("preflight", preflight, backend, mode)
             return self.HIDDEN
@@ -115,8 +119,8 @@ class _PiLaunchRig:
             _record("seal")
             return self.SEALED
 
-        def _launcher(pi_bin, extension_path):
-            _record("launcher", pi_bin, extension_path)
+        def _launcher(pi_bin, extension_path, program=()):
+            _record("launcher", pi_bin, extension_path, *((program,) if program else ()))
             return self.LAUNCHER
 
         async def _wrap(argv, **kwargs):
@@ -133,6 +137,7 @@ class _PiLaunchRig:
         monkeypatch.setattr(pi_mod, "_resolve_pi_acp_bin", _resolve_pi_acp_bin)
         monkeypatch.setattr(pi_mod, "_resolve_pi_bin", _resolve_pi_bin)
         monkeypatch.setattr(pi_mod, "_pi_version_issue", _version_issue)
+        monkeypatch.setattr(pi_mod, "_pi_node_choice", _node_choice)
         monkeypatch.setattr(launch_mod, "_run_preflight_bounded", _preflight)
         monkeypatch.setattr(pi_mod, "_seal_pi_gate_extension", _seal)
         monkeypatch.setattr(pi_mod, "_ensure_pi_gate_launcher", _launcher)

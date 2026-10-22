@@ -12,6 +12,7 @@ from kiro_crew.dashboard.chat_utils import (
     STEER_INTENT_META,
     SUBAGENT_COMPLETION_KIND,
 )
+from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -206,6 +207,7 @@ def _settle_consumed_steers(
         responsive_chat.forget_steer(slot, settled_msg)
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_act_now.discard(settled_msg)
+        slot._steer_automation.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
 
@@ -298,6 +300,12 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         if steer_msg in _act_now:
             _act_now.discard(steer_msg)
             _meta[STEER_INTENT_META] = True
+        # An automation steer (a work-ledger wake) keeps its origin on the entry,
+        # so the drain writes it as a nudge row, alone, and never merges it into
+        # the person's own queued text.
+        _nudge = getattr(slot, "_steer_automation", {}).pop(steer_msg, None)
+        if _nudge is not None:
+            _meta[AUTOMATION_STEER_META] = _nudge
         # The decision receipt rides the entry for the same reason the two ids do:
         # the drain unions a consumed entry's meta onto the row it writes, so this is
         # the only writer a requeued steer has. Both outcomes a `message.steer`

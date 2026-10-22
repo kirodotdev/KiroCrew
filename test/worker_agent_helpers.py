@@ -45,7 +45,7 @@ def _package_sources() -> Iterator[tuple[Path, str]]:
     gates' rule-shaped assertions only ever look at one file at a time anyway. The
     ``agent.py`` exclusion stays in the gates' own helper rather than in the shared
     ``source_corpus`` one, because which files a gate polices is that gate's contract
-    (and ``agent.py``, defining every name these gates hunt for, would match them all).
+    (and ``agent.py``, binding every name these gates hunt for, would match them all).
     """
     for path, text in iter_source_texts():
         if path.name != "agent.py":

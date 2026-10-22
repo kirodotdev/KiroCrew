@@ -87,6 +87,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_deepseek_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_defer_opencode_shell_permission": ("function", True, "7c70a056d5ef", "client_turn"),
     "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "client_permissions"),
+    "_delegate_launch_failure": ("function", True, "35f56320d7d1", "client_lifecycle"),
     "_deny_zero_tools": ("function", True, "2dfacffa6279", "client_permissions"),
     "_discard_bound_workspace": ("function", True, "b60c5fea256e", "client_lifecycle"),
     "_discard_claude_settings_seed": ("function", True, "b60c5fea256e", "client_seed_ownership"),

@@ -53,6 +53,7 @@ from kiro_crew.subagent_persistence import (
     settle_delivered_batch,
     write_tombstone,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestLiveStateWins:
@@ -1196,12 +1197,12 @@ class TestADetachedSettleBatchSurvivesCancellation:
             # flake-ok: the worker thread sets this event as its first statement, so the wait returns; pre-existing, moved verbatim
             await started.wait()
             task.cancel()
-            # The waiter is gone; the worker is not, so give it room to finish.
-            for _ in range(200):
-                if all((agent_root / a / "tombstone.json").exists() for a in ids):
-                    break
-                # flake-ok: a bounded poll (200 x 10 ms) for the tombstones the worker writes, not a barrier; pre-existing, moved verbatim
-                await asyncio.sleep(0.01)
+            # The waiter is gone; the worker is not, so wait for it to finish.
+            await async_wait_until(
+                lambda: all((agent_root / a / "tombstone.json").exists() for a in ids),
+                off_loop=True,
+                describe=lambda: f"tombstones written: {[a for a in ids if (agent_root / a / 'tombstone.json').exists()]}",
+            )
 
         asyncio.run(drive())
         for agent_id in ids:

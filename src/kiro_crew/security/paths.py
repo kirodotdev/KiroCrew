@@ -387,6 +387,7 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
         matched = _path_in_home_dirs(
             path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir, strict=True
         ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+        matched = matched or _native_store_write(path_str, base_dir)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     return f"Blocked: write to protected path: {path_str}" if matched else None
@@ -703,6 +704,7 @@ from .paths_lists import (  # noqa: E402
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
     _leaf_segments,
+    _native_store_write,
 )
 from .paths_resolver import (  # noqa: E402
     PathResolutionStalled,
@@ -739,6 +741,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _KIRO_CLI_WRITE_TIER_LEAVES,
         _KIRO_SETTINGS_MCP_JSON,
         _LEAF_SEPARATOR,
+        _NATIVE_ALLOW_STORE_LEAVES,
     )
     from kiro_crew.security.paths_resolver import (  # noqa: F401
         _CHILD_FAULT_WARN_STREAK,
@@ -787,6 +790,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stall_prefix,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401
+        _ADAPTER_ROOT_ENVS,
         _HOME_TARGETS_TTL_COST_RATIO,
         _HOME_TARGETS_TTL_MAX_SECS,
         _HOME_TARGETS_TTL_SECS,
@@ -820,6 +824,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.agent_sdk import (  # noqa: F401
         host_auth,
+        native_allow_stores,
     )
     from kiro_crew.executors import (  # noqa: F401
         path_resolve_executor,

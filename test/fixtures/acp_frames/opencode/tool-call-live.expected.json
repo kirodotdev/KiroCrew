@@ -1,16 +1,39 @@
 [
   {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.19.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
     "action": "update",
     "events": [
       {
         "is_shell": true,
         "kind": "tool_call",
         "raw_tool_params": {
-          "cwd": "~/.kiro/crew/scratch/runtime-f4308721/oc-proj"
+          "cwd": "<cwd>"
         },
         "title": "bash",
-        "tool_call_id": "call_xsro2n3p",
-        "tool_input": "{\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
+        "tool_call_id": "call_wfvrm3ls",
+        "tool_input": "{\n  \"cwd\": \"<cwd>\"\n}",
         "tool_kind": "execute",
         "wire_title": "bash"
       }
@@ -26,12 +49,12 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "echo kirocrew-opencode-live",
-          "cwd": "~/.kiro/crew/scratch/runtime-f4308721/oc-proj",
-          "timeout": "0"
+          "timeout": "null",
+          "workdir": "null"
         },
         "title": "echo kirocrew-opencode-live",
-        "tool_call_id": "call_xsro2n3p",
-        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"timeout\": \"0\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
+        "tool_call_id": "call_wfvrm3ls",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"timeout\": \"null\",\n  \"workdir\": \"null\"\n}",
         "tool_kind": "execute",
         "wire_title": "echo kirocrew-opencode-live"
       }
@@ -44,10 +67,10 @@
     "events": [
       {
         "kind": "tool_result",
-        "tool_call_id": "call_xsro2n3p",
-        "tool_output": "The bash tool was called with invalid arguments: SchemaError(Expected number | undefined, got \"0\"\n  at [\"timeout\"]).\nPlease rewrite the input so it satisfies the expected schema.",
-        "tool_output_bytes": 178,
-        "tool_output_digest": "67760b389d12e0c6c07bed3ac342aa65fdeedd230c72b21d526d64dca596386f",
+        "tool_call_id": "call_wfvrm3ls",
+        "tool_output": "The bash tool was called with invalid arguments: SchemaError(Expected number | undefined, got \"null\"\n  at [\"timeout\"]).\nPlease rewrite the input so it satisfies the expected schema.",
+        "tool_output_bytes": 181,
+        "tool_output_digest": "d74fcd9914976297027cb8c3497b2b67c9907a54f6a61163b2d4ebe7c2be3641",
         "tool_status": "failed"
       },
       {
@@ -55,17 +78,39 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "echo kirocrew-opencode-live",
-          "cwd": "~/.kiro/crew/scratch/runtime-f4308721/oc-proj",
-          "timeout": "0"
+          "timeout": "null",
+          "workdir": "null"
         },
         "title": "echo kirocrew-opencode-live",
-        "tool_call_id": "call_xsro2n3p",
-        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"timeout\": \"0\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
+        "tool_call_id": "call_wfvrm3ls",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"timeout\": \"null\",\n  \"workdir\": \"null\"\n}",
         "tool_kind": "execute",
         "wire_title": "echo kirocrew-opencode-live"
       }
     ],
     "frame": "session/update",
     "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      2399,
+      16384
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      49,
+      78,
+      2350,
+      0
+    ],
+    "stop_reason": "end_turn"
   }
 ]

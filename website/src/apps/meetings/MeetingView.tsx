@@ -2,6 +2,7 @@
 // sidebar, and (once it has ended) the task-review gate.
 
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertTriangle,
@@ -17,6 +18,7 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { settingsPath } from '../../components/settingsPath'
 import { Badge, Btn, SendBtn, Skeleton } from '../../components/ui'
 import {
   DropdownMenu,
@@ -66,6 +68,12 @@ export default function MeetingView({
     enabledIds,
     mutedAgents,
     outputs,
+    startError,
+    startErrorMessage,
+    transcriptionErrorMessage,
+    transcriptionErrorCode,
+    dismissStartError,
+    dismissTranscriptionError,
     outputEdits,
     editingOutput,
     tasks,
@@ -301,6 +309,34 @@ export default function MeetingView({
           </div>
         </div>
 
+        {/* The one surface for a refused start or a transcription error while
+             the meeting is open (no toast as well). Streaming-off links to its
+             setting; the start notice's copy names the button to use.
+             No hand-off: the minutes drafts in the AgentPanel below are unsaved
+             local state, and capture is live. Navigating to chat would unmount
+             this view, discard those drafts and stop the microphone. */}
+        {transcriptionErrorMessage && (
+          <ErrorNotice
+            message={transcriptionErrorMessage}
+            onDismiss={dismissTranscriptionError}
+            className="mx-4 mt-2 animate-rise"
+            footer={
+              transcriptionErrorCode === 'stt_streaming_disabled' ? (
+                <Link to={settingsPath({ tab: 'voice' })} className="underline">
+                  {i18nT('apps.meetings.session.openVoiceSettings')}
+                </Link>
+              ) : null
+            }
+          />
+        )}
+        {/* No hand-off: the minutes drafts in the AgentPanel below are unsaved. */}
+        {startError && startErrorMessage && (
+          <ErrorNotice
+            message={startErrorMessage}
+            onDismiss={dismissStartError}
+            className="mx-4 mt-2 animate-rise"
+          />
+        )}
         <AgentPillBar
           agents={agents}
           enabledIds={enabledIds}

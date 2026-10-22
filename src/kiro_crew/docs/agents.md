@@ -66,7 +66,7 @@ Kiro Crew owns and rewrites a fixed set of specs; [agent-spec-fields.md](agent-s
 
 ## Custom Agents
 
-Custom agents are JSON or markdown files in `~/.kiro/agents/` (or a project's `.kiro/agents/`). They define their own system prompt, tools, MCP servers, and permissions. To create, edit or delete your own custom agents in the app, open **Customize → Custom agents**: it lists every installed custom agent by origin, edits the ones you own (description, model, prompt, tools, skills), duplicates a package or built-in one into one you own, and refuses to delete a custom agent while a crewmate, the default agent, a schedule, a chat folder's default agent, a webhook token or a private copy still uses it — the refusal lists them. Deleting on disk also works: remove the file from `~/.kiro/agents/`. A crew still bound to a deleted name does not break: kiro-cli cannot resolve the missing spec and falls back to the default agent spec for that session, so the crew keeps running — with the default prompt and tools instead of the deleted template's. Check a template's bindings and repoint them before removing the file so no crew silently changes behavior.
+Custom agents are JSON or markdown files in `~/.kiro/agents/` (or a project's `.kiro/agents/`). They define their own system prompt, tools, MCP servers, and permissions. To create, edit or delete your own custom agents in the app, open **Customize → Custom agents**: it lists every installed custom agent by origin, edits the ones you own (description, model, prompt, tools, skills), duplicates a package or built-in one into one you own, and refuses to delete a custom agent while a mate, the default agent, a schedule, a chat folder's default agent, a webhook token or a private copy still uses it — the refusal lists them. Deleting on disk also works: remove the file from `~/.kiro/agents/`. A crew still bound to a deleted name does not break: kiro-cli cannot resolve the missing spec and falls back to the default agent spec for that session, so the crew keeps running — with the default prompt and tools instead of the deleted template's. Check a template's bindings and repoint them before removing the file so no crew silently changes behavior.
 
 ```json
 {
@@ -115,7 +115,7 @@ What differs from a JSON agent:
 
 ## Managing Agents
 
-**Customize → Custom agents** lists every agent definition and is where one is edited — model, system prompt, skills and tools. A crewmate's editor (**Customize → Crewmates**, or the Crewmates page) shows the agent it is built from in its **Built from** section, read-only: a crewmate does not own that definition, so editing it there would change every crewmate built from the same agent. Drop a new JSON or markdown file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Customize.
+**Customize → Custom agents** lists every agent definition and is where one is edited — model, system prompt, skills and tools. A mate's editor (**Customize → Mates**, or the Mates page) shows the agent it is built from in its **Built from** section, read-only: a mate does not own that definition, so editing it there would change every mate built from the same agent. Drop a new JSON or markdown file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Customize.
 
 ## Mapping Skills to an Agent
 

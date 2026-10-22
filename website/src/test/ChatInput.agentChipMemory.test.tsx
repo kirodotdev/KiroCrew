@@ -30,7 +30,7 @@ function agentChip(): HTMLButtonElement {
 }
 
 describe('ChatInput agent chip memory mark', () => {
-  it('names own memory for the crewmate of a pair', () => {
+  it('names own memory for the mate of a pair', () => {
     renderWithProviders(<ChatInput {...props({ agentName: 'reviewer', agentMemory: 'own' })} />)
     expect(agentChip().querySelector('span')?.textContent).toBe('reviewer · own memory')
     expect(agentChip()).toHaveAttribute('aria-label', 'Agent: reviewer · own memory')

@@ -343,8 +343,8 @@ Why deferral and not batching: embedding cost grows steeply with text length
 inline embed held the apply request for minutes. **`embed_batch()` is not the
 fix** — measured on real import text it is ~25% *slower* than looping `embed()`.
 That measured workload result, rather than the physical micro-batch size, is the
-reason imports defer the work: llama.cpp now decodes each input in bounded
-512-token physical batches while retaining the full 2,048-token logical batch
+reason imports defer the work: llama.cpp decodes each input in bounded
+256-token physical batches while retaining the full 2,048-token logical batch
 and context.
 
 `backfill_missing_embeddings()` requires numpy but **not faiss**. Faiss is an

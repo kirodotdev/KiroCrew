@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew import autonudge
 from kiro_crew.dashboard import chat_handlers as handlers
+from kiro_crew.testing.wait import await_until
 
 NAME = "chat-1-1785"
 
@@ -170,8 +171,8 @@ async def _reached(
     loop teardown and blamed on whichever test runs next.
     """
     try:
-        await asyncio.wait_for(entered.wait(), 5.0)
-    except asyncio.TimeoutError:
+        await await_until(entered, timeout=5.0, what=f"the close reaching {seam}")
+    except AssertionError:
         close.cancel()
         raise AssertionError(
             f"the close never reached {seam}: it returned or blocked short of the "

@@ -78,6 +78,7 @@ import { TOGGLE_RECT } from './chat/SessionFlyout'
 import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { useLabelTip } from '../components/InstantTip'
 import { sessionTitleRoster } from '../utils/sessionRoster'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 
 import { i18nT } from '../i18n/t'
@@ -240,6 +241,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     applyAutomationChange,
   } = useSessionAutomation({ activeSlot, queryClient, dispatch })
   const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
+  const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
 
   // Close the slot-scoped automation surface on navigation. Its record comes
   // from the same Redux collection the sidebar reads; the WebSocket hook owns
@@ -459,10 +461,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // its chips navigate here, so the two must agree on which slots may chip.
   // Signature because heartbeats remint slot objects.
   const sessionTitleSig = JSON.stringify(filteredSlots.map(s => [s.key, s.title || s.key]))
+  // The roster's "Untitled session" label is localized, so a language switch
+  // must rebuild it even when no slot changed (#23059).
+  const languageGeneration = useLanguageGeneration()
   const sessionTitles = useMemo(
     () => sessionTitleRoster(filteredSlots),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the value-equal pair signature, not the slot objects (see above)
-    [sessionTitleSig],
+    [sessionTitleSig, languageGeneration],
   )
   const {
     handleFork, forkDirectionChoice,
@@ -544,6 +549,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setAppSlotLaunch,
     closeSessionTab,
     drawerPopRef,
+    ensureSlotTab,
     handleResumeSession,
     highlightTs,
     initialMidRef,
@@ -903,21 +909,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     closeSidebar, chatContainerRef, containerH, activitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
-    embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
+    embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
     hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
     sidebarAutoHidden, toggleAct,
   })
+  // "Open Sidebar Sessions in a Session Tab" (Settings > Chat > Sessions). A
+  // sidebar row's click, Enter/Space and source chip all call `onSelectSlot`
+  // after their `switchSlot`, so one handler covers each; the flyout below is
+  // the same list while the sidebar is collapsed.
+  const sidebarClickOpensTab = chatConfig.sidebarClickOpensTab
+  const selectFromSidebar = useCallback((key: string) => {
+    clearSplitOnSelect()
+    if (sidebarClickOpensTab) ensureSlotTab(key)
+  }, [clearSplitOnSelect, sidebarClickOpensTab, ensureSlotTab])
   const flyoutSwitch = useCallback((key: string) => {
     // User gesture on a listed session row (collapsed-sidebar flyout): the
     // announced class, same as the expanded sidebar's own rows.
     dispatch(switchSlot({ key, announceOnMissing: true }))
     setSplitMode(false)
+    if (sidebarClickOpensTab) ensureSlotTab(key)
     flyout.close()
-  }, [dispatch, flyout, setSplitMode])
+  }, [dispatch, flyout, setSplitMode, sidebarClickOpensTab, ensureSlotTab])
   const {
     flyoutNew, panelReserve, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip, memorySwitching, composerOptimizing, handleOptimizingChange,
   } = usePanelLayout({
-    mode, dispatch, isMobile, filteredSlots, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
+    mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
     mobileNewSessionInFlightRef, setMobileNewSessionBusy, setSidebarPinned, sidebarPinned, railWidth, winW, effectiveSidebarWidth, mobileSessions, openSidebar, closeSidebar, previewExpanded,
     sidebarOpen, flyout, memorySwitch: { store: boundStore, composerSlotRef, inputRef, pendingFilesRef, pasteBlocksRef, pendingSessionsRef, drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, saveDrafts, setActionError, composerMountedRef, lockRef: memorySwitchingRef },
   })
@@ -949,7 +965,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       <SessionsSidebarChrome
         embedMode={embedMode} mode={mode} activeSlot={activeSlot} connected={connected} creatingSlot={creatingSlot} dispatch={dispatch} filteredSlots={filteredSlots} isMobile={isMobile}
         keyboardInset={keyboardInset} mobileNavRail={mobileNavRail} surfaceUnreadSlots={surfaceUnreadSlots} titleInTopbar={titleInTopbar} topbarSlot={topbarSlot} topbarTrailSlot={topbarTrailSlot}
-        vv={vv} activityOpen={activityOpen} clearSplitOnSelect={clearSplitOnSelect} history={history} historyHasMore={historyHasMore} navigateToEmbeddedSlot={navigateToEmbeddedSlot}
+        vv={vv} activityOpen={activityOpen} selectFromSidebar={selectFromSidebar} history={history} historyHasMore={historyHasMore} navigateToEmbeddedSlot={navigateToEmbeddedSlot}
         openEmbeddedCrewWindow={openEmbeddedCrewWindow} splitMode={splitMode} defaultAgent={defaultAgent} installedAgents={installedAgents} sidebarAgents={sidebarAgents} sidebarChoices={sidebarChoices}
         setActionError={setActionError} showActionError={showActionError} canStageSessionRef={canStageSessionRef} chatPaneEl={chatPaneEl} stageSessionRef={stageSessionRef}
         openSlotInNewTab={openSlotInNewTab} ownsSessionTabs={ownsSessionTabs} activePoppedOut={activePoppedOut} focusActivePopout={focusActivePopout} openActivePopout={openActivePopout}
@@ -965,7 +981,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
+      <div ref={setChatPaneEl} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         <ChatPaneChrome
           embedded={embedded} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} navigate={navigate} provider={provider} setVoiceRecoverySlot={setVoiceRecoverySlot}
           switchSlotGone={switchSlotGone} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}

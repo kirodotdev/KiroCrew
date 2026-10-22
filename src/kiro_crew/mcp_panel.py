@@ -38,6 +38,7 @@ from urllib.parse import quote
 
 from kiro_crew import dashboard_agentic
 from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
+from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 from kiro_crew.mcp_core import (
     _get,
     _post,
@@ -52,6 +53,17 @@ logger = logging.getLogger(__name__)
 
 SERVER_NAME = "kirocrew-panel"
 SERVER_VERSION = "1.0.0"
+
+#: The field list's own ceiling, because its GET does real work: the route reads the
+#: dashboard instance, folds the mistake book and the page's values from the crew
+#: log, and scans the template catalog, all on the gateway's shared default
+#: executor, where a busy gateway makes the read wait its turn. ``_get``'s 10 s
+#: default is sized for a telemetry read and its docstring asks a route like this
+#: one to raise it. The value is the write path's: ``dashboard_write`` passes the
+#: same caller gate and reads the same mistake book through ``_post``, whose default
+#: is 30 s, so the read that tells an agent what to write is not the call that fails
+#: first. Every reader of the route uses it, the type lookup a clear makes included.
+DASHBOARD_FIELDS_READ_TIMEOUT_SECS = 30.0
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
@@ -148,11 +160,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "dashboard_types",
             "description": (
                 "READ THIS BEFORE YOU COMPOSE A DASHBOARD. Lists every DATA TYPE "
-                "you can bind a dashboard block to -- one per fold of your crew "
+                "you can bind a dashboard field to -- one per fold of your crew "
                 "log -- and for each one: its name, the field shape inside it (so "
                 "you can name a path instead of guessing one), which fold the "
                 "value is folded from, and how far that fold has been folded for "
-                "you right now. A block bound to a path this does not list draws "
+                "you right now. A field bound to a path this does not list draws "
                 "nothing, so read the shape and copy the path out of it. Three "
                 "things to read carefully: an `array` is where the shape STOPS, "
                 "because a path cannot reach inside a list; an `opaque` object is "
@@ -221,11 +233,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "dashboard_save",
             "description": (
-                "SAVE the page you composed and PUT IT LIVE as YOUR crewmate's "
-                "Dashboard. A page is three declarations and this call saves all "
+                "SAVE a draft of your crewmate's Dashboard page. dashboard_apply "
+                "puts it live separately. A page has three declarations; this saves all "
                 "three at once: a "
                 "`model` naming the fields the page holds and where each value "
-                "comes from, a `view` laying out the blocks that draw them, and a "
+                "comes from, a `view` holding the page itself as inline HTML, and a "
                 "`theme` of tokens. Read dashboard_fields first -- it tells you "
                 "the page in force -- and tell the person what you are changing, "
                 "because the page is theirs. A field reads either from a crew-log fold "
@@ -233,10 +245,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 'gateway) or from you (`{"agentic": true}`) -- never a number you '
                 "type into the layout, which would be true only at the moment you "
                 "typed it. The "
-                "block types and data types come from a CLOSED catalog, so a "
+                "data types come from a CLOSED catalog, so a "
                 "package naming one that does not exist is refused and the refusal "
                 "lists the ones that do: recompose from that list. NAME YOUR FIELDS "
-                "AND BLOCKS FOR A READER -- `open_prs`, not a token. A name a "
+                "FOR A READER -- `open_prs`, not a token. A name a "
                 "redactor would mask is refused, because a name is a key the page "
                 "joins its cells by and cannot be rewritten on the way out; the "
                 "refusal tells you which position to rename. Values never version "
@@ -274,34 +286,41 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "The fields the page holds, as "
                             '`{"types": {<field_name>: {...}}}`. Each field names '
                             "a data type (`number`, `text`, `bool`, `timestamp`, "
-                            "`enum`) and a `source`, and may carry a `label` and "
-                            "`description` a reader sees. Field names are "
-                            "lowercase letters, digits and underscores."
+                            "`enum`, `array`, `object`) and a `source`, and may carry "
+                            "a `label` and `description`. Read a whole array or object "
+                            "in script; dashboard_types supplies row keys. A verified "
+                            "project snapshot can use an agentic source, with its "
+                            "source and observation time shown on the page. Field "
+                            "names are lowercase letters, digits and underscores."
                         ),
                     },
                     "view": {
                         "type": "object",
                         "description": (
-                            'The layout, as `{"blocks": [...]}`, in the order a '
-                            "reader meets them -- that order IS the layout. Each "
-                            "block carries an `id`, a `type` from the block "
-                            "catalog, the `fields` it draws (every one declared by "
-                            "the model) and an optional `title`."
+                            'The page, as `{"html": "..."}`: inline HTML, CSS and script. '
+                            + PAGE_LOOK
+                            + " Text cells can use "
+                            '`data-dashboard-field="<name>"`; drawings subscribe through '
+                            "window.kirocrew.subscribe. Every field is declared in the "
+                            "model, but a script-only field needs no text cell or hidden "
+                            "sink. The dashboard skill covers the frame and design."
                         ),
                     },
                     "theme": {
                         "type": "object",
                         "description": (
                             'Look, as `{"tokens": {"--name": "value"}}`, with an '
-                            'optional `"css"` string beside it for rules the '
-                            "tokens cannot express. None of "
-                            "the look is fixed by the product, so this is where "
-                            "you set it. An empty `tokens` object is valid and "
-                            "takes the defaults."
+                            'optional `"css"` string. Host variables and custom '
+                            "properties are both available; pair surfaces and text "
+                            "for light and dark. A texture or wallpaper in `css` is an "
+                            'inline data: URL (url("data:image/svg+xml,...")); an '
+                            "address that needs the network is refused. Omitting theme or "
+                            "tokens stores an empty tokens object. The page can still "
+                            "define its own complete design in view.html."
                         ),
                     },
                 },
-                "required": ["model", "view", "theme"],
+                "required": ["model", "view"],
             },
         },
         {
@@ -511,7 +530,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         sk, err = _strict_session_key()
         if err:
             return err
-        d = _get("/api/agent-panel/dashboard/fields", session_key=sk)
+        d = _get(
+            "/api/agent-panel/dashboard/fields",
+            session_key=sk,
+            timeout=DASHBOARD_FIELDS_READ_TIMEOUT_SECS,
+        )
         if d.get("error"):
             return redact(f"Error: {d['error']}")
         return redact(_render_fields(d))
@@ -575,6 +598,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         page: dict[str, Any] = {}
         for key in ("model", "view", "theme"):
             part = args.get(key)
+            if part is None and key == "theme":
+                # Omitted, or dropped by the client as an empty object: the default look.
+                part = {"tokens": {}}
             if not isinstance(part, dict):
                 return (
                     f"Error: `{key}` must be an object -- a page is a `model`, a "
@@ -593,7 +619,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # from. Shortened to a generic failure it would cost a cycle and teach
             # nothing.
             return redact(f"Error: {api_err}")
-        return redact(_render_saved(d.get("saved") or {}, d.get("verification")))
+        return redact(_render_saved(d.get("saved") or {}, d.get("verification"), reply=d))
 
     if name == "dashboard_templates":
         query = args.get("query")
@@ -765,20 +791,45 @@ def _render_verification(verification: Any) -> list[str]:
     return lines
 
 
-def _render_saved(saved: dict[str, Any], verification: Any = None) -> str:
-    """What was SAVED, the page check's verdict, and the one call that puts it live.
+def _render_saved(
+    saved: dict[str, Any], verification: Any = None, *, reply: dict[str, Any] | None = None
+) -> str:
+    """What was SAVED, the page check's verdict, the gateway's own checks, and the next call.
 
-    The verdict comes before the next step: a ``failed`` page is fixed and saved again
-    before it is applied.
+    The verdict and the checks come before the next step: a ``failed`` page is fixed
+    and saved again before it is applied. *reply* is the whole save reply, read for its
+    ``fields``, ``manual_fields``, ``shape_warnings`` and ``theme_warnings``, which the
+    crewmate has to see to act on: a reply that dropped them would check for nobody.
     """
+    reply = reply or {}
     lines = [
         f"SAVED as your dashboard package ({saved.get('fields')} field(s) in "
-        f"{saved.get('blocks')} block(s)). It is not live yet."
+        f"its page). It is not live yet."
     ]
     checked = _render_verification(verification)
     if checked:
         lines.append("")
         lines.extend(checked)
+        note = verification.get("note") if isinstance(verification, dict) else None
+        if isinstance(note, str) and note:
+            lines.append(f"  {note}")
+    rows = reply.get("fields")
+    if isinstance(rows, list) and rows:
+        lines.append("")
+        lines.append("Fields:")
+        for row in rows:
+            if isinstance(row, dict):
+                kind = row.get("type") or "untyped"
+                lines.append(f"  {row.get('field')} ({kind}) -- {row.get('source')}")
+    manual_note = reply.get("manual_note")
+    if reply.get("manual_fields") and isinstance(manual_note, str):
+        lines.append(f"  {manual_note}")
+    for key, head in (("shape_warnings", "Shape warnings"), ("theme_warnings", "Theme warnings")):
+        warned = reply.get(key)
+        if isinstance(warned, list) and warned:
+            lines.append("")
+            lines.append(f"{head}:")
+            lines.extend(f"  - {line}" for line in warned if isinstance(line, str))
     lines.append("")
     lines.append(
         "Next: call dashboard_apply with no arguments to put it on your crewmate's "
@@ -863,9 +914,24 @@ def _flatten(node: Any, prefix: str = "") -> list[str]:
         return []
     ntype = str(node.get("type", "?"))
     label = prefix or "(the whole value)"
+    hints: list[str] = []
+    keys = node.get("row_keys")
+    if isinstance(keys, list) and keys:
+        hints.append("row_keys: " + ", ".join(str(key) for key in keys))
+    if node.get("names_the_row"):
+        hints.append("names_the_row: " + str(node["names_the_row"]))
+    if node.get("row_note"):
+        hints.append(str(node["row_note"]))
+    nested = node.get("nested_rows")
+    if isinstance(nested, dict):
+        for name, row in nested.items():
+            if isinstance(row, dict):
+                child = _flatten({"type": "array", **row}, f"{label}[].{name}")
+                hints.append("nested rows (script only): {" + "; ".join(child) + "}")
+    suffix = (" [" + "; ".join(hints) + "]") if hints else ""
     if node.get("opaque") is True:
-        keyed = node.get("keyed_by")
-        return [f"{label}: object, keyed by {keyed}" if keyed else f"{label}: object, keyed by ids"]
+        keyed = node.get("keyed_by") or "ids"
+        return [f"{label}: object, keyed by {keyed}{suffix}"]
     properties = node.get("properties")
     if ntype == "object" and isinstance(properties, dict) and properties:
         out: list[str] = []
@@ -875,7 +941,17 @@ def _flatten(node: Any, prefix: str = "") -> list[str]:
     tail = " (may be null)" if node.get("nullable") else ""
     if ntype == "array":
         tail += " -- a path cannot reach inside it"
-    return [f"{label}: {ntype}{tail}"]
+    return [f"{label}: {ntype}{tail}{suffix}"]
+
+
+def _render_rendering(payload: dict[str, Any]) -> list[str]:
+    """The per-type rendering advice a page needs for a list, a record or a time."""
+    advice = payload.get("rendering")
+    if not isinstance(advice, dict) or not advice:
+        return []
+    lines = ["", "Drawing a type a data-dashboard-field cell shows raw:"]
+    lines.extend(f"  {kind}: {how}" for kind, how in advice.items() if isinstance(how, str))
+    return lines
 
 
 def _render_types(payload: dict[str, Any]) -> str:
@@ -890,12 +966,12 @@ def _render_types(payload: dict[str, Any]) -> str:
     rows = payload.get("types")
     if not isinstance(rows, list) or not rows:
         return (
-            "No data type came back, so there is nothing to bind a dashboard block to "
+            "No data type came back, so there is nothing to bind a dashboard field to "
             "yet. Tell the human: this gateway's fold registry answered empty."
         )
     lines = [
-        f"{len(rows)} data types you can bind a dashboard block to. Each one is a fold "
-        "of your crew log; bind a block by naming the type and a path from its list.",
+        f"{len(rows)} data types you can bind a dashboard field to. Each one is a fold "
+        "of your crew log; bind a field by naming the type and a path from its list.",
     ]
     unread = False
     for row in rows:
@@ -948,6 +1024,7 @@ def _render_types(payload: dict[str, Any]) -> str:
         "null until something fills it. Binding one is allowed and it may draw nothing, "
         "so prefer a path with a real type."
     )
+    lines.extend(_render_rendering(payload))
     return "\n".join(lines)
 
 
@@ -994,8 +1071,9 @@ def _render_fields(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     if not isinstance(template, dict):
         lines.append(
-            "You have no dashboard yet, so there is no field to write. Ask the human "
-            "to adopt a template for you."
+            "You have no dashboard page yet, so there is no field to write. Write your "
+            "own HTML page (view.html) with the dashboard skill: dashboard_save it, then "
+            "dashboard_apply it."
         )
     else:
         lines.append(
@@ -1092,6 +1170,7 @@ def _render_fields(payload: dict[str, Any]) -> str:
             f"A refused write names the fields you could have used. Fix it from that "
             f"list and retry; after {budget} tries, ask the human."
         )
+    lines.extend(_render_rendering(payload))
     return "\n".join(lines)
 
 
@@ -1110,7 +1189,11 @@ def _empty_value_for(field: str, sk: str) -> Any:
     refused by the write route as ``wrong_type``, and the next clear that can read
     the list writes ``{}``.
     """
-    d = _get("/api/agent-panel/dashboard/fields", session_key=sk)
+    d = _get(
+        "/api/agent-panel/dashboard/fields",
+        session_key=sk,
+        timeout=DASHBOARD_FIELDS_READ_TIMEOUT_SECS,
+    )
     rows = None if d.get("error") else d.get("fields")
     if isinstance(rows, list):
         for row in rows:

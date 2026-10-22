@@ -147,7 +147,7 @@ test.describe('New session keeps text typed while it is being created', () => {
     await expect(page.getByText('carry-note.txt').first()).toBeVisible()
   })
 
-  test('switching away and back while the create is pending still carries the typed text', async ({ page }) => {
+  test('switching away and back while the create is pending keeps the user and the typed text on the origin', async ({ page }) => {
     const other = await (await page.request.post('/api/chat/slots', { data: { agent: 'default' } })).json() as { key: string }
     const originKey = await openSeededSession(page)
     const composer = page.locator('textarea[data-composer-input]')
@@ -164,7 +164,12 @@ test.describe('New session keeps text typed while it is being created', () => {
     await row(originKey).click()
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     const { key } = await (await created).json() as { key: string }
-    await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
+    expect(key).not.toBe(originKey)
+    // The user chose where to be after asking for the new session, so the
+    // late create does not take the view. It is listed, and the text typed
+    // into the origin's composer stays with the origin.
+    await expect(row(key)).toBeVisible({ timeout: 10000 })
+    await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toHaveValue('typed then switched')
   })
 

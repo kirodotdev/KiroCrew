@@ -19,7 +19,7 @@ import random
 import re
 import time
 from collections.abc import Container, Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -202,8 +202,8 @@ def is_valid_skip_date(value: object) -> bool:
         return False
 
 
-def get_local_tz() -> tuple[str, ZoneInfo]:
-    """Return (tz_name, ZoneInfo) from the published config default, or UTC.
+def get_local_tz() -> tuple[str, tzinfo]:
+    """Return (tz_name, zone) from the published config default, or UTC.
 
     Reads :func:`published_config_timezone` rather than loading ``config.json``:
     prompt assembly (``context.py``), the dashboard cron handler and the
@@ -211,6 +211,10 @@ def get_local_tz() -> tuple[str, ZoneInfo]:
     stat/read/validate would be a per-call stall
     (``no-blocking-call-on-event-loop``). The snapshot is refreshed by every
     successful config load, so a settings change still reaches a running gateway.
+
+    The fallback is :data:`datetime.timezone.utc`, not ``ZoneInfo("UTC")``: a
+    host with no system zoneinfo tree and no ``tzdata`` package cannot load
+    any zone, UTC included, and prompt assembly calls this on every chat turn.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -222,7 +226,7 @@ def get_local_tz() -> tuple[str, ZoneInfo]:
             "Failed to load timezone from config, falling back to UTC",
             exc_info=True,
         )
-        return "UTC", ZoneInfo("UTC")
+        return "UTC", timezone.utc
 
 
 # Patterns for parse_time_string
@@ -245,7 +249,7 @@ _UNIT_SECS = {
 }
 
 
-def _wall_clock_resolution_error(value: datetime, tz: ZoneInfo, tz_name: str) -> str | None:
+def _wall_clock_resolution_error(value: datetime, tz: tzinfo, tz_name: str) -> str | None:
     """Return an error when a zone cannot resolve the requested wall clock."""
     clock_format = "%H:%M:%S" if value.second else "%H:%M"
     clock = value.strftime(clock_format)
@@ -300,6 +304,7 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     s = s.strip()
+    tz: tzinfo
     if tz_name:
         resolved_tz_name = tz_name
         tz = ZoneInfo(tz_name)
@@ -346,7 +351,7 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
     return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
 
 
-def _job_tz(job: CronJob) -> ZoneInfo:
+def _job_tz(job: CronJob) -> tzinfo:
     """Return the job's timezone, falling back to the published default then UTC.
 
     Reads :func:`published_config_timezone` rather than loading ``config.json``.
@@ -365,7 +370,9 @@ def _job_tz(job: CronJob) -> ZoneInfo:
         return ZoneInfo(tz_name)
     except Exception:
         logger.warning("Failed to resolve timezone for job %s, using UTC", job.id, exc_info=True)
-        return ZoneInfo("UTC")
+        # Fixed UTC needs no tz database, so the Schedule page and the timer
+        # keep working on a host that has none (see get_local_tz).
+        return timezone.utc
 
 
 def backoff_delaying_next_run(job: CronJob, now: float | None = None) -> float | None:
@@ -572,7 +579,7 @@ def compute_jitter(job: CronJob) -> float:
 _SAME_OCCURRENCE_SECS = 120
 
 
-def _cron_occurrence_ts(expr: str, ts: float, tz: ZoneInfo) -> float | None:
+def _cron_occurrence_ts(expr: str, ts: float, tz: tzinfo) -> float | None:
     """Return the occurrence of ``expr`` that ``ts`` belongs to, or ``None``.
 
     That is the latest occurrence at or before the end of ``ts``'s minute in

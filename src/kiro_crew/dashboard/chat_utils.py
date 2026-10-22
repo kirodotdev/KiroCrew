@@ -671,6 +671,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         APP_MESSAGE_PREFIX,
         AUTH_REQUIRED_KIND,
         AUTOMATION_NOTICE_KIND,
+        AUTOMATION_STEER_META,
         CONTEXT_OVERFLOW_KIND,
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,

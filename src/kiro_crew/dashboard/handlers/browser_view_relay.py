@@ -198,7 +198,8 @@ def _client(app: web.Application) -> aiohttp.ClientSession:
     """The app-scoped upstream session, created on first use.
 
     Lazy so the gateway boot path does no new work; closed by the browser-view
-    cleanup hook in ``server.py``. One session keeps a warm connection to the
+    cleanup hook (``_register_browser_view_cleanup`` in
+    ``server_runtime/browser_lifecycle.py``). One session keeps a warm connection to the
     view server instead of a fresh TCP handshake per asset.
     """
     session = app.get(_SESSION_KEY)

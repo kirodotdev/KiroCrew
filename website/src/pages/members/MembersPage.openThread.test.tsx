@@ -558,7 +558,7 @@ describe('MembersPage identity pill and Profile entry', () => {
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')
   })
 
-  it('the pill\'s second line says what the crewmate is doing: text only, always present, out of the button\'s name', async () => {
+  it('the pill\'s second line says what the mate is doing: text only, always present, out of the button\'s name', async () => {
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: Math.floor(Date.now() / 1000) - 180 })]) // flake-ok: a stamp three minutes back; the assertion reads only the 'Idle · ' prefix
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
@@ -671,7 +671,7 @@ describe('MembersPage identity pill and Profile entry', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const header = await screen.findByTestId('member-thread-header')
-    expect(within(header).queryByLabelText('Edit crewmate')).toBeNull()
+    expect(within(header).queryByLabelText('Edit mate')).toBeNull()
 
     fireEvent.click(screen.getByTestId('member-identity-pill'))
     fireEvent.click(await screen.findByTestId('crew-profile-edit'))
@@ -861,7 +861,7 @@ function expectCrewmateMessage(card: HTMLElement) {
 describe('MembersPage cold welcome (a new or long-idle thread)', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 
-  it('opening a long-idle crewmate with no goal in flight recaps its paused and recent work, once', async () => {
+  it('opening a long-idle mate with no goal in flight recaps its paused and recent work, once', async () => {
     vi.mocked(api.memberRecap).mockResolvedValue({
       slug: 'oncall', member: 'oncall',
       paused: [{ goal: 'Rotate the pager keys', next: 'confirm with Sam' }],
@@ -894,7 +894,7 @@ describe('MembersPage active task greeting', () => {
   }
   beforeEach(() => { sessionStorage.clear() })
 
-  it('opening a crewmate mid-goal shows no immediate static warm card', async () => {
+  it('opening a mate mid-goal shows no immediate static warm card', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     await renderPage([row()])
     fireEvent.click(await rosterRow('oncall'))
@@ -905,7 +905,7 @@ describe('MembersPage active task greeting', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('return summary rows stay ordinary crewmate messages', async () => {
+  it('return summary rows stay ordinary mate messages', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))

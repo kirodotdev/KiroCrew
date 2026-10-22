@@ -20,7 +20,7 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
@@ -87,6 +87,7 @@ if TYPE_CHECKING:
         expire_slack_options,
         get_dashboard_state,
         handle_message,
+        is_slack_born,
         is_thread_temporary,
         logger,
         note_turn,
@@ -95,6 +96,7 @@ if TYPE_CHECKING:
         record_interaction_event,
         redact,
         redact_local_paths,
+        resolve_channel_crew,
         rollback_skill_bodies,
         run_in_embed_pool,
         runtime_death,
@@ -561,8 +563,21 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
+        # A channel bound to a Crew agent RECORD runs as that record (mode,
+        # crew identity, workspace cwd) -- see slack/channel_crew.py. Same rule
+        # as the messaging transport: only when the selected agent IS the
+        # channel's binding (a thread value equal to it is that binding restored
+        # from the transcript header) and the session is Slack's own.
+        _channel_crew = (
+            await asyncio.to_thread(resolve_channel_crew, channel_agent)
+            if channel_agent and _agent == channel_agent and is_slack_born(session_key)
+            else None
+        )
+        _alloc: dict[str, Any] = (
+            _channel_crew.allocation_kwargs() if _channel_crew else {"agent": _agent}
+        )
         client, is_new, resumed = await sessions.get_or_create(
-            session_key, agent=_agent, channel_id=channel, start_priority=start_priority
+            session_key, channel_id=channel, start_priority=start_priority, **_alloc
         )
         _acquired = True
         if _compaction_replay is not None:

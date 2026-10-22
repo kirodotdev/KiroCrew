@@ -29,7 +29,11 @@ from real_adapter_gate import (
     MARKER,
     MEASURED_CODEX_ACP_VERSION,
     MEASURED_OPENCODE_VERSION,
+    MEASURED_PI_ACP_VERSION,
+    MEASURED_PI_VERSION,
     OPENCODE_PACKAGE,
+    PI_ACP_PACKAGE,
+    PI_PACKAGE,
     REQUIRE_ENV,
     pinned_version,
     real_adapters_required,
@@ -202,6 +206,10 @@ def test_the_lane_installs_from_the_committed_lockfile_and_copies_no_pin():
     assert "real_adapter_gate" in lane
     assert MEASURED_CODEX_ACP_VERSION not in workflow
     assert MEASURED_OPENCODE_VERSION not in workflow
+    # Scoped to the lane: pi's release number is short enough to collide with an
+    # unrelated tool pin elsewhere in the workflow.
+    assert MEASURED_PI_ACP_VERSION not in lane
+    assert MEASURED_PI_VERSION not in lane
 
 
 def test_the_manifest_pins_exact_releases_and_the_lockfile_agrees():
@@ -216,6 +224,8 @@ def test_the_manifest_pins_exact_releases_and_the_lockfile_agrees():
     for package, pin in (
         (CODEX_ACP_PACKAGE, MEASURED_CODEX_ACP_VERSION),
         (OPENCODE_PACKAGE, MEASURED_OPENCODE_VERSION),
+        (PI_ACP_PACKAGE, MEASURED_PI_ACP_VERSION),
+        (PI_PACKAGE, MEASURED_PI_VERSION),
     ):
         assert pinned_version(package) == pin
         assert len(pin.split(".")) == 3 and pin.replace(".", "").isdigit(), pin
@@ -247,7 +257,12 @@ def test_the_manifest_is_not_the_product_s_and_dependabot_refreshes_it():
     assert "website" not in MANIFEST.parts
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert manifest.get("private") is True
-    assert set(manifest["dependencies"]) == {CODEX_ACP_PACKAGE, OPENCODE_PACKAGE}
+    assert set(manifest["dependencies"]) == {
+        CODEX_ACP_PACKAGE,
+        OPENCODE_PACKAGE,
+        PI_ACP_PACKAGE,
+        PI_PACKAGE,
+    }
 
     dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
     assert 'package-ecosystem: "npm"' in dependabot

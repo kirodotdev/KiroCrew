@@ -9,7 +9,7 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
-``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_sandbox_init_failure``,
+``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
 ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
@@ -885,6 +885,7 @@ async def _finish_create_session(
     # whether the agent process can start.
     self._first_session_ready = True
     self._saw_sandbox_init_failure = False
+    self._saw_delegate_launch_failure = False
     try:
         await self._snapshot_descendants()
     except BaseException:

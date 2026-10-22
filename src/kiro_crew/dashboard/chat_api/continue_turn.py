@@ -175,6 +175,11 @@ async def continue_slot_turn(
             raise SlotContinueRefusal("not found", "slot_not_found", status=404)
         if slot.running:
             raise SlotContinueRefusal("slot is running", "slot_running")
+        if slot.linked_turn_running:
+            # A channel-path turn (the Slack thread this slot is bound to) is
+            # answering right now on the same session; a Resume here would queue
+            # a second answer to the prompt it is still answering.
+            raise SlotContinueRefusal("slot is running", "slot_running")
         if slot._stopping or slot._stop_state != "idle":
             raise SlotContinueRefusal("a stop is in progress", "slot_stopping")
         if slot.queue_depth:

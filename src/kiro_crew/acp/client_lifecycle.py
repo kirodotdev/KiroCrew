@@ -54,8 +54,10 @@ from kiro_crew.acp.liveness import LivenessOracle, _consume_future_exception
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.transport_errors import (
+    AcpDelegateLaunchFailed,
     AcpError,
     AcpSandboxInitFailed,
+    is_delegate_launch_failure_output,
     is_sandbox_init_failure_output,
     registration_throttle_line,
     sandbox_init_failure,
@@ -877,6 +879,26 @@ async def _sandbox_init_failure(self: AcpClient) -> AcpSandboxInitFailed | None:
         mode=self._sandbox_mode,
         extra_hidden_dirs=self._sandbox_hidden_dirs,
     )
+
+
+async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed | None:
+    """The delegate-launch error for this child's stderr, or ``None``.
+
+    The ``AcpClient`` side of the classification ``AcpRuntime`` latches per
+    stderr line: the same shared :func:`is_delegate_launch_failure_output`
+    signature, read off the ring buffer the way :meth:`_sandbox_init_failure`
+    reads it, so the two transports cannot disagree about what a
+    ``kiro-cli-chat`` launch failure is. ``None`` when nothing was retained (a
+    restricted-memory session keeps no stderr by design, so it keeps today's
+    behaviour rather than a guessed verdict). The message is fixed wording, so
+    no child output rides it and nothing needs redacting.
+    """
+    await self._settle_stderr()
+    if not self._stderr_lines:
+        return None
+    if not is_delegate_launch_failure_output("\n".join(self._stderr_lines)):
+        return None
+    return AcpDelegateLaunchFailed()
 
 
 async def _registration_throttle_line(self: AcpClient) -> str | None:

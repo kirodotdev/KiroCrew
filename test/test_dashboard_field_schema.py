@@ -328,7 +328,9 @@ class TestTheTurnBlock:
         # crewmate that adopted nothing; the block must not describe a page nobody sees.
         block = dashboard_agentic.turn_block("code-reviewer")
         assert "shows the suggestions page" in block, block
-        assert "dashboard_apply" in block
+        # The block rides every turn: it says when a page is written, never orders one.
+        assert "covers building one when the user asks" in block
+        assert "dashboard_apply" not in block and "dashboard_save" not in block
         # Writes to the default would land on a page nobody sees: no fields, no upkeep.
         assert "Fields you write" not in block
         assert "Upkeep:" not in block

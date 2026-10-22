@@ -25,7 +25,7 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HOME_PREFIXES,
     _LIVE_TARGET_LEAF,
     _LIVE_TARGET_STAGING_LEAF,
-    _MD_NOTEBOOK_STATE_LEAVES,
+    _MD_NOTEBOOK_STATE_FILES,
     MD_NOTEBOOK_APP_NAME,
 )
 from kiro_crew.sandbox_precreate import (
@@ -433,10 +433,10 @@ def _md_notebook_degraded_mask_dirs() -> list[str]:
     wholesale on a healthy host would hide the user's notes from every agent — the app's
     whole purpose.
 
-    When a component of the chain is a planted link the calculus inverts. The carve-out is
-    withheld under this same predicate, so the backend cannot write there and the app is
-    already non-functional for that root; hiding the directory costs nothing that still
-    works. What it buys is the one exposure skipping leaves behind: a legacy staging orphan
+    When a component of the chain is a planted link the calculus inverts. The Notes
+    backend does not start while this list is non-empty (``apps/backend.py``), so nothing
+    writes into the namespace-only stand-in this mask leaves, where a note would be lost on
+    restart; hiding the directory costs nothing that still works. What it buys is the one exposure skipping leaves behind: a legacy staging orphan
     holding real PAT bytes that :func:`_sweep_one_md_notebook_state_dir` cannot delete
     through a link, and that the three leaf masks do not cover because its name is neither
     ``pat`` nor a state file. A directory mask covers every name inside it, orphans
@@ -465,7 +465,7 @@ def _md_notebook_degraded_mask_dirs() -> list[str]:
         # miss a link at the directory itself — the very case the sweep's final-component
         # refusal leaves unswept. Sharing the input shape keeps "withheld" and "masked"
         # literally the same decision rather than two that merely agree today.
-        probe = os.path.join(state_dir, os.path.basename(_MD_NOTEBOOK_STATE_LEAVES[0]))
+        probe = os.path.join(state_dir, _MD_NOTEBOOK_STATE_FILES[0])
         if carveout_chain_has_planted_link(probe):
             dirs.append(state_dir)
     return dirs
@@ -880,7 +880,7 @@ def _sweep_one_md_notebook_state_dir(root: str) -> list[str]:
         return removed
     try:
         names = os.listdir(dir_fd)
-        protected = {os.path.basename(leaf) for leaf in _MD_NOTEBOOK_STATE_LEAVES}
+        protected = set(_MD_NOTEBOOK_STATE_FILES)
         for name in names:
             if not name.endswith(".tmp") or name in protected:
                 continue
@@ -1044,3 +1044,54 @@ def _materialize_md_notebook_mask_targets(established: list[str] | None = None) 
             # pass published itself.
             _note_established(established, target)
     return created
+
+
+def _migrate_md_notebook_legacy_state() -> list[str]:
+    """Run the Notes builtin's one-time legacy-state move before this sandbox launches.
+
+    Spawn prep runs it, not only the Notes backend's own spawn, so the first pass and its
+    marker that closes promotion happen as early as possible, before an agent of this build
+    gets a shell on a fresh upgrade. After that it is one ``stat``.
+
+    The move itself lives in :mod:`kiro_crew.md_notebook_state`, which imports no app code
+    or aiohttp. It runs against this module's ``config_dir()``, the same home the
+    materialiser fills.
+
+    **A failed move does not stop the spawn.** It is one optional app's state, so a copy or
+    read error, a full disk, an unwritable marker or an extra hard link on the PAT is
+    logged and the pass stays unsealed for the next spawn to retry. No agent can plant a
+    bare state name meanwhile: :func:`_materialize_md_notebook_mask_targets` runs right
+    after this and stubs every bare name, so its mask always mounts, and the Notes backend
+    does not start until the pass is sealed (``sealed_default_legacy_state`` in
+    ``apps/backend.py``). An absent data home is left absent: there is nothing to move.
+    """
+    # Local, not top-level: every module-level name here is an owner name the
+    # ``kiro_crew.sandbox`` facade inventory forwards, and a module alias is not one.
+    from kiro_crew import md_notebook_state as mns
+
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for the Notes move", exc_info=True)
+        return []
+    if not os.path.isdir(root):
+        return []
+    state_dir = Path(root) / mns.STATE_DIR_LEAF
+    if carveout_chain_has_planted_link(str(state_dir / mns.MIGRATION_MARKER)):
+        # The same skip the materialiser takes for this chain: this process cannot tell
+        # where a write would land, so it writes nothing. The Notes backend's own writer
+        # refuses the same chain, so nothing on this host writes Notes state at all.
+        return []
+    try:
+        return mns.migrate_legacy_state(state_dir, Path(root).joinpath(*mns.LEGACY_DIR_PARTS))
+    except OSError as exc:
+        # Log and continue: the stubs planted next keep every bare name masked, and the
+        # Notes backend stays down until a later pass seals.
+        logger.warning(
+            "the Notes builtin's one-time move of its old state into %s did not finish: %s. "
+            "Notes stays off until it does; the next spawn retries it. Fix the cause (disk "
+            "space, permissions, or an extra hard link on the PAT).",
+            state_dir,
+            exc,
+        )
+        return []

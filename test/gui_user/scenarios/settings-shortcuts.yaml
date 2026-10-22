@@ -4,8 +4,11 @@
 # default), then one card per shortcut group ("Chat Navigation", "Panel
 # Navigation", "Actions") whose rows pair a plain-language action with its key
 # caps, then "Search" and "Panel toggles". Everything is client-side and static
-# on the seeded target, so the flow is one read and one scroll and the
-# expectations hold on any night. The tester only READS the switch: flipping it
+# on the seeded target, so the expectations hold on any night. The Chat
+# Navigation group is long enough that the Preferences switch and a second
+# group never share one frame, and the harness judges every expectation on the
+# last screenshot, so the flow reads the first frame only, with no scroll: the
+# switch and the Chat Navigation rows. The tester only READS the switch: flipping it
 # off would disable every chord for the scenarios that follow in the same run.
 # Override recording and the modal itself are separate backlog records.
 name: settings-shortcuts
@@ -21,12 +24,12 @@ preconditions:
   members: [nova-sky]
   start_url: /settings/shortcuts
 steps:
-  - You are on the Settings page with its Shortcuts tab selected; the pane heading reads "Shortcuts" with "Keyboard shortcuts reference and preferences" beneath it. Read the first card, under a small "Preferences" heading. Do not click its switch.
-  - Scroll down once inside the pane so the shortcut groups below the Preferences card come into view, and read them.
+  - You are on the Settings page with its Shortcuts tab selected; the pane heading reads "Shortcuts" with "Keyboard shortcuts reference and preferences" beneath it. Read the "Preferences" section at the top and note whether its "Enable shortcuts" switch is on. Do not click the switch.
+  - Read the "Chat Navigation" group directly under Preferences. Do not scroll.
 expectations:
   - The "Shortcuts" tab is highlighted in the settings navigation on the left of the page.
-  - A "Preferences" card shows a row labelled "Enable shortcuts" whose switch is on.
-  - At least two group headings are visible (for example "Chat Navigation", "Panel Navigation" or "Actions"), each above a card of rows; every row has an action name on the left and one or more small key caps on the right (such as "Alt" + "1" or "Alt" + "C").
+  - A "Preferences" section shows a row labelled "Enable shortcuts" whose switch is on.
+  - Under it, a "Chat Navigation" group heading sits above its rows; every row has an action name on the left and one or more small key caps on the right (such as "Alt" + "1").
   - No text is clipped, overlapping or unreadable, and no red error banner is visible.
 max_steps: 6
 max_seconds: 180

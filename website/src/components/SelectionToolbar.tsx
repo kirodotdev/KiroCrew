@@ -473,6 +473,12 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   suspendedRef.current = suspended
   const externalOnlyRef = useRef(externalOnly)
   externalOnlyRef.current = externalOnly
+  // Bumped each time `externalSelection` opens the box. A press inside the
+  // container defers its dismissal a tick; when that same press is what made
+  // the host hand over a selection (a code block's gutter button), the open
+  // can land BEFORE the deferred close — a touch tap fires mousedown, mouseup
+  // and click together — and the close must not undo it.
+  const externalOpenSeqRef = useRef(0)
   const codeSelectionRef = useRef(codeSelection)
   codeSelectionRef.current = codeSelection
   // The composer's draft text lives HERE, not in `ComposerBox`, so it survives
@@ -866,7 +872,11 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // Clicking inside the container clears the selection (cursor reposition) —
       // dismiss after a tick so the new (empty) selection state is readable.
       if (containerRef.current && containerRef.current.contains(e.target as Node)) {
-        defer(() => { if (!window.getSelection()?.toString().trim()) setVisible(false) }, 0)
+        const seq = externalOpenSeqRef.current
+        defer(() => {
+          if (externalOpenSeqRef.current !== seq) return
+          if (!window.getSelection()?.toString().trim()) setVisible(false)
+        }, 0)
         return
       }
       setVisible(false)
@@ -1037,6 +1047,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     selectionRectRef.current = composerRef.current ? null : new DOMRect(externalSelection.x, externalSelection.y, 0, 0)
     setPos({ x: externalSelection.x, y: externalSelection.y + 8 })
     sourceRef.current = 'external'
+    externalOpenSeqRef.current += 1
     const activeComposer = composerRef.current
     if (activeComposer) {
       // The selection lives in another document (or an editor), so there is no

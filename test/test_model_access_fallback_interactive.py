@@ -30,6 +30,7 @@ from kiro_crew.acp.client import AcpError
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.chat_utils import MODEL_UNENTITLED_KIND, SYNTHETIC_RECOVERY_KIND
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
+from kiro_crew.testing.wait import await_until
 
 _MA = ReplayFamily.MODEL_ACCESS
 _MA_REPLAY = frozenset({_MA})
@@ -1083,7 +1084,9 @@ async def test_swap_holds_the_pick_lock_across_the_rpc_and_state_writes(tmp_path
     # Release the RPC; the swap finishes its state writes and releases the lock,
     # then the competitor gets in.
     let_rpc_return.set()
-    await asyncio.wait_for(asyncio.gather(swap_task, pick_task), timeout=5)
+    await await_until(
+        asyncio.gather(swap_task, pick_task), what="the swap and the competitor both finishing"
+    )
 
     # The competitor observed the FULLY written record, never the half-written
     # one: the sticky fields are all present together.

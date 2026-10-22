@@ -570,12 +570,13 @@ class TestBothWritePointsConsultTheCeiling:
                 f"{mod.__name__} re-declares the builtin tool→scope map; it belongs to "
                 f"platform/governance.py (see BUILTIN_TOOL_SCOPES)"
             )
-        # agent.py's writers are composed from the agent_materialization modules:
-        # none of them may carry the map, and the one predicate they all consult
+        # agent.py's writers are composed from the agent_parts and agent_materialization
+        # modules: none of them may carry the map, and the one predicate they all consult
         # is the shared one.
         agent_parts = [agent] + [
-            importlib.import_module(f"{agent_materialization.__name__}.{info.name}")
-            for info in pkgutil.iter_modules(agent_materialization.__path__)
+            importlib.import_module(f"{package.__name__}.{info.name}")
+            for package in (agent_materialization, importlib.import_module("kiro_crew.agent_parts"))
+            for info in pkgutil.iter_modules(package.__path__)
         ]
         assert len(agent_parts) > 1, "the agent_materialization modules were not found"
         for mod in agent_parts:
@@ -1182,9 +1183,9 @@ class TestEveryWriterRevokesAStaleGrant:
         from kiro_crew.apps import bridges
         from kiro_crew.dashboard.handlers import mcp as mcp_handler
 
-        # agent.py's writers are composed from the agent_materialization modules,
-        # so the agent side is judged on the whole composition; the predicate it
-        # consults is the one ``_may_auto_approve`` wraps.
+        # agent.py's writers are composed from its agent_parts owners and the
+        # agent_materialization modules; the agent side is judged on agent.py and those
+        # modules; the predicate it consults is the one ``_may_auto_approve`` wraps.
         agent_src = "\n".join(
             inspect.getsource(mod)
             for mod in [agent]
@@ -1338,8 +1339,8 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
     def test_every_crew_spec_writer_filters_or_inherits(self) -> None:
         """Writer parity: the NEXT installer cannot reintroduce the gap.
 
-        Every Crew-authored agent-spec writer in ``agent.py``, or in the
-        ``agent_materialization`` modules it is composed from, must either
+        Every Crew-authored agent-spec writer in ``agent.py`` and its ``agent_parts``
+        owners, or in the ``agent_materialization`` modules it is composed from, must either
         derive from ``build_agent_config`` (which filters), hand its own
         assembled spec to ``_apply_allowed_tools_ceiling`` (the same filter the
         constructor runs, pinned by the case above) or to the shared

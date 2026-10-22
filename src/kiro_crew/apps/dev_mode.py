@@ -49,6 +49,8 @@ from kiro_crew.apps.manager import (
     _write_installed,
     app_dir,
     apps_dir,
+    hold_app_record_lock,
+    holds_app_record_locks,
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.security import is_sensitive_path, path_contains_sensitive
@@ -355,6 +357,7 @@ def _set_dev_cache(names: set[str]) -> None:
     _dev_apps_cache = set(names)
 
 
+@holds_app_record_locks
 def set_dev_mode(
     name: str, enabled: bool, *, confirm_out_of_install_root: bool = False
 ) -> dict[str, Any]:
@@ -373,8 +376,9 @@ def set_dev_mode(
     """
     if not _check_path_safety(name):
         return {"error": f"invalid app name {name!r}"}
-    # Cheap validation read outside the lock — builtin/not-installed status does
-    # not change under us. The authoritative read → mutate → write happens again
+    hold_app_record_lock(name)
+    # Cheap validation read outside the sentinel lock (the record lock above is
+    # already held) — builtin/not-installed status does not change under us. The authoritative read → mutate → write happens again
     # INSIDE the lock below so the installed.json write is atomic with the
     # sentinel update.
     meta = _read_installed(name)

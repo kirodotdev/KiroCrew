@@ -73,9 +73,10 @@ pass and exposes a redacted reason in progress and the per-change run result.
   incomplete file coverage. Design is one dimension of that review, not a
   separate gate. The Focus Report is built deterministically by
   `sage_lib/report.py` from the result records.
-- **Backend** (`backend/routes.py`): registers the `/api/apps/code-review-sage`
-  routes on the dashboard app, including `GET .../review-queue` (open PRs that
-  request the `gh` user's review), which backs the page's **Requests** rail tab.
+- **Backend** (`backend/routes.py`, with its handlers in `backend/routes_parts/`):
+  registers the `/api/apps/code-review-sage` routes on the dashboard app,
+  including `GET .../review-queue` (open PRs that request the `gh` user's
+  review), which backs the page's **Requests** rail tab.
 - **Authorization**: every mutating route is the dashboard owner's alone — a
   non-owner dashboard subject and any app token (Sage's own included) get the
   shared 403 `owner_only` before a body is read. A review runs with the owner's
@@ -93,7 +94,15 @@ code_review_sage/
 ├── __init__.py              # exposes register_routes
 ├── backend/
 │   ├── __init__.py
-│   └── routes.py            # /api/apps/code-review-sage routes
+│   ├── routes.py            # /api/apps/code-review-sage routes: state, follow-up, registration
+│   └── routes_parts/        # the handlers, composed onto routes.py (see its __init__)
+│       ├── registry.py      # durable run registry (runs.json) + per-change claims
+│       ├── review_runs.py   # pasted-link / whole-repo kickoffs, background driver, outcome
+│       ├── run_threads.py   # per-run detail, report, cancel, delete, report archive
+│       ├── publishing.py    # posting findings to the PR, dismissals, pending count
+│       ├── repos.py         # repo + PR discovery, pinned-repo list
+│       ├── settings.py      # review settings: model, effort, namespaces, concurrency
+│       └── namespaces.py    # learning namespaces, learnings view, consolidation
 ├── sage_lib/
 │   ├── store.py             # data layout self-heal + config
 │   ├── review_driver.py     # code-enforced one-isolated-review-per-change loop

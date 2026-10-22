@@ -20,6 +20,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
 import { renderWithProviders } from './helpers'
 import App from '../App'
+import { api } from '../api/client'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 import { __resetBottomTerminal, openBottomTerminal } from '../hooks/useBottomTerminal'
 
@@ -56,6 +57,7 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    kirocrewConfig: vi.fn().mockResolvedValue({}),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {
@@ -145,5 +147,23 @@ describe('App nav rail — Terminal row reflects the docked panel state', () => 
     act(() => { openBottomTerminal() })
 
     await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
+  })
+
+  it('answers "Run in terminal" on a route with no chat page (#10708)', async () => {
+    // Before the shell answered unscoped requests, only the chat page did, so
+    // a code block on any other route got no terminal at all.
+    renderWithProviders(<App />, { route: '/logs' })
+    await waitFor(() => expect(terminalRow()).toBeInTheDocument())
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument()
+    // Let the reuse-setting read settle: while it is pending the run copies.
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
+    await act(async () => {})
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'npm test', reqId: 'r1' } }))
+    })
+
+    await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
+    expect(screen.getAllByTestId('cli-panel')).toHaveLength(1)
   })
 })

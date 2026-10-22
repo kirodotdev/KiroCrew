@@ -626,7 +626,34 @@ def _write_pinned(path: Path, data: bytes) -> None:
         os.close(d)
 
 
+#: Called as ``listener(slug, member, record)`` after each write of a goal record.
+_change_listeners: list[Any] = []
+
+
+def add_change_listener(listener: Any) -> None:
+    """Call *listener* after every write of a goal record, with the record written.
+
+    The gateway registers one (``dashboard.crewmate_feed``) to record the goal into
+    the crewmate's crew log for its Dashboard page. A listener runs on the writing
+    thread and must hand real work elsewhere; one that raises is logged and skipped.
+    """
+    _change_listeners.append(listener)
+
+
+def _notify_change(slug: str, member: str, rec: dict[str, Any]) -> None:
+    for listener in list(_change_listeners):
+        try:
+            listener(slug, member, rec)
+        except Exception:
+            logger.debug("goal change listener failed for %s", slug, exc_info=True)
+
+
 def _write(slug: str, member: str, rec: dict[str, Any]) -> None:
+    _write_record(slug, member, rec)
+    _notify_change(slug, member, rec)
+
+
+def _write_record(slug: str, member: str, rec: dict[str, Any]) -> None:
     path = member_goals_path(slug)
     data = _payload(slug, member, rec)
     try:

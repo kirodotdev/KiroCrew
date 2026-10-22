@@ -41,9 +41,10 @@ import pytest
 
 from kiro_crew import acp_backends, security
 from kiro_crew.acp import types as acp_types
-from kiro_crew.agent_sdk import host_auth, tool_gate
+from kiro_crew.agent_sdk import host_auth, native_allow_stores, tool_gate
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.security import paths as security_paths
+from kiro_crew.security import paths_targets
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 SRC = Path(__file__).resolve().parent.parent / "src"
@@ -326,7 +327,9 @@ def test_the_override_pairing_is_the_declaration_projection() -> None:
     relocated token is still fenced. The pairing has to name the same leaf the
     floor fences and the same variable the resolver reads -- it was a third
     hand-maintained copy of both."""
-    assert security_paths._OVERRIDE_ANCHORED_LEAVES == host_auth.override_anchored_leaves()
+    assert security_paths._OVERRIDE_ANCHORED_LEAVES == (
+        host_auth.override_anchored_leaves() + native_allow_stores.override_anchored_leaves()
+    )
     assert security._OVERRIDE_ANCHORED_LEAVES is security_paths._OVERRIDE_ANCHORED_LEAVES
     assert security_paths._OVERRIDE_ANCHORED_LEAVES, "no leaf is override-anchored; vacuous"
 
@@ -335,7 +338,7 @@ def test_every_anchored_variable_is_a_declared_override() -> None:
     """The resolver only resolves variables the declarations name, so a variable
     that appears in the pairing but not in that list anchors on a root nobody ever
     resolved -- an entry describing protection that does not exist."""
-    resolved = set(host_auth.home_override_env_vars())
+    resolved = set(paths_targets._ADAPTER_ROOT_ENVS)
     for leaf, env_vars, _under_root in security_paths._OVERRIDE_ANCHORED_LEAVES:
         for env_var in env_vars:
             assert env_var in resolved, (
@@ -609,7 +612,7 @@ def test_no_current_driver_implements_the_login_protocol() -> None:
 def _no_adapter_overrides(monkeypatch):
     """Clear every declared override so a developer machine that exports one
     cannot make a default-location assertion pass for the wrong reason."""
-    for env_var in host_auth.home_override_env_vars():
+    for env_var in paths_targets._ADAPTER_ROOT_ENVS:
         monkeypatch.delenv(env_var, raising=False)
     security._home_targets_cache.clear()
     yield
@@ -624,7 +627,7 @@ def test_the_resolved_root_key_is_still_hashable(_no_adapter_overrides, tmp_path
     roots = security._resolve_root_anchors(str(tmp_path))
     assert isinstance(hash(roots), int)
     assert isinstance(roots.adapter_roots, tuple)
-    assert {env for env, _root in roots.adapter_roots} == set(host_auth.home_override_env_vars())
+    assert {env for env, _root in roots.adapter_roots} == set(paths_targets._ADAPTER_ROOT_ENVS)
 
 
 def test_a_changed_declared_override_changes_the_key(monkeypatch, tmp_path) -> None:

@@ -315,7 +315,7 @@ class TestTheCrewmateIsToldOnEveryTurn:
         instance.set_structure_lock(SLUG, True)
         # No page in force: the tab shows the suggestions page, and the lock still rides.
         assert dashboard_agentic.turn_block(SLUG) == (
-            f"[DASHBOARD]\n{dashboard_agentic.SUGGESTIONS_LINE}\n{instance.LOCKED_REFUSAL}"
+            f"[DASHBOARD]\n{dashboard_agentic.SUGGESTIONS_STATE}\n{instance.LOCKED_REFUSAL}"
         )
 
     def test_the_line_forbids_every_page_change_and_points_at_the_person(self) -> None:

@@ -30,6 +30,7 @@ from conftest import requires_symlinks
 from kiro_crew import session_pid, session_work_dir
 from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.testing.wait import async_wait_until
 from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_NAME
 
 OTHER_HOME = "f" * 24
@@ -1396,10 +1397,10 @@ def _ceiling_spent(what: str, give_up_at: float) -> NoReturn:
 async def _await_until(predicate: Callable[[], bool], what: str, give_up_at: float) -> None:
     """Yield the loop until *predicate* holds, failing by name at *give_up_at*."""
     loop = asyncio.get_running_loop()
-    while not predicate():
-        if loop.time() >= give_up_at:
-            _ceiling_spent(what, give_up_at)
-        await asyncio.sleep(0.01)
+    try:
+        await async_wait_until(predicate, timeout=max(0.0, give_up_at - loop.time()))
+    except AssertionError:
+        _ceiling_spent(what, give_up_at)
 
 
 class TestRegistryLeavesASiblingsDirectory:

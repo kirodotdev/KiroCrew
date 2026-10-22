@@ -111,7 +111,7 @@ percentage is only logged. The next cycle's first task starts a fresh session.
 
 ### Session Identity
 
-Heartbeat runs in its own session (`HEARTBEAT_KEY = "_hb"` in `session_parts/policy.py`), distinct from the shared `BACKGROUND_KEY = "_bg"` used by cron / consolidator / chat-title. The session uses the dedicated `kirocrew-heartbeat` agent (installed by `_install_heartbeat_agent` in `agent.py`) — a minimal MCP surface (`kirocrew-core`, plus the default-spec servers behind the edition's `heartbeat_safe_tools()` pins; a standalone install pins none) so cycle cold-starts stay cheap. SEL audit logging stays gateway-side in `_heartbeat_approval` regardless; the per-agent narrowing is purely a cold-start cost reduction.
+Heartbeat runs in its own session (`HEARTBEAT_KEY = "_hb"` in `session_parts/policy.py`), distinct from the shared `BACKGROUND_KEY = "_bg"` used by cron / consolidator / chat-title. The session uses the dedicated `kirocrew-heartbeat` agent (installed by `_install_heartbeat_agent` in `agent_parts/spec_rebuild.py`) — a minimal MCP surface (`kirocrew-core`, plus the default-spec servers behind the edition's `heartbeat_safe_tools()` pins; a standalone install pins none) so cycle cold-starts stay cheap. SEL audit logging stays gateway-side in `_heartbeat_approval` regardless; the per-agent narrowing is purely a cold-start cost reduction.
 
 The heartbeat spec copies the default spec's `heartbeat_mirrored_servers()` entries — `kirocrew-core` with `autoApprove` included and the main agent's tool filters stripped, then each server an edition pinned a tool on verbatim minus `autoApprove` (kiro-cli would honour that field locally, before `_heartbeat_approval` saw the call, on the one agent with no approver) — so it is a derived spec like `kirocrew-worker`. A name the default spec does not mount is skipped, so an edition contributes a heartbeat server by also returning it from `extra_mcp_servers()`. Every spawn runs `require_fresh_derived_spec`, which compares the heartbeat file's own grant surface with the one `heartbeat_mcp_servers` derives from `kirocrew.json` as it stands: its `mcpServers` (volatile per-launch env values aside), its `tools`, no key the installer does not write, and an `includeMcpJson` that is literally `false` (kiro-cli reads a missing key as true and merges the global `mcp.json`). A copy that does not match is re-derived once, and the start is refused with `DerivedSpecStale` when the re-derived file still does not match. An edit to any other part of the default spec does not touch the heartbeat copy; the fingerprint covers exactly the mirrored servers, edition ones included.
 
@@ -151,7 +151,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `HEARTBEAT_KEY` | `_hb` | `session_parts/policy.py` |
 | `_HEARTBEAT_SAFE_CORE_MCP_TOOLS` | frozenset of `kirocrew-core` reads | `slack/gateway_runtime/tool_policy.py` |
 | `_HEARTBEAT_KEEP_INJECTION` | reminder string | `slack/gateway_runtime/heartbeat_turns.py` |
-| `kirocrew-heartbeat` agent | minimal-MCP agent JSON | installed by `agent.py:_install_heartbeat_agent` |
+| `kirocrew-heartbeat` agent | minimal-MCP agent JSON | installed by `agent_parts/spec_rebuild.py:_install_heartbeat_agent` |
 
 ## Known Limitations
 

@@ -281,14 +281,21 @@ def _write_protected_targets() -> tuple[str, ...]:
     Kiro Crew's own configuration. It is a superset of the 18 per-file entries ``strict``
     already hides there, and measured not to disturb the interpreter.
 
+    Each harness's own permission files (``native_allow_stores``) are left out: they are on
+    the write tier only to refuse the agent's file-edit tools, and masking their parents
+    would hide whole harness config directories (``~/.claude``, ``~/.codex`` ...) from the
+    child, reads included.
+
     Fail-soft: if the helper is unavailable the sandbox is still applied without the extra
     masking, which beats refusing to run any test at all.
     """
     try:
+        from kiro_crew.agent_sdk.native_allow_stores import home_leaves
         from kiro_crew.security import write_protected_home_paths
 
         home = Path.home()
-        parents = {(home / rel).parent for rel in write_protected_home_paths()}
+        native = set(home_leaves())
+        parents = {(home / rel).parent for rel in write_protected_home_paths() if rel not in native}
         return tuple(sorted(str(p) for p in parents if p.is_dir()))
     except Exception:  # noqa: BLE001 — masking is defense-in-depth, not the only control
         logger.debug("could not resolve write-protected paths to mask", exc_info=True)

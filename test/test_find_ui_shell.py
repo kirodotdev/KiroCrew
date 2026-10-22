@@ -229,10 +229,10 @@ def test_the_bell_feed_and_the_page_feed_are_separate_sites() -> None:
 
     bell_clear = _loc("clear all notifications", "notifications.clear-all")
     page_clear = _loc("delete all notifications", "notifications.page-clear-all")
-    assert bell_clear["label"] == "Clear all notifications?"
+    assert bell_clear["label"] == "Clear all notifications"
     assert _ids(bell_clear["placements"][0]) == ["shell.notifications", "notifications.clear-all"]
     assert _req(bell_clear["placements"][0]) == ["has_notifications"]
-    assert page_clear["label"] == "Clear"
+    assert page_clear["label"] == "Clear all"
     assert _ids(page_clear["placements"][0]) == [
         "page.notifications",
         "notifications.page-clear-all",

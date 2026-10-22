@@ -150,6 +150,9 @@ async def api_crons(request: web.Request) -> web.Response:
             # to the store's True and a save would silently re-enable the
             # persistent session on a job the user set to ephemeral.
             "persistent_session": j.persistent_session,
+            # The edit form's auto-pause field reads it so a save shows the
+            # job's real limit; 0 means the job never auto-pauses.
+            "auto_pause_after_failures": j.auto_pause_after_failures,
             "folder_id": j.folder_id,
             "chat_folder_id": j.chat_folder_id,
             # The Schedule-page template this job was seeded from, or None. A

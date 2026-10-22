@@ -257,7 +257,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     expect(screen.queryByTestId('crew-wake-section')).toBeNull()
   })
 
-  it('lists this crewmate\'s schedules as readable rows — name, when, state — and no others', async () => {
+  it('lists this mate\'s schedules as readable rows — name, when, state — and no others', async () => {
     await openCrewmate()
     const list = await openSchedulesTab()
     await waitFor(() => expect(within(list).getAllByTestId('crew-schedule-row')).toHaveLength(2))
@@ -275,7 +275,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
   })
 
-  it('matches a private schedule on the crewmate\'s IMMUTABLE id, not its display name', async () => {
+  it('matches a private schedule on the mate\'s IMMUTABLE id, not its display name', async () => {
     // The fixtures above all have name === slug, which cannot tell the two identities
     // apart. A private schedule's `member_id` is the slug, so for a crewmate whose
     // display name is not already its own slug, matching on the name showed nothing.
@@ -294,7 +294,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     await waitFor(() => expect(within(list).getAllByTestId('crew-schedule-row')).toHaveLength(2))
   })
 
-  it('does not hand the default crewmate a job that belongs to nobody', async () => {
+  it('does not hand the default mate a job that belongs to nobody', async () => {
     // `kirocrew` IS the default crew, and the crew editor's pane WOULD list the
     // ownerless job there (`wakesCrew`'s last fallback). The card does not: it answers
     // what wakes this crewmate, and a schedule with no crewmate is nobody's.
@@ -304,11 +304,11 @@ describe('MembersPage Profile card Schedules tab', () => {
     expect(list).not.toHaveTextContent('nightly backup')
   })
 
-  it('a crewmate nothing wakes gets the quiet line, in the panel\'s own words', async () => {
+  it('a mate nothing wakes gets the quiet line, in the panel\'s own words', async () => {
     vi.mocked(api.crons).mockResolvedValue({ jobs: [] } as never)
     await openCrewmate()
     const list = await openSchedulesTab()
-    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this crewmate on its own yet/i)
+    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this mate on its own yet/i)
     // No `0` anywhere — not on the rail, not in the list.
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
     expect(within(screen.getByTestId('crew-profile-tabs')).queryByText('0')).toBeNull()
@@ -323,7 +323,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     await waitFor(() => expect(within(list).getAllByTestId('crew-schedule-row')).toHaveLength(2))
   })
 
-  it('an unreadable cron list is not reported as "nothing wakes this crewmate"', async () => {
+  it('an unreadable cron list is not reported as "nothing wakes this mate"', async () => {
     // Absence of an answer is not an answer of none. The old chip dropped its badge on a
     // failed read for exactly this reason; the list must not state the affirmative
     // empty line on the strength of a request that failed.
@@ -333,7 +333,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     await waitFor(() => expect(vi.mocked(api.crons)).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 50))
     expect(within(list).queryByTestId('crew-schedule-empty')).toBeNull()
-    expect(list).not.toHaveTextContent(/Nothing wakes this crewmate/i)
+    expect(list).not.toHaveTextContent(/Nothing wakes this mate/i)
   })
 
   it('a row opens that job on the Schedule page; the footer opens the page itself', async () => {
@@ -367,7 +367,7 @@ describe('MembersPage Profile card Schedules tab', () => {
 })
 
 describe('MembersPage Profile card — New schedule', () => {
-  it('pushes the crew editor\'s own pane as a page over the card, with a back control naming the crewmate', async () => {
+  it('pushes the crew editor\'s own pane as a page over the card, with a back control naming the mate', async () => {
     await openCrewmate()
     await openSchedulesTab()
     fireEvent.click(screen.getByTestId('crew-schedule-create'))
@@ -389,11 +389,11 @@ describe('MembersPage Profile card — New schedule', () => {
     // second "What wakes this crewmate" and no second close control under the bar.
     expect(section).toHaveAttribute('data-chromeless', 'true')
     expect(within(section).queryByTestId('crew-wake-add')).toBeNull()
-    expect(within(page).queryByText('What wakes this crewmate')).toBeNull()
+    expect(within(page).queryByText('What wakes this mate')).toBeNull()
     expect(within(page).queryAllByRole('button', { name: /cancel new schedule/i })).toHaveLength(0)
     // The form's pinned-crew hint speaks this page's noun: the reader is on the
     // crewmate's Profile, not in the crew editor the editor's sentence names.
-    expect(within(section).getByText("Created from this crewmate's profile, so the job runs as this crewmate.")).toBeInTheDocument()
+    expect(within(section).getByText("Created from this mate's profile, so the job runs as this mate.")).toBeInTheDocument()
     expect(within(section).queryByText(/this crew's editor/)).toBeNull()
     // A clean form: back pops to the list with no question asked.
     fireEvent.click(screen.getByTestId('crew-profile-back'))
@@ -402,7 +402,7 @@ describe('MembersPage Profile card — New schedule', () => {
     expect(screen.getByTestId('crew-schedule-list')).toBeInTheDocument()
   })
 
-  it('writes the provider TEMPLATE for a crewmate whose identity persists, filed under its NAME', async () => {
+  it('writes the provider TEMPLATE for a mate whose identity persists, filed under its NAME', async () => {
     // `agent` and `member_id` are different fields and the form has to pass both. For a
     // crewmate with a persisted identity the server keeps `member_id`, so `wakesCrew`
     // matches on that and `agent` is free to carry the template — which is what
@@ -432,7 +432,7 @@ describe('MembersPage Profile card — New schedule', () => {
     )).toBe(true)
   })
 
-  it('writes the DISPLAY NAME for a crewmate whose identity does not persist, and lists it back', async () => {
+  it('writes the DISPLAY NAME for a mate whose identity does not persist, and lists it back', async () => {
     // A legacy crewmate has no persisted identity, so the server CLEARS `member_id` as
     // the job is created and `wakesCrew` falls through to comparing `agent` against the
     // display name. Writing the provider template there matched neither field.
@@ -545,7 +545,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     act(() => { release({ ok: true, id: 'j-new' }) })
   })
 
-  it('asks before a crewmate switch from the switcher discards a draft, and remounts the card once it does', async () => {
+  it('asks before a mate switch from the switcher discards a draft, and remounts the card once it does', async () => {
     // Two rules meet here. The card is keyed on the crewmate, so a switch REMOUNTS it and
     // the form cannot survive with its `memberId` silently rebound. And because that
     // remount destroys typed work, the switch asks first.
@@ -786,7 +786,7 @@ describe('MembersPage Profile card — Memory tile', () => {
     return await screen.findByTestId('crew-profile-memory')
   }
 
-  it("opens THAT crewmate's private memory page, the store preselected", async () => {
+  it("opens THAT mate's private memory page, the store preselected", async () => {
     const tile = await openProfile({
       name: 'radar', slug: 'radar', slot_key: 'member-radar',
       memory_store: 'member-radar', memory_version: 2, memory_owner: 'radar',
@@ -796,7 +796,7 @@ describe('MembersPage Profile card — Memory tile', () => {
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=member-radar'))
   })
 
-  it('stays a readout for a crewmate on the shared store', async () => {
+  it('stays a readout for a mate on the shared store', async () => {
     const tile = await openProfile({
       name: 'scout', slug: 'scout', slot_key: 'member-scout',
       memory_store: 'default', memory_version: 1, memory_owner: '',

@@ -12,6 +12,7 @@ import json
 import pytest
 
 from kiro_crew.dashboard import session_pulse_counter as spc
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +59,6 @@ class TestOffLoopIncrement:
 
     @pytest.mark.asyncio
     async def test_with_a_running_loop_the_io_leaves_the_loop_thread(_self, _isolated_home) -> None:
-        import asyncio
         import threading
 
         loop_thread = threading.get_ident()
@@ -66,7 +66,7 @@ class TestOffLoopIncrement:
         real = spc.increment_user_session_count
 
         def _recording() -> int:
-            # Recorded AFTER the write returns, not before: the poll below exits as
+            # Recorded AFTER the write returns, not before: the wait below exits as
             # soon as `seen` is non-empty, so appending first would let the test --
             # and `tmp_path` teardown -- run while this worker is still writing.
             # The ident is the same either way, since the whole wrapper runs on the
@@ -78,11 +78,8 @@ class TestOffLoopIncrement:
         spc.increment_user_session_count = _recording  # type: ignore[assignment]
         try:
             spc.increment_user_session_count_off_loop()
-            # Fire-and-forget: give the executor a moment to pick the job up.
-            for _ in range(200):
-                if seen:
-                    break
-                await asyncio.sleep(0.01)
+            # Fire-and-forget: the executor picks the job up on its own time.
+            await async_wait_until(lambda: seen)
         finally:
             spc.increment_user_session_count = real  # type: ignore[assignment]
 

@@ -319,6 +319,26 @@ async def request_approval(
     )
 
 
+def linked_session_busy(self: DashboardState, session_key: str) -> bool:
+    """Whether *session_key*'s turn lease is held right now.
+
+    The same lease a channel dispatcher checks before it starts or queues a
+    turn (``SessionManager.is_busy``): held for the whole turn by whichever
+    path runs it, released when it ends. A slot bound to that session reads it
+    through ``_ChatSlot.linked_turn_running`` so a channel-path turn is not
+    summarised as interrupted. Never raises; no session manager answers False.
+    """
+    sessions = getattr(self, "sessions", None)
+    is_busy = getattr(sessions, "is_busy", None)
+    if not session_key or not callable(is_busy):
+        return False
+    try:
+        return is_busy(session_key) is True
+    except Exception:
+        logger.debug("linked_session_busy: probe failed for %s", session_key, exc_info=True)
+        return False
+
+
 def pending_coordinator_approvals(self: DashboardState, slot_key: str) -> list[dict]:
     """Live coordinator approvals owned by *slot_key*, oldest first.
 
@@ -457,6 +477,11 @@ def mark_question_pending(
     slot = self._slots.get(slot_key)
     if slot is not None:
         self.notify_dashboard_card(slot, "question")
+    # Opening a question can land after its tool call's log growth settled (a
+    # retried open POST), so tell the feed directly, as retiring one does.
+    from kiro_crew.dashboard import crewmate_feed
+
+    crewmate_feed.question_retired(slot_key)
 
 
 def clear_question_pending(
@@ -468,13 +493,20 @@ def clear_question_pending(
     reason: str | None = None,
 ) -> bool:
     """Retire only question records matching both supplied filters."""
-    return _questions_for(self).clear_pending(
+    cleared = _questions_for(self).clear_pending(
         self,
         slot_key,
         blocking=blocking,
         card_id=card_id,
         reason=reason,
     )
+    if cleared:
+        # A crewmate page's waiting fold is fed on log growth, and retiring a
+        # question writes no log entry: tell the feed directly.
+        from kiro_crew.dashboard import crewmate_feed
+
+        crewmate_feed.question_retired(slot_key)
+    return cleared
 
 
 def _broadcast_question_retired(

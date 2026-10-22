@@ -118,16 +118,56 @@ describe('createSessionsProvider — result mapping', () => {
     }
   })
 
-  it('falls back to the session key when the title is missing', async () => {
+  it('shows "Untitled session", never the key, for an untitled hit; actions keep the key (#20879)', async () => {
     const fetchSessions = vi.fn(
-      async (): Promise<SessionSearchResponse> => ({ sessions: [{ key: 'abc123' }] }),
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [
+          { key: 'chat-9-1785440411' },
+          { key: 'chat-8-1785440400', title: 'chat-8-1785440400' },
+          { key: 's-named', title: 'Named work' },
+        ],
+      }),
+    )
+    const { d, openSession } = deps({ fetchSessions })
+    const results = await createSessionsProvider(d).search('')
+    expect(results.map(r => r.title)).toEqual(['Untitled session', 'Untitled session', 'Named work'])
+    // Two untitled rows stay distinct: each one's key leads its subtitle.
+    expect(results.map(r => r.subtitle)).toEqual(['chat-9-1785440411', 'chat-8-1785440400', undefined])
+    // Open and copy still carry the old {key, title || key} payload.
+    expect(results[0].enter).toEqual({ kind: 'open-session', sessionKey: 'chat-9-1785440411', title: 'chat-9-1785440411' })
+    results[0].onActivate?.()
+    expect(openSession).toHaveBeenCalledWith({ key: 'chat-9-1785440411', title: 'chat-9-1785440411', instanceId: undefined })
+  })
+
+  it('ranks an untitled hit by its key as before, with highlights inside the shown label', async () => {
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [{ key: 'chat-9-1785440411' }],
+      }),
     )
     const { d } = deps({ fetchSessions })
-    const p = createSessionsProvider(d)
+    // The key's match ends past the 16th character, beyond the shown label.
+    const [r] = await createSessionsProvider(d).search('440411')
+    expect(r.title).toBe('Untitled session')
+    // Scored on the key, as before, so the order does not change ...
+    expect(r.score).toBeGreaterThan(0)
+    // ... but no highlight points at a character the row does not show.
+    expect(r.indices.every(i => i < r.title.length)).toBe(true)
+    // The key line shows why it matched, with the query highlighted there.
+    expect(r.subtitle).toBe('chat-9-1785440411')
+    expect(r.subtitleIndices).toEqual([11, 12, 13, 14, 15, 16])
+  })
 
-    const [r] = await p.search('abc')
-    expect(r.title).toBe('abc123')
-    expect(r.subtitle).toBeUndefined()
+  it('keeps the snippet, not the key, as an untitled body hit\'s subtitle', async () => {
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [{ key: 'chat-9-1785440411', snippet: 'fix the grid', agent: 'kirocrew' }],
+      }),
+    )
+    const { d } = deps({ fetchSessions })
+    const [r] = await createSessionsProvider(d).search('grid')
+    expect(r.title).toBe('Untitled session')
+    expect(r.subtitle).toBe('fix the grid')
   })
 
   it('keeps non-matching backend hits (neutral score) rather than dropping them', async () => {

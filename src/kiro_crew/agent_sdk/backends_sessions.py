@@ -43,7 +43,7 @@ from kiro_crew.agent_sdk.backends import (
 # that ``_kiro.dev/session/terminate`` leaves on disk.
 #
 # codex-acp answers yes with a thread ``codex`` persists under ``CODEX_HOME``, and
-# the answer is MEASURED rather than argued -- codex-acp 1.11.0 against codex
+# the answer is MEASURED rather than argued -- measured on codex-acp 1.11.0 against codex
 # 0.154.0, one real adapter (the load half re-measured on 2.2.2, below):
 #
 #   * ``session/close`` (a request) evicts: the sessionId stops answering. That is

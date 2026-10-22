@@ -71,7 +71,6 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slack_options_owner_key,
     subagent_event_slot,
 )
-from kiro_crew.dashboard.cron_inject import queue_cron_notification
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _pip_install_channel_available,
     guard_owner_surface_routes,
@@ -789,54 +788,14 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # Text wrapper kept for LLM context and queue detection;
                     # cronLabel in cls JSON provides structured data for frontend.
                     wrapped = f'{CRON_NOTIFY_PREFIX}"{label}"]\n{text}\n{CRON_NOTIFY_END}'
-                    inject_cls = json.dumps({"cronLabel": label})
-                    # Queue while a turn is live -- same predicate the user-typed
-                    # path uses (chat_handlers._api_chat).
-                    if slot.running:
-                        from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+                    # The session decides idle (a cron row and a turn) vs running (a
+                    # queued card, dropping the oldest entry when the live queue is full).
+                    from kiro_crew.dashboard import session_deliver
 
-                        if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
-                            evicted = slot.queue_pop(0)
-                            logger.warning(
-                                "Queue full for slot %s — evicting oldest message", slot_key
-                            )
-                            _remove_queued_by_id(slot.messages, evicted["id"])
-                        queue_cron_notification(slot, wrapped, label)
-                        state.push_slots_update()
-                    else:
-                        # circular import: chat_runner imports from
-                        # kiro_crew.dashboard.handlers (for MAX_PROMPT_BYTES,
-                        # _find_prompt, _list_aim_prompts), so we can't import
-                        # it at module top-level without a cycle.
-                        from kiro_crew.dashboard.chat_runner import _run_chat
-                        from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
-
-                        # `cls` is not persisted for role `inject`, so the label
-                        # must also ride in `meta`, which is — otherwise the row
-                        # loses its identity on the next rehydrate.
-                        slot.append(
-                            "inject",
-                            wrapped,
-                            inject_cls,
-                            meta={"injectKind": "cron", "cronLabel": label},
-                        )
-                        task = spawn_guarded_turn(
-                            state,
-                            slot,
-                            _run_chat(
-                                state,
-                                slot,
-                                wrapped,
-                                _directive_user_origin=False,
-                                # Structural provenance for the session ledger:
-                                # the queued twin above carries
-                                # CRON_NOTIFICATION_KIND, and this branch is the
-                                # same injector dispatching directly.
-                                _turn_actor="cron",
-                            ),
-                        )
-                        slot.task = task
-                        state.push_slots_update()
+                    await session_deliver.deliver(
+                        state, slot, wrapped, session_deliver.cron(label), evict_oldest=True
+                    )
+                    state.push_slots_update()
                     sent_session = True
         # Fall back to normal delivery if no session target or session is gone
         if not sent_session:

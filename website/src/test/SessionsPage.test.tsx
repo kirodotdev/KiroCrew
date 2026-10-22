@@ -136,6 +136,24 @@ describe('SessionsPage', () => {
     expect(screen.getByTestId('chat-sid')).toHaveTextContent('s1')
   })
 
+  it('labels an untitled session "Untitled session", never its key, and still opens the key (#20875)', async () => {
+    renderPage([
+      slot('chat-9-1785440411', '', NOW - 60_000),
+      slot('chat-8-1785440400', 'chat-8-1785440400', NOW - 120_000),
+      slot('s-named', 'Named work', NOW - 180_000),
+    ])
+    const untitled = await screen.findByTestId('sessions-row-chat-9-1785440411')
+    expect(untitled).toHaveTextContent('Untitled session')
+    expect(untitled.textContent).not.toContain('chat-9-1785440411')
+    const keyTitled = screen.getByTestId('sessions-row-chat-8-1785440400')
+    expect(keyTitled).toHaveTextContent('Untitled session')
+    expect(keyTitled.textContent).not.toContain('chat-8-1785440400')
+    expect(screen.getByTestId('sessions-row-s-named')).toHaveTextContent('Named work')
+
+    fireEvent.click(untitled)
+    expect(screen.getByTestId('chat-sid')).toHaveTextContent('chat-9-1785440411')
+  })
+
   it('never auto-selects or auto-creates: empty store renders empty state, no slot created', async () => {
     const { store } = renderPage([])
     expect(await screen.findByTestId('empty-state')).toBeInTheDocument()

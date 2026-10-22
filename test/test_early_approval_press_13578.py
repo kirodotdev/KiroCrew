@@ -264,7 +264,8 @@ class TestTelegramEarlyPress:
             await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
             is False
         )
-        assert decider.last_deny_cause == ""
+        # Nobody refused: the cause names the undelivered prompt, not a Deny.
+        assert decider.last_deny_cause == "approval_undeliverable"
 
     @pytest.mark.asyncio
     async def test_an_undelivered_report_does_not_overwrite_a_press_that_landed(self) -> None:

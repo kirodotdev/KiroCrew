@@ -13,8 +13,6 @@ directions, which is why both are pinned here:
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from kiro_crew import crew_log as lg
@@ -23,6 +21,7 @@ from kiro_crew.crew_log import session_tree_projection as stp
 from kiro_crew.dashboard import state as st
 from kiro_crew.dashboard.session_memory import lineage_parents
 from kiro_crew.dashboard.state import _attach_slot_parents
+from kiro_crew.testing.wait import wait_until
 
 GATEWAY = "gateway"
 
@@ -840,9 +839,11 @@ def test_the_frame_after_the_seed_carries_the_edge():
     _unit("s-2", "chat-2", parent="chat-1")
 
     st._request_lineage_seed()
-    deadline = time.monotonic() + 10
-    while not stp.projection().seeded_for_current_store and time.monotonic() < deadline:
-        time.sleep(0.02)
+    wait_until(
+        lambda: stp.projection().seeded_for_current_store,
+        timeout=10,
+        describe=lambda: f"seeded_for_current_store={stp.projection().seeded_for_current_store!r}",
+    )
     assert stp.projection().seeded_for_current_store is True
 
     rows = _rows("chat-1", "chat-2")

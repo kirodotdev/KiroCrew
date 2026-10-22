@@ -11,6 +11,7 @@ import { SubmitBar, type SubmitVerdict } from './ArtifactSubmitBar'
 import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
+import { proseOverlayComments } from './codeComments'
 import { useConfirm } from './ConfirmDialog'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
 import { copyToClipboard } from '../utils/clipboard'
@@ -158,6 +159,18 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     submitSentIds,
   })
   const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe, confirmDiscardDraft, submitSentIds })
+  // Code-block threads (source-offset anchors, see codeComments.ts) show no
+  // chips here, and the prose overlay must not paint them on a prose copy of
+  // the code line: each layer's overlay gets its comments without them.
+  const isMarkdownBody = effectiveKind === 'markdown'
+  const faProse = useMemo(
+    () => (isMarkdownBody ? proseOverlayComments(effectiveContent ?? '', fa.comments) : fa.comments),
+    [isMarkdownBody, effectiveContent, fa.comments],
+  )
+  const faFullProse = useMemo(
+    () => (isMarkdownBody ? proseOverlayComments(effectiveContent ?? '', faFull.comments) : faFull.comments),
+    [isMarkdownBody, effectiveContent, faFull.comments],
+  )
   // The active comment layer for the visible surface.
   const active = fullscreen ? faFull : fa
   /** Run `proceed` unless the visible layer's comment draft would be lost, in
@@ -327,7 +340,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           editing={false}
           onChange={() => { /* read-only in the side panel */ }}
           previewRef={bodyPreviewRef}
-          comments={layer.comments}
+          comments={layer === fa ? faProse : faFullProse}
           heightStyle={BODY_HEIGHT_STYLE}
           onActivateComment={layer.activateComment}
           activeCommentId={layer.activeCommentId}

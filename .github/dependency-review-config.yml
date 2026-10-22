@@ -130,6 +130,16 @@ allow-dependencies-licenses:
   - pkg:npm/opencode-windows-x64                 # MIT -- platform binary of opencode-ai, same repository
   - pkg:npm/opencode-windows-x64-baseline        # MIT -- platform binary of opencode-ai, same repository
 
+  # bowser declares `"license": "MIT"` in its manifest; GitHub's detection reads its
+  # LICENSE file as "MIT AND MITNFA" because the MIT text carries the "no false
+  # attribs" clause (a substantially modified redistribution must replace or remove
+  # the original author's bug-report contacts) -- permissive, no copyleft. It is
+  # reached only through @aws-sdk/core inside pi's dependency tree, which the Real
+  # Adapter Contract Tests lane installs from test/real_adapters/package-lock.json
+  # -- a CI-only test fixture, never shipped, linked, or distributed with the
+  # product. Evidence: https://unpkg.com/bowser@2.14.1/LICENSE
+  - pkg:npm/bowser                               # MIT (+ MITNFA attribution clause) -- CI-only, via pi's @aws-sdk/core
+
 # License gate only — vulnerability scanning is covered separately by the
 # nightly/release Dependency Audit and the Semgrep / CodeQL jobs, so we don't duplicate it here.
 license-check: true

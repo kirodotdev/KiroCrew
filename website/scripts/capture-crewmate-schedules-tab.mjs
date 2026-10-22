@@ -133,7 +133,7 @@ async function openCrewmate(theme, name) {
 /** Frame 02: a crewmate nothing wakes — the state most of a fresh roster is in. */
 {
   const { context, page, chip } = await openCrewmate('light', 'courier')
-  check('a crewmate with no schedules carries no badge', await page.getByTestId('member-schedules-count').count() === 0)
+  check('a mate with no schedules carries no badge', await page.getByTestId('member-schedules-count').count() === 0)
   await chip.click()
   const body = page.getByTestId('member-schedules')
   await body.waitFor({ state: 'visible', timeout: 20000 })
@@ -196,7 +196,7 @@ async function openCrewmate(theme, name) {
   console.log('wrote', join(OUT, '06-create-in-tab.png'))
   await body.getByTestId('crew-wake-create-submit').click()
   await page.waitForTimeout(1200)
-  check('create posts against the open crewmate', createdBody?.member_id === 'radar', JSON.stringify(createdBody?.member_id))
+  check('create posts against the open mate', createdBody?.member_id === 'radar', JSON.stringify(createdBody?.member_id))
   check('create carries the typed name', createdBody?.name === 'Check the release board', String(createdBody?.name))
 
   // Run now, from the same rows. The refreshed list is what carries the result, so

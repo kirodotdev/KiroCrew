@@ -20,11 +20,16 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
 from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _passthrough_sandbox,
+    _stub_remote_probe_ssrf_vet,
 )
 from stray_line_helpers import STRAY_LINES
 
+# Bound at import, before the autouse fixture swaps the module attribute out, so the
+# live loopback cases can put the real connector back.
+from kiro_crew.link_unfurl import pinned_connector as _real_pinned_connector
 from kiro_crew.mcp_discovery import (
     MCP_CLIENT_PROTOCOL_VERSION,
     MCP_REDACTED_HEADER_VALUE,
@@ -1091,3 +1096,423 @@ class TestProtocolVersionNegotiation:
 
         assert (result.status, result.error) == ("error", "boom")
         assert session.post.call_count == 1
+
+
+_REFUSED_ADDRESS = "URL host is a link-local or metadata address, or does not resolve"
+
+
+def _ok_session() -> MagicMock:
+    """A session that answers initialize, the notification and tools/list."""
+
+    def _resp(status: int, body: dict | None = None) -> MagicMock:
+        r = MagicMock()
+        r.status = status
+        r.content_type = "application/json"
+        r.headers = {}
+        if body is not None:
+            r.json = AsyncMock(return_value=body)
+        r.__aenter__ = AsyncMock(return_value=r)
+        r.__aexit__ = AsyncMock(return_value=False)
+        return r
+
+    session = MagicMock()
+    session.post = MagicMock(
+        side_effect=[
+            _resp(200, {"jsonrpc": "2.0", "id": 1, "result": {}}),
+            _resp(202),
+            _resp(200, {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "search"}]}}),
+        ]
+    )
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session
+
+
+class TestProbeRemoteRejectsNonPublicUrls:
+    """The remote probe SSRF-vets its url before it POSTs.
+
+    ``server.url`` is attacker-reachable -- a sandboxed process can append an
+    entry to ``~/.kiro/crew/mcp.json`` -- so a url naming the cloud metadata
+    endpoint, or anything else link-local, must be refused and never contacted.
+    Otherwise the gateway POSTs the handshake there and reflects the reply onto
+    the dashboard row. Every other target must still probe: a public server on
+    any port, and a loopback or private one (an app backend on ``127.0.0.1``, a
+    LAN dev server), which kiro-cli itself connects to.
+
+    The autouse ``_stub_remote_probe_ssrf_vet`` fixture in ``mcp_discovery_helpers``
+    answers the vet's DNS seam from one public address, so a NAME is approved
+    without a real lookup while an IP LITERAL still runs the real address checks.
+    """
+
+    def setup_method(self) -> None:
+        _probe_cache.clear()
+
+    def teardown_method(self) -> None:
+        _probe_cache.clear()
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
+            "http://169.254.170.2/v2/credentials",  # container metadata (link-local)
+            "http://[fd00:ec2::254]/latest/meta-data/",  # IPv6 cloud metadata (not link-local)
+            "http://[fe80::1]/mcp",  # IPv6 link-local
+            "http://[::ffff:169.254.169.254]/mcp",  # IPv4-mapped spelling
+            "http://[2002:a9fe:a9fe::1]/mcp",  # 6to4 spelling
+            "http://[fd00:ec2::254%0]/latest/meta-data/",  # scoped IPv6 metadata (zone id)
+            "http://[fe80::1%0]/mcp",  # scoped IPv6 link-local
+            "http://2852039166/mcp",  # decimal spelling the OS resolver accepts
+            "http://0xa9fea9fe/mcp",  # hex spelling the OS resolver accepts
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_metadata_or_link_local_literal_is_refused_without_contact(
+        self, url: str
+    ) -> None:
+        server = McpServerInfo(name="remote", url=url)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert result.error == _REFUSED_ADDRESS
+        # A refused probe exposes no handshake details and lists no tools.
+        assert result.sent_headers is None
+        assert result.tools == []
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1:9100/mcp",  # an app backend's loopback MCP server
+            "http://[::1]:3000/mcp",  # IPv6 loopback
+            "http://0x7f000001:3000/mcp",  # alternate loopback encoding
+            "http://10.0.0.5:8000/mcp",  # RFC1918 private
+            "http://192.168.1.20/mcp",  # RFC1918 private
+            "http://100.64.0.7:8443/mcp",  # shared address space (a tailnet)
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_loopback_or_private_server_is_still_probed(self, url: str) -> None:
+        """No regression: a local or LAN server the operator configured -- or an
+        app backend registered on loopback -- probes as it did before the vet."""
+        server = McpServerInfo(name="local", url=url)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=_ok_session()):
+            result = await _probe_remote(server)
+
+        assert result.status == "ok"
+        assert result.tools == ["search"]
+
+    @pytest.mark.asyncio
+    async def test_a_name_resolving_to_a_metadata_address_is_refused(self, monkeypatch) -> None:
+        """DNS-rebinding guard: the vet checks EVERY resolved address, so a name
+        that answers with a public AND a metadata address is refused. Drives the
+        REAL vet with its resolver pointed at that answer."""
+        from kiro_crew import link_unfurl as lu
+
+        monkeypatch.setattr(
+            lu, "_default_resolve", lambda _h, _p: ["93.184.216.34", "169.254.169.254"]
+        )
+        server = McpServerInfo(name="remote", url="https://rebind.example/mcp")
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert result.error == _REFUSED_ADDRESS
+
+    @pytest.mark.parametrize("host", ["devbox.internal.example", "printer.local"])
+    @pytest.mark.asyncio
+    async def test_a_name_resolving_to_a_private_address_is_probed(
+        self, monkeypatch, host: str
+    ) -> None:
+        """A LAN name (an mDNS ``.local`` one included) that answers with a
+        private address is probed: only link-local and metadata answers refuse."""
+        from kiro_crew import link_unfurl as lu
+
+        monkeypatch.setattr(lu, "_default_resolve", lambda _h, _p: ["10.1.2.3"])
+        server = McpServerInfo(name="lan", url=f"http://{host}:8000/mcp")
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=_ok_session()):
+            result = await _probe_remote(server)
+
+        assert result.status == "ok"
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_host_is_refused_without_contact(self, monkeypatch) -> None:
+        """The vet fails closed on a host it could not resolve: no address was
+        checked, so none may be dialed, and the row says why."""
+        from kiro_crew import link_unfurl as lu
+
+        def _nxdomain(_host: str, _port: int) -> list[str]:
+            raise OSError("Name or service not known")
+
+        monkeypatch.setattr(lu, "_default_resolve", _nxdomain)
+        server = McpServerInfo(name="typo", url="https://mcp.exmaple.invalid/mcp")
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert result.error == _REFUSED_ADDRESS
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_dns_lookup_is_bounded_by_the_probe_timeout(self, monkeypatch) -> None:
+        """The vet's lookup runs inside the probe timeout, as aiohttp's own did: a
+        resolver that never answers reports ``timeout`` and frees the probe's slot
+        instead of holding it until the OS gives up."""
+        import threading
+
+        from kiro_crew import link_unfurl as lu
+        from kiro_crew import mcp_discovery
+
+        release = threading.Event()
+
+        def _stalled_vet(_url: str, **_kw: object) -> lu.VettedUrl:
+            # Bounded so a broken run cannot strand the worker thread; the
+            # finally below releases it as soon as the probe has returned.
+            release.wait(timeout=30)
+            raise lu.UnfurlRejected("blocked_url")
+
+        monkeypatch.setattr(lu, "vet_unfurl_url", _stalled_vet)
+        monkeypatch.setattr(mcp_discovery, "_get_probe_timeout", lambda: 0.05)
+        server = McpServerInfo(name="slow-dns", url="https://slow.example/mcp")
+        try:
+            with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+                result = await _probe_remote(server)
+        finally:
+            release.set()
+
+        session_cls.assert_not_called()
+        assert (result.status, result.error) == ("error", "timeout")
+
+    @pytest.mark.asyncio
+    async def test_a_url_carrying_credentials_is_refused_as_malformed(self) -> None:
+        """The vet refuses userinfo (aiohttp would turn it into a Basic header);
+        the row names that cause rather than an address one."""
+        server = McpServerInfo(name="remote", url="https://user:pw@mcp.example.com/mcp")
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert result.error == "URL is malformed or carries credentials"
+
+    @pytest.mark.asyncio
+    async def test_the_vet_runs_before_a_secretless_server_is_contacted(self) -> None:
+        """A plain (no ``secret://`` header) server still reaches the vet: the
+        header pre-check passes, and the metadata url is refused before any
+        POST -- so the fix does not depend on the header refusal firing first."""
+        server = McpServerInfo(
+            name="remote",
+            url="http://169.254.169.254/latest/meta-data/",
+            headers={"Authorization": "Bearer plain-token"},
+        )
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert result.error == _REFUSED_ADDRESS
+
+    @pytest.mark.asyncio
+    async def test_a_public_url_still_connects(self) -> None:
+        """No regression: a public remote server is vetted, pinned, and probed OK."""
+        server = McpServerInfo(name="remote", url="https://mcp.example.com/mcp")
+
+        init_resp = MagicMock()
+        init_resp.status = 200
+        init_resp.content_type = "application/json"
+        init_resp.headers = {}
+        init_resp.json = AsyncMock(return_value={"jsonrpc": "2.0", "id": 1, "result": {}})
+        init_resp.__aenter__ = AsyncMock(return_value=init_resp)
+        init_resp.__aexit__ = AsyncMock(return_value=False)
+
+        notif_resp = MagicMock()
+        notif_resp.status = 202
+        notif_resp.__aenter__ = AsyncMock(return_value=notif_resp)
+        notif_resp.__aexit__ = AsyncMock(return_value=False)
+
+        tools_resp = MagicMock()
+        tools_resp.status = 200
+        tools_resp.content_type = "application/json"
+        tools_resp.json = AsyncMock(
+            return_value={"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "search"}]}}
+        )
+        tools_resp.__aenter__ = AsyncMock(return_value=tools_resp)
+        tools_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(side_effect=[init_resp, notif_resp, tools_resp])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "ok"
+        assert result.tools == ["search"]
+
+    @pytest.mark.parametrize("port", [8443, 8000, 3000])
+    @pytest.mark.asyncio
+    async def test_a_public_url_on_a_nonstandard_port_connects(self, port: int) -> None:
+        """Regression: MCP servers commonly use non-web ports. A PUBLIC host on
+        :8443 / :8000 / :3000 must probe, not be refused by the 80/443 allowlist
+        -- the probe lifts it with ``allow_any_port`` while the address check
+        (what actually gates SSRF) is unchanged."""
+        server = McpServerInfo(name="remote", url=f"https://mcp.example.com:{port}/mcp")
+
+        def _resp(status: int, body: dict | None = None) -> MagicMock:
+            r = MagicMock()
+            r.status = status
+            r.content_type = "application/json"
+            r.headers = {}
+            if body is not None:
+                r.json = AsyncMock(return_value=body)
+            r.__aenter__ = AsyncMock(return_value=r)
+            r.__aexit__ = AsyncMock(return_value=False)
+            return r
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(
+            side_effect=[
+                _resp(200, {"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _resp(202),
+                _resp(200, {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "search"}]}}),
+            ]
+        )
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "ok"
+        assert result.tools == ["search"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254:8443/latest/meta-data/",  # metadata, nonstandard port
+            "http://[fd00:ec2::254]:8000/latest/meta-data/",  # IPv6 metadata, nonstandard port
+            "http://[fe80::1]:3000/mcp",  # IPv6 link-local, nonstandard port
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_metadata_url_on_a_nonstandard_port_is_still_refused(self, url: str) -> None:
+        """Lifting the port allowlist must NOT weaken the address check: a
+        link-local or metadata target is refused on any port."""
+        server = McpServerInfo(name="remote", url=url)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert result.error == _REFUSED_ADDRESS
+
+
+async def _start_loopback_stub(handler) -> tuple[web.AppRunner, int]:
+    """One real HTTP stub on ``127.0.0.1``, on a port the OS picks."""
+    app = web.Application()
+    app.router.add_post("/{tail:.*}", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    return runner, runner.addresses[0][1]
+
+
+class TestProbeRemoteAgainstLoopbackStubs:
+    """The probe end to end, through the REAL vet and the REAL pinned connector.
+
+    The module fixture stubs ``pinned_connector`` out for the mocked-session
+    cases; these restore it, so the socket really is opened by the connector the
+    vet's answer pins. Only ``127.0.0.1`` stubs are dialed.
+    """
+
+    def setup_method(self) -> None:
+        _probe_cache.clear()
+
+    def teardown_method(self) -> None:
+        _probe_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_an_app_backend_on_loopback_probes_ok(self, monkeypatch) -> None:
+        """An app's MCP backend is registered at ``http://127.0.0.1:<port>/mcp``
+        (``apps/bridges_mcp._resolve_live_mcp_url``); the probe must list its tools."""
+        from kiro_crew import link_unfurl as lu
+
+        monkeypatch.setattr(lu, "pinned_connector", _real_pinned_connector)
+
+        async def _mcp(request: web.Request) -> web.Response:
+            body = await request.json()
+            if body.get("method") == "initialize":
+                return web.json_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {"protocolVersion": "2025-06-18", "capabilities": {}},
+                    }
+                )
+            if body.get("method") == "tools/list":
+                return web.json_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {"tools": [{"name": "app_tool"}]},
+                    }
+                )
+            return web.Response(status=202)
+
+        runner, port = await _start_loopback_stub(_mcp)
+        try:
+            result = await _probe_remote(
+                McpServerInfo(name="myapp:backend", url=f"http://127.0.0.1:{port}/mcp")
+            )
+        finally:
+            await runner.cleanup()
+
+        assert result.status == "ok", result.error
+        assert result.tools == ["app_tool"]
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_is_reported_and_its_target_is_never_contacted(
+        self, monkeypatch
+    ) -> None:
+        """A vetted server's redirect is never followed. aiohttp follows a 307/308
+        by default, re-sending the POST body, and dials an IP-literal ``Location``
+        without asking the pinned resolver, so a followed redirect would reach an
+        address the vet never checked. The first stub answers every POST with a
+        307 to the second, which must never be contacted."""
+        from kiro_crew import link_unfurl as lu
+
+        monkeypatch.setattr(lu, "pinned_connector", _real_pinned_connector)
+        reached: list[str] = []
+
+        async def _target(request: web.Request) -> web.Response:
+            reached.append(request.path)
+            return web.json_response({"jsonrpc": "2.0", "id": 1, "result": {}})
+
+        target_runner, target_port = await _start_loopback_stub(_target)
+
+        async def _redirect(request: web.Request) -> web.Response:
+            raise web.HTTPTemporaryRedirect(f"http://127.0.0.1:{target_port}/mcp")
+
+        redirect_runner, redirect_port = await _start_loopback_stub(_redirect)
+        try:
+            result = await _probe_remote(
+                McpServerInfo(name="redirector", url=f"http://127.0.0.1:{redirect_port}/mcp")
+            )
+        finally:
+            await redirect_runner.cleanup()
+            await target_runner.cleanup()
+
+        assert reached == []
+        assert result.status == "error"
+        assert result.error == "HTTP 307"
+        assert result.tools == []

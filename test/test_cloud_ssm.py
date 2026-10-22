@@ -606,6 +606,53 @@ class TestSessionManagerPluginProbe:
         assert refusal.path == os.path.realpath(binary)
         assert Path(refusal.path).is_relative_to(Path(os.path.realpath(prefix)))
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_a_later_aws_copy_with_the_chown_remedy_is_reported_over_an_earlier_refusal(
+        self, monkeypatch, tmp_path
+    ):
+        """A second account's Homebrew copy sorts first; once AWS's package is
+        installed too, the row must name AWS's copy and its command, or the
+        "install AWS's copy" step would leave the same row on screen."""
+        from kiro_crew import github_runner
+        from kiro_crew.deploy import engine
+
+        prefix = tmp_path / "sessionmanagerplugin"
+        (prefix / "bin").mkdir(parents=True)
+        binary = prefix / "bin" / "session-manager-plugin"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        brew_dir = tmp_path / "opt-homebrew-bin"
+        brew_dir.mkdir()
+        brew_copy = brew_dir / "session-manager-plugin"
+        brew_copy.write_text("#!/bin/sh\n")
+        brew_copy.chmod(0o755)
+        link_dir = tmp_path / "usr-local-bin"
+        link_dir.mkdir()
+        (link_dir / "session-manager-plugin").symlink_to(binary)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(brew_dir), str(link_dir)))
+        monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+        monkeypatch.setattr(ssm, "_AWS_PKG_PLUGIN_PREFIX", str(prefix))
+        monkeypatch.setattr(os, "geteuid", lambda: binary.stat().st_uid + 1)
+        monkeypatch.setattr(ssm.platform, "system", lambda: "Darwin")
+
+        def _refuse(candidate):
+            raise ValueError("executable is owned by another user (uid 1501)")
+
+        monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert refusal.remedy_command == f"sudo chown -R root:wheel {prefix}"
+        assert refusal.path == os.path.realpath(binary)
+        # With no fixable copy, the first refusal is still the one reported.
+        (link_dir / "session-manager-plugin").unlink()
+        refusal = ssm.session_manager_plugin_refusal()
+        assert refusal is not None
+        assert (refusal.path, refusal.remedy_command) == (str(brew_copy), "")
+
     @pytest.mark.skipif(os.name == "nt", reason="AWS's package prefix is a POSIX path")
     def test_the_package_prefix_is_where_aws_installs_the_plugin(self):
         assert ssm._AWS_PKG_PLUGIN_PREFIX == "/usr/local/sessionmanagerplugin"

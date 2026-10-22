@@ -46,6 +46,7 @@ const apiMocks = vi.hoisted(() => ({
  */
 const stt = vi.hoisted(() => ({
   active: false,
+  halted: false,
   start: vi.fn(() => Promise.resolve()),
   stop: vi.fn(),
   onCaption: undefined as ((text: string) => void) | undefined,
@@ -75,7 +76,14 @@ vi.mock('../apps/meetings/hooks/useMeetingTranscription', async importOriginal =
       stt.onCaption = opts.onCaption
       stt.onFinal = opts.onFinal
       stt.onError = opts.onError
-      return { active: stt.active, start: stt.start, stop: stt.stop, supported: true }
+      return {
+        active: stt.active,
+        connecting: false,
+        halted: stt.halted,
+        start: stt.start,
+        stop: stt.stop,
+        supported: true,
+      }
     },
   }
 })
@@ -142,6 +150,7 @@ async function mountLoaded(overrides: Partial<SessionProps> = {}) {
 beforeEach(() => {
   vi.clearAllMocks()
   stt.active = false
+  stt.halted = false
   stt.onCaption = undefined
   stt.onFinal = undefined
   stt.onError = undefined
@@ -380,6 +389,47 @@ describe('useMeetingSession transcription binding', () => {
     expect(stt.start).not.toHaveBeenCalled()
   })
 
+  it('does not reopen a socket the server halted with an error frame', async () => {
+    apiMocks.meeting.mockResolvedValue({
+      meta: meta({ status: 'active' }),
+      live: { accepting_dispatches: true },
+    })
+    const view = await mountLoaded()
+    await waitFor(() => expect(stt.start).toHaveBeenCalledTimes(1))
+
+    // The error frame halts the hook; the connecting edge re-runs the effect.
+    stt.halted = true
+    view.rerender(view.initialProps)
+    view.rerender(view.initialProps)
+    expect(stt.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears a halt by stopping when the meeting leaves the open state', async () => {
+    stt.halted = true
+    apiMocks.meeting.mockResolvedValue({ meta: meta({ status: 'paused' }), live: null })
+    await mountLoaded()
+
+    await waitFor(() => expect(stt.stop).toHaveBeenCalled())
+    expect(stt.start).not.toHaveBeenCalled()
+  })
+
+  it('shows a transcription error inline, not as a toast, while active', async () => {
+    apiMocks.meeting.mockResolvedValue({
+      meta: meta({ status: 'active' }),
+      live: { accepting_dispatches: true },
+    })
+    const view = await mountLoaded()
+    await waitFor(() => expect(view.result.current.status).toBe('active'))
+
+    act(() => stt.onError?.('stt_streaming_disabled'))
+
+    expect(view.result.current.transcriptionErrorMessage).toBe(
+      i18nT('apps.meetings.session.sttStreamingDisabled'),
+    )
+    expect(view.result.current.transcriptionErrorCode).toBe('stt_streaming_disabled')
+    expect(view.notify).not.toHaveBeenCalled()
+  })
+
   it('restarts a socket that dropped while the meeting stayed active', async () => {
     stt.active = true
     apiMocks.meeting.mockResolvedValue({
@@ -425,6 +475,9 @@ describe('useMeetingSession transcription binding', () => {
     ['worklet', 'apps.meetings.session.sttWorkletFailed'],
     ['connection', 'apps.meetings.session.sttConnectionFailed'],
     ['disconnected', 'apps.meetings.session.sttDisconnected'],
+    // The gateway sends this when streaming is disabled (raises no HTTP error
+    // but sends a typed error frame after completing the WebSocket upgrade).
+    ['stt_streaming_disabled', 'apps.meetings.session.sttStreamingDisabled'],
   ] as const)('reports the %s transcription failure with its own message', async (code, key) => {
     const view = await mountLoaded()
 
@@ -816,7 +869,6 @@ describe('useMeetingSession action items', () => {
 
 describe('useMeetingSession failure reporting', () => {
   it.each([
-    ['start', 'start', 'apps.meetings.session.startFailed'],
     ['pause', 'setStatus', 'apps.meetings.session.statusFailed'],
     ['stop', 'stop', 'apps.meetings.session.stopFailed'],
     ['broadcast', 'dispatch', 'apps.meetings.session.broadcastFailed'],
@@ -842,7 +894,7 @@ describe('useMeetingSession failure reporting', () => {
       expect(view.notify).toHaveBeenCalledWith(i18nT(key), { type: 'error' }))
   })
 
-  it('explains a 409 as another meeting already running', async () => {
+  it('explains a 409 without context as another meeting already running (generic)', async () => {
     apiMocks.start.mockRejectedValue(new MeetingsApiError('conflict', 409))
     const view = await mountLoaded()
 
@@ -850,10 +902,87 @@ describe('useMeetingSession failure reporting', () => {
       view.result.current.actions.start()
     })
 
-    await waitFor(() => expect(view.notify).toHaveBeenCalledWith(
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBe(
       i18nT('apps.meetings.session.anotherMeetingActive'),
-      { type: 'error' },
     ))
+    // The inline notice is the only surface: no toast repeats it.
+    expect(view.notify).not.toHaveBeenCalledWith(expect.anything(), { type: 'error' })
+  })
+
+  it('names the blocking meeting in the 409 notice when the server includes its title', async () => {
+    apiMocks.start.mockRejectedValue(
+      new MeetingsApiError('conflict', 409, 'meeting_already_active', {
+        blocking_meeting_title: 'Weekly sync',
+        blocking_meeting_status: 'active',
+      }),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => { view.result.current.actions.start() })
+
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBe(
+      i18nT('apps.meetings.session.anotherMeetingActiveNamed', { title: 'Weekly sync' }),
+    ))
+    // The inline notice is the only surface: no toast repeats it.
+    expect(view.notify).not.toHaveBeenCalledWith(expect.anything(), { type: 'error' })
+  })
+
+  it('shows a review-specific message when the blocker is in reviewing state', async () => {
+    apiMocks.start.mockRejectedValue(
+      new MeetingsApiError('conflict', 409, 'meeting_already_active', {
+        blocking_meeting_title: 'Standup',
+        blocking_meeting_status: 'reviewing',
+      }),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => { view.result.current.actions.start() })
+
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBe(
+      i18nT('apps.meetings.session.anotherMeetingReviewing', { title: 'Standup' }),
+    ))
+    // The inline notice is the only surface: no toast repeats it.
+    expect(view.notify).not.toHaveBeenCalledWith(expect.anything(), { type: 'error' })
+  })
+
+  it('shows a failed start inline instead of as a toast', async () => {
+    apiMocks.start.mockRejectedValue(new Error('boom'))
+    const view = await mountLoaded()
+
+    await act(async () => { view.result.current.actions.start() })
+
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBe(
+      i18nT('apps.meetings.session.startFailed'),
+    ))
+    expect(view.notify).not.toHaveBeenCalledWith(expect.anything(), { type: 'error' })
+  })
+
+  it('clears a start error once the poll shows the meeting running', async () => {
+    // A start whose HTTP response timed out but that succeeded on the server.
+    apiMocks.start.mockRejectedValue(new Error('gateway timeout'))
+    const view = await mountLoaded()
+    await act(async () => { view.result.current.actions.start() })
+    await waitFor(() => expect(view.result.current.startErrorMessage).not.toBeNull())
+
+    apiMocks.meeting.mockResolvedValue({
+      meta: meta({ status: 'active' }),
+      live: { accepting_dispatches: true },
+    })
+    await act(async () => { await view.queryClient.invalidateQueries() })
+
+    await waitFor(() => expect(view.result.current.status).toBe('active'))
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBeNull())
+  })
+
+  it('lets the user dismiss a start error', async () => {
+    apiMocks.start.mockRejectedValue(new Error('boom'))
+    const view = await mountLoaded()
+    await act(async () => { view.result.current.actions.start() })
+    await waitFor(() => expect(view.result.current.startErrorMessage).not.toBeNull())
+
+    act(() => view.result.current.dismissStartError())
+
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBeNull())
   })
 
   it('keeps the generic message for a non-conflict api error', async () => {
@@ -864,10 +993,11 @@ describe('useMeetingSession failure reporting', () => {
       view.result.current.actions.start()
     })
 
-    await waitFor(() => expect(view.notify).toHaveBeenCalledWith(
+    await waitFor(() => expect(view.result.current.startErrorMessage).toBe(
       i18nT('apps.meetings.session.startFailed'),
-      { type: 'error' },
     ))
+    // The inline notice is the only surface: no toast repeats it.
+    expect(view.notify).not.toHaveBeenCalledWith(expect.anything(), { type: 'error' })
   })
 })
 

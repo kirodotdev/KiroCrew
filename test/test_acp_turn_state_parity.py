@@ -30,6 +30,7 @@ import pytest
 
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
+from kiro_crew.testing.wait import finished
 
 # ── Driver adapters ───────────────────────────────────────────────────────────
 #
@@ -260,7 +261,7 @@ async def test_wait_turn_done_returns_at_once_when_idle(drv: _Driver) -> None:
     """
     obj = drv.make()
 
-    await asyncio.wait_for(obj.wait_turn_done(0.05), timeout=2.0)
+    await finished(obj.wait_turn_done(0.05), "the idle wait_turn_done")
 
     assert drv.turn_done_is_set(obj) is True
 

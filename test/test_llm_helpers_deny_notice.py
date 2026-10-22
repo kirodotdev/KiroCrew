@@ -34,6 +34,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Imported before any test here patches ``kiro_crew.sel.sel``. The gateway binds
+# ``sel`` by name at import, and ``_resolve_permission`` reaches it lazily
+# (``hook_runtime.gate_tiers``); a first import under the broken-factory patch
+# would keep that factory for every later test in the same worker.
+import kiro_crew.slack.gateway  # noqa: F401
 from kiro_crew import llm_helpers
 from kiro_crew.hooks import ToolHookResult
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
@@ -797,3 +802,13 @@ class TestEveryHostDenyInLlmHelpersSteersFirst:
             if "cause=DENY_CAUSE_" not in block:
                 unnamed.append(i + 1)
         assert not unnamed, unnamed
+
+
+def test_the_sel_patches_here_leave_the_gateway_on_the_real_factory():
+    """Runs after the audit-failure tests above, which patch ``kiro_crew.sel.sel``
+    with a factory that raises. The gateway must still hold the real factory, or a
+    later grant decline in the same worker audits through the broken one."""
+    import kiro_crew.sel
+    from kiro_crew.slack import gateway
+
+    assert gateway.sel is kiro_crew.sel.sel

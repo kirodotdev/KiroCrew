@@ -39,6 +39,7 @@ vi.mock('../store', () => ({
 }))
 const slotRefresh = vi.hoisted(() => ({ rejected: false }))
 vi.mock('../store/dashboardSlice', () => ({
+  addSlotOptimistic: (row: unknown) => ({ type: 'dashboard/addSlotOptimistic', payload: row }),
   // The action a real dispatch of the thunk resolves to: fulfilled, or rejected
   // with RTK's async-thunk metadata so `isRejected` recognises it.
   fetchSlots: () => (slotRefresh.rejected

@@ -9,7 +9,7 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_process_tree_confirmed_dead``,
-``_saw_auth_failure``, ``_saw_sandbox_init_failure``, ``_scratch_dir``,
+``_saw_auth_failure``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``, ``_scratch_dir``,
 ``_stall_turn_sessions``, ``_stderr_lines``, ``_stdin_stall_death``.
 
 Instance fields read: ``_acp_backend``, ``_answer_tasks``, ``_initialized``, ``_process``,
@@ -213,5 +213,6 @@ async def _revive_after_failed_start(self: AcpRuntime) -> bool:
     self._stderr_lines.clear()
     self._saw_auth_failure = False
     self._saw_sandbox_init_failure = False
+    self._saw_delegate_launch_failure = False
     runtime_death.retract(self)
     return True

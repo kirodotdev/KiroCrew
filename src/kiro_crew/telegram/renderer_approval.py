@@ -18,7 +18,7 @@ import html
 import logging
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 from kiro_crew.telegram.renderer_display import _display_safe
@@ -71,6 +71,11 @@ class TelegramApprovalDecider:
     #: :meth:`discard_session` reads this to leave an owned window alone, since a
     #: wait under this session key need not belong to the turn running that sweep.
     _AWAITED: set[str] = set()
+
+    #: Keys whose recorded refusal came from :meth:`refuse_undelivered`, so the
+    #: adopting ``__call__`` can name the cause instead of reading it as a
+    #: human's Deny. Cleared on every exit that drops the key.
+    _UNDELIVERED: set[str] = set()
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
@@ -130,6 +135,7 @@ class TelegramApprovalDecider:
         reserved = adoptable_reservation(cls._REGISTRY.get(key), loop)
         if reserved is None or reserved.done():
             cls._REGISTRY[key] = loop.create_future()
+            cls._UNDELIVERED.discard(key)
         if detached:
             cls._AWAITED.add(key)
 
@@ -156,6 +162,7 @@ class TelegramApprovalDecider:
         cls._NONCES.pop(key, None)
         cls._REGISTRY.pop(key, None)
         cls._AWAITED.discard(key)
+        cls._UNDELIVERED.discard(key)
 
     @classmethod
     def refuse_undelivered(cls, key: str) -> None:
@@ -175,6 +182,7 @@ class TelegramApprovalDecider:
         reserved = cls._REGISTRY.get(key)
         if reserved is not None and not reserved.done():
             reserved.set_result(False)
+            cls._UNDELIVERED.add(key)
 
     @classmethod
     def discard_session(cls, session_key: str) -> None:
@@ -210,6 +218,7 @@ class TelegramApprovalDecider:
         for k in [k for k in cls._REGISTRY if k.startswith(prefix) and k not in cls._AWAITED]:
             cls._REGISTRY.pop(k, None)
             cls._NONCES.pop(k, None)
+            cls._UNDELIVERED.discard(k)
 
     async def __call__(self, event: Any) -> bool:
         self.last_deny_cause = ""
@@ -229,8 +238,13 @@ class TelegramApprovalDecider:
                 reserved = None
             else:
                 try:
-                    return bool(reserved.result())
+                    answer = bool(reserved.result())
+                    if not answer and k in TelegramApprovalDecider._UNDELIVERED:
+                        # The prompt never reached the chat; nobody refused.
+                        self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+                    return answer
                 finally:
+                    TelegramApprovalDecider._UNDELIVERED.discard(k)
                     TelegramApprovalDecider._REGISTRY.pop(k, None)
                     TelegramApprovalDecider._NONCES.pop(k, None)
         fut: "asyncio.Future[bool]" = (
@@ -240,13 +254,17 @@ class TelegramApprovalDecider:
         # This wait now owns the key, so the end-of-turn sweep must leave it be.
         TelegramApprovalDecider._AWAITED.add(k)
         try:
-            return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
+            answer = bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
+            if not answer and k in TelegramApprovalDecider._UNDELIVERED:
+                self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+            return answer
         except asyncio.TimeoutError:
             # Recorded for the driver, which steers the cause into the turn
             # before it rejects, so the model hears "expired" not "denied".
             self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
             return False  # deny-by-default on timeout
         finally:
+            TelegramApprovalDecider._UNDELIVERED.discard(k)
             TelegramApprovalDecider._AWAITED.discard(k)
             TelegramApprovalDecider._REGISTRY.pop(k, None)
             # Retire the nonce with the prompt, so a button for a request id the

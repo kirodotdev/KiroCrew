@@ -19,8 +19,13 @@ from typing import NamedTuple
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
-from kiro_crew.sandbox_leaves import _CREW_HIDDEN_LEAVES, _CREW_HOME_PREFIXES, MD_NOTEBOOK_APP_NAME
-from kiro_crew.sandbox_precreate import _MD_NOTEBOOK_PRECREATE_CONTENT
+from kiro_crew.sandbox_leaves import (
+    _CREW_HIDDEN_LEAVES,
+    _CREW_HOME_PREFIXES,
+    _MD_NOTEBOOK_RETIRED_STATE_LEAVES,
+    _MD_NOTEBOOK_STATE_LEAVES,
+    MD_NOTEBOOK_APP_NAME,
+)
 from kiro_crew.sandbox_seals import SandboxCeilingUnsealable, _symlink_target_display
 from kiro_crew.terminal_safe import safe_terminal_line
 
@@ -62,11 +67,12 @@ _CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env"})
 #: Masked leaves where a planted link at an INTERMEDIATE component DEGRADES instead of
 #: refusing, because a sibling control already answers that case.
 #:
-#: Derived from :data:`_MD_NOTEBOOK_PRECREATE_CONTENT`, not hand-listed, so the two cannot
-#: drift. Those leaves are the ones :func:`carveout_chain_has_planted_link` governs, and its
-#: docstring states the reasoning this set defers to: withholding the CARVE-OUT is the
-#: proportionate response, since while the chain holds a planted link the owning backend
-#: cannot write that state at all, so a leaf left unmasked has nothing to expose. Refusing
+#: The Notes builtin's retired bare state names under ``workspace/md-notebook``, the only
+#: multi-component md-notebook leaves left (the live state directory is a top-level name,
+#: so a link AT it refuses like any other). Nothing writes these names any more, and when
+#: their chain holds a planted link :func:`_md_notebook_degraded_mask_dirs` masks the whole
+#: ``workspace/md-notebook`` directory and the Notes backend does not start, so a stale copy
+#: under such a chain is hidden either way. Refusing
 #: the spawn instead would let one optional app's on-disk layout take every sandboxed
 #: process on the host down with it -- an operator who symlinks ``workspace/`` to another
 #: disk would find no agent could start, over a file they may never have created.
@@ -74,7 +80,7 @@ _CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env"})
 #: Every OTHER multi-component masked leaf refuses, because no such compensating control
 #: exists for it: nothing withholds anything when ``apps/aws-control`` is a link, so the
 #: mask binds the referent while the writable alias name persists.
-_CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_PRECREATE_CONTENT)
+_CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_RETIRED_STATE_LEAVES)
 
 #: Masked leaves where an extra HARD LINK refuses the spawn rather than warning.
 #:
@@ -94,7 +100,8 @@ _CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_PRECRE
 #:
 #: Only a REGULAR FILE can carry a second hard link -- ``link(2)`` refuses a directory --
 #: so every directory leaf is outside this decision by shape rather than by judgement, and
-#: no entry here needs to name one.
+#: no entry here needs to name one. A file INSIDE a masked directory can be named, though:
+#: the mask hides the name, not the inode.
 #:
 #: * ``token_signing.key`` -- signs dashboard access and refresh tokens. The bytes forge
 #:   any session cookie, so a read is a full authentication bypass.
@@ -134,6 +141,10 @@ _CREW_HARDLINK_REFUSED_LEAVES: frozenset[str] = frozenset(
         AUTH_SQLITE_DB,
         *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
         ".env",
+        # The live PAT inside the wholly-masked state directory: a hard-linking backup
+        # of the data home makes a second, unmasked name for it all the same. And its old
+        # bare spelling, which may still hold a token on a host not yet moved.
+        _MD_NOTEBOOK_STATE_LEAVES[0],
         f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
         "ops_mission_control_secrets.json",
         "browser-cookies.txt",
@@ -429,7 +440,7 @@ def _refuse_multilinked_credential_leaves(
 
     A leaf reached through a linked INTERMEDIATE component is skipped with a warning, not
     refused. ``lstat`` leaves only the final component un-followed, so for a multi-component
-    leaf (``workspace/md-notebook/pat`` is the one such entry here) a planted link above it
+    leaf (the two Notes PAT spellings are the only such entries here) a planted link above it
     makes this read report the link count of a file somewhere else entirely -- refusing on
     that would fail every spawn over a number belonging to a file outside the data home.
     The chain case has its own control: :data:`_CREW_ALIAS_CHAIN_DEGRADE_LEAVES` records
@@ -837,8 +848,9 @@ def _masked_leaf_alias_search_hint(target: str) -> str:
     # holding a space otherwise turns the remedy into a two-directory search that answers a
     # different question without erroring, so it has to survive being pasted.
     # The search directory is the DATA HOME, not the leaf's own parent. Every entry in
-    # _CREW_HARDLINK_REFUSED_LEAVES but one is a root-level name, for which the two
-    # coincide; ``workspace/<md-notebook>/pat`` is the exception, and using its parent there
+    # _CREW_HARDLINK_REFUSED_LEAVES but the two Notes PAT spellings is a root-level name, for
+    # which the two coincide; ``workspace/<md-notebook>/pat`` and ``md-notebook-staging/pat``
+    # are the exceptions, and using their parent there
     # would search one app's state directory while the sentence below promises the data home,
     # so a second name anywhere else under the home would report as absent. Strip whichever
     # leaf this target ends with to recover the home the caller was iterating.

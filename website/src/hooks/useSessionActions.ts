@@ -237,6 +237,8 @@ export function useSessionActions(mode?: string, opts?: {
   const [forkError, setForkError] = useState<(ForkFailureNotice & { slotKey: string }) | null>(
     null,
   )
+  // Sources with a fork in flight (see `duplicate`).
+  const forkingSlotsRef = useRef(new Set<string>())
   const forkMutation = useMutation({
     mutationFn: (slot: string) => api.forkChatSlot(slot),
     onMutate: () => ({ origin: captureForkOrigin(store.getState()) }),
@@ -306,6 +308,10 @@ export function useSessionActions(mode?: string, opts?: {
         alert(i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason }))
       }
     },
+    // Mutation-level, not a per-call `mutate` option: TanStack fires per-call
+    // callbacks only for the latest call, so a fork of A followed by a fork of B
+    // would leave A marked in flight for good.
+    onSettled: (_data, _err, slotKey) => { forkingSlotsRef.current.delete(slotKey) },
   })
 
   // One optimistic toggle for both user-owned mute flags, serialized per flag
@@ -419,7 +425,17 @@ export function useSessionActions(mode?: string, opts?: {
   const { mutate: muteFlagMutate } = muteFlagMutation
   const { mutate: reloadMutate } = reloadMutation
 
-  const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
+  // A second Fork of the same session while its first fork is in flight is
+  // dropped, so a double click makes one fork. The same rule as the header New
+  // button (`disabled={creatingSlot}`) and the Split View Fork, which disables
+  // itself while its fork is pending. A ref rather than `isPending`, because both
+  // clicks of a double click arrive before React re-renders with the new status.
+  // Keyed by source, so forking another session meanwhile still goes through.
+  const duplicate = useCallback((slotKey: string) => {
+    if (forkingSlotsRef.current.has(slotKey)) return
+    forkingSlotsRef.current.add(slotKey)
+    forkMutate(slotKey)
+  }, [forkMutate])
 
   const toggleRead = useCallback((slotKey: string) => {
     const isUnread = store.getState().dashboard.unreadSlots.includes(slotKey)

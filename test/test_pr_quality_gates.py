@@ -233,8 +233,12 @@ class TestScreenshotEvidence:
         wf = _read("screenshot-evidence.yml")
         assert cost in wf and 'echo "blob stays."' in wf
         prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
-        assert "never committed, bar one scoped exception" in prepare
-        assert "never committed. See below." not in prepare
+        contract = (
+            skills / "kirocrew-prepare-pr" / "references" / "pr-description-contract.md"
+        ).read_text(encoding="utf-8")
+        assert "references/pr-description-contract.md" in prepare
+        assert "never committed, bar one scoped exception" in contract
+        assert "never committed. See below." not in prepare + contract
         assert "is in `main`'s history for good" in prepare
         assert "references/rationale.md" in prepare
 

@@ -235,7 +235,7 @@ def _project_source_links(
 # link. Kept in step with ws_event_scope._SOURCE_LINK_STATUS_KEYS (the app-token
 # strip) and the frontend SidebarSourceLink type; a field absent here is never
 # emitted, so widening the cache cannot leak a new field into any frame.
-_CHIP_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
+_CHIP_STATUS_KEYS = ("ci", "ciPending", "state", "mergeable", "mergeStateStatus")
 
 
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})

@@ -148,7 +148,12 @@ export function useSessionTabs(
     // holds it. Without this the gesture is a no-op the user cannot tell from a
     // misfire — background mode does not even switch sessions.
     if (tabsRef.current.includes(key)) { setCue({ key, at: Date.now() }); return }
-    setTabs(current => openSessionTab(current, key, activeRef.current))
+    // Read the active session NOW, not in the updater: the updater can run
+    // after a render that already moved `activeRef` to a session the caller
+    // just switched to, which puts the tab at the end instead of beside the
+    // one the user was on.
+    const besideKey = activeRef.current
+    setTabs(current => openSessionTab(current, key, besideKey))
   }, [])
 
   const closeTab = useCallback((key: string) => {

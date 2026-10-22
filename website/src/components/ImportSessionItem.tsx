@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { findReport, parseErrorCode, type ErrorReport } from '../utils/errorReport'
 import { useAppDispatch } from '../store'
-import { fetchSlots } from '../store/dashboardSlice'
+import { addSlotOptimistic, fetchSlots } from '../store/dashboardSlice'
 import { switchSlot } from '../store/chatSlice'
 import ErrorNotice, {
   ErrorNoticeMenuItem,
@@ -222,9 +222,16 @@ export default function ImportSessionItem({ Item }: ImportSessionItemProps) {
     },
     onSuccess: async (r) => {
       if (mountedRef.current) setState({ kind: 'done', title: r.title })
-      // The slot list first, so the switch lands on a row the sidebar knows. A
-      // failed refresh is deliberately not surfaced: the import succeeded, the
-      // switch loads the session by key, and the next slot frame lists it.
+      // Listed as a membership add before anything else, like a create or a
+      // fork: a full `slots` frame the gateway built before the import can
+      // still arrive and omit the key, and only an add-stamped key survives
+      // that frame instead of being dropped (and the chat page falling back to
+      // another session). The refresh is dispatched after the add, so a reply
+      // that omits the key removes it, while one that lists it leaves the
+      // stamp to run to its cap. A failed refresh is deliberately not
+      // surfaced: the import succeeded, the row is already listed, and the
+      // switch loads the session by key.
+      dispatch(addSlotOptimistic({ key: r.key, title: r.title || r.key, messages: r.messages || 0, running: false }))
       await dispatch(fetchSlots())
       dispatch(switchSlot({ key: r.key, keepTargetOnMissing: true }))
     },

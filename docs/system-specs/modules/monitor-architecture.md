@@ -238,6 +238,30 @@ gated read path. `AutoNudgeService.notify_turn_complete` brings the busy-retry
 forward to `delay=0` on turn end instead of waiting for the loop deadline, and the
 per-loop wake text is held in `_pending_monitor_wake`, a `dict` keyed by loop id.
 
+The steered wake keeps the ROW the fire writes. `steer_into_running_turn` takes the
+loop's `nudge_meta` (`{"cycle", "loop_id"}`) and persists the steer as a `nudge` row
+with `meta.steer`, so it draws as the nudge chip and never as a bubble the person
+typed; the sender names the origin, the role follows from it. A steer the turn ends
+before taking is requeued with `AUTOMATION_STEER_META` on its entry: the drain
+writes it as a `nudge` row too, and the entry drains alone, never merged into the
+person's own queued text (#22747).
+
+The wake reaches the steer through `session_deliver.deliver`, the session-side entry
+point a non-human sender calls with its origin (`automation`, `cron`, `app`). The
+sender never picks idle vs running or a row role: `origin_row` maps the origin to
+its row, an idle slot gets that row and a turn, and a running slot gets the steer
+(an automation wake) or a queued card (a cron notification, an app message). A
+script cron's result (`_deliver_script_result`), a cron's `send_message` to its
+origin session (`api_send_message`, with `evict_oldest` so a full live queue drops its
+oldest entry) and an MCP App's `ui/message`
+(`api_mcp_apps_message`) call it too, and so does a peer `session_send`
+(`send_to_target`) with a `peer` origin: a `user` row on both paths, a steer only
+when it asked for one and the slot is running. `send_to_target` keeps its audience
+fence, cancellation shield and post-RPC re-gate around those calls. The idle
+autonudge fire writes its nudge row through `session_deliver.write_origin_row` (the
+`automation` origin, plus its `monitor` record), the same mapping a steered wake
+uses, but still chooses idle vs running itself (#23064).
+
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus
 the data-only kind registry. The four source-provider adapters and the workflow

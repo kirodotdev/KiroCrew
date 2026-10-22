@@ -1323,6 +1323,29 @@ describe('SelectionToolbar — composer opened from an external selection', () =
     expect(composer.onClose).not.toHaveBeenCalled()
   })
 
+  it('a press inside the container that itself hands over a selection does not close the box it opens', async () => {
+    // A code block's gutter button sits inside the container: a touch tap fires
+    // mousedown, mouseup and click in one go, so the host's open lands before
+    // the press's deferred dismissal runs. That dismissal must not undo it.
+    // Fake timers: the press defers its dismissal with a 0ms timer, and
+    // running exactly the pending timers is the barrier — no wall-clock wait.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<ExternalHarness actions={actions} composer={composer} externalSelection={null} />)
+      fireEvent.mouseDown(screen.getByTestId('container'))
+      rerender(<ExternalHarness actions={actions} composer={composer} externalSelection={external} />)
+      expect(screen.getByLabelText('Comment on the selected text')).toBeInTheDocument()
+      act(() => { vi.runOnlyPendingTimers() })
+      expect(screen.getByLabelText('Comment on the selected text')).toBeInTheDocument()
+      // A later plain press inside the container still dismisses an empty box.
+      fireEvent.mouseDown(screen.getByTestId('container'))
+      act(() => { vi.runOnlyPendingTimers() })
+      expect(screen.queryByTestId('selection-composer')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sits BELOW the point the host handed over, never over the annotated line', async () => {
     // The external point is the selection's bottom-left and carries no height;
     // the DOM path's above-the-selection placement would put the box over the

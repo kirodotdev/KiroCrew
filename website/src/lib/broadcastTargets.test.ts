@@ -71,18 +71,18 @@ describe('matchesBroadcast presets', () => {
   })
 })
 
-describe('crewmate mode', () => {
+describe('mate mode', () => {
   const rows = [busy, crew]
-  it('exclude drops crewmate chats', () => {
+  it('exclude drops mate chats', () => {
     expect(broadcastTargets(rows, base({ crewmates: 'exclude' }), ctx()).map(s => s.key)).toEqual(['busy'])
   })
-  it('only keeps crewmate chats', () => {
+  it('only keeps mate chats', () => {
     expect(broadcastTargets(rows, base({ crewmates: 'only' }), ctx()).map(s => s.key)).toEqual(['crew'])
   })
   it('include keeps both', () => {
     expect(broadcastTargets(rows, base({ crewmates: 'include' }), ctx())).toHaveLength(2)
   })
-  it('lets the caller recognise a kind-less crewmate chat', () => {
+  it('lets the caller recognise a kind-less mate chat', () => {
     const kindless: BroadcastSlot = { key: 'k', running: true, agent: 'astra' }
     const c = { ...ctx(), isCrewmate: (s: BroadcastSlot) => s.agent === 'astra' }
     expect(matchesBroadcast(kindless, base({ crewmates: 'exclude' }), c)).toBe(false)
@@ -114,7 +114,7 @@ describe('custom criteria', () => {
     const c = custom({ tagId: 't', pinnedOnly: true, activeWithinMs: 24 * 3600_000 })
     expect(broadcastTargets(rows, c, ctx()).map(s => s.key)).toEqual(['ok'])
   })
-  it('still applies the crewmate mode', () => {
+  it('still applies the mate mode', () => {
     expect(matchesBroadcast(crew, custom({ crewmates: 'exclude' }), ctx())).toBe(false)
   })
 })

@@ -3,7 +3,7 @@
 The probes answer one question — can THIS process create a real symlink — and
 they answer it at conftest IMPORT time (``_HAS_SYMLINKS = _can_create_symlink()``
 in ``test/conftest.py`` and ``_ROOT_HAS_REAL_SYMLINKS = _root_can_create_real_symlink()``
-in repo-root ``conftest.py``).
+in ``test/conftest_floor_reporting.py``, which the repo-root ``conftest.py`` loads).
 That placement is what fixes their error contract: a raise here is not a loud
 signal on one test, it is a collection error that takes the whole session down,
 including every test that never touches a symlink. So the probes treat any

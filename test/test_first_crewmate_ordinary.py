@@ -137,4 +137,4 @@ def test_no_code_path_refers_to_the_removed_guards():
         assert not hasattr(files, gone)
     assert not hasattr(catalog, "deletes_assistant_member")
     assert not hasattr(catalog, "MANAGED_TEMPLATES")
-    assert json.dumps(sorted(vars(catalog))).count("assistant") == 0
+    assert json.dumps(sorted(dir(catalog))).count("assistant") == 0

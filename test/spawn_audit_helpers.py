@@ -101,6 +101,19 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend_spawn.py`` pins that.
         "acp/harness/pi.py::_verify_pi_gate",
+        # pi's Node-engine probe, the same shape as the opencode version probe
+        # above. ONE fixed argv -- a ``node`` executable found on the session's
+        # PATH, beside the resolved ``pi`` or in pi's npm prefix, plus the literal
+        # ``--version`` -- no shell, a 10s timeout, stdin closed, an environment of
+        # only ``PATH`` and ``HOME``, and a cwd that is the session work dir; the
+        # agent supplies nothing to it in a turn, and stdout is read for a version
+        # alone. SANDBOX-WRAPPED for the life of the child by the caller's wrap
+        # (``acp/harness/pi.py::_pi_probe_wrap``: ``wrap_argv`` with the session's
+        # credential mask, run after the floor check, launcher reclaimed on exit),
+        # because a version-manager shim reads config from that work dir. Called
+        # from a worker thread, never the event loop --
+        # ``test/test_acp_pi_node_guard.py`` pins the wrap, the order and the thread.
+        "acp/harness/pi_node.py::_node_version",
         # The DeepSeek Harness gate read-back, the same shape as the pi one above:
         # the argv is the SESSION'S own argv already wrapped by ``wrap_argv_async``
         # before it reaches this function, so the sandbox and credential mask are

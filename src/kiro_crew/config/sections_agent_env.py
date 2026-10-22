@@ -349,8 +349,11 @@ def _agent_env_home_override_names() -> frozenset[str]:
     table, so a harness added there is refused here too.
     """
     from kiro_crew.agent_sdk.host_auth import home_override_env_vars
+    from kiro_crew.agent_sdk.native_allow_stores import override_env_vars
 
-    return frozenset(name.upper() for name in home_override_env_vars())
+    # Also each variable that moves a harness's own permission files, fenced the same way.
+    names = (*home_override_env_vars(), *override_env_vars())
+    return frozenset(name.upper() for name in names)
 
 
 def _agent_env_denied(upper: str) -> bool:

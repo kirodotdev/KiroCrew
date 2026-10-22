@@ -46,6 +46,7 @@ from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed
 from kiro_crew.acp.types import ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import model_registry_namespace
@@ -337,6 +338,23 @@ def _owning_channel_id(self: AcpProvider) -> str | None:
     return channel if isinstance(channel, str) and channel else None
 
 
+def _delegate_launch_failure(runtime: AcpRuntime) -> AcpDelegateLaunchFailed | None:
+    """Translate a startup death into an actionable delegate-launch error, or None.
+
+    Checked on every startup-death path alongside
+    :func:`sandbox_init_failure_for_runtime` and :meth:`saw_not_logged_in`: the
+    ``kiro-cli-chat`` delegate failing to launch is deterministic (so the pool
+    replacing the worker only reproduces it) and is fixed by repairing the Kiro
+    CLI install, not by a retry or a model switch. Raised as
+    :class:`AcpDelegateLaunchFailed` -- a non-retryable ``AcpError``, NOT an
+    ``AcpProcessDied`` -- so the chat surfaces' process-death respawn arms never
+    see it and their terminal error arm shows the install-repair message.
+    """
+    if not runtime.saw_delegate_launch_failure():
+        return None
+    return AcpDelegateLaunchFailed()
+
+
 def _member_session_key(self: AcpProvider) -> str:
     """This session's key when it is a member DM on a dispatch-capable backend.
 
@@ -567,6 +585,13 @@ async def _start_kiro_runtime_impl(
         sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
         if sandbox_failure is not None:
             raise sandbox_failure from exc
+        # A ``kiro-cli-chat`` delegate that would not launch is checked next, for
+        # the same reason and on all three paths: deterministic, fixed by repairing
+        # the install rather than a retry, so it must not fall through to the
+        # generic process-death card the ladder reproduces identically.
+        delegate_failure = _delegate_launch_failure(runtime)
+        if delegate_failure is not None:
+            raise delegate_failure from exc
         # kiro-cli can exit during initialize when not authenticated —
         # surface an actionable login prompt (parity with AcpClient) rather
         # than a generic runtime-death error.
@@ -710,6 +735,9 @@ async def _start_kiro_runtime_impl(
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
                     if sandbox_failure is not None:
                         raise sandbox_failure from exc
+                    delegate_failure = _delegate_launch_failure(runtime)
+                    if delegate_failure is not None:
+                        raise delegate_failure from exc
                     if runtime.saw_not_logged_in():
                         signed_out = host_auth.signed_out_message(self._client.backend)
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
@@ -734,6 +762,9 @@ async def _start_kiro_runtime_impl(
                 sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
                 if sandbox_failure is not None:
                     raise sandbox_failure from exc
+                delegate_failure = _delegate_launch_failure(runtime)
+                if delegate_failure is not None:
+                    raise delegate_failure from exc
                 if runtime.saw_not_logged_in():
                     signed_out = host_auth.signed_out_message(self._client.backend)
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:

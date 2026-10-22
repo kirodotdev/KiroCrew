@@ -25,6 +25,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
 from kiro_crew.session_directive import CORE_MCP_SERVER
+from kiro_crew.testing.wait import async_wait_until
 
 _MCP_ACTIVE = (VERDICT_WORKING, f"{EVIDENCE_MCP_SUBTREE_ACTIVE} (io +512B cpu +3t)")
 
@@ -96,10 +97,10 @@ async def _assert_deferred_past_cap(handle: AcpSessionHandle, oracle: _Oracle) -
 
     task = asyncio.create_task(_run())
     try:
-        for _ in range(1000):
-            if oracle.done.is_set() or task.done():
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: oracle.done.is_set() or task.done(),
+            describe=lambda: f"only {oracle.past_cap} consult(s) past the cap",
+        )
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

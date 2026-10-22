@@ -258,12 +258,61 @@ def test_fail_closed_permanent_message_includes_optout_and_detail(monkeypatch):
 # ── Finding 2: signal-killed probe child classified transient ──
 
 
+class _FakePoll:
+    """Stand-in for ``select.poll`` where the platform has none (Windows).
+
+    Always reports the fd readable, so the probe's own ``os.read`` decides: the
+    parent closed the pipe's write end, so that read returns EOF at once.
+    """
+
+    def register(self, fd, mask):
+        pass
+
+    def unregister(self, fd):
+        pass
+
+    def poll(self, timeout=None):
+        return [(0, 1)]
+
+
+def _provide_posix_probe_apis(monkeypatch):
+    """Supply the POSIX names the fork probe touches, only where they are missing.
+
+    On Linux and macOS every name already exists and nothing is replaced. On
+    Windows ``os.fork``, ``os.getuid``/``getgid``, ``os.WNOHANG``, the wait-status
+    macros and ``select.poll`` are absent, so stand-ins with POSIX semantics are
+    added for this test only (``raising=False`` lets monkeypatch add a name).
+    """
+    import select
+
+    def _missing(mod, name, value):
+        if not hasattr(mod, name):
+            monkeypatch.setattr(mod, name, value, raising=False)
+
+    _missing(os, "getuid", lambda: 1000)
+    _missing(os, "getgid", lambda: 1000)
+    _missing(os, "WNOHANG", 1)
+    # POSIX wait-status layout: low 7 bits are the terminating signal (0 = exited,
+    # 0x7f = stopped), the next byte is the exit status.
+    _missing(os, "WIFSIGNALED", lambda s: (s & 0x7F) not in (0, 0x7F))
+    _missing(os, "WTERMSIG", lambda s: s & 0x7F)
+    _missing(os, "WIFEXITED", lambda s: (s & 0x7F) == 0)
+    _missing(os, "WEXITSTATUS", lambda s: (s >> 8) & 0xFF)
+    _missing(select, "POLLIN", 1)
+    _missing(select, "poll", _FakePoll)
+
+
 def test_probe_child_killed_by_signal_is_transient(monkeypatch):
-    """A probe child killed by a signal (WIFEXITED=False) must be transient."""
+    """A probe child killed by a signal (WIFEXITED=False) must be transient.
+
+    Runs on every platform: fork, waitpid and libc are faked, and the POSIX names
+    Windows lacks are supplied, so the parent's verdict logic is what is tested.
+    """
+    _provide_posix_probe_apis(monkeypatch)
     # Simulate fork -> child killed by SIGKILL (signal 9).
     # Status word for signal-killed: signal number in low 7 bits, no exit.
     signal_status = 9  # WIFSIGNALED(9)=True, WTERMSIG(9)=9, WIFEXITED(9)=False
-    monkeypatch.setattr(os, "fork", lambda: 12345)
+    monkeypatch.setattr(os, "fork", lambda: 12345, raising=False)
     monkeypatch.setattr(os, "waitpid", lambda pid, flags: (pid, signal_status))
     # Stub out the libc loading so we don't actually fork
     import ctypes as _ct

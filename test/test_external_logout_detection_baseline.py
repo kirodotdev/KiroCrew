@@ -841,9 +841,14 @@ class TestBootSeededSessionBaseline:
         spelled identically at both sites.
         """
 
-        source = (
-            Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard" / "server.py"
-        ).read_text(encoding="utf-8")
+        dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
+        source = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                dashboard / "server.py",
+                dashboard / "server_runtime" / "api_entrypoint.py",
+            )
+        )
         constructions = source.count("KiroPrerequisiteService,")
         seeds = source.count("seed_sessions_baseline()")
         assert constructions >= 2, "expected both startup sites to construct the service"

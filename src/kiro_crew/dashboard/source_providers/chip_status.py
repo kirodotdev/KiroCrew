@@ -579,6 +579,16 @@ def _record_merge_state(result: dict[str, str], mergeable: str, merge_state: str
         result["mergeStateStatus"] = merge_state
 
 
+def carry_known_ci(status: dict[str, str], previous: dict[str, str]) -> dict[str, str]:
+    """Carry the previous entry's CI fields onto a read whose CI was unavailable.
+
+    ``ci`` and ``ciPending`` describe one rollup, so they travel together: a
+    kept ``failed`` without its ``ciPending`` would claim the run had finished.
+    """
+    carried = {key: previous[key] for key in projection.CI_STATUS_FIELDS if key in previous}
+    return {**status, **carried}
+
+
 _MERGE_STATE_FIELDS = ("mergeable", "mergeStateStatus")
 # Lifecycle states for which a merge answer is still meaningful. Once a source is
 # merged or closed the providers stop answering the merge pair at all, so a
@@ -653,12 +663,12 @@ def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     if isinstance(ci_status, str) and ci_status:
         result["ci"] = ci_status
     else:
-        buckets = [
-            str(check.get("bucket") or "") for check in projection._as_list(payload.get("checks"))
-        ]
-        ci = projection._rollup_ci(buckets)
-        if ci is not None:
-            result["ci"] = ci
+        projection._record_ci(result, projection._as_list(payload.get("checks")))
+        # Only a provider whose chip read computes ``ciPending`` keeps it here;
+        # for any other the chip read never carries it, so keeping it would
+        # read as a change on every chip refresh.
+        if payload.get("provider") not in projection.CI_PENDING_PROVIDERS:
+            result.pop(projection.CI_PENDING_KEY, None)
     state = projection._project_state(
         str(payload.get("state") or ""), draft=bool(payload.get("draft"))
     )
@@ -704,7 +714,7 @@ def record_full_payload_status(url: str, payload: dict[str, Any]) -> None:
         and "ci" in previous[1]
         and "checks" in (payload.get("partialSections") or [])
     ):
-        status = {**status, "ci": previous[1]["ci"]}
+        status = carry_known_ci(status, previous[1])
     # Never let a lazily-unsettled merge read erase a settled one. A first full
     # fetch commonly returns `unknown` (that is the bug the provider merge-state
     # re-reads address), so without this the write-through would strip a conflict

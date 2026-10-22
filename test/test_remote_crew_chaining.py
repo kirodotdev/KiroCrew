@@ -53,6 +53,7 @@ from kiro_crew.instances.registry import (
     ancestor_ids,
     descendant_ids,
 )
+from kiro_crew.testing.wait import finished
 
 # ── the data model ───────────────────────────────────────────────────────
 
@@ -916,15 +917,17 @@ class TestChainedToken:
 
     def test_a_parent_remint_completes_with_the_lock_already_held(self, tmp_path, monkeypatch):
         """The chained mint runs inside `connect`'s lock hold, so the re-mint it
-        reaches for on a rejected parent credential has to work THERE. Bounded by
-        `wait_for` so a re-entrant acquire fails the test instead of hanging it."""
+        reaches for on a rejected parent credential has to work THERE. Bounded so a
+        re-entrant acquire fails the test by name instead of hanging it."""
         reg, mgr = _mgr(tmp_path, monkeypatch)
         reg.add(name="B", ssh_host="b-host", instance_id="b")
 
         async def scenario():
             await mgr.connect("b")
             async with mgr._lock:
-                return await asyncio.wait_for(mgr._remint_parent_under_lock("b"), timeout=5)
+                return await finished(
+                    mgr._remint_parent_under_lock("b"), "the re-mint under the held lock"
+                )
 
         assert asyncio.run(scenario()) is True
         assert mgr.get_token("b"), "re-minted nothing for the parent"

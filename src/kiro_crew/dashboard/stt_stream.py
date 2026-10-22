@@ -201,6 +201,10 @@ _MODEL_PROGRESS_INTERVAL_SECS = 2.0
 # being remapped, so one vocabulary covers the settings panel and the socket.
 _CODE_MAX_DURATION = "stt_max_duration_exceeded"
 _CODE_SESSION_FAILED = "stt_session_failed"
+# When the gateway's streaming gate refuses the WebSocket before the upgrade,
+# the client only sees a 503 — no error frame, no code. Sending an error frame
+# through the upgraded socket lets `STT_ERROR_KEY` map it to the right message.
+_CODE_STREAMING_DISABLED = "stt_streaming_disabled"
 # The one condition no existing code names: streaming Transcribe bills per audio
 # second, so the socket refuses without a recorded operator grant for this exact
 # profile+region. Distinct from `_CODE_SESSION_FAILED` because the fix is an
@@ -1579,8 +1583,16 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
 
     cfg = KiroCrewConfig.load()
     if not cfg.stt.enabled or cfg.stt.provider not in _STREAMING_PROVIDERS or not cfg.stt.streaming:
+        # Complete the WebSocket upgrade so the client receives a typed error frame
+        # rather than a bare 503 it can only report as a generic 'connection' error.
+        # The guard audit records the refusal; no stt_stream_start is emitted, so
+        # no stt_stream_end is needed.
         _emit_guard_audit(request.remote or "unknown", outcome="unavailable")
-        raise web.HTTPServiceUnavailable(text="streaming STT not enabled")
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await _send_error(ws, "streaming STT is not enabled", _CODE_STREAMING_DISABLED)
+        await ws.close()
+        return ws
 
     global _active_sessions
     if _active_sessions >= _MAX_CONCURRENT_SESSIONS:

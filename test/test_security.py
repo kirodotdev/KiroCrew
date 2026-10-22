@@ -7340,7 +7340,7 @@ class TestAdaptiveHomeTargetsExpiry:
         scope as a closed list. That list of five is the one the failure message
         below names, so the two stay in step.
         Prose cannot hold a closed list shut. A future ``resolve_target`` call on a
-        sixth kind of path would widen what the flag reports while all five sites
+        seventh kind of path would widen what the flag reports while all five sites
         went on describing the old set, which is exactly the documentation defect
         this change exists to remove, reintroduced one call site later.
 
@@ -7348,7 +7348,6 @@ class TestAdaptiveHomeTargetsExpiry:
         than spelled out here, so adding a sensitive LEAF keeps this passing and
         adding a resolve CALL SITE fails it.
         """
-        from kiro_crew.agent_sdk import host_auth
         from kiro_crew.security import paths as gate
 
         crew_home = tmp_path / "crew"
@@ -7364,10 +7363,10 @@ class TestAdaptiveHomeTargetsExpiry:
         # Set EVERY harness override root this test asserts on, rather than
         # inheriting one from an unrelated autouse fixture. The override-anchored
         # arm only contributes where its root is set, so leaving that to a fixture
-        # written for another purpose makes the fifth class's coverage depend on a
+        # written for another purpose makes the last class's coverage depend on a
         # variable no reader of this test can see -- and the assertion at the end
         # would then pass or go vacuous for reasons outside this file.
-        for _override_env in host_auth.home_override_env_vars():
+        for _override_env in gate._ADAPTER_ROOT_ENVS:
             _override_root = tmp_path / f"override-{_override_env.lower()}"
             _override_root.mkdir(exist_ok=True)
             monkeypatch.setenv(_override_env, str(_override_root))
@@ -7384,7 +7383,7 @@ class TestAdaptiveHomeTargetsExpiry:
         # ``_OVERRIDE_ANCHORED_LEAVES`` member, because those leaves are spliced
         # into it; ``_WRITE_PROTECTED_HOME_PATHS`` on its own and
         # ``_KEYSTONE_ARTIFACT_PARENTS`` each filter all of them out of BOTH the
-        # recorder and ``expected``, which is how the fifth resolved class can come
+        # recorder and ``expected``, which is how the last resolved class can come
         # to be asserted vacuously.
         tiers = (
             gate._SENSITIVE_HOME_DIRS,
@@ -7422,12 +7421,10 @@ class TestAdaptiveHomeTargetsExpiry:
                                 else roots.crew_home
                             )
                             break
-            # Both kiro-cli leaves have their ``$HOME``-rooted form resolved, so a
-            # symlink below the home root cannot move the real file out of the
-            # fence. Derived from the same tuple the build reads.
-            for _cli_leaf in gate._KIRO_CLI_WRITE_TIER_LEAVES:
-                if _cli_leaf in tier:
-                    expected.add(os.path.join(roots.home, *gate._leaf_segments(_cli_leaf)))
+            # Every entry has its ``$HOME``-rooted form resolved, so a symlink at or
+            # below a protected entry cannot move the real store out of the fence.
+            for entry in tier:
+                expected.add(os.path.join(roots.home, *gate._leaf_segments(entry)))
             if roots.kiro_home and gate._KIRO_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
             # The registry leaf shares that class: one root, one guard shape. Derived
@@ -7452,7 +7449,7 @@ class TestAdaptiveHomeTargetsExpiry:
                 "security spec together"
             )
 
-        # The fifth class has to be REACHED, not merely described. Without this the
+        # The last class has to be REACHED, not merely described. Without this the
         # override-anchored arm can contribute nothing to either side -- which is
         # what ``_WRITE_PROTECTED_HOME_PATHS`` alone does -- and a widened flag
         # would still pass while the prose about declared credential leaves went
@@ -8527,10 +8524,11 @@ class TestKiroSettingsMcpJsonWriteProtection:
         assert is_sensitive_write_path("settings/mcp.json", base_dir="/tmp/project") is False
 
     def test_a_leaf_added_to_the_tuple_gets_both_halves(self, tmp_path, monkeypatch) -> None:
-        # The tuple's contract is that it drives the $HOME resolve loop AND the
-        # KIRO_HOME re-anchoring, so a third kiro-cli leaf is one tuple entry and not
-        # a third arm. Pinned by adding one, because the failure mode is silent: the
-        # leaf would be fenced under $HOME and writable under the override.
+        # The tuple drives the KIRO_HOME re-anchoring, and its $HOME half is the
+        # resolve loop over every home_dirs entry, so a third kiro-cli leaf is one
+        # tuple entry and not a third arm. Pinned by adding one, because the failure
+        # mode is silent: the leaf would be fenced under $HOME and writable under
+        # the override.
         from kiro_crew.security import is_sensitive_write_path
 
         home = tmp_path / "home"

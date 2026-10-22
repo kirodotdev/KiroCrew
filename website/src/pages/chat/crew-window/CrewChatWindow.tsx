@@ -39,6 +39,7 @@ import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
@@ -297,7 +298,18 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // The newest turn row the transcript draws as a bubble: a system notice
   // (compaction, reload) and a say-nothing reply are not one.
   const lastTurn = [...messages].reverse().find(m => m.role === 'user' || (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m)))
-  const title = slotQ.data?.title || detailQ.data?.title || key
+  // An untitled session shows the shared "Untitled session" label, never the
+  // internal slot key. The key still routes every request (crewWindowSlot,
+  // slotPath); only the header text changes. The label is used ONLY once a
+  // query has resolved with an empty title. While the slot/detail reads are
+  // pending, errored, or gated off by a version mismatch (enabled: versionOk)
+  // there is no title to trust, so the header shows the crew's own name (the
+  // same identifier the load_failed / feed_lost notices use) and drops the
+  // "On {{name}}" subtitle, which would only repeat it.
+  const titleResolved = slotQ.data !== undefined || detailQ.data !== undefined
+  const title = titleResolved
+    ? sessionDisplayTitle({ key, title: slotQ.data?.title || detailQ.data?.title })
+    : name
   const loadError = detailQ.error ?? slotQ.error ?? instancesQ.error ?? capsQ.error
   const versionMismatch = capsQ.data && !capsQ.data.version_match ? capsQ.data : null
   const actionPending = action.isPending
@@ -359,7 +371,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
         <Server size={14} className="text-info shrink-0" aria-hidden="true" />
         <span className="truncate font-semibold min-w-0">{title}</span>
-        <span className="text-muted truncate">{i18nT('pages.chat.crewWindow.running_on_header', { name })}</span>
+        {titleResolved && <span className="text-muted truncate">{i18nT('pages.chat.crewWindow.running_on_header', { name })}</span>}
         <span className="ml-auto text-muted truncate hidden sm:inline">{i18nT('pages.chat.crewWindow.close_hint', { name })}</span>
         <Btn className="shrink-0" onClick={onClose}><X size={14} aria-hidden="true" />{i18nT('pages.chat.crewWindow.close')}</Btn>
       </div>

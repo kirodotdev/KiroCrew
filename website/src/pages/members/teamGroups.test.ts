@@ -137,7 +137,7 @@ describe('unansweredQuestion', () => {
     expect(q?.text).toBe('Merge it as is?')
   })
 
-  it('a trailing system notice in the assistant role is not the crewmate\'s last word', () => {
+  it('a trailing system notice in the assistant role is not the mate\'s last word', () => {
     // The backend appends compaction / reload notices as assistant rows. Read
     // as the tail, "Conversation compacted." has no options and no question
     // mark, so the open question before it would vanish from "Needs you".

@@ -19,7 +19,7 @@ const SECTIONS: { key: Key; label: string }[] = [
   { key: 'danger', label: 'Danger Zone' },
 ]
 
-describe('crewmate editor rail', () => {
+describe('mate editor rail', () => {
   it("puts a segment's marker on that section's tab, and on no other row", () => {
     render(
       <CrewEditorNextRail<Key>
@@ -55,7 +55,7 @@ describe('crewmate editor rail', () => {
   })
 })
 
-describe('crewmate editor rail — the mobile select mirrors the rail', () => {
+describe('mate editor rail — the mobile select mirrors the rail', () => {
   // Below `sm` the rail collapses to a SimpleSelect; both are always in the DOM
   // (CSS swaps them by breakpoint). SimpleSelect draws the Radix popup on a
   // pointer device and a native <select> on a touch one. These tests force the

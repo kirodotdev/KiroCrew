@@ -411,7 +411,8 @@ def _flat(path: Path) -> str:
 
 
 def test_skill_wires_the_check_at_every_body_write_and_gates_both_checks() -> None:
-    flat = _flat(SKILL)
+    # The contract's section 3 and 4 text lives in a reference SKILL.md points to.
+    flat = _flat(SKILL) + " " + _flat(PREPARE_PR / "references" / "pr-description-contract.md")
     # Phase 1.5, Phase 2 amend, Phase 3 publish -- each names the flag.
     assert flat.count("diff_signals.py --check-body") >= 3
     assert "<body-file>" not in flat

@@ -152,7 +152,7 @@ class TestWindowFollowsFrameSize:
             end = time.monotonic() + 2.0
             while time.monotonic() < end:
                 state.push_slots_update()
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.05)  # flake-ok: stimulus pacing; the 50 ms burst is measured
             await asyncio.sleep(_SLOTS_BROADCAST_MAX_INTERVAL_S + 0.1)
 
         loop.run_until_complete(_run())

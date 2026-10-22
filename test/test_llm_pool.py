@@ -27,9 +27,12 @@ from llm_pool_helpers import (  # noqa: F401 -- the autouse fixture registers by
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
 )
 from kiro_crew.knowledge.llm_pool import (
     AcpWorker,
@@ -529,6 +532,11 @@ class TestReadConfig:
             # permission request on this backend's mirror) and
             # acp_client_spawnable -- passes through.
             (ACP_BACKEND_OPENCODE, ACP_BACKEND_OPENCODE),
+            # pi has no mirror; its zero_tools is read beside its member mounts
+            # from the same spec parse, and every pi tool call reaches
+            # session/request_permission through the gate extension, so
+            # _deny_zero_tools refuses it -- passes through.
+            (ACP_BACKEND_PI, ACP_BACKEND_PI),
         ],
     )
     def test_acp_backend_goes_through_the_selection_gate(self, persisted, expected):
@@ -573,6 +581,67 @@ class TestReadConfig:
             worker = AcpWorker()
             await worker.start()
         assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_OPENCODE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "backend", [ACP_BACKEND_PI, ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK]
+    )
+    async def test_an_adapter_worker_carries_the_extraction_model_pin(self, tmp_path, backend):
+        """None of these harnesses reads a spec of Crew's, so the knowledge model pin
+        reaches the client explicitly, the model kiro-cli reads from the spec;
+        without it extraction silently ran on the harness default."""
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("kiro_crew.knowledge.llm_pool._get_acp_backend", return_value=backend),
+            patch(
+                "kiro_crew.knowledge.llm_pool._knowledge_spec_model",
+                return_value="local/extract-small",
+            ),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            worker = AcpWorker()
+            await worker.start()
+        assert mk.call_args.kwargs["acp_backend"] == backend
+        assert mk.call_args.kwargs["model"] == "local/extract-small"
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_worker_reads_the_pin_from_its_spec(self, tmp_path):
+        """kiro-cli reads the spec's own model, so its construction is unchanged."""
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("kiro_crew.knowledge.llm_pool._get_acp_backend", return_value=ACP_BACKEND_KIRO),
+            patch(
+                "kiro_crew.knowledge.llm_pool._knowledge_spec_model",
+                side_effect=AssertionError("kiro must not read the pin here"),
+            ),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            worker = AcpWorker()
+            await worker.start()
+        assert "model" not in mk.call_args.kwargs
+
+    @pytest.mark.parametrize(
+        ("pin", "expected"),
+        [
+            ("local/extract-small", "local/extract-small"),
+            (" local/x ", "local/x"),
+            ("auto", None),
+            ("", None),
+        ],
+    )
+    def test_the_pin_is_the_installers_rule(self, pin, expected):
+        from kiro_crew.knowledge.llm_pool import _knowledge_spec_model
+
+        with patch("kiro_crew.agent.knowledge_agent_model", return_value=pin):
+            assert _knowledge_spec_model() == expected
+
+    def test_an_unreadable_pin_is_no_pin(self):
+        from kiro_crew.knowledge.llm_pool import _knowledge_spec_model
+
+        with patch("kiro_crew.agent.knowledge_agent_model", side_effect=OSError("boom")):
+            assert _knowledge_spec_model() is None
 
     @pytest.mark.asyncio
     async def test_start_degrades_a_non_enforced_backend_to_kiro(self, tmp_path):

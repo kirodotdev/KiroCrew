@@ -49,10 +49,12 @@ Every store read runs in ``asyncio.to_thread`` (SQLite on the request path is
 blocking I/O), and the list and detail routes serialize their rows THERE too:
 redacting a full page costs about as much as reading it, and the loop those
 requests land on is the one every session's turn shares. Auth is the
-dashboard's token middleware, like every sibling
-handler in this package -- there is no per-route check here, and the routes
-are NOT on the internal-path lists, so an MCP caller with only the internal
-secret is refused the same way it is for ``/api/sessions/health``.
+dashboard's token middleware, like every sibling handler in this package, and
+the routes are NOT on the internal-path lists, so an MCP caller with only the
+internal secret is refused the same way it is for ``/api/sessions/health``. The
+two action routes (``POST /api/tasks/{task_id}`` and ``.../cancel``) add the
+dashboard owner gate on top: they act on the owner's runs, and a non-owner
+dashboard session passes the middleware just as the owner's does.
 
 The lane spelling is ``taskq.lanes`` (RFC Q5): the row's stored ``lane``
 column when the accept path filed it, else derived -- cron and hook roots and
@@ -73,6 +75,7 @@ from aiohttp import web
 from kiro_crew import resource_status
 from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.handlers import spawn_resume
+from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.recovery.ladder import default_ladder
 from kiro_crew.security import redact_and_truncate
@@ -397,7 +400,13 @@ async def api_task_cancel(request: web.Request) -> web.Response:
     activity card. Only subagent rows have a live cancel adapter today; a
     workflow or TaskRunner row that the manager does not know answers 409 with
     the row's current state rather than pretending it stopped.
+
+    Owner-gated like ``POST /api/tasks/{task_id}``: a parked runner row ends here
+    through the same ``cancel_wait`` that route's ``cancel_wait`` action calls.
     """
+    owner_denied = await require_owner_for_dashboard_caller(request, "tasks.cancel")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     task_id = request.match_info["task_id"]
     store = _store_of(state)
@@ -533,7 +542,14 @@ async def api_task_action(request: web.Request) -> web.Response:
     read and the write is refused by the STORE and answers the same 409 the
     pre-check would have, from the state the row carries then -- never 200 for a
     cancel, or an answer, that did not happen.
+
+    Owner gate first, before the body is read: the answer is fed into the
+    owner's waiting run, and a non-owner dashboard session (a Telegram, Teams or
+    Webex allowlist link) holds the same empty app claim as the owner's own.
     """
+    owner_denied = await require_owner_for_dashboard_caller(request, "tasks.action")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     task_id = request.match_info["task_id"]
     try:

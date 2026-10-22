@@ -83,14 +83,14 @@ describe('DashboardPreviewPanel', () => {
     expect(await screen.findByTestId('crew-dashboard-frame', undefined, LAZY)).toBeInTheDocument()
   })
 
-  it('a page link names the crewmate by exact name, never by a guessed slug', async () => {
+  it('a page link names the mate by exact name, never by a guessed slug', async () => {
     roster([{ name: 'BI Buddy', slug: 'bi-buddy' }, { name: 'bi buddy 2', slug: 'bi-buddy-2' }])
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
     renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member-name', member: 'BI Buddy' }} />)
     await waitFor(() => expect(read).toHaveBeenCalledWith('bi-buddy', 'BI Buddy', 'en', true), LAZY)
   })
 
-  it('a page link naming no crewmate shows no page and says so', async () => {
+  it('a page link naming no mate shows no page and says so', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
     renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member-name', member: 'Ghost' }} />)
@@ -141,7 +141,7 @@ describe('DashboardPreviewPanel', () => {
     expect(screen.queryByTestId('dashboard-preview-actions')).toBeNull()
   })
 
-  it('reports a failed roster refresh even over a cached crewmate name', async () => {
+  it('reports a failed roster refresh even over a cached mate name', async () => {
     const members = roster([{ name: 'Atlas', slug: 'atlas' }])
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
     const { queryClient } = renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
@@ -159,7 +159,7 @@ describe('DashboardPreviewPanel', () => {
     expect(screen.queryByRole('link')).toBeNull()
   })
 
-  it('says the roster read failed instead of claiming no crewmate', async () => {
+  it('says the roster read failed instead of claiming no mate', async () => {
     vi.spyOn(api, 'members').mockRejectedValue(new Error('gateway restarting'))
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
     renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
@@ -188,7 +188,7 @@ describe('DashboardPreviewPanel', () => {
     expect(screen.queryByTestId('dashboard-preview-badge')).toBeNull()
   })
 
-  it('a later preview link for the same crewmate puts the open panel back on the staged page', async () => {
+  it('a later preview link for the same mate puts the open panel back on the staged page', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     let staging = false
     vi.spyOn(api, 'memberDashboard').mockImplementation(async (_s, _m, _l, preview) => {
