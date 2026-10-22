@@ -36,6 +36,7 @@ from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import handler
+from kiro_crew.testing.wait import async_wait_until
 
 # ── golden scenarios ──────────────────────────────────────────────────────────
 
@@ -148,11 +149,10 @@ async def _interactive(log, action_id, *, channel="D1", click=True, answer="afte
             approval_mode=handler.APPROVAL_INTERACTIVE,
         )
     )
-    for _ in range(1000):
-        if handler._pending_approvals or turn.done():
-            break
-        # flake-ok: pre-existing 10 ms poll while a scenario waits for the handler to park its approval, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: handler._pending_approvals or turn.done(),
+        describe=lambda: f"pending={sorted(handler._pending_approvals)} turn_done={turn.done()}",
+    )
     keys = sorted(handler._pending_approvals)
     log.add("pending", keys=keys)
     if click and keys:
@@ -800,11 +800,10 @@ async def _scenario_tool_then_rejected_while_streaming(log):
             approval_mode=handler.APPROVAL_INTERACTIVE,
         )
     )
-    for _ in range(1000):
-        if handler._pending_approvals or turn.done():
-            break
-        # flake-ok: pre-existing 10 ms poll while a scenario waits for the handler to park its approval, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: handler._pending_approvals or turn.done(),
+        describe=lambda: f"pending={sorted(handler._pending_approvals)} turn_done={turn.done()}",
+    )
     key = sorted(handler._pending_approvals)[0]
     await handler.handle_interaction(
         "C1", key.split(":", 1)[1], handler._ACTION_REJECT, user_id="UOWNER", sessions=sessions

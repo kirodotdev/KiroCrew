@@ -19,6 +19,7 @@ from kiro_prerequisite_helpers import _isolate_agent_specs  # noqa: F401
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
 from kiro_crew.kiro_prerequisite import _run_process
+from kiro_crew.testing.wait import await_until
 
 
 class TestKiroPrerequisiteWorkflowSupervisor:
@@ -343,13 +344,13 @@ class TestKiroPrerequisiteWorkflowSupervisor:
                 _on_private_loop=True,
             )
         )
-        await asyncio.wait_for(child_observed.wait(), timeout=1)
+        await await_until(child_observed, what="the supervisor observing the child")
         await asyncio.sleep(0)
 
         assert process_task.done() is False
 
         active_handles.clear()
-        result = await asyncio.wait_for(process_task, timeout=1)
+        result = await await_until(process_task, what="the supervised process finishing")
 
         assert result.ok is True
         assert closed_handles == [9001, 8001]

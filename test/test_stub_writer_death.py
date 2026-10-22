@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.mcp_gateway import stub
+from kiro_crew.testing.wait import finished
 
 
 class _RaisingBuffer:
@@ -47,7 +48,7 @@ async def test_bridge_terminates_when_writer_thread_dies(monkeypatch) -> None:
     writer = MagicMock()
 
     # Falls back to the real writer-thread path (stdout_writer=None).
-    await asyncio.wait_for(
+    await finished(
         stub.run_bridge(
             reader,
             writer,
@@ -56,7 +57,7 @@ async def test_bridge_terminates_when_writer_thread_dies(monkeypatch) -> None:
             stdout_writer=None,
             session=stub.StubSession(),
         ),
-        timeout=10,
+        "the bridge tearing down after the writer thread died",
     )
 
 
@@ -84,7 +85,7 @@ async def test_bridge_terminates_when_writer_dies_and_upstream_silent(
     stop_event = asyncio.Event()  # never set
     writer = MagicMock()
 
-    await asyncio.wait_for(
+    await finished(
         stub.run_bridge(
             reader,
             writer,
@@ -93,5 +94,5 @@ async def test_bridge_terminates_when_writer_dies_and_upstream_silent(
             stdout_writer=None,
             session=stub.StubSession(),
         ),
-        timeout=10,
+        "the bridge tearing down on the loop-level writer failure",
     )

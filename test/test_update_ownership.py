@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import update_ownership
+from kiro_crew.testing.wait import await_until
 from kiro_crew.update_ownership import Step
 
 _LOGGER = "kiro_crew.update_ownership"
@@ -136,14 +137,14 @@ async def test_an_expired_restart_does_not_hide_a_live_step_another_task_opened(
 
     with patch.object(update_ownership, "_now", lambda: clock["t"]):
         worker = asyncio.create_task(_dashboard_update())
-        await asyncio.wait_for(update_open.wait(), timeout=5)
+        await await_until(update_open, what="the dashboard update step opening")
         try:
             with update_ownership.step(Step.RESTART):
                 clock["t"] += Step.RESTART.max_secs
                 assert update_ownership.current_owner() == "the dashboard update"
         finally:
             finish_update.set()
-            await asyncio.wait_for(worker, timeout=5)
+            await await_until(worker, what="the dashboard update step closing")
     assert update_ownership.current_owner() is None
 
 

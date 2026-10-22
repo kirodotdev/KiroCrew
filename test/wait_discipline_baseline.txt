@@ -87,37 +87,15 @@
  3 test_hop_port_guard.py
  3 test_inbound_unbind_notice.py
  2 test_issue_radar_list_probe.py
- 2 test_job_routes.py
  3 test_kas_manual_compact.py
- 2 test_kas_mcp_sign_in.py
  3 test_kiro_prerequisite_handlers.py
- 2 test_kiro_prerequisite_supervisor.py
- 2 test_knowledge_agent_sync_off_loop.py
- 2 test_knowledge_cross_thread.py
- 2 test_knowledge_store_sources.py
  3 test_lessons_context_embedding_deadline.py
  3 test_llm_pool_ccworker.py
- 2 test_local_turn_restart_marker.py
  3 test_mcp_apps_call_endpoint.py
- 2 test_memv2_audit_a_prompt.py
- 2 test_memv2_audit_c_followup.py
- 2 test_oneshot_supervisor.py
- 2 test_plan_mode.py
- 2 test_pod_windows_boot.py
- 2 test_private_cron_proxy.py
- 2 test_push_guard_diagnostics.py
  9 test_resume_publishes_hydrated_slot.py
  5 test_runloop_integration.py
- 2 test_sandbox_mount_source_sweep.py
- 2 test_security_conductor_scripts_verify_finding.py
- 2 test_sel.py
- 2 test_sel_prune_streaming.py
- 2 test_session_broadcast.py
 16 test_session_capabilities.py
- 2 test_session_config_hot_reload.py
  3 test_session_control_audit.py
- 2 test_session_control_create.py
- 2 test_session_control_rename.py
  5 test_session_core_audit.py
  6 test_session_drain.py
  3 test_session_map_flush.py
@@ -125,31 +103,10 @@
  7 test_session_pool_refill.py
  4 test_session_sharing.py
 10 test_session_start_gate.py
- 2 test_session_transfer.py
- 2 test_session_transfer_import_body.py
  3 test_session_usage.py
- 2 test_shell_audit_log.py
  5 test_sign_in_refresher.py
- 2 test_slack_gateway_coverage_mcp_broker.py
- 2 test_slack_handler.py
- 2 test_slack_handler_composition_contract_golden.py
- 2 test_slack_handler_coverage.py
  5 test_slot_patch_frames.py
- 2 test_stall_enrichment.py
- 2 test_stub_writer_death.py
- 2 test_subagent_queued_visibility.py
- 2 test_tag_session.py
- 2 test_taskq_startup.py
- 2 test_taskrunner_execution_capture_async.py
- 2 test_taskrunner_execution_context.py
- 2 test_tool_permission.py
- 2 test_update_ownership.py
- 2 test_wake_judge_feedback_decision_log.py
- 2 test_webhook_permission_requests.py
- 2 test_windows_tree_reap.py
- 2 test_workflow_execution_capture_async.py
  4 test_workflow_memory_backend_reset.py
  4 test_workflows_nudge_wiring.py
  3 test_workflows_registry.py
  4 test_workflows_runner.py
- 2 test_workflows_startup_recovery.py

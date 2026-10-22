@@ -37,6 +37,7 @@ from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew import sel as kiro_crew_sel
 from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
+from kiro_crew.testing.wait import async_wait_until, wait_until
 
 
 class TestHmacKeyManagement:
@@ -466,12 +467,20 @@ log.flush()
             for tag in tags
         ]
         try:
-            deadline = time.monotonic() + 60
-            while not all((sync_dir / f"ready-{tag}").exists() for tag in tags):
-                assert time.monotonic() < deadline, "children never became ready"
+
+            def _all_ready() -> bool:
                 for proc in procs:
                     assert proc.poll() is None, f"child exited early: {proc.communicate()}"
-                time.sleep(0.01)
+                return all((sync_dir / f"ready-{tag}").exists() for tag in tags)
+
+            wait_until(
+                _all_ready,
+                timeout=60,
+                describe=lambda: (
+                    "children never became ready: "
+                    f"{sorted(p.name for p in sync_dir.glob('ready-*'))}"
+                ),
+            )
             (sync_dir / "go").write_text("1", encoding="utf-8")
 
             for proc in procs:
@@ -945,15 +954,17 @@ log.flush()
         t2.start()
         try:
             assert entered.wait(5)
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
+
+            def _hold_kind() -> str | None:
                 with kiro_crew_sel._CHAIN_HOLDS_MUTEX:
                     hold = kiro_crew_sel._CHAIN_HOLDS.get(key)
-                    if hold is not None and hold.kind == "prune":
-                        break
-                time.sleep(0.01)
-            else:
-                pytest.fail("prune join never promoted the hold's kind")
+                return None if hold is None else hold.kind
+
+            await async_wait_until(
+                lambda: _hold_kind() == "prune",
+                timeout=5,
+                describe=lambda: f"prune join never promoted the hold's kind: {_hold_kind()!r}",
+            )
             # Pre-fix: the hold still reads "append", so this JOINS -- and in
             # production would wait behind the streaming rewrite.
             with pytest.raises(OSError):

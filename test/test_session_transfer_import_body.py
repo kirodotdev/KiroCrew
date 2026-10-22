@@ -30,6 +30,8 @@ from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture regi
     _valid,
 )
 
+from kiro_crew.testing.wait import async_wait_until
+
 # ── install from a FILE: the body format ─────────────────────────────────
 
 
@@ -218,11 +220,10 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
     # to disk before it reaches admission, which takes longer than any fixed tick
     # on a slow runner. The gunzip is held shut, so an admitted or queued import
     # cannot finish yet; any task done before the release is one the gate refused.
-    deadline = asyncio.get_running_loop().time() + 10
-    while not any(t.done() for t in running):
-        assert asyncio.get_running_loop().time() < deadline, "no import ever reached the gate"
-        # flake-ok: pre-existing 10 ms tick of a poll bounded by its 10 s loop deadline, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: any(t.done() for t in running),
+        describe=lambda: "no import ever reached the gate",
+    )
     refused = [t for t in running if t.done()]
     release.set()
     results = await asyncio.gather(*running)
@@ -273,11 +274,9 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
     ]
     # Wait for the first caller to park, then give the rest time to pile in
     # behind it: a fixed sleep measures the harness's speed, not the permit.
-    for _ in range(200):
-        if resident["peak"]:
-            break
-        # flake-ok: pre-existing 10 ms tick of a poll bounded at 200 ticks, waiting for the first caller to park, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: resident["peak"], describe=lambda: f"resident peak so far: {resident['peak']}"
+    )
     # flake-ok: pre-existing 100 ms pile-in window behind the parked caller, moved verbatim; tracked for a de-flake pass
     # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 100 ms pile-in window behind the parked caller, moved verbatim; tracked for a de-flake pass
     await asyncio.sleep(0.1)

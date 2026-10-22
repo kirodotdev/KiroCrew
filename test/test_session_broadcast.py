@@ -31,6 +31,7 @@ from kiro_crew import validation
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -1088,7 +1089,7 @@ class TestTheShieldedSteerDelivery:
 
         # Let the wedged RPC finish: the shielded delivery reconciles ITSELF.
         release.set()
-        await asyncio.wait_for(orphans[0], timeout=5)
+        await await_until(orphans[0], what="the shielded delivery reconciling itself")
 
         assert target._steer_delivery_ids == {}, (
             "the delivery finished without popping `_steer_delivery_ids`, so this "
@@ -1199,7 +1200,7 @@ class TestTheShieldedSteerDelivery:
         )
         release.set()
         for task in list(sc._ORPHANED_STEER_DELIVERIES):
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task, what="an orphaned steer delivery finishing")
 
         # The turn confirms consumption, exactly as kiro-cli's echo does.
         prompt = sc._SEND_PROVENANCE.format(caller=caller.key, via=sc.BROADCAST_VIA) + text

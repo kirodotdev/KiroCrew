@@ -41,6 +41,7 @@ from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.knowledge.sync import MAX_FAILURES, SyncScheduler
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopStoreError
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -287,13 +288,13 @@ class TestSyncSourceOffLoop:
             sched = SyncScheduler(strict_store, pipeline, {"webhook": _connector()})
 
             task = asyncio.ensure_future(sched.sync_source(sid))
-            await asyncio.wait_for(ingested.wait(), timeout=10)
+            await await_until(ingested, what="the ingest reaching its parked wait")
             for _ in range(5):  # let the coroutine reach the outcome await
                 await asyncio.sleep(0)
             task.cancel()
             release.set()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=10)
+                await await_until(task, what="the cancelled sync finishing")
 
             assert (await off(_props, strict_store, sid))["consecutive_failures"] == 0
         finally:

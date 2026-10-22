@@ -32,6 +32,7 @@ from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import kiro_prerequisite, platform_compat
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.testing.wait import wait_until
 
 # Above every supported platform's pid_max, so no cleanup path can reach a live
 # process by it (same spelling as test/test_update_provider.py).
@@ -75,12 +76,9 @@ def _alive(pid: int) -> bool:
 
 
 def _wait_gone(pid: int, timeout: float = 10.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _alive(pid):
-            return True
-        time.sleep(0.05)
-    return False
+    return wait_until(
+        lambda: not _alive(pid), timeout=timeout, describe=lambda: f"pid {pid} is still alive"
+    )
 
 
 @contextlib.contextmanager
@@ -114,17 +112,17 @@ def _supervised(tmp_path: Path, helper: str, *flags: str) -> Iterator[tuple[int,
         start_new_session=True,
     )
     try:
-        info = None
-        deadline = time.monotonic() + 60
-        while info is None and time.monotonic() < deadline:
+
+        def _exited():
             # WNOWAIT: observe the exit without reaping, so the pgid stays ours.
-            info = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
-            if info is None:
-                time.sleep(0.05)
-        if info is None:
+            return os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+
+        try:
+            info = wait_until(_exited, timeout=60)
+        except AssertionError:
             # Still running, so still leading its group: the group id is ours.
             os.killpg(proc.pid, 9)
-            raise AssertionError("supervisor did not exit within 60s")
+            raise AssertionError("supervisor did not exit within 60s") from None
         elapsed = time.monotonic() - started
         returncode = info.si_status if info.si_code == os.CLD_EXITED else 128 + info.si_status
         yield returncode, int(pid_file.read_text()), elapsed

@@ -26,6 +26,7 @@ from kiro_crew.slack.handler import (
     set_allowed_users,
     set_owner_id,
 )
+from kiro_crew.testing.wait import finished
 
 
 class TestHandleMessage:
@@ -61,9 +62,9 @@ class TestHandleMessage:
         monkeypatch.setattr(sessions, "get_or_create", acquire)
         monkeypatch.setattr(sessions, "release", release)
 
-        await asyncio.wait_for(
+        await finished(
             handle_message(slack, sessions, "C1", "continue my task", None, "msg1", "U1"),
-            timeout=5,
+            "the refused message's handling",
         )
 
         refusal.assert_awaited_once()
@@ -1387,11 +1388,11 @@ class TestPerThreadAgent:
         monkeypatch.setattr(
             handler, "_hydrate_conv_flags", lambda _sessions, key: privacy_keys.append(key)
         )
-        await asyncio.wait_for(
-            handle_message(
-                MockSlackClient(), sessions, "C1", "hello", thread_ts, "msg1", "U_OWNER"
-            ),
-            timeout=5,
+        # Awaited in this task, not through a wrapper task: the assertions below read
+        # the keys the turn itself resolved, before the handler's background work
+        # (which runs on the next loop step) touches the session manager.
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "hello", thread_ts, "msg1", "U_OWNER"
         )
 
         assert old_owner in hydrated_keys

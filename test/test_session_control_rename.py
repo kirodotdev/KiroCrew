@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.testing.wait import await_until, finished
 
 
 @pytest.fixture(autouse=True)
@@ -69,9 +70,13 @@ def _run_race(make_first, during, started: asyncio.Event, release: asyncio.Event
                     first.result()
                     raise AssertionError("first rename finished without reaching its save")
                 raise AssertionError("first rename never reached its save")
-            during_result = await asyncio.wait_for(during(), _RACE_STEP_TIMEOUT_S)
+            during_result = await finished(
+                during(), "the step run during the parked save", timeout=_RACE_STEP_TIMEOUT_S
+            )
             release.set()
-            first_result = await asyncio.wait_for(asyncio.shield(first), _RACE_STEP_TIMEOUT_S)
+            first_result = await await_until(
+                first, what="the first rename finishing its save", timeout=_RACE_STEP_TIMEOUT_S
+            )
             return first_result, during_result
         finally:
             release.set()

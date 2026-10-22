@@ -17,6 +17,7 @@ from kiro_crew.dashboard.server import _register_mcp_routes
 from kiro_crew.history import ConversationLog
 from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
 from kiro_crew.memory_stores import provision_member_memory
+from kiro_crew.testing.wait import default_timeout
 
 
 @pytest.fixture
@@ -95,7 +96,7 @@ async def test_private_direct_cron_lifecycle_uses_host_store(env, monkeypatch):
             assert session_key == env.identities["alice"].key
             status, payload = asyncio.run_coroutine_threadsafe(
                 invoke(client, env, body["name"], body["arguments"]), loop
-            ).result(timeout=10)
+            ).result(timeout=default_timeout())
             assert status == 200, payload
             return payload
 
@@ -360,7 +361,7 @@ async def test_pooled_backend_carries_the_gateway_forwarded_token(env, monkeypat
             headers = {"X-Session-Key": session_key, "X-Internal-Secret": "fixture-internal-secret"}
             headers.update(mcp_core._session_token_header())
             status, payload = asyncio.run_coroutine_threadsafe(send(body, headers), loop).result(
-                timeout=10
+                timeout=default_timeout()
             )
             return payload if status == 200 else {"error": payload.get("error", "refused")}
 

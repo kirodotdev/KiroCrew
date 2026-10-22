@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 import types
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from kiro_crew.config.sections import DecisionProviderConfig, DecisionsConfig, N
 from kiro_crew.decisions import gate as decisions_gate
 from kiro_crew.decisions import log as decisions_log
 from kiro_crew.decisions.points import nudge_wake as point
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestJudgeTickReportsWhetherItAsked:
@@ -338,11 +338,7 @@ class TestJudgeTickReportsWhetherItAsked:
             # budget: a sleep chosen to outlast it is what made this case depend on
             # the runner. Once the worker is parked on ``release`` the budget can only
             # expire, so "the append lands after the budget" is a fact.
-            # flake-ok: pre-existing 5 s ceiling on a condition poll that fails by name; moved verbatim; tracked for a de-flake pass
-            deadline = time.monotonic() + 5.0
-            while not started.is_set():
-                assert time.monotonic() < deadline, "append worker never started"
-                await asyncio.sleep(0.001)
+            await async_wait_until(started.is_set, describe=lambda: "append worker never started")
             # flake-ok: outlasts the patched 5 ms budget while the worker is parked, so the budget can only have expired; moved verbatim
             await asyncio.sleep(decisions_gate._LOG_BUDGET_SECS * 4)
             # The post-budget commit, fired here on the event loop. Nothing about the
@@ -448,11 +444,10 @@ class TestDecisionLogGrace:
         async def _await_worker(index: int) -> None:
             # A thread this call handed off may not have been scheduled yet, which on
             # some platforms outlasts the write budget. Wait for it rather than assume.
-            # flake-ok: pre-existing 5 s ceiling on a condition poll that fails by name; moved verbatim; tracked for a de-flake pass
-            deadline = time.monotonic() + 5.0
-            while len(started) <= index or not started[index].is_set():
-                assert time.monotonic() < deadline, "append worker never started"
-                await asyncio.sleep(0.005)
+            await async_wait_until(
+                lambda: len(started) > index and started[index].is_set(),
+                describe=lambda: f"append worker {index} never started ({len(started)} handed off)",
+            )
 
         monkeypatch.setattr(decisions_gate, "_consented_for", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_capability_denied", lambda *_args, **_kwargs: False)

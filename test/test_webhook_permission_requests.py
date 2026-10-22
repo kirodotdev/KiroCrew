@@ -41,7 +41,7 @@ from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, finished
 
 _REQUEST_ID = "perm-req-9790"
 
@@ -166,8 +166,9 @@ def _drive(
     gate = _FakeGate(gate_result) if gate_result is not None else None
     builder = _FakeContextBuilder(gate) if gate is not None else None
     result_text = asyncio.run(
-        asyncio.wait_for(
+        finished(
             _run_hook_inner(_FakeState(client, builder), "hook:test:9790", "go", None),
+            "the webhook turn",
             timeout=_PROMPT_BOUND_S,
         )
     )
@@ -342,8 +343,9 @@ def test_unauditable_auto_approve_is_denied(monkeypatch):
     client = _FakeClient()
     builder = _FakeContextBuilder(_FakeGate(ToolHookResult(action=TOOL_AUTO_APPROVE)))
     result_text = asyncio.run(
-        asyncio.wait_for(
+        finished(
             _run_hook_inner(_FakeState(client, builder), "hook:test:9790", "go", None),
+            "the webhook turn",
             timeout=_PROMPT_BOUND_S,
         )
     )

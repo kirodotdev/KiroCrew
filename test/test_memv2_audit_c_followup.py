@@ -10,6 +10,7 @@ import pytest
 
 from kiro_crew import embeddings as emb
 from kiro_crew.dashboard.handlers import memory as handlers
+from kiro_crew.testing.wait import await_until
 
 
 def model_file(tmp_path):
@@ -109,7 +110,7 @@ async def test_missing_or_stale_stamp_heals_without_operator_action(
         release.set()
         await asyncio.to_thread(worker.join, 5)
         assert not worker.is_alive()
-        backend = await asyncio.wait_for(constructor, 5)
+        backend = await await_until(constructor, what="the shared embedder constructing")
         assert backend.model_path == model
         healed = json.loads((await handlers.api_memory_embedding_status(SimpleNamespace())).body)
         assert ":sha256:" in healed["model_id"]
@@ -128,7 +129,11 @@ async def test_missing_or_stale_stamp_heals_without_operator_action(
     finally:
         release.set()
         if constructor is not None:
-            await asyncio.wait_for(asyncio.gather(constructor, return_exceptions=True), 5)
+            await await_until(
+                asyncio.gather(constructor, return_exceptions=True),
+                what="the constructor settling in teardown",
+                timeout=5,
+            )
         worker = emb._model_verification_thread
         if worker is not None:
             await asyncio.to_thread(worker.join, 5)
