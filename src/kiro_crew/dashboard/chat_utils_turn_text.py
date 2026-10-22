@@ -1,7 +1,8 @@
 """What a turn's final text claims, read before the runner decides how the turn ended.
 
 Promise-only closers (a turn that says it will act and then stops), unfinished-progress
-claims, and tool-call markup that leaked into the reply text, each judged with quoted
+claims, deferred follow-up promises (a turn that says it will report back later), and
+tool-call markup that leaked into the reply text, each judged with quoted
 code stripped first.
 
 Served through :mod:`kiro_crew.dashboard.chat_utils`, which callers and tests import and
@@ -187,6 +188,142 @@ def has_unfinished_progress_claim(final_segment_text: str) -> bool:
         return False
     claim = terminal[match.start("claim") :]
     return not bool(re.search(r":\s*\S", claim))
+
+
+# A DEFERRED follow-up promise: the turn says the agent will come back later
+# ("I'll report back when the build finishes", "I'll let you know once the
+# pipeline is green", "I'll keep an eye on it"). Unlike the immediate promise
+# above, nothing about this is wrong while the turn runs. It becomes false when
+# the turn returns control with nothing set up to wake the agent: no monitor, no
+# scheduled job, no wait, no background run. The session then sits idle until
+# the person writes again, which is the incident this detector exists for.
+# Notice-only, like the progress claim: the turn may have run tools with side
+# effects, so the caller never replays it.
+#
+# The subject must be first person and the commitment future tense. Up to three
+# filler words may sit between them ("I'll then report back", "I will also
+# circle back"), so the follow-up verb is the commitment, not a later clause.
+# The bare verbs watch, monitor and poll are also nouns and objects of other
+# verbs ("I'll set up a monitor", "I'll explain how to poll the API"), so they
+# count only directly after the subject, optionally behind one adverb.
+_DEFERRED_FOLLOWUP_RE = re.compile(
+    r"\b(?:i(?:'|’)?ll|i\s+will|i(?:'|’)?m\s+going\s+to|i\s+am\s+going\s+to)\s+"
+    r"(?:(?:[a-z]+\s+){0,3}?"
+    r"(?:report\s+back|get\s+back\s+to\s+you|let\s+you\s+know|ping\s+you|notify\s+you"
+    r"|update\s+you|follow\s+up|circle\s+back|check\s+back|check\s+in\s+again|come\s+back"
+    r"|keep\s+(?:an\s+)?eye\s+on|keep\s+watching|keep\s+monitoring|keep\s+polling"
+    r"|(?:send|post|give)\s+(?:you\s+)?(?:an?\s+)?(?:update|summary|report|status))"
+    r"|(?:(?:then|also|just|now)\s+)?(?:watch|monitor|poll))\b",
+    re.IGNORECASE,
+)
+# A follow-up that waits on the PERSON needs no wake: their next message is the
+# trigger ("Let me know when you're ready and I'll report back", "Reply here and
+# I'll follow up"). Negations are explicit non-promises.
+_FOLLOWUP_USER_GATED_RE = re.compile(
+    r"\blet\s+me\s+know\b|\btell\s+me\b|\bask\s+me\b|\bping\s+me\b|\bmessage\s+me\b"
+    r"|\bsend\s+(?:me\s+)?(?:a\s+)?message\b|\breply\b|\bwhen\s+you(?:'|’)?re\s+ready\b"
+    r"|\bwhen\s+you\s+are\s+ready\b|\bif\s+you(?:(?:'|’)d|\s+would)?\s+(?:want|like|need|prefer)\b|\bwant\s+me\s+to\b"
+    r"|\bshall\s+i\b|\bshould\s+i\b|\byour\s+(?:approval|go[-\s]?ahead|confirmation)\b"
+    r"|\b(?:not|never|won(?:'|’)?t|can(?:'|’)?t|cannot)\b",
+    re.IGNORECASE,
+)
+#: The tools that leave something behind which wakes this session after the turn
+#: ends. A turn that called any of them made its follow-up real. Matched on the
+#: bare tool name (see :func:`_bare_tool_name`). ``wait`` is deliberately absent:
+#: it blocks inside the turn, so a turn that waited and then promised a later
+#: update still has nothing scheduled. ``spawn_steer`` is absent because it
+#: reaches a child that already exists, which the runtime probe counts.
+WAKE_ARMING_TOOLS: frozenset[str] = frozenset(
+    {
+        "monitor_start",
+        "monitor_watch",
+        "monitor_update",
+        "cron_add",
+        "cron_update",
+        "cron_resume",
+        "cron_trigger",
+        "register_hook",
+        "spawn_run",
+        "spawn_continue",
+        "workflow_run",
+        "workflow_rerun_subtree",
+        "task_run",
+    }
+)
+# Backends spell an MCP tool as ``mcp__<server>__<tool>``, ``<server>/<tool>``,
+# ``@<server>/<tool>`` or ``<server>___<tool>``; the tool is always the last part.
+_TOOL_NAME_SEPARATOR_RE = re.compile(r"_{2,}|/|::")
+
+
+def _bare_tool_name(tool_name: str) -> str:
+    """The tool part of a possibly server-qualified tool name."""
+    return _TOOL_NAME_SEPARATOR_RE.split(tool_name)[-1]
+
+
+#: How many trailing sentences a deferred promise may sit in. The promise is
+#: rarely the very last sentence ("I'll report back when it finishes. The build
+#: is about 20 minutes."), but one buried at the top of a long answer is a plan
+#: the answer went on to fulfil, not the turn's closing commitment.
+_DEFERRED_FOLLOWUP_TAIL_SENTENCES = 2
+
+
+def has_deferred_followup_promise(final_segment_text: str) -> bool:
+    """Return whether a turn's closing sentences promise to follow up LATER.
+
+    The caller supplies only text emitted after the last tool boundary, and must
+    still check that nothing was set up to wake the session
+    (:func:`turn_armed_a_wake` plus any monitor already running) before saying
+    so: this reads the words, not the runtime. Quoted code and an ``[OPTIONS:]``
+    trailer are stripped first, so a pasted transcript or a button label cannot
+    trigger it. A follow-up gated on the person's own next message, and a negated
+    one, are not promises the runtime has to keep.
+    """
+    text, _choices = split_options_trailer(final_segment_text or "", hide_partial=False)
+    text = _strip_quoted_code(text).strip()
+    if not text:
+        return False
+    sentences = [p.strip() for p in _SENTENCE_BOUNDARY_RE.split(text) if p.strip()]
+    for sentence in sentences[-_DEFERRED_FOLLOWUP_TAIL_SENTENCES:]:
+        match = _DEFERRED_FOLLOWUP_RE.search(sentence)
+        if match is None or _FOLLOWUP_USER_GATED_RE.search(sentence):
+            continue
+        # A colon after the promise introduces what it promised, delivered in
+        # the same reply ("I'll give you a summary: the build passed").
+        if re.search(r":\s*\S", sentence[match.start() :]):
+            continue
+        return True
+    return False
+
+
+def turn_armed_a_wake(turn_tool_identities: tuple[tuple[str, str, str, bool], ...]) -> bool:
+    """True when any call this turn was a tool that wakes the session later.
+
+    Each identity is ``(tool_call_id, mcp_server_name, tool_name, trusted)``.
+    Fails toward "armed": an identity that is not a well-formed tuple, or that
+    carries no tool name (claude-agent-acp and opencode frames name no tool),
+    counts as a wake, because the only cost of a wrong True is a missing notice,
+    while a wrong False tells the person nothing is scheduled when something is.
+    """
+    for identity in turn_tool_identities:
+        if not isinstance(identity, tuple) or len(identity) < 3:
+            return True
+        tool_name = identity[2]
+        if not isinstance(tool_name, str):
+            return True
+        bare_name = _bare_tool_name(tool_name)
+        if not bare_name or bare_name in WAKE_ARMING_TOOLS:
+            return True
+    return False
+
+
+#: Shown when a turn ends on a deferred follow-up promise and nothing wakes the
+#: session. Says what will NOT happen and what the person can do about it.
+DEFERRED_FOLLOWUP_NOTICE = (
+    "ℹ️ The reply says the agent will follow up later, but this turn set up no "
+    "monitor, scheduled job or background run, and no monitor is running on "
+    "this session — so nothing will wake it to send that update. Send a message "
+    "when you want it, or ask the agent to set up a monitor."
+)
 
 
 def is_promise_only_terminal(final_segment_text: str) -> bool:
