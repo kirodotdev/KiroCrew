@@ -115,6 +115,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HOST_CLI_COMMAND,
         _LEGACY_SHARED_MCP_PATH,
         _PY_OPTS_WITH_SEPARATE_VALUE,
+        APP_DIR_PLACEHOLDER,
         _deregister_mcp_servers,
         _has_python_shebang,
         _live_port_for,
@@ -137,6 +138,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         reregister_app_mcp_servers,
         resolve_stdio_command,
         scrub_backend_mcp_url,
+        substitute_app_dir,
     )
     from kiro_crew.apps.bridges_mcp_config import (  # noqa: F401
         _health_reconcile_guard,
@@ -242,6 +244,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         AppManifest,
         Containment,
         contained_in_screened_root,
+        file_entry_point_refusal,
         has_stdio_mcp_server,
         is_module_style_entry_point,
         screen_app_path,

@@ -41,7 +41,12 @@ from kiro_crew.apps.interpreter import (
     venv_provided_command,
 )
 from kiro_crew.apps.manager import app_dir
-from kiro_crew.apps.manifest import AppManifest, has_stdio_mcp_server, is_module_style_entry_point
+from kiro_crew.apps.manifest import (
+    AppManifest,
+    file_entry_point_refusal,
+    has_stdio_mcp_server,
+    is_module_style_entry_point,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
@@ -180,6 +185,62 @@ def _live_port_for(app_name: str, live_port: int | None) -> int | None:
 #: python when a version-matched one exists, else the RUNNING interpreter, which is the
 #: only one guaranteed to import ``kiro_crew``.
 _BARE_PYTHON = frozenset({"python", "python3", "py"})
+
+
+#: The placeholder a stdio ``mcpServers`` entry may use for the app's own install directory.
+#:
+#: A manifest is static, but an app installed from a registry or a local directory lives
+#: wherever ``app_dir(name)`` puts it, so it cannot name a script it ships by absolute path,
+#: and a relative path would resolve against the SESSION's working directory (an untrusted
+#: project) when kiro-cli spawns the server. ``${APP_DIR}/<path>`` is replaced with the real
+#: install directory when the entry is registered and when the agent config is rebuilt.
+APP_DIR_PLACEHOLDER = "${APP_DIR}"
+
+
+def substitute_app_dir(cfg: Any, app_root: Path) -> tuple[Any, str]:
+    """``(entry, "")`` with ``${APP_DIR}/<path>`` replaced in ``command`` and ``args``, or
+    ``(None, reason)`` when the entry must not be registered.
+
+    The rule, kept narrow on purpose: the placeholder may only START a value, exactly once,
+    as ``${APP_DIR}/<relative path>``, and the path must be a regular file inside the app
+    root after links are followed -- the same containment screen a file-style backend entry
+    point passes (:func:`file_entry_point_refusal`). Anything else naming the placeholder (in
+    the middle of a value, twice, bare, or a path that escapes the root, is missing, or
+    goes through a link out of it) refuses the whole entry rather than registering a
+    command that runs something the app did not ship. An entry without the placeholder, an
+    HTTP entry and a non-dict value are returned unchanged. Each value stays ONE argv
+    element, so a directory with spaces needs no quoting.
+    """
+    if not isinstance(cfg, dict) or cfg.get("url"):
+        return cfg, ""
+
+    def resolve(value: Any) -> tuple[Any, str]:
+        if not isinstance(value, str) or APP_DIR_PLACEHOLDER not in value:
+            return value, ""
+        prefix = APP_DIR_PLACEHOLDER + "/"
+        if not value.startswith(prefix) or value.count(APP_DIR_PLACEHOLDER) != 1:
+            return None, f"{APP_DIR_PLACEHOLDER} must start a value, as {prefix}<path>"
+        rel = value[len(prefix) :]
+        refusal = file_entry_point_refusal(rel, app_root) if rel else "not found"
+        if refusal:
+            return None, f"{value}: {refusal}"
+        return str(app_root / rel), ""
+
+    out = dict(cfg)
+    if "command" in cfg:
+        command, reason = resolve(cfg.get("command"))
+        if command is None:
+            return None, reason
+        out["command"] = command
+    if isinstance(cfg.get("args"), list):
+        args: list[Any] = []
+        for value in cfg["args"]:
+            resolved, reason = resolve(value)
+            if resolved is None:
+                return None, reason
+            args.append(resolved)
+        out["args"] = args
+    return out, ""
 
 
 def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
@@ -1006,6 +1067,14 @@ def _register_mcp_servers(
                 # `resolve_stdio_command`) — and surface an unresolvable command
                 # instead of letting the tools go silently missing.
                 if isinstance(cfg, dict):
+                    cfg, refused = substitute_app_dir(cfg, app_dir(app_name))
+                    if cfg is None:
+                        # Never register a command naming something the app did not ship;
+                        # scrub a stale entry so an earlier registration cannot linger.
+                        logger.warning("Not registering MCP server %s: %s", namespaced, refused)
+                        servers.pop(namespaced, None)
+                        skipped.append(namespaced)
+                        continue
                     cfg = resolve_stdio_command(cfg, app_root=app_dir(app_name))
                     _schedule_unresolvable_warning(app_name, server_name, cfg)
                     # This file is consumed by kiro-cli, which applies a declared
