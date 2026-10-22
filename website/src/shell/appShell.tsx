@@ -17,6 +17,7 @@ import { useTheme } from '../hooks/useTheme'
 import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useKeyboardViewportReset } from '../hooks/useKeyboardViewportReset'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
@@ -326,6 +327,9 @@ export function useAppShell() {
   usePolicyGovernedNotification()
   const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
   useRumPageView()
+  // iPad/iPhone Safari: put the page back at scroll 0 after the on-screen
+  // keyboard hides, so the header stays in view and no gap appears below.
+  useKeyboardViewportReset()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
   const navCollapsedRef = useRef(navCollapsed)
