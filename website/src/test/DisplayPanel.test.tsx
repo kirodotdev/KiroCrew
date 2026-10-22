@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
@@ -439,6 +439,63 @@ describe('DisplayPanel – plain diffs setting lives on the Chat tab', () => {
   it('does not render the toggle', () => {
     renderPanel()
     expect(screen.queryByRole('switch', { name: 'Plain diffs' })).toBeNull()
+  })
+})
+
+// Settings > Display > View > Desktop app (#12204). The row mounts only after
+// the main window's close-action read succeeds, so these drive it through the
+// real panel: its late-mount highlight anchor and its save-failure notice are
+// composed here, not in the hook or the toggle primitive.
+describe('DisplayPanel – desktop app close-button row', () => {
+  const ROW_ID = 'display.keep-running-in-the-background-after-closing-the-window'
+  const LABEL = 'Keep running in the background after closing the window'
+
+  beforeEach(() => {
+    displaySub = 'view'
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+  afterEach(() => {
+    delete (window as unknown as { closeActionAPI?: unknown }).closeActionAPI
+  })
+
+  it('stays absent without the bridge (browser, PWA)', () => {
+    renderPanel()
+    expect(screen.queryByRole('switch', { name: LABEL })).toBeNull()
+  })
+
+  it('mounts after the read with its highlight anchor, and reports a failed save', async () => {
+    let answerGet: (v: string) => void = () => {}
+    let refuseSet: () => void = () => {}
+    const closeActionAPI = {
+      get: vi.fn(() => new Promise<string>(resolve => { answerGet = resolve })),
+      set: vi.fn(() => new Promise<string>((_resolve, reject) => {
+        refuseSet = () => reject(new Error("close-action:set is restricted to the main window's dashboard"))
+      })),
+    }
+    ;(window as unknown as { closeActionAPI?: unknown }).closeActionAPI = closeActionAPI
+    const { container } = renderPanel()
+
+    // Not yet answered: no row, so a deep link must wait for its anchor.
+    expect(container.querySelector(`[data-setting-id="${ROW_ID}"]`)).toBeNull()
+    await act(async () => { answerGet('background') })
+    const row = await waitFor(() => {
+      const el = container.querySelector(`[data-setting-id="${ROW_ID}"]`)
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    const toggle = within(row).getByRole('switch', { name: LABEL })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(toggle)
+    expect(closeActionAPI.set).toHaveBeenCalledWith('quit')
+    await act(async () => { refuseSet() })
+
+    expect(await screen.findByText("Couldn't save this setting. Nothing changed. Try again.")).toBeInTheDocument()
+    const after = within(container.querySelector(`[data-setting-id="${ROW_ID}"]`) as HTMLElement)
+      .getByRole('switch', { name: LABEL })
+    expect(after).toHaveAttribute('aria-checked', 'true')
+    expect(after).not.toBeDisabled()
   })
 })
 

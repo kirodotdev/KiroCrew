@@ -9,6 +9,11 @@ const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice")
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
+const {
+  createCloseHandler,
+  getCloseAction,
+  setCloseAction,
+} = require("./close-action");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
@@ -887,9 +892,15 @@ function createWindowLifecycle(options) {
       rendererRecovery.handleGone(details || {});
     });
 
-    mainWindow.on("close", (event) => {
-      if (!isQuitting()) {
-        event.preventDefault();
+    mainWindow.on("close", createCloseHandler({
+      isQuitting,
+      getAction: () => getCloseAction(store),
+      cancelPendingHide: () => {
+        glog("close: quitting (closeAction=quit)");
+        cancelPendingTrayHide(mainWindow);
+      },
+      requestQuit,
+      hide: () => {
         // macOS must leave its native fullscreen Space before hiding or the Space
         // becomes an orphaned black surface, and the hide that follows is an
         // app-level one: AppKit may have left a full-display overlay on screen
@@ -909,14 +920,15 @@ function createWindowLifecycle(options) {
             fullScreenWatch ? fullScreenWatch.exitSettlingFor() : Infinity
           ),
         });
-        return;
-      }
-      if (saveTimer) {
-        clearTimeout(saveTimer);
-        saveTimer = null;
-      }
-      persist();
-    });
+      },
+      persist: () => {
+        if (saveTimer) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+        persist();
+      },
+    }));
 
     return mainWindow;
   }
@@ -991,6 +1003,13 @@ function createWindowLifecycle(options) {
     ]));
     tray.on("click", showFromTray);
     return tray;
+  }
+
+  // Returns the stored value, which the Settings switch renders.
+  function setCloseActionAndLog(value) {
+    const written = setCloseAction(store, value);
+    glog(`closeAction set to ${written}`);
+    return written;
   }
 
   async function promptRemoteHost() {
@@ -1692,6 +1711,10 @@ function createWindowLifecycle(options) {
     setupWindowContents,
     getMainWindow: () => mainWindow,
     getTray: () => tray,
+    closeAction: {
+      get: () => getCloseAction(store),
+      set: setCloseActionAndLog,
+    },
     getSummonWindow,
     focusedDashboardWindow,
     focusedDashboardWebContents,
