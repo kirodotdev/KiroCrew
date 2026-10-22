@@ -2229,6 +2229,16 @@ names only (`history.md`, "Card rows"). Every owner
 mutation through the hooked routes, card or manual, appends one names-only line
 to Global memory history.
 
+`kiro_crew/change_card_catalog.py` keeps the evidence, undo and result code
+(`extract_evidence`, `build_undo`, `result_summary`) and the manual-change memory
+lines (`describe_manual_change`, `HOOKED_ROUTES`, `MEMORY_ROUTES`), and is a mirror
+facade (`kiro_crew._facade_mirror`) over two sibling owners, so every other name
+still reads and patches as `change_card_catalog.<name>`. New work goes to the owner
+of its responsibility: `change_card_catalog_kinds.py` (the kind ids, the `KINDS`
+table, the risk and limit constants and the parameter validation) and
+`change_card_catalog_plans.py` (the plan steps and fills, the stores and dashboard
+setting tables, the display helpers and `build_preview`).
+
 `kirocrew-panel` is opt-in and reaches a crew member's DM session the way
 `kirocrew-dashboard` does: as a session-level `mcpServers` entry carrying that
 session's identity (`members.member_panel_session_server`), plus

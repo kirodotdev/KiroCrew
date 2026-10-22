@@ -137,7 +137,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Change-card details shown before Apply",
-        "change_card_catalog.py",
+        "change_card_catalog_plans.py",
         "Values a change card shows in full so the user sees what Apply runs: an "
         "MCP server's launch line, environment values and request headers. Each "
         "value passes the credential redactor before it reaches the card.",
