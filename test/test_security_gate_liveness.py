@@ -452,7 +452,14 @@ def _url_payload_command(n: int) -> str:
 #: cache stores output computed under exactly the set its key names. Fourteen lines:
 #: the keyword on both signatures, a two-branch read and the docstrings saying why.
 #: No rule widened or narrowed; the default path is the live read.
-_PACKAGE_LINE_BUDGET = 32_125
+#:
+#: Raised again, from 32,125, by 32 lines for the ``pkill``/``killall`` by-name self-kill
+#: window: ``_bare_kill_raw_bodies`` takes an anchor-basename set so the by-name leg reuses
+#: the quote-aware raw re-derivation the bare-``kill`` leg already had, the shared body
+#: search is factored into ``_raw_body_names_self``, and ``_is_self_kill`` runs the raw
+#: window once per anchor family. New detection for the public decoy shape, as a UNION with
+#: the token walk; no rule, threshold or existing pass changed.
+_PACKAGE_LINE_BUDGET = 32_157
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

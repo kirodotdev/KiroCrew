@@ -437,8 +437,18 @@ def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]"
     return not words and _shell_normalizer._program_basename("".join(word)) == "kill"
 
 
-def _bare_kill_raw_bodies(source: str) -> "list[str]":
-    """Substitution bodies inside a bare ``kill``'s own argv, read from the RAW text.
+def _bare_kill_raw_bodies(
+    source: str, anchor_basenames: "frozenset[str]" = frozenset({"kill"})
+) -> "list[str]":
+    """Substitution bodies inside a kill's own argv, read from the RAW text.
+
+    *anchor_basenames* names the program basenames that anchor the window. It
+    defaults to the bare ``kill`` this walk was written for; the by-name family
+    (``pkill``/``killall``) passes its own set, because the SAME quote-unaware
+    token window that dropped a decoyed ``kill`` clause also drops a decoyed
+    by-name clause (see :func:`_is_self_kill`). The anchor resolution, the
+    forward and segment bounds, and the quote-aware span scan are identical for
+    both; only which program word opens the window differs.
 
     The token walk in :func:`_is_self_kill` bounds the same window with
     :func:`_substitution_depth_delta`, which counts parens on tokens
@@ -534,14 +544,14 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
         # spelling slips both union halves (bash-measured).  Both ``$k`` and
         # ``${k}`` count; the value check goes through the same basename read as
         # the literal.
-        if _shell_normalizer._program_basename(w) == "kill":
+        if _shell_normalizer._program_basename(w) in anchor_basenames:
             return True
         if not w.startswith("$"):
             return False
         name = w[1:]
         if name.startswith("{") and name.endswith("}"):
             name = name[1:-1]
-        return _shell_normalizer._program_basename(aliases.get(name, "")) == "kill"
+        return _shell_normalizer._program_basename(aliases.get(name, "")) in anchor_basenames
 
     def end_segment() -> None:
         end_word()
@@ -708,6 +718,28 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
+def _raw_body_names_self(body: str) -> bool:
+    """True if a RAW substitution body names the product through the de-quoted views.
+
+    The exact search the bare-``kill`` raw window has always run on each body,
+    factored out so the by-name (``pkill``/``killall``) raw window runs the
+    identical search: the body raw and with parameter defaults resolved, then
+    per WORD of the ``_self_tokens`` view (which folds a ``backslash-newline``
+    split name whole and swallows an untokenizable body instead of raising out
+    of the gate) searched bare AND through ``_resolved_word_view``.
+    """
+    if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
+        _resolve_param_defaults(body)
+    ):
+        return True
+    for word in _shell_normalizer._self_tokens(body):
+        if _SELF_NAME_RE.search(_debracket(word)) or _SELF_NAME_RE.search(
+            _shell_normalizer._resolved_word_view(word)
+        ):
+            return True
+    return False
+
+
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
@@ -816,28 +848,30 @@ def _is_self_kill(text_lower: str) -> bool:
         # window from the RAW text, where the quotes still exist.  The counter
         # also scores a ``case`` PATTERN's ``)`` as a closer, so a lookup placed
         # after ``case ... esac`` in the body's list falls outside the token
-        # window too -- only this raw window reaches it.  Search each body raw,
-        # with parameter defaults resolved, AND per WORD of the ``_self_tokens``
-        # view (de-quoting only exists as a product of tokenization, and that
-        # view folds a ``backslash-newline`` split name whole and swallows an
-        # untokenizable body instead of raising out of the gate): each word
-        # searched bare AND through ``_resolved_word_view``.  Both members
-        # carry weight: the composed transform reaches what de-quoting leaves
-        # behind (``'kiro''[c]rew'``, ``kiro$()crew``, ``'kiro'${x:-crew}`` --
-        # a name needing TWO transforms sits in the seam between
-        # single-transform searches), while the bare search reaches a name the
-        # transform DESTROYS (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill``
-        # leg searches the same view per argument).  See the helper's docstring for
-        # why the transform is not ``_normalize_operand``.
-        for body in _bare_kill_raw_bodies(source):
-            if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
-                _resolve_param_defaults(body)
-            ):
-                return True
-            for word in _shell_normalizer._self_tokens(body):
-                if _SELF_NAME_RE.search(_debracket(word)) or _SELF_NAME_RE.search(
-                    _shell_normalizer._resolved_word_view(word)
-                ):
+        # window too -- only this raw window reaches it.  Each body is searched
+        # by :func:`_raw_body_names_self`: raw, with parameter defaults resolved,
+        # AND per WORD of the ``_self_tokens`` view, each word bare and through
+        # ``_resolved_word_view``.  Both members carry weight: the composed
+        # transform reaches what de-quoting leaves behind (``'kiro''[c]rew'``,
+        # ``kiro$()crew``, ``'kiro'${x:-crew}`` -- a name needing TWO transforms
+        # sits in the seam between single-transform searches), while the bare
+        # search reaches a name the transform DESTROYS
+        # (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill`` leg searches the same
+        # view per argument).
+        #
+        # The pkill/killall BY-NAME leg (the first loop) is bounded by that SAME
+        # de-quoted ``_substitution_depth_delta`` counter, so the identical
+        # quoted close-paren decoy cuts a by-name kill's argv short and drops the
+        # substitution clause that names the target
+        # (``k=pkill; $k -f $(printf ')' ; echo kirocrew)`` -- bash runs the
+        # pkill).  So the raw window runs once per anchor family, bare ``kill``
+        # and the by-name set, as a UNION with the token walks.  The by-name
+        # bodies need no extra machinery: the token leg already treats the
+        # product name anywhere in a by-name argv as the target, so scanning a
+        # decoy-dropped body the same way only restores that reach quote-aware.
+        for anchor in (frozenset({"kill"}), _KILL_BY_NAME_PROGRAMS):
+            for body in _bare_kill_raw_bodies(source, anchor):
+                if _raw_body_names_self(body):
                     return True
     return False
 
