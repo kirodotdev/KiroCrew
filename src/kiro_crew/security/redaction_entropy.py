@@ -157,31 +157,31 @@ _SECRET_MAX_VOWEL_RATIO = 0.30
 _SECRET_MAX_SLASHES = 3
 
 # The second ceiling a window CUT OUT OF A LONGER RUN is held to: it may not cross
-# the opening `/` of a routed commit and take twelve of its digits. A commit
-# permalink is one run (`com/Owner/RepoName/blob/<commit>/src/file`), and its window
-# straddling `RepoName/blob/` and the start of the commit clears every gate on two
+# the opening `/` of a routed commit and take eight of its digits. A permalink is
+# one run (`com/Owner/RepoName/blob/<commit>/src/file`), and its window straddling
+# `RepoName/blob/` and the start of the commit clears every gate on two
 # separators: capitals from the repository name, lowercase and digits from the hex.
 # A routed commit is a path segment of exactly 40 or 64 lowercase hex digits, as git
-# prints one, right after one of the code-host routes below and ending at a `/` or
-# the run's edge. The route is what keeps a key out: a key's own window crosses the
-# opening `/` of a routed commit only when the key itself holds that `/` and twelve
-# hex digits after it, which makes the text a permalink whose route runs into the
-# key. A window starting inside a commit is judged as before, and so is hex a key
-# carries anywhere else. Measured on ten commits of each of the 1,000 most-starred
-# GitHub repositories: 3.58% of their blob permalinks fire without this and 0.02%
-# with it, and none of 20,000 key-shaped random keys is lost glued before, after or
-# inside a commit, after a letter, after a route, or in a URL path. The residuals
-# are a repository name whose own capitals fill most of a window, a window that
-# starts inside the commit and runs into a path with capitals (1.08% of links to a
-# path like `src/File.py`, against 4.64% before), a key that carries a route word
-# and a `/` followed by twelve or more hex digits running to its end,
-# raw.githubusercontent.com links, which have no route word, and commits typed in
-# upper or mixed case, which git never prints.
+# prints one, right after a code-host route below (some hosts spell them `blobs/`
+# and `trees/`) and ending at a `/` or the run's edge. The route keeps a key out: a
+# key's own window crosses a routed commit's opening `/` only when the key itself
+# ends in a route word, that `/` and eight or more hex digits. Eight is what a
+# `packages/<name>/blobs/` link needs: its widest firing window is `kages/`, a
+# 19-character name and `/blobs/`, leaving eight digits (none of 4,000 such links
+# fire at eight, 766 at nine); twelve left a third redacted. A lower floor frees
+# more of a padded key: at one, a key needs only `/blob/` and one hex digit. On
+# ten commits of each of the 1,000 most-starred GitHub repositories, 3.58% of blob
+# permalinks fire without this and 0.02% at twelve. Residuals: a repository or
+# package name whose capitals fill a whole window (a name over 19 characters can
+# leave fewer than eight digits), a window starting inside the commit that runs
+# into a path with capitals (1.08% of links to `src/File.py`), a key ending in a
+# route word, `/` and eight or more hex the text runs on into a commit,
+# raw.githubusercontent.com links and upper-case commits.
 _ROUTED_COMMIT_RE = re.compile(
-    r"(?:(?<=/)|\A)(?:blob|tree|blame|raw|commits?|src)/"
+    r"(?:(?<=/)|\A)(?:blobs?|trees?|blame|raw|commits?|src)/"
     r"(?P<commit>[0-9a-f]{64}|[0-9a-f]{40})(?=/|\Z)"
 )
-_ROUTED_COMMIT_PIECE_MIN = 12
+_ROUTED_COMMIT_PIECE_MIN = 8
 
 # A token that base64-decodes to >=85% printable ASCII is encoded *text*, not a
 # random key (random 40-char keys decode to mostly non-printable bytes). Such a
