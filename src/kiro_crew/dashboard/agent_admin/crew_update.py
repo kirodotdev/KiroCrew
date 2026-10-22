@@ -101,12 +101,22 @@ async def _apply_member_approval_to_live_thread(request: web.Request, name: str,
 
 
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
-    """PUT /api/agents/{name} — update a Kiro Crew agent."""
+    """PUT /api/agents/{name} or PUT /api/agents — update a Kiro Crew agent.
+
+    In the first form the crew name comes from the URL path segment.  In the
+    second form (the proxy-safe alternative) it comes from a ``name`` field in
+    the JSON body: a reverse proxy that normalises percent-encoded paths decodes
+    ``%20`` to a literal space, which is the HTTP request-line delimiter and
+    produces a 502; putting the name in the body avoids that path entirely.
+    Both forms share the same handler; the route without ``{name}`` is
+    registered first so aiohttp's literal-path preference resolves it without
+    ambiguity.
+    """
 
     denied = await _require_owner(request, "agent.update")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    url_name = request.match_info.get("name", "")
     try:
         body = await request.json()
     except Exception:
@@ -115,6 +125,18 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
+    # Body-form route: extract the name from the body BEFORE the mask-removal
+    # pass below so it is never treated as a crew-record field to persist.
+    if url_name:
+        name = url_name
+    else:
+        body_name = body.pop("name", None)
+        # Use verbatim: stripping would mismatch a stored key that differs only by
+        # edge whitespace. .strip() here checks only that the value is non-empty,
+        # not the key itself.
+        name = body_name if isinstance(body_name, str) and body_name.strip() else ""
+    if not name:
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     # WRITE-SIDE HALF of the roster mask, and it runs FIRST -- immediately after
     # the body-object check, before any validation. `GET /api/agents` replaces a
     # value it cannot show verbatim with `_SENSITIVE_MASK` (`_roster_mask`), and

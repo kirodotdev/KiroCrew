@@ -53,6 +53,11 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/agents/resolved-model", handlers.api_kirocrew_agent_resolved_model)
     app.router.add_post("/api/agents", handlers.api_kirocrew_agents_create)
     app.router.add_post("/api/agents/sync", handlers.api_kirocrew_agents_sync)
+    # Body-form route registered first: PUT /api/agents with name in JSON body,
+    # the proxy-safe alternative for crew names that contain characters needing
+    # percent-encoding. Must precede the path-form route so aiohttp resolves
+    # the literal path /api/agents without the {name} variable pattern.
+    app.router.add_put("/api/agents", handlers.api_kirocrew_agent_update)
     app.router.add_put("/api/agents/{name}", handlers.api_kirocrew_agent_update)
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
     # Per-crew uploaded avatar (the "image" tier; file under the data home,
