@@ -17418,7 +17418,8 @@
         "custom_sound_undo": "Отменить",
         "custom_sound_option": "{{name}} (твой)",
         "channel_member": "Сообщения напарников",
-        "channel_apps": "Обновления приложений"
+        "channel_apps": "Обновления приложений",
+        "channel_turn": "Ошибки чата"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",

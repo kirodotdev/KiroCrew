@@ -16605,7 +16605,8 @@
         "custom_sound_undo": "撤销",
         "custom_sound_option": "{{name}}（自定义）",
         "channel_member": "队友消息",
-        "channel_apps": "应用更新"
+        "channel_apps": "应用更新",
+        "channel_turn": "聊天错误"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

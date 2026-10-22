@@ -17147,7 +17147,8 @@
         "custom_sound_undo": "Annulla",
         "custom_sound_option": "{{name}} (tuo)",
         "channel_member": "Messaggi dei compagni",
-        "channel_apps": "Aggiornamenti delle app"
+        "channel_apps": "Aggiornamenti delle app",
+        "channel_turn": "Errori chat"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

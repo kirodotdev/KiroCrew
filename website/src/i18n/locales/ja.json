@@ -16605,7 +16605,8 @@
         "custom_sound_undo": "元に戻す",
         "custom_sound_option": "{{name}}（自作）",
         "channel_member": "クルーメイトからのメッセージ",
-        "channel_apps": "アプリのアップデート"
+        "channel_apps": "アプリのアップデート",
+        "channel_turn": "チャットエラー"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

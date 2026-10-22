@@ -78,6 +78,19 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # write for a human decision. Default priority -- nothing is blocked, the
     # app keeps working on the version it has.
     "system.apps": _DEFAULT_PRIORITY,
+    # A chat turn that DIED with an error the user must act on -- a provider
+    # 5xx / throttle, a content-filter refusal, or a terminal transport death
+    # ("start a new chat" / "please retry"). Until this channel existed the
+    # only trace of a dead turn was the inline error card in the transcript,
+    # so an operator working in another session would learn work has stopped
+    # only by opening it. Its own channel, not system.agent, so the
+    # user can mute dead-turn alerts without muting the notes agents write for
+    # a human decision. Default priority: the note lands in the bell with the
+    # channel's configured sound/banner but blocks no turn -- the prompt that
+    # does (an approval) has its own critical channel. Deduped per session via
+    # group_key and attributed to the publishing session so that session's
+    # own mute applies (the note is suppressed when the user has muted it).
+    "system.turn": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

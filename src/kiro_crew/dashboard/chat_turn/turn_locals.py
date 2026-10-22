@@ -115,6 +115,7 @@ class _ChatTurn:
     _current_replay_message: "dict[Any, Any] | None"
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
+    died_notice: "str | None"
     _deferred_options_expiry: "bool"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"

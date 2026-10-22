@@ -14,7 +14,7 @@ import { createRef } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationBanner, { computeExitDelta, exitTarget } from '../components/notifications/NotificationBanner'
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
-import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
+import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, STOPPED_CHAT_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
 import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
 import type { RootState } from '../store'
 import { setActiveId } from '../store/instancesSlice'
@@ -247,6 +247,20 @@ describe('shouldBannerNote / targetsCurrentView (pure)', () => {
     expect(targetsCurrentView(ada, { pathname: '/chat', activeSlot: 'member-ada', windowFocused: true })).toBe(true)
     // Any other note keeps the route rule.
     expect(targetsCurrentView(mkN({ url: '/members?member=Ada' }), { ...onMembers, viewedThread: 'member-bo' })).toBe(true)
+  })
+  it('treats a stopped-chat alert as on screen only while its own chat is active', () => {
+    // Deep link is /chat?sid=<dying slot>; the generic url-path branch would
+    // strip the query and match the bare /chat route, so the channel is
+    // view-targeted by slot alone.
+    const died = mkN({ channel: STOPPED_CHAT_CHANNEL, kind: 'agent', slot: 'chat-A', url: '/chat?sid=chat-A' })
+    // Viewing the dying chat: on screen, no banner.
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: 'chat-A', windowFocused: true })).toBe(true)
+    // On a DIFFERENT chat: the death is elsewhere, so it still banners.
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: 'chat-B', windowFocused: true })).toBe(false)
+    // On a chat page with no active slot: still banners (not suppressed by the bare /chat path).
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: null, windowFocused: true })).toBe(false)
+    // Away from the window: nothing is on screen.
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: 'chat-A', windowFocused: false })).toBe(false)
   })
 })
 

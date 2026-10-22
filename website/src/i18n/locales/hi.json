@@ -16876,7 +16876,8 @@
         "custom_sound_undo": "पूर्ववत करो",
         "custom_sound_option": "{{name}} (तुम्हारी)",
         "channel_member": "साथियों के संदेश",
-        "channel_apps": "ऐप अपडेट"
+        "channel_apps": "ऐप अपडेट",
+        "channel_turn": "चैट त्रुटियाँ"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

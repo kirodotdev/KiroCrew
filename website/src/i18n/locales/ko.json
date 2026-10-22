@@ -16617,7 +16617,8 @@
         "custom_sound_undo": "실행 취소",
         "custom_sound_option": "{{name}}(내 사운드)",
         "channel_member": "크루메이트 메시지",
-        "channel_apps": "앱 업데이트"
+        "channel_apps": "앱 업데이트",
+        "channel_turn": "채팅 오류"
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

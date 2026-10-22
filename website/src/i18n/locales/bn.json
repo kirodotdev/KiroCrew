@@ -16876,7 +16876,8 @@
         "custom_sound_undo": "পূর্বাবস্থায় ফেরাও",
         "custom_sound_option": "{{name}} (তোমার)",
         "channel_member": "সঙ্গীদের বার্তা",
-        "channel_apps": "অ্যাপ আপডেট"
+        "channel_apps": "অ্যাপ আপডেট",
+        "channel_turn": "চ্যাট ত্রুটি"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

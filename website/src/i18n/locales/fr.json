@@ -17147,7 +17147,8 @@
         "custom_sound_undo": "Annuler",
         "custom_sound_option": "{{name}} (le tien)",
         "channel_member": "Messages des coéquipiers",
-        "channel_apps": "Mises à jour des apps"
+        "channel_apps": "Mises à jour des apps",
+        "channel_turn": "Erreurs de chat"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

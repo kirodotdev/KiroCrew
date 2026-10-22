@@ -16876,7 +16876,8 @@
         "custom_sound_undo": "Rückgängig",
         "custom_sound_option": "{{name}} (eigener)",
         "channel_member": "Crewmate-Nachrichten",
-        "channel_apps": "App-Aktualisierungen"
+        "channel_apps": "App-Aktualisierungen",
+        "channel_turn": "Chat-Fehler"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

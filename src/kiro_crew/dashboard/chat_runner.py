@@ -498,6 +498,7 @@ from kiro_crew.dashboard.chat_turn.turn_reply_seams import (
     _emit_stall,
     _flush_text_stream,
     _flush_thinking_stream,
+    _notify_turn_died,
     _persist_partial_reply,
     _steer_segment_cut,
 )
@@ -3351,6 +3352,9 @@ async def _run_chat(
                     )
                     slot._stale_recovery_exhausted_emitted = True
                 _emit_stale(turn, "Session stuck — please start a new chat.")
+                turn.died_notice = (
+                    "The chat stalled and could not recover. Open the chat to start a new one."
+                )
             else:
                 # depth>0 (nested turn) with budget remaining: reset the session
                 # but don't re-queue (mirrors the pipe-death depth>0 handling);
@@ -3404,6 +3408,9 @@ async def _run_chat(
                     _emit_recovery_outcome("tool_stall", "exhausted", slot._tool_stall_retries)
                     slot._tool_stall_exhausted_emitted = True
                 _emit_stall(turn, "Session stuck — please start a new chat.")
+                turn.died_notice = (
+                    "The chat stalled and could not recover. Open the chat to start a new one."
+                )
             else:
                 _emit_stall(turn, "⟳ Tool appeared stalled — please retry.")
             return
@@ -3545,14 +3552,26 @@ async def _run_chat(
             elif _death_attempts >= SESSION_RECOVERY_MAX_ATTEMPTS:
                 if _own_fault:
                     _emit_error(turn, f"Session stuck{_rc_suffix} — please start a new chat.")
+                    turn.died_notice = (
+                        "The connection to the agent kept dropping. "
+                        "Open the chat to start a new one."
+                    )
                 else:
                     _emit_error(
                         turn,
                         f"The agent process this chat shares kept restarting{_rc_suffix}"
                         " — please retry.",
                     )
+                    turn.died_notice = (
+                        "The agent process kept restarting and the turn did not finish. "
+                        "Open the chat to retry."
+                    )
             else:
                 _emit_error(turn, f"⟳ Connection lost{_rc_suffix} — please retry.")
+                # No bell here: this arm runs only for a NESTED turn
+                # (_prompt_depth > 0) whose parent turn is still live and may
+                # absorb the death, so ringing would report a stop the operator
+                # does not yet own.
             return
 
         # /compact acknowledged but compaction deferred — send a lightweight
@@ -3770,6 +3789,10 @@ async def _run_chat(
                         _refusal_card,
                         "msg msg-err",
                     )
+                    turn.died_notice = (
+                        "The model declined to answer and the chat stopped. "
+                        "Open the chat to see why."
+                    )
         elif _stop_reason == STOP_REASON_REFUSAL:
             # Model-side content refusal with no accompanying text: Anthropic's
             # bare `refusal` stop reason (passed through by every harness), or
@@ -3826,6 +3849,10 @@ async def _run_chat(
                     "error",
                     _refusal_card,
                     "msg msg-err",
+                )
+                turn.died_notice = (
+                    "The model declined to answer and the chat stopped. "
+                    "Open the chat to see why."
                 )
         elif not turn._terminal_directive_applied and should_continue_after_compaction(
             # A turn that ended on an applied terminal directive is answered by
@@ -5280,6 +5307,9 @@ async def _run_chat(
         # store the row stays a plain error. The prose is unchanged.
         slot.append("error", _auth_msg, "msg msg-err", meta=_terminal_error_meta(exc))
         _mark_kiro_signed_out(state)
+        turn.died_notice = (
+            "The chat stopped because the agent is signed out. Open the chat to sign in."
+        )
         await _deliver_linked_slack_message(state, slot, sessions, session_key, _auth_msg)
     except AcpProcessDied as exc:
         _is_synthetic = turn._is_synthetic
@@ -5365,11 +5395,19 @@ async def _run_chat(
             # a healthy conversation over someone else's fault.
             if _own_fault:
                 slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+                turn.died_notice = (
+                    "The connection to the agent kept dropping. "
+                    "Open the chat to start a new one."
+                )
             else:
                 slot.append(
                     "error",
                     "The agent process this chat shares kept restarting — please retry.",
                     "msg msg-err",
+                )
+                turn.died_notice = (
+                    "The agent process kept restarting and the turn did not finish. "
+                    "Open the chat to retry."
                 )
         else:
             slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
@@ -5392,6 +5430,7 @@ async def _run_chat(
             _is_synthetic=_is_synthetic,
             _queue_recovery=functools.partial(_queue_recovery, turn),
             _stop_pressed=functools.partial(_stop_pressed, turn),
+            turn=turn,
         )
     except AcpError as exc:
         # The exception CLASS is logged alongside the message because the
@@ -5500,11 +5539,22 @@ async def _run_chat(
                 # AcpError rather than the typed death.
                 if _own_fault:
                     slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+                    turn.died_notice = (
+                        "The connection to the agent kept dropping. "
+                        "Open the chat to start a new one."
+                        if _is_pipe_death
+                        else "The chat stopped and could not recover. "
+                        "Open the chat to start a new one."
+                    )
                 else:
                     slot.append(
                         "error",
                         "The agent process this chat shares kept restarting — please retry.",
                         "msg msg-err",
+                    )
+                    turn.died_notice = (
+                        "The agent process kept restarting and the turn did not finish. "
+                        "Open the chat to retry."
                     )
             elif _prompt_depth == 0:
                 # Single emit (see AcpProcessDied note): slot.append persists +
@@ -5924,6 +5974,10 @@ async def _run_chat(
                         "msg msg-err",
                         meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
                     )
+                    # No bell here: this branch runs ONLY when the user pressed
+                    # Stop during the backoff wait (the `if` guard is exactly
+                    # `_should_suppress_requeue or _stop_pressed`), so the end is
+                    # a cancel the operator chose, not a death that needs them.
                     # A NO-REQUEUE exit ENDS the turn, so this arm owes the same
                     # per-turn budget refresh as the landed and terminal arms —
                     # the refresh the requeue chain would otherwise have reached.
@@ -6665,6 +6719,13 @@ async def _run_chat(
                     "msg msg-err",
                     meta=_unentitled_meta,
                 )
+                # The turn ended on a terminal provider/runtime error the user
+                # must act on (a 5xx/throttle timeout, an unentitled model, a
+                # malformed-request rejection). Ring the bell so an operator in
+                # another session is not left to find the inline card.
+                turn.died_notice = (
+                    "The chat stopped with an error. Open the chat to see what happened."
+                )
                 # Record a STRUCTURAL terminal outcome for this slot's last turn,
                 # but ONLY for a self-driven nudge fire (``_directive_self_wake``).
                 # A malformed-request rejection is deterministic in the payload's
@@ -6852,6 +6913,17 @@ async def _run_chat(
             # this arm carries none of the tags and keeps its plain row.
             _err_meta = _terminal_error_meta(exc)
         slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
+        # Ring the dead-turn bell for a GENUINE runtime death that
+        # lands here -- a shared-runtime prompt timeout / session-start timeout
+        # (AcpRequestTimeout / AcpSessionStartTimeout, which descend from
+        # AcpRuntimeError, not AcpError, so they skip the arms above) or a plain
+        # terminal Exception. NOT for a deterministic config refusal: a
+        # memory-unavailable end and a capability/session-start refusal
+        # (`_err_meta["code"]`) carry their own guided-fix card and a retry
+        # repeats them unchanged, so they are not the "work silently stopped"
+        # case the bell exists for. Past the Stop checks and non-requeuing.
+        if not (isinstance(_err_meta, dict) and _err_meta.get("code")):
+            turn.died_notice = "The chat stopped with an error. Open the chat to see what happened."
         # The SIBLING of the tagged-start report in the AcpError branch above.
         # A session start on the SHARED runtime raises AcpRequestTimeout /
         # AcpSessionStartTimeout, which descend from AcpRuntimeError and not from
@@ -7039,6 +7111,15 @@ async def _run_chat(
             )
             _crew_log_turn_open = False
             turn._crew_log_turn_open = _crew_log_turn_open
+        # Dead-turn bell, fired at this ONE choke point so every
+        # terminal arm -- stop-reason and exception alike -- rings through the
+        # same site, and a future terminal arm is covered by setting
+        # `turn.died_notice` rather than by remembering a scattered call. The
+        # producer is best-effort (it swallows its own errors), and skips
+        # app-owned chats and muted sessions; a retry arm leaves `died_notice`
+        # None, so an auto-recovering turn is silent.
+        if turn.died_notice:
+            _notify_turn_died(turn, turn.died_notice)
         # Poisoned-conversation streak break — in the FINALLY on purpose (fork
         # GPT review): several recovery paths (stale-turn, tool-stall,
         # pipe-death) `return` before the main completion block, and a turn

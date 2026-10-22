@@ -17147,7 +17147,8 @@
         "custom_sound_undo": "Desfazer",
         "custom_sound_option": "{{name}} (seu)",
         "channel_member": "Mensagens de colegas",
-        "channel_apps": "Atualizações de apps"
+        "channel_apps": "Atualizações de apps",
+        "channel_turn": "Erros de chat"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",
