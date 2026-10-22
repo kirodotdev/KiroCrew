@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     METHOD_MCP_SERVER_INITIALIZED,
     overlay_project_scope,
 )
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -96,35 +97,62 @@ def authored_spec_declares_zero_tools(self: AcpClient) -> bool:
     return isinstance(tools, list) and not tools
 
 
+def _published_alias_declares_zero_tools(alias: str) -> bool:
+    """True when the alias file the harness loads as ``--agent <alias>`` declares ``"tools": []``.
+
+    That file is the one the projection published under the user-level agents
+    directory. A checkout cannot claim an alias name
+    (:mod:`kiro_crew.acp.managed_agent_shadow` refuses the spawn), so it is the file
+    the harness resolved. Read through the hardened spec reader, which answers
+    ``None`` for a file that is absent, unreadable, linked, oversized or not an
+    object. Blocking, and fails closed: anything but an empty ``tools`` list is
+    False.
+    """
+    from kiro_crew.acp import skill_projection
+
+    spec = _read_agent_spec(
+        skill_projection.kiro_agents_dir() / f"{alias}.json",
+        operation="zero_tool_confirmation",
+        source="acp",
+    )
+    if not isinstance(spec, dict):
+        return False
+    tools = spec.get("tools")
+    return isinstance(tools, list) and not tools
+
+
 def effective_spec_declares_zero_tools(
     self: AcpClient, *, authored_before_spawn: bool = False
 ) -> bool:
     """True when the spec the harness runs under declares an empty ``tools`` list.
 
-    With a prepared projection the answer comes from the view handed to the
-    harness through ``--agent``. The session prepares that view before the spawn
-    and never re-reads it, so the view is immutable and authoritative: a change
-    to the authored spec after the harness consumed it cannot change the answer,
-    and *authored_before_spawn* is ignored. The view covers a project-level spec
-    that shadows the installed one and any tool the projection adds, such as
-    skill search for a spec carrying ``skill://`` resources. Unlike
-    :attr:`spec_zero_tools` it needs no mirror, so it can confirm the ban on a
-    backend that enforces it natively.
+    With a prepared projection the harness was launched as the view's published
+    alias, so two things must declare an empty list: the view the session prepared
+    before the spawn, and the alias file the harness loaded under that name, read
+    after start. The view covers a project-level spec that shadows the installed one
+    and any tool the projection adds, such as skill search for a spec carrying
+    ``skill://`` resources. The file read covers a change written to the published
+    file after the view was prepared. The authored spec is not read, so a change to
+    it after preparation cannot change the answer, and *authored_before_spawn* is
+    ignored. Unlike :attr:`spec_zero_tools` this needs no mirror, so it can confirm
+    the ban on a backend that enforces it natively.
 
     With no prepared projection (the projection switched off, or its alias
     could not be taken) the harness reads the named spec itself. The caller
     reads that spec before the spawn and passes the result as
     *authored_before_spawn*; this method reads it again after the harness
-    started, and both reads must declare an empty list. The bracket narrows a
-    change to the authored file but cannot close one made and restored inside
-    the spawn window, which is why a prepared view is preferred.
+    started, and both reads must declare an empty list.
 
-    Fails closed: a projection with no view for this agent or a view whose
-    ``tools`` is missing or non-empty is unconfirmed, and so is a missing
-    projection whose pre-spawn read was not confirmed or whose post-start read
-    is not an empty list.
+    In both branches the post-start read narrows a change to the file the harness
+    loaded, but cannot close one made and restored inside the spawn window.
 
-    The no-projection branch reads a file, so async callers run this method with
+    Fails closed: a projection with no view or no alias for this agent, a view
+    whose ``tools`` is missing or non-empty, and a published file that is missing,
+    unreadable or not an empty list are all unconfirmed, and so is a missing
+    projection whose pre-spawn read was not confirmed or whose post-start read is
+    not an empty list.
+
+    Both branches read a file, so async callers run this method with
     ``asyncio.to_thread``.
     """
     projection = getattr(self, "_native_skill_projection", None)
@@ -134,7 +162,12 @@ def effective_spec_declares_zero_tools(
     if not isinstance(view, dict):
         return False
     tools = view.get("tools")
-    return isinstance(tools, list) and not tools
+    if not (isinstance(tools, list) and not tools):
+        return False
+    alias = projection.aliases.get(self._agent)
+    if not isinstance(alias, str) or not alias:
+        return False
+    return _published_alias_declares_zero_tools(alias)
 
 
 def _pooled_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:

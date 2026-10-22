@@ -219,13 +219,16 @@ class TestRepairKnowledgeAgentSpec:
 
 
 def _client_factory(
-    work_dir: Path, made: list[acp_client.AcpClient]
+    work_dir: Path,
+    made: list[acp_client.AcpClient],
+    after_publication: Callable[[projection.NativeSkillProjection], None] | None = None,
 ) -> Callable[..., acp_client.AcpClient]:
     """Real ``AcpClient`` objects whose spawn prepares the projection and nothing else.
 
     ``client_start`` prepares the native skill projection inside ``ensure_ready``, from
     the authored spec as it is at that moment, and hands the view to the harness; this
-    stand-in does the same.
+    stand-in does the same. *after_publication* runs on the prepared projection once
+    its alias file is published, where a write by another process would land.
     """
 
     def make(**kwargs: Any) -> acp_client.AcpClient:
@@ -237,6 +240,8 @@ def _client_factory(
             client._native_skill_projection = projection.prepare_native_skill_projection(
                 work_dir, per_session_element=False
             )
+            if after_publication is not None and client._native_skill_projection is not None:
+                after_publication(client._native_skill_projection)
 
         client.ensure_ready = ensure_ready
         client.shutdown = AsyncMock()
@@ -313,6 +318,73 @@ class TestKnowledgeWorkerOnAnInjectedSpec:
         made[0].send_message.assert_not_awaited()
         assert worker._client is None
         assert _read(_spec_path(agents_dir))["tools"] == ["@launcher-creds"]
+
+
+def _alias_path(agents: Path, prepared: projection.NativeSkillProjection) -> Path:
+    return agents / f"{prepared.agent(AGENT_NAME)}.json"
+
+
+class TestTheConfirmationReadsThePublishedAlias:
+    """With the projection on, kiro-cli loads the alias file published under the agents
+    directory, so the confirmation reads that file after start as well as the view."""
+
+    @pytest.mark.asyncio
+    async def test_a_tool_written_to_the_alias_after_publication_refuses(
+        self, agents_dir, workspace, monkeypatch
+    ):
+        _template(agents_dir)
+
+        def add_a_server(prepared: projection.NativeSkillProjection) -> None:
+            path = _alias_path(agents_dir, prepared)
+            spec = _read(path)
+            spec["mcpServers"] = {"another-server": {"command": "another-server", "args": []}}
+            spec["tools"] = ["@another-server"]
+            path.write_text(json.dumps(spec), encoding="utf-8")
+
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(
+            llm_pool, "AcpClient", _client_factory(workspace, made, after_publication=add_a_server)
+        )
+        worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO, sandbox_mode="auto")
+
+        with pytest.raises(RuntimeError, match="could not be confirmed"):
+            await worker.send_message("untrusted document text")
+
+        assert len(made) == 1
+        prepared = made[0]._native_skill_projection
+        assert prepared is not None
+        # The view held in memory still mounts nothing; only the file kiro-cli loads
+        # does, and that is what refuses.
+        _assert_mounts_nothing(prepared.specs[AGENT_NAME])
+        assert _read(_alias_path(agents_dir, prepared))["tools"] == ["@another-server"]
+        made[0].shutdown.assert_awaited_once()
+        made[0].send_message.assert_not_awaited()
+        assert worker._client is None
+
+    @pytest.mark.asyncio
+    async def test_a_rewritten_alias_that_still_declares_no_tools_starts(
+        self, agents_dir, workspace, monkeypatch
+    ):
+        """The file is judged by its ``tools``, not its bytes: a rewrite that keeps
+        the list empty still confirms the ban."""
+        _template(agents_dir)
+
+        def reformat(prepared: projection.NativeSkillProjection) -> None:
+            path = _alias_path(agents_dir, prepared)
+            path.write_text(json.dumps(_read(path), indent=4), encoding="utf-8")
+
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(
+            llm_pool, "AcpClient", _client_factory(workspace, made, after_publication=reformat)
+        )
+        worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO, sandbox_mode="auto")
+
+        await worker.start()
+
+        assert len(made) == 1 and worker._client is made[0]
+        prepared = made[0]._native_skill_projection
+        assert prepared is not None
+        _assert_mounts_nothing(_read(_alias_path(agents_dir, prepared)))
 
 
 class TestTheRepairRunsBeforeEverySpawn:

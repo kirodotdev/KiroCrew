@@ -1026,6 +1026,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/skill_projection_parts/preparation.py": [
         ("native_skill_projection", "acp"),
     ],
+    # The zero-tool confirmation reads the published alias file the harness loaded
+    # after start; a link or an oversized file at the alias reads as unconfirmed.
+    "kiro_crew/acp/client_mcp_array.py": [("zero_tool_confirmation", "acp")],
     # Three reads, deliberately labelled apart: the session-MCP translation resolves
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user
     # level) and falls back to the user-level spec, so a refusal names which of the

@@ -504,14 +504,15 @@ class AcpWorker(Worker):
         # harness resolves --agent against <cwd>/.kiro/agents before the global
         # directory, and this pool's cwd is a workspace under the data home, so a
         # project-level spec of the same name that carries tools would shadow the
-        # installed one and auto-approve them for untrusted document text. The
-        # projected view the harness consumed through --agent is the authority
-        # when one exists: it is prepared before the spawn and never re-read, so a
-        # later spec edit cannot change the answer. Without one (the rollback
-        # switch, or an alias that could not be taken) the harness loads the named
-        # spec itself, so the authored spec is read before the spawn and again
-        # after start, and both reads must declare an empty list. A worker that
-        # cannot confirm the ban does not start: Kiro is the last fallback.
+        # installed one and auto-approve them for untrusted document text. With a
+        # prepared projection the harness is launched as the view's published
+        # alias, so the view and the alias file kiro-cli loads, read after start,
+        # must both declare an empty list; the authored spec is not read there.
+        # Without one (the rollback switch, or an alias that could not be taken)
+        # the harness loads the named spec itself, so the authored spec is read
+        # before the spawn and again after start, and both reads must declare an
+        # empty list. A worker that cannot confirm the ban does not start: Kiro is
+        # the last fallback.
         if routing_for(acp_backend) is Routing.AGENT_SPEC and not (
             await asyncio.to_thread(
                 self._client.effective_spec_declares_zero_tools,
