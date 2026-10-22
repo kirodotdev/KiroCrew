@@ -936,6 +936,7 @@ class _ChatSlot:
         state: DashboardState,
         *,
         extra_meta: dict[str, Any] | None = None,
+        row_meta: dict[str, Any] | None = None,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -946,6 +947,11 @@ class _ChatSlot:
         Returns ``True`` if the prompt started an agent turn, ``False`` if
         it was queued. Lets callers gate UI-visible side-effects (notifications,
         SSE pushes) on whether the prompt actually ran.
+
+        *row_meta* is meta for the TRANSCRIPT ROW the prompt becomes, on either
+        arm: the run arm appends it with the row now, the queue arm puts it on the
+        entry, whose meta the drain unions onto the row it writes. It sits under
+        *extra_meta* and the containment stamp on a collision.
 
         *extra_meta* is merged onto the queued entry's ``meta`` beside the
         containment stamp, for a producer that must record something about the
@@ -974,7 +980,7 @@ class _ChatSlot:
             # *extra_meta* rides alongside, applied FIRST so the containment keys
             # win a collision: a caller's extra fields are descriptive, and the
             # drain's authorization input must not be replaceable from here.
-            _meta: dict[str, Any] = dict(extra_meta or {})
+            _meta: dict[str, Any] = {**(row_meta or {}), **(extra_meta or {})}
             _meta.update(containment_meta(state, self))
             self.queue_append(prompt, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
@@ -991,7 +997,10 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        self.append("user", prompt, "msg msg-u")
+        if row_meta:
+            self.append("user", prompt, "msg msg-u", meta=dict(row_meta))
+        else:
+            self.append("user", prompt, "msg msg-u")
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

@@ -1096,7 +1096,11 @@ class TestTheShieldedSteerDelivery:
         )
         assert target._steer_send_ids == {}
         assert target._steer_user_origin == {}
-        assert target._steer_admissions == {}
+        # Only the sender record of the steer still pending, held for a requeue of
+        # its own text (the turn's echo or teardown releases it with
+        # `_pending_steers`), so it strands nothing `_pending_steers` does not.
+        assert set(target._steer_admissions) <= set(target._pending_steers)
+        assert all(set(v) == {"sendProvenance"} for v in target._steer_admissions.values())
         # `_pending_steers` is NOT asserted empty: the steered tail deliberately
         # leaves it for the turn, whose `steering_consumed` echo settles it and
         # whose teardown otherwise degrades it to a visible queue card. Popping it

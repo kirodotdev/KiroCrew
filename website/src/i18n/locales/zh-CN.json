@@ -11983,6 +11983,17 @@
         "outcome_discarded": "已丢弃。正式页面没有变化。",
         "outcome_closed": "预览已结束。现在这就是正式页面。",
         "outcome_undo": "想撤销，就让 {{name}} 恢复之前的仪表板。"
+      },
+      "sendProvenance": {
+        "from": "来自 {{sender}}",
+        "from_queued": "来自 {{sender}} · 已排队",
+        "from_steered": "来自 {{sender}} · 打断了正在进行的回复",
+        "from_broadcast_other": "来自 {{sender}} · 目标为 {{count}} 个聊天",
+        "from_broadcast_unknown": "来自 {{sender}} · 目标为多个聊天",
+        "open_sender": "打开 {{title}}",
+        "closed_sender": "已关闭的聊天：{{title}}",
+        "empty_body": "无消息文本",
+        "closed_sender_name": "{{name}}（已关闭）"
       }
     },
     "chatPage": {

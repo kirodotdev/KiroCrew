@@ -91,8 +91,9 @@ export interface MessageRenderContext {
   /** Quote a WHOLE row into the host's next send (`chat-core/composer/messageQuote`).
    *  A host capability, like `onQuote`: absent, no row offers Quote and no
    *  bubble arms its context menu. Receives the row's own fields, so the
-   *  renderer never has to know what the host stores. */
-  onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
+   *  renderer never has to know what the host stores. `author` names the quoted
+   *  speaker when the row knows better than its role (another chat's row). */
+  onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string, author?: string) => void
   /** Drop mcp_oauth banners a Connections card already owns. */
   hideCardOwnedOAuth: boolean
   /** Whether a row's error notice may offer the "Ask the agent" hand-off.
@@ -515,13 +516,18 @@ export interface AssistantBubbleOptions {
  *  renders `variants[i].content`, and quoting must take what the reader sees,
  *  never the stored default (fork GPT review). A caller with nothing to add
  *  passes nothing and the row's own content is quoted. */
-export function quoteMessageFor(m: ChatMessage, ctx: MessageRenderContext, role: 'user' | 'assistant'): ((shown?: string) => void) | undefined {
+export function quoteMessageFor(m: ChatMessage, ctx: MessageRenderContext, role: 'user' | 'assistant'): ((shown?: string, author?: string) => void) | undefined {
   const fn = ctx.onQuoteMessage
   if (!fn || m.role === 'streaming' || !m.content.trim()) return undefined
   const mid = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
   // Typed check, not `??`: a user row wires this straight to `onClick`, which
   // hands over the click event, and an event must never become the quote.
-  return (shown?: string) => fn(role, typeof shown === 'string' ? shown : m.content, m.ts, mid)
+  return (shown?: string, author?: string) => {
+    const content = typeof shown === 'string' ? shown : m.content
+    // Passed only when a row names its speaker, so a host's existing call shape holds.
+    if (typeof author === 'string' && author) fn(role, content, m.ts, mid, author)
+    else fn(role, content, m.ts, mid)
+  }
 }
 
 export function renderAssistantBubble(
@@ -653,6 +659,9 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           meta={m.meta}
           timestamp={formatTs(m.ts)}
           timestampTitle={fmtMessageTimeFull(m.ts)}
+          // The row's own write time: a legacy row from another chat is read
+          // from its text envelope only when it predates the sender record.
+          messageTs={m.ts}
           renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
           onReplyInThread={replyInThreadFor(m, ctx)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}

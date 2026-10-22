@@ -97,7 +97,7 @@ interface TranscriptRenderingOptions {
   openMemberCapabilities: (member: string, fix?: CapabilityFix) => void
   openModelPickerFromError: () => void
   openTurnLimitSetting: () => void
-  quoteWholeMessage: (role: MessageQuoteRole, content: string, ts?: string, mid?: string) => void
+  quoteWholeMessage: (role: MessageQuoteRole, content: string, ts?: string, mid?: string, author?: string) => void
   handleAsk: ((text: string) => void) | undefined
   handleQuote: (text: string, rect: DOMRect) => void
   handleEditResend: (index: number, ts: string, newContent: string) => void
@@ -263,8 +263,10 @@ export function useTranscriptRendering({
               mode={mode}
               pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false}
               onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'user', m.content) : undefined}
-              onQuoteMessage={activeSlot && !activeSlotRemoteBound ? (shown) => quoteWholeMessage('user', shown, m.ts, messageId) : undefined}
+              onQuoteMessage={activeSlot && !activeSlotRemoteBound ? (shown, author) => (author ? quoteWholeMessage('user', shown, m.ts, messageId, author) : quoteWholeMessage('user', shown, m.ts, messageId)) : undefined}
               onJumpToQuote={handleJumpToQuote}
+              senderSessions={connected ? sessionTitles : undefined}
+              onOpenSender={selectSessionTab}
             />
           ) : isInject ? (
             (() => {

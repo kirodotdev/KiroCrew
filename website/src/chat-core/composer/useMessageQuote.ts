@@ -17,8 +17,10 @@ import { type MessageQuote, type MessageQuoteRole, prependQuote, quoteFromMessag
  */
 export interface UseMessageQuote {
   pendingQuote: MessageQuote | null
-  /** Stage `content` as the quote. A row with nothing quotable is a no-op. */
-  quoteMessage: (role: MessageQuoteRole, content: string, ts?: string, mid?: string) => void
+  /** Stage `content` as the quote. A row with nothing quotable is a no-op.
+   *  `author` names the quoted speaker on the card (another chat's name, for a
+   *  row it sent); absent, an assistant quote takes `assistantName`. */
+  quoteMessage: (role: MessageQuoteRole, content: string, ts?: string, mid?: string, author?: string) => void
   clearQuote: () => void
   /** Put a previously consumed quote back (a failed send) -- ONLY when nothing
    *  newer is staged: a quote the user staged while the send was in flight is
@@ -64,8 +66,8 @@ export function useMessageQuote({ slot, revealComposer, assistantName }: {
     setPendingQuote(null)
   }, [switched, slot])
 
-  const quoteMessage = useCallback((role: MessageQuoteRole, content: string, ts?: string, mid?: string) => {
-    const q = quoteFromMessage(role, content, ts, mid, role === 'assistant' ? assistantName : undefined)
+  const quoteMessage = useCallback((role: MessageQuoteRole, content: string, ts?: string, mid?: string, author?: string) => {
+    const q = quoteFromMessage(role, content, ts, mid, author ?? (role === 'assistant' ? assistantName : undefined))
     if (!q) return
     pendingRef.current = q
     setPendingQuote(q)

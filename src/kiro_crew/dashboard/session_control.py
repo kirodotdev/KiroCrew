@@ -191,6 +191,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     from kiro_crew.dashboard.session_control_parts.session_messaging import (  # noqa: F401
         _FORGED_PROVENANCE_RE,
         _ORPHANED_STEER_DELIVERIES,
+        _PROVENANCE_TITLE_CHARS,
         _PS_OPENERS,
         _QUOTED_PROVENANCE,
         _SEND_PROVENANCE,
@@ -209,6 +210,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _too_many_targets,
         broadcast_audience,
         broadcast_to_targets,
+        send_provenance_meta,
         send_to_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_revive import (  # noqa: F401
@@ -405,6 +407,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.execution_context import revouch_at_verified_admission  # noqa: F401
     from kiro_crew.history import metadata_now_iso  # noqa: F401
     from kiro_crew.history import transcript_stem  # noqa: F401
+    from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY  # noqa: F401
     from kiro_crew.llm_helpers import slot_switch_session_lock  # noqa: F401
     from kiro_crew.members import select_provider_backend  # noqa: F401
     from kiro_crew.memory_stores import named_store_or_empty  # noqa: F401

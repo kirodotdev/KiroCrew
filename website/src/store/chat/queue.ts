@@ -6,6 +6,7 @@ import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
 import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { queueEntrySendProvenance } from '../../pages/chat/sendProvenance'
 
 /** Replace only this send's provisional row; a queue acceptance is not execution.
  *
@@ -142,7 +143,9 @@ export const queueReducers = {
           msgs.splice(ei, 1)
         }
       }
-      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) }
+      // The sender a peer delivery names rides the pop (`queue_drain`), so the
+      // rebuilt row keeps its "From <chat>" label without waiting for a reload.
+      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta), ...queueEntrySendProvenance(meta) }
       if (queue_id && sendId) rowMeta.queueId = queue_id
       if (at >= 0 && clientTs) rowMeta.clientTs = clientTs
       delete rowMeta.optimistic

@@ -12166,6 +12166,18 @@
         "outcome_discarded": "Verworfen. Die Live-Seite hat sich nicht geändert.",
         "outcome_closed": "Vorschau beendet. Das ist jetzt die Live-Seite.",
         "outcome_undo": "Zum Rückgängigmachen bitte {{name}}, das vorherige Dashboard wiederherzustellen."
+      },
+      "sendProvenance": {
+        "from": "Von {{sender}}",
+        "from_queued": "Von {{sender}} · in der Warteschlange",
+        "from_steered": "Von {{sender}} · hat die Antwort unterbrochen",
+        "from_broadcast_one": "Von {{sender}} · an {{count}} Chat adressiert",
+        "from_broadcast_other": "Von {{sender}} · an {{count}} Chats adressiert",
+        "from_broadcast_unknown": "Von {{sender}} · an mehrere Chats adressiert",
+        "open_sender": "{{title}} öffnen",
+        "closed_sender": "Geschlossener Chat: {{title}}",
+        "empty_body": "Kein Nachrichtentext",
+        "closed_sender_name": "{{name}} (geschlossen)"
       }
     },
     "chatPage": {

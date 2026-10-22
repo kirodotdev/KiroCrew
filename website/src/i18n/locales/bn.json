@@ -12166,6 +12166,18 @@
         "outcome_discarded": "বাদ দেওয়া হয়েছে। লাইভ পেজ বদলায়নি।",
         "outcome_closed": "প্রিভিউ শেষ। এটাই এখন লাইভ পেজ।",
         "outcome_undo": "আগের অবস্থায় ফিরতে {{name}}-কে আগের ড্যাশবোর্ড ফিরিয়ে আনতে বলো।"
+      },
+      "sendProvenance": {
+        "from": "{{sender}} থেকে",
+        "from_queued": "{{sender}} থেকে · সারিতে",
+        "from_steered": "{{sender}} থেকে · উত্তরে বাধা দিয়েছে",
+        "from_broadcast_one": "{{sender}} থেকে · {{count}}টি চ্যাটের উদ্দেশে",
+        "from_broadcast_other": "{{sender}} থেকে · {{count}}টি চ্যাটের উদ্দেশে",
+        "from_broadcast_unknown": "{{sender}} থেকে · একাধিক চ্যাটের উদ্দেশে",
+        "open_sender": "{{title}} খুলুন",
+        "closed_sender": "বন্ধ চ্যাট: {{title}}",
+        "empty_body": "বার্তায় কোনো টেক্সট নেই",
+        "closed_sender_name": "{{name}} (বন্ধ)"
       }
     },
     "chatPage": {

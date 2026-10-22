@@ -6850,6 +6850,18 @@
         "outcome_discarded": "Discarded. The live page didn’t change.",
         "outcome_closed": "Preview ended. This is the live page now.",
         "outcome_undo": "To undo, ask {{name}} to restore the previous dashboard."
+      },
+      "sendProvenance": {
+        "from": "From {{sender}}",
+        "from_queued": "From {{sender}} · queued",
+        "from_steered": "From {{sender}} · interrupted the reply",
+        "from_broadcast_one": "From {{sender}} · addressed to {{count}} chat",
+        "from_broadcast_other": "From {{sender}} · addressed to {{count}} chats",
+        "from_broadcast_unknown": "From {{sender}} · addressed to several chats",
+        "open_sender": "Open {{title}}",
+        "closed_sender": "Closed chat: {{title}}",
+        "empty_body": "No message text",
+        "closed_sender_name": "{{name}} (closed)"
       }
     },
     "chatPage": {

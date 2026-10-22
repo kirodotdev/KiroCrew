@@ -18,6 +18,7 @@ import {
 } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
+import { readSendProvenance } from './sendProvenance'
 
 /**
  * Whether `node` is one of the transcript's own row wrappers. Rows are never
@@ -403,7 +404,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     setPinned(prev => nextPinnedPromptState(prev, {
       idx: pinIdx,
       ts: pinItem.msg.ts,
-      raw: pinItem.msg.content,
+      // A row another chat sent pins as its body, the way its bubble shows it:
+      // the `[sent by session …]` envelope is for the target model.
+      raw: readSendProvenance(pinItem.msg.content, pinItem.msg.meta, pinItem.msg.ts)?.body ?? pinItem.msg.content,
       pastes: (pinItem.msg.meta?.pastes as PasteBlock[] | undefined) || [],
       push,
       bannerH,

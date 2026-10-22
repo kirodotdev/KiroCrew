@@ -1,5 +1,6 @@
 import { Quote, X } from 'lucide-react'
 import { quoteExcerpt, type MessageQuote } from '../../chat-core/composer/messageQuote'
+import { withoutLeadingEnvelope } from './sendProvenance'
 import { fmtMessageTime, fmtMessageTimeFull } from './messageTime'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -31,7 +32,7 @@ export default function QuoteCard({ quote, variant, onJump, onRemove }: {
   // The surface's own speaker name when the record carries one (a crewmate
   // DM), else the role label -- so "Worker" is quoted as Worker, not Assistant.
   const author = quote.author ?? (quote.role === 'user' ? i18nT('pages.chat.quoteCard.you') : i18nT('pages.chat.quoteCard.assistant'))
-  const excerpt = quoteExcerpt(quote.text)
+  const excerpt = quoteExcerpt(withoutLeadingEnvelope(quote.text))
   const time = quote.ts ? fmtMessageTime(quote.ts) : ''
   const timeFull = quote.ts ? fmtMessageTimeFull(quote.ts) : undefined
   const head = (

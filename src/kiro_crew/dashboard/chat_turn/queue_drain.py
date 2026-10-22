@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -773,6 +774,13 @@ async def _start_next_queued_turn(
         _pop_send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
         if _pop_send_id:
             _pop_meta["sendId"] = _pop_send_id
+        # The sender a peer delivery names (gateway-written, reserved on client
+        # meta), so the rebuilt row keeps its "From <chat>" label. The client
+        # draws that label from this record only: a rebuilt row has no message
+        # id, which is what keeps its text from being read as a legacy envelope.
+        _pop_sender = (item.get("meta") or {}).get(SEND_PROVENANCE_META_KEY)
+        if isinstance(_pop_sender, dict):
+            _pop_meta[SEND_PROVENANCE_META_KEY] = _pop_sender
         if _pop_meta:
             _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)
@@ -882,8 +890,14 @@ async def _start_next_queued_turn(
     # A drop-notice address names the one sender whose text the notice quotes.
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
-    # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY):
+    # last writer would be quoted another sender's words. The sender label
+    # (`SEND_PROVENANCE_META_KEY`) is held to the same rule: a merged row that
+    # mixes a peer's delivery with anyone else's text is not that peer's message.
+    for _address_key in (
+        CHANNEL_RECIPIENT_META_KEY,
+        SEND_ORIGIN_META_KEY,
+        SEND_PROVENANCE_META_KEY,
+    ):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)

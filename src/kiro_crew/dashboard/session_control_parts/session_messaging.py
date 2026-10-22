@@ -44,6 +44,7 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import (
     refuse_caller_identity,
     refuse_caller_surface,
 )
+from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
     BROADCAST_TARGET_ALLOWANCE_SECS,
@@ -113,6 +114,60 @@ def _neutralize_send_provenance(body: str) -> str:
 #: eight are a fact about the base. A worker that cannot tell which it received
 #: cannot judge whether a sibling is about to make the same change.
 BROADCAST_VIA = "session_broadcast"
+
+
+#: Cap on the sender title the provenance record keeps. A title is a label, and
+#: the row persists it for the transcript's lifetime.
+_PROVENANCE_TITLE_CHARS = 200
+
+
+def send_provenance_meta(
+    state: "DashboardState",
+    caller_key: str,
+    *,
+    via: str,
+    mode: str,
+    broadcast_count: int | None = None,
+) -> dict[str, Any]:
+    """Row ``meta`` naming the session a delivered message came FROM.
+
+    The transcript draws it as a muted "From <chat>" label over the bubble, in
+    place of the ``[sent by session …]`` line the row's text still opens with (that
+    line is for the target MODEL and stays). Structured rather than parsed out of
+    the text because only this path writes it: a person who types the envelope
+    into their own composer gets no label (the key is reserved on client meta).
+
+    ``title`` is the sender's title AT SEND TIME, kept for a reader whose sender
+    has since closed. ``mode`` is how the message reached the turn -- ``started``,
+    ``queued`` or ``steered`` -- and ``count`` is how many existing sessions a
+    broadcast addressed (not how many it reached: each row is written as its own
+    delivery lands, before the others are known, so the label says "addressed to").
+    Empty for a caller with no slot key, which has no session to name.
+    """
+    key = str(caller_key or "")
+    if not key:
+        return {}
+    sender = state.get_slot(key)
+    raw_title = ""
+    if sender is not None:
+        shown = str(getattr(sender, "display_title", "") or "")
+        # `display_title` stands a "New Session…" placeholder in for a slot whose
+        # title has not landed yet. Saved here it would name the author by that
+        # placeholder for the life of the transcript, so an untitled sender is
+        # recorded without a title and a reader falls back to its key.
+        if shown and shown == str(getattr(sender, "title", "") or ""):
+            raw_title = shown
+    record: dict[str, Any] = {
+        "from": key,
+        "via": via,
+        "mode": mode,
+    }
+    title = sanitize_outbound(raw_title)[:_PROVENANCE_TITLE_CHARS].strip() if raw_title else ""
+    if title:
+        record["title"] = title
+    if broadcast_count is not None and broadcast_count > 0:
+        record["count"] = int(broadcast_count)
+    return {SEND_PROVENANCE_META_KEY: record}
 
 
 @dataclass
@@ -240,6 +295,7 @@ async def send_to_target(
     caller_fenced: bool | None = None,
     via: str = "session_send",
     _delivery_progress: "_DeliveryProgress | None" = None,
+    _broadcast_count: int | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to *target* as its next agent turn.
 
@@ -377,6 +433,19 @@ async def send_to_target(
         caller=caller_key or "unknown", via=via or "session_send"
     ) + _neutralize_send_provenance(sanitize_outbound(body))
 
+    # The structured twin of the envelope above, for the transcript's "From
+    # <chat>" label. `mode` is filled per arm below; a steer's record carries
+    # `queued` because the requeue copies it onto a queue entry verbatim, and the
+    # steer's own persisted row rewrites it to `steered` (`chat_delivery`).
+    def _provenance(mode: str) -> dict[str, Any]:
+        return send_provenance_meta(
+            state,
+            caller_key,
+            via=via or "session_send",
+            mode=mode,
+            broadcast_count=_broadcast_count,
+        )
+
     steered = False
     requeued = False
     # Containment names that newly held when a successful steer's turn was stopped;
@@ -418,7 +487,11 @@ async def send_to_target(
         # dropped at the drain reports back to us like any queued delivery. Inert
         # for the two other readers: `newly_held_constraints` reads only the
         # containment key, and so does the audience fence below.
-        admission = {**containment_meta(state, slot), **send_origin_meta(state, caller_key)}
+        admission = {
+            **containment_meta(state, slot),
+            **send_origin_meta(state, caller_key),
+            **_provenance("queued"),
+        }
 
         # Which turn this steer is going into. `_turn_generation` increments on every
         # task assignment, so it identifies a turn even if a later task object reuses
@@ -505,6 +578,7 @@ async def send_to_target(
                 _run_chat,
                 state,
                 extra_meta=send_origin_meta(state, caller_key),
+                row_meta=_provenance("queued" if slot.running else "started"),
             )
             logger.info(
                 "session_send: orphaned steer to %s came back unavailable and was "
@@ -693,6 +767,10 @@ async def send_to_target(
                 # stamp is what lets that drop be reported back to us instead of
                 # ending at the target's own transcript.
                 extra_meta=send_origin_meta(state, caller_key),
+                # Read here, synchronously with the call: `enqueue_or_run_prompt`
+                # makes the same `running` test with no await between, so this
+                # names the arm it is about to take.
+                row_meta=_provenance("queued" if slot.running else "started"),
             )
         )
         if started:
@@ -945,6 +1023,11 @@ async def broadcast_to_targets(
         # set, remains in the audience so the gate can return its refusal row.
         seen: set[tuple[str, str]] = set()
         audience: list[str] = []
+        # The "From <chat> · addressed to N chats" count: the sessions this list
+        # NAMED that exist. Not a delivered count -- each row is written as its own
+        # delivery lands, before the rest are known -- which is why the label says
+        # "addressed to". A name that resolves to nothing is no chat at all.
+        addressed = 0
         for raw in targets or []:
             name = str(raw).strip()
             if not name:
@@ -957,6 +1040,8 @@ async def broadcast_to_targets(
             if identity not in seen:
                 seen.add(identity)
                 audience.append(slot.key if slot is not None else name)
+                if slot is not None:
+                    addressed += 1
         if not audience:
             # The caller named targets and not one of them is usable. Both silent
             # answers are wrong here: falling back to the default audience turns a
@@ -970,6 +1055,7 @@ async def broadcast_to_targets(
             )
     else:
         audience = broadcast_audience(state, caller_key)
+        addressed = len(audience)
 
     if len(audience) > MAX_BROADCAST_TARGETS:
         # The DEFAULT audience's own bound. An explicit list was already refused
@@ -1040,6 +1126,7 @@ async def broadcast_to_targets(
                     caller_fenced=caller_fenced,
                     via=BROADCAST_VIA,
                     _delivery_progress=delivery_progress,
+                    _broadcast_count=addressed,
                 ),
                 timeout=BROADCAST_TARGET_ALLOWANCE_SECS,
             )

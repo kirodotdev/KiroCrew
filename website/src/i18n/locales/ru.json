@@ -12532,6 +12532,20 @@
         "outcome_discarded": "Отменено. Рабочая страница не изменилась.",
         "outcome_closed": "Предпросмотр закончен. Теперь это рабочая страница.",
         "outcome_undo": "Чтобы вернуть как было, попроси {{name}} восстановить прежний дашборд."
+      },
+      "sendProvenance": {
+        "from": "От {{sender}}",
+        "from_queued": "От {{sender}} · в очереди",
+        "from_steered": "От {{sender}} · прервало ответ",
+        "from_broadcast_one": "От {{sender}} · адресовано {{count}} чату",
+        "from_broadcast_few": "От {{sender}} · адресовано {{count}} чатам",
+        "from_broadcast_many": "От {{sender}} · адресовано {{count}} чатам",
+        "from_broadcast_other": "От {{sender}} · адресовано {{count}} чата",
+        "from_broadcast_unknown": "От {{sender}} · адресовано нескольким чатам",
+        "open_sender": "Открыть {{title}}",
+        "closed_sender": "Закрытый чат: {{title}}",
+        "empty_body": "В сообщении нет текста",
+        "closed_sender_name": "{{name}} (закрыт)"
       }
     },
     "chatPage": {

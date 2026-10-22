@@ -268,6 +268,16 @@ def carry_provenance(dest: dict, src: dict) -> None:
 HUMAN_TURN_META_KEY = "human"
 
 
+#: ``meta`` key naming the session that SENT a cross-chat row (``session_send`` /
+#: ``session_broadcast``): ``{"from", "title", "via", "mode"[, "count"]}``. Written
+#: only by the gateway's own delivery path, so the transcript can draw a "From
+#: <chat>" label above the bubble without reading it out of the row's text -- the
+#: text envelope stays, because it is what the target MODEL weighs. Reserved on the
+#: composer's client meta (``chat_handlers.RESERVED_ROW_META_KEYS``), so a person's
+#: own send can never carry it.
+SEND_PROVENANCE_META_KEY = "sendProvenance"
+
+
 def transcript_sort_key(ts: str) -> tuple[int, float]:
     """Sort key for a transcript timestamp: ``(bucket, epoch_seconds)``.
 

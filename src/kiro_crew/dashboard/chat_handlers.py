@@ -496,6 +496,7 @@ from kiro_crew.history import (  # noqa: F401
     is_incognito_transcript,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
+from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
@@ -585,7 +586,12 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+#: ``SEND_PROVENANCE_META_KEY`` is the gateway's record that ANOTHER SESSION sent
+#: the row, which the transcript draws as a "From <chat>" label; a caller-supplied
+#: one would let typed text pose as a peer's delivery.
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, SEND_PROVENANCE_META_KEY}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the

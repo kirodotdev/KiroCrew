@@ -12349,6 +12349,19 @@
         "outcome_discarded": "Scartata. La pagina live non è cambiata.",
         "outcome_closed": "Anteprima finita. Ora questa è la pagina live.",
         "outcome_undo": "Per annullare, chiedi a {{name}} di ripristinare la dashboard precedente."
+      },
+      "sendProvenance": {
+        "from": "Da {{sender}}",
+        "from_queued": "Da {{sender}} · in coda",
+        "from_steered": "Da {{sender}} · ha interrotto la risposta",
+        "from_broadcast_one": "Da {{sender}} · indirizzato a {{count}} chat",
+        "from_broadcast_many": "Da {{sender}} · indirizzato a {{count}} chat",
+        "from_broadcast_other": "Da {{sender}} · indirizzato a {{count}} chat",
+        "from_broadcast_unknown": "Da {{sender}} · indirizzato a più chat",
+        "open_sender": "Apri {{title}}",
+        "closed_sender": "Chat chiusa: {{title}}",
+        "empty_body": "Nessun testo nel messaggio",
+        "closed_sender_name": "{{name}} (chiusa)"
       }
     },
     "chatPage": {

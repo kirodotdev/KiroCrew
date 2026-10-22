@@ -211,8 +211,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, prompt: 'str', run_chat_coro: 'Callable[[DashboardState, "
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
-        "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None) "
-        "-> 'bool'",
+        "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
+        "row_meta: 'dict[str, Any] | None' = None) -> 'bool'",
     ),
     "flush_deferred_notes": ("function", False, False, "(self) -> 'int'"),
     "forget_session_model_state": ("function", False, False, "(self) -> 'None'"),

@@ -154,6 +154,16 @@ function trackScroll(el: HTMLElement, contentTop: number, height: number, g: { s
 const mountedSteer = { mountIndex: () => false, estimateRowTop: () => null }
 
 describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
+  it('pins a row another chat sent as its body, without the envelope line', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    const items: DisplayItem[] = ITEMS.map((it, i) => i === 2 && it.kind === 'single'
+      ? { ...it, msg: { ...it.msg, content: '[sent by session chat-1-1792410000 via session_send]\n\nrebase now', meta: { sendProvenance: { from: 'chat-1-1792410000', via: 'session_send', mode: 'queued' } } } }
+      : it)
+    wire(h, g, items)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, text: 'rebase now' })
+  })
+
   it('pins the prompt above the fold, with its image sources, from live geometry', () => {
     const h = renderPin()
     const g = mountGeometry(5)

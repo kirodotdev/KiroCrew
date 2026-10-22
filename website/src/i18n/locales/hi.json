@@ -12166,6 +12166,18 @@
         "outcome_discarded": "हटा दिया। लाइव पेज नहीं बदला।",
         "outcome_closed": "प्रीव्यू खत्म। अब यही लाइव पेज है।",
         "outcome_undo": "वापस करने के लिए {{name}} से पिछला डैशबोर्ड वापस लाने को कहो।"
+      },
+      "sendProvenance": {
+        "from": "{{sender}} से",
+        "from_queued": "{{sender}} से · कतार में",
+        "from_steered": "{{sender}} से · जवाब को बीच में रोका",
+        "from_broadcast_one": "{{sender}} से · {{count}} चैट को संबोधित",
+        "from_broadcast_other": "{{sender}} से · {{count}} चैट को संबोधित",
+        "from_broadcast_unknown": "{{sender}} से · कई चैट को संबोधित",
+        "open_sender": "{{title}} खोलो",
+        "closed_sender": "बंद चैट: {{title}}",
+        "empty_body": "कोई संदेश टेक्स्ट नहीं",
+        "closed_sender_name": "{{name}} (बंद)"
       }
     },
     "chatPage": {

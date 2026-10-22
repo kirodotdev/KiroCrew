@@ -210,6 +210,11 @@ def _settle_consumed_steers(
         slot._steer_automation.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
+        if settled_msg not in slot._steer_rpc_in_flight:
+            # The sender record a pending peer steer holds for a requeue
+            # (`steer_into_running_turn`). While the steer RPC is still in flight
+            # its own tail has not read the record yet, and it drops it itself.
+            slot._steer_admissions.pop(settled_msg, None)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:

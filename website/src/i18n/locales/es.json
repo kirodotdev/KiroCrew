@@ -12349,6 +12349,19 @@
         "outcome_discarded": "Descartada. La página activa no cambió.",
         "outcome_closed": "Vista previa terminada. Esta es la página activa ahora.",
         "outcome_undo": "Para deshacerlo, pídele a {{name}} que restaure el panel anterior."
+      },
+      "sendProvenance": {
+        "from": "De {{sender}}",
+        "from_queued": "De {{sender}} · en cola",
+        "from_steered": "De {{sender}} · interrumpió la respuesta",
+        "from_broadcast_one": "De {{sender}} · dirigido a {{count}} chat",
+        "from_broadcast_many": "De {{sender}} · dirigido a {{count}} chats",
+        "from_broadcast_other": "De {{sender}} · dirigido a {{count}} chats",
+        "from_broadcast_unknown": "De {{sender}} · dirigido a varios chats",
+        "open_sender": "Abrir {{title}}",
+        "closed_sender": "Chat cerrado: {{title}}",
+        "empty_body": "Sin texto en el mensaje",
+        "closed_sender_name": "{{name}} (cerrado)"
       }
     },
     "chatPage": {

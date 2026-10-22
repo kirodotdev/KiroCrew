@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
 from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -793,7 +794,20 @@ async def steer_into_running_turn(
     slot._steer_send_ids.pop(message, None)
     slot._steer_user_origin.pop(message, None)
     slot._steer_channel_origin.pop(message, None)
-    slot._steer_admissions.pop(message, None)
+    # A peer's steer recorded who sent it on its admission (the requeue copies
+    # that record onto a queue entry as `queued`); this row is the one that DID
+    # cut into the turn, so it says so.
+    _admitted = slot._steer_admissions.pop(message, None)
+    _provenance = _admitted.get(SEND_PROVENANCE_META_KEY) if isinstance(_admitted, dict) else None
+    if still_registered and isinstance(_provenance, dict):
+        # Still pending (`written`): a turn that ends without the consumption echo
+        # requeues this text, and the drained row must still name its sender, so
+        # the record is held for `_requeue_unconsumed_steers` the way the
+        # attachments below are; `_settle_consumed_steers` drops it once the echo
+        # lands. Only the sender record: the rest of the admission (its containment
+        # snapshot) is not held, so that requeue keeps facing the drain's
+        # fail-closed containment floor exactly as before.
+        slot._steer_admissions[message] = {SEND_PROVENANCE_META_KEY: _provenance}
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
     # turn-end requeue stamping it on the queue entry too would put one decision on
@@ -895,6 +909,11 @@ async def steer_into_running_turn(
         # broadcasts the live frame from inside the call, so a later write would
         # persist a receipt the open tab never renders.
         meta["decisions_strip"] = decision_strip
+    _row_provenance: dict[str, Any] | None = None
+    if isinstance(_provenance, dict) and not user_origin:
+        # Stamped at append time for the same reason as the strip above.
+        _row_provenance = {**_provenance, "mode": "steered"}
+        meta[SEND_PROVENANCE_META_KEY] = _row_provenance
     if send_id:
         # Persist the client correlation id alongside the steer flag: the
         # transcript page is what mergePreservedThinking reads to resolve an
@@ -957,6 +976,9 @@ async def steer_into_running_turn(
         # Another open tab draws the steer row from this frame: without the
         # quote it would render the blockquote as text until a reload.
         push_payload.setdefault("meta", {}).update(quote)
+    if _row_provenance:
+        # Another open tab draws the steer row from this frame too.
+        push_payload.setdefault("meta", {})[SEND_PROVENANCE_META_KEY] = _row_provenance
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 

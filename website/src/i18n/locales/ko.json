@@ -11983,6 +11983,17 @@
         "outcome_discarded": "버렸어요. 라이브 페이지는 바뀌지 않았어요.",
         "outcome_closed": "미리보기가 끝났어요. 이제 이게 라이브 페이지예요.",
         "outcome_undo": "되돌리려면 {{name}}에게 이전 대시보드로 되돌려 달라고 해요."
+      },
+      "sendProvenance": {
+        "from": "{{sender}}에서 보냄",
+        "from_queued": "{{sender}}에서 보냄 · 대기열에 추가됨",
+        "from_steered": "{{sender}}에서 보냄 · 응답에 끼어듦",
+        "from_broadcast_other": "{{sender}}에서 · 채팅 {{count}}개 대상",
+        "from_broadcast_unknown": "{{sender}}에서 · 여러 채팅 대상",
+        "open_sender": "{{title}} 열기",
+        "closed_sender": "닫힌 채팅: {{title}}",
+        "empty_body": "메시지 텍스트 없음",
+        "closed_sender_name": "{{name}} (닫힘)"
       }
     },
     "chatPage": {

@@ -21,6 +21,8 @@ import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { readSteerRecord } from './decisionRecord'
+import SendProvenanceLabel from './SendProvenanceLabel'
+import { quotedPeerText, readSendProvenance, shortSessionKey } from './sendProvenance'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
@@ -94,15 +96,41 @@ interface UserMessageProps {
    *  which lists Quote first and the same actions after it. Absent, the row
    *  and the bubble are byte-for-byte what they were. Receives the text this
    *  bubble SHOWS -- collapsed pastes expanded from `meta.pastes` -- so a
-   *  quoted paste carries the pasted text, never its `[ Paste #N ]` token. */
-  onQuoteMessage?: (shownContent: string) => void
+   *  quoted paste carries the pasted text, never its `[ Paste #N ]` token.
+   *  A row another chat sent hands over its body with the sender's envelope put
+   *  back in front (the model must know whose words they are) and, as
+   *  `author`, the sender's name for the quote card. */
+  onQuoteMessage?: (shownContent: string, author?: string) => void
   /** Scroll to the message this row quotes (`meta.quote`). Absent, the card is
    *  drawn but is not a control. */
   onJumpToQuote?: (quote: MessageQuote) => void
+  /** Open sessions (key -> title), for the "From <chat>" label a row another chat
+   *  sent carries: a sender in this map is named by its live title and opens on
+   *  click. Absent means the host cannot tell what is open. */
+  senderSessions?: ReadonlyMap<string, string>
+  /** Opens the sending chat from that label. */
+  onOpenSender?: (key: string) => void
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content: rawContent, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, senderSessions, onOpenSender }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // A row ANOTHER chat sent (`session_send` / `session_broadcast`): the label says
+  // who, and the `[sent by session …]` envelope line -- which is for the target
+  // model -- comes off everything this bubble shows, copies, quotes and edits.
+  const sent = readSendProvenance(rawContent, meta, messageTs)
+  const content = sent ? sent.body : rawContent
+  const sentEmpty = !!sent && !content.trim()
+  // "· interrupted the reply" claims the running turn TOOK the message, and only a
+  // `consumed` steer proves that (see the steer badge below). A `written` row may
+  // still be requeued, and a `requeued` one runs as its own turn, so until the
+  // backend confirms it the label names the sender with no mode suffix.
+  const sentProvenance = sent && sent.provenance.mode === 'steered'
+    && (meta as { steerState?: string } | undefined)?.steerState !== 'consumed'
+    ? { ...sent.provenance, mode: undefined }
+    : sent?.provenance
+  const senderLabel = sentProvenance
+    ? <SendProvenanceLabel provenance={sentProvenance} sessions={senderSessions} onOpen={onOpenSender} />
+    : null
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
   const [draft, setDraft] = useState(content)
@@ -432,7 +460,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // refused) as well as rejecting — both are a copy that did not happen.
     copyToClipboard(shownContent).then(ok => flash(ok ? 'ok' : 'failed'), () => flash('failed'))
   }
-  const quoteShown = () => onQuoteMessage?.(quotableContent)
+  const quoteShown = () => {
+    if (!sent) { onQuoteMessage?.(quotableContent); return }
+    const { from, title } = sent.provenance
+    onQuoteMessage?.(quotedPeerText(sent.provenance, quotableContent), senderSessions?.get(from) || title || shortSessionKey(from))
+  }
   const copyLink = () => {
     if (!messageTs || !slotKey) return
     // Same error surface as Copy: a refused write is reported under the row,
@@ -491,7 +523,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           the wrong conversation, silently. The fallback still covers a bubble that
           has no server ts yet. */}
       {carriedQuote && <QuoteCard quote={carriedQuote} variant="sent" onJump={carriedQuote.ts ? onJumpToQuote : undefined} />}
-      {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+      {sentEmpty
+        ? <span className="text-muted italic">{i18nT('pages.chat.sendProvenance.empty_body')}</span>
+        : renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
   // The right-click menu wraps the bubble only when Quote is offered (the
@@ -512,13 +546,22 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           render as visible blank lines and inflate the gaps between list
           items and paragraphs. Assistant markdown keeps standard
           CommonMark soft-break-collapse. */}
+      {/* Who sent it, when another chat did: above everything else on the row,
+          so the bubble below reads as an agent's from its first line. */}
+      {senderLabel}
       {isSteer ? (
         <>
           {/* Injected into the RUNNING turn — badge + accent bubble + one-shot
-              entrance so the steer is visibly distinct from a normal message. */}
-          <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
-            <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
-          </div>
+              entrance so the steer is visibly distinct from a normal message.
+              A peer's steer already says so in its "From <chat> · interrupted
+              the reply" label above, so the badge would state the same fact a
+              second time in other words (UX review); the accent bubble and the
+              entrance still mark it. */}
+          {sentProvenance?.mode !== 'steered' && (
+            <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
+              <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
+            </div>
+          )}
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
               decision behind it. */}

@@ -730,6 +730,9 @@ export function createTranscriptRenderers(
                 meta={m.meta}
                 timestamp={formatTs(m.ts)}
                 timestampTitle={fmtMessageTimeFull(m.ts)}
+                // Same as the shared user row: a legacy row from another chat
+                // is labelled from its envelope only by its write time.
+                messageTs={m.ts}
                 // The session triple mirrors the crewmate bubble above, so a
                 // `/chat?sid=…` the USER pasted resolves exactly as the same
                 // link does in the reply quoting it back.
@@ -744,6 +747,8 @@ export function createTranscriptRenderers(
                 })}
                 // Delivery mechanics stay in Sessions, including old scrollback.
                 hideSteerBadge={!!crewmate || o.hideSteerBadge}
+                senderSessions={o.sessions}
+                onOpenSender={o.onSessionOpen}
                 // The accent fill pairs with the crewmate's gray bubble above
                 // (#17839); a host that hides the steer badge without a
                 // crewmate keeps the neutral surface.

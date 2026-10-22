@@ -12349,6 +12349,19 @@
         "outcome_discarded": "Supprimé. La page en ligne n’a pas changé.",
         "outcome_closed": "Aperçu terminé. C’est maintenant la page en ligne.",
         "outcome_undo": "Pour annuler, demande à {{name}} de remettre le tableau de bord précédent."
+      },
+      "sendProvenance": {
+        "from": "De {{sender}}",
+        "from_queued": "De {{sender}} · en file d'attente",
+        "from_steered": "De {{sender}} · a interrompu la réponse",
+        "from_broadcast_one": "De {{sender}} · adressé à {{count}} discussion",
+        "from_broadcast_many": "De {{sender}} · adressé à {{count}} discussions",
+        "from_broadcast_other": "De {{sender}} · adressé à {{count}} discussions",
+        "from_broadcast_unknown": "De {{sender}} · adressé à plusieurs discussions",
+        "open_sender": "Ouvrir {{title}}",
+        "closed_sender": "Discussion fermée : {{title}}",
+        "empty_body": "Aucun texte dans le message",
+        "closed_sender_name": "{{name}} (fermée)"
       }
     },
     "chatPage": {

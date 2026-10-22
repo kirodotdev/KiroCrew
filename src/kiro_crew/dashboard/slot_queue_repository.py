@@ -333,6 +333,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         QUEUED_CONTAINMENT_META_KEY,
         SEND_ORIGIN_META_KEY,
     )
+    from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY
 
     entries: list[dict[str, Any]] = []
     budget = MAX_DURABLE_QUEUE_BYTES
@@ -416,6 +417,13 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # blast radius: it names a conversation on a network surface and the
             # drop notice would carry the entry's text there, so an edited stamp
             # would turn a file write into an outbound channel message.
+            #
+            # The SENDER RECORD (`SEND_PROVENANCE_META_KEY`) goes too: it is the
+            # gateway's claim that another session sent this text, which the
+            # transcript draws as a "From <chat>" label. Carried back off the
+            # line, an edited record would attribute any queued text to any
+            # session; dropped, a delivery that outlives a restart shows its
+            # envelope text unlabelled, which overclaims nothing.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -425,6 +433,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
+                    SEND_PROVENANCE_META_KEY,
                 )
             }
         try:
@@ -766,6 +775,7 @@ class SlotQueueRepository:
             # (`isAppMessageQueued`) withholds exactly this same set.
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+            from kiro_crew.history_schema import SEND_PROVENANCE_META_KEY
 
             if item.get("kind") == MCP_APP_MESSAGE_KIND:
                 return False
@@ -790,9 +800,13 @@ class SlotQueueRepository:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
             # Replacement words belong to the editor, not the automation that queued them.
+            # Nor to the chat that sent the original: the sender record names
+            # another chat as the author, and the drain would draw the editor's own
+            # words as "From <chat>".
             meta = item.get("meta")
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
+                meta.pop(SEND_PROVENANCE_META_KEY, None)
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

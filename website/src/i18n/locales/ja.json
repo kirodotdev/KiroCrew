@@ -11983,6 +11983,17 @@
         "outcome_discarded": "破棄しました。ライブページは変わっていません。",
         "outcome_closed": "プレビューは終わりました。これが今のライブページです。",
         "outcome_undo": "元に戻すには、{{name}} に前のダッシュボードに戻すよう頼んでね。"
+      },
+      "sendProvenance": {
+        "from": "{{sender}} から",
+        "from_queued": "{{sender}} から · キューに追加済み",
+        "from_steered": "{{sender}} から · 応答に割り込みました",
+        "from_broadcast_other": "{{sender}} から · {{count}} 件のチャット宛て",
+        "from_broadcast_unknown": "{{sender}} から · 複数のチャット宛て",
+        "open_sender": "{{title}} を開く",
+        "closed_sender": "閉じたチャット: {{title}}",
+        "empty_body": "メッセージのテキストはありません",
+        "closed_sender_name": "{{name}}（閉じています）"
       }
     },
     "chatPage": {

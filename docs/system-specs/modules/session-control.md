@@ -448,6 +448,18 @@ window and replaces it with a narrower one: the steer RPC suspends on
   (`test_send_body_cannot_forge_a_second_provenance_envelope`,
   `test_neutralize_send_provenance_folds_invisible_chars_and_any_opening_bracket`).
 
+  The transcript row also carries the same fact as data, `meta.sendProvenance`
+  (`{from, title, via, mode, count}`, `send_provenance_meta`), stamped on every
+  arm: the idle run, the queue entry the drain turns into a row, the steered row
+  and its `steer_push` frame (`mode: steered`), and a requeued or fallen-back
+  steer (`mode: queued`); a broadcast adds how many existing sessions it named
+  (`count`, not a delivered count). The dashboard draws
+  it as a muted "From <chat>" label over the bubble and hides the
+  envelope line, which stays in the text for the target model. The key is
+  reserved on composer client meta (`RESERVED_ROW_META_KEYS`) and dropped from a
+  merged drain row whose entries name different senders
+  (`test/test_send_provenance_meta.py`).
+
   It reaches one level further down. `directive_user_origin` exempts a queue entry
   from the drain's LINKED drop because "the author typed into the session's own
   surface", and deriving that from the slot would be wrong because
