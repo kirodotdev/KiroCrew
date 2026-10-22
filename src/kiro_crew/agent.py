@@ -186,6 +186,7 @@ from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_ke
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
 from kiro_crew.platform import (
+    PlatformCompositionError,
     current_context,
 )
 from kiro_crew.platform import redact_log_via_context as redact_log
@@ -2008,12 +2009,25 @@ def rebuild_agent_config(
     global _conductor_spec_held, _conductor_installers_held
     _rebuild_admitted_token = _rebuild_spec_install_admitted.set(True)
     try:
+        # A ``PlatformCompositionError`` from any installer below is the fail-closed
+        # signal that this host cannot compose its companion; it must abort the rebuild
+        # (``safe_context_call``'s contract: it is never swallowed). It is CAPTURED here
+        # rather than raised in place so the independent, companion-agnostic repairs at
+        # the end of this block -- ``repair_agent_configs`` hook-key sanitization and the
+        # fork refresh -- still run, exactly as a failed dashboard-author install is
+        # captured and re-raised at the end for the same reason. The first one wins; it is
+        # raised after the ``finally``, before ``_wrote_out`` is marked, so the rebuild
+        # reports no write.
+        composition_error: PlatformCompositionError | None = None
+
         # Install Kiro Crew AIM capabilities package (includes kirocrew-lite)
         _install_aim_capabilities()
 
         # Install kirocrew-knowledge agent (used by Knowledge Library LLMPool)
         try:
             service_agents._install_knowledge_agent()
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             logger.debug("kirocrew-knowledge agent install failed", exc_info=True)
 
@@ -2033,6 +2047,8 @@ def rebuild_agent_config(
         # Install kirocrew-research agent (used by the Research Lab campaign loop)
         try:
             service_agents._install_research_agent()
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             research_held = True
             logger.warning(
@@ -2066,6 +2082,8 @@ def rebuild_agent_config(
         # not recording a tightened ceiling as synced over an unrewritten grant list.
         try:
             service_agents._install_team_lead_agent()
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             team_lead_held = True
             logger.warning(
@@ -2081,6 +2099,8 @@ def rebuild_agent_config(
         # keeps working and only CHANGING the page is unavailable.
         try:
             service_agents._install_dashboard_manager_agent()
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             logger.debug("kirocrew-dashboard-manager agent install failed", exc_info=True)
         # Every install, fresh or upgraded, creates its first crewmate once (a
@@ -2094,6 +2114,8 @@ def rebuild_agent_config(
         # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
         try:
             _install_heartbeat_agent()
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
 
@@ -2110,6 +2132,8 @@ def rebuild_agent_config(
         conductor_held = False
         try:
             conductor_held |= not conductor_agents._install_conductor_agent(clean=clean)
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             conductor_held = True
             logger.debug("kirocrew-conductor agent install failed", exc_info=True)
@@ -2117,6 +2141,8 @@ def rebuild_agent_config(
         # Install kirocrew-pipeline-conductor agent (repository pipeline fleet supervision)
         try:
             conductor_held |= not conductor_agents._install_pipeline_conductor_agent(clean=clean)
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             conductor_held = True
             logger.debug("kirocrew-pipeline-conductor agent install failed", exc_info=True)
@@ -2131,6 +2157,8 @@ def rebuild_agent_config(
         # what the alias exists to keep working.
         try:
             conductor_held |= not conductor_agents._install_ledger_conductor_agent(clean=clean)
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             conductor_held = True
             logger.debug("kirocrew-ledger-conductor alias install failed", exc_info=True)
@@ -2138,6 +2166,8 @@ def rebuild_agent_config(
         # Install kirocrew-security-conductor agent (one security audit's worker fleet)
         try:
             conductor_held |= not conductor_agents._install_security_conductor_agent(clean=clean)
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             conductor_held = True
             logger.debug("kirocrew-security-conductor agent install failed", exc_info=True)
@@ -2167,6 +2197,11 @@ def rebuild_agent_config(
         dashboard_author_install_error: Exception | None = None
         try:
             worker_agent._install_dashboard_author_agent()
+        except PlatformCompositionError as exc:
+            # The fail-closed signal routes to the shared slot like every other installer,
+            # so it is raised at the end (after the independent repairs) and takes priority
+            # over an ordinary author-install failure below.
+            composition_error = composition_error or exc
         except Exception as exc:
             # Capture, do NOT swallow. An installer failure must not ABORT the independent
             # repairs below (fork governance refresh, hook repair) -- those run for every other
@@ -2213,6 +2248,8 @@ def rebuild_agent_config(
         # cannot outlive a tightened ceiling.
         try:
             worker_agent._install_worker_agent()
+        except PlatformCompositionError as exc:
+            composition_error = composition_error or exc
         except Exception:
             logger.debug("kirocrew-worker agent install failed", exc_info=True)
 
@@ -2232,6 +2269,13 @@ def rebuild_agent_config(
         repair_agent_configs()
     finally:
         _rebuild_spec_install_admitted.reset(_rebuild_admitted_token)
+
+    if composition_error is not None:
+        # The independent repairs have run; now fail the rebuild with the fail-closed
+        # signal. ``_wrote_out`` is left UNMARKED (the reporting wrapper never appends
+        # True), so a host that cannot compose its companion does not report a rebuild it
+        # could not safely complete. It takes priority over a plain author-install failure.
+        raise composition_error
 
     if dashboard_author_install_error is not None:
         # The independent repairs have run; now fail the rebuild. ``_wrote_out`` is left
