@@ -541,6 +541,12 @@ several changes consolidating the doc trees at once, so an entry graduates in a 
 the current change never touched; it is not a claim that a triple is fragile, since
 the recorded identity omits the line number and a reflow keeps it.
 
+CI and the tests see one script, `scripts/docs_lint.py`. It keeps the scanned trees,
+the finding shapes, the walk helpers, the structural checks, the run, the report and
+the entry point, and re-exports every name of its two owners beside it. New work on a
+fact check or on the baseline goes to `scripts/docs_lint_fact_checks.py`, and a new
+self-test probe goes to `scripts/docs_lint_selftest.py`.
+
 ## `ci.yml`: correctness
 
 Every job here is blocking. Every job that costs real runner time also `needs:`
