@@ -43,6 +43,7 @@ from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_ser
     _usage_number,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.metrics.harness import harness_of
 from kiro_crew.metrics.turns import (
     OUTCOME_UNCLASSIFIED,
     emit_turn_duration,
@@ -606,7 +607,11 @@ async def persist_token_record_async(
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
         if emit_metric:
-            _emit_turn_histogram(record, slot_key, event)
+            # The harness is read off model_source, the live provider every
+            # surface already hands in to name the model that ran: it is the one
+            # object here that knows the session's EFFECTIVE backend, overrides
+            # included. Not written to the row; it labels the latency sample only.
+            _emit_turn_histogram(record, slot_key, event, harness=harness_of(model_source))
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:
         logger.debug("Failed to persist token record for slot %s", slot_key, exc_info=True)
@@ -616,6 +621,8 @@ def _emit_turn_histogram(
     record: dict,
     slot_key: str,
     event: object,
+    *,
+    harness: str = "",
 ) -> None:
     """Emit this turn's OTEL samples from a built record.
 
@@ -656,6 +663,7 @@ def _emit_turn_histogram(
         outcome=outcome,
         model=model,
         provider=provider,
+        harness=harness,
     )
     emit_turn_usage(
         input_tokens=record.get("input"),

@@ -1058,7 +1058,7 @@ class CompactionCoordinator:
                     owner._recycling.pop(key, None)
                 self._keep_resume_sid(key, session, dropped_sid)
                 if owner._sessions.get(key) is session:
-                    await record_session_started(key)  # it lives on
+                    await record_session_started(key, session.provider)  # it lives on
         try:
             successor = owner._sessions.get(key)
             live = [e for e in session.queue if e[0] not in session.cancelled]

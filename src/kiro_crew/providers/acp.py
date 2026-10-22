@@ -1014,6 +1014,52 @@ def is_claude_backend(provider: Any) -> bool:
     return isinstance(provider, AcpProvider) and provider.is_claude_backend
 
 
+def provider_backend(provider: Any) -> Any:
+    """The backend id *provider* talks to, or ``None`` for a shape that carries none.
+
+    For the two provider shapes this is the check :func:`provider_label`
+    resolves through, so a caller that needs the raw id (the ``harness`` metric
+    attribute) reads the same answer the session map persists. It also reads a
+    bare ``AcpSessionHandle`` and an ``AcpRuntime``, which the background
+    one-liner path passes in place of a provider. ``None`` keeps "not a provider" apart from
+    kiro-cli, whose own id is the empty string (see
+    ``agent_sdk.backend_identity`` for why a blind ``getattr`` default of
+    ``""`` would conflate them). The value is returned as found, so a caller
+    decides what a non-string means.
+    """
+    backend = _provider_shape_backend(provider)
+    if backend is not None:
+        return backend
+    # The two shapes a background one-liner hands out as its turn's
+    # ``model_source``: a runtime-owned session handle, and the runtime itself.
+    # Neither is a provider, so ``provider_label`` (which keys the session map)
+    # deliberately does not read them; only this attribution read does.
+    if isinstance(provider, AcpSessionHandle):
+        runtime = getattr(provider, "_runtime", None)
+        return None if runtime is None else getattr(runtime, "acp_backend", None)
+    if isinstance(provider, AcpRuntime):
+        return provider.acp_backend
+    return None
+
+
+def _provider_shape_backend(provider: Any) -> Any:
+    """The backend of the two PROVIDER shapes, or ``None``.
+
+    The shape check :func:`provider_label` resolves through. An ``AcpProvider``
+    with no client yet carries no backend, so it is ``None`` here rather than
+    kiro-cli's ``""``; the label maps both to the default, so its answer is
+    unchanged.
+    """
+    if isinstance(provider, AcpSessionProvider):
+        return provider.backend
+    if isinstance(provider, AcpProvider):
+        client = getattr(provider, "client", None)
+        if client is None:
+            return None
+        return getattr(client, "backend", "")
+    return None
+
+
 def provider_label(provider: Any) -> str:
     """Backend identity key for *provider*.
 
@@ -1033,11 +1079,8 @@ def provider_label(provider: Any) -> str:
     the kiro label, and the map then prunes its id for want of a kiro
     transcript.
     """
-    if isinstance(provider, AcpSessionProvider):
-        backend = provider.backend
-    elif isinstance(provider, AcpProvider):
-        backend = getattr(getattr(provider, "client", None), "backend", "")
-    else:
+    backend = _provider_shape_backend(provider)
+    if backend is None:
         return PROVIDER_LABEL_DEFAULT
     # The claude test stays a NAME check ahead of the mapping rather than folding
     # into it: ``is_claude_backend_name`` accepts every spelling this build treats

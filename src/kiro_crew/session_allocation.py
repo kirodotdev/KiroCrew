@@ -926,7 +926,7 @@ class SessionAllocationService:
                     self.advance_ownership_generation(key)
                     won_race_session = session
                     try:
-                        await record_session_started(key)
+                        await record_session_started(key, provider)
                     except BaseException:
                         # This await is the only suspension point between registering
                         # the session and returning it. Cancelled here, the caller

@@ -69,6 +69,7 @@ __all__ = [
     "kas_engine_unsupported_reason",
     "kiro_cli_resolves",
     "narrowed_agent_permissions",
+    "provider_backend",
     "provider_error_client",
     "provider_label",
     "resolve_pin_spelling",
@@ -269,6 +270,20 @@ def provider_label(provider: object) -> str:
     :func:`resolve_pin_spelling`.
     """
     from kiro_crew.providers.acp import provider_label as _impl
+
+    return _impl(provider)
+
+
+def provider_backend(provider: object) -> object:
+    """The backend id *provider* talks to, or ``None`` for a shape that carries none.
+
+    Thin delegation to :func:`kiro_crew.providers.acp.provider_backend`, the
+    shape check :func:`provider_label` resolves through, so the ``harness``
+    metric attribute (``metrics/harness.py``) reads the same answer the session
+    map persists without importing the providers layer. Function-local import
+    for the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.providers.acp import provider_backend as _impl
 
     return _impl(provider)
 

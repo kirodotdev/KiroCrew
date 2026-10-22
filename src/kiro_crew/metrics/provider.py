@@ -45,6 +45,7 @@ from urllib.parse import urlsplit
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -662,6 +663,11 @@ RESOURCE_ATTR_PROCESS_ROLE = "kirocrew.process.role"
 #: a closed set) when a second process has a caller for it.
 PROCESS_ROLE_GATEWAYD = "gatewayd"
 
+#: Resource attribute naming the install's configured default harness (global
+#: ``agent.acp_backend``, or ``claude_code`` on that provider seam). Closed set:
+#: :data:`kiro_crew.metrics.harness.HARNESS_VALUES`, which owns the value map.
+RESOURCE_ATTR_HARNESS = _harness.RESOURCE_ATTR_HARNESS
+
 _is_gatewayd = False
 
 
@@ -676,8 +682,17 @@ def mark_gatewayd_process() -> None:
     _is_gatewayd = True
 
 
-def _resource_attributes() -> "dict[str, str | int]":
+def _resource_attributes(harness: Optional[str] = None) -> "dict[str, str | int]":
     """Resource attributes for the MeterProvider.
+
+    *harness* is the install's configured default harness, already mapped to
+    its closed value by :func:`kiro_crew.metrics.harness.configured_harness`.
+    :func:`_build_recorder` always passes it (it has just loaded the config), so
+    every exported series carries ``kirocrew.harness``; ``None`` omits it, for a
+    probe that has no config in hand. It sits beside ``kirocrew.process.role``
+    because it is the same kind of label: one value per process, read once per
+    recorder. A config change to ``agent.acp_backend`` or ``agent.provider``
+    rebuilds the recorder (:func:`watch_config`), so the label follows it.
 
     A resource attribute becomes a LABEL on every series this process exports,
     which cuts both ways: it is the only place fleet-level GROUP BYs can come
@@ -766,6 +781,8 @@ def _resource_attributes() -> "dict[str, str | int]":
         logger.debug("process.pid resource attr unavailable: %s", exc)
     if _is_gatewayd:
         attrs[RESOURCE_ATTR_PROCESS_ROLE] = PROCESS_ROLE_GATEWAYD
+    if harness:
+        attrs[RESOURCE_ATTR_HARNESS] = harness
     try:
         attrs["service.version"] = beacon.release(__version__)
     except Exception as exc:  # pragma: no cover - defensive
@@ -819,7 +836,8 @@ def _build_recorder() -> _Build:
     # it unset there would make every recheck window see a difference and rebuild
     # a no-op recorder in a loop.
     try:
-        cfg = KiroCrewConfig.load().telemetry
+        full_cfg = KiroCrewConfig.load()
+        cfg = full_cfg.telemetry
     except Exception as exc:
         logger.warning("telemetry config load failed; metrics disabled: %s", exc)
         # Unknown rather than False: the next successful read re-resolves once.
@@ -894,7 +912,12 @@ def _build_recorder() -> _Build:
             beacon.install_id(create=True)
         except Exception:
             logger.debug("install id mint failed", exc_info=True)
-        resource_attrs = _resource_attributes()
+        # Read from the SAME load as the telemetry section, so a rebuild after a
+        # config change labels the new resource with the new harness. Also
+        # records the Claude Code seam for the per-session ``harness`` point
+        # attribute, so the two never disagree about it.
+        harness = _harness.set_configured(getattr(full_cfg, "agent", None))
+        resource_attrs = _resource_attributes(harness)
         provider = MeterProvider(
             metric_readers=started_readers,
             resource=Resource.create(resource_attrs),
@@ -1589,14 +1612,27 @@ def reset_for_testing() -> None:
     # in-process) are state too; the next test starts from neither.
     use_telemetry_provider(None)
     _is_gatewayd = False
+    _harness.reset_for_testing()
 
 
 #: The registered telemetry applier, kept so ``watch_config`` stays idempotent.
 _config_sub: object = None
 
 
+#: The config paths outside ``telemetry`` that a recorder reads at build time:
+#: the ``kirocrew.harness`` resource attribute. A resource is fixed for the life
+#: of a MeterProvider, so the only way to relabel is the same rebuild a
+#: ``telemetry.*`` change takes. Both are live (not restart-marked) settings.
+_RESOURCE_CONFIG_PATHS: tuple[str, ...] = ("agent.acp_backend", "agent.provider")
+
+
 async def _on_config_change(change: object) -> None:
     """Rebuild the recorder whenever anything under ``telemetry`` moves.
+
+    Also on a change to :data:`_RESOURCE_CONFIG_PATHS`: the default harness is a
+    resource attribute, and a resource cannot change under a live provider.
+    Downstream that reads as a new series set from the change on, which is the
+    honest reading of an install that switched harness.
 
     The consent worker re-resolves only ``enabled``, on a 30-second window, so
     every other field in the section (``local_dir``, ``retention_days``,
@@ -1626,4 +1662,6 @@ def watch_config() -> None:
         return
     from kiro_crew.config import live
 
-    _config_sub = live.subscribe("telemetry", callback=_on_config_change, name="telemetry")
+    _config_sub = live.subscribe(
+        "telemetry", *_RESOURCE_CONFIG_PATHS, callback=_on_config_change, name="telemetry"
+    )

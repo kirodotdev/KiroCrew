@@ -761,6 +761,7 @@ from kiro_crew.messaging.link import (  # noqa: F401
 )
 from kiro_crew.messaging.renderer import chunk_for_transport  # noqa: F401
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
+from kiro_crew.metrics.harness import harness_of
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
 from kiro_crew.mirror_admission import admission_required, verify_mirror_admission  # noqa: F401
@@ -3182,6 +3183,9 @@ async def _run_chat(
                     usage=event.usage,
                     model=_turn_model or _record_model,
                     provider=_provider_name,
+                    # The EFFECTIVE harness, read off the client that ran the
+                    # turn (a per-session acp_backend override included).
+                    harness=harness_of(client),
                 )
                 if usage_has_billing(_u):
                     # Claim the turn's single usage row BEFORE the persist await

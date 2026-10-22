@@ -1289,7 +1289,7 @@ async def test_a_registration_cancelled_before_it_commits_keeps_the_parked_entri
     bob = ("ts-b", "bob's", {"queued_owner": "bob"})
     sl._park_queue(mgr, key, (bob,))
 
-    async def _boom(_key):
+    async def _boom(_key, _provider=None):
         raise asyncio.CancelledError()
 
     # Scoped: the stub must be gone before the second get_or_create below, and

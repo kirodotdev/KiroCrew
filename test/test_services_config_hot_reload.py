@@ -620,7 +620,13 @@ class TestTelemetryRecorderRebuild:
         from kiro_crew.metrics import provider as provider_mod
 
         provider_mod.watch_config()
-        assert _one_sub("telemetry").prefixes == ("telemetry",)
+        # The harness settings feed the ``kirocrew.harness`` resource attribute,
+        # which only a rebuild can relabel.
+        assert provider_mod._RESOURCE_CONFIG_PATHS == ("agent.acp_backend", "agent.provider")
+        assert _one_sub("telemetry").prefixes == (
+            "telemetry",
+            *provider_mod._RESOURCE_CONFIG_PATHS,
+        )
 
     def test_watch_config_is_idempotent(self) -> None:
         """A re-entered boot path must not stack appliers that each rebuild."""

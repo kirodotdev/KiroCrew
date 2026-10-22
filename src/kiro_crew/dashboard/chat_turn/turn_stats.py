@@ -228,8 +228,13 @@ def _emit_turn_metric(
     usage: object = None,
     model: str = "",
     provider: str = "",
+    harness: str = "",
 ) -> None:
     """Emit this turn's OTEL samples (best-effort).
+
+    ``harness`` labels the duration sample only (see
+    :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
+    from the turn's live client.
 
     Thin delegate to :func:`kiro_crew.metrics.turns.emit_turn_duration` and
     :func:`~kiro_crew.metrics.turns.emit_turn_usage`. The family is emitted for
@@ -261,6 +266,7 @@ def _emit_turn_metric(
         elapsed_ms=elapsed_ms,
         model=model,
         provider=provider,
+        harness=harness,
     )
     emit_turn_usage(
         input_tokens=getattr(usage, "input_tokens", 0),

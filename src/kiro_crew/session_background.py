@@ -242,6 +242,16 @@ class _ProviderBgSession:
         self._sem_held = False
 
     @property
+    def provider(self) -> LLMProvider:
+        """The provider serving this handle, for attribution reads.
+
+        A turn's usage row passes this handle as ``model_source``; the
+        ``harness`` metric attribute unwraps it here to name the backend that
+        ran the turn. Read-only: turns still go through :meth:`prompt`.
+        """
+        return self._sess.provider
+
+    @property
     def session_id(self) -> str:
         try:
             return self._sess.provider.session_id
@@ -432,7 +442,7 @@ class BackgroundSessionRuntime:
                         self._owner._sessions[background_key] = sess
                         self._owner._advance_session_generation(background_key)
                         try:
-                            await record_session_started(background_key)
+                            await record_session_started(background_key, provider)
                         except BaseException:
                             # Cancelled between registering and recording: roll the entry
                             # back so no claimant sees a session the caller is tearing
