@@ -299,6 +299,9 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
         # Set before the folder preflight below, so its dry-run probe carries the
         # value and a refused threshold creates no folder.
         payload["autocompact_pct"] = args["autocompact_pct"]
+    if args.get("message") is not None:
+        # Also before the preflight: a message the route refuses creates no folder.
+        payload["message"] = args["message"]
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(
@@ -390,9 +393,30 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
-        f"It is empty and waiting in {where}; watch it with "
-        "session_read_message." + reply_line(resp) + _worker_capabilities_line(resp)
+        + _first_message_line(
+            {"message": args["message"]} if args.get("message") is not None else {}, resp, where
+        )
+        + reply_line(resp)
+        + _worker_capabilities_line(resp)
     )
+
+
+def _first_message_line(
+    payload: dict[str, Any], resp: dict[str, Any], where: str = "the user's sidebar"
+) -> str:
+    """What became of the create's first message, or that the session is empty."""
+    if "message" not in payload:
+        return f"It is empty and waiting in {where}; watch it with session_read_message."
+    failed = resp.get("delivery_error")
+    if isinstance(failed, dict):
+        return (
+            f"Your first message was NOT delivered: {failed.get('error')} "
+            f"({failed.get('code')}). The session is kept; session_send to it to retry."
+        )
+    receipt = resp.get("delivery") or {}
+    if receipt.get("started"):
+        return "It started a turn on your first message; watch it with session_read_message."
+    return "Your first message is queued for its next turn; poll it with session_read_message."
 
 
 def _worker_capabilities_line(resp: dict[str, Any]) -> str:
