@@ -263,21 +263,22 @@ def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[d
         reason = "raw copy does not match the streamed text"
     else:
         try:
-            saved = _redact_segment_text(slot, reflow_and_label_glued_option_marker(raw)[0])
+            whole = reflow_and_label_glued_option_marker(raw)[0]
+            saved = _redact_segment_text(slot, whole)
             if removed:
                 per_delta, _, _ = _redact_segment_text(slot, shown)
                 # Never edit the raw copy to drop such a value: a mask changes
                 # what the next pass sees (a tag's space ends a link early).
                 # The saved text is one pass over what the model wrote, or the
                 # segment is withheld.
-                if len(removed) * (len(saved[0]) + len(per_delta)) > _SEGMENT_CHECK_MAX_WORK:
-                    reason = "too many removed values to check"
-                elif _kept_removed_values(saved[0], per_delta, removed):
-                    reason = "whole-text pass keeps a value a per-delta pass removed"
-                elif _saved_text_shows_more(saved[0], per_delta):
-                    reason = "whole-text pass keeps text the streamed redaction hid"
-                elif _records_hold_removed_credential(saved[1], removed, saved[2]):
-                    reason = "a saved record holds a value a per-delta pass removed"
+                reason = _whole_text_refusal(saved, per_delta, removed)
+                if reason and saved[0] != (strict := _redact_segment_text(slot, whole, False))[0]:
+                    # A delta boundary split an SRI value, so its delta redacted
+                    # the bare digest the whole text keeps. One pass with that
+                    # exemption off is main's verdict on the digest; save it if
+                    # it passes the same checks, rather than withhold the reply.
+                    if not _whole_text_refusal(strict, per_delta, removed):
+                        saved, reason = strict, ""
         except Exception as exc:  # noqa: BLE001 -- any failure must fail closed
             # The type only: a message or traceback could quote the text.
             reason = f"redaction raised {type(exc).__name__}"
@@ -287,6 +288,21 @@ def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[d
             return saved[0], _links_main_shows(saved[1], saved[0], per_delta, removed), saved[2]
     logger.warning("segment flush failed closed: %s", reason)
     return _SEGMENT_UNCHECKED_TEXT, [], []
+
+
+def _whole_text_refusal(
+    saved: tuple[str, list[dict], list[dict]], per_delta: str, removed: dict[str, str]
+) -> str:
+    """Why the whole-text ``saved`` may not be saved over ``per_delta``, or ``""``."""
+    if len(removed) * (len(saved[0]) + len(per_delta)) > _SEGMENT_CHECK_MAX_WORK:
+        return "too many removed values to check"
+    if _kept_removed_values(saved[0], per_delta, removed):
+        return "whole-text pass keeps a value a per-delta pass removed"
+    if _saved_text_shows_more(saved[0], per_delta):
+        return "whole-text pass keeps text the streamed redaction hid"
+    if _records_hold_removed_credential(saved[1], removed, saved[2]):
+        return "a saved record holds a value a per-delta pass removed"
+    return ""
 
 
 def _kept_removed_values(saved: str, per_delta: str, removed: Iterable[str]) -> list[str]:
@@ -428,7 +444,9 @@ def _records_hold_removed_credential(
     )
 
 
-def _redact_segment_text(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[dict]]:
+def _redact_segment_text(
+    slot: _ChatSlot, text: str, keep_sri_digests: bool = True
+) -> tuple[str, list[dict], list[dict]]:
     """Both removers over ``text``, with the records each placeholder needs."""
     # Never relaxed by the reader's allowed hosts: what is saved must not depend
     # on the allow-list, so an allowed link is kept as a placeholder with its
@@ -436,7 +454,9 @@ def _redact_segment_text(slot: _ChatSlot, text: str) -> tuple[str, list[dict], l
     redacted, exfil_warnings, blocked_links = redact_exfiltration_urls_with_records(text)
     for w in exfil_warnings:
         logger.warning("Exfiltration URL redacted in chat segment: %s", w)
-    redacted, cred_warnings, matches = redact_credentials_with_records(redacted)
+    redacted, cred_warnings, matches = redact_credentials_with_records(
+        redacted, keep_sri_digests=keep_sri_digests
+    )
     for w in cred_warnings:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the redactor's warning names the pattern class, never the matched value; moved verbatim
         logger.warning("Credential redacted in chat segment: %s", w)

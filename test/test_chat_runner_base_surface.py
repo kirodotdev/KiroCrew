@@ -749,7 +749,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_redact_segment_text",
             "function",
-            "(slot: '_ChatSlot', text: 'str') -> 'tuple[str, list[dict], list[dict]]'",
+            # keep_sri_digests: defaulted, so every old caller keeps its shape.
+            "(slot: '_ChatSlot', text: 'str', keep_sri_digests: 'bool' = True)"
+            " -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
         ("_TOOL_GROUP_ROLES", "value", "frozenset"),

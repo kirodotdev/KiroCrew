@@ -167,3 +167,44 @@ def test_a_lockfile_of_many_digests_costs_one_probe_per_run() -> None:
 def test_the_exemption_leaves_the_exfil_scan_unchanged() -> None:
     """Only pass 3 of the redactor consults the shape; the URL scan judges runs as before."""
     assert _redaction._text_contains_bare_secret(FIRING_VALUES[0])
+
+
+def _flush_streamed(deltas: list[str]) -> str:
+    """Stream *deltas* through the per-delta removers as the run loop does, then flush."""
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("sri-flush")
+    text = ""
+    for delta in deltas:
+        shown, removed = chat_runner._redact_delta(delta)
+        chat_runner._accumulate_segment_raw(slot, delta, shown, removed)
+        text += shown
+    return chat_runner._redact_segment(slot, text)[0]
+
+
+def test_a_streamed_sri_value_in_one_delta_is_saved_whole() -> None:
+    line = f'Run this:\n    integrity = "{FIRING_VALUES[0]}",\nthen build.'
+    assert _flush_streamed([line[:5], line[5:]]) == line
+
+
+@pytest.mark.parametrize("value", FIRING_VALUES)
+def test_a_delta_split_sri_value_saves_the_reply_not_the_withheld_notice(value: str) -> None:
+    from kiro_crew.dashboard.chat_turn.segment_flush import _SEGMENT_UNCHECKED_TEXT
+
+    head, digest = 'Run this:\n    integrity = "sha256-', value.removeprefix("sha256-")
+    tail = '",\nthen build.'
+    saved = _flush_streamed([head, digest, tail])
+    # The digest's own delta could not see the SRI shape and redacted it, so the
+    # save falls back to main's verdict on the digest instead of withholding all.
+    assert saved != _SEGMENT_UNCHECKED_TEXT
+    assert saved.startswith("Run this:") and saved.endswith("then build.")
+    assert digest not in saved and TAG in saved
+
+
+def test_a_delta_split_sri_value_beside_a_key_keeps_the_key_redacted() -> None:
+    value = FIRING_VALUES[1]
+    digest = value.removeprefix("sha256-")
+    saved = _flush_streamed([f"key {KEY} and integrity sha256-", digest, "= ok"])
+    assert KEY not in saved and digest not in saved
+    assert saved.startswith("key ") and saved.endswith(" ok")

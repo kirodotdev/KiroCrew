@@ -461,7 +461,9 @@ def _url_payload_command(n: int) -> str:
 #: and nothing glued after. One regex of three fixed-width alternatives, a helper that
 #: returns the digest spans, their comment, and the one clause beside the document-link
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
-_PACKAGE_LINE_BUDGET = 32_182
+#: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
+#: boundary split an SRI value saves main's verdict on the digest, not the notice.
+_PACKAGE_LINE_BUDGET = 32_188
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
