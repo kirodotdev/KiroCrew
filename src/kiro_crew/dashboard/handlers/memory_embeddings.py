@@ -48,7 +48,9 @@ from kiro_crew.embeddings import (
     LEGACY_EMBEDDING_WARNING,
     ReembedProgress,
     _custom_model_id,
+    _load_llama_class,
     _model_file_stamp,
+    _platform_libs_dirname,
     _read_memory_config,
     activate_shared_embedder,
     active_embedding_space_signature,
@@ -615,6 +617,23 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     model_present = model_file_present()
     custom = resolve_custom_model()
 
+    # The vendored llama.cpp runtime load result, read the way ``kirocrew
+    # doctor`` reads it: the import failed AND vendored libs ship for this
+    # platform. A failed import does NOT recover in-process
+    # (``_load_llama_class`` is lru_cached on None), so once it has failed the
+    # model cannot produce a vector for the life of the gateway, no matter that
+    # the model file is present. Without this the payload below could not tell
+    # that fault apart from a healthy gateway whose model is merely idle. The
+    # ``_platform_libs_dirname() is not None`` conjunct excludes the designed
+    # unsupported-platform degradation, where no libs ship and keyword search is
+    # expected rather than a fault. Offloaded because the first call per process
+    # runs the one bounded import attempt (every later call is the cached read);
+    # the status handler must not block the event loop on it.
+    def _runtime_load_failed() -> bool:
+        return _load_llama_class() is None and _platform_libs_dirname() is not None
+
+    runtime_failed = await asyncio.to_thread(_runtime_load_failed)
+
     setup_step = _SETUP_STEP_LEGACY.get(step, step)
     setup_error = str(mgr.status["error"])
     can_retry = step == "failed" and bool(setup_error)
@@ -644,6 +663,27 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
         error_code = custom.error_code or "model_path_unreadable"
     elif setup_error:
         error_code = "model_download_failed"
+    elif runtime_failed:
+        # The model file is present (or none is needed) and no download or
+        # custom-path fault owns the error slot, yet the runtime cannot load, so
+        # memory is keyword-only for the life of the process. Report it the way a
+        # model-file fault is reported — a code plus plain text naming the cost —
+        # following the ``model_error_*`` pattern. ``kirocrew doctor`` has the
+        # per-platform remedy (missing native libs, the Windows MSVC runtime, an
+        # unusable LLAMA_CPP_LIB_PATH override); the Memory tab's job is to stop
+        # the fault reading as a healthy idle model.
+        #
+        # ``setup_step`` is deliberately LEFT as the download manager reports it
+        # (``idle`` here) rather than forced to ``error``: ``error`` is a
+        # download-flow state the enabling card renders with a "check network"
+        # hint, which is the wrong remedy for a runtime load failure. The fault
+        # surfaces through ``server_healthy``/``setup_error_code``/``setup_error``
+        # instead, which the card renders without the download copy.
+        error_code = "model_error_runtime_load"
+        setup_error = (
+            "The in-process embedding runtime failed to load, so memory uses "
+            "keyword search meanwhile. Run 'kirocrew doctor' for the cause."
+        )
     else:
         error_code = ""
     progress = reembed_progress().snapshot()
@@ -685,9 +725,15 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             "model_path": str(custom.path) if custom is not None else "",
             # "healthy" = embeddings usable now or ready to lazily activate:
             # the model file being present is what matters — the in-memory
-            # load happens automatically on first embed.
+            # load happens automatically on first embed. EXCEPT when the runtime
+            # import has failed: that load will never happen this process (the
+            # loader's result is cached on None), so a present model file no
+            # longer makes embeddings "ready to lazily activate" — report
+            # unhealthy, matching the doctor row.
             "server_healthy": bool(
-                (model_present or embedder.is_ready()) and not (custom is not None and custom.error)
+                (model_present or embedder.is_ready())
+                and not (custom is not None and custom.error)
+                and not runtime_failed
             ),
             "needs_docker": False,
             "docker_available": True,

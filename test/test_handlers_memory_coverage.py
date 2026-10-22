@@ -2394,6 +2394,81 @@ class TestEmbeddingStatusCustomModel:
 
 
 # ---------------------------------------------------------------------------
+# embedding-status runtime-load fault: a failed llama.cpp runtime load must not
+# read as a healthy idle model.
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingStatusRuntimeLoad:
+    # The handler reads the runtime load result from two primitives:
+    # ``_load_llama_class`` (the import result) and ``_platform_libs_dirname``
+    # (whether vendored libs ship for the platform). The three cases below drive
+    # those directly.
+    _FAILED = ("failed", None, "linux_x86_64")  # import failed, libs ship -> fault
+    _IMPORTABLE = ("importable", object(), "linux_x86_64")  # import ok
+    _UNSUPPORTED = ("unsupported", None, None)  # no libs ship -> designed degradation
+
+    def _patches(self, runtime_case: Any, *, model_present: bool = True) -> Any:
+        _name, llama, libs_dir = runtime_case
+        # A healthy-IDLE embedder: the model file is present and the backend is
+        # not serving yet (is_ready() False) — the state a failed runtime load is
+        # indistinguishable from unless the status reads the load result.
+        embedder = MagicMock(model_id="bundled", dim=1024)
+        embedder.is_ready.return_value = False
+        mgr = MagicMock()
+        mgr.status = {"step": "idle", "error": "", "attempt": 0}
+        return (
+            patch(f"{_MOD}.get_shared_embedder", return_value=embedder),
+            patch(f"{_MOD}.model_download_manager", return_value=mgr),
+            patch(f"{_MOD}.model_file_present", return_value=model_present),
+            patch(f"{_MOD}.resolve_custom_model", return_value=None),
+            patch(f"{_MOD}.embedding_backend_serving", return_value=False),
+            patch(f"{_MOD}._load_llama_class", return_value=llama),
+            patch(f"{_MOD}._platform_libs_dirname", return_value=libs_dir),
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_runtime_load_reports_fault_not_idle(self) -> None:
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._FAILED):
+                stack.enter_context(p)
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        # The fault is distinct from the healthy-idle payload.
+        assert body["server_healthy"] is False
+        assert body["setup_error_code"] == "model_error_runtime_load"
+        # setup_step is left as the download manager reports it (idle), NOT forced
+        # to the download-flow "error" state whose card copy says "check network".
+        assert body["setup_step"] == "idle"
+        assert body["setup_error"]  # names the keyword-search cost
+        assert "keyword search" in body["setup_error"]
+
+    @pytest.mark.asyncio
+    async def test_importable_runtime_keeps_neutral_idle_state(self) -> None:
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._IMPORTABLE):
+                stack.enter_context(p)
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        # Healthy idle model: unchanged neutral state, no fault, no runtime code.
+        assert body["server_healthy"] is True
+        assert body["setup_error_code"] == ""
+        assert body["setup_step"] == "idle"
+        assert body["setup_error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_unsupported_platform_is_not_a_fault(self) -> None:
+        # No vendored libs ship for the platform: keyword search is the designed
+        # degradation, not a fault, so the status must not flip to an error code
+        # or report unhealthy on that account alone.
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._UNSUPPORTED):
+                stack.enter_context(p)
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        assert body["server_healthy"] is True
+        assert body["setup_error_code"] == ""
+        assert body["setup_step"] == "idle"
+
+
+# ---------------------------------------------------------------------------
 # _write_embed_model_config
 # ---------------------------------------------------------------------------
 
