@@ -171,6 +171,23 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(await screen.findByRole('radio', { name: /Claude Code/ })).toBeChecked()
   })
 
+  it.each([
+    ['not installed', false],
+    ['installed but signed out', true],
+  ])('does not call Kiro CLI required when it is %s', async (_state, installed) => {
+    // Another coding agent can finish setup instead of Kiro CLI, so the card
+    // reports Kiro CLI's state and carries no step badge claiming it is needed.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed }))
+    vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe()] })
+    render()
+
+    const card = (await screen.findByRole('heading', { name: 'Get Kiro CLI' })).closest('div.card-glow') as HTMLElement
+    // A word match, not the exact label: a badge rendered with its catalog key
+    // missing shows `components.kiroPrerequisiteGate.required`, and is caught too.
+    expect(within(card).queryAllByText(/\brequired\b/i)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Use other coding agents' })).toBeInTheDocument()
+  })
+
   it('offers only backends explicitly eligible for independent setup', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
     vi.mocked(api.acpBackends).mockResolvedValue({

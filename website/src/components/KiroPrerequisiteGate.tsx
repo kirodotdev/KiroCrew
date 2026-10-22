@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   ArrowRight,
   Boxes,
-  CheckCircle2,
   ChevronDown,
   Download,
   ExternalLink,
@@ -30,7 +29,7 @@ import {
 } from './OnboardingChapterShell'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
-import { Badge, Btn, Card, SendBtn } from './ui'
+import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import {
@@ -174,20 +173,6 @@ function SetupShell({
     </main>
   )
 }
-
-function StepStatus({
-  complete,
-  current,
-}: {
-  complete: boolean
-  current: boolean
-}) {
-  if (complete) {
-    return <Badge variant="ok"><CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.complete')}</Badge>
-  }
-  return <Badge variant={current ? 'aim' : 'muted'}>{current ? i18nT('components.kiroPrerequisiteGate.required') : i18nT('components.kiroPrerequisiteGate.waiting')}</Badge>
-}
-
 
 function OwnerSetupRequired({
   retrying,
@@ -1855,26 +1840,23 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
           )}
 
           <Card className="border-accent/60 shadow-[0_10px_35px_var(--accent-glow)]">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="flex items-center gap-2 text-base font-semibold text-text-strong">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-subtle text-accent">
-                    <Package className="lucide-inline" />
-                  </span>
-                  {i18nT('components.kiroPrerequisiteGate.get_kiro_cli')}
-                </h2>
-                {/* The card's first line is the state, in both states: "isn't
-                    installed yet" or "is installed, finish signing in". The
-                    footer used to carry the installed line, below the other
-                    agents section, where it read as an afterthought. */}
-                <p className="mt-2 text-sm leading-relaxed text-muted">
-                  {status.installed
-                    ? i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_finish_signing_in_to_conti')
-                    : i18nT('components.kiroPrerequisiteGate.kiro_cli_is_not_installed_yet')}
-                </p>
-              </div>
-              <StepStatus complete={false} current />
-            </div>
+            <h2 className="flex items-center gap-2 text-base font-semibold text-text-strong">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-subtle text-accent">
+                <Package className="lucide-inline" />
+              </span>
+              {i18nT('components.kiroPrerequisiteGate.get_kiro_cli')}
+            </h2>
+            {/* The card's first line is the state, in both states: "isn't
+                installed yet" or "is installed, finish signing in". It sits
+                here, not in a footer below the other agents section, where it
+                would read as an afterthought. The card carries no step badge:
+                an agent chosen under "Use other coding agents" finishes setup
+                without Kiro CLI, so a "Required" tag here would be false. */}
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              {status.installed
+                ? i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_finish_signing_in_to_conti')
+                : i18nT('components.kiroPrerequisiteGate.kiro_cli_is_not_installed_yet')}
+            </p>
             {/* The one-line installer is SHOWN, never run: Kiro Crew does not
                 install Kiro CLI. The setup page stays as the route for every
                 other install form (RPM, AppImage, musl) and stays correct as

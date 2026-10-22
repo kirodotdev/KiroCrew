@@ -4765,7 +4765,6 @@
     "kiroPrerequisiteGate": {
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "Ask the {{productName}} owner to install Kiro CLI and sign in on this gateway. This dashboard\n          will open for you as soon as the gateway is ready.",
       "check_again": "Check again",
-      "complete": "Complete",
       "could_not_check_kiro_cli": "Could not check Kiro CLI.",
       "gateway": "gateway",
       "gateway_setup_required": "Gateway setup required",
