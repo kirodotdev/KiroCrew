@@ -3,8 +3,8 @@ title: Inline paste pills — the Lexical composer becomes the default chat edit
 status: in-progress
 author: qh2244
 created: 2026-09-21
-last-audited: 2026-10-06
-audited-at: 334335182
+last-audited: 2026-10-19
+audited-at: 6204f7d82
 doc-pr: null
 implementation-prs: [11100]
 tracking-issues: [8309, 8513, 11122, 11337]
@@ -21,7 +21,9 @@ a mirrored `<div>` that drifts away from the text as the composer wraps
 ([#8309](https://github.com/kirodotdev/KiroCrew/issues/8309)).
 [#8310](https://github.com/kirodotdev/KiroCrew/pull/8310) landed a Lexical
 composer that makes the marker a real inline node, but behind a prop no host
-passes, so no user has it. This RFC records the **product-shape decision** that
+passes, so only a user who opts into the *Style Markdown While Typing* setting
+([#15031](https://github.com/kirodotdev/KiroCrew/pull/15031), default off)
+reaches it. This RFC records the **product-shape decision** that
 [#11100](https://github.com/kirodotdev/KiroCrew/pull/11100) implements: the
 inline paste-pill composer becomes the default editor of ChatPage, ChatPane and
 SideChat on fine-pointer devices, and the `<textarea>` stays where evidence is
@@ -62,14 +64,17 @@ sidecar it already speaks. The positions this RFC takes, one line each:
    `Composer.Paste` atom (P3-c, `in review` since #17101) mounts the node and
    plugins described
    here rather than re-deriving them. The ratified row carries a one-line
-   amendment note pointing back here, landed with this document, so the two
-   non-draft records agree.
+   note pointing back here, landed with this document, that marks the change
+   as proposed and not yet accepted; it is reworded to a plain amendment when
+   this RFC is accepted, so the ratified record never states a shape main has
+   not decided.
 
 ## Motivation
 
 ### Current state
 
-Verified at `0140fdd57`; re-audited against `334335182` on 2026-10-06.
+Verified at `0140fdd57`; re-audited against `334335182` on 2026-10-06 and
+against `6204f7d82` on 2026-10-19.
 
 - `website/src/components/ChatInput.tsx` declares the optional `lexicalComposer`
   prop and defaults it to `false`; the prop's own comment says it "Defaults off
@@ -77,7 +82,12 @@ Verified at `0140fdd57`; re-audited against `334335182` on 2026-10-06.
   is complete". Outside tests and the `website/src/components/chat-input/`
   engine modules it extracts into (`engine.tsx`, `optimizer.ts`, `props.ts`),
   the identifier has no hit anywhere but `ChatInput.tsx` itself, and no host
-  passes it, so every host renders the `<textarea>`.
+  passes it. The only other route to the Lexical editor is the opt-in
+  *Style Markdown While Typing* chat setting from
+  [#15031](https://github.com/kirodotdev/KiroCrew/pull/15031) (`inlineMarkdown`
+  in `website/src/pages/chat/ChatSettings.tsx`, default `false`), which
+  `ChatInput.tsx` ORs into the prop. So by default every host renders the
+  `<textarea>`.
 - The composer #8310 shipped renders a collapsed paste as
   `website/src/components/PasteTokenNode.tsx`: a read-only pill with a hover
   tooltip, no editing and no reordering. `website/src/composer/` does not exist.
@@ -239,20 +249,20 @@ land on the same `<textarea>` they have today.
   (merged 2026-09-23, closing [#11337](https://github.com/kirodotdev/KiroCrew/issues/11337))
   wired the paste-block sidecar into both panes.
 - The page-level probes in `website/src/pages/chat/composerFocus.ts` resolve the
-  composer through the stable `[data-composer-input]` hook. On main the selector
-  is `textarea[data-composer-input]` and the keyboard-switch blur is an
-  `ae instanceof HTMLTextAreaElement && ae.hasAttribute('data-composer-input')`
-  test — textarea-only, matching the SideChat seed probe
-  (`textarea[data-composer-input]`). Part of this RFC's #11100 is to widen those
-  probes to resolve the hook on either element so Alt+Enter, quote-to-compose,
-  widget prefill and the macOS keyboard-switch chain behave the same on the
-  Lexical root and the `<textarea>`.
+  composer through the stable `[data-composer-input]` hook, on either element.
+  Since [#15031](https://github.com/kirodotdev/KiroCrew/pull/15031) the selector
+  is `[data-composer-input]` (no `textarea` qualifier) and the keyboard-switch
+  blur is an `ae instanceof HTMLElement && ae.hasAttribute('data-composer-input')`
+  test, and the SideChat seed probe matches the same hook on the `<textarea>`
+  or the Lexical root. So Alt+Enter, quote-to-compose, widget prefill and the
+  macOS keyboard-switch chain already resolve the Lexical root on main; #11100
+  does not need to widen them.
 
 ## Migration plan
 
 | Phase | Slice | Exit criteria | State |
 |---|---|---|---|
-| 1 | Default on fine-pointer devices in ChatPage, ChatPane and SideChat; `<textarea>` on touch and on load failure; the invariants; write-through editing; reorder — [#11100](https://github.com/kirodotdev/KiroCrew/pull/11100) | The host ratchet and the touch-guard test pass on main. The real-browser acceptance walk (`website/scripts/capture-composer-pills.mjs`, engine-selectable) passes on Chromium and Firefox with the frames attached to the PR, and either passes on WebKit as well — run by a maintainer with a host that can provision Playwright's WebKit — or the maintainers record that WebKit is out of verification scope for this phase (**Q5**). The offline Playwright E2E driver passes. `composerFocus` probes resolve both element kinds. #8309 is closed by the merge | in review |
+| 1 | Default on fine-pointer devices in ChatPage, ChatPane and SideChat; `<textarea>` on touch and on load failure; the invariants; write-through editing; reorder — [#11100](https://github.com/kirodotdev/KiroCrew/pull/11100) | The host ratchet and the touch-guard test pass on main. The real-browser acceptance walk (`website/scripts/capture-composer-pills.mjs`, engine-selectable) passes on Chromium and Firefox with the frames attached to the PR, and either passes on WebKit as well — run by a maintainer with a host that can provision Playwright's WebKit — or the maintainers record that WebKit is out of verification scope for this phase (**Q5**). The offline Playwright E2E driver passes. #8309 is closed by the merge | in review |
 | 2 | Lift the touch guard, one host at a time | A recorded device pass on a real touch device covers: type, paste → pill, open and edit the preview, Enter-to-send, IME composition and commit, and either a touch path for reorder or an explicit note that reorder stays pointer-only. Each host's guard removal is one line and the ratchet is updated with it. **Blocked on Q1** | not started |
 | 3 | Paste-block sidecar in ChatPane and SideChat — [#11337](https://github.com/kirodotdev/KiroCrew/issues/11337) | A large paste in either pane collapses to a pill, persists with the draft and expands on send, with the same tests ChatPage carries | shipped ([#12915](https://github.com/kirodotdev/KiroCrew/pull/12915), 2026-09-23; #11337 closed) |
 | 4 | Keyboard reorder — [#11122](https://github.com/kirodotdev/KiroCrew/issues/11122) | A focused pill moves with a keyboard chord and the move is announced; a keyboard-only user can do everything the pointer can | not started |
