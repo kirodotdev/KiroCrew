@@ -1119,6 +1119,7 @@ describe("dashboard window wiring order", () => {
       || entry.startsWith("view.set") || entry.startsWith("view.session") || entry.startsWith("win.set"));
     assert.deepEqual(events, [
       "view.on:did-finish-load",
+      "win.on:swipe",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",

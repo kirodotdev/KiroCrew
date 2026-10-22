@@ -62,6 +62,9 @@ declare global {
     onNavigate: (cb: (path: string) => void) => () => void
     /** View > Toggle Focus Mode. Optional: absent on a shell older than the menu item. */
     onToggleFocusMode?: (cb: () => void) => () => void
+    /** A macOS swipe the shell relays as one route-history step (-1 Back,
+     *  1 Forward). Optional: absent in a browser and on an older shell. */
+    onHistoryStep?: (cb: (delta: unknown) => void) => () => void
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
     onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void

@@ -8,6 +8,7 @@ const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./ren
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
+const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
@@ -310,6 +311,13 @@ function createWindowLifecycle(options) {
     armSplashHistoryClear(view.webContents, {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
       log: glog,
+    });
+    // Mouse software such as Logitech's Options sends Back/Forward to macOS apps
+    // as swipes; the dashboard, or the browser panel under the cursor, takes each
+    // as a history step.
+    armSwipeHistory(win, view.webContents, {
+      isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+      panelUnderCursor: () => browserPanelUnderCursor(win, screen.getCursorScreenPoint()),
     });
 
     // Teardown order is load-bearing: no command poller or CDP owner may outlive

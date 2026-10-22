@@ -51,6 +51,20 @@ export function subscribeNativeFocusModeToggle(onToggle: () => void): (() => voi
 }
 
 /**
+ * One route-history step the main process relays from a macOS swipe (mouse
+ * software such as Logitech's Options sends Back/Forward as swipes).
+ * Accepts only -1 (Back) and 1 (Forward). Returns the unsubscribe, or nothing
+ * outside the desktop app.
+ */
+export function subscribeNativeHistoryStep(onStep: (delta: -1 | 1) => void): (() => void) | undefined {
+  const electronAPI = window.electronAPI
+  if (!electronAPI?.onHistoryStep) return
+  return electronAPI.onHistoryStep(delta => {
+    if (delta === -1 || delta === 1) onStep(delta)
+  })
+}
+
+/**
  * macOS fullscreen hides the native traffic lights, so the header's 84px
  * clearance inset drops while fullscreen (mac-fullscreen class on the root).
  * Native traffic lights sit over the consolidated 42px header, so there is no
