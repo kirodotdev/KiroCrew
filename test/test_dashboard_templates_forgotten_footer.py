@@ -168,3 +168,47 @@ class TestTheStandupColumnsStayOnTheListedItems:
         with_gone = _run("standup", {"items": _LISTED, "forgotten": _GONE})["cols"]
         assert without == ["1", "0", "2", "0"]
         assert with_gone == without
+
+
+#: The template version each page shipped at BEFORE the footer counted ``forgotten``.
+#: A crewmate that adopted the page then holds a copy at this version, with the old
+#: undercounting footer frozen inside it.
+_PRE_FIX_VERSION = {"standup": 1, "pr-watch": 2}
+
+
+class TestAnAdoptedCopyOfTheOldFooterTurnsStale:
+    """An adopted copy is frozen at adopt and turns ``stale`` only when the registry's
+    version is HIGHER (``instance._state_of``). A fix to the page that does not raise
+    the version reaches new adoptions only: every page adopted before it keeps the
+    undercount while the frame still says ``live``. So each page must ship above the
+    version its pre-fix copies carry.
+
+    Driven through the real store: adopt the shipped page, then set the stored copy's
+    template version back to the pre-fix one, which is exactly the record an earlier
+    adoption left on disk.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        yield
+
+    @pytest.mark.parametrize("page", sorted(_PRE_FIX_VERSION))
+    def test_a_pre_fix_copy_reads_stale(self, page: str) -> None:
+        from kiro_crew.dashboard_templates import instance
+
+        slug = f"pre-fix-{page}"
+        instance.stage_preview(slug, template_id=page)
+        instance.apply_preview(slug, session_id="")
+        record_path = instance.instance_dir(slug) / instance._RECORD_FILE
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["template"]["version"] = _PRE_FIX_VERSION[page]
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+
+        copy = instance.read(slug)
+        assert copy.template_version == _PRE_FIX_VERSION[page]
+        assert copy.state == instance.STATE_STALE, (
+            f"a {page} copy adopted before the forgotten-items fix reads "
+            f"{copy.state!r}: the manifest version was not raised, so the old "
+            "undercount keeps showing as live"
+        )

@@ -82,6 +82,12 @@ last written, and the registry moves on its own: a template shipping a new versi
 every copy of it stale without touching one instance file, so the flag would say `live`
 forever.
 
+The corollary binds whoever edits a shipped page: a change a copy should pick up -- a
+bug fix in the page, a new bound field -- raises the manifest `version`. A copy turns
+`stale` only when the registry's version is higher than the one it froze at adopt, so
+an unbumped fix reaches new adoptions alone, and every page adopted before it keeps the
+old behaviour while the frame says `live`.
+
 `empty` and `error` are deliberately separate, and that distinction is the reason the
 read does not 404. A mate that never adopted a template answers 200 with `empty`,
 because having no dashboard yet is the ordinary first state of every mate and the

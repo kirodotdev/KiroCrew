@@ -1,6 +1,6 @@
 {
   "id": "standup",
-  "version": 1,
+  "version": 2,
   "title": "Standup",
   "description": "What changed since you last looked, as three lists: finished, newly opened, and stuck. A reader who asks how things are going twice in one afternoon is asking for a DELTA, and a page that restates the whole board answers a different question. The split comes from the work fold's item states beside each worker's own last status, and the moment feed comes from the timeline fold, so both halves are the record's. One line is the mate's own headline, which no fold writes, and the page marks it as written.",
   "source": "builtin",
