@@ -9184,6 +9184,8 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "O gateway não conseguiu abrir um navegador para esta página.",
       "the_server_at": "O servidor em",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "A vista é servida no endereço de loopback do host do gateway, e este navegador não conseguiu se conectar a ela. Se você acessa o painel por um túnel SSH, fixe a porta da vista com a configuração abaixo e encaminhe essa porta também.",
+      "browser_view_can_t_load_its_files_here": "Provavelmente a vista do navegador não consegue carregar seus arquivos aqui",
+      "a_sign_in_proxy_refuses_the_view_s_files": "Os arquivos da vista foram recusados sem cookie, mas responderam com ele. Uma causa provável é algo na frente do painel, como um proxy de login ou um túnel, que verifica um cookie em cada solicitação. A vista roda em um quadro isolado que não pode enviar esse cookie. Se for o caso, acesse o painel por um encaminhamento de porta SSH direto.",
       "opened_from_this_chat": "Aberto deste chat",
       "this_dashboard_is_served_over_https_so_the_brows": "Este painel é servido por HTTPS, então o navegador bloqueia a incorporação de uma página",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL é o próprio servidor do painel, que não permite ser incorporado. Informe a URL de um servidor de desenvolvimento.",

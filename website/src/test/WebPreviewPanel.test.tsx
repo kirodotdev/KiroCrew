@@ -799,9 +799,10 @@ describe('WebPreviewPanel — Playwright CLI browser view', () => {
     getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
     const relayRender = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     await screen.findByTitle('Live browser session')
+    // The relay does get the one-shot cookie check (#23180), which is a cors
+    // GET; what it must never get is the polling no-cors liveness probe.
     const relayProbes = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .map(c => String(c[0]))
-      .filter(u => u.includes('/browser-view'))
+      .filter(c => String(c[0]).includes('/browser-view') && (c[1] as RequestInit | undefined)?.mode === 'no-cors')
     expect(relayProbes).toEqual([])
     relayRender.unmount()
 
@@ -814,6 +815,112 @@ describe('WebPreviewPanel — Playwright CLI browser view', () => {
       .map(c => String(c[0]))
       .filter(u => u.startsWith('http://127.0.0.1:45613'))
     expect(directProbes.length).toBeGreaterThan(0)
+  })
+
+  describe('a front door that refuses the frame for want of a cookie (#23180)', () => {
+    const RELAY = { ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' }
+    /** A fetch answer, as much of `Response` as the cookie check reads. */
+    const answer = (ok: boolean, landed?: string) => status(ok ? 200 : 403, landed)
+    const status = (code: number, landed?: string) => ({
+      ok: code >= 200 && code < 300, status: code, redirected: !!landed, url: landed ?? '', body: null,
+    })
+    /** Answers the relay path by credentials mode: `withCookie` for the
+     *  dashboard's own credentialed GET, `withoutCookie` for the cookieless one. */
+    const relayAnswers = (withCookie: unknown, withoutCookie: unknown) => {
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const out = init?.credentials === 'omit' ? withoutCookie : withCookie
+        if (out instanceof Error) throw out
+        return out
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
+    /** The cookie check's requests only: the panel fetches other things too. */
+    const relayCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+      fetchMock.mock.calls.filter(c => c[0] === RELAY.path).length
+    const settled = async (fetchMock: ReturnType<typeof vi.fn>) => {
+      await waitFor(() => expect(relayCalls(fetchMock)).toBe(2))
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    }
+
+    it('shows the explanation instead of a blank frame when only the cookieless request is refused', async () => {
+      getBrowserView.mockResolvedValue(RELAY)
+      relayAnswers(answer(true), answer(false))
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      expect(await screen.findByTestId('web-preview-view-cookie-refused')).toHaveTextContent("A likely cause")
+      expect(screen.queryByTitle('Live browser session')).toBeNull()
+      // The existing way out stays: the header's open-in-new-tab link.
+      expect(screen.getByRole('link', { name: 'Open in browser' })).toHaveAttribute('href', RELAY.path)
+    })
+
+    it.each([
+      ['a 401', status(401)],
+      ['a network failure (a cross-origin sign-in redirect fails CORS)', new TypeError('Failed to fetch')],
+      ['a 200 redirected to a same-origin sign-in page off the relay', status(200, `${window.location.origin}/login`)],
+    ])('counts %s on only the cookieless request as a refusal', async (_name, withoutCookie) => {
+      getBrowserView.mockResolvedValue(RELAY)
+      relayAnswers(answer(true), withoutCookie)
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      expect(await screen.findByTestId('web-preview-view-cookie-refused')).toBeInTheDocument()
+    })
+
+    it.each([
+      ['a 404 (token rotated)', status(404)],
+      ['a 429', status(429)],
+      ['a 500', status(500)],
+      ['a 502', status(502)],
+      ['a 503', status(503)],
+    ])('keeps the frame when only the cookieless request gets %s', async (_name, withoutCookie) => {
+      getBrowserView.mockResolvedValue(RELAY)
+      const fetchMock = relayAnswers(answer(true), withoutCookie)
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await screen.findByTitle('Live browser session')
+      await settled(fetchMock)
+      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
+      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
+    })
+
+    it('keeps the frame when the credentialed request does not reach the relay, whatever the other gets', async () => {
+      getBrowserView.mockResolvedValue(RELAY)
+      const fetchMock = relayAnswers(status(503), answer(false))
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await screen.findByTitle('Live browser session')
+      await settled(fetchMock)
+      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
+    })
+
+    it('keeps the frame when both requests reach the relay, including its own index redirect', async () => {
+      getBrowserView.mockResolvedValue(RELAY)
+      const landed = `${window.location.origin}${RELAY.path}index.html?ws=x`
+      const fetchMock = relayAnswers(answer(true, landed), answer(true, landed))
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await screen.findByTitle('Live browser session')
+      await settled(fetchMock)
+      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
+      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
+    })
+
+    it('blames no proxy when the relay fails either way (gateway down, view dead)', async () => {
+      getBrowserView.mockResolvedValue(RELAY)
+      const fetchMock = relayAnswers(new TypeError('Failed to fetch'), new TypeError('Failed to fetch'))
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await screen.findByTitle('Live browser session')
+      await settled(fetchMock)
+      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
+    })
+
+    it('asks again on Try again, and frames the view once the front door lets it through', async () => {
+      getBrowserView.mockResolvedValue(RELAY)
+      const fetchMock = relayAnswers(answer(true), answer(false))
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await screen.findByTestId('web-preview-view-cookie-refused')
+      fetchMock.mockImplementation(async () => answer(true))
+      fireEvent.click(screen.getByRole('button', { name: /Try again/ }))
+      expect(await screen.findByTitle('Live browser session')).toBeInTheDocument()
+      await waitFor(() => expect(relayCalls(fetchMock)).toBe(4))
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
+    })
   })
 
   it('layers nothing over the frame, so the CLI keeps its remote input', async () => {
@@ -1493,6 +1600,23 @@ describe('WebPreviewPanel — address bar launcher (non-native transport)', () =
     fireEvent.change(input, { target: { value: raw } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
   }
+
+  it('drops the padlock hint and the green dot when a cookie proxy refuses the relayed view (#23180)', async () => {
+    const RELAY = { ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' }
+    getBrowserView.mockResolvedValue(RELAY)
+    openInBrowser.mockImplementation(async () => ({ ...OPENED('https://google.com/'), view: RELAY }))
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => (
+      init?.credentials === 'omit'
+        ? { ok: false, status: 403, redirected: false, url: '', body: null }
+        : { ok: true, status: 200, redirected: false, url: '', body: null }
+    )))
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    submit('google.com')
+    await screen.findByTestId('web-preview-view-cookie-refused')
+    expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
+    expect(screen.queryByTestId('web-preview-padlock-hint')).toBeNull()
+    expect(screen.getByTestId('web-preview-view-dot').style.backgroundColor).toBe('var(--danger)')
+  })
 
   it('drops a launch answer for a slot the user has left, on success and on failure', async () => {
     // Slot A's launch is still in flight when the user switches to slot B; the

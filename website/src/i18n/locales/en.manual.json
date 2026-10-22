@@ -3447,6 +3447,8 @@
       "try_again": "Try again",
       "browser_view_can_t_be_reached_from_this_browser": "Browser view can't be reached from this browser",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "The view is served on the gateway host's loopback address, and this browser could not connect to it. If you reach the dashboard over an SSH tunnel, pin the view's port with the setting below and forward that port too.",
+      "browser_view_can_t_load_its_files_here": "Browser view probably can't load its files here",
+      "a_sign_in_proxy_refuses_the_view_s_files": "The view's files were refused without a cookie but answered with one. A likely cause is something in front of the dashboard, like a sign-in proxy or tunnel, that checks a cookie on every request. The view runs in a locked-down frame that can't send that cookie. If that is the case, reach the dashboard over a direct SSH port forward instead.",
       "opened_from_this_chat": "Opened from this chat",
       "to_open_another_site_unlock_the_view_s_address_bar": "Click the padlock above the page to type another address there; the monitor button (top right) brings the preview bar back.",
       "your_page_is_in_pick_it_in_the_sidebar": "Your page is in {{session}} — pick it in the frame's sidebar.",

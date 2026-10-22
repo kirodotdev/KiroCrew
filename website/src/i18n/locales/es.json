@@ -9184,6 +9184,8 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "La pasarela no pudo abrir un navegador para esta página.",
       "the_server_at": "El servidor en",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vista se sirve en la dirección de bucle local del host de la pasarela, y este navegador no pudo conectarse a ella. Si llegas al panel a través de un túnel SSH, fija el puerto de la vista con el ajuste de abajo y reenvía también ese puerto.",
+      "browser_view_can_t_load_its_files_here": "Probablemente la vista del navegador no puede cargar sus archivos aquí",
+      "a_sign_in_proxy_refuses_the_view_s_files": "Los archivos de la vista se rechazaron sin cookie, pero respondieron con ella. Una causa probable es algo delante del panel, como un proxy de inicio de sesión o un túnel, que comprueba una cookie en cada solicitud. La vista se ejecuta en un marco aislado que no puede enviar esa cookie. Si es así, accede al panel mediante un reenvío de puerto SSH directo.",
       "opened_from_this_chat": "Abierto desde este chat",
       "this_dashboard_is_served_over_https_so_the_brows": "Este panel se sirve por HTTPS, por lo que el navegador bloquea incrustar una página",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL es el propio servidor del panel, que no permite ser incrustado. Introduce en su lugar la URL de un servidor de desarrollo.",

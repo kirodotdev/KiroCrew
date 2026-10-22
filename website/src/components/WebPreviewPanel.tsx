@@ -20,6 +20,7 @@ import {
 } from './webPreviewPanelUrl'
 import { useWebPreviewPanelAnnotate } from './useWebPreviewPanelAnnotate'
 import { useFrameNavigationBlock } from './useFrameNavigationBlock'
+import { useRelayCookieRefusal } from './useRelayCookieRefusal'
 import WebPreviewPanelNativeSurface from './WebPreviewPanelNativeSurface'
 
 import { i18nT } from '../i18n/t'
@@ -722,6 +723,13 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     !!viewUrl && !viewIsRelay && viewRunning && showBrowserView && active,
     viewProbeKey,
   )
+  // The relay path's own failure: a cookie-checking front door refuses the
+  // opaque-origin frame's asset fetches, so the view never boots (#23180).
+  const viewCookieRefused = useRelayCookieRefusal(
+    viewUrl || '',
+    viewIsRelay && viewRunning && showBrowserView && active,
+    viewProbeKey,
+  )
 
   /**
    * True exactly when the body renders the preview iframe — the one state in
@@ -780,8 +788,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             it does not — a green dot beside an "unreachable" card contradicted it. */}
         {viewRunning && (
           <span
-            className={`inline-block w-1.5 h-1.5 rounded-full ${viewUnreachable ? '' : 'animate-pulse'}`}
-            style={{ backgroundColor: viewUnreachable ? 'var(--danger)' : 'var(--ok)' }}
+            className={`inline-block w-1.5 h-1.5 rounded-full ${viewUnreachable || viewCookieRefused ? '' : 'animate-pulse'}`}
+            style={{ backgroundColor: viewUnreachable || viewCookieRefused ? 'var(--danger)' : 'var(--ok)' }}
             data-testid="web-preview-view-dot"
             aria-hidden
           />
@@ -855,6 +863,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         && launchedAttached !== false
         && viewRunning
         && !viewUnreachable
+        && !viewCookieRefused
         && !padlockHintDismissed && (
         <div
           className="flex items-center gap-2 px-3 py-1 border-b border-border shrink-0 text-[11px] text-muted leading-snug"
@@ -909,6 +918,27 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             {/* The pin lives in config.json; the chip links to the setting where
                 the UI edits it, or shows the CLI command where it does not. */}
             <SettingRef configKey="dashboard.browser_view_port" />
+            <button
+              type="button"
+              onClick={() => setViewProbeKey(k => k + 1)}
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
+            >
+              <RotateCw size={13} /> {i18nT('components.webPreviewPanel.try_again')}
+            </button>
+          </div>
+        ) : viewRunning && viewCookieRefused ? (
+          // Something in front of the dashboard wants a cookie the sandboxed
+          // frame cannot send, so the frame would stay blank: say so, and name
+          // the way that works (a direct forward with no such front door).
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            <Monitor size={22} className="text-muted" />
+            <ErrorNotice
+              title={i18nT('components.webPreviewPanel.browser_view_can_t_load_its_files_here')}
+              message={i18nT('components.webPreviewPanel.a_sign_in_proxy_refuses_the_view_s_files')}
+              className="max-w-[420px] text-left"
+              testId="web-preview-view-cookie-refused"
+              askAgent
+            />
             <button
               type="button"
               onClick={() => setViewProbeKey(k => k + 1)}

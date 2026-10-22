@@ -9184,6 +9184,8 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "Il gateway non è riuscito ad aprire un browser per questa pagina.",
       "the_server_at": "Il server su",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vista è servita sull’indirizzo di loopback dell’host del gateway e questo browser non è riuscito a connettersi. Se raggiungi la dashboard tramite un tunnel SSH, fissa la porta della vista con l’impostazione qui sotto e inoltra anche quella porta.",
+      "browser_view_can_t_load_its_files_here": "Probabilmente la vista del browser non può caricare i suoi file qui",
+      "a_sign_in_proxy_refuses_the_view_s_files": "I file della vista sono stati rifiutati senza cookie ma hanno risposto con il cookie. Una causa probabile è qualcosa davanti alla dashboard, come un proxy di accesso o un tunnel, che controlla un cookie a ogni richiesta. La vista gira in un riquadro isolato che non può inviare quel cookie. Se è così, raggiungi la dashboard con un inoltro di porta SSH diretto.",
       "opened_from_this_chat": "Aperto da questa chat",
       "this_dashboard_is_served_over_https_so_the_brows": "Questa dashboard viene servita tramite HTTPS, quindi il browser blocca l'incorporamento di un",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Questo URL è il server della dashboard stessa, che rifiuta di essere incorporato. Inserisci invece l'URL di un server di sviluppo.",

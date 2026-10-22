@@ -9184,6 +9184,8 @@
       "the_gateway_could_not_open_a_browser_for_this_page": "La passerelle n'a pas pu ouvrir de navigateur pour cette page.",
       "the_server_at": "Le serveur à l'adresse",
       "the_view_runs_on_the_gateway_host_pin_and_forward": "La vue est servie sur l'adresse de bouclage de l'hôte de la passerelle, et ce navigateur n'a pas pu s'y connecter. Si tu accèdes au tableau de bord via un tunnel SSH, fixe le port de la vue avec le réglage ci-dessous et transfère aussi ce port.",
+      "browser_view_can_t_load_its_files_here": "La vue du navigateur ne peut probablement pas charger ses fichiers ici",
+      "a_sign_in_proxy_refuses_the_view_s_files": "Les fichiers de la vue ont été refusés sans cookie mais ont répondu avec. Une cause probable est un élément placé devant le tableau de bord, comme un proxy de connexion ou un tunnel, qui vérifie un cookie à chaque requête. La vue tourne dans un cadre isolé qui ne peut pas envoyer ce cookie. Si c'est le cas, accède plutôt au tableau de bord via une redirection de port SSH directe.",
       "opened_from_this_chat": "Ouvert depuis cette discussion",
       "this_dashboard_is_served_over_https_so_the_brows": "Ce tableau de bord est servi via HTTPS, donc le navigateur bloque l'intégration d'une page",
       "this_url_is_the_dashboard_s_own_server_which_ref": "Cette URL est le serveur du tableau de bord lui-même, qui refuse d'être intégré. Saisissez plutôt l'URL d'un serveur de développement.",
