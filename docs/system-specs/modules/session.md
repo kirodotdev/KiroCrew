@@ -1231,7 +1231,10 @@ against sweep completeness, and are torn down at `close_all`.
   misdescribe it) and gets its own notice card, worded for that shape:
   the earlier calls were ATTEMPTED and may already have taken effect, so the
   reader is told to check what landed rather than that nothing ran
-  (`should_notice_mixed_turn_leak`).
+  (`should_notice_mixed_turn_leak`). Neither card offers a plain re-send as
+  the fix (issue #22398): the leaked text stays in the chat's own context and
+  the model tends to repeat it, so both say the model wrote the call as text
+  and point at a new chat (or a compaction) if it happens again.
 - **Leak dropped at a compaction boundary** (issue #11995): a REAL
   (non-synthesized) mid-turn compaction terminal is a segment boundary, so the
   runner clears `assistant_text` there — text streamed before the
