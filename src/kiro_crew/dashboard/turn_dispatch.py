@@ -74,6 +74,24 @@ class TurnTimeoutError(TimeoutError):
         self.native_cancel_outcome = native_cancel_outcome
 
 
+class BackgroundTurnAbandoned(TimeoutError):
+    """An unattended turn gave up waiting for a background-turn permit and never ran.
+
+    Raised by ``DashboardState.run_background_turn``. A ``TimeoutError``, so the
+    callers that treat that wait as one keep doing so (the structured nudge fire
+    settles ``BUSY``, the crew runtime renders its own card). :func:`finish_turn_task`
+    tells it apart from the turn ceiling: nothing ran, so the ceiling card's "hit
+    the limit and was stopped" would name a cause that never happened.
+    """
+
+    def __init__(self, wait_secs: float, cap: int | None) -> None:
+        super().__init__(
+            f"queued {wait_secs}s behind the background-turn cap ({cap} concurrent) "
+            "without a free slot"
+        )
+        self.wait_secs = wait_secs
+
+
 def _turn_budget_remaining() -> float | None:
     """Seconds left in the running turn, or ``None`` when that is unknowable."""
     deadline = _TURN_DEADLINE.get()
@@ -398,6 +416,23 @@ def format_turn_timeout_card(
     )
 
 
+def format_background_turn_abandoned_card(wait_secs: float) -> str:
+    """User-facing text for an unattended turn that never got a background-turn permit.
+
+    Distinct from :func:`format_turn_timeout_card`: that card describes a turn that
+    ran until its limit stopped it, and its remedy (a longer turn limit) does nothing
+    for a turn that waited behind the cap and never started.
+    """
+    minutes = max(1, round(wait_secs / 60))
+    waited = f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+    return (
+        f"⏱️ This turn never started: it waited {waited} for a free background-turn "
+        "slot and gave up. Nothing ran and nothing was rolled back; the next message "
+        "or loop cycle starts a new turn. If turns keep queueing at the cap, raise "
+        "`dashboard.max_background_turns`."
+    )
+
+
 def _report_turn_timeout(
     state: Any,
     slot: Any,
@@ -460,6 +495,17 @@ def finish_turn_task(
     except asyncio.CancelledError:  # pragma: no cover - racing cancellation
         return
     if exc is None:
+        return
+    if isinstance(exc, BackgroundTurnAbandoned):
+        # Checked before the ceiling below, whose card it would otherwise get.
+        # run_background_turn already logged the wait at warning level.
+        try:
+            slot.append(
+                "error", format_background_turn_abandoned_card(exc.wait_secs), "msg msg-err"
+            )
+            state.push_slots_update()
+        except Exception:
+            logger.debug("Failed to render the background-turn abandonment card", exc_info=True)
         return
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         _report_turn_timeout(
@@ -778,6 +824,47 @@ def spawn_guarded_turn(
             # wrapper but not the input coroutine stored in its arguments.
             coro.close()
         finish_turn_task(state, slot, t, timeout, limit_scope)
+        _hand_off_if_unstarted(state, slot, t)
 
     task.add_done_callback(_finish)
     return task
+
+
+def mark_turn_unstarted(slot: Any) -> None:
+    """Record that the dispatch holding *slot* ends without starting its turn.
+
+    ``_run_chat`` hands the slot's queue off on every exit. A dispatch that
+    returns or raises before entering it -- a monitor wake refused before its
+    runner, a wait for a background-turn permit that gave up or was cancelled --
+    still held ``slot.task`` while it waited, so a send may have queued behind
+    it. The exit marks itself here, and :func:`spawn_guarded_turn`'s done
+    callback hands that queue off in its place. A slot without a turn
+    generation (a test double) is left alone, so the exit's own outcome is what
+    propagates.
+    """
+    generation = getattr(slot, "_turn_generation", None)
+    if isinstance(generation, int):
+        slot._unstarted_generation = generation
+
+
+def _hand_off_if_unstarted(state: Any, slot: Any, task: "asyncio.Task[Any]") -> None:
+    """Hand off *task*'s slot queue when its exit marked the turn unstarted.
+
+    The chat runner's ``_hand_off_unstarted_turn`` decides whether one is owed
+    and owns it; the check here only spares every other turn the import.
+    """
+    if getattr(slot, "task", None) is not task:
+        return
+    if getattr(slot, "_unstarted_generation", None) != getattr(slot, "_turn_generation", None):
+        return
+    try:
+        # circular import: the chat runner imports this module at load.
+        from kiro_crew.dashboard.chat_runner import _hand_off_unstarted_turn
+
+        _hand_off_unstarted_turn(state, slot, task)
+    except Exception:
+        logger.warning(
+            "Could not hand off the queue after a turn that never started in slot %s",
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )

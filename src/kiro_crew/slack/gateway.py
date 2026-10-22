@@ -220,7 +220,11 @@ from kiro_crew.dashboard.state import (
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
+from kiro_crew.dashboard.turn_dispatch import (
+    bounded_chat_turn,
+    mark_turn_unstarted,
+    spawn_guarded_turn,
+)
 from kiro_crew.embeddings import (
     embedding_model_is_custom,
     get_shared_embedder,

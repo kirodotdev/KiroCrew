@@ -96,6 +96,7 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_unstarted_generation",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -462,6 +463,7 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    _unstarted_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event

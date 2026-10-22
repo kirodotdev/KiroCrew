@@ -2371,7 +2371,7 @@ Cross-tab context: none. No block of other dashboard tabs' messages is injected;
 
 **Context budget** (`context.py`): ordinary startup uses the fixed Crew background admission defined in [memory-skills-hooks](memory-skills-hooks.md#context-builder-contextpy). It retains complete explicit preferences and applicable rules rather than slicing the joined prompt. Rules of uncertain provenance remain intact; old activity is retrieved on demand through the same store-bound recall route, including bounded V1 notebook/history snippets. Outer replay, the safety contract, following-interaction guidance and the current request are measured separately from optional background. Neither a larger model window nor `skills.lazy_load` adds background capacity.
 
-**Per-turn timeout** (`constants.py:CHAT_TURN_TIMEOUT`): every `_run_chat` invocation is routed through `spawn_guarded_turn` or the compatible `bounded_chat_turn` wrapper, regardless of dispatch surface. This applies to primary user turns, queue drains, cron and app injections, Slack/dashboard wakes, subagent delivery, Spec Builder chat, and post-fan-out synthesis. The structured dashboard-monitor path runs `_run_chat` inside an authorization coroutine passed to `spawn_guarded_turn`; authorization is rechecked after the background permit and the helper still owns the same ceiling. The configured cap (`agent.chat_turn_timeout_secs`, 14400s / 4 hours by default) is sized to match the inner ACP prompt timeout so the dashboard layer does not bound below the transport; four hours is the final safety ceiling for a genuinely runaway turn, while longer work belongs to loop mechanisms that end the turn between cycles.
+**Per-turn timeout** (`constants.py:CHAT_TURN_TIMEOUT`): every `_run_chat` invocation is routed through `spawn_guarded_turn` or the compatible `bounded_chat_turn` wrapper, regardless of dispatch surface. This applies to primary user turns, queue drains, cron and app injections, Slack/dashboard wakes, subagent delivery, Spec Builder chat, and post-fan-out synthesis. The structured dashboard-monitor path runs `_run_chat` inside an authorization coroutine passed to `spawn_guarded_turn`; authorization is rechecked after the background permit and the helper still owns the same ceiling. The configured cap (`agent.chat_turn_timeout_secs`, 14400s / 4 hours by default) is sized to match the inner ACP prompt timeout so the dashboard layer does not bound below the transport; four hours is the final safety ceiling for a genuinely runaway turn, while longer work belongs to loop mechanisms that end the turn between cycles. An unattended turn that gets no background-turn permit within `DashboardState._BACKGROUND_QUEUE_WAIT_SECS` never started, so `run_background_turn` raises `turn_dispatch.BackgroundTurnAbandoned`: a `TimeoutError` (callers that settle the wait as one keep doing so) that `finish_turn_task` reports with its own card saying the turn never started, never with the ceiling card.
 
 **Per-session turn time limit** (`_ChatSlot.turn_timeout_secs`, `turn_dispatch.resolve_turn_limit`): a session can carry its own limit in whole seconds, held to the global setting's range (`CHAT_TURN_TIMEOUT_MIN`..`CHAT_TURN_TIMEOUT_MAX`, 300–86,400). When it is set, both dispatch helpers bound that session's turns at it instead of `agent.chat_turn_timeout_secs`; `None` follows the global. It is resolved when each turn starts, so a change applies from the next turn and a running turn keeps the limit it started with. Unlike the global value it is not clamped to the transport's prompt timeout: `_bounded_turn` publishes the limit of the running turn in `kiro_crew.turn_limit.TURN_LIMIT_SECS`, and `acp.client_timeouts.resolve_prompt_timeout` takes the largest of that, the global ceiling and the subagent deadline, so the transport wait outlives a session limit above its default and the dashboard card still fires first. `tool_approval_timeout_secs` bounds the approval window against the same published limit. The value is slot-owned metadata (`turn_timeout_secs` in the metadata line and `SLOT_OWNED_META_KEYS`); the full save omits it while the session follows the global, the empty-window merge writes `null` so a clear reaches a line already on disk, and every restore path (`metadata_codec`, `surface_channel_session`) re-validates it, discarding a non-integer and clamping an out-of-range integer. A reopened cron tab (`cron_inject._bind_cron_slot`, the deleted-job branch of `api_cron_to_chat`) is linked without reading its transcript's metadata line, so it starts with `_turn_timeout_hydrated = False`: while that holds, both save forms carry the on-disk `turn_timeout_secs` forward (`metadata_line._turn_timeout_fold`) instead of writing "follow the global" over it, and `restore_cron_turn_timeout` (called after the bind by `api_cron_to_chat` and `ensure_cron_slot`) reads the value back off-loop and marks the slot hydrated. A failed or unreadable read leaves it carrying; a write through the route marks it hydrated. `GET/POST /api/chat/slots/{slot}/turn-timeout` reads and writes it: POST takes `{"secs": <integer|null>}`, refuses a non-integer (`secs_not_an_integer`), an out-of-range value (`secs_out_of_range`) or a missing key (`secs_required`) with 400, applies the session-aware app ownership gate, and holds the compaction-threshold route's per-transcript lock. The write is persist-before-publish: the save carries the new value as a staged fold (`SaveFolds.turn_timeout_secs`, a 1-tuple because `None` is the clear) while the live field keeps the committed value, so a turn dispatched during the save runs under the committed limit; the live field of the slot and of every alias slot on the same transcript flips in the save's `after_commit_under_lock` hook, under the transcript lock, so no alias flush can write the old value back. A failed or refused save changes nothing. A tab with no metadata line yet has no durable record, so the value is kept on the slot until its first full save writes it. The UI is a **Turn time limit** submenu in the session menu (`SessionTurnLimitSubmenu`, every surface `SessionActionsMenu` renders on) and the timeout card's one limit control (`SessionTurnLimitButton`, a **Change turn time limit** menu beside Resume holding **This session** and, where a settings route exists, the link to the global field), both a radio list of presets plus "Same as all sessions (now …)". The timeout row's `meta.limit_scope` is `session` or `global`, and the card's prose points at the session menu or at Settings → Chat → Advanced to match.
 
@@ -2755,6 +2755,27 @@ record and the slot, not from where the turn stopped:
 Two exits opt out by marking the record handed off: the remote-slot
 refusal, whose queue drains on its peer, and the `/prompts get` branch,
 whose nested turn is a whole turn with its own guard.
+
+Two dispatches can end without entering `_run_chat` at all while they hold
+`slot.task`: a dashboard monitor wake refused at its pre-runner authorization
+(`nudge_dashboard_fire._run_dashboard_turn`), and an unattended turn whose wait
+for a background-turn permit gives up or is cancelled
+(`DashboardState.run_background_turn`). A send arriving meanwhile queued behind
+it, so its end owes the same hand-off. Each exit records the generation of the
+turn it did not start (`turn_dispatch.mark_turn_unstarted`, into
+`_ChatSlot._unstarted_generation`), and `spawn_guarded_turn`'s done callback,
+after writing the dispatch's own card, calls
+`queue_cycle._hand_off_unstarted_turn`. That hand-off is owed only while the
+ended task still holds `slot.task` under the marked generation, no send has
+reserved the floor (`running`), and the slot is still the registered, open,
+local one; never during a gateway shutdown, which leaves the queue for the
+history save. It takes `slot.task` with a cycle-end task before returning, as the
+synthesis launch does, and runs the no-outcome half of the tail only: the
+memory-preparation and sign-in holds, then `_hand_off_queue`, so the queue drains
+or the cycle ends with its `done` row and `chat_done`. It consumes no reset,
+retires no wait and does not re-arm AutoNudge: the fire that dispatched a refused
+or abandoned wake settles its own result. A drained successor runs as every
+queue successor does, outside the background-turn cap.
 
 `_finish_queue_cycle` reads the `chat_done` payload while the finishing
 turn still holds `slot.task`, so no turn or reservation can take the floor
@@ -5763,7 +5784,11 @@ fingerprint)` claim, crosses SessionManager's synchronous shutdown gate, appends
 the wake, and accepts its completion hook. A background-cap wait that times out
 or a shutdown-gate refusal returns `BUSY` without appending to chat history,
 preserving the same claim for the controller's bounded retry; a final
-authorization refusal returns `UNAVAILABLE`. The slot runs from the handoff,
+authorization refusal returns `UNAVAILABLE` and logs one INFO line naming its
+reason (slot replaced or closing, crew/member mode, non-persistent memory, or a
+revoked claim). A wake refused or abandoned before its runner hands off the
+queue a send built behind it when its task ends (see "Every turn exit runs the
+turn's tail"). The slot runs from the handoff,
 before that row exists, so the slot frame carries `wake_starting` from the first
 push that shows it running until acceptance writes the row and pushes again. A
 reader asking who opened the running turn (the Mates page's resume greeting,

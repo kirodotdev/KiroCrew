@@ -176,6 +176,7 @@ from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
     _end_turn_tail,
+    _hand_off_unstarted_turn,
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
