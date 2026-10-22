@@ -63,6 +63,11 @@ export default [
       // the module may contain ONLY paint data, so the filename IS the
       // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
       'src/components/folderColorPaint.ts',
+      // The signal-cli command line the Signal settings panel quotes in its
+      // connection-failed notice. A shell command handed to the user to run,
+      // never prose: translated, it would not run. Same named-boundary idiom as
+      // `folderColorPaint.ts` above; the sentence around it stays a catalog key.
+      'src/pages/settings/signalCliCommand.ts',
       // The MCP App (SEP-1865) host theme token map: every string is a CSS custom
       // property name (`--bg`), a protocol variable key (`--color-text-primary`), a
       // CSS value (`400`, `9999px`) or the `color-mix()` wash template that derives
@@ -940,7 +945,7 @@ export default [
               // per-channel settings panels. Enumerated and whole-value-anchored,
               // so a sentence merely mentioning a channel is still reported —
               // only the bare name is exempt.
-              '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat|WhatsApp|iMessage|Feishu)$',
+              '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat|WhatsApp|iMessage|Signal|Feishu)$',
               // The code-forge product brands, in the do-not-translate glossary for
               // the same reason and enforced there by `glossary.test.ts`: "GitLab" is
               // "GitLab" in every language, and a localized spelling would name a

@@ -483,6 +483,12 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_turn,
 )
 
+# ── Signal settings (handlers/signal_settings.py; not a messaging owner) ──
+from kiro_crew.dashboard.handlers.signal_settings import (  # noqa: E402, F401
+    api_signal_config_get,
+    api_signal_config_save,
+)
+
 # ── Skill context budget (extracted to handlers/skill_budget.py) ──
 from kiro_crew.dashboard.handlers.skill_budget import (  # noqa: E402, F401
     api_skills_budget,

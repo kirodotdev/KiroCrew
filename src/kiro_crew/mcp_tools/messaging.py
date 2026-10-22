@@ -101,7 +101,7 @@ def schemas() -> list[dict[str, Any]]:
                 "\n  omitted   — dashboard notification only (default)."
                 '\n  "slack"   — Slack DM + dashboard notification.'
                 '\n  a channel name ("discord", "telegram", "webex", "teams",'
-                ' "whatsapp", "imessage", "feishu") — a DM to'
+                ' "whatsapp", "imessage", "signal", "feishu") — a DM to'
                 " that channel's own configured owner + dashboard notification."
                 " Only a destination the user already allow-listed for that channel"
                 " is reachable, and only when exactly one is configured: an"
@@ -122,7 +122,8 @@ def schemas() -> list[dict[str, Any]]:
                 "options: combining any of them with a channel session is REFUSED, "
                 "not silently ignored."
                 "\n\nOn a non-Slack messaging channel (Telegram, Discord, Teams, "
-                "Webex, WeCom, Weixin, WhatsApp, iMessage, Feishu) set 'channel_type' to "
+                "Webex, WeCom, Weixin, WhatsApp, iMessage, Signal, Feishu) set "
+                "'channel_type' to "
                 "that channel's name to post into the conversation you are already "
                 "talking in. Use it in preference to a channel session whenever you "
                 "are talking on that channel — it reaches the conversation at hand, "
@@ -177,7 +178,8 @@ def schemas() -> list[dict[str, Any]]:
                             "Deliver into the non-Slack messaging conversation this "
                             "session belongs to, named by its transport: "
                             '"telegram", "discord", "teams", "webex", "wecom", '
-                            '"weixin", "whatsapp", "imessage" or "feishu". Use it when the '
+                            '"weixin", "whatsapp", "imessage", "signal" or "feishu". '
+                            "Use it when the "
                             "[RUNTIME] marker says you are talking over one of "
                             "those channels and you want a proactive message "
                             "(a silent cron's report, a finished background task) "
@@ -426,7 +428,7 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Send a file to the user. Copies the file to the outbox and "
                 "notifies the dashboard with a download link. When this "
-                "session is linked to a Telegram, Discord or WeCom "
+                "session is linked to a Telegram, Discord, WeCom or Signal "
                 "conversation the file is also delivered there natively; "
                 "otherwise it uploads to "
                 "Slack when the caller's Slack identity permits it. Use "

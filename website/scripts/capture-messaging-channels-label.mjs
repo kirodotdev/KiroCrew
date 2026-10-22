@@ -27,7 +27,7 @@ mkdirSync(OUT, { recursive: true })
 const PROJECT = '/home/user/project'
 const fixedApi = makeFixedApi(PROJECT)
 
-const CHANNEL_KEYS = ['slack', 'discord', 'telegram', 'webex', 'wecom', 'feishu', 'teams', 'weixin', 'imessage', 'whatsapp']
+const CHANNEL_KEYS = ['slack', 'discord', 'telegram', 'webex', 'wecom', 'feishu', 'teams', 'weixin', 'imessage', 'signal', 'whatsapp']
 const GOVERNANCE = Object.fromEntries(CHANNEL_KEYS.map(k => [k, true]))
 const SLACK_CONFIG = {
   connected: false, connect_error: '', configured: false, read_only: false,

@@ -384,6 +384,8 @@ class DashboardState:
         # binary, a Messages database the process cannot read (Full Disk
         # Access), or a non-macOS host. Empty when connected or never attempted.
         self.imessage_connect_error: str = ""
+        self.signal_connected: bool = False  # kept live by SignalClient
+        self.signal_connect_error: str = ""  # why it is not running; "" when up
         # True only while the WeCom (企业微信) channel's WebSocket is connected
         # + subscribed (kept live by WeComClient.on_status, wired in
         # maybe_start_wecom). Read by the WeCom settings status badge.

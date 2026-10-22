@@ -77,6 +77,13 @@ def _imessage_renderer() -> Any:
     return IMessageRenderer(object(), "+61400000000", IMESSAGE_CAPABILITIES)
 
 
+def _signal_renderer() -> Any:
+    from kiro_crew.signal_cli.renderer import SignalRenderer
+    from kiro_crew.signal_cli.transport import SIGNAL_CAPABILITIES
+
+    return SignalRenderer(object(), "+61491570000", SIGNAL_CAPABILITIES)
+
+
 def _feishu_renderer() -> Any:
     from kiro_crew.feishu.renderer import FeishuRenderer
     from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
@@ -92,6 +99,7 @@ ZERO_WIDGET_RENDERERS: dict[str, Callable[[], Any]] = {
     "wecom": _wecom_renderer,
     "weixin": _weixin_renderer,
     "imessage": _imessage_renderer,
+    "signal": _signal_renderer,
     "feishu": _feishu_renderer,
 }
 
@@ -123,6 +131,7 @@ def _all_channel_capabilities() -> dict[str, TransportCapabilities]:
     from kiro_crew.discord.transport import DISCORD_CAPABILITIES
     from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
     from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
+    from kiro_crew.signal_cli.transport import SIGNAL_CAPABILITIES
     from kiro_crew.slack.transport import SLACK_CAPABILITIES
     from kiro_crew.teams.transport import TEAMS_CAPABILITIES
     from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
@@ -140,6 +149,7 @@ def _all_channel_capabilities() -> dict[str, TransportCapabilities]:
         "wecom": WECOM_CAPABILITIES,
         "weixin": WEIXIN_CAPABILITIES,
         "imessage": IMESSAGE_CAPABILITIES,
+        "signal": SIGNAL_CAPABILITIES,
         "feishu": FEISHU_CAPABILITIES,
         "whatsapp": WHATSAPP_CAPABILITIES,
     }

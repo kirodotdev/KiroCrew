@@ -2,7 +2,7 @@
 
 ## Overview
 
-`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, WhatsApp, and Feishu integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
+`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, Signal, WhatsApp, and Feishu integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
 **Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), `sel` for audit, and, function-locally from `privacy_mode`, `session_map` (the durable flag) and `history` (the transcript header the mode is stamped into). The one pinned exception: `messaging/dispatch.py` imports `kiro_crew.dashboard.session_directive_apply` function-locally, allowlisted in `test_messaging_import_purity.py`.
 
@@ -6138,6 +6138,354 @@ actual Messages.app and reply to real people.
   this transport's deny-all, not an unreadable value), the thresholds and
   `session_folder` are read at the point of use, and a `db_path`, `cli_path`,
   `service` or `enabled` change restarts the iMessage bridge alone.
+
+## Signal channel
+
+**Transport (`kiro_crew/signal_cli/`).** A concrete `MessagingTransport` over a
+local [signal-cli](https://github.com/AsamK/signal-cli) child in its `jsonRpc`
+mode: the gateway spawns `signal-cli -a <account> jsonRpc` and speaks
+newline-framed JSON-RPC 2.0 over stdin/stdout, the iMessage bridge's shape
+(`rpc.py` reuses the iMessage `JsonRpcPeer` framing). No daemon, no port, no
+webhook, so **no new inbound network surface**. The package is `signal_cli`, not
+`signal`, because `signal` would shadow the stdlib module. User guide:
+[signal-integration.md](../../../src/kiro_crew/docs/signal-integration.md).
+
+**Binary resolution (`bridge_path.py`).** The operator-controlled environment
+variable `KIROCREW_SIGNAL_CLI` (an absolute path) first, then a fixed source-level
+list of install locations. Never `PATH` and never `config.json`: the child holds
+the account's keys and runs outside the agent sandbox, and `config.json` is not
+owner-gated. A set but unusable override resolves to nothing rather than falling
+through to a listed install.
+
+**Identity.** `signal.account` is the E.164 number signal-cli runs as: a
+registered primary device (a dedicated bot number), or a **linked device** of the
+owner's own account. signal-cli keeps the key store in its own data directory;
+the channel stores and hoists no credential, so the descriptor declares
+`credentials=()` and `required_config=("account",)`, and `boot_keys` are
+`enabled` and `account` (the account is on the child's argv). The account is read
+ONCE, through `account_identifier` (`normalize_identifier` over
+`coerce_identifier`), by the client (the `-a` argv and self-identity matching), the
+boot gate and doctor alike, so `+44 7700 900123`, `0044...` or an unquoted JSON
+integer reaches signal-cli as the same `+E.164` doctor reports. These identity
+helpers live in `signal_cli/identifiers.py`, which imports nothing but `re`, and
+`client.py` re-exports them: config loading (`config.section_builders` coerces
+`account` and every `allowed_numbers` entry with the same `coerce_identifier`)
+and the settings handler read them without loading the channel's runtime.
+
+**Inbound.** signal-cli receives on start, so every message arrives as an
+unsolicited `receive` notification with the envelope under `params.envelope`
+(or `params.result.envelope` under `subscribeReceive`; both are read). Signal
+queues messages server-side while the gateway is down, so no cursor is kept.
+`client.py` classifies each envelope: a `dataMessage` from another account, a
+**Note to Self** (`syncMessage.sentMessage` whose destination is the account
+itself), a sync of the owner's message to a THIRD party (never input, no audit),
+and everything else (receipts, typing, calls, stories), which is ignored.
+
+**Access control.** `signal.allowed_numbers` holds E.164 numbers and/or ACI UUIDs,
+normalized by `normalize_identifier` (formatting stripped, a leading `00` read as
+`+`, ACIs lowercased); an entry that is neither `+` and 6-15 digits nor a UUID is
+dropped from the roster and warned about (redacted) at boot and on every reload,
+since signal-cli always reports `+E.164`. Deny-by-default, an empty list authorizes nobody. A sender matches on EITHER its
+number or its ACI, because a numberless account has only the latter. Note to
+Self is admitted only when one of the account's own identities is on the list,
+and a sync is classified as Note to Self only when BOTH its source and its
+destination are trusted self identities: the configured account, or the other
+half of it learned from an envelope that was already trusted. An envelope's own
+claimed source never teaches an identity, so a forged sync reads as a sync to a
+third party. **Groups fail closed** with a `denied_group_chat` audit (the iMessage reasoning:
+a reply would reach members who are not on the list), and an unauthorized
+sender is dropped with no reply. `SignalTransport.reconfigure` adopts a reloaded
+list wholesale (an EMPTY list is adopted, as deny-all) and SEL-audits the change
+by count. Refusal audits are throttled, the same way in both setups: at most once
+per (sender, outcome) per 600s (`DENIAL_AUDIT_INTERVAL_S`, the remembered pairs
+capped at 1024). In the linked setup (an own identity is on the list) every
+refused DM and group message is the owner's ordinary inbox, so that rate limit is
+what keeps it from flooding the audit log; a refusal is never left unaudited,
+because one there can still be someone trying the agent.
+
+**Own-message suppression** follows the iMessage ledger design (body + reported
+timestamp, consumed whole on a match, TTL `ECHO_TTL_S = 30` starting when the
+send resolves, at most `ECHO_WINDOW` entries), except that a record holds a
+SHA-256 digest of the body key (`_echo_digest`), never the text: every record is
+the same size, so memory is bounded by the entry cap, and no message body
+outlives its send there. Equal keys have equal digests, so matching is unchanged.
+It keeps the iMessage ordering rule: the ledger is consulted LAST, after the group
+and allow-list gates. It is consulted for self-addressed traffic only
+-- signal-cli does not deliver its own sends back, but another device on the
+account can re-sync them into Note to Self -- so a DM from another person is
+never swallowed by it. Once signal-cli has reported a send's timestamp, the
+timestamp alone identifies its echo; the body is the fallback only while the send
+is in flight or when it never resolved. So the owner's short reply ("1", "yes")
+that equals a recent send is input, never an echo -- an approval answer must not
+be eaten by the ledger. An attachment-only send (no caption) is keyed by its
+attachments' shape instead of an empty body (`client.outbound_echo_key`): the
+count plus each file's content type and decoded size, in order, read off the
+`data:` URIs on the way out and off `attachments[]` (`contentType`, `size`) on
+the way in. Not a hash of the payload: the re-synced copy carries an id, the type
+and the plaintext size, never the bytes, so a hash could not be matched inbound.
+`_echo_key` strips NUL from every body and the attachment key starts with one, so
+no typed message can equal it.
+
+**Long text.** Signal sends a body over its inline limit as a
+`text/x-signal-plain` attachment, and signal-cli ALSO inlines that text into
+`message`. `_fill_body` drops such entries whenever `message` is non-empty, so
+the body reaches the turn once and is never fetched as a file; with no inline
+body the entry is kept, since it is then the only copy.
+
+**Operator scope (`SignalTransport.is_operator`).** Narrower than admission,
+as on WhatsApp: every allowed contact may chat, but only the operator may answer
+a tool approval, run an operator-only command or steer a running turn -- under
+`messaging.dm_scope="unified"` all of them share the operator's session, so a
+peer's `3` would trust it and a peer's `/stop` would end the operator's turn. The
+operator is (1) the account itself when one of its identities is on the
+allow-list (the linked / Note to Self setup), else (2) the sole entry when the
+list has exactly one, else (3) nobody. It is recomputed per call, so a reloaded
+`allowed_numbers` and an account identity learned later take effect at once, and
+case (3) logs one WARNING at construction and on each reload that changes the
+roster: tool approvals and operator commands are off, and a tool that needs
+approval is refused (no decider). `receive` records the verdict on
+`SignalInbound.operator` next to `principal`; the dispatcher reads it, failing
+closed on an inbound without a principal. Which case applies is the module
+function `transport.operator_mode(allowed, self_ids)` -- `"account"`,
+`"sole_entry"` or `"none"`, over canonical identifiers -- which `is_operator`
+dispatches on. Because case (2) depends on the list's SIZE, a bot-number setup
+that gains a second allowed number silently loses its operator, so the rule is
+surfaced, not only logged: `GET /api/signal/config` reports `operator_mode`,
+computed by that same function over the saved allow-list and account (plus the
+identities the running client learned, when it runs for that account), and the
+Settings panel warns when the mode is `"none"` and more than one number is
+allowed. While the form is being edited the panel evaluates a mirror of the
+rule on the draft (`signalOperatorMode`: `normalizeSignalId` on both sides,
+invalid entries dropped, duplicates collapsed); it uses the backend's answer
+when the channel is connected and the draft matches what is saved.
+
+**Origin mirror.** Like Telegram, Discord and WeCom, the dispatcher binds each
+conversation as its session's own mirror (`bind_origin_mirror`, offloaded) and
+records it as the session's origin (`set_origin_link`) on every turn, as
+`ChannelLink("signal", channel_id=<number or ACI>)`. That link is the only
+destination `_resolve_mirror_target` reads, so without it `file_send`
+(`/api/channel/upload-file`), dashboard turns on the conversation, and
+origin-routed notices all resolve to `no_channel_destination`. A
+`unified:{agent}` key binds neither: it has no single origin.
+
+**Outbound and proactive send.** `send` with `recipient` (or `noteToSelf` when
+the conversation is the account itself); the result's timestamp is Signal's
+message id, so `returns_message_id` keeps its default. `configured_targets()`
+lists one `user:<id>` per allow-list entry and nothing learned from traffic, so
+Signal is in `CHANNEL_OWNER_DM_NAMESPACES`: `send_message(session="signal")` (a
+cron result, a background notification) DMs the single configured identity --
+the owner's own number in the linked setup, i.e. Note to Self -- and falls back
+to the dashboard notification when the list has more or fewer than one entry or
+the channel is not connected. `may_send_to` re-checks the roster at send time.
+
+**Capabilities.** `streaming=False`, `edit=False`, `reactions=True`,
+`files_inbound=True`, `files_outbound=True`, `threads=False`, `max_buttons=0`
+(an `[OPTIONS:]` trailer becomes a numbered list through
+`render_options_as_text`), `supports_proactive_send=True`,
+`supports_session_resume=False`. `max_message_chars=2000`: Signal keeps a body
+inline up to 2000 bytes and signal-cli turns a longer one into a long-text
+attachment.
+
+**Tool approval (typed reply, WhatsApp's ladder).** In `interactive` mode the
+dispatcher installs `messaging.approval.TextReplyApprovalDecider` for the
+operator's turn (300s, `TEXT_APPROVAL_TIMEOUT_S`, deny on silence). The operator
+is the transport's verdict (see **Operator scope**), not every admitted sender:
+the predicate is `bool(principal) and operator`; a non-operator's turn carries
+no decider, so a tool that needs approval is denied, and its typed `1`/`2`/`3`
+is never consumed as an answer. `SignalRenderer.on_prompt_choice` opens
+the pending entry bound to the conversation (`conversation_id` = the handle)
+before it sends the numbered plain-text prompt through `client.send`, and
+abandons it if the send fails; a timeout sends `TIMEOUT_NOTICE` as a new message
+(no edit). `handle_message` consumes an answer BEFORE the command table and
+before the busy/steer path (the waiting turn holds the session), only when
+`parse_approval_reply` reads the WHOLE message as a verdict and `pending_for`
+finds an open request for this conversation, so the answer never reaches the
+model and another allow-listed person cannot answer under a unified `dm_scope`.
+In Note to Self the prompt's own echo is dropped by the own-send ledger (it went
+through `client.send`), so it neither starts a turn nor answers itself.
+`auto_approve_session` is the shared `safety_override` grant OR the session's
+own Trust (answer `3`, persisted as the session's approval policy). `auto`
+installs no decider.
+
+**Commands.** `/new` (`/start`), `/compact`, `/status` (the shared
+`Stats().summary()`), `/stop` (`/cancel`: `sessions.stop_turn`, with the shared
+declined-while-compacting escalation from `session_lifecycle`) and `/help`
+(`/commands`), matched on the first token. Every row except `/help` is
+operator-only through `commands.is_operator_only`, and an inbound that is not
+the operator's (or has no principal) runs none of them. A mid-turn message is
+steered into the running turn only for the operator (WhatsApp's peer-steer
+rule); anyone else gets the resend receipt.
+
+**Rendering.** Only the final answer is delivered, flattened to plain text
+(`plaintext.py`, the iMessage flattener) with fenced code passed through
+verbatim; `renderer.py` re-scans the flattened form through `redact_for_display`
+before it ships, which is why it is the channel's registered redaction sink in
+`security_posture`. A typing indicator (`sendTyping`) runs during the turn on a
+1:1 chat and is skipped for Note to Self; typing and read receipts switch off for
+good only when signal-cli rejects the method (-32601/-32602), while a timeout is
+retried next turn. A `send` refused with -4 (untrusted identity, i.e. a changed
+safety number) sets `signal_connect_error` to a `signal-cli trust` hint that names
+the recipient redacted and the account by the placeholder `<your number>`, so
+neither number reaches the log or the status line whole.
+
+**Inbound files (`signal_cli/attachments.py`).** The envelope's
+`attachments[]` (`id`, `contentType`, `filename`, `size`, `isVoiceNote`) names
+copies signal-cli already downloaded and decrypted into
+`<data-dir>/attachments/<id>`; the bytes are fetched with the `getAttachment`
+JSON-RPC method (`{"id", "recipient"}` -> `{"data": "<base64>"}`), so the
+channel never guesses signal-cli's data dir. The fetch runs in
+`SignalTransport.receive` LAST: after the group, allow-list and echo gates AND a
+strict `inbound_permitted("signal")` governance check, so no stranger and no
+governed-off channel can make the host pull bytes. Everything after the bytes is
+the shared `messaging.attachments.ingest_attachments` (per-kind caps, raster
+sniff, document text extraction, redaction, temp staging under a fresh name --
+the sender's filename is display text only), with voice notes (`audio/aac`,
+suffix pinned so the decoder is chosen) transcribed by the shared
+`transcribe_audio_attachments`, as on WhatsApp. At most 4 attachments per
+message; one file is capped at `MAX_MEDIA_BYTES`, derived from the peer's
+8 MiB stdout line limit (base64 on one line), so an attachment that could not
+come back is refused with a reason instead of timing out. Rejections are
+appended to the prompt; the temp files are owned by the inbound
+(`SignalInbound.temp_paths`) and deleted after the dispatch -- and by
+`ingest_inbound_attachments` itself when voice-note transcription raises or is
+cancelled, since the caller never receives the paths then. A message **steered**
+into a running turn is folded in as text that names its files, so the dispatcher
+hands them to that turn before the steer (`transport_dispatch._TurnFiles`, keyed by
+session) and the turn deletes them when it ends, normally, on an error or on a
+cancel; a declined steer gives them back to the transport, and with no Signal turn
+owning the session (a dashboard turn on it) a message carrying files is not
+steered at all and gets the resend receipt, as Telegram never steers one. The
+durable spool keeps the pre-ingestion text (`SignalInbound.spool_text`) and the
+attachment count (`InboundRoute.attachments_dropped`, as on WhatsApp), so an
+uncaptioned picture refused at shutdown still gets a restart notice naming it. An
+attachment-only message is admitted; a **reaction envelope never is**
+(`dataMessage.reaction`, dropped by kind).
+
+**Outbound files (`signal_cli/files.py`).** At `on_done` the renderer plans the
+answer's `![alt](/abs/path)` picture references through the shared
+`extract_local_refs_off_loop` (approved roots = the provider's cwd, denylist, no
+symlinks, descriptor-pinned read, raster allowlist; WhatsApp's 4 files / 8 MiB /
+16 MiB budgets) BEFORE flattening and splitting, then asks the shared
+`upload_gate.uploads_restricted` ceiling. The text goes first, then one `send`
+per picture with the validated bytes as an RFC 2397 `data:` URI in
+`attachments` (signal-cli accepts a path or a data URI; the path is never
+re-opened) and the alt text as caption; every refusal or failed upload is named
+in a plain-text "Not sent:" note. `SignalTransport.send_document` serves the
+`file_send` tool's native leg (`signal` is in
+`upload_destination.DOCUMENT_CHANNELS`) the same way, re-checking `may_send_to`.
+A picture's `filename=` is the shared `upload_filename`; a document keeps its own
+basename (and so its extension), screened by `files.document_filename` with
+`outbound_files.filename_passes_screen`, the same credential and exfiltration
+screen `upload_filename` applies: a name either redactor would change goes out as
+`file` plus its extension when that is plain (`.` and 1-10 letters or digits),
+else as `file`.
+Every one of those texts passes the same display screen as the answer
+(`renderer.display_safe_text`: `redact_for_display` with the driver's redactor
+pair, without re-flattening): the caption, the note -- which quotes the model's
+own image destination and the refusal reason, so a credential written there,
+split by `**`, a backtick or `_`, would otherwise reach the phone intact -- and
+`send_document`'s caption, screened at the transport even though the upload
+endpoint already screened its description. A placeholder the screen writes into
+the note counts toward the follow-up redaction notice like one in the answer.
+An attachment-only send in Note to Self is recognised as an echo by its
+timestamp, or by its attachment shape when the send never reported one (see
+**Own-message suppression**).
+
+**Status reactions.** The renderer reacts on the person's message
+(`sendReaction` with `emoji`, `targetAuthor` = the sender as reported,
+`targetTimestamp`, and `recipient` or `noteToSelf`): an hourglass at
+`on_turn_start`, replaced by a check mark when the answer was delivered or a
+warning sign when the turn failed or delivery raised (Signal keeps one reaction
+per author, so no removal is needed) -- WhatsApp's set. A muted conversation
+never reaches this renderer (`drive_turn` substitutes `SilentRenderer`), and
+commands get none. Best-effort: a failure is logged, and -32601/-32602 switches
+reactions off for good. In Note to Self the reaction is on the owner's own
+message; it syncs back as a reaction envelope, which the transport drops by
+kind, so it cannot become a turn or an echo loop.
+
+**Lifecycle.** `maybe_start_signal` gates on `_signal_enabled` (hoisted by
+`_hoist_signal` from `signal.enabled` alone), refuses to start without an
+account, and reports failures to `dashboard_state.signal_connect_error`
+(<=120 chars), which `channel_status()` serves to System → Services. The
+transport is registered before the first connect, and a failed start (no binary,
+network not up, account lock held, unregistered account) is handed to the same
+backoff loop as a later crash -- 2s doubling to a 60s cap, error refreshed each
+round -- so the channel comes up by itself once signal-cli works. The delay carries
+across restarts and resets only after `STABLE_UPTIME_S` (300s) of uptime.
+**Boot path:** the channel is opt-in, so none of its runtime loads at gateway
+import (`no-new-work-on-gateway-boot-path`, clause 5). Its descriptor's `start` is
+`channels._start_signal`, which imports `signal_cli.gateway` on a worker thread
+and then calls `maybe_start_signal`; the registry calls a start only for an
+enabled, permitted channel. Only the package and `identifiers.py` load at import,
+pinned by `test_signal_boot_path.py`. **Pod isolation:** `pod/runtime.py` forces `signal.enabled = false` in a
+sanitized seed, and the crew container's `CHANNEL_SECTIONS` turns it off, because
+a flag-only channel has no credential to scrub.
+
+**Doctor (`doctor_checks/channels.py::_doctor_signal`).** `kirocrew doctor` has a
+`Signal Integration` section, and Signal is excluded from `Other Channels` so one
+fault is not named twice. It never starts the gateway or opens the account. It
+reports: the binary from the SAME `resolve_bridge_path()` the channel spawns from
+(missing is an issue, with `describe_lookup()`); `signal-cli --version`, run with
+no stdin and a `SIGNAL_VERSION_TIMEOUT_S` (15s) bound, where a timeout, non-zero
+exit or unrunnable binary is an issue carrying the last stderr line; for the JVM
+build (the resolved file starts with `#!`, the upstream launcher script) whether
+`$JAVA_HOME/bin/java` or `java` on `PATH` exists, the launcher's own order;
+`signal.account` set and well-formed through `identifier_problem`; whether the
+account is listed in signal-cli's local `accounts.json` under
+`$XDG_DATA_HOME/signal-cli` (else `~/.local/share/signal-cli`), one file read and
+only ever a warning, since a store elsewhere is legitimate; and the usable and
+malformed `allowed_numbers` entries (no usable entry is an issue, as is any
+malformed one). Every identifier printed goes through `redact_identifier`. The
+runner is bound as `channels._run` so tests inject results.
+
+**Deliberately out of scope for v1.** Group chats and edits/deletes.
+
+## Signal settings API
+
+`dashboard/handlers/signal_settings.py`, routed in `routes/messaging.py` and
+re-exported from the `handlers` package. A standalone module rather than a
+`messaging_api` owner (the WhatsApp setup handlers' shape): an owner is composed
+onto `handlers.messaging`'s globals, which would grow that baselined file for
+every name the handler reads. It imports only `signal_cli.identifiers` at module
+scope; `bridge_path` and `transport` are imported inside the handlers, so loading
+the handlers package does not load the channel. The panel is `website/src/pages/settings/SignalPanel.tsx`
+(**Settings → Messaging Channels → Signal**).
+
+- `GET /api/signal/config` — `connected` / `connect_error` from
+  `dashboard_state.signal_connected` / `signal_connect_error` (kept truthful by the
+  client's state observer), `configured` (enabled AND an account AND a non-empty
+  allow-list: signal-cli cannot launch without the account and the list is
+  deny-by-default), `read_only` (true unless the request is direct-local),
+  `cli_found` (whether `resolve_bridge_path()` found a usable executable — a
+  boolean, never the path), `operator_mode` (`"account"`, `"sole_entry"` or
+  `"none"`: `signal_cli.transport.operator_mode` over the saved roster, see
+  **Operator scope**), plus `enabled`, `account`, `allowed_numbers` and
+  `session_folder`. **No credential and no binary path** in the payload.
+- `PUT /api/signal/config` — requires a direct-local request (403 otherwise),
+  runs under `run_to_completion`, validate-first/commit-last, and SEL-audits
+  `signal.config.update` (`denied` with the reason, or `ok` with the changed
+  fields). The body accepts exactly `SAVE_FIELDS` (`enabled`, `account`,
+  `allowed_numbers`, `session_folder`); **any other key is refused** with
+  `unknown_field`, so no spelling of a path field can reach the config and the
+  executable stays with `KIROCREW_SIGNAL_CLI` and the fixed list (see **Binary
+  resolution**). The thresholds are `config.json`-only. `account` is `""` or a
+  `+E.164` number (an ACI is refused: signal-cli's `-a` takes a number);
+  `allowed_numbers` entries are `+E.164` numbers or ACI UUIDs, checked by
+  `signal_cli.identifiers.identifier_problem`, at most `MAX_ALLOWED_NUMBERS`. Both are
+  stored as the STRING `normalize_identifier` produces (formatting stripped, a
+  leading `00` read as `+`, ACIs lowercased), so the `+` survives every round trip
+  and the stored form is the one the transport compares; a JSON integer gains its
+  `+` through `coerce_identifier`. A malformed entry is rejected (`invalid_account`
+  / `invalid_number`, naming the entry by position and never echoing the
+  value), never stored to be dropped at boot.
+  The write is `update_config_locked` under `_get_config_lock()`, merging only
+  the changed fields into the `signal` section (a no-op save writes nothing), and
+  the answer waits for `_hot_apply_after_write()`: a changed `allowed_numbers`
+  is then live through `SignalTransport.reconfigure`, and an `enabled` or
+  `account` change has made the registry restart the channel (its `boot_keys`),
+  so `restart_required` is false for every field. `verify_warning` names a
+  stored channel that cannot work yet (enabled without an account, or with an
+  empty allow-list); the panel shows its own localized hints for those instead.
 
 ## WhatsApp channel
 

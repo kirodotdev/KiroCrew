@@ -624,6 +624,7 @@ if TYPE_CHECKING:
     from kiro_crew.memory_startup import MemoryStartup
     from kiro_crew.messaging.registry import ChannelDescriptor
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.signal_cli.client import SignalClient
     from kiro_crew.subagent_scale import SubagentEventCoalescer
     from kiro_crew.task_models import Task
     from kiro_crew.teams.client import TeamsClient
@@ -797,6 +798,8 @@ class GatewayOrchestrator:
     _webex_client: "WebexClient | None"
     _imessage_enabled: bool
     _imessage_client: "IMessageClient | None"
+    _signal_enabled: bool
+    _signal_client: "SignalClient | None"
     _teams_app_id: str
     _teams_app_password: str
     _teams_tenant_id: str
@@ -1099,6 +1102,7 @@ class GatewayOrchestrator:
     _hoist_discord = _channel_boot._hoist_discord
     _hoist_webex = _channel_boot._hoist_webex
     _hoist_imessage = _channel_boot._hoist_imessage
+    _hoist_signal = _channel_boot._hoist_signal
     _hoist_teams = _channel_boot._hoist_teams
     _SLACK_APPLIER_PREFIXES = _channel_boot._SLACK_APPLIER_PREFIXES
     _register_config_appliers = _channel_boot._register_config_appliers

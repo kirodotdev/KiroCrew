@@ -50,6 +50,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.use_builtin_browser"
   },
   {
+    "id": "channels.account-number-signal",
+    "label": "Account number (Signal)",
+    "labelKey": "pages.settings.signalPanel.account",
+    "labelSuffix": "Signal",
+    "description": "The number signal-cli runs as, in international format with a leading +: the bot's number, or your own number when signal-cli is a linked device.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "signal"
+    },
+    "configKey": "signal.account"
+  },
+  {
     "id": "channels.allowed-emails-webex",
     "label": "Allowed emails (Webex)",
     "labelKey": "pages.settings.webexPanel.allowed_emails",
@@ -86,6 +100,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "imessage"
+    }
+  },
+  {
+    "id": "channels.allowed-numbers-signal",
+    "label": "Allowed numbers (Signal)",
+    "labelKey": "pages.settings.signalPanel.allowed_numbers",
+    "labelSuffix": "Signal",
+    "description": "Phone numbers with a leading +, or Signal account IDs (ACIs), that may message the agent. Empty denies everyone.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "signal"
     }
   },
   {
@@ -243,6 +270,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.enable-signal-channel-signal",
+    "label": "Enable Signal channel (Signal)",
+    "labelKey": "pages.settings.signalPanel.enable",
+    "labelSuffix": "Signal",
+    "description": "Run signal-cli for this account and answer allowed senders. Saving applies the change without a gateway restart.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "signal"
+    },
+    "configKey": "signal.enabled"
+  },
+  {
     "id": "channels.enable-teams-channel-teams",
     "label": "Enable Teams channel (Teams)",
     "labelKey": "pages.settings.teamsPanel.enable_teams_channel",
@@ -314,6 +355,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "imessage"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-signal",
+    "label": "File sessions in a folder (Signal)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Signal",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "signal"
     }
   },
   {
@@ -424,6 +477,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "imessage"
+    }
+  },
+  {
+    "id": "channels.folder-name-signal",
+    "label": "Folder name (Signal)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Signal",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "signal"
     }
   },
   {

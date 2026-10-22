@@ -897,6 +897,7 @@ class TestOmissionDetection:
             "webex:1": "webex",
             "teams:1": "teams",
             "imessage:1": "imessage",
+            "signal:1": "signal",
             "C123:456.789": "slack",
         }
         for key, expected in probes.items():

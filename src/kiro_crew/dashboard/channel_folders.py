@@ -71,6 +71,7 @@ CHANNEL_CONFIG_SECTIONS: dict[str, str] = {
     "teams": "teams",
     "weixin": "weixin",
     "imessage": "imessage",
+    "signal": "signal",
     "whatsapp": "whatsapp",
     "feishu": "feishu",
 }

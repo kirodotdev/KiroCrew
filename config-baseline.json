@@ -7529,6 +7529,139 @@
       "defaultValue": ""
     },
     {
+      "path": "signal",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Signal",
+      "help": "Signal integration settings (local signal-cli over JSON-RPC, no bot token).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "account": "",
+        "allowed_numbers": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95,
+        "session_folder": ""
+      }
+    },
+    {
+      "path": "signal.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Signal channel. Drives a local signal-cli (Java) over JSON-RPC on stdio, so there is no bot token and no hosted relay. signal-cli must already be registered as its own number or linked as a secondary device of your account. The turn itself still goes to the configured model provider, as on any channel.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "signal.account",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Account",
+      "help": "The signal-cli account to run as, as an E.164 phone number (e.g. '+447700900123'): a dedicated bot number you registered, or your own number when signal-cli is linked as a secondary device (then you talk to the agent through Note to Self).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "signal.allowed_numbers",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Allowed Numbers",
+      "help": "E.164 phone numbers or Signal ACI UUIDs permitted to message the agent. Empty = deny all (fail closed). To chat through Note to Self on a linked device, list the account's own number here.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "signal.allowed_numbers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "signal.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "When a conversation's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "signal.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context reaches this, even without a user decision, so the window never overflows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
+      "path": "signal.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "signal"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "dashboard",
       "kind": "core",
       "type": "object",

@@ -97,6 +97,7 @@ from kiro_crew.config.section_builders import (
     _build_monitoring_config,
     _build_publish_config,
     _build_session_summary_config,
+    _build_signal_config,
     _build_skills_config,
     _build_slack_config,
     _build_stt_config,
@@ -738,6 +739,7 @@ def build_config(
     wakatime_data = _coerced_section(data, "wakatime", _degraded)
     teams_data = _coerced_section(data, "teams", _degraded)
     imessage_data = _coerced_section(data, "imessage", _degraded)
+    signal_data = _coerced_section(data, "signal", _degraded)
     slack_data = _coerced_section(data, "slack", _degraded)
     publish_data = _coerced_section(data, "publish", _degraded)
     # A malformed allowed_destinations is the same class as a malformed
@@ -1053,6 +1055,7 @@ def build_config(
         webex=_build_webex_config(webex_data),
         wakatime=_build_wakatime_config(wakatime_data),
         imessage=_build_imessage_config(imessage_data),
+        signal=_build_signal_config(signal_data),
         teams=_build_teams_config(teams_data),
         slack=_build_slack_config(slack_data),
         publish=_build_publish_config(_dests_raw, publish_data),

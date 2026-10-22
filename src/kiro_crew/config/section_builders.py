@@ -75,6 +75,7 @@ from kiro_crew.config.sections import (
     FeishuConfig,
     IMessageConfig,
     SectionReader,
+    SignalConfig,
     SlackConfig,
     SttConfig,
     TeamsConfig,
@@ -110,6 +111,12 @@ from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
 from kiro_crew.monitoring.limits import coerce_runtime_ceiling
+
+# The channel's own reading of a number or ACI, from its dependency-free module:
+# config and the channel must not disagree about what an entry means. The full
+# shape check and its warning stay with the channel
+# (``signal_cli.transport.warn_unusable_entries``).
+from kiro_crew.signal_cli.identifiers import coerce_identifier
 
 # The speech-to-text bounds come from the package that owns them, so a tuning
 # knob cannot be clamped past what the session accepts; its defaults are the
@@ -693,6 +700,20 @@ def _build_imessage_config(imessage_data: dict) -> IMessageConfig:
             h for h in _safe_list(section.get("allowed_handles")) if isinstance(h, str) and h
         ],
         service=str(section.get("service") or section.default("service")),
+        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
+        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+    )
+
+
+def _build_signal_config(signal_data: dict) -> SignalConfig:
+    section = SectionReader(SignalConfig, signal_data)
+    return SignalConfig(
+        session_folder=_coerce_session_folder(section.get("session_folder")),
+        enabled=section.read("enabled", _safe_bool),
+        account=coerce_identifier(section.get("account")),
+        allowed_numbers=[
+            n for n in map(coerce_identifier, _safe_list(section.get("allowed_numbers"))) if n
+        ],
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
     )

@@ -158,6 +158,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'TeamsPanel.tsx': { tab: 'channels', params: { channel: 'teams' }, labelSuffix: 'Teams' },
   'WeixinPanel.tsx': { tab: 'channels', params: { channel: 'weixin' }, labelSuffix: 'WeChat' },
   'IMessagePanel.tsx': { tab: 'channels', params: { channel: 'imessage' }, labelSuffix: 'iMessage' },
+  'SignalPanel.tsx': { tab: 'channels', params: { channel: 'signal' }, labelSuffix: 'Signal' },
   'WhatsAppPanel.tsx': { tab: 'channels', params: { channel: 'whatsapp' }, labelSuffix: 'WhatsApp' },
   // The shared bot-token panel: one source file whose labels render for the
   // channels that mount it, so each extracted primitive fans out into one

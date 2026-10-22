@@ -45,6 +45,7 @@ _RUNTIME_DISPLAY = {
     "webex": "Webex",
     "teams": "Microsoft Teams",
     "imessage": "iMessage",
+    "signal": "Signal",
 }
 
 
@@ -91,6 +92,7 @@ def _resolve_runtime_source(session_key: str, runtime_source: str | None = None)
             "webex",
             "teams",
             "imessage",
+            "signal",
             "slack",
         ):
             if lowered_key.startswith((f"{namespace}:", f"{namespace}_")):

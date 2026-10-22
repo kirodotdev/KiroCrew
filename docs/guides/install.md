@@ -650,7 +650,8 @@ channel later -- Slack (`kirocrew setup --slack` or
 [WeCom](../../src/kiro_crew/docs/wecom-integration.md),
 [Weixin](../../src/kiro_crew/docs/weixin-integration.md),
 [Feishu](../../src/kiro_crew/docs/feishu-integration.md),
-[iMessage](../../src/kiro_crew/docs/imessage-integration.md), or
+[iMessage](../../src/kiro_crew/docs/imessage-integration.md),
+[Signal](../../src/kiro_crew/docs/signal-integration.md), or
 [WhatsApp](../../src/kiro_crew/docs/whatsapp-integration.md) --
 when you want to reach the same agent away from your desk.
 
@@ -1424,7 +1425,8 @@ sign-off is tracked in
   [WeCom](../../src/kiro_crew/docs/wecom-integration.md),
   [Weixin](../../src/kiro_crew/docs/weixin-integration.md),
   [Feishu](../../src/kiro_crew/docs/feishu-integration.md),
-  [iMessage](../../src/kiro_crew/docs/imessage-integration.md), and
+  [iMessage](../../src/kiro_crew/docs/imessage-integration.md),
+  [Signal](../../src/kiro_crew/docs/signal-integration.md), and
   [WhatsApp](../../src/kiro_crew/docs/whatsapp-integration.md).
 - [Remote and mobile access](remote-and-mobile.md): 24/7 operation on a remote
   host, and reaching the dashboard from a phone.

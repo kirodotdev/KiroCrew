@@ -13,7 +13,8 @@ Orchestrator fields written: ``_channel_handles``, ``_channel_transports_started
 ``_discord_client``, ``_discord_enabled``, ``_feishu_allow_group``,
 ``_feishu_allowed_group_ids``, ``_feishu_allowed_open_ids``, ``_feishu_app_id``,
 ``_feishu_app_secret``, ``_feishu_enabled``, ``_imessage_client``,
-``_imessage_enabled``, ``_teams_allowed_emails``, ``_teams_app_id``,
+``_imessage_enabled``, ``_signal_client``, ``_signal_enabled``,
+``_teams_allowed_emails``, ``_teams_app_id``,
 ``_teams_app_password``, ``_teams_client``, ``_teams_enabled``, ``_teams_tenant_id``,
 ``_telegram_allow_forum``, ``_telegram_allowed_forum_chat_ids``,
 ``_telegram_allowed_user_ids``, ``_telegram_bot_token``, ``_telegram_client``,
@@ -189,6 +190,16 @@ def _hoist_imessage(
     self._imessage_client = None
 
 
+def _hoist_signal(self: GatewayOrchestrator, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+    # Signal — no credential exists to hoist: signal-cli keeps its own key
+    # store, registered or linked out of band, so enablement is the config
+    # flag alone. The account and allow-list are read from the typed
+    # cfg.signal dataclass at start (a missing account is reported by
+    # maybe_start_signal, and by channel readiness via required_config).
+    self._signal_enabled = bool(cfg.signal.enabled)
+    self._signal_client = None
+
+
 def _hoist_teams(self: GatewayOrchestrator, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
     # Teams — the MICROSOFT_APP_ID / MICROSOFT_APP_PASSWORD / _TENANT_ID
     # credentials (env/.env) override the typed cfg.teams fields; all other
@@ -303,7 +314,7 @@ async def _start_channel_transports(
     # deprecated-accounts stop (which already has its own warning at
     # config-load time, so pointing at the token would misname the actual
     # blocker), and teams deliberately omits the tenant id its predicate
-    # never reads. whatsapp/imessage enablement is config-only (no
+    # never reads. whatsapp/imessage/signal enablement is config-only (no
     # credential operand), so they have no row.
     uncredentialed_probe_rows: tuple[tuple[str, str, bool, tuple[tuple[str, bool], ...]], ...] = (
         (

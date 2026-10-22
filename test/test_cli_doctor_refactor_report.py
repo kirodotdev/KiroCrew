@@ -28,7 +28,7 @@ import pytest
 
 from kiro_crew import _llama_lib_path, cli_doctor
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, install
+from kiro_crew.doctor_checks import access, channels, install
 from kiro_crew.platform import PlatformCompositionError
 
 pytestmark = pytest.mark.skipif(
@@ -81,6 +81,7 @@ _SECTIONS = (
     "_doctor_model_url_reachable",
     "_doctor_discord",
     "_doctor_whatsapp",
+    "_doctor_signal",
 )
 
 #: The sections that take the shared ``issues`` list, so a marker can add to it.
@@ -103,6 +104,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 #: it held before, so these are stubbed on their family module.
 _FAMILY_ONLY = {
     "_doctor_signing_key": access,
+    "_doctor_signal": channels,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -120,6 +122,7 @@ _ISSUES_POSITION = {
     "_doctor_mcp_governance": 1,
     "_doctor_discord": 3,
     "_doctor_whatsapp": 1,
+    "_doctor_signal": 1,
 }
 
 
@@ -457,6 +460,7 @@ Slack Integration
                (Slack, Discord, Telegram, …) from the dashboard
   <<_doctor_discord>>
   <<_doctor_whatsapp>>
+  <<_doctor_signal>>
 
 Other Channels
   status:      ⏭  none enabled (optional)
@@ -647,6 +651,7 @@ Slack Integration
                (Slack, Discord, Telegram, …) from the dashboard
   <<_doctor_discord>>
   <<_doctor_whatsapp>>
+  <<_doctor_signal>>
 
 Other Channels
   telegram:    ❌ enabled but missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids
@@ -671,7 +676,7 @@ Connectivity
      Then run: kirocrew token
   auth check:  ❌ external access allowed without token!
 
-❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), dashboard auth: no token required on external interface
+❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, _doctor_signal issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), dashboard auth: no token required on external interface
 """
 
 
@@ -742,6 +747,7 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
         "_doctor_import_path",
         "_doctor_discord",
         "_doctor_whatsapp",
+        "_doctor_signal",
     }
 
     out, code = host.run(capsys, platform_boot_error=PlatformCompositionError("companion missing"))

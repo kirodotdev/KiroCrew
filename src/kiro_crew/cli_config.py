@@ -237,7 +237,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 if _is_list_key(key):
                     parsed = _parse_list_value(key, value)
                 else:
-                    parsed = _parse_value(value)
+                    parsed = _parse_value_for(key, value)
             except ValueError as list_error:
                 print(f"❌ {key}: {list_error}", file=sys.stderr)
                 sys.exit(1)
@@ -992,6 +992,52 @@ def _list_hint(key: str) -> str:
             f"     Windows PowerShell 5.1: {prefix} '{escaped}'",
         ]
     )
+
+
+#: What ``json.loads`` skips around a value, so ``null`` is recognised on exactly
+#: the inputs the generic parse turns into ``None``.
+_JSON_WHITESPACE = " \t\n\r"
+
+
+def _parse_value_for(key: str, raw: str) -> object:
+    """Parse *raw* for *key*: the text verbatim when *key* is declared ``string``.
+
+    The generic parser tries ``int()`` first, and ``int("+447700900001")``
+    succeeds, so a phone number written to ``signal.account`` was stored as a
+    JSON integer without its ``+`` (and ``0044...`` lost its leading zeros). The
+    loader then reads a wrong-typed value as absent and loads the default, so the
+    setting silently became empty. The declared-type check cannot catch it: that
+    runs only on a key's first write, and a declared string key is usually in the
+    document already. For a string key every parse is a guess the declaration
+    already rules out, so the text is kept as typed, with two exceptions that
+    read the value exactly as the generic parse does: a bare ``null`` is JSON
+    null on every string key, nullable or not, which the loader reads as the
+    key's default, and a JSON string literal (``'"text"'``) is decoded to its
+    string. Any other key keeps the generic parse.
+    """
+    entry = _declared_entry(key)
+    if entry is not None and entry.type == "string":
+        if raw.strip(_JSON_WHITESPACE) == "null":
+            return None
+        decoded = _json_string_literal(raw)
+        return raw if decoded is None else decoded
+    return _parse_value(raw)
+
+
+def _json_string_literal(raw: str) -> str | None:
+    """The string *raw* spells as a JSON string literal, else ``None``.
+
+    Only a value that starts and ends with a double quote and decodes to a
+    ``str`` qualifies, so ``"+447700900001"`` gives the number and ``"a" "b"``
+    (not one literal) stays verbatim.
+    """
+    if len(raw) < 2 or not (raw.startswith('"') and raw.endswith('"')):
+        return None
+    try:
+        decoded = json.loads(raw)
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, str) else None
 
 
 def _parse_value(raw: str) -> object:

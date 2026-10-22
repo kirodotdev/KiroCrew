@@ -280,6 +280,46 @@ export interface IMessageConfigSave {
   session_folder?: string
 }
 
+/**
+ * Signal channel status + config, from GET /api/signal/config.
+ *
+ * No credential: signal-cli keeps the account's keys in its own store. No
+ * binary path either — which signal-cli runs is fixed in code (plus the
+ * KIROCREW_SIGNAL_CLI environment variable), so the payload only says whether
+ * one was found.
+ */
+export interface SignalConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  /** Whether a usable signal-cli executable resolved on the gateway host. */
+  cli_found: boolean
+  enabled: boolean
+  /** The +E.164 number signal-cli runs as ("" = not set). */
+  account: string
+  /** +E.164 numbers or ACI UUIDs allowed to message the agent; empty = deny all. */
+  allowed_numbers: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+  /** Who may approve tools and use /stop, by the transport's own rule for the
+   *  saved roster: the account itself, the sole allowed entry, or nobody. */
+  operator_mode?: SignalOperatorMode
+}
+
+/** `signal_cli.transport.operator_mode`'s answers. */
+export type SignalOperatorMode = 'account' | 'sole_entry' | 'none'
+
+/** Writable Signal config fields sent to PUT /api/signal/config. Any other key
+ *  is refused by the server. */
+export interface SignalConfigSave {
+  enabled: boolean
+  account: string
+  allowed_numbers: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+}
+
 /** Microsoft Teams channel status + config, from GET /api/teams/config. */export interface TeamsConfigData {
   connected: boolean
   connect_error: string
@@ -440,6 +480,9 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     // own Messages.app on this machine.
     getIMessageConfig: () => get('/api/imessage/config').then(j) as Promise<IMessageConfigData>,
     saveIMessageConfig: (body: Partial<IMessageConfigSave>) => put('/api/imessage/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    // Signal — a local signal-cli, no credential and no settable binary path.
+    getSignalConfig: () => get('/api/signal/config').then(j) as Promise<SignalConfigData>,
+    saveSignalConfig: (body: Partial<SignalConfigSave>) => put('/api/signal/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Effective per-channel governance policy decision: { slack: true, discord: false, ... }
     // (true = permitted, false = denied by the `channels` policy, null = governance
     // evaluation transiently failed → shown as "unavailable", NOT "Off by admin").

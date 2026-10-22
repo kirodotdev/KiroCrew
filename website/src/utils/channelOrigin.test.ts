@@ -3,6 +3,7 @@ import { channelBrandLabel, slotChannelLabel, slotChannelNamespace } from './cha
 
 describe.each([
   ['imessage', 'iMessage'],
+  ['signal', 'Signal'],
   ['feishu', 'Feishu'],
 ])('%s channel origin', (namespace, brand) => {
   it.each([':', '_'])('recognizes keys using %s and preserves the brand spelling', (separator) => {

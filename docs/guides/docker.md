@@ -109,6 +109,14 @@ machine the gateway runs on and needs macOS 14 or newer plus Full Disk Access
 and Automation grants, so no Linux container can serve it —
 [imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md).
 
+**Signal** needs `signal-cli` (and the Java runtime its release names, unless you use its Linux
+native build) inside the image, plus its data directory
+(`~/.local/share/signal-cli` of the user the gateway runs as) on a persistent
+volume — that directory holds the account's keys, so losing it means
+registering or linking again. Install the binary at one of the paths the
+channel trusts, or set `KIROCREW_SIGNAL_CLI` in the container environment —
+[signal-integration.md](../../src/kiro_crew/docs/signal-integration.md).
+
 Everything else lives in `config.json` inside the volume. Most settings are
 editable from the (token-authenticated) dashboard; the exceptions are the
 channel-credential pages (Slack, Discord, Telegram, WeCom, Weixin, Webex,

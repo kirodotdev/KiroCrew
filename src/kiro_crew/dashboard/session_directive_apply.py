@@ -4,9 +4,9 @@ Called from ``_on_tool_result`` (``dashboard/chat_turn/tool_results.py``), a pha
 shared turn loop for every dashboard-driven surface (dashboard, Slack mirror,
 taskrunner, …) — and from ``messaging/driver.py``'s ``TurnDriver`` directive
 consumer, which covers the standalone channel transports (Telegram, Discord,
-standalone Slack, iMessage, Teams, Webex, WeCom, Weixin). The caller supplies
-the AUTHORITATIVE ``session_key`` for the turn, so a stateless tool's directive
-is applied to the exact session that produced it. Effects run IN-PROCESS via
+standalone Slack, iMessage, Signal, Teams, Webex, WeCom, Weixin). The caller
+supplies the AUTHORITATIVE ``session_key`` for the turn, so a stateless tool's
+directive is applied to the exact session that produced it. Effects run IN-PROCESS via
 the same cores the HTTP endpoints call (no loopback HTTP, no user-token dance):
 the consumer is the authoritative session, so cross-session misattribution is
 unrepresentable.

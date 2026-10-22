@@ -36,6 +36,14 @@
       "configKey": "dashboard.use_builtin_browser"
     },
     {
+      "id": "channels.account-number-signal",
+      "label": "Account number (Signal)",
+      "tab": "channels",
+      "route": "/settings/channels/signal?highlight=key%3Asignal.account",
+      "description": "The number signal-cli runs as, in international format with a leading +: the bot's number, or your own number when signal-cli is a linked device.",
+      "configKey": "signal.account"
+    },
+    {
       "id": "channels.allowed-emails-webex",
       "label": "Allowed emails (Webex)",
       "tab": "channels",
@@ -55,6 +63,13 @@
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.allowed-handles-imessage",
       "description": "Phone numbers or Apple Account emails allowed to message the agent. Empty denies everyone — anyone who knows this Mac's handle can send to it, so there is no safe default. Formatting is ignored."
+    },
+    {
+      "id": "channels.allowed-numbers-signal",
+      "label": "Allowed numbers (Signal)",
+      "tab": "channels",
+      "route": "/settings/channels/signal?highlight=channels.allowed-numbers-signal",
+      "description": "Phone numbers with a leading +, or Signal account IDs (ACIs), that may message the agent. Empty denies everyone."
     },
     {
       "id": "channels.allowed-numbers-whatsapp",
@@ -139,6 +154,14 @@
       "description": "Start the channel at gateway boot on this Mac."
     },
     {
+      "id": "channels.enable-signal-channel-signal",
+      "label": "Enable Signal channel (Signal)",
+      "tab": "channels",
+      "route": "/settings/channels/signal?highlight=key%3Asignal.enabled",
+      "description": "Run signal-cli for this account and answer allowed senders. Saving applies the change without a gateway restart.",
+      "configKey": "signal.enabled"
+    },
+    {
       "id": "channels.enable-teams-channel-teams",
       "label": "Enable Teams channel (Teams)",
       "tab": "channels",
@@ -175,6 +198,12 @@
       "label": "File sessions in a folder (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.file-sessions-in-a-folder-imessage"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-signal",
+      "label": "File sessions in a folder (Signal)",
+      "tab": "channels",
+      "route": "/settings/channels/signal?highlight=channels.file-sessions-in-a-folder-signal"
     },
     {
       "id": "channels.file-sessions-in-a-folder-slack",
@@ -230,6 +259,13 @@
       "label": "Folder name (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.folder-name-imessage",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-signal",
+      "label": "Folder name (Signal)",
+      "tab": "channels",
+      "route": "/settings/channels/signal?highlight=channels.folder-name-signal",
       "description": "Created for you when you save these settings, if it does not exist yet."
     },
     {

@@ -1402,7 +1402,7 @@ and onto the orchestrator (`_wecom_enabled`, `_telegram_bot_token`, and so on)
 before `_start_channel_transports` runs. That work is one
 `_hoist_<channel>(cfg, creds)` per channel — `_hoist_wecom`, `_hoist_telegram`,
 `_hoist_weixin`, `_hoist_whatsapp`, `_hoist_feishu`, `_hoist_discord`,
-`_hoist_webex`, `_hoist_imessage`, `_hoist_teams` — called from `__init__` in
+`_hoist_webex`, `_hoist_imessage`, `_hoist_signal`, `_hoist_teams` — called from `__init__` in
 roster order. One function per channel is what makes a reconnect possible at all:
 `restart_channel` re-runs exactly one of them against a fresh config instead of
 re-deriving every channel's state, so restarting Telegram cannot disturb Discord.
