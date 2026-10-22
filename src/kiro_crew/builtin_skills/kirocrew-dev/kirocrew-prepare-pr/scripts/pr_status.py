@@ -803,7 +803,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
     }
 
 
-def head_run_exists(repo, head_sha):
+def head_run_exists(repo, head_sha, rollup=()):
     """Whether a pull_request-event workflow run exists for the current head.
 
     A conflicted or stale PR dispatches no pull_request workflows at all, so
@@ -820,9 +820,20 @@ def head_run_exists(repo, head_sha):
       False  -- an Actions-shaped rollup with NO runs for this head at all:
                 the visible checks cannot belong to this head (stale)
       None   -- API error (the caller fails closed with an explicit reason)
+
+    ``rollup`` is this head's own check rows. fetch_check_rollup discards a
+    rollup read off any other commit, so the run behind each row ran for this
+    head, and a row whose run a pull_request event started settles the question
+    without the listing. The listing is still read otherwise, for a run with no
+    check row yet, but it is a filtered search that can answer no runs for a head
+    whose runs exist, even while that head's own rows name them. An empty listing
+    therefore reads False only when no row names a run either.
     """
     if not repo or not head_sha:
         return None
+    row_events = {row["workflowRunEvent"] for row in rollup if row.get("workflowRunEvent")}
+    if "pull_request" in row_events:
+        return True
     rc, out, _ = run(
         [
             "gh",
@@ -839,7 +850,7 @@ def head_run_exists(repo, head_sha):
         return None
     if "pull_request" in events:
         return True
-    if events:
+    if events or row_events:
         return "skip"
     return False
 
@@ -1432,7 +1443,7 @@ def main(argv):
         and any(e.get("workflowName") for e in rollup)
         and head_run_check_enabled(argv, os.environ)
     ):
-        head_run = head_run_exists(repo, head_sha)
+        head_run = head_run_exists(repo, head_sha, rollup)
         if head_run is True:
             run_shown = "yes"
         elif head_run is False:
