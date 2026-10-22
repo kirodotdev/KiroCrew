@@ -239,7 +239,7 @@ describe('ChatEmbed optimistic own message', () => {
     const onSend = vi.fn(() => new Promise<void>(() => {}))
     await mount({ onSend })
     await sendText('via host')
-    expect(onSend).toHaveBeenCalledWith('via host')
+    expect(onSend).toHaveBeenCalledWith('via host', { sendId: expect.any(String) })
     expect(rows()).toEqual(['user:first', 'assistant:reply', 'user*:via host'])
   })
 

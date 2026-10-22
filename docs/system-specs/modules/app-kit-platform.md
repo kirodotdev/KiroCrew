@@ -126,8 +126,9 @@ it, ahead of any staged since, so a retry needs no new upload; the files ride
 the parked receipt too, so an embed remounted for the slot gets them. Proof
 that an unconfirmed send was delivered unstages the handed-back files still in
 the composer, as it takes the text back, so they are not sent twice. That
-proof is the send's own `sendId`. A host `onSend` send carries none, so its
-only proof is its text arriving as a user row after the send's anchor row,
+proof is the send's own `sendId`. A host `onSend` gets it as `meta.sendId`
+and has the same id proof when it forwards it on its chat POST. A host
+`onSend` send whose host drops it carries none, so its only proof is its text arriving as a user row after the send's anchor row,
 compared with edge whitespace trimmed since a host may strip what it stores;
 text cannot say which send landed, so that proof never touches the composer:
 the warning becomes a calm line saying the message is in the conversation and

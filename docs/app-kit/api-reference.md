@@ -122,7 +122,7 @@ shown as text, only as the header's hover tooltip.
 | `placeholder` | `string` | localized "Message..." (`appSdk.chatEmbed.message`) | Composer placeholder while the session is idle. While a turn runs the composer shows its own "agent is working" text instead. |
 | `frameless` | `boolean` | `false` | Drops the outer border, rounding, background and title strip, and makes the input row transparent, so a host card can hold the chat flush. |
 | `startAtBottom` | `boolean` | `false` | Opens scrolled to the newest row and stays pinned there as rows arrive, until the user scrolls up; shows a jump-to-bottom button while unpinned. Without it the embed opens at the top and smooth-scrolls to each new message. |
-| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. A send with non-image attachments or a collapsed paste passes `meta` (`{ files?: string[]; pastes?: PasteBlock[] }`); forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)). |
+| `onSend` | `(message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> \| void` | none | Replaces `POST /api/chat` as the send path. Use it when the app owns its slots: the generic endpoint creates a missing slot with no app ownership and no project. Every send passes `meta` (`{ sendId?: string; files?: string[]; pastes?: PasteBlock[] }`): `sendId` always, `files` and `pastes` when the send has non-image attachments or a collapsed paste. Forward it as `meta` on your own chat POST (see [Attachments](#attachments) and [Long pastes](#long-pastes)); forwarding `meta.sendId` lets the embed prove a send landed even when `onSend` rejects. |
 | `aboveComposer` | `ReactNode` | none | Content placed in normal flow directly above the composer, such as a docked quote bar. |
 | `composerMaxHeight` | `number` (px) | `240` | Cap for the composer's auto-grow (see below). |
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
@@ -187,9 +187,10 @@ entry then takes over the same card). Once seen, it does not come back. Each
 send is held on its own, so a second send made before the poll shows the first
 leaves the first's copy in place. A send
 whose text goes back to the composer (refused, or delivery not confirmed) drops
-the row. An `onSend` handler posts on its own endpoint, so no `sendId` comes
-back; there the server copy is a new `user` row with the same text, one that
-was not in the transcript at send time.
+the row. An `onSend` handler posts on its own endpoint. If it forwards
+`meta.sendId`, the server copy is found by id as for a default send. If not,
+the server copy is a new `user` row with the same text, one that was not in
+the transcript at send time.
 
 A host that boxes the embed at a fixed height passes `composerMaxHeight` (in
 pixels) to lower that cap, so a long draft cannot take most of the box from the
@@ -328,9 +329,9 @@ A server refusal (unsupported type, over the size cap) shows the same way with
 the server's reason.
 
 A host that passes `onSend` receives the meta as a second argument on a send
-with non-image attachments, `onSend(message, { files })`, and forwards it as
-`meta` on its own chat POST. A send without attachments still calls
-`onSend(message)` alone.
+with non-image attachments, `onSend(message, { sendId, files })`, and forwards
+it as `meta` on its own chat POST. A send without attachments calls
+`onSend(message, { sendId })`.
 
 ### Command and file pickers
 
@@ -387,7 +388,7 @@ On send each chip is expanded in `message`, and its block rides
 `meta.pastes`, the main chat's send shape, so the transcript folds the text
 back into the same chip. A refused send hands the chip back with its block, so
 pressing Send again still sends the full text. A host that passes `onSend`
-receives that meta, `onSend(message, { pastes })`, and forwards it as `meta`
+receives that meta, `onSend(message, { sendId, pastes })`, and forwards it as `meta`
 on its own chat POST. No permission is involved: nothing is uploaded.
 
 ## Native Chat Panel
