@@ -10,7 +10,8 @@ import {
 } from './apiTypes'
 import type {
   AccountScope, ApplyLabelsResponse, BulkApplyResponse, BulkPrAction, BulkPrResponse,
-  CiRunsResponse, ConnectResponse, CreateLabelResponse, DepsResponse, GenerateTaggingResponse,
+  CiRunsResponse, CommentBatchItem, CommentBatchResponse, ConnectResponse, CreateLabelResponse,
+  DepsResponse, GenerateTaggingResponse,
   GitLabGroup, GitLabGroupReviewsResponse, GitLabGroupsResponse, InvestigationPatch,
   InvestigationResponse, IssueAiResponse, IssueAssigneesResponse, IssueDetailResponse,
   IssuesResponse, IssueStateResponse, ItemKind, LabelsResponse, MembersResponse, MeResponse,
@@ -78,7 +79,8 @@ export type {
   PullDetailResponse, Reactions, DetailLabel, Milestone, IssueDetailData, TimelineEvent,
   IssueDetailResponse, RefSummary, RefSummaryResponse, SuggestedLabel, IssueAiResponse,
   PrAiResponse, ApplyLabelsResponse, IssueStateResponse, IssueAssigneesResponse, PrAction,
-  BulkPrAction, PrMergeResponse, PrStateResponse, PrReviewResponse, PrCommentResponse,
+  BulkPrAction, PrMergeResponse, PrStateResponse, PrReviewResponse, CommentBatchItem,
+  CommentBatchResponse, PrCommentResponse,
   PrAutoMergeResponse, PrWorkflowRun, PrRunsResponse, CiRun, CiRepoRuns, CiRunsResponse,
   PrRunActionResponse, BulkPrResponse, RepoLabel, LabelsResponse, RepoMember, MembersResponse,
   RepoPermissions, RepoSettings, SettingsResponse, RecommendationCategory, LabelRecommendation,
@@ -97,6 +99,10 @@ export type {
   CrewCounts, CrewPatch, CrewSpec, WorkItemPatch, CrewSettingsPatch, CrewsResponse, CrewResponse,
   CrewNamesResponse, CrewDetailResponse, CrewWorkResponse, CrewSettingsResponse,
 } from './apiCrewTypes'
+
+/** The gateway answered a comment write with an error status: nothing was posted.
+ * Any other failure of that call may have reached the forge. */
+export class CommentsRefusedError extends Error {}
 
 export const issueRadarApi = {
   connect: async (url: string): Promise<ConnectResponse> => {
@@ -369,6 +375,34 @@ export const issueRadarApi = {
       body: JSON.stringify({ ...repoBody(ref), number, body }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Post timeline comments and replies on one issue or pull request. A single
+   * comment is a batch of one. */
+  postComments: async (
+    ref: RepoRef, number: number, target: 'issue' | 'pull', items: CommentBatchItem[],
+  ): Promise<CommentBatchResponse> => {
+    const r = await fetch(`${API}/comments`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, target, items }),
+    })
+    if (!r.ok) {
+      // Only the gateway's own error body, which always names a `code`, says that
+      // nothing reached the forge: it reports a partial or uncertain batch as a 200.
+      // Its statuses include 502, so the status cannot tell it from a proxy's error
+      // page, which leaves delivery unknown and is thrown as a plain Error.
+      const text = await r.text().catch(() => '')
+      let body: unknown = null
+      try { body = JSON.parse(text) } catch { /* not the gateway's answer */ }
+      const { error, code } = (body && typeof body === 'object' ? body : {}) as { error?: unknown; code?: unknown }
+      if (typeof code === 'string') {
+        throw new CommentsRefusedError(typeof error === 'string' && error ? error : `HTTP ${r.status}`)
+      }
+      throw new Error(`HTTP ${r.status}`)
+    }
     return r.json()
   },
 

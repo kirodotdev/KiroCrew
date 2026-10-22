@@ -838,42 +838,84 @@ class TestRefSummary(unittest.TestCase):
 
 
 class TestMrTimelineNotesFetch(unittest.TestCase):
-    """The MR timeline reads the notes endpoint ONCE.
+    """The MR timeline reads the discussions endpoint ONCE.
 
     GitLab keeps inline (diff) comments in the same notes stream, so the MR
     timeline both assembles the notes AND promotes the positioned ones.
     ``_assemble_timeline`` returns the notes it fetched so the promotion reuses
-    that one read instead of fetching ``{base}/notes`` a second time per
-    PR-detail load."""
+    that one read instead of fetching the notes a second time per PR-detail load.
+    The notes come from ``{base}/discussions``, because only that endpoint says
+    which discussion a note is in, and a reply is posted into the discussion."""
 
-    def test_notes_endpoint_is_hit_once(self):
+    DISCUSSION = "6a9c1750b37d513a43987b574953fceb50b03ce7"
+
+    def _discussions(self, *notes, discussion_id=None):
+        return [{"id": discussion_id or self.DISCUSSION, "individual_note": False, "notes": list(notes)}]
+
+    def _timeline(self, discussions, kind="pr"):
+        calls: list[str] = []
+
+        def fake_api(path, **kwargs):
+            calls.append(path)
+            if path.endswith("/discussions"):
+                return discussions
+            # resource_label_events / resource_state_events — empty is fine.
+            return []
+
+        reader = gitlab_client.list_pr_timeline if kind == "pr" else gitlab_client.list_issue_timeline
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake_api), \
+                mock.patch.object(gitlab_client, "list_repo_labels", return_value=[]):
+            events = reader("g", "p", 7, host="gitlab.com")
+        return events, calls
+
+    def test_discussions_endpoint_is_hit_once(self):
         note = {
             "id": 1, "system": False, "body": "inline!", "created_at": "2024-01-01T00:00:00Z",
             "author": {"username": "alice"},
             "position": {"new_path": "a.py", "new_line": 3},
         }
-        calls: list[str] = []
+        events, calls = self._timeline(self._discussions(note))
 
-        def fake_api(path, **kwargs):
-            calls.append(path)
-            # The notes path carries a query string (?order_by=…&sort=asc), so match
-            # on the endpoint before the query rather than the whole path.
-            if path.split("?")[0].endswith("/notes"):
-                return [note]
-            # resource_label_events / resource_state_events — empty is fine.
-            return []
-
-        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake_api), \
-                mock.patch.object(gitlab_client, "list_repo_labels", return_value=[]):
-            events = gitlab_client.list_pr_timeline("g", "p", 7, host="gitlab.com")
-
-        notes_calls = [p for p in calls if p.split("?")[0].endswith("/notes")]
-        self.assertEqual(len(notes_calls), 1, f"notes fetched {len(notes_calls)}x: {calls}")
+        discussion_calls = [p for p in calls if p.endswith("/discussions")]
+        self.assertEqual(len(discussion_calls), 1, f"fetched {len(discussion_calls)}x: {calls}")
+        self.assertFalse([p for p in calls if "/notes" in p], calls)
         # The positioned note is promoted to a single inline review_comment and the
         # plain-comment copy of it is dropped, so it shows once.
         kinds = [e["kind"] for e in events]
         self.assertEqual(kinds.count("review_comment"), 1)
+        # The inline entry keeps the note id, which keys the comment on the page.
+        inline = next(e for e in events if e["kind"] == "review_comment")
+        self.assertEqual(inline["id"], 1)
         self.assertNotIn("comment", kinds)
+        self.assertEqual(events[0]["thread_id"], self.DISCUSSION)
+
+    def test_every_note_carries_its_discussion_as_the_reply_handle(self):
+        first = {
+            "id": 1, "system": False, "body": "root", "created_at": "2024-01-01T00:00:00Z",
+            "author": {"username": "alice"},
+        }
+        reply = {**first, "id": 2, "body": "reply", "created_at": "2024-01-03T00:00:00Z"}
+        other = {**first, "id": 3, "body": "other", "created_at": "2024-01-02T00:00:00Z"}
+        discussions = [
+            *self._discussions(first, reply),
+            *self._discussions(other, discussion_id="ab" * 20),
+        ]
+        events, _ = self._timeline(discussions, kind="issue")
+        # Flattened across discussions and sorted oldest-first, as the notes
+        # endpoint served them.
+        self.assertEqual([e["body"] for e in events], ["root", "other", "reply"])
+        self.assertEqual(
+            [e["thread_id"] for e in events], [self.DISCUSSION, "ab" * 20, self.DISCUSSION]
+        )
+
+    def test_a_system_note_has_no_reply_handle(self):
+        system = {
+            "id": 4, "system": True, "body": "changed title from **a** to **b**",
+            "created_at": "2024-01-01T00:00:00Z", "author": {"username": "alice"},
+        }
+        events, _ = self._timeline(self._discussions(system), kind="issue")
+        self.assertEqual(events[0]["kind"], "renamed")
+        self.assertNotIn("thread_id", events[0])
 
 
 class TestTimelineLabelColours(unittest.TestCase):
@@ -1413,6 +1455,7 @@ class TestClientParity(unittest.TestCase):
         "build_pr_search_query", "get_ref_summary",
         # Pull-request actions.
         "set_pr_state", "submit_pr_review", "add_issue_comment", "add_pr_comment",
+        "post_comment_batch",
         "merge_pull_request", "enable_auto_merge", "disable_auto_merge",
         "list_pr_workflow_runs",
         "cancel_workflow_run", "rerun_workflow_run",

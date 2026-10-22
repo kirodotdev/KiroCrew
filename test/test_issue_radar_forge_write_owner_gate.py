@@ -29,6 +29,7 @@ FORGE_WRITES = (
     "/pull/state",
     "/pull/review",
     "/pull/comment",
+    "/comments",
     "/pull/auto-merge",
     "/pull/merge",
     "/pull/run",
