@@ -1514,5 +1514,5 @@ class TestProbeRemoteAgainstLoopbackStubs:
 
         assert reached == []
         assert result.status == "error"
-        assert result.error == "HTTP 307"
+        assert result.error == f"HTTP 307, redirects to http://127.0.0.1:{target_port}/mcp"
         assert result.tools == []

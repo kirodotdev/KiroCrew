@@ -520,7 +520,9 @@ Probes run from `POST /api/mcp/probe`:
   (a server on `:8443` / `:8000` / `:3000` probes) and `allow_private` (a loopback
   or LAN server, such as an app backend on `127.0.0.1`, probes, as kiro-cli itself
   connects to it). Redirects are not followed, so a server cannot hand the
-  handshake to an address the vet never checked; a redirect reports as its status.
+  handshake to an address the vet never checked; a redirect reports as its status
+  and the target it names (scheme, host, port and path only), so a server whose
+  url needs a trailing slash says which url to configure.
   The remote probe
   offers `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) in `initialize`. A `-32602`
   refusal of that offer whose `data.supported` lists an older revision makes it
