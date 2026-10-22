@@ -452,7 +452,14 @@ def _url_payload_command(n: int) -> str:
 #: cache stores output computed under exactly the set its key names. Fourteen lines:
 #: the keyword on both signatures, a two-branch read and the docstrings saying why.
 #: No rule widened or narrowed; the default path is the live read.
-_PACKAGE_LINE_BUDGET = 32_125
+#:
+#: Raised again, from 32,125, for pass 4's prefix snapshot: ``redact_credentials`` takes
+#: an optional ``token_param_prefixes`` that replaces pass 4's live read, the diagram scan
+#: (``_document_link_spans``, ``_plantuml_verdict``) hands it to its nested call, and
+#: ``_well_formed_token_param_prefixes`` is the one shape gate the live read and a
+#: snapshot share. The added lines are the keyword, its threading, docstrings and
+#: comment, and the gate. No rule, pattern or pass changed.
+_PACKAGE_LINE_BUDGET = 32_162
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

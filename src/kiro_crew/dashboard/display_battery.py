@@ -56,14 +56,22 @@ RULE_SOURCES: tuple[str, ...] = (
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 
 
-def display_battery(text: str, *, exempt_hosts: frozenset[str] | None = None) -> str:
+def display_battery(
+    text: str,
+    *,
+    exempt_hosts: frozenset[str] | None = None,
+    token_param_prefixes: tuple[str, ...] | None = None,
+) -> str:
     """Every display redactor, in order.
 
     ``exempt_hosts`` is the caller's snapshot of the exempt-host set (see
     ``redact_exfiltration_urls``); ``None`` is the live read.
+
+    ``token_param_prefixes`` is the caller's snapshot of the pass-4 prefix set
+    (see ``redact_credentials``); ``None`` is the live read.
     """
     out, _ = redact_exfiltration_urls(text, exempt_hosts=exempt_hosts)
-    out, _ = redact_credentials(out)
+    out, _ = redact_credentials(out, token_param_prefixes=token_param_prefixes)
     return out
 
 

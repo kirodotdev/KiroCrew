@@ -38,7 +38,7 @@ import posixpath
 import re
 import secrets
 import sys as _sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew.credential_patterns import AWS_KEY_ID
@@ -69,8 +69,14 @@ from .redaction_patterns import _is_json_object_segment  # noqa: F401
 from .redaction_patterns import _credential_matches, _might_contain_credential
 
 
-def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
-    """Judge one diagram; also return how much text was inflated for it."""
+def _plantuml_verdict(
+    encoded: str, limit: int, token_param_prefixes: tuple[str, ...] | None = None
+) -> tuple[bool, int]:
+    """Judge one diagram; also return how much text was inflated for it.
+
+    ``token_param_prefixes`` is the enclosing call's pass-4 snapshot, so the
+    diagram's source is judged under the same prefix set as the text around it.
+    """
     source = _plantuml_source(encoded, min(limit, _PLANTUML_RATIO_CAP * len(encoded)))
     if source is None:
         return False, min(limit, _PLANTUML_RATIO_CAP * len(encoded))
@@ -79,18 +85,21 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
     previous = _IN_DIAGRAM_SCAN.get()
     _IN_DIAGRAM_SCAN.set(True)
     try:
-        return redact_credentials(source)[0] == source, len(source)
+        cleaned = redact_credentials(source, token_param_prefixes=token_param_prefixes)[0]
+        return cleaned == source, len(source)
     finally:
         _IN_DIAGRAM_SCAN.set(previous)
 
 
-def _document_link_spans(text: str) -> list[tuple[int, int]]:
+def _document_link_spans(
+    text: str, token_param_prefixes: tuple[str, ...] | None = None
+) -> list[tuple[int, int]]:
     """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
     spans = []
     budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
-            kept, spent = _plantuml_verdict(m["diagram"], budget)
+            kept, spent = _plantuml_verdict(m["diagram"], budget, token_param_prefixes)
             budget -= spent
         else:
             kept = not any(
@@ -606,10 +615,18 @@ def _token_param_exempt_prefixes() -> tuple[str, ...]:
         getter = getattr(ctx.credentials, "token_param_exempt_url_prefixes", None)
         if getter is None:
             return ()
-        prefixes = (p for p in getter() if isinstance(p, str))
-        return tuple(sorted(p for p in prefixes if _TOKEN_PARAM_EXEMPT_PREFIX_RE.fullmatch(p)))
+        return _well_formed_token_param_prefixes(getter())
     except Exception:
         return ()
+
+
+def _well_formed_token_param_prefixes(prefixes: Iterable[object]) -> tuple[str, ...]:
+    """The members of *prefixes* pass 4 may honour, sorted; malformed ones drop.
+
+    The one shape gate for the live read and for a caller's snapshot alike.
+    """
+    members = (p for p in prefixes if isinstance(p, str))
+    return tuple(sorted(p for p in members if _TOKEN_PARAM_EXEMPT_PREFIX_RE.fullmatch(p)))
 
 
 #: Single-character wrappers that may open an exempt URL. A ``(`` is accepted only
@@ -801,7 +818,12 @@ def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     return "".join(parts)
 
 
-def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[str, list[str]]:
+def redact_credentials(
+    text: str,
+    *,
+    defer_token_param: bool = False,
+    token_param_prefixes: tuple[str, ...] | None = None,
+) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
@@ -814,8 +836,15 @@ def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[s
     a value an earlier pass already partly claimed is still redacted here, and
     every other pass still runs. With the empty default prefix set the output is
     byte-identical to a plain call.
+
+    ``token_param_prefixes`` is a SNAPSHOT of that prefix set that stands in for
+    pass 4's live read. A caller that keys a cache on the set passes the set it
+    keyed on, so the output is computed under exactly that set. ``None``, the
+    default, is the live read.
     """
-    spans, warnings, _rules = _credential_redaction_plan(text, defer_token_param=defer_token_param)
+    spans, warnings, _rules = _credential_redaction_plan(
+        text, defer_token_param=defer_token_param, token_param_prefixes=token_param_prefixes
+    )
     if not spans:
         return text, warnings
     return _splice(text, spans), warnings
@@ -918,12 +947,14 @@ def _credential_redaction_plan(
     text: str,
     *,
     defer_token_param: bool = False,
+    token_param_prefixes: tuple[str, ...] | None = None,
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
 
     Returns ``(spans, warnings, rules)``: ``spans`` sorted and disjoint against
     the input, ``rules`` mapping each span's start to its ``(rule_id, label)``.
-    ``defer_token_param`` is :func:`redact_credentials`'s keyword of that name.
+    ``defer_token_param`` and ``token_param_prefixes`` are
+    :func:`redact_credentials`'s keywords of those names.
 
     Unconditional on every surface EXCEPT inside an explicit
     ``redaction_switch.owner_view()`` scope: there, and only there, the owner's
@@ -1074,7 +1105,7 @@ def _credential_redaction_plan(
         # not a key (see `_DOCUMENT_LINK_RE`). Scanned only after a run fires,
         # so text with no key-shaped run never pays for it.
         if link_spans is None:
-            link_spans = _document_link_spans(text)
+            link_spans = _document_link_spans(text, token_param_prefixes)
         if any(start <= m.start() and run_end <= end for start, end in link_spans):
             continue
         for piece_start, piece_end in pieces:
@@ -1143,8 +1174,16 @@ def _credential_redaction_plan(
     # so an uncovered tail left here would never be revisited. The stream
     # suspension wins when both are set: it pins the prefixes empty, and an empty
     # set defers nothing.
+    #
+    # SNAPSHOT: `token_param_prefixes` replaces the lazy live read with the set a
+    # caller keyed its cache on. It passes the live read's own shape gate, so it
+    # cannot exempt a URL the live read could not, and the suspension still wins.
     pass4: list[_RedactionSpan] = []
-    exempt_prefixes: tuple[str, ...] | None = () if _TOKEN_PARAM_EXEMPT_SUSPENDED.get() else None
+    exempt_prefixes: tuple[str, ...] | None = None
+    if _TOKEN_PARAM_EXEMPT_SUSPENDED.get():
+        exempt_prefixes = ()
+    elif token_param_prefixes is not None:
+        exempt_prefixes = _well_formed_token_param_prefixes(token_param_prefixes)
     exempt_scan = _TokenParamExemptScan(text)
     for m in _TOKEN_PARAM_RE.finditer(text):
         value_start, value_end = m.start(1), m.end(1)
