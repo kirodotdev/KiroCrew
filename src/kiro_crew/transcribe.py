@@ -207,12 +207,30 @@ CODE_DISABLED = "stt_disabled"
 #: ``test_stt_provider_off`` pins it equal to ``config.sections.STT_PROVIDER_OFF``.
 STT_PROVIDER_OFF = "off"
 
+
+def _is_registered_provider(provider: object) -> bool:
+    """Whether *provider* is an edition-registered STT name (``PlatformContext.speech``).
+
+    The loader accepts such a name, but no recogniser is dispatched for one yet,
+    so both dispatch points refuse it rather than fall through to ``local``.
+    """
+    from kiro_crew import speech_providers
+
+    return provider in speech_providers.registered_stt_names()
+
+
 #: ``stt.enabled`` is on but ``stt.provider`` is ``off``. Its own code, distinct
 #: from :data:`CODE_DISABLED`, because the two name different controls: the
 #: dashboard renders "switch it on above" for the first, and that is the wrong
 #: remedy for a user whose Enabled toggle is already on -- including everyone
 #: whose unknown stored provider the loader degraded onto ``off``.
 CODE_PROVIDER_OFF = "stt_provider_off"
+
+#: The selected provider is one an edition registered, and this build has no
+#: recogniser for it. Not :data:`CODE_PROVIDER_OFF`: the user chose a provider,
+#: and the dashboard must not say they chose Off. A code the dashboard has no
+#: sentence for, so it shows ``detail`` instead.
+CODE_PROVIDER_UNAVAILABLE = "stt_provider_unavailable"
 
 #: This host cannot run Apple's on-device speech at all (not macOS, or too old a
 #: macOS for the SpeechAnalyzer API). No install fixes it.
@@ -270,8 +288,17 @@ def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no
         return _aws_availability()
     if provider == "apple":
         return _apple_availability()
-    # ``local``: the loader admits only selectable providers, and ``off`` was
-    # answered above, so this is the resident recogniser and nothing else.
+    if _is_registered_provider(provider):
+        # An edition-registered provider the loader accepted. Nothing dispatches
+        # to one yet, so it is not ready -- never the local recogniser under
+        # another name.
+        return stt.Availability(
+            False,
+            CODE_PROVIDER_UNAVAILABLE,
+            f"the speech provider {provider!r} cannot run in this build; choose another provider",
+        )
+    # ``local``: the loader admits only selectable providers, and ``off`` and a
+    # registered name were answered above, so this is the resident recogniser.
     # The first call links the recogniser's native extension, then ``sys.modules``
     # makes it a dictionary lookup. A FAILED import is not cached, so a gateway
     # that booted without the extra picks up a later install with no restart.
@@ -403,10 +430,17 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         result = await _transcribe_aws(audio_path, stt_config)
     elif provider == "apple":
         result = await _transcribe_apple(audio_path, stt_config)
+    elif _is_registered_provider(provider):
+        # An edition-registered provider: nothing dispatches to one yet, so the
+        # clip is refused rather than sent to the local recogniser.
+        logger.warning(
+            "STT provider %r has no recogniser in this build; not transcribing", provider
+        )
+        return None
     else:
         # ``local``. The config loader admits only the selectable providers: a
-        # retired name has already become ``local`` and an unknown one ``off``
-        # (refused above), so nothing else reaches this branch.
+        # retired name has already become ``local``, an unknown one ``off``
+        # (refused above), and a registered one was refused just above.
         result = await _transcribe_local(audio_path, stt_config)
 
     if result:

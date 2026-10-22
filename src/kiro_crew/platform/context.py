@@ -60,6 +60,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         SandboxPolicy,
         SkillDiscoveryProvider,
         SlackEnterpriseGate,
+        SpeechProviderRegistry,
         TelemetryProvider,
         TipsProvider,
         TunnelProvider,
@@ -348,6 +349,10 @@ class PlatformContext:
     # the dashboard's ``setFeedbackTracker`` seam. v1 addition (no
     # CONTRACT_VERSION bump).
     feedback: "FeedbackTrackerProvider"
+    # Edition-registered STT / TTS providers and the edition's default choice.
+    # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
+    # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).
+    speech: "SpeechProviderRegistry"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS
@@ -639,6 +644,15 @@ PEEK_CALLERS: "dict[str, str]" = {
         "being skipped; the genuine downgrade case — a context IS installed and "
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
+    ),
+    "speech_providers.py::_installed_speech": (
+        "no-context answer is 'no registered speech providers and no edition "
+        "default', which is the standalone answer: the built-in STT and TTS sets. "
+        "An unknown stored name then keeps its built-in fallback (STT fails closed "
+        "to off, TTS falls back to the local default), so an absent context can only "
+        "NARROW what is selectable, never route audio anywhere. It must peek: the STT "
+        "half runs inside KiroCrewConfig.load(), and current_context() with nothing "
+        "installed loads config, which would re-enter that load."
     ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "

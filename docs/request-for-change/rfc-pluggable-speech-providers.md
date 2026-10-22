@@ -1,19 +1,19 @@
 ---
 title: Pluggable speech providers
-status: draft
+status: in-progress
 author: iamwhatever
 created: 2026-10-22
 last-audited: 2026-10-22
-audited-at: ba5327702c
-doc-pr: null
-implementation-prs: []
+audited-at: 88d73a83b0
+doc-pr: 22983
+implementation-prs: [22997]
 tracking-issues: [22982]
 supersedes: []
 superseded-by: []
 ---
 # RFC: Pluggable speech providers
 
-- Status: draft
+- Status: in-progress
 - Author: iamwhatever
 - Created: 2026-10-22
 - Related: issue [#22982](https://github.com/kirodotdev/KiroCrew/issues/22982), [`docs/system-specs/modules/platform-context.md`](../system-specs/modules/platform-context.md), [`stt-streaming.md`](../system-specs/modules/stt-streaming.md), [`voice-streaming.md`](../system-specs/modules/voice-streaming.md)

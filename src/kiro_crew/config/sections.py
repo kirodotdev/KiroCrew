@@ -344,6 +344,7 @@ from kiro_crew.config.sections_slack import (  # noqa: F401
     _validate_tracking_channels,
 )
 from kiro_crew.config.sections_stt import (  # noqa: F401
+    _DEFERRED_STT_PROVIDERS,
     _RETIRED_STT_PROVIDERS,
     _TRANSCRIBE_LANGUAGE_RE,
     _TRANSCRIBE_VOCABULARY_NAME_RE,
@@ -366,10 +367,13 @@ from kiro_crew.config.sections_stt import (  # noqa: F401
     _validated_stt_threads,
     _validated_transcribe_languages,
     _validated_transcribe_vocabulary,
+    default_stt_provider,
     stt_provider_is_coerced,
     stt_provider_resolution,
     transcribe_language_options,
     transcribe_vocabulary_name,
+    valid_stt_providers,
+    warn_deferred_stt_providers,
 )
 from kiro_crew.config.sections_tailnet import (  # noqa: F401
     TailscaleConfig,

@@ -1,7 +1,7 @@
 """Extension points for the services that run beside a live gateway and its dashboard.
 
 The public-URL tunnel, the phone connection, remote-instance provisioners, telemetry
-export, dashboard contributions and the process jail -- the "runtime-service / frontend"
+export, dashboard contributions, speech providers and the process jail -- the "runtime-service / frontend"
 extension points of the Composed Platform Providers contract.
 
 :mod:`kiro_crew.platform.interfaces` re-exports every name here and stays the one import path
@@ -345,6 +345,91 @@ class FeedbackTrackerProvider(Protocol):
         error, a non-string or an empty string degrades to the public link.
         v1 addition (no ``CONTRACT_VERSION`` bump).
         """
+        ...
+
+
+class SttProvider(Protocol):
+    """One edition-supplied speech-to-text recogniser.
+
+    ``name`` is the value ``stt.provider`` stores to select it. It must not be a
+    built-in name, a retired one or ``off``; boot refuses a context that tries
+    (``speech_providers.validate_speech_registry``).
+
+    Phase 1 of the pluggable-speech RFC reads only ``name``: config accepts it as
+    a valid ``stt.provider``. The other members are the published shape that
+    dispatch will call once it routes through this seam; until then they have no
+    core call site.
+    """
+
+    name: str
+    #: Whether the provider may join a live ``stt_stream`` session.
+    streaming: bool
+
+    async def check(self, stt_config: Any) -> Any:
+        """Whether this provider can run now, and why not when it cannot."""
+        ...
+
+    async def transcribe_file(self, audio_path: str, stt_config: Any) -> Optional[str]:
+        """Recognise one recorded clip; ``None`` when nothing was recognised."""
+        ...
+
+    def open_stream(self, stt_config: Any) -> Any:
+        """Open a streaming session. Called only when ``streaming`` is true."""
+        ...
+
+
+class TtsProvider(Protocol):
+    """One edition-supplied text-to-speech engine.
+
+    ``name`` is the value ``voice_reply.provider`` stores to select it. It must
+    not be a built-in name; boot refuses a context that tries. As with
+    :class:`SttProvider`, Phase 1 reads only ``name``.
+    """
+
+    name: str
+
+    async def check(self, voice_config: Any) -> Any:
+        """Whether this provider can run now, and why not when it cannot."""
+        ...
+
+    def synthesize(self, text: str, voice_config: Any) -> Any:
+        """Speak *text*, yielding audio chunks (an async iterator)."""
+        ...
+
+
+class SpeechProviderRegistry(Protocol):
+    """The edition's extra speech providers and its default choice.
+
+    ADD-only: a registered provider joins the built-in set and can never shadow
+    a built-in name or ``off``. A colliding or duplicate name, or a default that
+    names no known provider, fails boot with ``PlatformCompositionError``.
+    Providers come only from the composed context, never from config strings, so
+    config can SELECT a registered provider but cannot load code.
+
+    WIRED (through ``kiro_crew.speech_providers``): the ``stt.provider`` valid
+    set and absent-key default in the config loader, and the
+    ``voice_reply.provider`` valid set and absent-key default in
+    ``voice_reply.resolve_configured_provider``. A stored value always wins over
+    ``default_stt()`` / ``default_tts()``; the edition default applies only when
+    the key is absent. An invalid stored value keeps today's fallback (STT fails
+    closed to ``off``, TTS falls back to the built-in default), so an edition
+    default is never reached because a value was mistyped.
+
+    The Default registers nothing and answers ``None`` for both defaults, so a
+    standalone install has the same valid sets, defaults and messages as before
+    the seam existed. v1 addition (no ``CONTRACT_VERSION`` bump).
+    """
+
+    def stt_providers(self) -> Tuple[SttProvider, ...]: ...
+
+    def tts_providers(self) -> Tuple[TtsProvider, ...]: ...
+
+    def default_stt(self) -> Optional[str]:
+        """The ``stt.provider`` an absent key resolves to; ``None`` = core default."""
+        ...
+
+    def default_tts(self) -> Optional[str]:
+        """The ``voice_reply.provider`` an absent key resolves to; ``None`` = core default."""
         ...
 
 

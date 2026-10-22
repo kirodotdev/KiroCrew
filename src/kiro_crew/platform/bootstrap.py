@@ -52,6 +52,7 @@ from kiro_crew.platform.defaults import (
     DefaultSandboxPolicy,
     DefaultSkillDiscoveryProvider,
     DefaultSlackEnterpriseGate,
+    DefaultSpeechProviderRegistry,
     DefaultTelemetryProvider,
     DefaultTipsProvider,
     DefaultTunnelProvider,
@@ -226,6 +227,7 @@ def build_default_context(
         mobile_connect=DefaultMobileConnectProvider(),
         remote_provisioners=DefaultRemoteProvisionerProvider(),
         feedback=DefaultFeedbackTrackerProvider(),
+        speech=DefaultSpeechProviderRegistry(),
         feature_apps=(),
         governance=governance,
     )
@@ -237,6 +239,33 @@ def _assert_contract(ctx: PlatformContext) -> None:
         raise PlatformCompositionError(
             f"companion contract_version={ctx.contract_version} != core "
             f"CONTRACT_VERSION={CONTRACT_VERSION}; rebuild the companion against this core."
+        )
+
+
+def _refresh_stt_for_edition(cfg: "KiroCrewConfig") -> None:
+    """Re-resolve ``stt.provider`` once an edition's speech registry is installed.
+
+    The config every boot path is handed was loaded BEFORE any context existed,
+    so its ``stt.provider`` was resolved against the built-ins alone: a stored
+    registered name degraded to ``off`` and an absent key took ``local``. The
+    validated-config cache holds that same answer. Drop the cache and re-read the
+    section so this ``cfg`` and every later load see the edition's providers. A
+    no-op for the Default registry, so a standalone boot does nothing here.
+    Best-effort: a failure leaves the built-in answer, which is a working
+    (conservative) setting, rather than aborting boot.
+    """
+    from kiro_crew.speech_providers import edition_changes_stt
+
+    if not edition_changes_stt():
+        return
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
+
+        _invalidate_config_cache()
+        cfg.stt = KiroCrewConfig.load().stt
+    except Exception:
+        logger.warning(
+            "re-resolving stt.provider for the edition failed; continuing", exc_info=True
         )
 
 
@@ -280,7 +309,20 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
 
     assert_profiles_within_ceiling(ctx.governance)
 
+    # Speech providers are ADD-only: a registered name that would shadow a
+    # built-in (or ``off``), a duplicate, or a default naming no provider aborts
+    # boot here, fail-closed, before anything can select it. The Default registry
+    # passes trivially.
+    from kiro_crew.speech_providers import validate_speech_registry
+
+    validate_speech_registry(ctx.speech)
+
     set_context(ctx)
+
+    from kiro_crew.config.sections_stt import warn_deferred_stt_providers
+
+    warn_deferred_stt_providers()
+    _refresh_stt_for_edition(cfg)
 
     # Register any edition-contributed ACP backends now that the context is
     # installed.  The Default ProviderRegistry.register_acp_backends() is a

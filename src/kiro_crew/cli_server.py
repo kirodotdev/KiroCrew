@@ -382,6 +382,14 @@ async def _gateway(
 
     if not config_path().exists():
         cfg = KiroCrewConfig()
+        # Boot has installed the context, so an edition's default STT provider is
+        # known here; seeding the field default would persist ``local`` as a choice.
+        from kiro_crew import speech_providers
+
+        if speech_providers.edition_default_stt() is not None:
+            from kiro_crew.config.sections_stt import default_stt_provider
+
+            cfg.stt.provider = default_stt_provider()
         # _gateway is a coroutine, so this runs on the event loop: save() takes
         # the sidecar advisory flock and a contended wait (another
         # process writing config at boot) must block a worker thread, not the

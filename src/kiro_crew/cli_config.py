@@ -850,6 +850,13 @@ def _declared_enum_value(key: str, value: object) -> object:
         return value
     if value in entry.enum_values:
         return value
+    if key == "stt.provider" and isinstance(value, str):
+        # The schema enum lists only the built-ins; an edition-registered
+        # provider is selectable too, by the loader's own rule.
+        from kiro_crew.config.sections_stt import valid_stt_providers
+
+        if value in valid_stt_providers():
+            return value
     if isinstance(value, str):
         if key == "stt.model":
             resolved = _stt_model_canonical(value)

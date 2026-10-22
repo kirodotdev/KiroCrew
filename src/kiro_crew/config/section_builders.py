@@ -775,7 +775,10 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
     section = SectionReader(SttConfig, stt_data)
     return SttConfig(
         enabled=section.read("enabled", _safe_bool),
-        provider=_validated_stt_provider(section.get("provider")),
+        # The raw value, not ``section.get``: an ABSENT key must reach the
+        # resolver as ``None`` so it takes the edition's default
+        # (``default_stt_provider``) rather than the field's ``local``.
+        provider=_validated_stt_provider(stt_data.get("provider")),
         model=_validated_stt_model(
             section.get("model"),
             custom_path=section.get("custom_model_path"),

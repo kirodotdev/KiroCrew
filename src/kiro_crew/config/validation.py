@@ -676,9 +676,18 @@ def validate_config_data(data: dict) -> dict:
     # makes the resolved value and the log identical whether or not ``jsonschema``
     # is installed, which is the whole point: this function is a no-op without it.
     stt = data.get("stt")
+    # An edition-registered provider passes the resolver above but is not in the
+    # schema's enum, which lists only the built-ins (the schema is built once at
+    # import, before any context exists). Held aside across the enum check and put
+    # back after it, so the check cannot delete a value the resolver accepted.
+    registered_stt_provider: str | None = None
     if isinstance(stt, dict):
         if "provider" in stt:
             stt["provider"] = _validated_stt_provider(stt["provider"])
+            from kiro_crew.config.sections_stt import _VALID_STT_PROVIDERS
+
+            if stt["provider"] not in _VALID_STT_PROVIDERS:
+                registered_stt_provider = stt.pop("provider")
         if "model" in stt:
             # The sibling pair travels with the name: ``custom`` is only a usable
             # selection when both halves are set, and validating it without them
@@ -782,5 +791,8 @@ def validate_config_data(data: dict) -> dict:
                     err.message,
                     "using default" if removed else "value kept (validated by its consumer)",
                 )
+
+    if registered_stt_provider is not None and isinstance(data.get("stt"), dict):
+        data["stt"]["provider"] = registered_stt_provider
 
     return data

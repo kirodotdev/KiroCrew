@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
         McpScope,
         MemoryRoots,
         SessionPrincipal,
+        SttProvider,
+        TtsProvider,
         WorkloadIdentity,
     )
     from kiro_crew.security import DeniedCommandRule
@@ -764,6 +766,27 @@ class DefaultFeedbackTrackerProvider:
     def report_issue_url(
         self, bundle: "BundleResult", note: str, *, prefill: bool
     ) -> Optional[str]:
+        return None
+
+
+class DefaultSpeechProviderRegistry:
+    """No edition speech providers: only the built-in STT and TTS sets exist.
+
+    Empty tuples and ``None`` defaults, so the valid ``stt.provider`` and
+    ``voice_reply.provider`` sets, their defaults and their warning text are
+    exactly what they were before the seam existed.
+    """
+
+    def stt_providers(self) -> "Tuple[SttProvider, ...]":
+        return ()
+
+    def tts_providers(self) -> "Tuple[TtsProvider, ...]":
+        return ()
+
+    def default_stt(self) -> Optional[str]:
+        return None
+
+    def default_tts(self) -> Optional[str]:
         return None
 
 

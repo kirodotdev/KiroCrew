@@ -1090,7 +1090,10 @@ from kiro_crew.platform.interfaces_runtime import (  # noqa: E402,F401 - re-expo
     OtlpDestination,
     RemoteProvisioner,
     RemoteProvisionerProvider,
+    SpeechProviderRegistry,
+    SttProvider,
     TelemetryProvider,
+    TtsProvider,
     TunnelProvider,
 )
 from kiro_crew.platform.interfaces_structural import (  # noqa: E402,F401 - re-exported
