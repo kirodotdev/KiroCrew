@@ -112,7 +112,12 @@ member's saved agent spec. Kiro and KAS belong natively (kiro-cli reads the
 saved file at spawn; KAS receives it whole as `_meta.kiro.customAgents` and
 activates it by `session/set_mode`). Claude, Codex and DeepSeek confirm the
 exact spec consumed by their MCP projection after session creation or load
-(Claude's projection must also be governed). `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
+(Claude's projection must also be governed). pi confirms the same way with no
+mirror: the consumed spec is the parse its member mounts and zero-tool answer
+come from (`AcpClient._mirrorless_member_mounts`), and since its projection is
+`BROKER_ONLY` a declared server that is not pooled never reaches pi and leaves
+the session unverified rather than applied. On a member session pi's pooled stubs
+pass the spec's `tools` allowlist, as a mirror's do. `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
 (Kiro only) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
 `capability_tool_limits_unsupported`. This is separate from session sharing and per-session member dispatch. Both `AcpProvider` and

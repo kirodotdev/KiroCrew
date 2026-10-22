@@ -15,7 +15,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_ref_spec``,
-``_mcp_report``, ``_mcp_report_frame_floor``, ``_oauth_emitted_servers``,
+``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
+``_oauth_emitted_servers``,
 ``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
 ``_opencode_native_mounts``, ``_pending_oauth_requests``,
 ``_permission_surface_share_validated``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``,
@@ -663,6 +664,7 @@ def _reset_state(self: AcpClient) -> None:
     self._session_mcp_cache = None
     self._session_mcp_snapshot = None
     self._session_agent_spec = None
+    self._member_stub_allowlist = None
     self._loaded_capability_template = ""
     self._capability_projection_gaps = ()
     # Per SESSION, not per spawn: a replacement process' session is judged on its

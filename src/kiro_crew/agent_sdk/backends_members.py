@@ -44,32 +44,29 @@ from kiro_crew.agent_sdk.backends import (
 # ``session/set_mode``). kiro-cli reported ``probe`` as the current mode, KAS accepted
 # ``set_mode probe``, and on both the model called the spec's server tool.
 #
-# pi is NOT a member, though it holds a member session key
-# (``ACP_BACKENDS_MEMBER_DISPATCH``) and a panel (``ACP_BACKENDS_MEMBER_PANEL``).
-# Membership here means a saved spec is confirmed against what the session consumed,
-# and on pi there is no consumed spec to confirm:
+# pi is a member on the same confirmation, with no mirror behind it:
 #
-#   * pi has no mirror (``providers/mirrors/registry.py`` ``MIRRORS``), so
-#     ``AcpClient._resolve_session_mcp_servers`` takes the mirror-less branch, which
-#     never records ``_session_agent_spec``. ``confirm_member_projection`` would hand
-#     ``None`` to ``consumed_spec_matches`` and refuse EVERY saved-spec member on pi
-#     with ``capability_runtime_unverified`` -- fail-closed, and useless;
-#   * recording that parse would not make the confirmation true. pi's projection is
-#     ``BROKER_ONLY``: the handoff carries the member mounts and the pooled broker
-#     stubs and nothing else, so of the servers a saved spec declares only the ones
-#     the shared gateway pools reach pi (all of them are absent with pooling off),
-#     and a pane reporting the template loaded would overstate what runs;
-#   * pi is not in ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``, so a saved ``"tools": []``
-#     would run with pi's native tools on -- wider than saved, which this set exists
-#     to refuse.
+#   * the consumed spec is recorded -- pi has no mirror (``providers/mirrors/registry.py``
+#     ``MIRRORS``), so ``AcpClient._resolve_session_mcp_servers`` takes the mirror-less
+#     branch, and ``_mirrorless_member_mounts`` records ``_session_agent_spec`` from the
+#     one ``session_mcp_projection`` parse its member mounts and zero-tool answer come
+#     from. ``confirm_member_projection`` digests that parse against the saved intent,
+#     so a spec edited after its save is refused with ``capability_runtime_unverified``;
+#   * the projection is ``BROKER_ONLY``: of the servers a saved spec declares, only the
+#     ones the shared gateway pools reach pi (all of them are absent with pooling off),
+#     and on a member session those stubs pass the spec's ``tools`` allowlist from the
+#     same parse (``_pooled_mcp_servers``), as a mirror's do, so a pooled server the
+#     spec never references is not mounted beside it. The confirmation does not claim
+#     the declared servers run. ``session_capabilities.runtime_view`` shows
+#     the template applied only when every declared server is in the session's ready
+#     report, so a declared server that did not reach pi leaves the pane unverified
+#     (``capability_mcp_unreported``) instead of overstating what runs;
+#   * pi is in ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``, so a saved ``"tools": []`` refuses
+#     pi's native tools too, and is not run wider than saved.
 #
-# So a saved-spec member on pi is refused before spawn with
-# ``capability_harness_unsupported`` (``session_allocation_parts.get_or_create`` reads
-# ``member_capabilities_supported`` off this set; ``agent_capabilities.member_backend_gap``
-# warns on the Capabilities page in the same words) rather than run either narrower or
-# wider than it was saved. Joining needs the spec's servers projected into the handoff
-# and the zero-tool ban enforced first, then a live capture of a saved spec's server
-# reaching pi under ``acp_frames/pi/``.
+# ``test/fixtures/acp_frames/pi/saved-spec-projection-live.jsonl`` is a member session on
+# pi-acp 0.0.34 over pi 1.3.0 whose saved spec the client confirmed after
+# ``session/new``; the same drive with the spec edited after its save was refused.
 ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -77,6 +74,7 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_PI,
     }
 )
 

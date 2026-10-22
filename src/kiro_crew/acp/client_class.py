@@ -76,6 +76,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.session_mcp import ToolsAllowlist
     from kiro_crew.acp.skill_projection import NativeSkillProjection
 
 #: The client's own logger: this code logged under that name before the split.
@@ -228,6 +229,9 @@ class AcpClient:
         # array cache: the host already holds the array this describes, and dropping
         # the cache for the NEXT session must not erase what THIS one consumed.
         self._session_agent_spec: dict[str, Any] | None = None
+        # A member session's spec ``tools`` allowlist on a mirror-less array host
+        # (pi), from the same parse; the pooled stubs pass through it.
+        self._member_stub_allowlist: ToolsAllowlist | None = None
         self.member_context = False
         self._loaded_capability_template = ""
         self._capability_projection_gaps: tuple[str, ...] = ()

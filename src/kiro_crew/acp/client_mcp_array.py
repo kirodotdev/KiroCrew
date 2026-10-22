@@ -12,7 +12,8 @@ Instance fields written: ``_capability_projection_gaps``,
 ``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
-``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_session_agent_spec``,
+``_member_stub_allowlist``, ``_pending_oauth_requests``, ``_pi_mcp_handoff``,
+``_session_agent_spec``,
 ``_session_harness_deny_rules``, ``_session_mcp_cache``,
 ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
 ``_session_mcp_snapshot``, ``_session_mcp_unhonoured``, ``_spec_denied_tools``,
@@ -24,7 +25,7 @@ Instance fields read: ``_agent``, ``_channel_id``, ``_claude_inline_settings``,
 ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
-``_stub_session_token``, ``_work_dir``.
+``_stub_session_token``, ``_work_dir``, ``member_context``.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP
 from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
-from kiro_crew.acp.session_mcp import agent_spec_snapshot
+from kiro_crew.acp.session_mcp import ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -67,6 +68,10 @@ if TYPE_CHECKING:
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
+
+#: The allowlist of a member spec that was not read: it references nothing, so a
+#: pooled stub is never mounted on the strength of a spec nobody read.
+_GRANTS_NOTHING = ToolsAllowlist(applies=True, grant_all=False, refs=frozenset())
 
 
 def authored_spec_declares_zero_tools(self: AcpClient) -> bool:
@@ -174,7 +179,25 @@ def _pooled_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         for element in (getattr(self, "_session_mcp_cache", None) or [])
         if isinstance(element, dict)
     }
-    return [s for s in self._pooled_broker_stubs() if s.get("name") not in mounted]
+    stubs = [s for s in self._pooled_broker_stubs() if s.get("name") not in mounted]
+    # A member session on a BROKER_ONLY host (pi) recorded its spec's ``tools``
+    # allowlist beside its consumed spec; the stubs pass through it the way a
+    # mirror's do. Only the instance field is read here: nothing else records one,
+    # so kiro-cli's stubs return unchanged with no added branch or lookup (H13).
+    allowlist = getattr(self, "_member_stub_allowlist", None)
+    if allowlist is None:
+        return stubs
+    kept = [s for s in stubs if allowlist.grants(str(s.get("name")))]
+    kept_names = {s.get("name") for s in kept}
+    for stub in stubs:
+        if stub.get("name") not in kept_names:
+            logger.warning(
+                "member session %s: not mounting pooled stub %r -- the saved spec's "
+                "`tools` does not reference it",
+                getattr(self, "_session_key", None),
+                stub.get("name"),
+            )
+    return kept
 
 
 def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
@@ -314,6 +337,18 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     (``registry.PROJECTIONS``), the record that states it per backend, rather
     than of a membership set: the caller has already resolved that record
     through ``mirror_for``, so an undeclared backend raised before this point.
+
+    The same host records the parsed spec too, as ``_session_agent_spec``: the spec
+    this session CONSUMED, which ``confirm_member_projection`` digests against the
+    saved intent. From this parse and no other, so the mounts, the ban and the
+    confirmed spec are one generation. An unreadable spec records ``None``, which
+    the confirmation refuses.
+
+    On a MEMBER session the same parse also records the spec's ``tools`` allowlist,
+    which :meth:`_pooled_mcp_servers` filters the broker stubs through: a mirror
+    applies it to the stubs it places itself, and without it a stub the spec never
+    references would reach pi beside a spec confirmed as consumed. A non-member
+    session records none, so its stubs are unchanged.
     """
     records_zero_tools = projection_for(self.backend).kind is ProjectionKind.BROKER_ONLY
     if (
@@ -322,6 +357,14 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         and self.backend not in ACP_BACKENDS_MEMBER_PANEL
     ):
         return []
+    if records_zero_tools:
+        # Cleared before the read, so a re-resolve that fails keeps no older parse.
+        # A member's stubs are cleared to granting nothing, so a read that fails
+        # leaves them withheld; a non-member's to no filter, its stubs unchanged.
+        self._session_agent_spec = None
+        self._member_stub_allowlist = (
+            _GRANTS_NOTHING if getattr(self, "member_context", False) else None
+        )
     try:
         from kiro_crew.acp.session_mcp import session_mcp_projection
 
@@ -336,10 +379,26 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             exc_info=True,
         )
         if records_zero_tools:
+            # The allowlist stays as cleared above: a member's grants nothing.
             self._spec_zero_tools = False
         return []
     if records_zero_tools:
         self._spec_zero_tools = projection.zero_tools
+        self._session_agent_spec = projection.agent_spec
+        if getattr(self, "member_context", False):
+            # A missing spec references nothing either (stricter than a mirror's
+            # "no spec, no filter"): its confirmation refuses, and the handoff is
+            # written before it. A server with a tool switched off (in the spec or
+            # the global settings) is withheld whole, as the member mounts below
+            # are: pi carries no per-tool deny, so nothing could refuse that tool.
+            narrowed_stubs = frozenset(server for server, _tool in projection.disabled_tools)
+            self._member_stub_allowlist = (
+                projection.allowlist._replace(
+                    muted=frozenset(projection.allowlist.muted) | narrowed_stubs
+                )
+                if projection.agent_spec is not None
+                else _GRANTS_NOTHING
+            )
     if (
         self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
         and self.backend not in ACP_BACKENDS_MEMBER_PANEL

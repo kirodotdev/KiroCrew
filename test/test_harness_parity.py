@@ -280,6 +280,7 @@ def test_member_capabilities_are_opt_in() -> None:
             ACP_BACKEND_CLAUDE,
             ACP_BACKEND_CODEX,
             ACP_BACKEND_DEEPSEEK,
+            ACP_BACKEND_PI,
         }
     )
     assert ACP_BACKENDS_MEMBER_CAPABILITIES is not ACP_BACKENDS_SESSION_SHARING
