@@ -35,6 +35,7 @@ from cron_reaper_helpers import (
 from kiro_crew import platform_compat
 from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronService, _RunClaim
 from kiro_crew.cron_history import CronHistoryStore
+from kiro_crew.testing.wait import async_wait_until, finished
 
 #: Every cron reaper suite pins a healthy free-memory reading (see
 #: ``ample_host_free_memory``): ``test_cron_reaper.py`` fires cron jobs through the
@@ -75,15 +76,7 @@ def _assert_the_reset_completed(caplog: pytest.LogCaptureFixture, elapsed: float
 
 async def _settle(predicate: Callable[[], bool], what: str) -> None:
     """Poll until ``predicate()`` holds; at the ceiling raise naming ``what`` and the time."""
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    while not predicate():
-        # flake-ok: the poll checks its elapsed time against the named lost-run ceiling and never asserts a duration
-        elapsed = loop.time() - started
-        if elapsed > _FENCE_SETTLE_CEILING_SECS:
-            raise AssertionError(f"{what} after {elapsed:.3f}s")
-        # flake-ok: the interval of a bounded poll that re-reads the predicate until the lost-run ceiling
-        await asyncio.sleep(0.005)
+    await async_wait_until(predicate, timeout=_FENCE_SETTLE_CEILING_SECS, describe=lambda: what)
 
 
 class TestARegistrationAfterThePopIsNamedNotChased:
@@ -514,17 +507,15 @@ class TestEveryKeyOfTheRunIsEnded:
             sweep,
             patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
-            try:
-                # flake-ok: the 5 s bound only names a serial reap; the concurrent resets finish in a few loop steps
-                await asyncio.wait_for(
-                    svc._force_reap("par1", _JOB_TIMEOUT_SECS + 60, claim=claim), timeout=5
-                )
-            except asyncio.TimeoutError:
-                pytest.fail(
-                    "the run's keys were ended one after another: the older key's reset never "
-                    "started while the newest key's was in flight, so the fences are up for the "
-                    "sum of every key's bound"
-                )
+            # The 5 s bound only names a serial reap: the concurrent resets finish
+            # in a few loop steps, while ending the keys one after another keeps the
+            # fences up for the sum of every key's bound.
+            await finished(
+                svc._force_reap("par1", _JOB_TIMEOUT_SECS + 60, claim=claim),
+                "the run's keys ending concurrently (the older key's reset starting while "
+                "the newest key's is in flight)",
+                timeout=5,
+            )
 
         assert sorted(called.args[0] for called in group_kill.call_args_list) == [7050, 7051]
         assert _audited_outcome(mock_sel) == "reaped"

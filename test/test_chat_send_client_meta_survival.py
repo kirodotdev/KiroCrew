@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.testing.wait import finished
 
 _SLOT = "meta-survival-slot"
 _FENCE = "meta-survival-test-finished"
@@ -117,7 +118,7 @@ async def test_feature_request_stamp_survives_ingress_persistence_echo_and_fetch
         owner = await client.ws_connect("/api/ws", params={"token": token})
         # The initial slots frame proves the socket is registered for echoes
         # before the send goes out.
-        initial = await asyncio.wait_for(owner.receive_json(), timeout=5)
+        initial = await finished(owner.receive_json(), "the owner socket's initial slots frame")
         assert initial["type"] == "slots"
 
         # INGRESS: the flow's send, byte for byte the shape
@@ -141,7 +142,7 @@ async def test_feature_request_stamp_survives_ingress_persistence_echo_and_fetch
         # ECHO: the correlated user row reaches the owner socket with the stamp
         # intact -- this is the row the optimistic bubble reconciles against.
         survival_state._broadcast({"_type": "refresh", "kinds": _FENCE})
-        frames = await asyncio.wait_for(_ws_until_fence(owner), timeout=5)
+        frames = await finished(_ws_until_fence(owner), "the owner socket reaching the fence")
         echoed = _user_rows(
             [frame["data"] for frame in frames if frame.get("type") == "chat_message"]
         )

@@ -39,6 +39,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.name_grant import SHADOWED, Refusal
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+from kiro_crew.testing.wait import await_until, finished
 
 
 def _tool_messages(slot: _ChatSlot) -> list[dict]:
@@ -73,8 +74,8 @@ class TestApprovalModes:
         )
         try:
             with _patch_stats():
-                await asyncio.wait_for(_run_chat(state, slot, "hello"), 15)
-            await asyncio.wait_for(answer, 5)
+                await finished(_run_chat(state, slot, "hello"), "the chat turn completing")
+            await await_until(answer, what="the approval answer landing")
             assert slot._approval_futures["req-1"] is replacement
             assert slot.approval_instance("req-1") == row_mid(observed["row"])
             assert "resolved" not in parse_cls_meta(observed["row"]["cls"])

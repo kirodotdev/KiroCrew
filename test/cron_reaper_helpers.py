@@ -24,6 +24,7 @@ from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronJob, CronSchedule, CronService
 from kiro_crew.cron_history import CronHistoryStore
 from kiro_crew.process_identity import ProcessHandle, process_handle_of
 from kiro_crew.session_lifecycle import TornDown, _TeardownScope
+from kiro_crew.testing.wait import finished
 
 #: The platform kill primitives the kill path can reach. Each is pinned to a
 #: refusal for the whole module (``_kill_seam``): a test that drives one patches
@@ -243,17 +244,7 @@ _FENCE_SETTLE_CEILING_SECS = 20.0
 
 async def _within_the_ceiling(aw: Any, what: str) -> Any:
     """Await *aw* under ``_FENCE_SETTLE_CEILING_SECS``; past it raise naming ``what``."""
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    try:
-        # flake-ok: a named lost-run ceiling; the awaited state lands in a few loop steps and the ceiling only names a wedge
-        return await asyncio.wait_for(aw, timeout=_FENCE_SETTLE_CEILING_SECS)
-    except asyncio.TimeoutError:
-        raise AssertionError(
-            # flake-ok: the wait's duration is only quoted in the failure message, never asserted
-            f"{what}: not done after {loop.time() - started:.3f}s "
-            f"(lost-run ceiling {_FENCE_SETTLE_CEILING_SECS:.0f}s)"
-        ) from None
+    return await finished(aw, what, timeout=_FENCE_SETTLE_CEILING_SECS)
 
 
 def _parks_at_the_fence_door(mgr: Any) -> tuple[asyncio.Event, Any]:
@@ -276,15 +267,17 @@ async def _held_or_landed(parked: asyncio.Event, claim: asyncio.Task[Any]) -> st
     Returns rather than raises: the reset and history-append seams it runs in
     swallow exceptions, so the caller's own assertion names the outcome.
     """
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    while not parked.is_set() and not claim.done():
-        # flake-ok: the poll checks its elapsed time against the named lost-run ceiling and never asserts a duration
-        elapsed = loop.time() - started
-        if elapsed > _FENCE_SETTLE_CEILING_SECS:
-            return f"neither held nor landed after {elapsed:.3f}s"
-        # flake-ok: the interval of a bounded poll that re-reads the fence state until the lost-run ceiling
-        await asyncio.sleep(0.005)
+    parking = asyncio.ensure_future(parked.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {parking, claim},
+            timeout=_FENCE_SETTLE_CEILING_SECS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        parking.cancel()
+    if not done:
+        return f"neither held nor landed after {_FENCE_SETTLE_CEILING_SECS:.0f}s"
     return "held" if parked.is_set() and not claim.done() else "landed before the record"
 
 

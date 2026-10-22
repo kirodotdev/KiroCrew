@@ -18,7 +18,7 @@ from denied_commands_security_helpers import _REAL_RESOLVED_HOST_VERDICT, _denie
 
 from kiro_crew import security
 from kiro_crew.security import argv_floor as _argv_floor
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import async_wait_until, wait_until
 
 # This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
 # so the shared macOS handle caches are put back after each one (see conftest.py).
@@ -353,11 +353,10 @@ class TestSandboxEscapeSshSelfOwnHost:
             started_before_release = not done.is_set()
             release.set()
             # Let the scheduled worker finish while the loop is still alive.
-            for _ in range(500):
-                if done.is_set() and not _server._OWN_HOST_WARM_TASKS:
-                    break
-                # flake-ok: pre-existing bounded 10 ms poll that lets the scheduled worker finish before the loop closes, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: done.is_set() and not _server._OWN_HOST_WARM_TASKS,
+                describe=lambda: f"done={done.is_set()} tasks={_server._OWN_HOST_WARM_TASKS}",
+            )
             return elapsed, started_before_release
 
         elapsed, started_before_release = asyncio.run(_run())
@@ -375,11 +374,10 @@ class TestSandboxEscapeSshSelfOwnHost:
 
         async def _run():
             await app.on_startup[0](app)
-            for _ in range(500):
-                if not _server._OWN_HOST_WARM_TASKS:
-                    break
-                # flake-ok: pre-existing bounded 10 ms poll that lets the scheduled worker finish before the loop closes, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: not _server._OWN_HOST_WARM_TASKS,
+                describe=lambda: f"tasks={_server._OWN_HOST_WARM_TASKS}",
+            )
 
         with caplog.at_level("WARNING", logger=_server.logger.name):
             asyncio.run(_run())

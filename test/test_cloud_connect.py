@@ -9,6 +9,12 @@ import pytest
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.cloud import aws, connect, ssm
+from kiro_crew.testing.wait import wait_until
+
+#: How long a killed tree's descendant may take to leave the process table.
+#: Well under the 30 s the stand-in descendants sleep, so a test that waited on
+#: a descendant's natural exit instead of the kill fails.
+_DESCENDANT_KILL_SECS = 5.0
 
 
 class TestMintToken:
@@ -270,7 +276,6 @@ class TestKillProcessTree:
         # here — no descendant survives teardown — is identical on both.
         import subprocess
         import sys
-        import time
 
         # Parent spawns a grandchild `sleep`, writes its pid, then waits — so the
         # tree has two members. Start it in its own session (mirrors
@@ -287,9 +292,9 @@ class TestKillProcessTree:
         proc = subprocess.Popen(
             [sys.executable, "-c", script], start_new_session=True, cwd=tmp_path
         )
-        # Bound BEFORE the try: the pidfile read below raises FileNotFoundError /
-        # ValueError whenever the 5s poll budget expires on a loaded host, and the
-        # finally must still be able to skip the grandchild reap in that case.
+        # Bound BEFORE the try: the pidfile wait below fails by name when the
+        # child never writes it, and the finally must still be able to skip the
+        # grandchild reap in that case.
         child_pid: int | None = None
         child_start_id: str | None = None
         # Set once the body has PROVEN the grandchild is gone. The finally must not
@@ -300,10 +305,10 @@ class TestKillProcessTree:
         grandchild_reaped = False
         try:
             # Wait for the grandchild pid to be recorded.
-            for _ in range(50):
-                if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
-                    break
-                time.sleep(0.1)
+            wait_until(
+                lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+                describe=lambda: f"{pidfile} was never written",
+            )
             child_pid = int(pidfile.read_text(encoding="utf-8").strip())
             # Identity, captured WITH the pid. A pid alone is not a handle: the
             # kernel may reassign it the moment the process exits, so the reap in
@@ -317,18 +322,20 @@ class TestKillProcessTree:
 
             # Both the parent and the grandchild must be gone.
             assert proc.poll() is not None, "parent should be reaped"
-            # Poll: the tree kill is asynchronous w.r.t. the grandchild exiting.
-            for _ in range(50):
-                if not _pid_alive(child_pid):
-                    break
-                time.sleep(0.1)
-            assert not _pid_alive(child_pid), "grandchild (same tree) must also be killed"
+            # The tree kill is asynchronous w.r.t. the grandchild exiting. The
+            # bound stays well under the grandchild's own 30 s sleep, so its
+            # natural exit can never stand in for the kill.
+            wait_until(
+                lambda: not _pid_alive(child_pid),
+                timeout=_DESCENDANT_KILL_SECS,
+                describe=lambda: "grandchild (same tree) must also be killed",
+            )
             grandchild_reaped = True
         finally:
             # `connect._kill_process_tree` is the ONLY reaper in the body above and
-            # it is the code under test, so every failing exit — the pidfile read
-            # raising when the 5s poll budget expires, either assertion, a real
-            # regression in the tree kill — abandons a live `time.sleep(30)`
+            # it is the code under test, so every failing exit — the pidfile wait
+            # failing, either assertion, a real regression in the tree kill —
+            # abandons a live `time.sleep(30)`
             # wrapper AND its grandchild for 30s past the test. Both sit in their
             # own session thanks to start_new_session=True, i.e. in a group no
             # run-level sweep of the xdist worker's group can reach. Reap through

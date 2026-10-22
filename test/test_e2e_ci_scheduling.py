@@ -13,9 +13,10 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
+
+from kiro_crew.testing.wait import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "ci_e2e_parallel.py"
@@ -62,11 +63,11 @@ class TestE2eScheduling(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def wait_file(self, name):
-        deadline = time.monotonic() + 10
         path = self.root / name
-        while not path.exists() or path.stat().st_size == 0:
-            self.assertLess(time.monotonic(), deadline, f"missing {name}")
-            time.sleep(0.01)
+        wait_until(
+            lambda: path.exists() and path.stat().st_size > 0,
+            describe=lambda: f"missing {name}",
+        )
         return path
 
     def command(self, name, rc=0, gated=False, descendant=False):
@@ -181,10 +182,13 @@ class TestE2eScheduling(unittest.TestCase):
         child = int(self.wait_file("a.child").read_text())
         self.wait_file("b.started")
         # Release the healthy sibling only after the timed-out tree is reaped.
-        deadline = time.monotonic() + 10
-        while Path(f"/proc/{child}").exists():
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(0.01)
+        # Bounded well under the child's own 60 s sleep, so its natural exit can
+        # never stand in for the reap.
+        wait_until(
+            lambda: not Path(f"/proc/{child}").exists(),
+            timeout=10,
+            describe=lambda: f"pid {child} of the timed-out tree is still present",
+        )
         self.assertIsNone(proc.poll())
         (self.root / "release").touch()
         output, _ = proc.communicate(timeout=10)

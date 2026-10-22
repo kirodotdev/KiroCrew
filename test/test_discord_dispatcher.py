@@ -67,6 +67,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.session import SessionManager
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.testing.wait import await_until
 
 # ── transport_dispatch.py ────────────────────────────────────────────────
 
@@ -218,14 +219,14 @@ class TestDispatcher:
             )
         )
         try:
-            await asyncio.wait_for(boundary_reached.wait(), timeout=5)
+            await await_until(boundary_reached, what="the monitor reaching the claim boundary")
             await manager.get_or_create(key)  # A user turn wins the actual semaphore.
             resume_monitor.set()
 
             # Await completion while the user still owns the semaphore. Real
             # off-loop metadata reads may need more than a few scheduler turns;
             # a blocking claim cannot finish before finally releases the user.
-            result = await asyncio.wait_for(asyncio.shield(monitor_task), timeout=5)
+            result = await await_until(monitor_task, what="the monitor dispatch completing")
             assert result is MonitorDispatchResult.BUSY
             assert provider.steered == []
             assert manager.dequeue(key) is None

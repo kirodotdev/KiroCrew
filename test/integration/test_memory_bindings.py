@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 
 import pytest
+
+from kiro_crew.testing.wait import async_wait_until
 
 #: The tracked follow-up that seeds the enrolled-member state bug 12 was
 #: reported from and runs a workflow on its behalf; the happy-path test below
@@ -29,14 +30,19 @@ _TRIVIAL_WORKFLOW = (
 
 
 async def _finished(gw, run_id: str, *, secs: float = 60.0) -> dict:
-    deadline = time.monotonic() + secs
     run: dict = {}
-    while time.monotonic() < deadline:
+
+    async def _terminated() -> bool:
+        nonlocal run
         run = await gw.get_json(f"/api/workflows/runs/{run_id}")
-        if run.get("status") != "running":
-            return run
-        await asyncio.sleep(0.1)
-    pytest.fail(f"workflow {run_id} did not terminate: {json.dumps(run)[:500]}")
+        return run.get("status") != "running"
+
+    await async_wait_until(
+        _terminated,
+        timeout=secs,
+        describe=lambda: f"workflow {run_id} did not terminate: {json.dumps(run)[:500]}",
+    )
+    return run
 
 
 # ---------------------------------------------------------------- bug 11 ---
@@ -159,11 +165,11 @@ async def _agents_dir(*, secs: float = 30.0) -> Path:
     from kiro_crew.config.paths import kiro_agents_dir
 
     directory = kiro_agents_dir()
-    deadline = time.monotonic() + secs
-    while not (directory / "kirocrew.json").is_file():
-        if time.monotonic() > deadline:
-            pytest.fail(f"boot did not write the managed agent specs under {directory}")
-        await asyncio.sleep(0.05)
+    await async_wait_until(
+        (directory / "kirocrew.json").is_file,
+        timeout=secs,
+        describe=lambda: f"boot did not write the managed agent specs under {directory}",
+    )
     return directory
 
 

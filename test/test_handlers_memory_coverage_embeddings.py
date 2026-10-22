@@ -30,6 +30,7 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
 from kiro_crew.embeddings import CustomModelSpec
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
@@ -1022,7 +1023,7 @@ class TestConfigWritesRunOffTheEventLoop:
             # flake-ok: pre-existing await of the cancelled writer after its worker is released; moved verbatim and tracked for a de-flake pass
             await first
         # flake-ok: pre-existing 10 s lost-run bound on the second writer moved verbatim; its expiry fails the test at this line
-        await asyncio.wait_for(second, timeout=10)
+        await await_until(second, what="the second writer running after the release")
 
         assert order.index("worker-end") < order.index(
             "second-ran"

@@ -29,6 +29,7 @@ from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging import resume_expectation
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session_map import ConversationOwnershipConflict
+from kiro_crew.testing.wait import await_until
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_sessions_helpers._isolated_home
@@ -568,7 +569,9 @@ class TestBindingLostUnderTheConversation:
                     siblings.append(
                         asyncio.create_task(dispatcher.handle_message(_message("third")))
                     )
-                    await asyncio.wait_for(third_in_governance.wait(), timeout=1)
+                    await await_until(
+                        third_in_governance, what="the third sibling entering governance"
+                    )
                 elif detached_sends == 2:
                     release_third.set()
             return await real_send(channel_id, text, **kwargs)
@@ -618,9 +621,9 @@ class TestBindingLostUnderTheConversation:
         async def _park_first_send_until_c2_routes(channel_id: str, text: str, **kwargs):
             if "Detached" in text and channel_id == "c1" and not crossed:
                 try:
-                    await asyncio.wait_for(c2_routed.wait(), timeout=10)
+                    await await_until(c2_routed, what="c2 routing while c1's send is parked")
                     crossed.append(True)
-                except asyncio.TimeoutError:
+                except AssertionError:
                     crossed.append(False)
                 finally:
                     c2_routed.set()

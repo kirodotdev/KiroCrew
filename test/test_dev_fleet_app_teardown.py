@@ -6,7 +6,6 @@ and cache invalidation, and the TOCTOU and containment checks.
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -19,6 +18,7 @@ from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
+from kiro_crew.testing.wait import async_wait_until
 
 # --- Worktree teardown guard tests ---
 
@@ -393,18 +393,14 @@ async def test_start_run_invokes_on_finish_at_terminal_state():
 
     calls: list[int] = []
     rid = await mod._start_run("finish-test", ["true"], on_finish=lambda: calls.append(1))
-    for _ in range(50):
+
+    async def _stamped() -> bool:
         async with mod._RUNS_LOCK:
-            if mod._RUNS[rid]["status"] != "running":
-                break
-        # flake-ok: pre-existing bounded 50 ms poll of the run status, moved verbatim; on expiry the test reads the record as it stands and its assertions fail
-        await asyncio.sleep(0.05)
+            return mod._RUNS[rid]["status"] != "running"
+
+    await async_wait_until(_stamped, describe=lambda: mod._RUNS[rid]["status"])
     # The callback runs in the worker's finally, after the status stamp.
-    for _ in range(50):
-        if calls:
-            break
-        # flake-ok: pre-existing bounded 50 ms poll for the finish callback, moved verbatim; the assertion below names a callback that never ran
-        await asyncio.sleep(0.05)
+    await async_wait_until(lambda: calls, describe=lambda: f"calls={calls}")
     assert calls == [1]
 
 

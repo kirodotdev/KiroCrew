@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from kiro_crew.channel import Channel, ChannelAgent, ChannelMessage
+from kiro_crew.testing.wait import await_until, finished
 
 
 def _make_channel_with_agent(state: str = "working") -> tuple[Channel, ChannelAgent]:
@@ -40,7 +41,7 @@ async def test_subscribe_exits_when_agent_becomes_done(monkeypatch) -> None:
 
     agent.state = "done"
     # Must exit within a few poll intervals; would hang forever before the fix.
-    await asyncio.wait_for(task, timeout=5)
+    await await_until(task, what="subscribe() exiting once the agent is done")
 
 
 @pytest.mark.asyncio
@@ -53,6 +54,6 @@ async def test_subscribe_still_yields_messages(monkeypatch) -> None:
     msg = ChannelMessage(id="m1", from_id="human", from_role="Human", content="hi")
     await agent.inbox.put(msg)
 
-    got = await asyncio.wait_for(gen.__anext__(), timeout=5)
+    got = await finished(gen.__anext__(), "the delivered message reaching the subscriber")
     assert got is msg
     await gen.aclose()

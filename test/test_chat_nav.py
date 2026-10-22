@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_nav import (
     _resolve_link_summaries,
 )
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class TestBuildLinkSummaryPrompt:
@@ -642,7 +643,7 @@ class _GatedBgSessions:
 
             async def prompt(self, text, allow_image=False):
                 owner.prompts.append(text)
-                await asyncio.wait_for(owner.release.wait(), 5.0)
+                await await_until(owner.release, what="the test releasing the prompt")
                 yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=owner._answer)
                 yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
 
@@ -669,12 +670,7 @@ async def _within(awaitable, what: str, ceiling: float = 5.0):
 
 async def _until(done, what: str, ceiling: float = 5.0) -> None:
     """Poll *done* until it holds; fail with *what* if it does not within *ceiling* seconds."""
-    try:
-        async with asyncio.timeout(ceiling):
-            while not done():
-                await asyncio.sleep(0.01)
-    except TimeoutError:
-        pytest.fail(f"{what} did not happen within {ceiling:.0f} s")
+    await async_wait_until(done, timeout=ceiling, describe=lambda: what)
 
 
 def _count_shared_call_entries(monkeypatch) -> list[int]:

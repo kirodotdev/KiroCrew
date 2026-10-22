@@ -11,6 +11,7 @@ from kiro_crew.cron import (
     CronSchedule,
     CronService,
 )
+from kiro_crew.testing.wait import finished
 
 
 def _job(schedule: CronSchedule, strict: bool = False) -> CronJob:
@@ -299,8 +300,6 @@ class TestJitterWaitEndsOnWallClock:
     async def test_wall_clock_jump_ends_the_wait(self, monkeypatch):
         """A suspend that carries the wall clock past the deadline ends the wait
         within one slice of AWAKE time, not after ``jitter`` awake seconds."""
-        import asyncio
-
         import kiro_crew.cron as cron_mod
 
         base = 1_790_000_000.0
@@ -309,20 +308,18 @@ class TestJitterWaitEndsOnWallClock:
         monkeypatch.setattr(cron_mod, "_JITTER_WALL_SLICE_SECS", 0.01)
 
         # A 59-minute jitter would hang here for 59 minutes under the old sleep.
-        await asyncio.wait_for(cron_mod._sleep_out_jitter(59 * 60), timeout=5)
+        await finished(cron_mod._sleep_out_jitter(59 * 60), "the jitter wait ending on resume")
 
     @pytest.mark.asyncio
     async def test_backward_wall_step_cannot_stretch_the_wait(self, monkeypatch):
         """A wall clock stepped back a day still ends on the monotonic deadline."""
-        import asyncio
-
         import kiro_crew.cron as cron_mod
 
         base = 1_790_000_000.0
         monkeypatch.setattr(cron_mod, "time", self._clock([base, base - 86400]))
         monkeypatch.setattr(cron_mod, "_JITTER_WALL_SLICE_SECS", 0.01)
 
-        await asyncio.wait_for(cron_mod._sleep_out_jitter(0.05), timeout=5)
+        await finished(cron_mod._sleep_out_jitter(0.05), "the jitter wait ending on its deadline")
 
     @pytest.mark.asyncio
     async def test_no_suspend_waits_the_full_jitter(self):

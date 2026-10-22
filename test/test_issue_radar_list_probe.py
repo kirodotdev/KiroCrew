@@ -36,6 +36,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import routes, store
+from kiro_crew.testing.wait import async_wait_until, finished
 
 PROBE_TARGET = "kiro_crew.apps.builtins.issue_radar.backend.github_client.probe_open_list"
 
@@ -442,7 +443,10 @@ class TestProbeCoalescing(unittest.TestCase):
         def probe_impl(owner, repo, kind):
             if repo == "slow":
                 blocked.set()
-                release.wait(5)
+                # Blocked until the test releases it, with no self-release: a
+                # probe that let itself go would let a serialized fast probe
+                # finish inside the wait below and hide the regression.
+                release.wait()
             return dict(reading)
 
         with mock.patch(PROBE_TARGET, side_effect=probe_impl):
@@ -452,13 +456,16 @@ class TestProbeCoalescing(unittest.TestCase):
                     routes._poll_can_serve_cache(_key("o", "slow"), "issue", "open", snap)
                 )
                 await asyncio.to_thread(blocked.wait, 5)
-                # No timeout escape hatch on purpose: if this serializes behind
-                # the blocked probe it deadlocks until `release`, and asserting on
-                # a wall-clock margin would just make the test flaky on CI.
-                fast = await asyncio.wait_for(
-                    routes._poll_can_serve_cache(_key("o", "fast"), "issue", "open", snap), 5,
-                )
-                release.set()
+                try:
+                    # The fast probe must finish WHILE the slow one is still held:
+                    # if it serializes behind the blocked probe it never finishes
+                    # here, and the bound names that instead of a wall-clock margin.
+                    fast = await finished(
+                        routes._poll_can_serve_cache(_key("o", "fast"), "issue", "open", snap),
+                        "the fast repo's probe overtaking the blocked one",
+                    )
+                finally:
+                    release.set()
                 return fast, await slow
             fast, slow = asyncio.run(overlap())
         self.assertTrue(fast[0])
@@ -487,11 +494,10 @@ class TestProbeCoalescing(unittest.TestCase):
                 with contextlib.suppress(asyncio.CancelledError):
                     await doomed
                 release.set()
-                # The shielded probe survives the cancellation; give it the loop.
-                for _ in range(50):
-                    if routes._probe_memo:
-                        break
-                    await asyncio.sleep(0.01)
+                # The shielded probe survives the cancellation; wait for its reading.
+                await async_wait_until(
+                    lambda: routes._probe_memo, describe=lambda: "the probe's reading never landed"
+                )
                 return await routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
             serve, _ = asyncio.run(cancel_then_poll())
         self.assertTrue(serve)

@@ -6,38 +6,3 @@
 # `python test/test_wait_discipline_ratchet.py --write-baseline` lowers every line to
 # its real count and drops files that are gone; it never raises or adds an entry.
 # `... --move OLD NEW` carries a line to a renamed file's path.
-2 chat_test_helpers.py
-2 cron_reaper_helpers.py
-2 e2e/test_memory_ui_evidence.py
-2 e2e/test_private_workflow_memory.py
-2 e2e/test_real_kiro_smoke.py
-2 integration/test_memory_bindings.py
-2 spawn_test_helpers.py
-2 test_channel_subscribe_timeout.py
-2 test_chat_nav.py
-2 test_chat_send_client_meta_survival.py
-2 test_cloud_connect.py
-2 test_cloud_ssm.py
-2 test_config_save_locking.py
-2 test_connections_premint.py
-2 test_cron_jitter.py
-2 test_cron_reaper_ending_fence.py
-2 test_cron_reaper_failed_kill.py
-2 test_cron_refused_one_shot_retry_floor.py
-2 test_cron_undispatched_one_shot.py
-2 test_dashboard_approval_modes.py
-2 test_dashboard_files_coverage.py
-2 test_dashboard_member_assignment.py
-2 test_dashboard_status_snapshot.py
-2 test_decisions_local_provider.py
-2 test_denied_commands_security_own_host.py
-2 test_dev_fleet_app_teardown.py
-2 test_discord_dispatcher.py
-2 test_discord_sessions_binding_state.py
-2 test_e2e_ci_scheduling.py
-2 test_fargate_closed_forward_remedy.py
-2 test_feishu_client.py
-1 test_handlers_memory_coverage.py
-1 test_handlers_memory_coverage_embeddings.py
-2 test_headless_memory_recognition.py
-2 test_issue_radar_list_probe.py

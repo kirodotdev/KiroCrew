@@ -10,6 +10,12 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import aws, ssm
+from kiro_crew.testing.wait import wait_until
+
+#: How long a killed tree's descendant may take to leave the process table.
+#: Well under the 30 s the stand-in descendants sleep, so a test that waited on
+#: a descendant's natural exit instead of the kill fails.
+_DESCENDANT_KILL_SECS = 5.0
 
 
 class TestArgvBuilders:
@@ -695,7 +701,6 @@ class TestKillPortForward:
         # `taskkill /T`) but the invariant is the same: no descendant survives.
         import subprocess
         import sys
-        import time
 
         pidfile = tmp_path / "child.pid"
         script = (
@@ -718,10 +723,10 @@ class TestKillPortForward:
                 else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
             ),
         )
-        for _ in range(50):
-            if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
-                break
-            time.sleep(0.1)
+        wait_until(
+            lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+            describe=lambda: f"{pidfile} was never written",
+        )
         child_pid = int(pidfile.read_text(encoding="utf-8").strip())
 
         # `platform_compat.pid_exists`, NOT `os.kill(pid, 0)`: on Windows signal 0
@@ -734,11 +739,13 @@ class TestKillPortForward:
         assert _alive(child_pid)
         ssm.kill_port_forward(proc)
         assert proc.poll() is not None
-        for _ in range(50):
-            if not _alive(child_pid):
-                break
-            time.sleep(0.1)
-        assert not _alive(child_pid), "plugin child (same tree) must be killed"
+        # Bounded well under the child's own 30 s sleep, so its natural exit can
+        # never stand in for the kill.
+        wait_until(
+            lambda: not _alive(child_pid),
+            timeout=_DESCENDANT_KILL_SECS,
+            describe=lambda: "plugin child (same tree) must be killed",
+        )
 
     def test_escalates_to_kill_when_terminate_does_not_reap(self, monkeypatch):
         """The SIGKILL escalation must actually run — on Windows too.

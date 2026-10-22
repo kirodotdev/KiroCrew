@@ -31,6 +31,7 @@ from kiro_crew.cron_service import schedule
 from kiro_crew.cron_service.schedule import next_wake_secs
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.slack.gateway_runtime.cron_dispatch import _defer_cron_before_dispatch
+from kiro_crew.testing.wait import await_until
 
 _ADMITTED = SimpleNamespace(admitted=True, reason="")
 _EMPTY_STEP = "empty agent_sequence step cannot resolve a crew; refusing to dispatch"
@@ -61,7 +62,7 @@ async def _service(tmp_path, gateway: _Gateway) -> CronService:
     if task is not None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+            await await_until(task, what="the cancelled timer task retiring")
     return service
 
 
@@ -70,7 +71,7 @@ async def _tick(service: CronService, job_id: str) -> None:
     await service._on_timer()
     claim = service._claims.get(job_id)
     if claim is not None and claim.task is not None:
-        await asyncio.wait_for(claim.task, timeout=5.0)
+        await await_until(claim.task, what=f"the run dispatched for {job_id}")
 
 
 def _stored(tmp_path, job_id: str) -> CronJob:

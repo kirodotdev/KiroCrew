@@ -16,6 +16,7 @@ import urllib.request
 import pytest
 from e2e.test_gateway_boot_matrix import _await_assistant_reply, _booted
 
+from kiro_crew.testing.wait import finished, wait_until
 from kiro_crew.testing.workflow_memory_scenario import (
     progress_summary,
     source,
@@ -66,17 +67,25 @@ def _post_as(client, path, body, session):
 
 
 def _finished(client, run_id):
-    deadline = _wait_deadline()
     run = None
-    while time.monotonic() < deadline:
+
+    def _terminated() -> bool:
+        nonlocal run
         run = client.get(f"/api/workflows/runs/{run_id}")
-        if run["status"] != "running":
-            assert run["status"] == "finished", run
-            assert not run.get("agent_errors"), run
-            return run
-        time.sleep(0.1)
-    progress = json.dumps(progress_summary(run)) if run is not None else "never polled"
-    pytest.fail(f"Workflow did not terminate: {run_id}; {progress}")
+        return run["status"] != "running"
+
+    wait_until(
+        _terminated,
+        timeout=max(0.0, _wait_deadline() - time.monotonic()),
+        interval=0.1,
+        describe=lambda: (
+            f"Workflow did not terminate: {run_id}; "
+            f"{json.dumps(progress_summary(run)) if run is not None else 'never polled'}"
+        ),
+    )
+    assert run["status"] == "finished", run
+    assert not run.get("agent_errors"), run
+    return run
 
 
 def _assert_result(run, marker):
@@ -139,7 +148,7 @@ async def _nested_with_owner_approval(client, session, nested_source):
                         assert resolved == {"ok": True}, "Spawn approval was not accepted"
                         return
 
-                await asyncio.wait_for(approve_once(), timeout=10)
+                await finished(approve_once(), "the nested spawn's approval request", timeout=10)
                 return nested, spawn_id
             finally:
                 reader.cancel()

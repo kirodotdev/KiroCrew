@@ -20,6 +20,7 @@ import pytest
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFAULT_ENDPOINT
 from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT as DEFAULT_MODEL
 from kiro_crew.decisions import consent, local_models
+from kiro_crew.testing.wait import await_until
 
 # ---------------------------------------------------------------------------
 # The loopback test
@@ -998,7 +999,7 @@ class TestDeleteAndSwitchAreSerialised:
             assert not pending.done()
             # The switch lands: the runtime now prepares the preset being deleted.
             runtime.state.update(preset="laya", state="downloading", port=8104)
-        resp = await asyncio.wait_for(pending, timeout=5)
+        resp = await await_until(pending, what="the delete finishing after the switch")
         assert resp.status == 409
         assert ("remove", "laya") not in runtime.calls
 
@@ -1020,5 +1021,5 @@ class TestStartupResumeIsSerialisedWithSwitches:
             pending = asyncio.ensure_future(mod.resume_local_decision_model())
             await asyncio.sleep(0.05)
             assert not pending.done() and calls == []
-        assert await asyncio.wait_for(pending, timeout=5) == "laya"
+        assert await await_until(pending, what="the resume finishing after the switch") == "laya"
         assert calls == ["resume"]

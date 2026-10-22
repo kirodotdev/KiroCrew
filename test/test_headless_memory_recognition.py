@@ -20,6 +20,7 @@ from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.session import SessionManager
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import await_until, finished
 
 env = _member_env
 
@@ -457,7 +458,7 @@ async def test_gateway_spawn_freezes_mode_and_enforces_it_after_parent_change(
             )
         )
         assert response.status == 200, response.text
-        await asyncio.wait_for(ready.wait(), timeout=5)
+        await await_until(ready, what="the spawned run opening its session")
         run_id = json.loads(response.text)["id"]
         key = f"subagent:{run_id}"
         assert read_run_memory_mode(run_id) == mode
@@ -487,8 +488,11 @@ async def test_gateway_spawn_freezes_mode_and_enforces_it_after_parent_change(
         assert (read_refusal is not None) == (mode == "temporary")
     finally:
         finish.set()
-        await asyncio.wait_for(
-            asyncio.gather(*manager._tasks.values(), return_exceptions=True), timeout=5
+        # A cleanup deadline: a run that outlives it is cancelled, not waited on.
+        await finished(
+            asyncio.gather(*manager._tasks.values(), return_exceptions=True),
+            "the released runs finishing",
+            timeout=5,
         )
         manager.close()
         await sessions.close_all()

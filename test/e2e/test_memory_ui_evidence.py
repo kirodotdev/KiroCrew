@@ -40,6 +40,8 @@ from typing import Callable, Iterator, NoReturn
 
 import pytest
 
+from kiro_crew.testing.wait import wait_until
+
 pytestmark = pytest.mark.skipif(
     not os.environ.get("KIROCREW_E2E"),
     reason="Set KIROCREW_E2E=1 for the memory UI evidence gateways",
@@ -88,8 +90,16 @@ def _put_fact(client, key: str, value: str) -> None:
     client._open(request, timeout=30)
 
 
+#: How often a gateway is re-read over HTTP while a state is awaited.
+_HTTP_POLL_SECS = 0.5
+
+
 def _await_ready(client, path: str, secs: float = 30) -> None:
-    """HTTP readiness precedes recovery; wait on a read before seeding data."""
+    """HTTP readiness precedes recovery; wait on a read before seeding data.
+
+    Reads this module's ``time`` binding on purpose: ``test_memory_ui_evidence_driver.py``
+    pins the retry schedule and the deadline under a ``ManualClock`` installed there.
+    """
     deadline = time.monotonic() + secs
     while True:
         try:
@@ -101,21 +111,27 @@ def _await_ready(client, path: str, secs: float = 30) -> None:
                 raise
             if time.monotonic() >= deadline:
                 raise
-        time.sleep(0.5)
+        time.sleep(_HTTP_POLL_SECS)  # flake-ok: schedule pinned by the driver's ManualClock
 
 
 def _await_status(client, ready: Callable[[dict], bool], what: str, secs: float = 30) -> dict:
-    deadline = time.monotonic() + secs
     last: dict = {}
-    while time.monotonic() < deadline:
+
+    def _reached() -> bool:
+        nonlocal last
         last = client.get("/api/memory/embedding-status")
-        if ready(last):
-            return last
-        time.sleep(0.5)
-    pytest.fail(
-        f"embedding-status never reached {what}: {json.dumps(last, sort_keys=True)[:800]}\n"
-        f"{client.diagnostics()}"
+        return ready(last)
+
+    wait_until(
+        _reached,
+        timeout=secs,
+        interval=_HTTP_POLL_SECS,
+        describe=lambda: (
+            f"embedding-status never reached {what}: {json.dumps(last, sort_keys=True)[:800]}\n"
+            f"{client.diagnostics()}"
+        ),
     )
+    return last
 
 
 @pytest.fixture()

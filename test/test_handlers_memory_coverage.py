@@ -48,6 +48,7 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 )
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
@@ -417,7 +418,7 @@ class TestRunConfigWriteCancellation:
                 await first
             except asyncio.CancelledError:
                 cancelled = True
-            await asyncio.wait_for(second, timeout=10)
+            await await_until(second, what="the second writer running after the release")
             return early, cancelled, list(order)
 
         early, cancelled, seen = self._run(_drive())

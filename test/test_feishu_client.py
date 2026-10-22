@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until
+
 # ---------------------------------------------------------------------------
 # Fake lark_oapi SDK -- installed into sys.modules for the duration of tests
 # ---------------------------------------------------------------------------
@@ -1058,9 +1060,9 @@ class TestStart:
 
         client = LarkClient(app_id="a", app_secret="s")
         await client.start()
-        await asyncio.wait_for(
-            asyncio.to_thread(client._ws_client._started_event.wait),
-            timeout=1.0,
+        await async_wait_until(
+            client._ws_client._started_event.is_set,
+            describe=lambda: "the SDK client never started on its thread",
         )
 
         assert client._thread.is_alive()
@@ -1214,9 +1216,9 @@ class TestClose:
         try:
             client = LarkClient(app_id="a", app_secret="s")
             await client.start()
-            await asyncio.wait_for(
-                asyncio.to_thread(client._ws_client._started_event.wait),
-                timeout=1.0,
+            await async_wait_until(
+                client._ws_client._started_event.is_set,
+                describe=lambda: "the SDK client never started on its thread",
             )
 
             await client.close()

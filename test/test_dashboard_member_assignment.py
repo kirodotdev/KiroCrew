@@ -15,6 +15,7 @@ from kiro_crew.dashboard import chat_persistence
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.member_memory_auth import read_private_session_store
 from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture
@@ -130,7 +131,7 @@ async def test_dashboard_pin_holds_namespace_lock_through_publication(
         chat_persistence.pin_private_agent_store(state, key, "writer", KiroCrewConfig.load())
     )
     try:
-        assert await asyncio.wait_for(asyncio.to_thread(checked.wait, 5), timeout=6)
+        await async_wait_until(checked.is_set, describe=lambda: "the pin never reached its check")
         lock_path = (
             memory_stores.memory_stores_root().resolve()
             / memory_stores.MEMBER_BACKUPS_DIR_NAME
@@ -145,7 +146,7 @@ async def test_dashboard_pin_holds_namespace_lock_through_publication(
             os.close(fd)
     finally:
         release.set()
-        await asyncio.wait_for(pin, timeout=5)
+        await await_until(pin, what="the released pin finishing")
     assert pin.result() == writer
     assert await asyncio.to_thread(read_private_session_store, key) == writer
 

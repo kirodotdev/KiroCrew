@@ -49,6 +49,7 @@ from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.dashboard.handlers import files as files_mod
+from kiro_crew.testing.wait import finished
 
 # ``api_file_raw`` and ``api_file_download`` open with ``os.O_NOFOLLOW``, which
 # only exists on POSIX; the whole code path is unreachable on Windows.
@@ -784,7 +785,7 @@ class TestFileWatch:
             assert resp.status == 200
             assert resp.headers["Content-Type"].startswith("text/event-stream")
             assert resp.headers["Cache-Control"] == "no-cache"
-            chunk = await asyncio.wait_for(resp.content.readuntil(b"\n\n"), timeout=10)
+            chunk = await finished(resp.content.readuntil(b"\n\n"), "the first change event")
             payload = json.loads(chunk.decode("utf-8").split("data: ", 1)[1].strip())
             assert payload["content"] == "first revision\n"
             assert payload["mtime"] > 0
@@ -814,7 +815,7 @@ class TestFileWatch:
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.get(f"/api/file-watch?path={f}")
                 assert resp.status == 200
-                body = await asyncio.wait_for(resp.content.read(), timeout=10)
+                body = await finished(resp.content.read(), "the stream ending after the swap")
                 # Stream ends without ever emitting the file's contents.
                 assert body == b""
         assert len(seen) >= 2, "the watcher never re-resolved the path"

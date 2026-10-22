@@ -271,7 +271,7 @@ class TestTypedReadApproval:
             ],
         }
         client = _ClientStub([first, first, final])
-        with patch.object(rk.time, "sleep", return_value=None):
+        with patch.object(rk, "_SLOT_POLL_SECS", 0.001):
             assistant, tool = rk._await_completed_turn(client, "slot", path, nonce, 1.0)
         assert assistant["content"] == nonce
         assert tool["meta"]["done"] is True
@@ -287,7 +287,7 @@ class TestTypedReadApproval:
         permission["content"] = "Read file"
         permission["meta"]["tool_input"] = write_tool["meta"]["input"]
         client = _ClientStub([{"running": True, "queue": [], "messages": [write_tool, permission]}])
-        with patch.object(rk.time, "sleep", return_value=None):
+        with patch.object(rk, "_SLOT_POLL_SECS", 0.001):
             with pytest.raises(AssertionError, match="operation other than"):
                 rk._await_completed_turn(client, "slot", path, "nonce", 1.0)
         assert client.posts == [("/api/approvals/approval-1/reject", {})]
@@ -315,7 +315,7 @@ class TestTypedReadApproval:
             ],
         }
         client = _ClientStub([first, second])
-        with patch.object(rk.time, "sleep", return_value=None):
+        with patch.object(rk, "_SLOT_POLL_SECS", 0.001):
             with pytest.raises(AssertionError, match="more than one permission"):
                 rk._await_completed_turn(client, "slot", path, "nonce", 1.0)
         assert client.posts == [
