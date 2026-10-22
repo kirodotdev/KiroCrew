@@ -41,6 +41,10 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            AcpProcessDied with ambiguous_delivery set
 ├── AcpAuthRequired        — kiro-cli not authenticated; non-retryable
 ├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
+├── AcpDelegateLaunchFailed — the kiro-cli-chat delegate failed to launch (a stale
+│                            or version-skewed install); non-retryable, and not an
+│                            AcpProcessDied, so the chat shows the reinstall
+│                            message instead of a respawn loop
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
 ├── PiGateExtensionTampered — a shipped gate extension (Pi or DeepSeek) failed its digest check
