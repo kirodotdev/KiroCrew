@@ -14,7 +14,7 @@ import type { DisplayItem } from '../pages/chat/types'
 const msg = (role: string, content = ''): ChatMessage =>
   ({ role, content, cls: '' } as ChatMessage)
 
-/** A turn long enough to collapse: needs a working step and > 2 items. */
+/** A turn that collapses: it holds a tool call (any length wraps, #23017). */
 const workingTurn = () => [msg('assistant', 'a'), msg('tool', 't'), msg('assistant', 'b')]
 
 /** A sub-agent completion event SubagentCompletionCard can parse. */
@@ -405,8 +405,8 @@ describe('groupDisplayItems', () => {
   })
 
   it('reports trailingTurnIdx = -1 when the trailing group does not collapse', () => {
-    // Two items only — below the > 2 threshold, so flushTurn spreads them as
-    // loose items and there is no `complete` flag for the running state to touch.
+    // A lone answer, no tool call: flushTurn spreads it as a loose item and
+    // there is no `complete` flag for the running state to touch.
     const { turns, trailingTurnIdx } = groupDisplayItems([msg('user', 'u'), msg('assistant', 'a')])
     expect(trailingTurnIdx).toBe(-1)
     expect(turns.every(t => !isTurn(t))).toBe(true)
@@ -414,6 +414,40 @@ describe('groupDisplayItems', () => {
 
   it('reports trailingTurnIdx = -1 for an empty list', () => {
     expect(groupDisplayItems([])).toEqual({ turns: [], trailingTurnIdx: -1 })
+  })
+
+  // #23017: a one-tool turn must wrap like a two-tool turn, so it gets the
+  // "1 tool call" fold. The old `items.length > 2` rule spread it loose.
+  it('wraps a one-tool turn (tool call + answer) into a turn', () => {
+    const { turns, trailingTurnIdx } = groupDisplayItems([
+      msg('user', 'what is in README.md'), msg('tool', '🔧 Running: read'), msg('assistant', 'It lists the setup steps.'),
+    ])
+    const wrapped = turns.filter(isTurn)
+    expect(wrapped).toHaveLength(1)
+    expect(wrapped[0].items).toHaveLength(2)
+    expect(trailingTurnIdx).toBe(turns.indexOf(wrapped[0]))
+  })
+
+  it('wraps a lone tool call with no answer into a turn', () => {
+    const { turns } = groupDisplayItems([msg('user', 'u'), msg('tool', '🔧 Running: git status')])
+    expect(turns.filter(isTurn)).toHaveLength(1)
+  })
+
+  it('wraps a one-tool turn that is not the trailing one', () => {
+    const { turns } = groupDisplayItems([
+      msg('user', 'u1'), msg('tool', '🔧 Running: read'), msg('assistant', 'a'), msg('user', 'u2'),
+    ])
+    expect(turns.filter(isTurn)).toHaveLength(1)
+  })
+
+  it('leaves a lone answer with no tool call loose', () => {
+    const { turns } = groupDisplayItems([msg('user', 'u1'), msg('assistant', 'hi'), msg('user', 'u2')])
+    expect(turns.filter(isTurn)).toHaveLength(0)
+  })
+
+  it('leaves two answers with no tool call loose', () => {
+    const { turns } = groupDisplayItems([msg('user', 'u'), msg('assistant', 'a'), msg('assistant', 'b')])
+    expect(turns.filter(isTurn)).toHaveLength(0)
   })
 
   it('does not collapse a turn with no working steps', () => {

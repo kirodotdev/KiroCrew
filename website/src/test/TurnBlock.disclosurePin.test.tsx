@@ -63,7 +63,7 @@ const tool = (): ChatMessage => ({ role: 'tool', content: '🔧 Running: shell',
 const text = (s: string): ChatMessage => ({ role: 'assistant', content: s, ts: `${++seq}` })
 const user = (s: string): ChatMessage => ({ role: 'user', content: s, ts: `${++seq}` })
 
-/** A turn long enough that flushTurn emits a `turn` object (items.length > 2). */
+/** A turn flushTurn wraps as a `turn` object (it holds a tool call). */
 const aTurn = (): ChatMessage[] => { seq = 0; return [user('go'), tool(), text('a'), tool()] }
 
 const label = () => screen.getByRole('button').textContent
@@ -143,8 +143,8 @@ describe('TurnBlock — user disclosure survives running-flag churn', () => {
 
 describe('TurnBlock — row identity across turn promotion', () => {
   // KNOWN DEFECT (tracked separately): flushTurn only emits a `turn` object once
-  // the trailing group exceeds items.length > 2. Below that the items render
-  // loose; above it they are wrapped in TurnBlock. Inserting a component into
+  // the trailing group holds a tool call or exceeds items.length > 2. Before
+  // that the items render loose; after it they are wrapped in TurnBlock. Inserting a component into
   // the tree remounts everything beneath it, so row-local state dies once per
   // turn. virtualKeyFor deliberately keeps the ROW key stable across the
   // promotion, but a stable row key cannot prevent a remount caused by a
@@ -154,13 +154,13 @@ describe('TurnBlock — row identity across turn promotion', () => {
   // non-remounting this test starts failing and must be flipped to `it`.
   it.fails('promoting loose items into a turn does not remount the row', () => {
     seq = 0
-    const m: ChatMessage[] = [user('go'), tool()]
+    // A lone answer stays loose; the first tool call promotes the batch (#23017).
+    const m: ChatMessage[] = [user('go'), text('looking')]
     const firstId = `m${m[1].ts}`
     const { rerender } = render(<Transcript messages={m} running={true} />)
     expect(mounts[firstId]).toBe(1)
 
-    // Two more items push the trailing group over the promotion threshold.
-    rerender(<Transcript messages={[...m, text('thinking'), tool()]} running={true} />)
+    rerender(<Transcript messages={[...m, tool()]} running={true} />)
     expect(mounts[firstId]).toBe(1)
   })
 })

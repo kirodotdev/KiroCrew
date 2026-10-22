@@ -8,9 +8,8 @@
  * to the bare `key` restores the defect (same-tick tool pills expand together)
  * while every helper-level test stays green — so the wiring needs its own pin.
  *
- * Arrangement note: exactly two tool rows are used on purpose — the
- * "Worked through N steps" turn fold requires items.length > 2, so two pills
- * render directly and the test needs no fold expansion.
+ * Arrangement note: two tool rows are used on purpose. Since #23017 they wrap
+ * as a turn; the test reads the two pills directly and needs no fold expansion.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'

@@ -701,6 +701,10 @@ describe('ChatPage renderMessage — role dispatch', () => {
     renderChatPage([
       msg('tool', '🔧 grep', { ts: 't1', meta: { output: 'no matches' } }),
     ])
+    // A settled one-tool turn folds behind its "1 tool call" toggle (#23017);
+    // open it to reach the row this test is about.
+    const toggle = await screen.findByRole('button', { name: /1 tool call/i })
+    fireEvent.click(toggle)
     await waitFor(() => expect(shown()).toContain('grep'))
   })
 

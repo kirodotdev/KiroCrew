@@ -135,6 +135,16 @@ const isForeignInjection = (msg: ChatMessage): boolean => {
   return typeof kind === 'string' && FOREIGN_INJECT_KINDS.has(kind)
 }
 
+/**
+ * A batch holding a tool call: the rows a turn's fold counts (TurnBlock's
+ * `isTool` matches `single` tool rows only). Such a batch wraps as a turn
+ * whatever its length, so a one-tool turn folds like a two-tool turn (#23017).
+ * Shared with app-sdk `ChatMessageList`, which keeps its own grouping (its
+ * groups hold reasoning, which must not count) but must wrap the same batches.
+ */
+export const hasToolStep = (items: TurnItem[]): boolean =>
+  items.some(t => t.kind === 'single' && t.msg.role === 'tool')
+
 export interface GroupedTurns {
   turns: DisplayItem[]
   /** Index into `turns` of the turn object produced by the TRAILING flush, or
@@ -151,7 +161,7 @@ export interface GroupedTurns {
  * The region can hold both loose TurnItems (a batch too short to have been
  * wrapped) and already-wrapped turns (a completion opener splits the region
  * into several), so it is flattened back to a single item list. Flattening is
- * what makes the fold reliable: a two-item reply is spread loose by `flushTurn`
+ * what makes the fold reliable: a short reply with no tool call is spread loose by `flushTurn`
  * and would otherwise have no TurnBlock to fold it.
  *
  * Always `complete: true` — a region is only folded once the synthesis row that
@@ -247,8 +257,12 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   // nothing, and mergeTurnThinking ignores them too).
   const contentThinkingCount = (items: TurnItem[]) =>
     items.reduce((n, t) => n + (isReasoningBurst(t) ? 1 : 0), 0)
+  // A batch with a tool call wraps at ANY length (#23017). The `> 2` rule alone
+  // spread a one-tool turn (tool + answer) loose, so it never got the
+  // "1 tool call" fold a two-tool turn gets. Assistant-only batches keep the
+  // length rule: a lone answer has no step to fold and must stay loose.
   const flushTurn = (items: TurnItem[], complete: boolean) => {
-    if ((hasWorkingSteps(items) && items.length > 2) || contentThinkingCount(items) >= 2) {
+    if (hasToolStep(items) || (hasWorkingSteps(items) && items.length > 2) || contentThinkingCount(items) >= 2) {
       turns.push({ kind: 'turn', items, complete })
     } else {
       turns.push(...items)
