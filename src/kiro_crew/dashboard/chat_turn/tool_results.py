@@ -100,6 +100,9 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         _wt_result_key = _tcid_identity_key(event.tool_call_id)
         if _wt_result_key and _wt_result_key in _wt_pending_coding:
             _wt_maybe_cadence(turn)
+    if event.tool_output_truncated:
+        _turn_tool_output_truncated = True
+        turn._turn_tool_output_truncated = _turn_tool_output_truncated
     _out = _redact_tool_field(event.tool_output)
     # Redact the join key once for the WS broadcast and the
     # message-meta comparison below. `_tool_meta` stores the
@@ -860,6 +863,16 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 # a first terminal frame with no output still reads as one.
                 if _out or "output" not in _meta:
                     _meta["output"] = _out
+                # Every result row created this turn records whether
+                # its output is known whole. Missing means unknown on a
+                # legacy row, so writing False is as important as writing
+                # True. Once incomplete, later frames cannot restore text
+                # an earlier frame omitted.
+                if str(m.get("ts") or "") not in _rows_before_turn:
+                    if event.tool_output_truncated:
+                        _meta["outputTruncated"] = True
+                    else:
+                        _meta.setdefault("outputTruncated", False)
         # Tell open clients about the app flag as well as storing it.
         # `chat.mcpApps` is a BOUNDED cache, so a session that opens
         # many apps evicts the oldest payload while its row is still

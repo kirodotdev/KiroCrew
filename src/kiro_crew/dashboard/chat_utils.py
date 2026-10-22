@@ -558,8 +558,10 @@ def _validate_tool_name(tool_name: str, *, is_shell: bool = False, canonical_nam
 #
 #   ``chat_utils_slots`` -- a slot's session, history and transcript keys, and its memory mode
 #   ``chat_utils_display`` -- display redaction and preparing stored rows for the wire
-#   ``chat_utils_turn_text`` -- what a turn's final text claims: promise-only, leaked tool calls
-#   ``chat_utils_injected_rows`` -- the rows the runner injects, their kinds, the next message
+#   ``chat_utils_turn_text`` -- what a turn's final text claims: promise-only, leaked tool calls,
+#       a provider-only token-budget banner
+#   ``chat_utils_injected_rows`` -- the rows the runner injects, their kinds and recovery
+#       provenance, the next message
 #   ``chat_utils_turn_recovery`` -- how a turn ended and whether the runner continues it
 #   ``chat_utils_awaits`` -- cancellation-safe awaits for handlers that must finish a write
 #   ``chat_utils_completion`` -- the end of a turn: sub-agent probes, the done payload
@@ -679,6 +681,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNENTITLED_KIND,
+        RECOVERY_PROVENANCE_META_KEY,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
         STEER_INTENT_META,
@@ -690,6 +693,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         TRANSIENT_RETRY_KIND,
         USAGE_LIMIT_KIND,
         RecoveryPayload,
+        RecoveryProvenance,
         _dequeue_next_message,
         _dequeue_next_system_message,
         _edit_queued_by_id,
@@ -697,6 +701,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stamped_turn_actor,
         app_inject_row,
         carries_attachments,
+        has_recovery_provenance,
         is_synthetic_payload_item,
         is_synthetic_recovery_item,
         is_system_injection,
@@ -783,23 +788,35 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_utils_turn_text import (  # noqa: F401
         _APPROVAL_GATED_RE,
         _CODE_DELIM_RE,
+        _COUNT_RE,
+        _DIGIT_GROUPING_RE,
+        _JSON_UNICODE_ESCAPE_RE,
         _LEAKED_INVOKE_BODY_RE,
         _LEAKED_INVOKE_OPEN_RE,
         _NEGATED_PROMISE_RE,
         _NO_ACTION_CLOSER_RE,
         _PROMISE_HAS_FOLLOWING_CONTENT_RE,
         _PROMISE_NOW_RE,
+        _PROVIDER_BUDGET_BANNER_RE,
+        _PROVIDER_BUDGET_TOPIC_RE,
         _SENTENCE_BOUNDARY_RE,
         _UNFINISHED_PROGRESS_RE,
+        _banner_count,
+        _carries_count,
+        _decode_json_unicode_escapes,
+        _fold_unicode_digits,
         _strip_quoted_code,
         _terminal_sentence,
+        classify_provider_budget_banner,
         has_leaked_tool_call,
         has_unfinished_progress_claim,
         is_promise_only_terminal,
+        mentions_provider_budget,
         open_construct_at_end,
         should_notice_compaction_dropped_leak,
         should_notice_leaked_tool_call,
         should_notice_mixed_turn_leak,
+        strip_provider_budget_banner,
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

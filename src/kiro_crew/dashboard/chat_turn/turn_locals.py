@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         MonitorCompletionHook,
+        RecoveryProvenance,
         RefusalInfo,
         ReplayFamily,
         StopClass,
@@ -112,6 +113,7 @@ class _ChatTurn:
     _crew_log_terminal: "dict[Any, Any] | None"
     _crew_log_turn_no: "int"
     _crew_log_turn_open: "bool"
+    _current_recovery_provenance: "RecoveryProvenance | None"
     _current_replay_message: "dict[Any, Any] | None"
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
@@ -162,10 +164,13 @@ class _ChatTurn:
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
     _produced_visible_output: "bool"
+    _provider_budget_banner: "bool"
+    _provider_budget_recovery_owned: "bool"
     _provider_has_history: "bool"
     _recovering_compaction: "bool"
     _recovering_infra: "bool"
     _recovering_promise: "bool"
+    _recovering_provider_artifact: "bool"
     _recovery_turn_id: "str"
     _refusal_notices: "list[str]"
     _refusal_notices_settled: "int"
@@ -212,6 +217,7 @@ class _ChatTurn:
     _this_turn_is_clear: "bool"
     _todo_recovery_carried: "bool"
     _todo_sync_rendered: "tuple[tuple[str, str, bool], ...]"
+    _transient_recovery_owned: "bool"
     _trusted_prompt_tail: "str | None"
     _ttft_quiet_text: "bool"
     _ttft_t0: "float | None"
@@ -223,6 +229,7 @@ class _ChatTurn:
     _turn_elapsed_ms: "int"
     _turn_emitted: "bool"
     _turn_flushed_visible_text: "bool"
+    _turn_input_texts: "list[str]"
     _turn_is_completion: "bool"
     _turn_landed: "bool"
     _turn_model: "str"
@@ -239,7 +246,9 @@ class _ChatTurn:
     _turn_thought: "bool"
     _turn_tool_calls: "int"
     _turn_tool_identities: "list[tuple[str, str, str, bool]]"
+    _turn_tool_output_truncated: "bool"
     _turn_usage_persisted: "bool"
+    _user_authority_text: "str"
     _user_msg_for_mirror: "str"
     _user_prepend_offset: "int"
     _user_span: "list[int]"

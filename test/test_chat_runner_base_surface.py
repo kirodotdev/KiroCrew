@@ -758,7 +758,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_flush_segment",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot', assistant_text: 'str', *, broadcast: 'bool' = True, quiet_persist: 'bool' = False, interrupted: 'bool' = False) -> 'dict[str, Any]'",
+            "(state: 'DashboardState', slot: '_ChatSlot', assistant_text: 'str', *, broadcast: 'bool' = True, quiet_persist: 'bool' = False, interrupted: 'bool' = False, strip_provider_banner: 'bool' = False) -> 'dict[str, Any] | None'",
         ),
         (
             "_schedule_widget_registration",

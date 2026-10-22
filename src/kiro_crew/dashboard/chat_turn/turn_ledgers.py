@@ -11,10 +11,12 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         CADENCE_MIN_INTERVAL_SECS,
         COMMANDS_OFF_META_KEY,
+        RECOVERY_PROVENANCE_META_KEY,
         SUBAGENT_COMPLETION_KIND,
         DirectiveOutcome,
         KiroCrewConfig,
         RecoveryPayload,
+        RecoveryProvenance,
         ReplayFamily,
         _redact_tool_field,
         attachment_meta,
@@ -65,6 +67,7 @@ def _queue_recovery(
     kind: str,
     payload: str = "",
     extra_meta: dict | None = None,
+    provenance: RecoveryProvenance | None = None,
 ) -> str:
     """Queue a retry without losing a producer's consumption settlement.
 
@@ -123,6 +126,12 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    # Host-minted recovery ownership (see RecoveryProvenance). Callers that
+    # requeue within the current recovery episode pass its recognized owner; a
+    # producer that starts a new episode omits it, and an intentional ownership
+    # change names its tag.
+    if provenance is not None:
+        _recovery_meta[RECOVERY_PROVENANCE_META_KEY] = provenance.value
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
@@ -223,6 +232,7 @@ def _requeue_owed_completion(turn) -> None:
             if _current_message is not None and isinstance(_current_message.get("meta"), dict)
             else None
         ),
+        provenance=turn._current_recovery_provenance,
     )
 
 

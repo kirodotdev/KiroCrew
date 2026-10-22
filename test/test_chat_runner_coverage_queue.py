@@ -366,6 +366,186 @@ def _children(*, running=(), queued: int | None = 0, in_memory: bool = False) ->
     )
 
 
+class TestPostTokenRecoveryPurge:
+    """The head-inserted post-token banner recovery is a synthetic continuation.
+
+    A Stop or a queued user correction arriving between its enqueue and the drain
+    must purge it under the same ownership/generation invariant as its promise-only
+    and compaction siblings, so it can never dispatch auto-approved file-changing
+    work after the intervention or consume the new turn's one-shot recovery budget.
+    The opposite mode is equally load bearing: with no intervention the recovery
+    must still dispatch.
+    """
+
+    @staticmethod
+    def _queue_posttoken(slot, *, provider_owned: bool = True):
+        # Mirror the production enqueue (`_provider_budget_banner` arm): head
+        # insert, spent one-shot marker, and the continuation record armed at
+        # enqueue. Independent transient-5xx retries can deliberately reuse the
+        # same text under their own ownership tag.
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.dashboard.chat_utils import (
+            RECOVERY_PROVENANCE_META_KEY,
+            SYNTHETIC_RECOVERY_KIND,
+            RecoveryPayload,
+            RecoveryProvenance,
+        )
+        from kiro_crew.dashboard.recovery_replays import ReplayFamily
+
+        slot._posttoken_retry_used = True
+        slot.replays.arm(
+            ReplayFamily.CONTINUATION,
+            entry_id="",
+            session_key=chat_runner.effective_session_key(slot),
+            stop_gen=slot._stop_generation,
+            session_stop_gen=0,
+        )
+        provenance = (
+            RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT
+            if provider_owned
+            else RecoveryProvenance.TRANSIENT_RETRY
+        )
+        meta = {RECOVERY_PROVENANCE_META_KEY: provenance.value}
+        return slot.queue_insert(
+            0,
+            _POSTTOKEN_RECOVER_MSG,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=RecoveryPayload.CONTINUATION,
+            meta=meta,
+        )
+
+    @staticmethod
+    def _notices(slot) -> list[str]:
+        return [m.get("content", "") for m in slot.messages if m.get("role") == "notice"]
+
+    @pytest.mark.asyncio
+    async def test_purged_when_user_queues_a_correction(self, tmp_path):
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = None
+        self._queue_posttoken(slot)
+        # A user correction lands AFTER the recovery was head-inserted.
+        slot.queue_append("actually stop — do something else instead")
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        # The recovery is purged; the user's correction is what dispatched.
+        assert all(q["content"] != _POSTTOKEN_RECOVER_MSG for q in slot._queue)
+        assert [m["content"] for m in slot.messages if m["role"] == "user"] == [
+            "actually stop — do something else instead"
+        ]
+        # The one-shot budget is reset so the user's own turn keeps its recovery.
+        assert slot._posttoken_retry_used is False
+        assert any("cancelled" in n for n in self._notices(slot))
+
+    @pytest.mark.asyncio
+    async def test_purged_when_a_stop_resolved_while_it_waited(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = None
+        self._queue_posttoken(slot)  # snapshot == current _stop_generation
+        # A Stop pressed AND resolved back to idle after enqueue: invisible to
+        # `_stopping` / `_should_suppress_requeue`, but the monotonic counter moved.
+        slot._stop_generation += 1
+
+        assert await chat_runner._start_next_queued_turn(state, slot) is False
+
+        assert slot._queue == []
+        assert slot._posttoken_retry_used is False
+        assert any("stopped" in n for n in self._notices(slot))
+
+    @pytest.mark.asyncio
+    async def test_same_content_transient_5xx_retry_survives_autoapprove(self, tmp_path):
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.dashboard.chat_utils import (
+            RecoveryProvenance,
+            has_recovery_provenance,
+        )
+
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = None
+        # The post-token transient-5xx ladder legitimately uses the same fixed
+        # continuation under its own ownership tag.
+        self._queue_posttoken(slot, provider_owned=False)
+        slot._trust = True
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        injected = [m for m in slot.messages if m["role"] == "inject"]
+        assert [m["content"] for m in injected] == [_POSTTOKEN_RECOVER_MSG]
+        assert has_recovery_provenance(injected[0], RecoveryProvenance.TRANSIENT_RETRY)
+        assert slot._posttoken_retry_used is True
+
+    @pytest.mark.asyncio
+    async def test_provider_owner_and_same_text_transient_both_dispatch_under_autoapprove(
+        self, tmp_path
+    ):
+        """Neither owner of the shared continuation text is gated by the approval
+        mode: the head entry dispatches and the other keeps its queue place."""
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.dashboard.chat_utils import (
+            RecoveryProvenance,
+            has_recovery_provenance,
+        )
+
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = None
+        slot._stop_generation = 7
+        self._queue_posttoken(slot, provider_owned=False)
+        self._queue_posttoken(slot, provider_owned=True)
+        slot._trust = True
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        injected = [m for m in slot.messages if m["role"] == "inject"]
+        assert [m["content"] for m in injected] == [_POSTTOKEN_RECOVER_MSG]
+        # The provider-owned entry was head-inserted last, so it dispatches first.
+        assert has_recovery_provenance(injected[0], RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+        assert not has_recovery_provenance(injected[0], RecoveryProvenance.TRANSIENT_RETRY)
+        assert len(slot._queue) == 1
+        assert has_recovery_provenance(slot._queue[0], RecoveryProvenance.TRANSIENT_RETRY)
+        assert slot._posttoken_retry_used is True
+
+    @pytest.mark.asyncio
+    async def test_survives_and_dispatches_without_intervention(self, tmp_path):
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = None
+        # A prior turn's Stop left the counter elevated; the recovery was enqueued
+        # AFTER it, snapshotting the SAME value, so there is no since-enqueue Stop
+        # and no user input. The recovery must NOT be purged.
+        slot._stop_generation = 3
+        self._queue_posttoken(slot)  # snapshot = 3
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        # It dispatched (recovery rows render as "inject", never "user"); the
+        # one-shot marker is left intact for it to complete.
+        assert [m["content"] for m in slot.messages if m["role"] == "inject"] == [
+            _POSTTOKEN_RECOVER_MSG
+        ]
+        assert not any(m["role"] == "user" for m in slot.messages)
+        assert slot._posttoken_retry_used is True
+        assert not any("cancelled" in n for n in self._notices(slot))
+
+
 class TestRunPendingSynthesis:
     @pytest.mark.asyncio
     async def test_unarmed_synthesis_just_finishes_the_cycle(self, tmp_path):

@@ -2,8 +2,8 @@
 
 The synthetic recovery instructions the runner injects, the structural kinds of its
 notices, app messages, cron notifications and sub-agent deliveries, the recovery payload
-a replay carries, and the queue operations that pick the next message or edit and
-remove a queued placeholder.
+a replay carries and the host-minted provenance a recovery entry is authorized by, and
+the queue operations that pick the next message or edit and remove a queued placeholder.
 
 Served through :mod:`kiro_crew.dashboard.chat_utils`, which callers and tests import and
 patch; this module never imports it.
@@ -361,6 +361,33 @@ def is_synthetic_recovery_item(item: dict) -> bool:
         SYNTHETIC_RECOVERY_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
     )
+
+
+class RecoveryProvenance(str, Enum):
+    """Host-minted ownership carried by a synthetic recovery queue entry.
+
+    Recovery text and payload describe what the next turn receives; neither can
+    identify why it was enqueued because independent retry mechanisms may use the
+    same continuation text. This tag is the authorization identity consumed at
+    queue drain. Its provider-budget value deliberately equals the corresponding
+    structural stop reason so the producer and consumer cannot drift.
+    """
+
+    PROVIDER_BUDGET_ARTIFACT = "provider_budget_artifact"
+    TRANSIENT_RETRY = "transient_retry"
+
+
+# Named by the path callers import it from: the facade that serves it.
+RecoveryProvenance.__module__ = "kiro_crew.dashboard.chat_utils"
+
+
+RECOVERY_PROVENANCE_META_KEY = "recoveryProvenance"
+
+
+def has_recovery_provenance(item: dict, provenance: RecoveryProvenance) -> bool:
+    """Return whether a queue entry carries one exact host-minted provenance."""
+    meta = item.get("meta")
+    return isinstance(meta, dict) and meta.get(RECOVERY_PROVENANCE_META_KEY) == provenance.value
 
 
 class RecoveryPayload(str, Enum):

@@ -2,7 +2,9 @@
 
 Promise-only closers (a turn that says it will act and then stops), unfinished-progress
 claims, and tool-call markup that leaked into the reply text, each judged with quoted
-code stripped first.
+code stripped first; and a provider-only weighted-token banner at the head of the reply,
+recognized by its exact grammar and kept visible whenever the evidence the turn can see
+could make it an echo.
 
 Served through :mod:`kiro_crew.dashboard.chat_utils`, which callers and tests import and
 patch; this module never imports it.
@@ -11,6 +13,8 @@ patch; this module never imports it.
 from __future__ import annotations
 
 import re
+import unicodedata
+from collections.abc import Iterable
 
 from kiro_crew.messaging.renderer import split_options_trailer
 from kiro_crew.messaging.split import FENCE_CLOSE, FENCE_OPEN, iter_fence_lines
@@ -615,3 +619,233 @@ def should_notice_compaction_dropped_leak(
     if stop_reason != end_turn_reason:
         return False
     return prompt_depth == 0
+
+
+# Some model backends occasionally emit their private context-budget reminder as
+# answer text at the end of a long turn. Keep recognition deliberately exact and
+# suppression conservative: ordinary discussion of tokens and quoted/code text
+# survives without provenance. A capacity request the session's own human wrote
+# fails open regardless of request verb or turn kind; typed provider recovery is
+# host-minted provenance.
+# The prefix is recognized at a line break, at end of input, or glued directly to
+# an uppercase letter: the observed provider shapes are a banner-only message and
+# a banner fused to the reply's first word with no separator. A lowercase
+# continuation (``leftover``), punctuation before glued text, and quoted or
+# mid-text mentions are not recognized. Recognition proves only the shape; who
+# authored the bytes is decided by ``classify_provider_budget_banner``.
+_PROVIDER_BUDGET_BANNER_RE = re.compile(
+    r"\A[ \t]*You have (?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+) "
+    r"weighted tokens left"
+    r"(?:(?=[A-Z])|[.!]?(?:[ \t]*(?:\r?\n)+[ \t]*|[ \t]*\Z))"
+)
+_PROVIDER_BUDGET_TOPIC_RE = re.compile(
+    # The topic words of a model-capacity or token-budget request. Any text from
+    # the session's own human that names one of them fails open: the banner
+    # stays visible on that turn. A list of question shapes cannot be complete
+    # ("how many tokens are left", "I can still use", "have I got left", "the
+    # number of tokens", "whether I have any tokens left" are a few of the forms
+    # a person uses), and the two mistakes are not symmetric: failing open on a
+    # turn that mentions tokens shows a leaked banner once, which is what every
+    # such turn showed without suppression, while a missed wording deletes an
+    # answer the person asked for. So no verb, subject or question shape is
+    # required, and a message about an API token or a project budget fails open
+    # too.
+    r"\b(?:tokens?|budgets?|capacity|quotas?|allowances?|context windows?)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_provider_budget_banner(text: str) -> tuple[str, bool]:
+    """Remove one leading provider-only weighted-token banner.
+
+    Returns ``(clean_text, removed)``. A leading-only rule is intentional: the
+    provider artifact arrives before answer prose, while the same words later in
+    an answer can be legitimate user-facing discussion.
+    """
+    match = _PROVIDER_BUDGET_BANNER_RE.match(text or "")
+    if match is None:
+        return text, False
+    return text[match.end() :], True
+
+
+def mentions_provider_budget(message: str) -> bool:
+    """Return whether the asker's text names tokens, a budget, capacity or a quota.
+
+    Any such mention fails open, with no verb, subject or question shape
+    required: a leaked banner then stays visible on that turn, which is what
+    every such turn shows without suppression, while a missed wording would
+    delete an answer the person asked for. Whitespace is folded before the
+    search so a wrapped or double-spaced message reads the same. Fixed
+    synthetic provider-recovery text never consults this gate.
+    """
+    return _PROVIDER_BUDGET_TOPIC_RE.search(" ".join((message or "").split())) is not None
+
+
+#: A separator between digit groups (``8,154``, ``8 154``, a thin or no-break
+#: space). Folded away before a count is read or looked for, so a number reads
+#: the same however it is grouped.
+_DIGIT_GROUPING_RE = re.compile(r"(?<=\d)[,\u202f\u00a0 ](?=\d{3}\b)")
+_COUNT_RE = re.compile(r"\d+")
+
+
+def _fold_unicode_digits(text: str) -> str:
+    """Map every Unicode decimal digit to its ASCII equivalent, nothing else.
+
+    A count the reply echoes can be written in another script's decimal digits
+    -- Arabic-Indic ``٨١٥٤``, Devanagari, fullwidth -- and still name the same
+    whole number as the banner's ASCII ``8154``. Each decimal digit (Unicode
+    category Nd) becomes its value ``0``-``9``; every other character is left
+    exactly as it is, so this is a per-digit map, never a broad substring
+    rewrite. Run before the count is read or searched for so both sides compare
+    on one digit alphabet. ASCII text (the common case) is returned untouched.
+    """
+    if not text or text.isascii():
+        return text
+    return "".join(
+        str(unicodedata.decimal(ch)) if (not ch.isascii() and ch.isdecimal()) else ch for ch in text
+    )
+
+
+#: A JSON ``\uXXXX`` escape, or a UTF-16 surrogate pair spelled as two of them,
+#: behind any run of backslashes (a payload serialised twice doubles them).
+_JSON_UNICODE_ESCAPE_RE = re.compile(
+    r"\\+u(?:(?P<high>[dD][89abAB][0-9a-fA-F]{2})\\+u(?P<low>[dD][c-fC-F][0-9a-fA-F]{2})"
+    r"|(?P<bmp>[0-9a-fA-F]{4}))"
+)
+
+
+def _decode_json_unicode_escapes(text: str) -> str:
+    """Spell each JSON ``\\uXXXX`` escape in *text* as the character it encodes.
+
+    A tool result whose payload is serialised with ``json.dumps`` (an object a
+    parser cannot show as plain text, such as a stderr-only shell result) keeps
+    every non-ASCII character as an escape, so an Arabic-Indic ``٨١٥٤`` in it
+    reads ``\\u0668\\u0661\\u0665\\u0664`` and names no number at all. Decoding
+    the escapes lets such a figure, and an escaped digit-group separator beside
+    it, read as the characters the tool returned. A lone surrogate escape is
+    left as it is. Text with no escape is returned untouched.
+    """
+    if "\\u" not in text:
+        return text
+
+    def _char(match: re.Match[str]) -> str:
+        if match.group("bmp") is not None:
+            code = int(match.group("bmp"), 16)
+            return match.group(0) if 0xD800 <= code <= 0xDFFF else chr(code)
+        high = int(match.group("high"), 16)
+        low = int(match.group("low"), 16)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+    return _JSON_UNICODE_ESCAPE_RE.sub(_char, text)
+
+
+def _banner_count(banner: str) -> str:
+    """The count a matched banner carries, with Unicode digits and grouping folded away."""
+    match = _COUNT_RE.search(_DIGIT_GROUPING_RE.sub("", _fold_unicode_digits(banner or "")))
+    return match.group(0) if match else ""
+
+
+def _carries_count(text: str, count: str) -> bool:
+    """Whether ``text`` names ``count`` as a whole number, however its digits are grouped or scripted.
+
+    ``You have 8,154 weighted tokens left``, ``you have 8154 weighted tokens
+    left``, a translation carrying Arabic-Indic ``٨١٥٤`` and ``{"remaining":
+    8154}`` all carry ``8154``; ``18154`` and ``8154.2`` do not name the same
+    whole number. Unicode decimal digits are folded to ASCII first so a figure
+    the reply echoes in another script still protects it, then digit grouping is
+    folded, so both ends of the comparison read one digit alphabet. A figure a
+    serialised tool result carries as JSON ``\\uXXXX`` escapes counts too: the
+    text is read both as written and with those escapes decoded, so decoding can
+    only find more evidence, never hide a count the written text shows.
+    """
+    pattern = re.compile(rf"(?<![\d.]){re.escape(count)}(?!\d|\.\d)")
+    raw = text or ""
+    for candidate in dict.fromkeys((raw, _decode_json_unicode_escapes(raw))):
+        if pattern.search(_DIGIT_GROUPING_RE.sub("", _fold_unicode_digits(candidate))):
+            return True
+    return False
+
+
+def classify_provider_budget_banner(
+    text: str,
+    user_authority: str,
+    *,
+    is_provider_recovery: bool,
+    is_transient_recovery: bool,
+    prior_visible_output: bool,
+    tool_results: Iterable[str] = (),
+    echo_evidence_complete: bool = True,
+    transcript_texts: Iterable[str] = (),
+    turn_inputs: Iterable[str] = (),
+) -> tuple[str, bool]:
+    """Classify one exact leading banner using artifact-specific provenance.
+
+    ``bool`` means the matched prefix is provider metadata. The checks that keep
+    the text visible run before either strip, so they hold on every turn kind:
+    a typed transient retry may legitimately repeat the original answer, a
+    mention of tokens, a budget, capacity or a quota in ``user_authority``
+    keeps the bytes, and the banner's count (the same number, however grouped,
+    in any case, wording or language) in ``user_authority`` itself, in a tool
+    result in ``tool_results`` or in an earlier row in ``transcript_texts`` is
+    evidence the reply echoes, reformats, translates or repeats text the turn
+    can see. A count that appears nowhere the turn can see is the provider's
+    own figure. The caller
+    passes as ``user_authority`` the turn's own payload unless it is runner- or
+    app-authored (a payload another session or a scheduled job injected is read
+    like typed text), plus each consumed steer the session's human typed, never
+    a recovery's own continuation text, as ``tool_results`` the
+    text of every tool result delivered to the model this turn, and as
+    ``transcript_texts`` the text and tool output of every row of an earlier
+    turn in this conversation, whoever wrote it, and as ``turn_inputs`` what
+    the model read as input this turn, whoever wrote it: the prompt as sent (an
+    ``@prompt`` body, an app's or a peer's injected payload, the runner's own
+    prepends) and every steer the turn consumed, a peer's included.
+    ``turn_inputs`` is count evidence only: the topic gate reads
+    ``user_authority`` alone, so a peer or a prompt file that names tokens does
+    not keep a banner by its topic.
+
+    Only then do the strips apply. Typed provider recovery has host-minted
+    ownership and removes the prefix. For an ordinary turn, grammar alone cannot
+    prove authorship: a leading prefix before semantic answer text remains
+    byte-for-byte visible, and a banner-only tail is an artifact only after the
+    turn already delivered visible model output AND the echo evidence is whole.
+    ``echo_evidence_complete`` is False when a prompt image could hold the
+    count, an earlier transcript prefix is outside the live window, or a tool
+    result's recorded text is not known to be whole. The tail then stays visible
+    as an echo the available evidence cannot rule out, and the typed-recovery
+    strip stands down for the same reason. A
+    banner-only turn with no such evidence is ambiguous and therefore stays
+    visible, including regenerated answers and echoes whose prompt uses wording
+    this classifier has never seen.
+    """
+    stripped, matched = strip_provider_budget_banner(text)
+    if not matched:
+        return text, False
+    if is_transient_recovery or mentions_provider_budget(user_authority):
+        return text, False
+    # The echo evidence is the banner's count. The human's own words this turn,
+    # a tool result delivered this turn, any row of an earlier turn, or any input
+    # the model read this turn (the prompt as sent, a consumed steer from anyone),
+    # that carries the same number is what a reply in the banner's shape may be
+    # echoing, reformatting, translating or repeating (grouped digits, a changed
+    # case, a rewording, a wrapped line, another language all keep the number),
+    # so the number alone is the test and both sides are folded first. A
+    # different number, or none, is no evidence.
+    count = _banner_count(text[: len(text) - len(stripped)])
+    if count and (
+        _carries_count(user_authority, count)
+        or any(_carries_count(result, count) for result in tool_results)
+        or any(_carries_count(earlier, count) for earlier in transcript_texts)
+        or any(_carries_count(given, count) for given in turn_inputs)
+    ):
+        return text, False
+    # Evidence the classifier could not read cannot rule an echo out for
+    # either strip. A count may sit in prompt-image pixels, an omitted transcript
+    # prefix, a cut result, or an output field the recorded row never showed.
+    if not echo_evidence_complete:
+        return text, False
+    if is_provider_recovery:
+        return stripped, True
+    if prior_visible_output and not stripped:
+        return stripped, True
+    return text, False

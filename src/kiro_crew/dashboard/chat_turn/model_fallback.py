@@ -1059,6 +1059,7 @@ async def _refusal_fallback_retry(turn) -> bool:
         kind=SYNTHETIC_RECOVERY_KIND,
         payload=_replay_payload,
         extra_meta=_replay_extra,
+        provenance=(turn._current_recovery_provenance if turn._turn_tool_calls == 0 else None),
     )
     # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
     # purges the replay when either counter moved (a Stop landed while

@@ -11,7 +11,7 @@ import re
 import uuid
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
 from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         row_mid,
         sel,
         sel_is_warm,
+        strip_provider_budget_banner,
         telemetry_channel_of,
         with_bounded_redaction_records,
     )
@@ -595,6 +596,32 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
 _TOOL_GROUP_ROLES = frozenset({"tool", "permission", "card"})
 
 
+@overload
+def _flush_segment(
+    state: DashboardState,
+    slot: _ChatSlot,
+    assistant_text: str,
+    *,
+    broadcast: bool = ...,
+    quiet_persist: bool = ...,
+    interrupted: bool = ...,
+    strip_provider_banner: Literal[False] = ...,
+) -> dict[str, Any]: ...
+
+
+@overload
+def _flush_segment(
+    state: DashboardState,
+    slot: _ChatSlot,
+    assistant_text: str,
+    *,
+    broadcast: bool = ...,
+    quiet_persist: bool = ...,
+    interrupted: bool = ...,
+    strip_provider_banner: bool,
+) -> dict[str, Any] | None: ...
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -603,8 +630,15 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
-) -> dict[str, Any]:
+    strip_provider_banner: bool = False,
+) -> dict[str, Any] | None:
     """Finalize current text block as a segment, persist it, and return its row.
+
+    ``strip_provider_banner`` removes one leading provider-budget banner the
+    caller already classified as provider metadata. When that strip leaves the
+    segment empty and no regeneration is pending, nothing is persisted and the
+    return is ``None``; the overloads keep every caller that does not opt in
+    typed to the row.
 
     ``quiet_persist`` additionally suppresses the per-message ``chat_message``
     broadcast that ``slot.append`` emits for the finalized assistant message.
@@ -680,6 +714,11 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    stripped_budget_banner = False
+    if strip_provider_banner:
+        assistant_text, stripped_budget_banner = strip_provider_budget_banner(assistant_text)
+        if stripped_budget_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
     # Repair a glued option marker before persisting. A mid-turn steer reply (or
     # any concatenation seam upstream) can append prose directly after an
     # ``[OPTIONS: ...]`` line with no separator, producing a single line the render
@@ -693,6 +732,19 @@ def _flush_segment(
     # _redact_segment applies it (_reflow_label_and_audit) to both the streamed
     # text and the raw copy it saves.
     redacted, blocked_links, redactions = _redact_segment(slot, assistant_text)
+    # A banner-only segment (opted-in strip removed the whole text) has no
+    # user-facing text to persist. Gated on an actual strip so ordinary empty
+    # flushes keep their existing behaviour. File chips and stats are already
+    # scoped to this turn's own rows, so nothing lands on the preceding answer.
+    # Regeneration is different: fall through so the normal assistant-message
+    # path consumes and attaches pending variants; returning here would let its
+    # done callback discard prior answers.
+    if stripped_budget_banner and not redacted and not slot._pending_variants:
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return None
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
