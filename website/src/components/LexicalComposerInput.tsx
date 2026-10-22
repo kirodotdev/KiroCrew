@@ -8,10 +8,8 @@ import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import {
-  $createLineBreakNode,
   $createParagraphNode,
   $createRangeSelection,
-  $createTextNode,
   $getRoot,
   $getSelection,
   $isElementNode,
@@ -62,6 +60,7 @@ import { listLineBreakEdit, listMarkerBackspaceEdit, type ListLineBreakEdit } fr
 import {
   $createPasteTokenNode,
   $isPasteTokenNode,
+  appendPlainText,
   PasteTokenNode,
 } from './PasteTokenNode'
 import {
@@ -134,14 +133,6 @@ interface LexicalComposerInputProps {
    *  result of removing the touched mention(s) whole, or null when the edit
    *  touches no staged mention (then the editor's own delete runs). */
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
-}
-
-function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
-  const lines = text.split('\n')
-  lines.forEach((line, index) => {
-    if (line) append($createTextNode(line))
-    if (index < lines.length - 1) append($createLineBreakNode())
-  })
 }
 
 function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {

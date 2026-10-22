@@ -33,6 +33,7 @@ function ControlledHost({
   sentMessages,
   historyScope,
   showFullPastes,
+  readOnly,
   onEditLastRequest,
   onMentionKey,
   onEndUndoBurst,
@@ -48,6 +49,7 @@ function ControlledHost({
   sentMessages?: string[]
   historyScope?: string
   showFullPastes?: boolean
+  readOnly?: boolean
   onEditLastRequest?: () => void
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: { meta: boolean; ctrl: boolean; alt: boolean; shift: boolean }) => { value: string; caret: number } | null
   onEndUndoBurst?: () => void
@@ -62,6 +64,7 @@ function ControlledHost({
         onChange={setValue}
         onBlocksChange={setBlocks}
         showFullPastes={showFullPastes}
+        readOnly={readOnly}
         onSend={onSend}
         ariaLabel="Message input"
         placeholder="Write a message"
@@ -202,6 +205,48 @@ describe('LexicalComposerInput', () => {
     await user.keyboard('{Backspace}')
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('xy'))
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
+  })
+
+  // #23148: the Lexical composer (reached via Style Markdown While Typing) must
+  // expand a collapsed paste on double-click, matching the textarea composer.
+  it('expands a paste chip to its full text on double-click and drops the block', async () => {
+    render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+    fireEvent.doubleClick(screen.getByTestId('paste-token-1'))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(`x${block.content}y`))
+    expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('blocks')).toHaveTextContent('[]')
+  })
+
+  // A real double-click is click, click, dblclick: userEvent.dblClick sends the
+  // whole sequence, so each click handler runs before the dblclick one does.
+  // While read-only, none of them may touch the editor state.
+  it('does not change the editor on a real double-click while read-only', async () => {
+    const user = userEvent.setup()
+    const editorRef = createRef<LexicalEditor>()
+    const { rerender } = render(
+      <ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} editorRef={editorRef} />,
+    )
+    rerender(
+      <ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} editorRef={editorRef} readOnly />,
+    )
+    await waitFor(() => expect(editorRef.current?.isEditable()).toBe(false))
+    const chip = screen.getByTestId('paste-token-1')
+    const blocksBefore = screen.getByTestId('blocks').textContent
+    const updateSpy = vi.spyOn(editorRef.current!, 'update')
+    await user.dblClick(chip)
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y`)
+    expect(screen.getByTestId('blocks').textContent).toBe(blocksBefore)
+    expect(blocksBefore).toContain(block.id)
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+  })
+
+  it('a single click on a paste chip still only selects it, never expands', async () => {
+    const user = userEvent.setup()
+    render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+    await user.click(screen.getByTestId('paste-token-1'))
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y`)
   })
 
   // #18186: the Lexical composer must delete a staged @mention as one atomic
