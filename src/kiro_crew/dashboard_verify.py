@@ -18,6 +18,12 @@ kinds, number sizes, date and id formats, the words of the closed vocabularies, 
 keys the page names -- and invented values. The browser is handed the copy alone, and every error it reports
 quotes invented values. :attr:`Verification.data` says so.
 
+The one exception is a snapshot of the page IN FORCE (``real_record=True``, asked for by
+``dashboard_snapshot`` and nothing else). That page has been applied and the tab already
+serves it this record, after the same redaction pass, so the run hands it the same read
+the tab gets and :attr:`Verification.data` says ``record``. A page that is only saved is
+never run over the record.
+
 What runs
 ---------
 The document is :func:`kiro_crew.dashboard_frame.compose` over that copy, so the page sees
@@ -101,6 +107,16 @@ program the gateway runs. That rule is why the check runs on Linux only: ``/Appl
 on macOS is group-writable by every administrator account, so no browser installed there
 can pass it.
 
+A picture of the page
+---------------------
+With ``capture=True`` the run also takes a PNG of the first paint once the page has
+settled (:mod:`kiro_crew.dashboard_page_image`), in the same browser and under the same
+limit, and :attr:`Verification.image` holds it or the reason there is none. Only a run
+that loaded the page and was judged ``passed`` or ``failed`` carries a picture: a skipped,
+timed-out or crashed run drew nothing worth showing, and a page whose script stopped at a
+library the run could not fetch would be shown without that library. The picture is of
+whatever the run was handed: the record for a snapshot of the page in force.
+
 Result
 ------
 :class:`Verification` has a status of ``passed``, ``failed``, ``timed_out`` or
@@ -130,13 +146,20 @@ from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlsplit
 
-from kiro_crew import dashboard_frame, dashboard_synth, github_runner, platform_compat
+from kiro_crew import (
+    dashboard_frame,
+    dashboard_page_image,
+    dashboard_synth,
+    github_runner,
+    platform_compat,
+)
 from kiro_crew.browser_cli.launcher import _SANDBOX_MARKERS
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DATA_RECORD",
     "DATA_SYNTHETIC",
     "REPLY_SECONDS",
     "RUN_TIMEOUT_SECONDS",
@@ -160,6 +183,10 @@ STATUS_TIMED_OUT: Final[str] = "timed_out"
 
 #: What :attr:`Verification.data` says when the page ran over a synthetic copy.
 DATA_SYNTHETIC: Final[str] = "synthetic"
+
+#: What :attr:`Verification.data` says when the page ran over the record itself: only a
+#: snapshot of the page in force, which the tab already serves that record.
+DATA_RECORD: Final[str] = "record"
 
 #: The hard limit on one run, counted from the save: the record is read and copied, and the
 #: browser must start, be handed the page and finish loading it, inside this, or its whole
@@ -334,8 +361,12 @@ class Verification:
     omitted: int = 0
     elapsed_ms: int = 0
     #: What the page was given: :data:`DATA_SYNTHETIC` when it ran over the synthetic
-    #: copy, empty when it was never given anything.
+    #: copy, :data:`DATA_RECORD` when it ran over the record itself, empty when it was
+    #: never given anything.
     data: str = ""
+    #: The picture a ``capture=True`` run took, or why it has none; ``None`` when no
+    #: picture was asked for or the run never got as far as one. Never on the wire.
+    image: dashboard_page_image.PageImage | None = None
 
     def wire(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -550,6 +581,8 @@ class _Pipe:
         os.set_blocking(self._in, False)
         self._selector = selectors.DefaultSelector()
         self._buffer = b""
+        #: The largest message kept. Raised only while the page's picture is read back.
+        self.max_message_bytes = _MAX_MESSAGE_BYTES
         #: True while the tail of an oversize message is being read and dropped.
         self._discarding = False
         #: How many oversize messages were dropped.
@@ -610,7 +643,7 @@ class _Pipe:
                 if isinstance(message, dict):
                     return message
                 continue
-            if self._discarding or len(self._buffer) > _MAX_MESSAGE_BYTES:
+            if self._discarding or len(self._buffer) > self.max_message_bytes:
                 if not self._discarding:
                     self.dropped += 1
                 self._discarding = True
@@ -773,6 +806,8 @@ class _Collector:
         self.committed = False
         self.loaded = False
         self.crashed = False
+        #: The picture of the settled page, when one was asked for and the page loaded.
+        self.image: dashboard_page_image.PageImage | None = None
         self._seen: set[tuple[str, str, int | None]] = set()
 
     def refuse(self, url: str, resource_type: str) -> None:
@@ -974,10 +1009,13 @@ def _exit_reason(proc: subprocess.Popen[bytes], profile: str) -> str:
 class _Run:
     """One page load: the request filter, the event stream and the settle wait."""
 
-    def __init__(self, pipe: _Pipe, document: _Document, deadline: float) -> None:
+    def __init__(
+        self, pipe: _Pipe, document: _Document, deadline: float, *, capture: bool = False
+    ) -> None:
         self._pipe = pipe
         self._document = document
         self._deadline = deadline
+        self._capture = capture
         self._session = ""
         self._served = False
         #: Set once the browser has answered a command.
@@ -1071,11 +1109,40 @@ class _Run:
                     "(a very large console.error or thrown value)",
                 )
             )
+        if self._capture and collector.loaded and not collector.crashed:
+            # After the oversize count above, so the picture's own large reply is never
+            # mistaken for a message the page made the browser send.
+            collector.image = self._picture()
         return collector
 
+    def _picture(self) -> dashboard_page_image.PageImage:
+        """A PNG of the settled page, or why there is none. Never raises."""
+        pipe = self._pipe
 
-def _drive(python: str, browser: str, document: _Document, deadline: float) -> _Collector:
-    """Load the document in *browser* and collect what the page raises.
+        def call(params: Mapping[str, Any]) -> Mapping[str, Any]:
+            return pipe.call(
+                "Page.captureScreenshot", params, session=self._session, deadline=self._deadline
+            )
+
+        pipe.max_message_bytes = dashboard_page_image.MAX_REPLY_BYTES
+        try:
+            return dashboard_page_image.capture(call, (_VIEWPORT["width"], _VIEWPORT["height"]))
+        except _TimedOut:
+            reason = "the check reached its time limit before the picture was taken"
+        except _BrowserGone:
+            reason = "the browser closed before the picture was taken"
+        except _CdpError:
+            reason = "the browser could not take the picture"
+        finally:
+            pipe.max_message_bytes = _MAX_MESSAGE_BYTES
+        return dashboard_page_image.PageImage(reason=reason)
+
+
+def _drive(
+    python: str, browser: str, document: _Document, deadline: float, capture: bool = False
+) -> _Collector:
+    """Load the document in *browser* and collect what the page raises, and with
+    *capture* a picture of it.
 
     Each descriptor is closed exactly once, by this function: a number closed twice can
     by then belong to another thread's file.
@@ -1105,7 +1172,7 @@ def _drive(python: str, browser: str, document: _Document, deadline: float) -> _
         release(commands_read)
         release(replies_write)
         pipe = _Pipe(commands_write, replies_read)
-        run = _Run(pipe, document, deadline)
+        run = _Run(pipe, document, deadline, capture=capture)
         return run.execute()
     except _BrowserGone as exc:
         reason = _exit_reason(proc, profile) if proc is not None else ""
@@ -1185,7 +1252,9 @@ _BUSY: Final[str] = (
 )
 
 
-def _verdict(collector: _Collector, document: _Document, started: float) -> Verification:
+def _verdict(
+    collector: _Collector, document: _Document, started: float, data: str = DATA_SYNTHETIC
+) -> Verification:
     raws, missing = _split_missing_library(collector)
     errors = [
         PageError(raw.kind, raw.message, *document.locate(raw.line, raw.column)) for raw in raws
@@ -1212,7 +1281,7 @@ def _verdict(collector: _Collector, document: _Document, started: float) -> Veri
             notes=notes,
             omitted=collector.omitted,
             elapsed_ms=_ms_since(started),
-            data=DATA_SYNTHETIC,
+            data=data,
         )
     if missing:
         if not errors:
@@ -1227,14 +1296,14 @@ def _verdict(collector: _Collector, document: _Document, started: float) -> Veri
                 ),
                 notes=notes,
                 elapsed_ms=_ms_since(started),
-                data=DATA_SYNTHETIC,
+                data=data,
             )
         notes += (
             f"Not listed above: {_undefined(missing)}, most likely because a script the page "
             "loads from a CDN origin was not fetched by this offline check.",
         )
     status = STATUS_FAILED if errors else STATUS_PASSED
-    if errors:
+    if errors and data == DATA_SYNTHETIC:
         notes += (_INVENTED_NOTE,)
     return Verification(
         status,
@@ -1242,8 +1311,35 @@ def _verdict(collector: _Collector, document: _Document, started: float) -> Veri
         notes=notes,
         omitted=collector.omitted,
         elapsed_ms=_ms_since(started),
-        data=DATA_SYNTHETIC,
+        data=data,
+        image=_image_to_keep(collector, missing),
     )
+
+
+def _image_to_keep(
+    collector: _Collector, missing: list[str]
+) -> dashboard_page_image.PageImage | None:
+    """The picture the run may hand back: none for a crashed page, and none for a page
+    that loads a library the run could not fetch, which says so instead.
+
+    Any refused library script counts, not only one whose name an error then named: a page
+    that guards its drawing with ``if (window.Chart)`` raises nothing and still draws
+    without it, which is not the page the tab shows."""
+    if collector.crashed or collector.image is None:
+        return None
+    if missing or collector.library_refused:
+        which = (
+            _undefined(missing)
+            if missing
+            else ", ".join(_short_url(url) for url in collector.library_urls[:3])
+        )
+        return dashboard_page_image.PageImage(
+            reason=(
+                "the page loads a library from a CDN origin that this offline run does not "
+                f"fetch ({which}), so a picture would leave that part out"
+            )
+        )
+    return collector.image
 
 
 def _limit_reason() -> str:
@@ -1301,14 +1397,20 @@ def _copy_of_record(
     read: Mapping[str, Any] | Callable[[], Mapping[str, Any]],
     model: Mapping[str, Any] | None,
     page: str,
+    real_record: bool = False,
 ) -> dict[str, Any]:
     """Read the record and copy it. This is the one place the real record is held: what
-    comes back is the copy, and the record is released when this returns."""
+    comes back is the copy, and the record is released when this returns.
+
+    With *real_record* the record itself comes back, uncopied: a snapshot of the page
+    in force, which the tab already serves this record (see :func:`verify_page`)."""
     try:
         record = read() if callable(read) else read
     except Exception as exc:
         logger.warning("dashboard: the record for a page check could not be read", exc_info=True)
         raise _ReadFailed from exc
+    if real_record:
+        return dict(record)
     return dashboard_synth.synthesize(record, model=model, page=page)
 
 
@@ -1320,8 +1422,11 @@ def _run_in_slot(
     python: str,
     started: float,
     end: float,
+    capture: bool = False,
+    real_record: bool = False,
 ) -> Verification:
     """The check proper, while this thread holds the slot."""
+    data = DATA_RECORD if real_record else DATA_SYNTHETIC
     if time.monotonic() >= end:
         return Verification(
             STATUS_TIMED_OUT,
@@ -1332,7 +1437,7 @@ def _run_in_slot(
     if known is not None and time.monotonic() - known[0] < _UNUSABLE_SECONDS:
         return _skipped(f"the browser could not start: {known[1]}", started)
     try:
-        copy = _copy_of_record(read, model, page_html)
+        copy = _copy_of_record(read, model, page_html, real_record)
     except _ReadFailed:
         return _skipped(
             "this crewmate's current data could not be read, so the page was not run", started
@@ -1346,25 +1451,25 @@ def _run_in_slot(
             STATUS_TIMED_OUT,
             reason="the check ran out of time reading the record, so no browser was started",
             elapsed_ms=_ms_since(started),
-            data=DATA_SYNTHETIC,
+            data=data,
         )
     document = _compose(page_html, copy)
     if len(document.html.encode("utf-8")) > _MAX_DOCUMENT_BYTES:
         return _skipped("the page and its data are too large to run here", started)
     try:
-        collector = _drive(python, browser, document, end)
+        collector = _drive(python, browser, document, end, capture)
     except _TimedOut:
         return Verification(
             STATUS_TIMED_OUT,
             reason=_limit_reason() + " before the page was loaded",
             elapsed_ms=_ms_since(started),
-            data=DATA_SYNTHETIC,
+            data=data,
         )
     except _BrowserGone as exc:
         if exc.failed_to_start:
             _UNUSABLE[browser] = (time.monotonic(), str(exc))
         raise
-    return _verdict(collector, document, started)
+    return _verdict(collector, document, started, data)
 
 
 def verify_page(
@@ -1374,6 +1479,8 @@ def verify_page(
     model: Mapping[str, Any] | None = None,
     timeout: float = RUN_TIMEOUT_SECONDS,
     deadline: float | None = None,
+    capture: bool = False,
+    real_record: bool = False,
 ) -> Verification:
     """Run *page_html* once over a synthetic copy of *read* and report what it raised.
 
@@ -1392,6 +1499,10 @@ def verify_page(
     *deadline* is a ``time.monotonic()`` instant past which nothing runs; left out, it is
     *timeout* from now. It lets a caller that queued the check count the wait against the
     same limit.
+
+    *capture* also takes a picture of the settled page (:attr:`Verification.image`; see
+    "A picture of the page" above). *real_record* hands the page *read* itself instead of
+    a copy; only a snapshot of the page in force asks for that.
 
     Blocking: it reads, copies, starts a process and waits on it, so a caller on the event
     loop offloads it to a thread. Never raises.
@@ -1419,7 +1530,9 @@ def verify_page(
         if not _SLOT.acquire(blocking=False):
             return _skipped(_BUSY, started)
         try:
-            verdict = _run_in_slot(page_html, read, model, browser, python, started, end)
+            verdict = _run_in_slot(
+                page_html, read, model, browser, python, started, end, capture, real_record
+            )
         finally:
             _SLOT.release()
         logger.info(

@@ -1844,10 +1844,12 @@ async def test_a_save_whose_limit_has_passed_starts_no_browser_and_says_timed_ou
 
 def test_only_a_save_of_a_written_page_can_start_a_check():
     """The browser is for ``dashboard_save`` of a page written as ``view.html`` and for
-    nothing else: not a ``dashboard_write``, a preview, an apply, or the load of a page.
+    the crewmate's own ``dashboard_snapshot`` of one, and for nothing else: not a
+    ``dashboard_write``, a preview, an apply, or the load of a page.
 
-    Every module that names the runner or the glue is listed, and within the route module
-    the one function that starts a check is the save.
+    Every module that names the runner or the glue is listed; within the route module the
+    one function that starts a check is the save, and within the snapshot's module it is
+    the snapshot route, through the glue's picture-taking entry.
     """
     from source_corpus import iter_candidate_sources, src_root
 
@@ -1859,7 +1861,9 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
     )
     assert users == [
         "dashboard/handlers/agent_panel_dashboard.py",
+        "dashboard/handlers/agent_panel_snapshot.py",
         "dashboard/handlers/member_dashboard_fields.py",
+        "dashboard_page_image.py",
         "dashboard_verify.py",
     ]
     # a mirror facade: its code is in the owners it lists
@@ -1878,6 +1882,15 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_page_check"
     }
     assert starters == {"api_dashboard_save"}
+    snapshot = importlib.import_module("kiro_crew.dashboard.handlers.agent_panel_snapshot")
+    picture_takers = {
+        fn.name
+        for fn in ast.walk(ast.parse(Path(snapshot.__file__).read_text(encoding="utf-8")))
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Attribute) and node.attr == "snapshot_package_page"
+    }
+    assert picture_takers == {"api_dashboard_snapshot"}
 
 
 async def test_a_skipped_run_says_so_and_the_gateway_checks_shapes_and_schemes(monkeypatch, store):

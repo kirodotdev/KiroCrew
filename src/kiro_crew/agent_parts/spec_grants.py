@@ -373,6 +373,11 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/dashboard_preview",
     "@kirocrew-panel/dashboard_apply",
     "@kirocrew-panel/dashboard_rollback",
+    # A picture of the calling crewmate's own page in force, granted on the read test
+    # ``dashboard_fields`` passes: it writes, stages and versions nothing, takes no
+    # argument at all, and the values it draws are the ones the crewmate's own tab and
+    # ``dashboard_fields`` already show it.
+    "@kirocrew-panel/dashboard_snapshot",
 )
 
 

@@ -43,6 +43,16 @@ a missing field, null or wrong type is still a case the page needs to handle.
 A pass means the first paint raised no script errors: later pushes, small
 screens, visual quality and colour contrast still need their own checks.
 
+**Look at the page.** `dashboard_snapshot` draws your applied page in the
+same offline run, over your real data, and returns a PNG file path; open it
+with your file-read tool. It is one 1280x800 view of the top of the page, as
+the person's tab shows it in the default light theme, so judge what it says as
+well as layout, colour, type and fit; their own theme pack or dark mode can
+show other colours. A page you only saved has no picture: apply it first. When the
+run cannot start it answers "no image" with the reason and no file; an
+earlier picture is not the page as it is now. A template page has no picture.
+The file holds real values: leave it where it is.
+
 The gateway's secret filter also processes markup and script. A note reports
 how many places changed and the first line, without revealing the replaced
 text. A long identifier-like string can trigger it; shorter pieces joined in

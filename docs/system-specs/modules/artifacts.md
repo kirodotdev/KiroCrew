@@ -1499,6 +1499,40 @@ CSS generic families, never a named typeface: `--font-sans: system-ui,
 sans-serif` (the body default), `--font-serif: ui-serif, serif` and
 `--font-mono: ui-monospace, monospace`.
 
+**A crewmate can look at its own page.** The `dashboard_snapshot` MCP tool on
+`kirocrew-panel` and `GET /api/agent-panel/dashboard/snapshot`
+(`handlers/agent_panel_snapshot.py`, no arguments) run the page IN FORCE through the same
+check with `capture=True` and `real_record=True`
+(`member_dashboard_fields.snapshot_package_page`), and the run also takes a PNG of the
+settled first paint (`dashboard_page_image.capture`, `Page.captureScreenshot` over the
+same DevTools pipe). This is the one run handed the record rather than the synthetic
+copy: the page is already applied and the tab already serves it that read, so the run
+gets the same `LivePage.arm` read through the same `_page_safe` redaction and
+`verification.data` says `record`; the page is drawn as the tab's own frame draws it: the dashboard's default light theme tokens (`dashboard_snapshot_look.LIGHT_TOKENS`, pinned by a test to the `[data-theme="light"]` block of `website/src/styles/design-tokens.css`, with the frame's aliases; the body's padding and font stay the frame's own host stylesheet's, as on the tab), the Tailwind runtime read from the built package (the same vendored file the tab loads, read and `</script`-escaped by `publish_sync._tailwind_runtime_js` and `_SCRIPT_CLOSE_RE` as a published widget is, inlined because the run fetches nothing; a build without it answers `no_image` saying so), then the package's own theme, with the UI language Settings stores (`dashboard.language`) as the page's locale; it is the default light look, not the person's own theme pack or dark mode, and the tool says so; and the script-grant audit row names the applied package and version rather than `(staged)`, so the picture shows what the person's tab shows and the log shows which applied page ran. The
+page is the tab's page in force: the instance's pinned snapshot (`instance.pinned_package`), or for an older unlocked record from before pins (`instance.keeps_older_package_rule`) the bound package's newest version a person cut, as `member_dashboard._serve` draws it, and must be
+bound to the caller the prefix's gate vetted; a page that is only saved is never run over
+the record. A template page, no applied page, a root session and a package bound elsewhere
+answer `snapshot.status: no_image` with a reason and run nothing. The picture is
+bounds-checked: the run's 1280x800 viewport only, at most `MAX_IMAGE_BYTES` (2 MiB) with
+one retry at half scale, and a DevTools reply cap of `MAX_REPLY_BYTES` raised for that one
+reply. Only a run judged `passed` or `failed` carries one; a skipped run (busy, short of
+memory, no browser, a page stopped by an unfetched CDN library, or one that also
+lacks such a library beside its own errors), a timed-out run and a
+crashed page answer `no_image` with the reason, so a stale picture is never offered as
+current. Because the PNG holds real values, it never travels in a response body: the
+gateway writes it to `<data home>/dashboard-snapshots/<crewmate>/page-<ms>-<random>.png`,
+mode `0600` under `0700` directories, opening each directory `O_NOFOLLOW` from the
+previous descriptor and creating the file `O_EXCL` (`pinned_fs`), so a link an agent
+plants in the data home cannot steer the write; the newest eight per crewmate are kept.
+The route answers the path, and the tool (`mcp_panel_snapshot.py`) hands only the calling
+crewmate that path, with the run's `verification` lines, for its own file-read tool; a
+`no_image` answer names no file. No route serves `dashboard-snapshots/` (the file
+explorer's data-home allowlist does not name it), and like the crew logs its values come
+from, the file is not fenced at the OS level from another process of the same user. Page
+and versions are untouched, and nothing is kept between calls apart from that cache.
+Granted without a prompt in `_MEMBER_PANEL_GRANTS`, on the same read test as
+`dashboard_fields`.
+
 The MCP text preserves the catalog's `row_keys`, `names_the_row`, `row_note`
 and `nested_rows` beside each path. Nested rows are script-readable metadata,
 not new dotted index paths. Each nested group is bracketed and retains its

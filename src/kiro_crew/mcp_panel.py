@@ -36,7 +36,7 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
-from kiro_crew import dashboard_agentic
+from kiro_crew import dashboard_agentic, mcp_panel_snapshot
 from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
 from kiro_crew.dashboard_templates.page_look import PAGE_LOOK
 from kiro_crew.mcp_core import (
@@ -436,6 +436,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "required": ["to_version"],
             },
         },
+        mcp_panel_snapshot.TOOL_DEFINITION,
     ]
 
 
@@ -702,6 +703,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{d.get('instance_version')} -- a rollback moves forward, so the page you "
             "were on is still there to go back to." + _guide_tail(d)
         )
+
+    if name == mcp_panel_snapshot.TOOL_NAME:
+        sk, err = _strict_session_key()
+        if err:
+            return err
+        own, gateway = mcp_panel_snapshot.call_snapshot(sk, _get, _render_verification)
+        # The spool path and its numbers are this server's own and skip the pass, like
+        # ``kirocrew-computer``'s screenshot note; everything the gateway sent crosses it.
+        return own + (redact(gateway) if gateway else "")
 
     return f"Error: unknown tool '{name}'"
 

@@ -604,27 +604,104 @@ def verify_package_page(
     Blocking (fold reads, a browser start), so a route calls it through
     ``asyncio.to_thread``. Never raises: a save must not fail because a check could not.
     """
+    return _run_package_page(slug, crew, slot, package, deadline, capture=False)[0]
+
+
+def snapshot_package_page(
+    slug: str,
+    crew: str,
+    slot: str,
+    package: Mapping[str, Any],
+    deadline: float | None,
+    package_slug: str,
+    version: int,
+    state: Any,
+) -> tuple[dict[str, Any] | None, Any]:
+    """The page IN FORCE run over the crewmate's REAL read, with a picture of it.
+
+    ``(verification, image)``: :func:`verify_package_page`'s wire form, and the run's
+    :class:`~kiro_crew.dashboard_page_image.PageImage`, or ``None`` when the run never got
+    as far as one (the verification's ``reason`` says why).
+
+    Unlike the save's check this hands the page the record itself: the read
+    :meth:`LivePage.arm` builds for the tab, through the tab's own ``_page_safe``
+    redaction, so the picture shows exactly the values the person's tab shows. That is
+    only sound for a page that is already applied -- the tab serves it this record
+    anyway -- so *package* must be the page in force; a page that is only saved goes
+    through :func:`verify_package_page` and its synthetic copy. The picture is bytes and
+    is not put through a text pass, which could only corrupt it; what it can show is what
+    the tab already shows.
+
+    *package_slug* and *version* name the applied page, and the script-grant audit row
+    is written under them, as the tab's own serve writes it, so the log shows which
+    applied page ran script over the record. The page is drawn with its theme in front
+    of it, as the tab draws it. *state* is the gateway's, so the session folds are read
+    from the unit the slot's live session serves, as the tab reads them
+    (``member_dashboard._live_or_newest_unit``). Blocking, and never raises.
+    """
+    return _run_package_page(
+        slug,
+        crew,
+        slot,
+        package,
+        deadline,
+        capture=True,
+        real=(package_slug, version),
+        state=state,
+    )
+
+
+def _run_package_page(
+    slug: str,
+    crew: str,
+    slot: str,
+    package: Mapping[str, Any],
+    deadline: float | None,
+    *,
+    capture: bool,
+    real: tuple[str, int] | None = None,
+    state: Any = None,
+) -> tuple[dict[str, Any] | None, Any]:
+    """The run behind :func:`verify_package_page` and :func:`snapshot_package_page`.
+
+    *real* is ``(package slug, version)`` of the applied page for a snapshot over the
+    real record, and ``None`` for the save's check over the synthetic copy.
+    """
     html = authored_html(package)
     if html is None:
-        return None
+        return None, None
     # Deferred: this module is imported before the socket binds and must not pull in
     # the browser runner, and `member_dashboard` imports this module (a cycle).
     from kiro_crew import dashboard_verify
     from kiro_crew.dashboard.handlers import member_dashboard
 
-    def skipped(reason: str) -> dict[str, Any]:
-        return dashboard_verify.Verification(dashboard_verify.STATUS_SKIPPED, reason=reason).wire()
+    def skipped(reason: str) -> tuple[dict[str, Any], None]:
+        wire = dashboard_verify.Verification(dashboard_verify.STATUS_SKIPPED, reason=reason).wire()
+        return wire, None
 
     if not crew:
         return skipped("only a crewmate's own page is run, and this session is not a crewmate")
     reason = dashboard_verify.preflight()
     if reason:
         return skipped(reason)
+    look = ""
+    if real is not None:
+        # Before the grant is audited: without the tab's look nothing is drawn.
+        from kiro_crew import dashboard_snapshot_look
+
+        look, missing = dashboard_snapshot_look.look_prefix()
+        if missing:
+            return skipped(missing)
     try:
         key = member_dashboard.governance_session_key(slot)
         decision = member_dashboard._egress_decision(crew, key)
+        audited_slug, audited_version = real if real is not None else (_STAGED, 0)
         member_dashboard._audit_page_script_grant(
-            member=crew, package_slug=_STAGED, version=0, session_key=key, decision=decision
+            member=crew,
+            package_slug=audited_slug,
+            version=audited_version,
+            session_key=key,
+            decision=decision,
         )
         if not decision.granted:
             return skipped(
@@ -639,6 +716,11 @@ def verify_package_page(
         # it; `rewrite_note` tells the agent that the page it wrote is not the page it got.
         shown = member_dashboard._template_text_safe(html)
         note = dashboard_verify.rewrite_note(html, shown)
+        # A snapshot draws the page as the tab does: the tab's default light look and
+        # its Tailwind runtime (`dashboard_snapshot_look`), then the package's theme
+        # (`render_package_page`). The save's check is left as it is. Error lines are
+        # moved back onto view.html.
+        theme = look + _theme_style(package) if real is not None else ""
 
         def read_once() -> Mapping[str, Any]:
             page = LivePage(
@@ -646,29 +728,75 @@ def verify_package_page(
                 slot,
                 package,
                 lambda _frame: None,
-                session_unit=member_dashboard._newest_unit(slot),
+                session_unit=(
+                    member_dashboard._live_or_newest_unit(state, slot)
+                    if real is not None
+                    else member_dashboard._newest_unit(slot)
+                ),
                 redact=member_dashboard._page_safe,
+                # A snapshot has no browser to say the reader's language, so it takes
+                # the one Settings persists (``dashboard.language``); the save check
+                # keeps the default it always had.
+                locale=_persisted_locale() if real is not None else "",
             )
             try:
                 return page.arm()
             finally:
                 page.disarm()
 
+        # Asked for only by a snapshot, so the save's own call stays as it was.
+        picture = {"capture": True, "real_record": real is not None} if capture else {}
         verdict = dashboard_verify.verify_page(
-            shown,
+            theme + shown,
             read_once,
             model=member_dashboard._manifest_text_safe(package.get("model")),
             deadline=deadline,
+            **picture,
         )
+        if theme:
+            verdict = _without_theme_lines(verdict, theme.count("\n"))
         if note:
             verdict = dataclasses.replace(verdict, notes=(note, *verdict.notes))
         # REDACTED LIKE EVERY VALUE THE TAB IS SERVED. The page's own script chose the text of
         # its errors, and it can build a string that no scan of its source saw (two literals
         # joined at run time), so what goes back to the agent crosses the same recursive pass.
-        return member_dashboard._page_safe(verdict.wire())
+        return member_dashboard._page_safe(verdict.wire()), verdict.image
     except Exception:
         logger.warning("dashboard: the page for %r could not be checked", slug, exc_info=True)
         return skipped("the check could not run on this machine")
+
+
+def _persisted_locale() -> str:
+    """The UI language Settings stores, or ``""`` (then the page draws in English).
+
+    ``""`` also covers "follow the browser", which only the browser can resolve. Read
+    through the same validator the prompt's language section uses; never raises."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.context import ui_language_tag
+
+        return ui_language_tag(KiroCrewConfig.load())
+    except Exception:
+        logger.debug("dashboard: the UI language could not be read", exc_info=True)
+        return ""
+
+
+def _without_theme_lines(verdict: Any, lines: int) -> Any:
+    """*verdict* with each error line counted from ``view.html`` again, not from the theme
+    put in front of it; an error inside the theme itself has no ``view.html`` line."""
+    errors = tuple(
+        (
+            error
+            if error.line is None
+            else dataclasses.replace(
+                error,
+                line=error.line - lines if error.line > lines else None,
+                column=error.column if error.line > lines else None,
+            )
+        )
+        for error in verdict.errors
+    )
+    return dataclasses.replace(verdict, errors=errors)
 
 
 def writing_caller(request: Any) -> tuple[str, str]:

@@ -2428,7 +2428,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   where the tab stands (`dashboard_agentic.SUGGESTIONS_STATE`), since there is no
   `dashboard_save` to build with. The member protocol's page item says the same
   (progress on the page; the first report is when the page is built) and names
-  the three parts `dashboard_save` takes as fields, `view.html` and theme; its
+  the three parts `dashboard_save` takes as fields, `view.html` and theme, and
+  names `dashboard_snapshot` as the way the mate looks at a picture of its own
+  page; its
   front-desk item says the thread is read once or twice a day, so it gets few
   reports, each one message covering several things, never a stream of small
   updates. The Daily Goal Reminder puts where things stand on the page and

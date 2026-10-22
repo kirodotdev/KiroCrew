@@ -30,6 +30,7 @@ Two halves with deliberately different auth, because they are different acts:
 #   ``agent_panel_read`` -- the panel record, its board card, and the drawer's read route
 #   ``agent_panel_publish`` -- vetting a publishing caller, and the two publish routes
 #   ``agent_panel_dashboard`` -- the dynamic dashboard's ``/api/agent-panel/dashboard/`` routes
+#   ``agent_panel_snapshot`` -- the picture of a crewmate's own page, ``.../dashboard/snapshot``
 
 from __future__ import annotations
 
@@ -56,6 +57,7 @@ from kiro_crew.dashboard.handlers.agent_panel_publish import (
     api_agent_panel_templates,
 )
 from kiro_crew.dashboard.handlers.agent_panel_read import api_member_panel
+from kiro_crew.dashboard.handlers.agent_panel_snapshot import api_dashboard_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,9 @@ def register_agent_panel_routes(app: web.Application) -> None:
     app.router.add_post("/api/agent-panel/dashboard/preview", api_dashboard_preview)
     app.router.add_post("/api/agent-panel/dashboard/apply", api_dashboard_apply)
     app.router.add_post("/api/agent-panel/dashboard/rollback", api_dashboard_rollback)
+    # A picture of the caller's own page in force, over its real data. On this prefix
+    # because that picture is the crewmate's own record, which is nobody else's to ask for.
+    app.router.add_get("/api/agent-panel/dashboard/snapshot", api_dashboard_snapshot)
     # The drawer's read. NOT under /api/agent-panel: that prefix is
     # strict-internal (MCP-only), and this one is called by the browser.
     app.router.add_get("/api/members/{slug}/panel", api_member_panel)
@@ -97,6 +102,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.agent_panel_read",
     "kiro_crew.dashboard.handlers.agent_panel_publish",
     "kiro_crew.dashboard.handlers.agent_panel_dashboard",
+    "kiro_crew.dashboard.handlers.agent_panel_snapshot",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -154,6 +160,26 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_and_compose,
         _with_board_numbers,
         owned_panel_record,
+    )
+    from kiro_crew.dashboard.handlers.agent_panel_snapshot import (  # noqa: F401
+        BUSY,
+        NOT_COMPOSED,
+        SHOT_FILE_MODE,
+        SHOT_FILE_PREFIX,
+        SHOT_FILE_SUFFIX,
+        SHOT_KEEP,
+        SHOT_ROOT,
+        STATUS_IMAGE,
+        STATUS_NO_IMAGE,
+        _await_run,
+        _no_image,
+        _NoPage,
+        _now_ms,
+        _older_page,
+        _page_in_force,
+        _shot_root,
+        _trim,
+        spool_png,
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes

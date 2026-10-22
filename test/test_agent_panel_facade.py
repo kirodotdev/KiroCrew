@@ -36,6 +36,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.agent_panel_read",
     "kiro_crew.dashboard.handlers.agent_panel_publish",
     "kiro_crew.dashboard.handlers.agent_panel_dashboard",
+    "kiro_crew.dashboard.handlers.agent_panel_snapshot",
 )
 
 
@@ -129,7 +130,9 @@ def test_a_facade_patch_of_the_panel_slot_reaches_every_owner_reading_it(
 
     monkeypatch.setattr(agent_panel, "_panel_slot", _no_slot)
     holders = _index().holders["_panel_slot"]
-    assert set(holders) == set(_OWNERS)
+    # The snapshot route resolves its caller through the dashboard owner's gate and
+    # holds no slot lookup of its own.
+    assert set(holders) == set(_OWNERS) - {"kiro_crew.dashboard.handlers.agent_panel_snapshot"}
     assert all(vars(sys.modules[owner])["_panel_slot"] is _no_slot for owner in holders)
     cfg = SimpleNamespace(agents={})
     assert agent_panel._card_slot(cfg, "Oncall", "oncall") == ""
