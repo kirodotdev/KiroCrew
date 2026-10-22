@@ -10,7 +10,6 @@ drives when it builds the archive.
 from __future__ import annotations
 
 import contextlib
-import io
 import json
 import os
 import shutil
@@ -20,6 +19,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePath, PurePosixPath
+from typing import TYPE_CHECKING
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
@@ -49,6 +49,9 @@ from kiro_crew.portability_archive import (
 )
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import _DB_SIDECAR_GLOBS
+
+if TYPE_CHECKING:
+    from typing import IO
 
 
 def _wal_checkpoint(db_path: Path) -> None:
@@ -83,26 +86,39 @@ def _sqlite_logical_size(src: Path) -> int:
         return src.stat().st_size
 
 
-def _backup_sqlite(src: Path, dst_buffer: io.BytesIO) -> None:
-    """Use SQLite backup API for a consistent copy."""
+#: Read size when a database backup is copied out of its temp file. The copy is
+#: the only buffer the backup holds, so this bounds its memory whatever the size of
+#: the database.
+_SQLITE_COPY_CHUNK_BYTES = 1024 * 1024
+
+
+def _backup_sqlite(src: Path, dst: IO[bytes]) -> int:
+    """Write a consistent copy of the SQLite database *src* to *dst*; return its size.
+
+    The backup API copies the committed pages straight into a private temp file,
+    which is then streamed to *dst* in fixed-size reads. The export passes the open
+    archive member as *dst*, so a database of any size costs one copy buffer of
+    memory, not the database. The temp file is removed before this
+    returns, whether it succeeds or fails.
+    """
     src_conn = sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True)
-    mem_conn = sqlite3.connect(":memory:")
     try:
-        src_conn.backup(mem_conn)
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        tmp.close()
+        fd, tmp_name = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         try:
-            disk_conn = sqlite3.connect(tmp.name)
+            disk_conn = sqlite3.connect(tmp_name)
             try:
-                mem_conn.backup(disk_conn)
+                src_conn.backup(disk_conn)
             finally:
                 disk_conn.close()
-            dst_buffer.write(Path(tmp.name).read_bytes())
+            with open(tmp_name, "rb") as copy:
+                shutil.copyfileobj(copy, dst, _SQLITE_COPY_CHUNK_BYTES)
+                return copy.tell()
         finally:
-            os.unlink(tmp.name)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_name)
     finally:
         src_conn.close()
-        mem_conn.close()
 
 
 def _keep_for_export(rel: PurePath) -> bool:

@@ -1112,6 +1112,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.portability_export import (  # noqa: F401
         _MANIFEST_BASE_RESERVE,
         _MANIFEST_PER_MEMBER_RESERVE,
+        _SQLITE_COPY_CHUNK_BYTES,
         _ZIP_DATE_MAX,
         _ZIP_DATE_MIN,
         _add_from_fd,

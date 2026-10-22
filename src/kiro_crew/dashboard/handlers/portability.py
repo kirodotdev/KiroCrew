@@ -191,10 +191,11 @@ async def api_portability_export(request: web.Request) -> web.StreamResponse:
     The archive is STREAMED: a stat-only pre-pass (`portability.plan_export`) fixes
     the filename and both advisory headers, the response head goes out on
     ``prepare()``, and the zip is written chunk by chunk as it is built, so the
-    first byte reaches the client in milliseconds. Non-database members stream, so
-    the whole archive is never buffered at once; each SQLite store is still backed
-    up into memory and written in one piece, as before. This is what lets a large
-    export complete through a proxy or tunnel with a first-byte timeout.
+    first byte reaches the client in milliseconds. Every member streams -- files in
+    fixed-size reads, each SQLite store backed up to a temp file and copied in the
+    same way -- so neither the archive nor any one member is ever held whole in
+    memory. This is what lets a large export complete through a proxy or tunnel
+    with a first-byte timeout.
 
     An error BEFORE ``prepare()`` is a coded 500. An error AFTER the stream has
     begun cannot become an HTTP status, so it is fail-safe: the connection is
