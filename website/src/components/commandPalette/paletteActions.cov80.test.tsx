@@ -7,7 +7,7 @@
  * BEFORE navigating so ChatPage's auto-create cannot race it into a duplicate,
  * and a failed create is reported instead of silently seeding nothing.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -84,6 +84,9 @@ describe('insertToken', () => {
 
 describe('newSessionWithToken', () => {
   it('creates the session first, then seeds it and navigates to chat', async () => {
+    // Off the chat page: on it the URL sync owns the new session's entry.
+    window.history.replaceState(null, '', '/settings')
+    onTestFinished(() => window.history.replaceState(null, '', '/'))
     const { result, store } = harness(null)
     act(() => result.current.newSessionWithToken('@zzq/prompt'))
     // Nothing is seeded or navigated until the create resolves.

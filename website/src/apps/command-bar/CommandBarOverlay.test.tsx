@@ -203,6 +203,9 @@ describe('CommandBarOverlay rows', () => {
   it('navigates to the new session so a success is visible off the chat page', async () => {
     // Created from Settings or Task Runner without this, the session lands off-screen
     // and the success reads as a failure -- the user runs it again into a duplicate.
+    // Off the chat page: on it the URL sync owns the new session's entry.
+    window.history.replaceState(null, '', '/settings')
+    onTestFinished(() => window.history.replaceState(null, '', '/'))
     resolvingDispatch()
     const onClose = mount()
     fireEvent.mouseDown(rowByText('New Session'))

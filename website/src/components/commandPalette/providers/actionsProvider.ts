@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import type { ReactNode } from 'react'
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { isOnChatRoute } from '../../../lib/chatRoute'
 import { useMutation } from '@tanstack/react-query'
 import { Command, MessageSquarePlus, SunMoon, Keyboard, Pin } from 'lucide-react'
 
@@ -189,10 +190,11 @@ export function useActionsProvider(opts: { openShortcuts: () => void }): Resourc
   // "New session" is a write (createSlot); route it through useMutation for
   // error/loading state and consistency with paletteActions.ts's createSlot
   // mutation (`use-react-query` lint rule). onSuccess navigates to /chat so the
-  // user lands in the new session rather than staying on the current page.
+  // user lands in the new session rather than staying on the current page; on
+  // the chat page the URL sync owns the entry (see isOnChatRoute).
   const { mutate: doNewSession } = useMutation({
     mutationFn: () => dispatch(createSlot({ defaultFolder: true })).unwrap(),
-    onSuccess: () => navigate('/chat'),
+    onSuccess: () => { if (!isOnChatRoute()) navigate('/chat') },
   })
 
   return useMemo(

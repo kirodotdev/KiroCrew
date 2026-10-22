@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { isOnChatRoute } from '../../lib/chatRoute'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, store } from '../../store'
 import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
@@ -51,7 +52,9 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   const newChatMutation = useMutation({
     mutationFn: () => dispatch(createSlot({ defaultFolder: true })).unwrap(),
     onSuccess: () => {
-      navigate('/chat')
+      // Off the chat page, open it; on it, the URL sync owns the entry (see
+      // isOnChatRoute).
+      if (!isOnChatRoute()) navigate('/chat')
       // Unguarded on purpose: this mutation only fires from the new-chat
       // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
       // focusComposer()'s touch-device skip would wrongly suppress focus on a

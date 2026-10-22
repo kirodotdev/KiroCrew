@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 
 import { appNavTargets } from '../../appNav'
+import { isOnChatRoute } from '../../lib/chatRoute'
 import type { AppDispatch, AppStore, RootState } from '../../store'
 import { createSlot, switchSlot } from '../../store/chatSlice'
 import { focusComposerForOpenedSession } from '../../pages/chat/composerFocus'
@@ -227,10 +228,11 @@ export function useCommandBarOverlayRootRows({
         // The navigate is part of the action, not decoration: created off-screen from
         // Settings or Task Runner the new session is invisible, so a success reads as a
         // failure and the user runs it again into a duplicate. The palette carried this
-        // in the mutation's `onSuccess`; it belongs to the row either way.
+        // in the mutation's `onSuccess`; it belongs to the row either way. Already on
+        // chat, the URL sync owns the entry (see isOnChatRoute).
         run: async () => {
           await dispatch(createSlot(undefined)).unwrap()
-          navigate('/chat')
+          if (!isOnChatRoute()) navigate('/chat')
         },
         keywords: ['chat', 'start', 'blank'],
       },
