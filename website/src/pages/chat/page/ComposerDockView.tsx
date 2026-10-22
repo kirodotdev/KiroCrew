@@ -20,7 +20,7 @@ import type { SessionRef } from '../../../utils/sessionRefs'
 import type { SlotApprovalMode } from '../../../utils/slotApprovalMode'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../../../hooks/useSettingHighlight'
 import { settingsPath } from '../../../components/settingsPath'
-import { agentOrDefaultLabel } from '../../../utils/agentLabel'
+import { sessionAgentLabel } from '../../../utils/agentLabel'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
 import { Input } from '../../../components/ui'
@@ -46,6 +46,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { pinIsWithheld } from '../../../lib/model'
+import { gatewayToolsState } from '../../../lib/mcpSessionReport'
 import FollowUpCard from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
 import FlyingQuote from '../../../components/FlyingQuote'
@@ -219,6 +220,10 @@ interface ComposerDockViewProps {
   projectGit: ReturnType<typeof useComposerChips>['projectGit']
   projectGitError: boolean
   shownModel: string
+  /** What the model chip names: the model the live session reported running. */
+  chipModel: string
+  /** The selection, when the harness reported running another model; else `''`. */
+  modelSelected: string
   cardOwnsRecovery: boolean
   continuable: boolean
   continuing: boolean
@@ -269,7 +274,7 @@ export default function ComposerDockView({
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, chipModel, modelSelected, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
   composerSessionControls,
@@ -523,13 +528,17 @@ export default function ComposerDockView({
               // Uses the SLOT's stored agent (not `activeAgentName`, which has
               // already collapsed empty->default) so an agent-less slot reads
               // `<default> · default` and a pinned one reads the bare alias (#8770).
-              agentLabel={agentOrDefaultLabel(currentSlot?.agent, defaultAgent)}
+              // The live session's own report of what it runs as wins over both.
+              agentLabel={sessionAgentLabel(currentSlot?.agent, currentSlot?.served_agent, defaultAgent)}
               agentIsInheritedDefault={!currentSlot?.agent && !!defaultAgent}
               // Read from the same rows the picker lists, so the chip marks a
               // session exactly when the picker shows a same-name pair.
               agentMemory={sessionMemoryTag(currentSlot?.agent, currentSlot?.agent_kind, defaultAgent, effectiveAgents)}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
-              modelName={shownModel}
+              sessionBackend={currentSlot?.served_backend}
+              gatewayTools={gatewayToolsState(currentSlot?.mcp_report, currentSlot?.served_backend)}
+              modelSelected={modelSelected}
+              modelName={chipModel}
               modelIsInheritedDefault={modelMarker === 'default'}
               modelIsAutoChosen={modelMarker === 'auto'}
               // The turn's model is Jev's to pick exactly when the routing gate
@@ -612,11 +621,12 @@ export default function ComposerDockView({
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
-              effortIsDefault={!currentSlot?.reasoning_effort && !legacyCodexEffort(currentSlot?.model || '', '', codexPairModels) && !!defaultEffort}
+              effortIsDefault={!currentSlot?.reasoning_effort && !legacyCodexEffort(currentSlot?.model || '', '', codexPairModels) && !!effectiveEffort}
               // Effort is edited INSIDE the model picker (one control, see
               // docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md);
-              // the chip only names the level in force.
-              hasEffort={effortSupported}
+              // the chip only names the level in force, including one the session
+              // reports through its model id on a harness that offers no control.
+              hasEffort={effortSupported || !!currentSlot?.served_effort}
               onAutomationClick={setAutomationOpen}
               automation={automation}
               automationOpen={automationOpen}

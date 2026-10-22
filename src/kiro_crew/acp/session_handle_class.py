@@ -638,6 +638,9 @@ class AcpSessionHandle:
         # (mirrors AcpClient._resolved_model_id; avoids the profile-id
         # pinning trap where a resolved profile id poisons slot.model).
         self._resolved_model_id: str = ""
+        # The model the last prompt response reported serving its turn
+        # (mirrors AcpClient.turn_model); "" until a turn reports one.
+        self.turn_model: str = ""
         # True after set_mode switched a live session's agent, until the model
         # kiro-cli reported for that activation has been judged against the
         # served list (see _served_default_after_set_mode).

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
         crew_log_emit,
         logger,
         provider_last_turn_usage,
-        read_turn_model,
+        read_reported_turn_model,
         save_slot_off_loop,
         slot_history_key,
     )
@@ -175,7 +175,7 @@ async def _record_abnormal_turn_usage(turn, reason: str) -> None:
             turn._turn_elapsed_ms,
             turn._turn_credits,
             turn._turn_cost_usd,
-            turn._turn_model,
+            turn._footer_model,
             ttft_ms=_ttft_visible.ms,
         )
     if turn._turn_usage_persisted:
@@ -247,7 +247,7 @@ def _attach_abnormal_turn_stats(
             credits,
             cost_usd,
             turn_boundary=turn._turn_msg_boundary,
-            model=(read_turn_model(turn.client) or "") if model is None else model,
+            model=(read_reported_turn_model(turn.client) or "") if model is None else model,
             ttft_ms=ttft_ms,
             reply_mids=reply_mids if isinstance(reply_mids, list) else None,
         )

@@ -62,7 +62,7 @@ if TYPE_CHECKING:
         publish_turn_identity,
         read_context_tokens,
         read_effective_agent,
-        read_turn_model,
+        read_reported_turn_model,
         rearm_reinjection,
         rollback_skill_bodies,
         run_in_embed_pool,
@@ -695,7 +695,7 @@ async def _cron_run_single(
                 int(_turn_usage.duration_ms or (time.monotonic() - _turn_t0) * 1000),
                 float(_turn_usage.credits or 0.0),
                 float(_turn_usage.cost_usd or 0.0),
-                read_turn_model(client),
+                read_reported_turn_model(client),
             )
             await persist_token_record_async(
                 session_key,

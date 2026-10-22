@@ -21,6 +21,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from kiro_crew import model_registry
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpClient,
@@ -38,6 +39,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_KIRO_FAMILY,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     effort_config_option_id,
     effort_config_option_value,
 )
@@ -288,6 +290,50 @@ def _resolve_effort(self: AcpProvider) -> str | None:
         levels=self._advertised_effort_levels(),
         normalize=functools.partial(effort_config_option_value, self._client.backend),
     )
+
+
+# The effort value claude-agent-acp reports when no level is set, so the model's own
+# default applies.
+_HARNESS_DEFAULT_EFFORT = "default"
+
+
+def _reported_effort(level: str) -> str | None:
+    """A harness-reported effort level the slot may retain, or ``None``.
+
+    The level rides every slots snapshot, so only one the effort-name check
+    accepts (short, lowercase) is kept; anything else reads as no level reported.
+    """
+    # circular import: chat_persistence → dashboard → session → providers.acp
+    from kiro_crew.dashboard.chat_persistence import cap_effort_capability_levels
+
+    return level if level and cap_effort_capability_levels([level], source="reported") else None
+
+
+def applied_effort(provider: AcpProvider) -> str | None:
+    """The reasoning effort *provider*'s session runs at (public — see LLMProvider).
+
+    Where the harness advertises an effort config option, it is that option's
+    value as the harness last reported it, so a level the adapter refused or
+    never got does not read as applied. A pair-id harness that advertises no
+    effort option carries the level in its current model id
+    (``<model>[<effort>]``). kiro-cli reads effort from the ``cli.json``
+    overlay (``ACP_BACKENDS_EFFORT_OVERLAY``), so there it is the level Crew
+    wrote for the current model. ``""`` is the harness's own default; ``None``
+    means this harness has no effort channel or reported no level, or none
+    that is an effort name.
+    """
+    backend = provider._client.backend
+    option_id = effort_config_option_id(backend)
+    for option in provider._client.acp_config_options:
+        if isinstance(option, dict) and option.get("id") == option_id:
+            value = option.get("currentValue")
+            if isinstance(value, str):
+                return "" if value == _HARNESS_DEFAULT_EFFORT else _reported_effort(value)
+    if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        return _reported_effort(model_registry.split_effort_suffix(provider.served_model)[1])
+    if backend in ACP_BACKENDS_EFFORT_OVERLAY:
+        return provider._resolve_effort() or ""
+    return None
 
 
 async def _set_effort_config_option(self: AcpProvider, level: str) -> None:

@@ -69,6 +69,10 @@ class _ChatSlot:
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
+        "turn_model",
+        "served_backend",
+        "served_agent",
+        "served_effort",
         "_session_requested_model",
         "_crew_log_previous_sid",
         "_crew_log_previous_undecided",
@@ -377,6 +381,10 @@ class _ChatSlot:
     _crew_log_opened_sid: str
     _crew_log_pending_channel: bool
     served_model: str
+    turn_model: str
+    served_backend: str | None
+    served_agent: str | None
+    served_effort: str | None
     _effort_pick_gen: int
     _reasoning_effort: str
     autocompact_pct: float | None
@@ -1075,6 +1083,7 @@ class _ChatSlot:
     mcp_report_payload = _slot_session.mcp_report_payload
     record_model_withheld = _slot_session.record_model_withheld
     record_served_model = _slot_session.record_served_model
+    record_session_facts = _slot_session.record_session_facts
     latch_crew_log_previous = _slot_session.latch_crew_log_previous
     take_crew_log_previous = _slot_session.take_crew_log_previous
     forget_session_model_state = _slot_session.forget_session_model_state

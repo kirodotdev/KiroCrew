@@ -577,6 +577,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
+    read_reported_turn_model,
     read_turn_model,
 )
 from kiro_crew.dashboard.member_message_notes import post_turn_reply
@@ -2976,6 +2977,12 @@ async def _run_chat(
                 # unattributable turn stays "" and the footer omits the field.
                 _turn_model = read_turn_model(client)
                 turn._turn_model = _turn_model
+                # The footer names the model the harness reported running, in its
+                # own spelling; the usage row and the metrics keep the id above.
+                turn._footer_model = read_reported_turn_model(client)
+                # The prompt response just reported what served the turn, so
+                # the slot's session facts move with it.
+                _sync_served_model(slot, client)
                 _turn_stats_captured = True
                 turn._turn_stats_captured = _turn_stats_captured
                 # ── Turn outcome for this turn's histogram sample ──
@@ -4680,7 +4687,7 @@ async def _run_chat(
                 _turn_credits,
                 _turn_cost_usd,
                 turn_boundary=_turn_msg_boundary,
-                model=_turn_model,
+                model=turn._footer_model,
                 ttft_ms=_ttft_visible.ms,
                 reply_mids=_reply_mids if isinstance(_reply_mids, list) and _reply_mids else None,
                 retries=sum(slot._turn_retries.values()) if _prompt_depth == 0 else 0,

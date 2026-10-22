@@ -73,6 +73,7 @@ def _stub_accessors(monkeypatch, *, usage):
     """
     monkeypatch.setattr(chat_runner, "provider_last_turn_usage", lambda c, *, since=None: usage)
     monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+    monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
     monkeypatch.setattr(chat_runner, "read_context_tokens", lambda c: (1234, 200000))
     monkeypatch.setattr(chat_runner, "read_effective_agent", lambda c: "kirocrew")
     monkeypatch.setattr(chat_runner, "telemetry_channel_of", lambda sk: "dashboard")
@@ -517,6 +518,7 @@ class TestStoppedTurnFooter:
     ) -> None:
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="stop-footer-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         # Last attempt billed 1.0; the turn's accumulated total is 3.25.
@@ -548,6 +550,7 @@ class TestStoppedTurnFooter:
         # rendered as zero, and no usage row is written for an unbilled turn.
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "")
         state, slot, client = _drive_state_and_slot(tmp_path, name="stop-unbilled-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
         self._stop_mid_stream(slot, client, credits=0.0)
@@ -568,6 +571,7 @@ class TestStoppedTurnFooter:
 
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="sweep-cancel-slot")
         client.last_prompt_stats = _RealStats(credits=0.0)
 
@@ -600,6 +604,7 @@ class TestStoppedTurnFooter:
         # walk back to the PREVIOUS reply and overwrite its recorded footer.
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name="pre-dispatch-stop-slot")
         prior_stats = {"elapsed_ms": 5000, "credits": 9.0}
         slot.append(
@@ -641,6 +646,7 @@ class TestAbnormalEndFooter:
     def _wire(self, tmp_path, monkeypatch, name, stream):
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "read_reported_turn_model", lambda c: "served-model")
         state, slot, client = _drive_state_and_slot(tmp_path, name=name)
         client.last_prompt_stats = _RealStats(credits=0.0)
         client.stream = stream(client)

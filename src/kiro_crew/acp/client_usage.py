@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_between_turn_credits``, ``_claude_compaction_pending``,
 ``_codex_compaction_pending``, ``_compaction_failed_at``, ``_mcp_notifications``,
-``last_compaction_transient``.
+``last_compaction_transient``, ``turn_model``.
 
 Instance fields read: ``_model``, ``_resolved_model_id``, ``last_prompt_stats``,
 ``memory_mode``.
@@ -25,6 +25,7 @@ from kiro_crew.acp._dispatch import (
     parse_claude_compaction_notice,
     parse_codex_compaction_update,
     parse_prompt_token_usage,
+    parse_prompt_turn_model,
     parse_refusal,
     parse_usage_cost,
     parse_usage_update,
@@ -107,6 +108,9 @@ def _track_prompt_usage(self: AcpClient, result: Any) -> None:
     tokens = parse_prompt_token_usage(result)
     if tokens is not None:
         self.last_prompt_stats.apply_prompt_token_usage(*tokens)
+    model = parse_prompt_turn_model(result)
+    if model:
+        self.turn_model = model
 
 
 def _backfill_context_window(self: AcpClient, pct: float) -> None:

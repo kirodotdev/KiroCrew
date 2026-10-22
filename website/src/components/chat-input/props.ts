@@ -8,6 +8,7 @@ import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
 import type { MemorySource } from '../../lib/agentMemorySource'
+import type { GatewayToolsState } from '../../lib/mcpSessionReport'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
@@ -174,6 +175,16 @@ export interface ChatInputProps {
    * marks its label and spoken name with it. Null or unset: no mark. */
   agentMemory?: MemorySource | null
   agentSource?: string
+  /** The ACP backend id the live session reports running on, in the config
+   *  spelling (`ACP_BACKEND_KIRO` is kiro-cli);
+   *  null/absent until a session reports. The model chip names it. */
+  sessionBackend?: string | null
+  /** Whether Kiro Crew's own MCP servers reached the live session. The context
+   *  popover names the state and the agent chip warns when they did not. */
+  gatewayTools?: GatewayToolsState | null
+  /** What the session SELECTED, when `modelName` is a different model its
+   *  harness reported running; the model chip's title names both. */
+  modelSelected?: string
   modelName?: string
   /**
    * True when `modelName` is the model an INHERITING slot actually runs on (the

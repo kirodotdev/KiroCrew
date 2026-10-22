@@ -190,6 +190,19 @@ describe('chat sidebar — effective-agent marker', () => {
     expect(markerFor(container, title)).toBeNull()
   })
 
+  it('takes the agent the live session reports over the resolution', () => {
+    // The session runs `kirocrew` while the resolution predicted nothing to
+    // report, and a second session runs the requested agent although the
+    // resolution predicted a substitute: the session's own report decides both.
+    const slots = [
+      { key: 'k-served', title: 'served', running: false, messages: 2, agent: 'mochi', effective_agent: '', served_agent: 'kirocrew', tags: [], last_ts: LAST_TS },
+      { key: 'k-runs-it', title: 'runs it', running: false, messages: 2, agent: 'mochi', effective_agent: 'kirocrew', served_agent: 'mochi', tags: [], last_ts: LAST_TS },
+    ] as unknown as ChatSlot[]
+    const { container } = renderSidebar(slots)
+    expect(markerFor(container, 'served')!.textContent).toContain('kirocrew')
+    expect(markerFor(container, 'runs it')).toBeNull()
+  })
+
   it('carries the meaning in text, not in colour or an icon', () => {
     // The accessibility contract. Colour-blind and screen-reader users get the
     // same information as everyone else because the information IS the text: it

@@ -122,6 +122,7 @@ class _ChatTurn:
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
+    _footer_model: "str"
     _had_empty_response_verdict: "bool"
     _held: "dict[str, Any]"
     _incoming_message: "str"

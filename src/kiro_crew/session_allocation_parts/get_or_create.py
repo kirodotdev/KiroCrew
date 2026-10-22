@@ -751,6 +751,10 @@ async def _get_or_create_impl(
                     crew_agent=claim_crew,
                     watchdog=claim_watchdog,
                 )
+                # The pooled provider was built before any crew claimed it, so its
+                # own crew is still empty: rebind it too, or ``session_agent``
+                # reports the pool's agent spec instead of the claiming crew.
+                cast(Any, provider)._crew_agent = claim_crew
                 if model:
                     # A cache miss walks the agents directory and reads specs
                     # until the pool agent matches: filesystem work, off the

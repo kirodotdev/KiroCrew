@@ -84,7 +84,8 @@ def _attach_turn_stats(
     ``elapsed_ms`` is the turn wall clock (or the provider-reported duration
     when available); ``credits`` is kiro-cli's per-turn ``meteringUsage`` sum;
     ``cost_usd`` is claude_code's API-reported cost. ``model`` is what served
-    this turn (``read_turn_model``): a concrete id on a pinned session, or the
+    this turn (``read_reported_turn_model``): the id the harness reported, else
+    a concrete id on a pinned session, or the
     bare ``"auto"`` when the turn was handed to Auto and the backend disclosed
     no id for it — Auto's per-turn choice is not on the ACP wire, so ``"auto"``
     is the whole of what can be said truthfully. ``ttft_ms`` is the turn's

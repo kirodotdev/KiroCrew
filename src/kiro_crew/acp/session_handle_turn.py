@@ -21,7 +21,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 ``_tool_call_kind``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``_tool_dispatched``, ``_tool_output_seen``,
 ``_tool_tracker``, ``_turn_done``, ``_turn_steering_denied``, ``_working_logged_ts``,
-``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``.
+``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``, ``turn_model``.
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
 ``_mode_model_unjudged``, ``_queue``, ``_runtime``, ``_session_id``,
@@ -627,6 +627,8 @@ async def _run_turn(
         )
 
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    # A turn that ends without a PromptResponse must not inherit the last one's model.
+    self.turn_model = ""
     # Credits reported between turns belong to no turn's window; this turn
     # bills them (see ``_track_metadata``).
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)

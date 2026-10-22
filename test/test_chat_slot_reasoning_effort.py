@@ -20,9 +20,7 @@ from kiro_crew.providers.acp import AcpProvider
 def _make_app(state: DashboardState) -> web.Application:
     app = web.Application()
     app["state"] = state
-    app.router.add_post(
-        "/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort
-    )
+    app.router.add_post("/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort)
     app.router.add_get(
         "/api/chat/slots/{slot}/selection-capabilities", api_chat_slot_selection_capabilities
     )
@@ -302,9 +300,7 @@ class TestChatSlotReasoningEffort:
             chat_handlers.KiroCrewConfig,
             "load",
             lambda: SimpleNamespace(
-                agent=SimpleNamespace(
-                    acp_backend=global_backend, member_acp_backend=member_backend
-                )
+                agent=SimpleNamespace(acp_backend=global_backend, member_acp_backend=member_backend)
             ),
         )
         slot = _ChatSlot("member-test")
@@ -515,15 +511,19 @@ class TestChatSlotReasoningEffort:
 
         state.sessions.reset = AsyncMock(side_effect=_reset)
         async with TestClient(TestServer(_make_app(state))) as client:
-            first = asyncio.create_task(client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "low"},
-            ))
+            first = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "low"},
+                )
+            )
             await first_reset_started.wait()
-            second = asyncio.create_task(client.post(
-                "/api/chat/slots/test/reasoning-effort",
-                json={"reasoning_effort": "low"},
-            ))
+            second = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "low"},
+                )
+            )
             # Let the second request reach (and block on) the slot lock, then
             # let the first request's reset fail.
             await asyncio.sleep(0.05)
@@ -706,6 +706,30 @@ class TestChatSlotReasoningEffortLiveProvider:
             provider.accepts_effort_level.assert_called_once_with("medium")
             provider.change_effort.assert_not_awaited()
             state.sessions.reset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_live_change_publishes_the_level_the_session_reports(self):
+        # The adapter stepped the push down to the model's ceiling; the slot
+        # shows that level, not the one the request asked for.
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.change_effort = AsyncMock(return_value=True)
+        provider.served_model = "claude-opus-4.7"
+        provider.turn_model = ""
+        provider.capabilities = SimpleNamespace(backend="claude")
+        provider.session_agent = "cr-writer"
+        provider.applied_effort = "xhigh"
+        slot = _ChatSlot("test")
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "max"},
+            )
+            assert resp.status == 200
+        assert slot.reasoning_effort == "max"
+        assert slot.served_effort == "xhigh"
 
     @pytest.mark.asyncio
     async def test_live_clear_that_changed_nothing_commits_nothing_and_does_not_reset(self):
@@ -911,6 +935,7 @@ class TestValidateReasoningEffortPersistence:
     @pytest.mark.parametrize("level", ["", "low", "medium", "high", "xhigh", "max"])
     def test_passes_through_allowlisted(self, level: str):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(level) == level
 
     @pytest.mark.parametrize(
@@ -919,10 +944,12 @@ class TestValidateReasoningEffortPersistence:
     )
     def test_discards_disallowed(self, tampered: str):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(tampered) == ""
 
     def test_discards_non_string(self):
         from kiro_crew.dashboard.chat_persistence import _validate_reasoning_effort
+
         assert _validate_reasoning_effort(5) == ""
         assert _validate_reasoning_effort(None) == ""
         assert _validate_reasoning_effort(["max"]) == ""
