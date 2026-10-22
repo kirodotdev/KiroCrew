@@ -144,6 +144,14 @@ _ANSWERS: dict[str, str] = {
         "What this crewmate waits on the person for: its open questions and the cards "
         "still waiting on a button, newest first, with the count"
     ),
+    "workers": (
+        "The worker sessions this crewmate created: each one's task, whether it is "
+        "running, between turns, done, blocked, failed or closed, and what it last said"
+    ),
+    "worker": (
+        "One worker session's own row, the part of `workers` read from that worker's "
+        "own log; not bound by a page"
+    ),
     "worktree": (
         "The shape of a fleet: every work board the tree reaches, which board each one "
         "hangs under, and which boards are its roots"

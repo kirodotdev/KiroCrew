@@ -274,7 +274,7 @@ DASHBOARD_BUILD_LINE: str = (
     "progress belongs on it rather than in chat. Build one with "
     "the dashboard skill: dashboard_save stores your HTML page (view.html), and "
     "dashboard_apply puts it live. Read dashboard_types for paths and row keys: "
-    "work and workstreams for progress, hourly history and "
+    "workers for sessions, work and workstreams for progress, hourly history and "
     "project spend, goal for relevant milestones, waiting for things needing the "
     "person, timeline for recent events, tools and usage for the live session's "
     "activity. Bind values through the model. A verified project snapshot can be "

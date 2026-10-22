@@ -2351,7 +2351,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   the loop, end with `goal_reminder.DASHBOARD_BUILD_LINE`: write your own HTML page
   (`view.html`) with the dashboard skill, stored by `dashboard_save` and put
   live by `dashboard_apply`, reading `dashboard_types` for paths and row keys
-  (`work` and `workstreams` for progress, hourly history and project
+  (`workers`, `work` and `workstreams` for progress, hourly history and project
   spend, `goal` for relevant milestones, `waiting`, `timeline`, and `tools` and
   `usage` for the live session's activity); a verified project snapshot may be
   an agentic field with its source and observation time shown. The look is

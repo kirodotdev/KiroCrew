@@ -442,6 +442,31 @@ class SessionTreeProjection:
             return ""
         return best.parent_slot
 
+    def created(self) -> "dict[str, tuple[str, int]]":
+        """Each slot's creator and when, from CREATION records only. No I/O.
+
+        A creation record is the creator's own ``session/spawned`` or the child's
+        ``session/opened`` naming a parent. A release or a takeover is a later
+        decision (an :class:`EdgeRecord` in the edges), so it leaves this answer
+        standing: a crewmate's page still knows which workers it made after it let one
+        go. Per slot the EARLIEST record wins, its ``at`` the creation time.
+        """
+        found: dict[str, tuple[str, int]] = {}
+
+        def _keep(slot: str, creator: "str | None", at: int) -> None:
+            if not slot or not creator or creator == slot:
+                return
+            held = found.get(slot)
+            if held is None or at < held[1]:
+                found[slot] = (creator, at)
+
+        with self._lock:
+            for spawn in self._spawned.values():
+                _keep(spawn.slot, spawn.parent_slot, spawn.at)
+            for record in self._records.values():
+                _keep(record.slot, record.parent_slot, record.created_at)
+        return found
+
     # ── the delta ──────────────────────────────────────────────────────────
 
     def apply(self, record: OpenedRecord) -> None:
@@ -1016,6 +1041,46 @@ def spawned_creator(slot: str) -> str:
     except Exception:  # pragma: no cover -- defensive; a read must not fail an open
         log_exception_text(logger, logging.DEBUG, "session tree spawn creator could not be read")
         return ""
+
+
+def creator_of(slot: str) -> str:
+    """The slot that created *slot*, from creation records, or ``""``. No I/O.
+
+    Unlike the folded parent, a release does not clear it
+    (:meth:`SessionTreeProjection.created`). ``""`` while the tree is not seeded for
+    this store, like :func:`spawned_creator`.
+    """
+    if not slot:
+        return ""
+    try:
+        proj = projection()
+        if not proj.seeded_for_current_store:
+            return ""
+        held = proj.created().get(slot)
+    except Exception:  # pragma: no cover -- defensive; a read must not fail a wake
+        log_exception_text(logger, logging.DEBUG, "session tree creator could not be read")
+        return ""
+    return held[0] if held else ""
+
+
+def created_children(creator: str) -> "tuple[str, ...]":
+    """The slots *creator* created, newest first, from creation records. No I/O.
+
+    ``()`` while the tree is not seeded for this store, like :func:`spawned_creator`:
+    an unseeded tree names no children, which is not the same as having none.
+    """
+    if not creator:
+        return ()
+    try:
+        proj = projection()
+        if not proj.seeded_for_current_store:
+            return ()
+        created = proj.created()
+    except Exception:  # pragma: no cover -- defensive; a read must not fail a fold read
+        log_exception_text(logger, logging.DEBUG, "session tree children could not be read")
+        return ()
+    mine = [(at, slot) for slot, (by, at) in created.items() if by == creator]
+    return tuple(slot for _at, slot in sorted(mine, reverse=True))
 
 
 def _depth_readable_nodes() -> "dict[str, TreeNode] | None":

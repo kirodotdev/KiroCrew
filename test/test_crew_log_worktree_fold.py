@@ -165,7 +165,7 @@ def test_the_three_key_kinds_partition_the_registry() -> None:
     """
     families = (
         set(projection.SESSION_FOLD_NAMES),
-        set(projection.SLOT_PROJECTION_NAMES),
+        set(projection.SLOT_PROJECTION_NAMES) | set(projection.INTERNAL_SLOT_PROJECTION_NAMES),
         set(projection.TREE_PROJECTION_NAMES),
     )
     for name in projection.FOLD_NAMES:
@@ -174,7 +174,7 @@ def test_the_three_key_kinds_partition_the_registry() -> None:
 
 
 def test_the_fold_is_lazy_with_a_stated_reason_and_no_warm_path() -> None:
-    """LAZY, and the only lazy fold in the registry.
+    """LAZY, like every tree fold.
 
     Eager would mean a warm cell, and a tree cell is stale when ANY member's log grows
     -- including a member that was not in the closure when the cell was built. No

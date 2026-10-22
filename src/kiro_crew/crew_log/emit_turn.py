@@ -26,6 +26,7 @@ from kiro_crew.crew_log.emit_state import (
     _SRC_GATEWAY,
     _last_config,
     _lock,
+    _note_eager,
     enabled,
 )
 from kiro_crew.crew_log.emit_text import (
@@ -200,7 +201,9 @@ def on_turn_started(
         # the rare one.
         if n > 1:
             payload["attempt"] = int(n)
-        log.append("turn/started", payload, src=_SRC_GATEWAY)
+        entry = log.append("turn/started", payload, src=_SRC_GATEWAY)
+        # A worker's turn moves its creator's ``workers`` page.
+        _note_eager(entry, "turn/started", session_id, payload)
 
     _submit(_job, "appending turn/started", session_id)
 
@@ -438,7 +441,7 @@ def on_message_received(
         log = _handle(session_id)
         if log is None:
             return
-        _append_body_entry(
+        entry = _append_body_entry(
             log,
             "message/received",
             turn,
@@ -446,6 +449,8 @@ def on_message_received(
             extra=extra,
             src=_SRC_GATEWAY,
         )
+        if entry is not None:
+            _note_eager(entry, "message/received", session_id, entry.data)
 
     _submit(_job, "appending message/received", session_id, len(body))
 
@@ -494,7 +499,7 @@ def on_message_sent(
         log = _handle(session_id)
         if log is None:
             return
-        _append_body_entry(
+        entry = _append_body_entry(
             log,
             "message/sent",
             turn,
@@ -503,6 +508,8 @@ def on_message_sent(
             extra=extra,
             src=_SRC_ACP,
         )
+        if entry is not None:
+            _note_eager(entry, "message/sent", session_id, entry.data)
 
     _submit(_job, "appending message/sent", session_id, len(body))
 

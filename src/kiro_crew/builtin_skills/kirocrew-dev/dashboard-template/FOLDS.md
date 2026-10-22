@@ -54,6 +54,8 @@ reaches a fold by its bus scope and a tree fold has none. A fold marked
 | `workstreams` | slot | Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session |
 | `goal` | slot | This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts |
 | `waiting` | slot | What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count |
+| `workers` | slot | The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said |
+| `worker` *(internal)* | slot | One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page |
 | `worktree` *(package only)* | tree | The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots |
 
 ## `status`
@@ -381,6 +383,30 @@ Moved by: `dashboard/waiting_changed`.
 | `newest` | `string` | no |
 | `omitted` | `number` | no |
 | `updated_at` | `string` | no |
+
+## `workers`
+
+The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said.
+
+Moved by: `message/received`, `message/sent`, `session/adopted`, `session/closed`, `session/opened`, `session/released`, `session/spawned`, `turn/completed`, `turn/started`, `work/recorded`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `counts` | `object` | no |
+| `items` | `array` | no |
+| `omitted` | `number` | no |
+| `total` | `number` | no |
+
+## `worker`
+
+One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page.
+
+Moved by: `message/received`, `message/sent`, `session/adopted`, `session/closed`, `session/opened`, `session/released`, `turn/completed`, `turn/started`, `work/recorded`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `parent` | `string` | no |
+| `row` | `object` | no |
 
 ## `worktree`
 

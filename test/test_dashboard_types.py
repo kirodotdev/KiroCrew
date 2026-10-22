@@ -26,6 +26,7 @@ from kiro_crew.crew_log.projection import (
     _SLOT_FOLD_ROW_BYTES,
     _TREE_FOLD_ROW_BYTES,
     FOLD_NAMES,
+    INTERNAL_SLOT_PROJECTION_NAMES,
     OWNER_SERVED_SLOT_PROJECTION,
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
@@ -254,7 +255,7 @@ class TestKeying:
         assert kinds == {dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT, dt.KEYED_BY_TREE}
         families = (
             set(SESSION_FOLD_NAMES),
-            set(SLOT_PROJECTION_NAMES),
+            set(SLOT_PROJECTION_NAMES) | set(INTERNAL_SLOT_PROJECTION_NAMES),
             set(TREE_PROJECTION_NAMES),
         )
         for index, family in enumerate(families):

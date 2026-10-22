@@ -1105,6 +1105,79 @@
       ]
     },
     {
+      "name": "workers",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "session/adopted",
+        "session/closed",
+        "session/opened",
+        "session/released",
+        "session/spawned",
+        "turn/completed",
+        "turn/started",
+        "work/recorded"
+      ],
+      "answers": "The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said",
+      "fields": [
+        {
+          "name": "counts",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "total",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "worker",
+      "mode": "slot",
+      "advertised": false,
+      "package_only": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "session/adopted",
+        "session/closed",
+        "session/opened",
+        "session/released",
+        "turn/completed",
+        "turn/started",
+        "work/recorded"
+      ],
+      "answers": "One worker session's own row, the part of `workers` read from that worker's own log; not bound by a page",
+      "fields": [
+        {
+          "name": "parent",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "row",
+          "type": "object",
+          "optional": false
+        }
+      ]
+    },
+    {
       "name": "worktree",
       "mode": "tree",
       "advertised": false,

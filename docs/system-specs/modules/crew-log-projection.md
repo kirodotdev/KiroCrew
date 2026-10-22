@@ -7,7 +7,7 @@ is a FOLD: `status`, `usage`, `timeline`, `tools`, `approvals`, `subagents` and
 `class` -- the session side panel of the RFC's section 5 table, plus the one fold a
 READER of another unit's log consults rather than a panel. This module is those six
 advertised folds, the internal `class` fold, the slot-keyed `ledger`, `radar`,
-`work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal` and `waiting` folds, the two read routes that serve them, and the frame that pushes a fold
+`work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting` and `workers` folds, the two read routes that serve them, and the frame that pushes a fold
 when the file grows.
 
 The split it implements is RFC NFR-2: the backend folds and cuts pages, the
@@ -19,7 +19,7 @@ sends, so `PROJECTION_NAMES` holds those six. A fold in `SLOT_PROJECTION_NAMES` 
 keyed by a SLOT rather than by one unit: a slot owns one ACP session id at a time,
 so the state it accrues over its life is spread across a unit per id it ran under,
 and answering for it means joining them. `SLOT_PROJECTION_NAMES` holds `ledger`,
-`radar`, `work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal` and `waiting`, and those names are kept OUT of
+`radar`, `work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting` and `workers`, and those names are kept OUT of
 `PROJECTION_NAMES` for that reason -- the growth push and the side panel address a
 session, and pushing a slot-wide value under one session's id would report a partial
 answer as the whole one. `FOLD_NAMES` is the union of the two, and the import-time
@@ -53,6 +53,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_radar.py` | the `radar` slot fold |
 | `crew_log/projection_dashboard.py` | the `panel`, `agentic` and `mistakes` slot folds |
 | `crew_log/projection_crewmate.py` | the `goal` and `waiting` slot folds, a crewmate's own record |
+| `crew_log/projection_workers.py` | the `workers` slot fold (the worker sessions a mate created) and its internal per-worker part `worker` (what one worker is doing), merged at read |
 | `crew_log/projection_work.py` | the `work` slot fold, and which units a work board spans (`_work_units`, `work_slots_naming_board`) |
 | `crew_log/projection_workstreams.py` | the `workstreams` slot fold and its board closure |
 | `crew_log/projection_worktree.py` | the `worktree` tree fold |
@@ -100,8 +101,10 @@ step for an entry a fold does not name, and `None` would leave a reader unable t
 
 **Every fold is eager today, and `LAZY_FOLD_REASONS` is empty.** The two families each
 have their own warm path (section 5.1): the nine SLOT folds -- `ledger`, `radar`, `work`,
-`panel`, `agentic`, `mistakes`, `workstreams`, `goal` and `waiting` -- are continued in the slot memo, and the seven SESSION folds -- the six the
-crew-log panel draws plus the internal `class` -- in the session memo.
+`panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting` and `workers` -- are continued in the slot memo, and the seven SESSION folds -- the six the
+crew-log panel draws plus the internal `class` -- in the session memo. The internal slot
+fold `worker` is the exception, LAZY with its reason: it is a part of `workers`, folded
+only when `workers` is read, in a slot-memo cell of its own per worker.
 `EAGER_SLOT_FOLD_NAMES` and `EAGER_SESSION_FOLD_NAMES` name the two halves, and an eager
 fold in neither is refused at import, because it would be woken for and then have
 nothing to continue. `timeline` is eager like the rest: the panel's feed section reads
@@ -397,7 +400,9 @@ reopened.
 | `agentic` | The mate's own dynamic-dashboard values, the latest per field, folded from `dashboard/agentic_value` entries in the member's own DM session log. It keeps up to `DASHBOARD_VALUE_LIMIT` fields, re-checks each value's declared type and byte size against the template manifest, and evicts the least recently written field past the cap. |
 | `mistakes` | The mate's mistake book: refused dashboard writes grouped by `(code, field)` from `dashboard/agentic_refused` entries, worst group first, carrying the correction a later accepted write recorded. It keeps up to `MISTAKE_GROUP_LIMIT` groups. |
 | `goal` | A mate's goal record, from the newest `dashboard/goal_recorded` snapshot: `goal` (the first goal's text), `goals`, `goals_total`, `goals_omitted`, `milestones` (each with its target and the reading the mate last recorded, as text, and its time; whether a milestone is reached is the mate's own word in that reading, never judged here), `milestones_total`, `milestones_omitted` and `changes`. It keeps up to `CREWMATE_ROW_LIMIT` rows per list and `CREWMATE_TEXT_LIMIT` characters per cell; every count covers the whole snapshot, and `*_omitted` says how many rows a list cut. |
+| `worker` | INTERNAL, bound by no page and served by no route: one worker's `row` and the `parent` its first opener named, folded over that worker's own units (`worker_units`); the per-worker part `workers` merges. Lazy. |
 | `waiting` | What a mate waits on the person for, from the newest `dashboard/waiting_changed` snapshot: `items` (newest first), `count` (how many wait in all, from the snapshot's `total`), `omitted` (how many the list cut; each item's `options_omitted` likewise for its choices), `newest` (the newest item's text, `""` when nothing waits) and `changes`. It keeps up to `CREWMATE_WAITING_LIMIT` items, the same bound the producer cuts at, and `CREWMATE_OPTION_LIMIT` choices each. |
+| `workers` | The worker sessions a mate created with `session_create`, newest first: `items` (each with `slot`, `task` -- from the FIRST user message only, `""` when that message carries `chunks` instead of `text`; the line of what it was given that names the ask: a `TASK:` or `GOAL:` heading, else the first line past the relay's provenance line and a leading `You are ...` role preamble --, `state`, `agent`, `started_at`, `last_activity_at`, `last_said` -- the last line of its newest reply, `""` when that reply was too long for one entry and carries `chunks` instead of `text` --, `report` and `report_status` from its own work report, `turns`, `stop_reason`, `closed_reason`), `counts` per state, `total` and `omitted`. Two folds merged at read (`read_slot_projection` → `_read_workers` → `merge_render`): `workers` reads `session/spawned` in the mate's OWN units (its creates, under the cap), and the internal `worker`, one slot-memo cell per child, reads that child's own units in `previous_sid` succession order (`units_in_succession`), its first unit (which holds the task) and its newest `WORKERS_UNITS_PER_CHILD` while its creator still holds it and every unit once the session tree's current parent is not its creator -- released, or released and then adopted (`worker_units`, `_let_go`) -- so one worker writing continues its own cell, the others answer warm, and a released worker stays `released`. The merged revision is minted fresh whenever any part's moves, and one crewmate's whole merged read, parts and revision, runs under its own lock (`_WORKERS_READ_LOCKS`), so a read that captured older parts never gets the higher revision. Until the session tree is seeded for the current store (`tree_seeded`), it names no children and no creator, and the read is served at revision 0, so the provisional value never outranks the one read after the seed. A worker's own `progress` report after a `done` or `blocked` one puts the row back to what its turns say. The children are the newest `2 * WORKERS_LIMIT` the session tree's creation records name, and a worker is drawn when the mate's log holds its create or its own `session/opened` names the mate as `parent`. From the worker's log: `turn/started`, `turn/completed`, `message/received`, `message/sent`, `work/recorded` (actor `worker`), `session/closed`, `session/released` and `session/adopted` (one naming a parent other than the worker's creator reads `released`, released first or not). Task, reply, report and close lines keep up to `WORKERS_TEXT_LIMIT` characters and end in "…" when cut. States: `starting`, `running`, `idle` (between turns), `done` and `blocked` (only from the worker's own report), `failed` (a `stop_reason` that `metrics.turns.turn_outcome` classifies as anything but `ok`, `cancelled`, `tool_stall` or `stale_recover` -- a timeout, an error, an interrupt; those four leave it `idle`), `closed`, `released`. Whether a worker FINISHED its task is not in the log without a `done` report, so such a worker reads `idle`. The eager path routes a worker's entry to its creator's cell (`eager._creator_slot`). It keeps up to `WORKERS_LIMIT` rows and `WORKERS_TEXT_LIMIT` characters per cell. |
 | `workstreams` | The project report: every board this slot reaches, keyed by `(slot, generation)`, each task costed by the credits of the worker session bound to it. It reads `work/recorded`, `session/opened` and the three turn closers, and counts board, task and spender overflow rather than dropping it silently. |
 
 No fold interprets `card/*` or `guide/*`. They are declared in the type registry, so

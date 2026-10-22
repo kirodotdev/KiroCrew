@@ -27,10 +27,13 @@ from kiro_crew.crew_log.entry_types import (
 from kiro_crew.crew_log.projection_catalogue import (
     _FOLD_STATE_VERSION_BASE,
     FOLD_NAMES,
+    INTERNAL_SLOT_PROJECTION_NAMES,
     KNOWN_TYPES,
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
     TREE_PROJECTION_NAMES,
+    WORKER_FOLD_NAME,
+    WORKERS_FOLD_NAME,
     WORKSTREAMS_FOLD_NAME,
     WORKTREE_FOLD_NAME,
     _Fold,
@@ -119,6 +122,22 @@ from kiro_crew.crew_log.projection_work import (
     _work_render,
     _work_start,
     _work_step,
+)
+from kiro_crew.crew_log.projection_workers import (
+    WORKER_TYPES,
+    WORKERS_TYPES,
+    _worker_bind_slot,
+    _worker_copy,
+    _worker_render,
+    _worker_rows,
+    _worker_start,
+    _worker_step,
+    _workers_bind_slot,
+    _workers_copy,
+    _workers_render,
+    _workers_rows,
+    _workers_start,
+    _workers_step,
 )
 from kiro_crew.crew_log.projection_workstreams import (
     _workstreams_bind_slot,
@@ -702,6 +721,38 @@ _FOLDS: Final[dict[str, _Fold]] = {
         copy_state=_flat_copy,
         count_rows=_waiting_rows,
     ),
+    # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
+    # and when, under the cap. What each worker is doing is ``worker``, merged in at
+    # read. ``affects`` stays the whole set a worker's entries carry, because the eager
+    # path routes a worker's entry to its creator's cell by this fold's types.
+    WORKERS_FOLD_NAME: _Fold(
+        WORKERS_FOLD_NAME,
+        _workers_start,
+        _workers_step,
+        _workers_render,
+        bind_slot=_workers_bind_slot,
+        affects=WORKERS_TYPES,
+        copy_state=_workers_copy,
+        count_rows=_workers_rows,
+    ),
+    # One worker's row, over that worker's own newest units: a cell per worker, so one
+    # worker growing continues its own cell and leaves the others warm.
+    WORKER_FOLD_NAME: _Fold(
+        WORKER_FOLD_NAME,
+        _worker_start,
+        _worker_step,
+        _worker_render,
+        bind_slot=_worker_bind_slot,
+        affects=WORKER_TYPES,
+        copy_state=_worker_copy,
+        count_rows=_worker_rows,
+        mode="lazy",
+        lazy_reason=(
+            "a part of ``workers``, read only when that fold is read: every session's "
+            "turns carry its types, so folding it eagerly would fold for every session "
+            "while only a crewmate's workers are ever read"
+        ),
+    ),
     # The TREE-keyed fold, the third key kind, argued where
     # :data:`TREE_PROJECTION_NAMES` names it. ``affects`` is the one work entry type:
     # the nodes are boards and the edges are items, and both are recorded there.
@@ -784,7 +835,9 @@ if _ORPHAN_EAGER:  # pragma: no cover - import-time
 #: CONSTANT, which is what this change exists to stop being. Checked at import because a
 #: fold added without a counter would be silently under-charged forever.
 _UNCOUNTED_SLOT_FOLDS: Final[tuple[str, ...]] = tuple(
-    name for name in SLOT_PROJECTION_NAMES if _FOLDS[name].count_rows is None
+    name
+    for name in SLOT_PROJECTION_NAMES + INTERNAL_SLOT_PROJECTION_NAMES
+    if _FOLDS[name].count_rows is None
 )
 if _UNCOUNTED_SLOT_FOLDS:  # pragma: no cover - import-time
     raise RuntimeError(
@@ -802,7 +855,11 @@ _MISKEYED_FOLDS: Final[tuple[str, ...]] = tuple(
     for name in FOLD_NAMES
     if sum(
         name in family
-        for family in (SESSION_FOLD_NAMES, SLOT_PROJECTION_NAMES, TREE_PROJECTION_NAMES)
+        for family in (
+            SESSION_FOLD_NAMES,
+            SLOT_PROJECTION_NAMES + INTERNAL_SLOT_PROJECTION_NAMES,
+            TREE_PROJECTION_NAMES,
+        )
     )
     != 1
 )

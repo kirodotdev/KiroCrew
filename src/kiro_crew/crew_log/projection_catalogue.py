@@ -80,6 +80,13 @@ SESSION_FOLD_NAMES: Final[tuple[str, ...]] = PROJECTION_NAMES + INTERNAL_PROJECT
 #: constants because :data:`SLOT_PROJECTION_NAMES` below names it and that table is
 #: built at import, before the fold's own section is reached.
 WORKSTREAMS_FOLD_NAME: Final[str] = "workstreams"
+#: The worker sessions a crewmate created and what each is doing
+#: (:mod:`~kiro_crew.crew_log.projection_workers`).
+WORKERS_FOLD_NAME: Final[str] = "workers"
+#: One worker session's own row, folded over that worker's own units only. Read only
+#: through ``workers`` (:func:`~kiro_crew.crew_log.projection_readers.read_slot_projection`
+#: merges one per worker), so each worker's cell continues on its own growth.
+WORKER_FOLD_NAME: Final[str] = "worker"
 
 #: Projections keyed by a SLOT instead of by one crew log. A slot owns one ACP
 #: session id at a time, so a fact that belongs to the slot for its whole life --
@@ -104,7 +111,14 @@ SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = (
     WORKSTREAMS_FOLD_NAME,
     GOAL_FOLD_NAME,
     WAITING_FOLD_NAME,
+    WORKERS_FOLD_NAME,
 )
+
+#: Slot-keyed folds no page binds and no route serves: each is a PART of an advertised
+#: slot fold, read only by the reader that merges it. ``worker`` is one worker's row,
+#: kept in a cell of its own so one worker's growth continues that cell instead of
+#: refolding every worker's log (``workers`` with two or more workers did).
+INTERNAL_SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = (WORKER_FOLD_NAME,)
 
 #: The slot-keyed fold served by its OWNER and by no generic route. This fold's owner
 #: (the Issue Radar crew store) orders a crew's units by the order the crew recorded
@@ -153,7 +167,11 @@ TREE_PROJECTION_NAMES: Final[tuple[str, ...]] = (WORKTREE_FOLD_NAME,)
 
 #: Every fold the registry (``_FOLDS``) holds, in registry order.
 FOLD_NAMES: Final[tuple[str, ...]] = (
-    PROJECTION_NAMES + INTERNAL_PROJECTION_NAMES + SLOT_PROJECTION_NAMES + TREE_PROJECTION_NAMES
+    PROJECTION_NAMES
+    + INTERNAL_PROJECTION_NAMES
+    + SLOT_PROJECTION_NAMES
+    + INTERNAL_SLOT_PROJECTION_NAMES
+    + TREE_PROJECTION_NAMES
 )
 
 #: The SHAPE of what these folds store, which is what a savepoint holds. It lives

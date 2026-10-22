@@ -111,6 +111,15 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
         "dashboard/agentic_refused",
         "dashboard/goal_recorded",
         "dashboard/waiting_changed",
+        # The ``workers`` fold: a crewmate's creates, and each worker's own turns,
+        # replies and end, which it reads from the worker's log and routes to the
+        # crewmate's cell (:func:`_creator_slot`).
+        "session/spawned",
+        "session/released",
+        "session/adopted",
+        "turn/started",
+        "message/received",
+        "message/sent",
         # The project report's fold costs each task by its worker's spend, so it reads
         # the opener that names a unit's session and the three closers that carry a
         # charge. The widest set here, and the reason is that the spend is in the
@@ -122,6 +131,10 @@ _WAKE_TYPES: Final[frozenset[str]] = frozenset(
         "background/completed",
     }
 )
+
+#: The slot fold whose cell lives under the creating session's slot, not the entry's.
+_WORKERS_FOLD: Final[str] = "workers"
+
 
 #: How long the worker waits for a wake before looping, so a stop is noticed.
 _POLL_SECONDS: Final[float] = 0.5
@@ -683,8 +696,30 @@ def _fold_batch(
         if _outranked_by_a_closer(wake, slot, closed, own_slots):
             continue
         for name in touches_slot:
+            if name == _WORKERS_FOLD and wake.entry_type != "session/spawned":
+                # Only a create moves the crewmate's own cell. Every other type it reads
+                # is a WORKER's entry, routed to the creator below; advancing every
+                # session's own cell on every turn would fold for nobody.
+                continue
             key = (slot, name)
             work[key] = max(work.get(key, 0), wake.seq)
+        if _WORKERS_FOLD in touches_slot and wake.entry_type != "session/spawned":
+            # A worker's entry is in the WORKER's log, whose header names the worker's
+            # slot -- but the cell a page reads is its creator's. The worker is the
+            # HEADER's slot, never the board: a worker's report names its conductor's
+            # board, and that board's creator is not the worker's.
+            creator = _creator_slot(_slot_of(wake.unit_id))
+            if creator:
+                key = (creator, _WORKERS_FOLD)
+                work[key] = max(work.get(key, 0), wake.seq)
+    for unit_id, seq in closed.items():
+        # A worker closing is a row its creator's page draws (``closed``), and the
+        # closer's own wake skips the routing above. Its creator's cell is not one the
+        # drops below touch, so advancing it after them folds the closer in.
+        creator = _creator_slot(own_slots.get(unit_id, ""))
+        if creator:
+            key = (creator, _WORKERS_FOLD)
+            work[key] = max(work.get(key, 0), seq)
     for slot in closed_slots:
         # The savepoint story for a slot fold is the memo, so dropping it costs the next
         # read one cold fold of a unit that has stopped growing -- and holds nothing for
@@ -709,6 +744,19 @@ def _fold_batch(
         _advance_session(unit_id)
         if closed.get(unit_id, 0) >= seq > 0:
             projection.forget_session_folds(unit_id)
+
+
+def _creator_slot(slot: str) -> str:
+    """The slot that created *slot* with ``session_create``, or ``""``. No I/O.
+
+    From the tree's creation records, so a worker its creator let go still moves the
+    creator's ``workers`` cell, which shows it ``released``.
+    """
+    if not slot:
+        return ""
+    from kiro_crew.crew_log import session_tree_projection
+
+    return session_tree_projection.creator_of(slot)
 
 
 def _advance_session(unit_id: str) -> None:

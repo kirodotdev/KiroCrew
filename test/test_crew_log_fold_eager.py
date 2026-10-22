@@ -205,7 +205,11 @@ def test_an_eager_fold_with_an_affects_set_is_accepted():
 
 
 def test_every_fold_with_a_warm_path_is_eager_and_the_rest_say_why_not():
-    """The rule is "eager unless written down", and exactly the TREE folds write it down.
+    """The rule is "eager unless written down", and the TREE folds and the internal slot
+    folds write it down.
+
+    An internal slot fold (``worker``) is a part of an advertised one, read only when
+    that one is read, so folding it eagerly would fold for every session's turns.
 
     The session-keyed folds are what the dashboard's panel reads, so they are eager like
     the slot folds; each family is advanced along its own memo, and together the two are
@@ -219,7 +223,7 @@ def test_every_fold_with_a_warm_path_is_eager_and_the_rest_say_why_not():
     reason, which is the pin here: an empty ``LAZY_FOLD_REASONS`` was the old assertion
     and it cannot tell "no exception" from "an exception nobody wrote down".
     """
-    lazy = set(crew_log.TREE_PROJECTION_NAMES)
+    lazy = set(crew_log.TREE_PROJECTION_NAMES) | set(crew_log.INTERNAL_SLOT_PROJECTION_NAMES)
     assert set(crew_log.EAGER_FOLD_NAMES) == set(crew_log.FOLD_NAMES) - lazy
     assert set(crew_log.LAZY_FOLD_REASONS) == lazy
     for name, reason in crew_log.LAZY_FOLD_REASONS.items():

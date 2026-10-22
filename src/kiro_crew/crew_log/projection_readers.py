@@ -4,9 +4,12 @@ them, and the public reads the routes serve.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
+from typing import Any
 
 from kiro_crew import session_ledger
+from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
     DASHBOARD_FOLD_NAME,
     GOAL_FOLD_NAME,
@@ -17,6 +20,8 @@ from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.projection_catalogue import (
     KNOWN_TYPES,
     TREE_PROJECTION_NAMES,
+    WORKER_FOLD_NAME,
+    WORKERS_FOLD_NAME,
     WORKSTREAMS_FOLD_NAME,
     Projection,
 )
@@ -25,6 +30,13 @@ from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session_log import open_session_log
 from kiro_crew.crew_log.projection_slot_memo import fold_slot_warm_revised
 from kiro_crew.crew_log.projection_work import _work_units
+from kiro_crew.crew_log.projection_workers import (
+    merge_render,
+    tree_seeded,
+    worker_units,
+    workers_children,
+    workers_units,
+)
 from kiro_crew.crew_log.projection_workstreams import _board_closure_units, _workstreams_units
 from kiro_crew.crew_log.schema import KIND_SESSION
 from kiro_crew.crew_log.session_tree import OpenedRecord, log_rank_of
@@ -110,6 +122,8 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
     party the record itself does not name yet (a worker bound before the board was
     recorded) says so here.
     """
+    if name == WORKERS_FOLD_NAME:
+        return _read_workers(slot)
     units = list(_slot_units_for_fold(slot, name))
     known = set(units)
     for extra in also_slots:
@@ -119,6 +133,72 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
                 units.append(unit_id)
     checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot)
     return projection_of(checkpoint, revision=revision)
+
+
+#: Per ``(data home, crewmate slot)``, the part revisions the last ``workers`` read
+#: merged and the revision it was served at. Bounded: the oldest crewmate goes first.
+_WORKERS_REVISIONS: "dict[tuple[str, str], tuple[Any, int]]" = {}
+_WORKERS_REVISIONS_MAX = 512
+_WORKERS_REVISIONS_LOCK = threading.Lock()
+#: Held across ONE crewmate's whole ``workers`` read, from the first part to the
+#: revision, so a read that captured older parts cannot be handed a revision above one
+#: that captured newer parts and finished first. Striped by crewmate, a fixed set.
+_WORKERS_READ_LOCKS: "tuple[threading.Lock, ...]" = tuple(threading.Lock() for _ in range(64))
+
+
+def _read_workers(slot: str) -> Projection:
+    """``workers`` for crewmate *slot*: its own creates merged with each worker's row.
+
+    Each part is a warm cell of its own (:func:`fold_slot_warm_revised`): ``workers``
+    over the crewmate's units, and ``worker`` per child over that child's units
+    (:func:`~kiro_crew.crew_log.projection_workers.worker_units`). A worker that wrote
+    continues its own cell; every other part answers from the cell it holds.
+
+    The REVISION moves whenever any part's does: the merged value is new then, and a
+    consumer keeps the highest revision per (key, fold). A fresh one is minted when the
+    parts changed, never the highest part's -- a part that leaves the set (a worker
+    past the cap) would otherwise move the number backwards.
+    """
+    key = (str(data_home()), slot)
+    with _WORKERS_READ_LOCKS[hash(key) % len(_WORKERS_READ_LOCKS)]:
+        return _read_workers_locked(slot, key)
+
+
+def _read_workers_locked(slot: str, key: "tuple[str, str]") -> Projection:
+    from kiro_crew.crew_log.projection_slot_memo import _minted_revision
+
+    seeded = tree_seeded()
+    own, own_revision = fold_slot_warm_revised(WORKERS_FOLD_NAME, workers_units(slot), slot=slot)
+    parts = [own_revision]
+    workers: dict[str, Any] = {}
+    for child in workers_children(slot):
+        units = worker_units(child, units_in_succession(child))
+        if not units:
+            continue
+        cell, revision = fold_slot_warm_revised(WORKER_FOLD_NAME, units, slot=child)
+        workers[child] = _FOLDS[WORKER_FOLD_NAME].render(cell.state)
+        parts.append(revision)
+    value = merge_render(own.state, slot, workers)
+    signature = (tuple(parts), tuple(workers))
+    with _WORKERS_REVISIONS_LOCK:
+        held = _WORKERS_REVISIONS.get(key)
+        if not seeded:
+            # The unseeded session tree names no workers, so this value is provisional
+            # and vouches for no revision: the one read once it is seeded outranks it.
+            revision = 0
+        elif held is not None and held[0] == signature:
+            revision = held[1]
+        elif 0 in parts:
+            # A part read outside a warm memo vouches for no revision, so neither does
+            # the whole.
+            revision = 0
+        else:
+            revision = _minted_revision()
+            _WORKERS_REVISIONS.pop(key, None)
+            _WORKERS_REVISIONS[key] = (signature, revision)
+            while len(_WORKERS_REVISIONS) > _WORKERS_REVISIONS_MAX:
+                del _WORKERS_REVISIONS[next(iter(_WORKERS_REVISIONS))]
+    return Projection(name=WORKERS_FOLD_NAME, seq=own.last_seq, value=value, revision=revision)
 
 
 def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
@@ -251,6 +331,12 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         # reading a slot nothing here binds would be a scan for data no reader asked
         # for.
         return _workstreams_units(slot)
+    if name == WORKERS_FOLD_NAME:
+        # The crewmate's own units: its creates. Each worker's own log is read by that
+        # worker's ``worker`` cell, merged in by :func:`_read_workers`.
+        return workers_units(slot)
+    if name == WORKER_FOLD_NAME:
+        return worker_units(slot, units_in_succession(slot))
     if name == PANEL_FOLD_NAME:
         # NOT the header fallthrough. A header's ``createdAt`` is stamped once and never
         # rewritten, so a backward clock step between two units of one slot would order

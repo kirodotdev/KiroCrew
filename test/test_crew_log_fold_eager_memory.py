@@ -395,6 +395,26 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             {"items": [dict(item) for _ in range(min(index + 1, crew_log.CREWMATE_WAITING_LIMIT))]},
             src=GATEWAY,
         )
+    elif name == "workers":
+        # One unit can only hold the crewmate's own creates: each worker's task and
+        # lines live in the worker's own log. The unit's opener names this slot, so
+        # every create here makes a row; the text cells a worker's own entries fill
+        # are covered by the recorded figure's headroom (see the projection spec).
+        if index == 0:
+            handle.append(
+                "session/opened",
+                {
+                    "agent": "kirocrew",
+                    "slot": slot,
+                    "model": "",
+                    "cwd": "/tmp",
+                    "owner": "raymond",
+                    "resumed": False,
+                },
+                src=GATEWAY,
+            )
+        child = f"{index:06d}{_WIDE_ASCII[: crew_log.WORKERS_TEXT_LIMIT - 6]}"
+        handle.append("session/spawned", {"child": {"slot": child}}, src=GATEWAY)
     elif name == "mistakes":
         # The WIDEST mistake row: a distinct field per entry so each mints its own
         # group, with the code, field and reason each at their clamp.
