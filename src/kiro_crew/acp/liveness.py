@@ -253,6 +253,7 @@ from kiro_crew.acp.liveness_tool_state import (  # noqa: F401 - re-exported for 
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS  # noqa: F401 - re-exported
 from kiro_crew.platform_compat import (  # noqa: F401 - re-exported for existing importers
     boottime_now,
+    get_process_start_id,
     process_start_boot_secs,
 )
 from kiro_crew.session_directive import CORE_MCP_SERVER  # noqa: F401 - re-exported
@@ -286,6 +287,7 @@ class LivenessOracle:
         wall_now=time.time,
         steady_now_fn=steady_now,
         tenancy: Callable[[], int | None] | None = None,
+        cleanup_tenancy: Callable[[], int | None] | None = None,
         server_launches: Callable[[], LaunchRoster | None] | None = None,
     ) -> None:
         self._proc = str(proc_root)
@@ -303,6 +305,9 @@ class LivenessOracle:
             darwin_backend if darwin_backend is not None else select_darwin_backend(self._proc)
         )
         self._tracked_child: int | None = None
+        self._tracked_child_start_id: str | None = None
+        self._tracked_tool: ToolCallState | None = None
+        self._shell_cleanup_ambiguous = False
         self._child_gone_ts: float | None = None
         # How many sessions the probed runtime hosts, asked at verdict time
         # because a runtime gains and loses tenants while a turn runs. Only the
@@ -315,6 +320,10 @@ class LivenessOracle:
         # about tenancy keeps today's verdicts exactly; a caller whose runtime
         # CAN host a second session is the one that must pass this.
         self._tenancy = tenancy
+        # Cleanup has a stricter, separate contract: only a positive answer of
+        # one authorizes signals. Keeping this probe separate means adding shell
+        # cleanup cannot change the model-wait DEAD/UNKNOWN policy.
+        self._cleanup_tenancy = cleanup_tenancy
         # How this session launched its MCP servers (see :data:`LaunchRoster`),
         # read ONLY by the socket scan behind the ``remote_flat`` tag, which
         # uses it to find the in-flight tool's own server process. Asked at
@@ -341,6 +350,9 @@ class LivenessOracle:
         confine.
         """
         self._tracked_child = None
+        self._tracked_child_start_id = None
+        self._tracked_tool = None
+        self._shell_cleanup_ambiguous = False
         self._child_gone_ts = None
         self._samples.clear()
 
@@ -360,6 +372,7 @@ class LivenessOracle:
             wall_now=self._wall_now,
             steady_now_fn=self._steady_now,
             tenancy=self._tenancy,
+            cleanup_tenancy=self._cleanup_tenancy,
             server_launches=self._server_launches,
         )
 
@@ -587,6 +600,7 @@ class LivenessOracle:
         return root
 
     def _check_shell_child(self, runtime_pid: int, tool: ToolCallState) -> tuple[str, str]:
+        self._observe_cleanup_tenancy(tool)
         if self._darwin is not None:
             return self._check_shell_child_darwin(self._darwin, runtime_pid, tool)
         if not self._tree_observable():
@@ -615,7 +629,7 @@ class LivenessOracle:
             self._proc_rows(runtime_pid, descendants), tool
         )
         if matched is not None:
-            return self._track_child(matched)
+            return self._track_child(matched, tool)
         if possibly_running:
             return VERDICT_UNKNOWN, "no matching shell child"
         if not live_descendants and not children_interface_readable(self._proc, runtime_pid):
@@ -652,7 +666,7 @@ class LivenessOracle:
         rows = (row for row in map(backend.row, descendants) if row is not None)
         matched, live_descendants, possibly_running = self._scan_for_child(rows, tool)
         if matched is not None:
-            return self._track_child(matched)
+            return self._track_child(matched, tool)
         if possibly_running:
             return VERDICT_UNKNOWN, "no matching shell child"
         return self._absent_child_verdict(live_descendants)
@@ -678,35 +692,41 @@ class LivenessOracle:
 
     def _scan_for_child(
         self, rows: Iterable[ProcessRow], tool: ToolCallState
-    ) -> tuple[int | None, int, bool]:
-        """``(matched_pid, live_descendants, possibly_running)`` over *rows*.
+    ) -> tuple[ProcessRow | None, int, bool]:
+        """``(matched_row, live_descendants, possibly_running)`` over *rows*.
 
-        ``matched_pid`` is the first live descendant whose cmdline matches the
-        cached command AND that is young enough to be this dispatch's own.
-        ``possibly_running`` is True when something that could be this command
-        is running unrecognized: a descendant started since the dispatch (the
-        match heuristic may have missed a live command — a shell that exec'd
-        away, a cached input redacted past any usable fragment), or one whose
-        cmdline matches while predating a late-taken stamp. Either vetoes the
-        absence claim; the caller keeps the plain evidence and the full window.
+        ``matched_row`` is set only when the fresh cmdline matches have exactly
+        one topmost process. A shell and its matching exec child form one tree;
+        two matching sibling commands under a shared runtime are deliberately
+        ambiguous because either can belong to another session, so neither
+        grants cleanup authority. That ambiguity is sticky for this tool call:
+        one sibling exiting later cannot make the survivor attributable.
+        ``possibly_running`` is True when something
+        that could be this command is running unrecognized or when multiple
+        topmost matches exist; both veto the absent-child claim.
         """
         fragment = match_fragment(tool.command)
         program = first_program(tool.command)
         live_descendants = 0
         started_since_dispatch = False
         matched_but_older = False
+        matched_rows: list[ProcessRow] = []
+        fallback_match_pids: set[int] = set()
         for row in rows:
             live_descendants += 1
             fresh = self._started_after_dispatch(row.started, tool)
             started_since_dispatch = started_since_dispatch or fresh
             if not row.cmdline:
                 continue
-            matched = bool(fragment) and fragment in row.cmdline
+            exact_match = bool(fragment) and fragment in row.cmdline
+            matched = exact_match
             if not matched and program:
                 base_tokens = {t.rsplit("/", 1)[-1] for t in row.cmdline.split()}
                 matched = program in base_tokens
             if not matched:
                 continue
+            if not exact_match:
+                fallback_match_pids.add(row.pid)
             if not fresh:
                 # Cmdline matches but the process predates the dispatch stamp by
                 # more than the tolerance. Two causes the oracle cannot tell
@@ -720,17 +740,181 @@ class LivenessOracle:
                 # not evidence that nothing is running.
                 matched_but_older = True
                 continue
-            return row.pid, live_descendants, True
-        return None, live_descendants, started_since_dispatch or matched_but_older
+            matched_rows.append(row)
+        topmost = self._unique_topmost_shell_match(matched_rows)
+        if self._shell_cleanup_ambiguous:
+            tool.shell_cleanup_disqualified = True
+        if topmost is not None:
+            if topmost.pid in fallback_match_pids:
+                tool.shell_cleanup_disqualified = True
+            return topmost, live_descendants, True
+        return (
+            None,
+            live_descendants,
+            started_since_dispatch or matched_but_older or bool(matched_rows),
+        )
 
-    def _track_child(self, pid: int) -> tuple[str, str]:
+    def _unique_topmost_shell_match(self, matches: list[ProcessRow]) -> ProcessRow | None:
+        """The sole matching tree root, or None when the matches are ambiguous."""
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return None
+        match_pids = {row.pid for row in matches}
+        nested: set[int] = set()
+        for row in matches:
+            if self._darwin is not None:
+                descendants = self._darwin.descendants(row.pid)
+            elif os.path.isdir(self._proc):
+                descendants = iter_descendants(self._proc, row.pid)
+                if descendants and descendants[0] == row.pid:
+                    descendants = descendants[1:]
+            else:
+                self._shell_cleanup_ambiguous = True
+                return None
+            if descendants is None:
+                self._shell_cleanup_ambiguous = True
+                return None
+            nested.update(match_pids.intersection(descendants))
+        topmost = [row for row in matches if row.pid not in nested]
+        if len(topmost) != 1:
+            self._shell_cleanup_ambiguous = True
+            return None
+        return topmost[0]
+
+    def _track_child(self, row: ProcessRow, tool: ToolCallState) -> tuple[str, str]:
+        pid = row.pid
         self._tracked_child = pid
+        self._tracked_tool = tool
+        self._tracked_child_start_id = self._capture_tracked_child_start_id(row, tool)
         self._child_gone_ts = None
         # Prime the stuck-detection movement baseline now so the NEXT check
         # can already compare deltas (otherwise stuck detection needs three
         # ticks: match, baseline, compare).
         self._tree_movement(pid, key_prefix="stuck")
         return VERDICT_WORKING, f"shell child {pid} matched command"
+
+    def _cleanup_has_exclusive_tenancy(self) -> bool:
+        """Whether this runtime positively reports exactly one session."""
+        if self._cleanup_tenancy is None:
+            return False
+        try:
+            count = self._cleanup_tenancy()
+        except Exception:
+            logger.debug("liveness: cleanup tenancy probe failed", exc_info=True)
+            return False
+        return type(count) is int and count == 1
+
+    def _observe_cleanup_tenancy(self, tool: ToolCallState) -> None:
+        """Permanently deny this call's cleanup after any non-exclusive view."""
+        if not self._cleanup_has_exclusive_tenancy():
+            tool.shell_cleanup_disqualified = True
+
+    def _capture_tracked_child_start_id(
+        self, observed: ProcessRow, tool: ToolCallState
+    ) -> str | None:
+        """Bind *observed* to one process incarnation, or refuse authority.
+
+        The matcher and identity reader are separate kernel calls. Read the
+        identity, re-read the row's start instant, then read the identity again;
+        a PID recycled anywhere across that bracket keeps liveness tracking but
+        gains no later cleanup authority.
+        """
+        self._observe_cleanup_tenancy(tool)
+        if (
+            observed.started is None
+            or self._shell_cleanup_ambiguous
+            or tool.shell_cleanup_disqualified
+        ):
+            return None
+        start_id = get_process_start_id(observed.pid)
+        if not start_id:
+            return None
+        if self._darwin is not None:
+            current = self._darwin.row(observed.pid)
+            current_started = current.started if current is not None else None
+        else:
+            stat = read_pid_stat(self._proc, observed.pid)
+            current_started = process_start_boot_secs(stat[1]) if stat is not None else None
+        if current_started != observed.started:
+            return None
+        return start_id if get_process_start_id(observed.pid) == start_id else None
+
+    def stalled_shell_tree(self, runtime_pid: int | None) -> list[tuple[int, str]]:
+        """Return the tracked shell subtree as ``(pid, start_id)``, leaf-first.
+
+        This is cleanup authority, not another liveness verdict, so every
+        uncertainty fails closed. The tool must have retained exact-command
+        attribution on an exclusively single-session runtime. The tracked root
+        must still be the exact process matched during this tool call, must not be
+        the shared runtime,
+        and must still sit below that runtime. The complete tree is enumerated
+        twice around its identity capture; one unreadable/recycled process or a
+        changed edge refuses the whole snapshot rather than authorizing a
+        partial kill.
+        """
+
+        def descendants_of(pid: int) -> list[int] | None:
+            if self._darwin is not None:
+                return self._darwin.descendants(pid)
+            if not os.path.isdir(self._proc):
+                return None
+            descendants = iter_descendants(self._proc, pid)
+            return descendants[1:] if descendants and descendants[0] == pid else descendants
+
+        try:
+            tracked_tool = self._tracked_tool
+            if tracked_tool is None or tracked_tool.shell_cleanup_disqualified:
+                return []
+            if not self._cleanup_has_exclusive_tenancy():
+                tracked_tool.shell_cleanup_disqualified = True
+                return []
+            root = self._tracked_child
+            root_start = self._tracked_child_start_id
+            if (
+                not runtime_pid
+                or not root
+                or root <= 1
+                or root == runtime_pid
+                or not root_start
+                or get_process_start_id(root) != root_start
+            ):
+                return []
+
+            runtime_tree = descendants_of(runtime_pid)
+            descendants = descendants_of(root)
+            if runtime_tree is None or descendants is None or root not in runtime_tree:
+                return []
+            if any(pid <= 1 or pid in (root, runtime_pid) for pid in descendants) or len(
+                set(descendants)
+            ) != len(descendants):
+                return []
+
+            captured: list[tuple[int, str]] = [(root, root_start)]
+            for pid in descendants:
+                start_id = get_process_start_id(pid)
+                if not start_id:
+                    return []
+                captured.append((pid, start_id))
+            if any(get_process_start_id(pid) != start_id for pid, start_id in captured):
+                return []
+
+            runtime_again = descendants_of(runtime_pid)
+            descendants_again = descendants_of(root)
+            if (
+                runtime_again is None
+                or descendants_again is None
+                or root not in runtime_again
+                or set(descendants_again) != set(descendants)
+                or len(descendants_again) != len(descendants)
+            ):
+                return []
+            if get_process_start_id(root) != root_start:
+                return []
+            return list(reversed(captured))
+        except Exception:
+            logger.debug("liveness: stalled shell tree snapshot failed", exc_info=True)
+            return []
 
     def _tracked_child_verdict(self, pid: int, alive: bool) -> tuple[str, str]:
         """Verdict for the tracked shell child *pid* given whether it is still alive."""

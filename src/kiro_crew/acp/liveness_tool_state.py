@@ -67,6 +67,11 @@ class ToolCallState:
 
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
+    # Sticky denial of process-cleanup authority for this call. Liveness may
+    # still track a likely child, but a shared runtime, a program-only match,
+    # or overlap with another shell call can never later become safe merely
+    # because an oracle generation was retired or a sibling exited.
+    shell_cleanup_disqualified: bool = False
     # ``boottime_now()`` at EVENT_TOOL_CALL — the SAME clock /proc dates process
     # start times against, so a child's start can be compared to its dispatch
     # without mixing clocks (see :func:`boottime_now`). Separate from
@@ -306,6 +311,18 @@ class InFlightToolTracker:
         never appears in ``active_calls``. Returns True — a dispatch always
         changes the judged call.
         """
+        if state.is_shell:
+            active_shells = [
+                existing
+                for existing_id, (existing, _aux) in self._calls.items()
+                if existing_id != (call_id or "") and existing.is_shell
+            ]
+            if self._idless is not None and self._idless[0].is_shell:
+                active_shells.append(self._idless[0])
+            if active_shells:
+                state.shell_cleanup_disqualified = True
+                for existing in active_shells:
+                    existing.shell_cleanup_disqualified = True
         self._current_id = call_id or ""
         if call_id:
             self._idless = None

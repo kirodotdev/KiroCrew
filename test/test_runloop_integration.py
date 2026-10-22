@@ -65,7 +65,7 @@ from kiro_crew.taskq.dependency import DependencyCoordinator
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
-_STALL_EVIDENCE = "verdict=dead; idle_secs=700; tool=execute_bash"
+_STALL_EVIDENCE = "verdict=dead; idle_secs=700; processes_terminated=2; tool=execute_bash"
 
 
 # ── harness ──────────────────────────────────────────────────────────────────
@@ -419,6 +419,7 @@ async def test_stop_recovery_yields_and_resumes_through_admission():
 
     assert info.outcome == "completed" and info.result == "partial done"
     assert calls[1].startswith(TOOL_STALL_RECOVERY_PREFIX)
+    assert "terminated 2 processes" in calls[1]
     kinds = [k for k, _ in events]
     assert "subagent_waiting" in kinds and "subagent_resumed" in kinds
     waiting = next(e for k, e in events if k == "subagent_waiting")
