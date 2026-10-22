@@ -314,6 +314,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     read_only_reason_for_path,
     validate_definition_patch,
 )
+from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
 from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
@@ -559,6 +560,9 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     "no session is up" is not "nothing is advertised", and an id the catalog does
     not list reaches a picker ONLY through this list. Returns ``[]`` only when the
     snapshot is empty too (a genuine first run) or the backend advertised nothing.
+    Both sources pass the same bounded admission
+    (:func:`model_registry.live_advertised_model_rows`), so a live payload cannot
+    reach the picker with an id or label the cache would refuse or clip.
 
     Two filters, and both are load-bearing. The CAPABILITY gate
     (``SessionCapabilities.resolves_model_from_advertised_list``) is the property
@@ -593,19 +597,16 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
             advertised = getter()
         except Exception:
             continue
-        if advertised:
-            return [
-                {
-                    "model_name": m.get("modelId", ""),
-                    "display_name": m.get("name", "") or m.get("modelId", ""),
-                    "description": m.get("description", ""),
-                }
-                for m in advertised
-                if m.get("modelId")
-            ]
+        rows = model_registry.live_advertised_model_rows(advertised) if advertised else []
+        if rows:
+            return rows
     return [
-        {"model_name": m, "display_name": m, "description": ""}
-        for m in model_registry.advertised_models(namespace)
+        {
+            "model_name": r["model_name"],
+            "display_name": r.get("display_name", "") or r["model_name"],
+            "description": r.get("description", ""),
+        }
+        for r in model_registry.advertised_model_rows(namespace)
     ]
 
 
@@ -760,9 +761,9 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     shown it unfiltered is offered the full flagship list and discovers the truth
     only when a prompt fails.
 
-    So when anything is advertised, registry rows are FILTERED DOWN to it (keeping
-    the registry's cleaner display names for the survivors), and advertised models
-    the registry does not list are appended for forward-compat.
+    So when anything is advertised, registry rows are FILTERED DOWN to it (each survivor
+    labelled with the backend's own name when it sent one, else the registry's),
+    and advertised models the registry does not list are appended for forward-compat.
 
     With no session live the advertised set is the last snapshot any session
     wrote (:func:`_advertised_cc_models`), so a cold dashboard filters the same
@@ -796,20 +797,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             or _normalize_model_key(e.get("model_name", "")) == "auto"
         ]
 
-    merged: list[dict] = []
-    seen: dict[str, int] = {}
-    for entry in (*registry_rows, *advertised):
-        name = entry.get("model_name", "")
-        key = _normalize_model_key(name)
-        if not key:
-            continue
-        if key in seen:
-            # Collision: registry keeps display, advertised id keeps the wire value.
-            if key != "auto":
-                merged[seen[key]] = {**merged[seen[key]], "model_name": name}
-            continue
-        seen[key] = len(merged)
-        merged.append(entry)
+    merged = merge_advertised_rows(registry_rows, advertised, _normalize_model_key)
     # "auto" leads. It may be absent entirely if a future registry drops the row,
     # so synthesize it rather than assuming the filter above preserved one.
     merged = [e for e in merged if _normalize_model_key(e.get("model_name", "")) == "auto"] + [
@@ -817,7 +805,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     ]
     if not any(_normalize_model_key(e.get("model_name", "")) == "auto" for e in merged):
         merged.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
-        seen = {_normalize_model_key(e.get("model_name", "")): i for i, e in enumerate(merged)}
+    seen = {_normalize_model_key(e.get("model_name", "")) for e in merged}
     # Guarantee the configured default is present (e.g. a custom cc_model the
     # backend doesn't advertise) so the selected model never vanishes. Resolve it
     # to its canonical key first (it may be stored as a provider id or alias) so a

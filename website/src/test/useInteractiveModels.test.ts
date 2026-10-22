@@ -101,6 +101,26 @@ describe('interactive model visibility', () => {
     ])
   })
 
+  it('does not give a grouped row one variant display name', () => {
+    const models = [
+      { name: 'openai.gpt-6-astra[high]', displayName: 'GPT-6 Astra (high)' },
+      { name: 'openai.gpt-6-astra[max]', displayName: 'GPT-6 Astra (max)' },
+    ]
+    const [row] = filterInteractiveModels(models, [], [], true)
+    expect(row.name).toBe('openai.gpt-6-astra')
+    expect(row.displayName).toBeUndefined()
+  })
+
+  it('keeps the base display name when the base row is advertised', () => {
+    const models = [
+      { name: 'openai.gpt-6-astra[high]', displayName: 'GPT-6 Astra (high)' },
+      { name: 'openai.gpt-6-astra', displayName: 'GPT-6 Astra' },
+    ]
+    const [row] = filterInteractiveModels(models, [], [], true)
+    expect(row.name).toBe('openai.gpt-6-astra')
+    expect(row.displayName).toBe('GPT-6 Astra')
+  })
+
   it('separates effort only when the capability response says IDs encode effort', () => {
     const pairModels = [{ name: 'gpt-6-sol[medium]' }]
     expect(shouldSeparateModelEffort(true, pairModels)).toBe(true)

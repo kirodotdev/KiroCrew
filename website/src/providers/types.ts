@@ -132,6 +132,18 @@ export interface ProviderLabels {
 
 export interface ModelInfo {
   name: string
+  /**
+   * The backend's own human label for this model, from `GET /api/models`
+   * `display_name`. It is the name the backend reported for the row: an
+   * advertised-selection harness (Claude Code, Codex) advertises one — "Opus 5.5"
+   * for the id `opus` — and kiro-cli prints one beside some ids, so the picker
+   * reads like the backend's own list instead of the raw wire id. Optional and
+   * never defaulted: a row without one (a cold auto-only fallback, the 24h cache
+   * written before this field existed) falls
+   * back to `name` at the render site. Not a translation key — it is
+   * backend-authored text passed through verbatim.
+   */
+  displayName?: string
   description: string
   contextWindow?: number
   supportsExtendedContext?: boolean

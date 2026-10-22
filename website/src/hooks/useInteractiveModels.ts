@@ -149,9 +149,10 @@ export function filterInteractiveModels(
     seen.add(name)
     // Prefer metadata from an explicitly advertised base model. Without one,
     // retain a description only if every advertised effort variant agrees;
-    // a price remains level-specific and cannot describe the grouped row.
+    // a price and a display name are level-specific and cannot describe the
+    // grouped row.
     const base = baseModels.get(name)
-    return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { description: pairDescriptions.get(name) || '', rateMultiplier: undefined } : {}) }]
+    return [{ ...(base ?? model), name, ...(!base && name !== model.name ? { description: pairDescriptions.get(name) || '', rateMultiplier: undefined, displayName: undefined } : {}) }]
   })
 }
 

@@ -84,7 +84,13 @@ def _cold_advertised_cache(monkeypatch):
     warm one would pass or fail on a neighbour's leftovers.
     """
     monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+    monkeypatch.setattr(model_registry, "_ADVERTISED_META", {})
     monkeypatch.setattr(model_registry, "persist_advertised_models", lambda: None)
+
+
+# The genuine persist, captured before the autouse fixture stubs the name, for
+# the one test that exercises a real disk write.
+_REAL_PERSIST = model_registry.persist_advertised_models
 
 
 def _codex_client(tmp_path, model: str = "") -> AcpClient:
@@ -424,3 +430,228 @@ async def test_api_models_routes_the_codex_backend_to_the_advertised_list(monkey
 
     assert resp.status == 200
     assert _names(json.loads(resp.body)) == ["auto", "gpt-5.4", "gpt-5.4-codex", "gpt-5.5"]
+
+
+# ── The shared-runtime handle path (the path a dashboard codex chat takes) ──
+#
+# Every dashboard chat runs on AcpSessionHandle, not the direct-spawn AcpClient.
+# That path captured the advertised list onto the live handle but never fed the
+# CROSS-SESSION cache, so the codex picker emptied to auto + default the moment
+# no codex session was live (a harness switch away and back, or a restart). The
+# feed below is the fix.
+
+
+def _feeding_handle(backend: str, models: list[dict]):
+    """A minimal stand-in carrying only what ``_feed_advertised_model_cache`` reads."""
+    return SimpleNamespace(
+        _runtime=SimpleNamespace(acp_backend=backend),
+        _available_models=models,
+        _advertised_models_changed=False,
+    )
+
+
+def test_handle_feed_populates_the_codex_cross_session_cache() -> None:
+    from kiro_crew.acp import session_handle_model_selection as sh_models
+
+    handle = _feeding_handle(
+        ACP_BACKEND_CODEX,
+        [{"modelId": "gpt-5.4"}, {"modelId": "gpt-5.5"}],
+    )
+
+    sh_models._feed_advertised_model_cache(handle)
+
+    # Survives the live session: the picker's cold fallback now reads these.
+    assert model_registry.advertised_models("codex") == ["gpt-5.4", "gpt-5.5"]
+    assert model_registry.advertised_models("acp") == []
+    assert handle._advertised_models_changed is True
+
+
+def test_handle_feed_skips_a_non_advertised_backend() -> None:
+    """kiro reaches its ids through --list-models, not this feed (harness-parity H6)."""
+    from kiro_crew.acp import session_handle_model_selection as sh_models
+
+    handle = _feeding_handle(ACP_BACKEND_KIRO, [{"modelId": "claude-opus-4.8"}])
+
+    sh_models._feed_advertised_model_cache(handle)
+
+    assert model_registry.advertised_models("acp") == []
+    assert handle._advertised_models_changed is False
+
+
+def test_handle_feed_is_a_no_op_when_nothing_was_advertised() -> None:
+    from kiro_crew.acp import session_handle_model_selection as sh_models
+
+    handle = _feeding_handle(ACP_BACKEND_CODEX, [])
+
+    sh_models._feed_advertised_model_cache(handle)
+
+    assert model_registry.advertised_models("codex") == []
+    assert handle._advertised_models_changed is False
+
+
+@pytest.mark.asyncio
+async def test_handle_persist_offloads_only_when_changed(monkeypatch) -> None:
+    from kiro_crew.acp import session_handle_model_selection as sh_models
+
+    calls = []
+    monkeypatch.setattr(model_registry, "persist_advertised_models", lambda: calls.append(1))
+
+    handle = SimpleNamespace(_advertised_models_changed=True)
+    await sh_models._persist_advertised_models_if_changed(handle)
+    assert calls == [1]
+    # The flag clears so a second session-init step does not re-persist.
+    assert handle._advertised_models_changed is False
+    await sh_models._persist_advertised_models_if_changed(handle)
+    assert calls == [1]
+
+
+# ---------------------------------------------------------------------------
+# Native display labels survive to the cold picker path.
+#
+# With no live session, the claude_code picker reads the advertised snapshot
+# alone. ``refresh_advertised_models(rows=...)`` keeps each id's
+# ``name``/``description`` in ``_ADVERTISED_META``, and ``advertised_model_rows``
+# serves them to that cold path, so the picker shows the backend's own names
+# (``Sonnet 5``) rather than raw ids (``claude-sonnet-5``).
+# ---------------------------------------------------------------------------
+
+
+def _rich_rows() -> list[dict]:
+    return [
+        {"modelId": "sonnet", "name": "Sonnet", "description": "Everyday"},
+        {"modelId": "claude-sonnet-5", "name": "Claude Sonnet 5", "description": "Current"},
+    ]
+
+
+def test_refresh_with_rows_persists_native_labels() -> None:
+    changed = model_registry.refresh_advertised_models(
+        "claude_code", [r["modelId"] for r in _rich_rows()], rows=_rich_rows()
+    )
+    assert changed is True
+    rows = model_registry.advertised_model_rows("claude_code")
+    by_id = {r["model_name"]: r for r in rows}
+    assert by_id["claude-sonnet-5"]["display_name"] == "Claude Sonnet 5"
+    assert by_id["claude-sonnet-5"]["description"] == "Current"
+    # The id-only contract is unchanged for every entitlement caller.
+    assert model_registry.advertised_models("claude_code") == ["sonnet", "claude-sonnet-5"]
+
+
+def test_refresh_without_rows_leaves_labels_untouched() -> None:
+    """A legacy id-only call keeps the id list and does not clear existing labels."""
+    model_registry.refresh_advertised_models(
+        "claude_code", ["sonnet", "claude-sonnet-5"], rows=_rich_rows()
+    )
+    # Same ids, no rows: a no-op on ids, labels preserved.
+    changed = model_registry.refresh_advertised_models("claude_code", ["sonnet", "claude-sonnet-5"])
+    assert changed is False
+    assert (
+        model_registry.advertised_model_rows("claude_code")[1]["display_name"] == "Claude Sonnet 5"
+    )
+
+
+def test_label_only_change_reports_changed_so_it_repersists() -> None:
+    model_registry.refresh_advertised_models(
+        "claude_code", ["sonnet", "claude-sonnet-5"], rows=_rich_rows()
+    )
+    relabeled = [
+        {"modelId": "sonnet", "name": "Sonnet", "description": "Everyday"},
+        {"modelId": "claude-sonnet-5", "name": "Claude Sonnet 5.5", "description": "Newer"},
+    ]
+    changed = model_registry.refresh_advertised_models(
+        "claude_code", ["sonnet", "claude-sonnet-5"], rows=relabeled
+    )
+    assert changed is True  # ids identical, but a label moved -> persist warranted
+
+
+def test_label_less_rows_report_no_change_on_repeat() -> None:
+    """Rows that carry no label admit to an empty map, which matches no entry, so a repeat is a no-op."""
+    rows = [{"modelId": "sonnet"}, {"modelId": "claude-sonnet-5"}]
+    ids = [r["modelId"] for r in rows]
+    assert model_registry.refresh_advertised_models("claude_code", ids, rows=rows) is True
+    assert model_registry.refresh_advertised_models("claude_code", ids, rows=rows) is False
+    assert "claude_code" not in model_registry._ADVERTISED_META
+
+
+def test_a_cached_label_is_clipped_to_the_same_bound() -> None:
+    big = model_registry.ADVERTISED_LABEL_MAX_CHARS
+    model_registry.refresh_advertised_models(
+        "claude_code",
+        ["claude-big-1"],
+        rows=[{"modelId": "claude-big-1", "name": "N" * 10_000, "description": "D" * 10_000}],
+    )
+    row = model_registry.advertised_model_rows("claude_code")[0]
+    assert row["display_name"] == "N" * big
+    assert row["description"] == "D" * big
+
+
+def test_live_and_cached_rows_agree() -> None:
+    """The live payload and the cached snapshot yield identical picker rows, oversized labels included."""
+    payload = [
+        *_rich_rows(),
+        {
+            "modelId": "x" * (model_registry.ADVERTISED_MODEL_ID_MAX_CHARS + 1),
+            "name": "Huge",
+            "description": "",
+        },
+        {"modelId": "claude-big-1", "name": "N" * 10_000, "description": "D" * 10_000},
+    ]
+    model_registry.refresh_advertised_models(
+        "claude_code", [r["modelId"] for r in payload], rows=payload
+    )
+    assert model_registry.live_advertised_model_rows(
+        payload
+    ) == model_registry.advertised_model_rows("claude_code")
+
+
+def test_cold_sidecar_roundtrip_keeps_labels(tmp_path, monkeypatch) -> None:
+    """A persisted sidecar carrying the label block reloads with native labels."""
+    sidecar = tmp_path / "provider_models.json"
+    monkeypatch.setattr(model_registry, "_advertised_models_cache_path", lambda: sidecar)
+    # Write the exact superset shape persist_advertised_models produces: legacy
+    # ``{ns: [ids]}`` plus the reserved label block.
+    sidecar.write_text(
+        model_registry.json.dumps(
+            {
+                "claude_code": ["sonnet", "claude-sonnet-5"],
+                "__labels__": {
+                    "claude_code": {
+                        "sonnet": {"name": "Sonnet", "description": "Everyday"},
+                        "claude-sonnet-5": {"name": "Claude Sonnet 5", "description": "Current"},
+                    }
+                },
+            }
+        )
+    )
+    model_registry._ADVERTISED_MODELS.clear()
+    model_registry._ADVERTISED_META.clear()
+    model_registry._load_advertised_models()
+    rows = {r["model_name"]: r for r in model_registry.advertised_model_rows("claude_code")}
+    assert rows["claude-sonnet-5"]["display_name"] == "Claude Sonnet 5"
+    assert rows["sonnet"]["description"] == "Everyday"
+
+
+def test_persist_writes_the_label_block(tmp_path, monkeypatch) -> None:
+    """``persist_advertised_models`` emits the reserved ``__labels__`` block."""
+    sidecar = tmp_path / "provider_models.json"
+    monkeypatch.setattr(model_registry, "_advertised_models_cache_path", lambda: sidecar)
+    model_registry.refresh_advertised_models(
+        "claude_code", [r["modelId"] for r in _rich_rows()], rows=_rich_rows()
+    )
+    _REAL_PERSIST()  # the autouse fixture stubbed the public name to a no-op
+    data = model_registry.json.loads(sidecar.read_text())
+    assert data["claude_code"] == ["sonnet", "claude-sonnet-5"]
+    assert data["__labels__"]["claude_code"]["claude-sonnet-5"]["name"] == "Claude Sonnet 5"
+
+
+def test_legacy_sidecar_without_label_block_loads(tmp_path, monkeypatch) -> None:
+    """A legacy sidecar (``{ns: [ids]}``, no label block) loads with id-fallback labels."""
+    sidecar = tmp_path / "provider_models.json"
+    sidecar.write_text(model_registry.json.dumps({"codex": ["gpt-6-astra", "gpt-6-nova"]}))
+    monkeypatch.setattr(model_registry, "_advertised_models_cache_path", lambda: sidecar)
+    model_registry._ADVERTISED_MODELS.clear()
+    model_registry._ADVERTISED_META.clear()
+    model_registry._load_advertised_models()
+    assert model_registry.advertised_models("codex") == ["gpt-6-astra", "gpt-6-nova"]
+    # No labels persisted: rows fall back to the id as display_name.
+    rows = model_registry.advertised_model_rows("codex")
+    assert rows[0]["display_name"] == "gpt-6-astra"

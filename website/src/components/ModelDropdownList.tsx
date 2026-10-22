@@ -17,17 +17,22 @@ import { i18nT } from '../i18n/t'
  * only the shapes are pinned.
  */
 export type ModelItem =
-  Pick<ModelInfo, 'name'> & Partial<Pick<ModelInfo, 'description' | 'rateMultiplier'>>
+  Pick<ModelInfo, 'name'> & Partial<Pick<ModelInfo, 'displayName' | 'description' | 'rateMultiplier'>>
 
 /** The multiplier Auto is pinned at, and the baseline the badges are relative to. */
 const BASELINE = 1
 
 /**
- * What a row SHOWS for its model.
+ * What a row SHOWS for its model when the backend gave it no name of its own.
  *
- * Every real row shows its own id, verbatim: the id is what the user
- * cross-references against `kiro-cli chat --list-models`, the composer chip and
- * the config file, so translating or prettifying it would break that match.
+ * A row whose backend reported a display name (an advertised-selection harness's
+ * own name, or the name kiro-cli prints beside an id) shows that name, followed by
+ * its id in small monospace text, so the row still matches the composer chip and
+ * the config file, which show the id. Every other real row shows its own id,
+ * verbatim:
+ * the id is what the user cross-references against `kiro-cli chat --list-models`,
+ * the composer chip and the config file, so translating or prettifying it would
+ * break that match.
  *
  * `auto:jev` is the one row that is not a model. It is a request to let Jev pick
  * one per turn, and its wire id exists only so the gateway can recognise the
@@ -147,14 +152,19 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
     <div className="overflow-y-auto flex flex-col gap-0.5">
       {models.map(m => {
         const active = activeModel === m.name
+        const named = !!m.displayName && m.displayName !== m.name
         const mult = m.rateMultiplier
         return (
           <button key={m.name} ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)}>
             <div className="flex items-center gap-2">
-              {/* `data-model-name` carries the ID, not the label: the harnesses and
+              {/* `data-model-id` carries the ID, not the label: the harnesses and
                   the keyboard-nav tests select rows by the value that is sent, and a
-                  translated label would make that selector locale-dependent. */}
-              <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{rowLabel(m.name)}</span>
+                  translated label would make that selector locale-dependent. The
+                  VISIBLE text prefers the backend's native label (e.g. "Opus 5.5"
+                  for the id `opus`), in the sans font, followed by the id in small
+                  monospace; without one the row shows the id via rowLabel. */}
+              <span data-model-name data-model-id={m.name} className={`text-[13px] ${named ? '' : 'font-mono '}font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
+              {named && <span data-model-id-hint className="text-[11px] font-mono text-muted truncate">{m.name}</span>}
               {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
               {/* Credit multiplier. Rendered only when the backend reported a
                   usable one — a cold-start or pre-feature cached row has none,
@@ -192,7 +202,7 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                 resolvable for check-i18n-keys. */}
             {m.name === 'auto'
               ? <span className="text-[12px] text-muted leading-tight">{i18nT('components.modelDropdownList.auto_default')}</span>
-              : m.description && <span className="text-[12px] text-muted leading-tight">{m.description}</span>}
+              : m.description && <span className="text-[12px] text-muted leading-tight break-words">{m.description}</span>}
           </button>
         )
       })}

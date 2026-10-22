@@ -68,6 +68,19 @@ describe('displayModel', () => {
     expect(displayModel('auto', list)).toBe('auto')
     expect(displayModel('default', list)).toBe('auto')
   })
+
+  describe('with two advertised ids that share one normalized key', () => {
+    const fableList = [{ name: 'fable' }, { name: 'claude-fable-5' }]
+
+    it('shows the exact pinned id, not the first normalized match', () => {
+      expect(displayModel('claude-fable-5', fableList, false, null)).toBe('claude-fable-5')
+      expect(displayModel('claude-fable-5', fableList, false, false)).toBe('claude-fable-5')
+    })
+
+    it('names the exact inherited id, not the first normalized match', () => {
+      expect(displayModel('auto', fableList, false, null, 'claude-fable-5')).toBe('claude-fable-5')
+    })
+  })
 })
 
 /** The backend computes the withhold at spawn, against the live session's own
