@@ -791,9 +791,6 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
-    slot._steer_user_origin.pop(message, None)
-    slot._steer_channel_origin.pop(message, None)
-    slot._steer_admissions.pop(message, None)
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
     # turn-end requeue stamping it on the queue entry too would put one decision on
@@ -811,6 +808,17 @@ async def steer_into_running_turn(
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
         slot._steer_automation.pop(message, None)
+        slot._steer_admissions.pop(message, None)
+        slot._steer_user_origin.pop(message, None)
+        slot._steer_channel_origin.pop(message, None)
+    # Still registered, the provenance is held like the attachments: the RPC
+    # accepting the write is not consumption, and a turn that ends before the
+    # `steering_consumed` echo requeues the text from these records. Dropping them
+    # here would requeue an entry with no containment baseline and no origin marks:
+    # the drain would check it against every currently held constraint, a channel
+    # human's steer would lose its channel narrowing, and the session's own human's
+    # would lose the user origin that vouches for a member self-arm. The echo's
+    # settle or the requeue pops all three.
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
