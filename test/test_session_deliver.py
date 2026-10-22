@@ -81,6 +81,21 @@ class TestRunning:
         assert [m["role"] for m in slot.messages] == ["queued"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("evict", [True, False])
+    async def test_a_full_queue_drops_its_oldest_entry_only_when_asked(self, state, evict):
+        slot = _running_slot(state)
+        await sd.deliver(state, slot, "old report", sd.cron("nightly"))
+        with patch("kiro_crew.dashboard.slot_queue_repository.MAX_LIVE_QUEUE_ENTRIES", 1):
+            out = await sd.deliver(
+                state, slot, "new report", sd.cron("nightly"), evict_oldest=evict
+            )
+        assert out == sd.DELIVERED_QUEUED
+        expected = ["new report"] if evict else ["old report", "new report"]
+        assert [q["content"] for q in slot._queue] == expected
+        cards = [m["content"] for m in slot.messages if m["role"] == "queued"]
+        assert cards == expected
+
+    @pytest.mark.asyncio
     async def test_a_running_slot_queues_an_app_message_with_its_admission(self, state):
         slot = _running_slot(state)
         admission = {"queued_containment": {"x": 1}}

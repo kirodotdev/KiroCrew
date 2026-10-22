@@ -140,3 +140,32 @@ def test_notify_caller_session_cannot_be_overridden():
     ctx.notify("hello", session="origin", caller_session="cron:evil")
     _path, payload = ctx._post.call_args.args
     assert payload["caller_session"] == f"cron:{JOB_ID}"
+
+
+# ── the session-side entry point ──
+
+
+@pytest.mark.asyncio
+async def test_a_cron_send_message_is_delivered_as_cron_with_eviction(mock_sel):
+    """The handler names its `cron` origin and leaves idle vs running to the
+    session, asking a full live queue to drop its oldest entry."""
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.dashboard import session_deliver
+
+    slot = _live_running_slot()
+    state = _state_with_job(slot=slot)
+    deliver = AsyncMock(return_value=session_deliver.DELIVERED_QUEUED)
+    with patch.object(session_deliver, "deliver", deliver):
+        async with TestClient(TestServer(_make_app(state))) as c:
+            resp = await c.post(
+                "/api/send-message",
+                json={"text": "comments!", "session": "origin", "caller_session": f"cron:{JOB_ID}"},
+            )
+            data = await resp.json()
+    assert data["session"] is True
+    origin = deliver.await_args.args[3]
+    assert origin.kind == session_deliver.ORIGIN_CRON
+    assert origin.label == "autosde-Z"
+    assert deliver.await_args.args[1] is slot
+    assert deliver.await_args.kwargs["evict_oldest"] is True

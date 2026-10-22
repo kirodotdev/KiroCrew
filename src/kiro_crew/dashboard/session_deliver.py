@@ -17,11 +17,14 @@ not come through here; it has its own composer path.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+
+logger = logging.getLogger(__name__)
 
 #: Who sent the text. ``automation`` is a monitor loop's wake, ``cron`` a cron
 #: job's notification, ``app`` an embedded MCP App's message.
@@ -110,6 +113,7 @@ async def deliver(
     *,
     admission: dict | None = None,
     queue_meta: dict | None = None,
+    evict_oldest: bool = False,
 ) -> str:
     """Deliver *text* from *origin* into *slot*; return a ``DELIVERED_*`` outcome.
 
@@ -124,12 +128,13 @@ async def deliver(
     *admission* is the containment snapshot the caller's gate held: the steer
     records it for a requeue, and an app message's queue entry carries it so the
     drain re-checks it. :data:`QUEUE_FULL` means the live queue had no room and
-    nothing was written.
+    nothing was written. *evict_oldest* makes a cron notification on a full live
+    queue drop the oldest entry and its card instead, so the newest report waits.
     """
     if origin.kind == ORIGIN_PEER:
         return await _deliver_peer(state, slot, text, origin, admission, queue_meta)
     if slot.running:
-        return await _deliver_running(state, slot, text, origin, admission)
+        return await _deliver_running(state, slot, text, origin, admission, evict_oldest)
     if origin.kind == ORIGIN_AUTOMATION:
         return NOT_DELIVERED
     from kiro_crew.dashboard.chat_runner import _run_chat
@@ -161,6 +166,7 @@ async def _deliver_running(
     text: str,
     origin: Origin,
     admission: dict | None,
+    evict_oldest: bool = False,
 ) -> str:
     """The running-slot half of :func:`deliver`."""
     if origin.kind == ORIGIN_AUTOMATION:
@@ -186,6 +192,14 @@ async def _deliver_running(
     if origin.kind == ORIGIN_CRON:
         from kiro_crew.dashboard.cron_inject import queue_cron_notification
 
+        if evict_oldest:
+            from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
+            from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+
+            if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
+                evicted = slot.queue_pop(0)
+                logger.warning("Queue full for slot %s: evicting oldest message", slot.key)
+                _remove_queued_by_id(slot.messages, evicted["id"])
         queue_cron_notification(slot, text, origin.label)
         return DELIVERED_QUEUED
     if origin.kind == ORIGIN_APP:
