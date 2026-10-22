@@ -606,6 +606,27 @@ def test_registered_webhooks_corrupt_file_is_a_gap_AND_a_counted_fault(tmp_path,
         ig.reset_for_testing()
 
 
+def test_registered_webhooks_corrupt_file_warns_once_across_export_intervals(
+    tmp_path, monkeypatch, caplog
+):
+    """The probe runs every export interval. A file that stays corrupt is reported
+    once, by the probe's own warn-once note, not once per read by the webhook store's
+    reader, which would also call ``hooks.json`` the "webhook store"."""
+    ig.reset_for_testing()
+    try:
+        path = _hooks_home(monkeypatch, tmp_path)
+        path.write_text("{not json", encoding="utf-8")
+        with caplog.at_level(logging.DEBUG):
+            for _ in range(3):
+                assert ig.read_registered_webhooks() is None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1, warnings
+        assert repr(ig.PROBE_WEBHOOKS) in warnings[0]
+        assert ig.read_probe_failures() == {ig.PROBE_WEBHOOKS: 3}
+    finally:
+        ig.reset_for_testing()
+
+
 def test_registered_webhooks_callback_never_raises_on_a_corrupt_file(tmp_path, monkeypatch):
     """End to end through a real pipeline: the fault is published as DATA and the
     exporter keeps running -- a raise in an observable callback would spam the SDK
