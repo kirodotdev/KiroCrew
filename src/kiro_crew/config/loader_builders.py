@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
 from kiro_crew.config import sections as _sections
-from kiro_crew.config.loader_document import _raw_agent_section, unsandboxed_exec_platform_default
+from kiro_crew.config.loader_document import (
+    _raw_agent_section,
+    _raw_stt_provider,
+    unsandboxed_exec_platform_default,
+)
 from kiro_crew.config.loader_locations import config_path
 from kiro_crew.config.sections import (
     _DEFAULT_CHAT_TURN_TIMEOUT_SECS,
@@ -515,6 +519,35 @@ def _restore_stored_harness_fields(doc: dict) -> None:
             agent_section[key] = stored_agent[key]
         else:
             agent_section.pop(key, None)
+
+
+def _restore_stored_stt_provider(doc: dict) -> None:
+    """In place: keep a stored edition STT provider the snapshot could not see.
+
+    A config loaded before boot, or by a command that never boots, resolves
+    ``stt.provider`` against the built-ins alone, so a stored edition name such as
+    ``acme`` reads as ``off``. Publishing that snapshot would turn a valid choice
+    into ``off`` for good. So when the stored value is such a name (a string that
+    is neither built-in nor retired), the snapshot holds the loader's degraded
+    ``off``, and the edition registry is still pending or registers the name,
+    the stored value is written back instead.
+
+    A standalone host has no pending registry and no registered names, so this
+    never changes what it writes: an unknown name there still saves as ``off``.
+    """
+    stt_section = doc.get("stt")
+    if not isinstance(stt_section, dict) or stt_section.get("provider") != "off":
+        return
+    stored = _raw_stt_provider(config_path())
+    if not isinstance(stored, str) or not stored:
+        return
+    if stored in _sections._VALID_STT_PROVIDERS or stored in _sections._RETIRED_STT_PROVIDERS:
+        return
+    # Imported here: this module sits below the platform context it reads.
+    from kiro_crew import speech_providers
+
+    if speech_providers.registry_pending() or stored in speech_providers.registered_stt_names():
+        stt_section["provider"] = stored
 
 
 # Build each section in its own frame: the large inline constructor amplifies

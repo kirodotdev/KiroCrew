@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from aiohttp import web
 
-from kiro_crew import aws_consent
+from kiro_crew import aws_consent, speech_providers
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
@@ -41,13 +41,16 @@ from kiro_crew.voice_reply import (
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
     VALID_ENGINES,
-    VALID_PROVIDERS,
     SystemVoiceProbeError,
     VoiceSynthesisError,
     _validate_pitch,
     _validate_rate,
+    is_available,
+    iter_registered_chunks,
+    join_audio,
     list_system_voices,
     pcm_to_wav,
+    registered_voice_config,
     resolve_polly_cli,
     resolve_system_tts_async,
     stitch_mp3s,
@@ -55,6 +58,7 @@ from kiro_crew.voice_reply import (
     streaming_voice_reply,
     strip_markdown,
     synthesize_speech,
+    valid_providers,
     validate_length_scale,
     validated_config_bool,
     validated_config_string,
@@ -229,6 +233,53 @@ def _sandbox_refusal_response(
     )
 
 
+#: The built-in TTS providers in the order the Voice settings picker lists them,
+#: with an English label (the dashboard localises a built-in by its ``name``).
+_TTS_BUILTIN_ROWS: tuple[tuple[str, str], ...] = (
+    (PROVIDER_SYSTEM, "System (built-in)"),
+    (PROVIDER_PIPER, "Piper (local, offline)"),
+    (PROVIDER_POLLY, "Polly (cloud)"),
+)
+
+
+async def _voice_provider_rows() -> list[dict]:
+    """The voice ``providers`` capability list.
+
+    Built-ins answer through ``voice_reply.is_available`` with the settings in
+    force (it stats binaries, so it runs off the loop). The edition's providers
+    answer through their own ``check()``, each bounded and fail-closed. ``error``
+    is true only for a check that timed out or raised.
+    """
+    from kiro_crew.platform.interfaces_runtime import ProviderStatus
+
+    def _builtins() -> list[dict]:
+        rows = []
+        for name, label in _TTS_BUILTIN_ROWS:
+            try:
+                ok = is_available(name, piper_binary=_vc.piper_binary, piper_model=_vc.piper_model)
+            except Exception:
+                # A probe that raised is an error, not a missing prerequisite.
+                logger.warning("TTS provider %r probe failed", name, exc_info=True)
+                status = ProviderStatus(False, "the provider check failed", error=True)
+            else:
+                status = ProviderStatus(ok, None if ok else f"{label} is not set up on this host")
+            rows.append(speech_providers.provider_entry(name, label, True, status))
+        return rows
+
+    rows = await asyncio.to_thread(_builtins)
+    rows += await speech_providers.registered_entries(
+        speech_providers.registered_tts_providers(),
+        lambda provider: registered_voice_config(
+            provider.name,
+            voice_id=_vc.default_voice,
+            rate=_vc.default_rate,
+            pitch=_vc.default_pitch,
+            system_voice=_vc.system_voice,
+        ),
+    )
+    return rows
+
+
 async def api_voice_config(request: web.Request) -> web.Response:
     """GET/PUT /api/voice/config — read or update voice settings."""
     if request.method == "GET":
@@ -248,6 +299,10 @@ async def api_voice_config(request: web.Request) -> web.Response:
                 "piper_model_config": _vc.piper_model_config,
                 "piper_length_scale": _vc.piper_length_scale,
                 "system_voice": _vc.system_voice,
+                # One row per selectable provider, built-ins first in today's
+                # order, then the edition's: ``{name, label, builtin, available,
+                # reason, action}``. ``action`` is a sign-in step or null.
+                "providers": await _voice_provider_rows(),
             }
         )
 
@@ -263,12 +318,13 @@ async def api_voice_config(request: web.Request) -> web.Response:
     # live provider can change on a request the API said it refused.
     pending: dict[str, object] = {}
 
-    # ``in VALID_PROVIDERS`` would raise TypeError on an unhashable JSON value
-    # (list/dict), 500ing the PUT — require a str first.
+    # ``in valid_providers()`` would raise TypeError on an unhashable JSON value
+    # (list/dict), 500ing the PUT — require a str first. The built-ins plus the
+    # edition's registered TTS providers; with the default registry, the built-ins.
     if (
         "provider" in body
         and isinstance(body["provider"], str)
-        and body["provider"] in VALID_PROVIDERS
+        and body["provider"] in valid_providers()
     ):
         pending["provider"] = body["provider"]
     if "voice" in body:
@@ -452,6 +508,13 @@ async def _synthesize_request(
     try:
         if _vc.provider == PROVIDER_PIPER:
             return await _synthesize_piper_stream(state, text, identity, piper)
+        # Tried only for a name that is not a built-in (``tts_provider`` answers
+        # None for every built-in), so the branches around it are unchanged.
+        registered = speech_providers.tts_provider(_vc.provider)
+        if registered is not None:
+            return await _synthesize_registered_stream(
+                state, registered, text, identity, voice_id, rate, pitch
+            )
         # Only explicitly selected Polly may reach the paid sentence stream.
         # The built-in engine retains its provider-aware single-WAV path.
         if _vc.provider != PROVIDER_POLLY:
@@ -588,6 +651,65 @@ async def _synthesize_piper_stream(
         {**identity, "audio": audio_b64, "chunks": chunks, "audioMime": "audio/wav"},
     )
     return web.json_response({"ok": True, "chunks": chunks, "request_id": identity["request_id"]})
+
+
+async def _synthesize_registered_stream(
+    state: DashboardState,
+    provider: object,
+    text: str,
+    identity: dict[str, str],
+    voice_id: str,
+    rate: str,
+    pitch: str,
+) -> web.Response:
+    """Play an edition provider's chunks as they arrive, then one replay clip.
+
+    Same frames, identity and errors as the Piper and Polly streams, so the
+    dashboard plays it with no new branch. The text is already redacted; the
+    markdown is stripped here, as for every local provider.
+    """
+    plain = strip_markdown(text).strip()
+    voice_config = registered_voice_config(
+        _vc.provider, voice_id=voice_id, rate=rate, pitch=pitch, system_voice=_vc.system_voice
+    )
+    chunks: list[tuple[bytes, str]] = []
+    if plain:
+        async for chunk in iter_registered_chunks(provider, plain, voice_config):
+            audio = bytes(chunk.audio)
+            chunks.append((audio, chunk.mime))
+            sentence = getattr(chunk, "sentence", "")
+            state.broadcast_ws(
+                "voice_chunk",
+                {
+                    **identity,
+                    "index": len(chunks) - 1,
+                    "sentence": sentence if isinstance(sentence, str) else "",
+                    "audio": base64.b64encode(audio).decode("ascii"),
+                    "audioMime": chunk.mime,
+                },
+            )
+    if not chunks:
+        raise VoiceSynthesisError(
+            "voice_unavailable", "The selected voice provider returned no audio."
+        )
+    joined = await asyncio.to_thread(join_audio, chunks)
+    if joined is None:
+        raise VoiceSynthesisError(
+            "voice_synthesis_failed", "The voice provider returned audio that cannot be joined."
+        )
+    audio, suffix = joined
+    state.broadcast_ws(
+        "voice_complete",
+        {
+            **identity,
+            "audio": base64.b64encode(audio).decode("ascii"),
+            "chunks": len(chunks),
+            "audioMime": "audio/mpeg" if suffix == ".mp3" else "audio/wav",
+        },
+    )
+    return web.json_response(
+        {"ok": True, "chunks": len(chunks), "request_id": identity["request_id"]}
+    )
 
 
 async def _synthesize_nonstreaming(

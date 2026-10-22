@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
         PROVIDER_PIPER,
+        PROVIDER_POLLY,
         PROVIDER_SYSTEM,
         KiroCrewConfig,
         SlackClientOps,
@@ -194,6 +195,10 @@ async def _reply_by_voice(
                         "Install piper (`pip install piper-tts`) and set "
                         "`voice_reply.piper_model` to your voice .onnx file."
                     )
+                elif _vc.provider != PROVIDER_POLLY:
+                    # An edition-registered provider: its own check() said no,
+                    # and the Voice settings row carries its reason.
+                    hint = "Check the voice provider in Voice settings."
                 else:
                     hint = "Run `ada credentials update` and ensure `aws` CLI " "is on PATH."
                 if voice_auto_reply:

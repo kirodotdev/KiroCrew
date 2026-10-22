@@ -348,6 +348,79 @@ class FeedbackTrackerProvider(Protocol):
         ...
 
 
+#: The one :class:`ProviderAction` kind: the user must sign in before the
+#: provider can run. The dashboard renders it as a button with ``label``.
+PROVIDER_ACTION_LOGIN = "login"
+
+
+@dataclass(frozen=True)
+class ProviderAction:
+    """A step the user can take to make an unavailable provider available.
+
+    ``kind`` is :data:`PROVIDER_ACTION_LOGIN`; ``label`` is the button text.
+    """
+
+    kind: str
+    label: str
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    """What a provider's ``check()`` answers: can it run now, and if not, why.
+
+    ``reason`` is a short sentence the dashboard shows beside an unavailable
+    provider. ``label`` is the provider's display name; empty means "show the
+    ``name``". ``action`` is set when the user can fix it themselves, for example
+    a hosted provider that needs a sign-in first.
+
+    ``error`` is set by core alone, when the check itself timed out or raised:
+    the dashboard shows an error notice for it rather than a prerequisite. A
+    provider's own ``check()`` cannot set it.
+    """
+
+    available: bool
+    reason: Optional[str] = None
+    label: str = ""
+    action: Optional[ProviderAction] = None
+    error: bool = False
+
+
+@dataclass(frozen=True)
+class AudioChunk:
+    """One piece of synthesized audio from :meth:`TtsProvider.synthesize`.
+
+    ``mime`` is ``audio/mpeg`` or ``audio/wav``, the two the dashboard already
+    plays. ``sentence`` is the text this chunk speaks, when the provider knows it.
+    """
+
+    audio: bytes
+    mime: str
+    sentence: str = ""
+
+
+class SttStreamSession(Protocol):
+    """A live dictation session from :meth:`SttProvider.open_stream`.
+
+    The shape the on-device streaming helper already has, so core drives an
+    edition session with the same loop: ``start()`` answers ``None`` or a reason
+    it could not start; ``feed()`` takes 16 kHz mono Int16 PCM and answers False
+    once the session stops accepting audio; ``events()`` yields
+    ``{"type": "partial"|"final", "text": str}`` or ``{"type": "error",
+    "message": str}``; ``finish()`` ends the input so the trailing finals arrive;
+    ``close()`` releases everything and is idempotent.
+    """
+
+    async def start(self) -> Optional[str]: ...
+
+    async def feed(self, pcm: bytes) -> bool: ...
+
+    def events(self) -> Any: ...
+
+    async def finish(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 class SttProvider(Protocol):
     """One edition-supplied speech-to-text recogniser.
 
@@ -355,25 +428,28 @@ class SttProvider(Protocol):
     built-in name, a retired one or ``off``; boot refuses a context that tries
     (``speech_providers.validate_speech_registry``).
 
-    Phase 1 of the pluggable-speech RFC reads only ``name``: config accepts it as
-    a valid ``stt.provider``. The other members are the published shape that
-    dispatch will call once it routes through this seam; until then they have no
-    core call site.
+    WIRED: ``transcribe.transcribe_audio`` calls :meth:`transcribe_file`,
+    ``transcribe.availability_detail`` and the STT capability list call
+    :meth:`check`, and ``/api/ws/stt`` calls :meth:`open_stream` when
+    ``streaming`` is true. A built-in name never reaches any of them.
+
+    ``check()`` and ``transcribe_file()`` always run on one event loop (normally
+    the gateway's), whoever asks, so a provider may cache a loop-bound client.
     """
 
     name: str
     #: Whether the provider may join a live ``stt_stream`` session.
     streaming: bool
 
-    async def check(self, stt_config: Any) -> Any:
+    async def check(self, stt_config: Any) -> ProviderStatus:
         """Whether this provider can run now, and why not when it cannot."""
         ...
 
     async def transcribe_file(self, audio_path: str, stt_config: Any) -> Optional[str]:
-        """Recognise one recorded clip; ``None`` when nothing was recognised."""
+        """Recognise one recorded clip; ``None`` on failure, ``""`` for silence."""
         ...
 
-    def open_stream(self, stt_config: Any) -> Any:
+    def open_stream(self, stt_config: Any) -> SttStreamSession:
         """Open a streaming session. Called only when ``streaming`` is true."""
         ...
 
@@ -382,18 +458,22 @@ class TtsProvider(Protocol):
     """One edition-supplied text-to-speech engine.
 
     ``name`` is the value ``voice_reply.provider`` stores to select it. It must
-    not be a built-in name; boot refuses a context that tries. As with
-    :class:`SttProvider`, Phase 1 reads only ``name``.
+    not be a built-in name; boot refuses a context that tries.
+
+    WIRED: ``voice_reply.synthesize_speech`` and the dashboard's
+    ``/api/voice/synthesize`` call :meth:`synthesize`; ``voice_reply.is_available``
+    and the voice capability list call :meth:`check`. Core redacts the text
+    before :meth:`synthesize` sees it.
     """
 
     name: str
 
-    async def check(self, voice_config: Any) -> Any:
+    async def check(self, voice_config: Any) -> ProviderStatus:
         """Whether this provider can run now, and why not when it cannot."""
         ...
 
     def synthesize(self, text: str, voice_config: Any) -> Any:
-        """Speak *text*, yielding audio chunks (an async iterator)."""
+        """Speak *text*, yielding :class:`AudioChunk` values (an async iterator)."""
         ...
 
 

@@ -1638,8 +1638,13 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     guarded: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and isinstance(node.ops[0], ast.In):
-            target = getattr(node.comparators[0], "id", "")
-            if target.startswith("VALID_"):
+            # A ``VALID_*`` set, or ``valid_providers()``: the built-in providers
+            # plus the edition's registered ones.
+            comparator = node.comparators[0]
+            if isinstance(comparator, ast.Call):
+                comparator = comparator.func
+            target = getattr(comparator, "id", "")
+            if target.startswith("VALID_") or target == "valid_providers":
                 for inner in ast.walk(node.left):
                     if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
                         guarded.add(inner.value)

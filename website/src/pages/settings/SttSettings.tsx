@@ -90,7 +90,11 @@ interface SttConfig {
   language_code?: string
   /** Whether a fast model tidies the finished transcript. Off unless turned on. */
   polish?: boolean
-  providers?: string[]
+  /**
+   * One row per selectable provider. Older gateways served bare names, so both
+   * shapes are read; only `name` is used here.
+   */
+  providers?: (string | { name: string })[]
   streaming_providers?: string[]
   language_codes?: string[]
   prereqs: string[]
@@ -1021,7 +1025,9 @@ export default function SttSettings({ cardIndex }: {
 
   const isTranscribe = stt.provider === PROVIDER_TRANSCRIBE
   const provider = stt.provider || PROVIDER_LOCAL
-  const providerOptions = stt.providers?.length ? stt.providers : FALLBACK_PROVIDERS
+  const providerOptions = stt.providers?.length
+    ? stt.providers.map(p => (typeof p === 'string' ? p : p.name))
+    : FALLBACK_PROVIDERS
   // Gate the streaming controls on the CAPABILITY, not on a provider name. The
   // backend owns the list (`stt_stream._STREAMING_PROVIDERS`) and serves it, so
   // adding a streaming provider cannot silently hide its own toggle — which is

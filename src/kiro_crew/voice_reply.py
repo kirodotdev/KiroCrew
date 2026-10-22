@@ -61,6 +61,12 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     redact_with_findings,
 )
+from kiro_crew.voice_reply_registered import (  # noqa: F401 - re-exported
+    _synthesize_registered,
+    iter_registered_chunks,
+    join_audio,
+    registered_voice_config,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -180,6 +186,11 @@ def is_available(
         if not os.path.isfile(os.path.expanduser(piper_model)):
             return False
         return True
+    registered = speech_providers.tts_provider(provider)
+    if registered is not None:
+        # An edition provider answers through its own check(). BLOCKING, like
+        # this whole function (its callers run it off the loop).
+        return speech_providers.check_status_sync(registered, {"provider": provider}).available
     logger.warning("is_available: unknown provider %r", provider)
     return False
 
@@ -1055,6 +1066,18 @@ async def synthesize_speech(
         if not plain:
             return None
         return await _synthesize_system(plain, voice=system_voice, rate=rate)
+    registered = speech_providers.tts_provider(provider)
+    if registered is not None:
+        plain = strip_markdown(text).strip()
+        if not plain:
+            return None
+        return await _synthesize_registered(
+            registered,
+            plain,
+            registered_voice_config(
+                provider, voice_id=voice_id, rate=rate, pitch=pitch, system_voice=system_voice
+            ),
+        )
     logger.error("synthesize_speech: unknown provider %r", provider)
     return None
 

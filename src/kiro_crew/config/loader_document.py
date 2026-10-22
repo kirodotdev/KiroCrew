@@ -126,6 +126,16 @@ def _raw_agent_section(path: Path) -> dict | None:
     return agent if isinstance(agent, dict) else None
 
 
+def _raw_stt_provider(path: Path) -> object:
+    """The raw ``stt.provider`` of the config document at *path*, or ``None``."""
+    try:
+        doc = json.loads(read_config_text(path))
+    except (OSError, ValueError):
+        return None
+    stt = doc.get("stt") if isinstance(doc, dict) else None
+    return stt.get("provider") if isinstance(stt, dict) else None
+
+
 def _stored_agent_value(key: str) -> object:
     """The raw stored ``agent.<key>`` a load would read: overlay first, then base."""
     for path in (config_local_path(), config_path()):

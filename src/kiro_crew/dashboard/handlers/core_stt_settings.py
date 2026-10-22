@@ -28,6 +28,7 @@ from kiro_crew.config.sections import (
     SttConfig,
     transcribe_language_options,
     transcribe_vocabulary_name,
+    valid_stt_providers,
 )
 from kiro_crew.cpu_affinity import affinity_cpu_count
 from kiro_crew.dashboard.chat_utils import drained_to_thread
@@ -41,7 +42,7 @@ from kiro_crew.dashboard.handlers.core_stt_access import (
     _stt_custom_model_refusal,
     _stt_positive_int,
 )
-from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS, PROVIDER_LOCAL
+from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL, streaming_providers
 from kiro_crew.stt import decoder as stt_decoder
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import (
@@ -81,13 +82,99 @@ def _stt_providers() -> list[str]:
     than shown as an option that cannot be selected. This is the single source of
     truth for which providers are advertised (GET) and accepted (PUT).
     """
-    providers = list(_VALID_STT_PROVIDERS)
+    # Through the loader's own set, so an edition-registered provider is offered
+    # and accepted too (ahead of ``off``). The default registry gives exactly
+    # ``_VALID_STT_PROVIDERS``.
+    providers = list(valid_stt_providers())
     if "apple" in providers:
         from kiro_crew import apple_speech
 
         if not apple_speech.availability().ok:
             providers.remove("apple")
     return providers
+
+
+#: English display label per built-in STT provider, for the ``providers`` rows.
+#: The dashboard localises a built-in by its ``name``; this is the fallback.
+_STT_BUILTIN_LABELS: dict[str, str] = {
+    "local": "Local (runs on this machine)",
+    "apple": "Apple Speech (on-device)",
+    "transcribe": "Transcribe (AWS)",
+    "off": "Off (no speech recognition)",
+}
+
+
+def _builtin_stt_rows(names: list[str], stt_cfg: SttConfig) -> dict[str, dict]:
+    """Capability rows for the built-in providers in *names*. BLOCKING (probes each).
+
+    Each row answers "could this provider run here if chosen", so it is probed
+    with that provider selected and speech-to-text on; ``off`` always can. A
+    probe that raises gives ``error`` true; an answered refusal keeps it false.
+
+    One exception keeps opening Settings as cheap as before: ``local`` is probed
+    only when it is selected and on, or its engine is already loaded,
+    because the probe imports numpy and the native recogniser. Otherwise it is
+    reported available, which it is on every host that ships it; a real refusal
+    shows the moment it is selected.
+    """
+    import dataclasses
+    import sys
+
+    from kiro_crew import speech_providers
+    from kiro_crew.platform.interfaces_runtime import ProviderStatus
+
+    rows: dict[str, dict] = {}
+    for name in names:
+        if name not in _VALID_STT_PROVIDERS:
+            continue
+        if name == "off" or (
+            name == PROVIDER_LOCAL
+            and not (stt_cfg.enabled and stt_cfg.provider == PROVIDER_LOCAL)
+            and "kiro_crew.stt.engine" not in sys.modules
+        ):
+            status = ProviderStatus(True)
+        else:
+            try:
+                detail = availability_detail(
+                    dataclasses.replace(stt_cfg, provider=name, enabled=True)
+                )
+            except Exception:
+                # A probe that raised is an error, not a missing prerequisite.
+                logger.warning("STT provider %r probe failed", name, exc_info=True)
+                status = ProviderStatus(False, "the provider check failed", error=True)
+            else:
+                status = ProviderStatus(
+                    detail.ok, None if detail.ok else (detail.detail or detail.code)
+                )
+        rows[name] = speech_providers.provider_entry(
+            name, _STT_BUILTIN_LABELS.get(name, name), True, status
+        )
+    return rows
+
+
+async def _stt_provider_rows(
+    names: list[str], built: dict[str, dict], stt_cfg: SttConfig
+) -> list[dict]:
+    """The ``providers`` list: one row per name in *names*, in that order.
+
+    *built* holds the built-in rows; the edition's providers are checked here, on
+    the loop, each bounded by ``speech_providers.CHECK_TIMEOUT_SECS``.
+    """
+    import dataclasses
+
+    from kiro_crew import speech_providers
+
+    registered = tuple(
+        p for n in names if n not in built and (p := speech_providers.stt_provider(n)) is not None
+    )
+    extra = {
+        row["name"]: row
+        for row in await speech_providers.registered_entries(
+            registered,
+            lambda provider: dataclasses.replace(stt_cfg, provider=provider.name, enabled=True),
+        )
+    }
+    return [row for n in names if (row := built.get(n) or extra.get(n)) is not None]
 
 
 # Common BCP-47 language codes surfaced in the Chat Settings STT picker, and the
@@ -375,7 +462,9 @@ async def api_stt_config(request: web.Request) -> web.Response:
     # set outside the thread that exists to hold the lighter ones. Windows was
     # where this first showed up, as "event-loop heartbeat: lag".
 
-    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool, str]:
+    provider_names = _stt_providers()
+
+    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool, str, dict[str, dict]]:
         cmds = _stt_prereq_commands(provider)
         ensure_ffmpeg_in_path()
         # `_find_ffmpeg`, not a bare `which`: the settings panel must report on the
@@ -390,7 +479,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
         # api_stt_status uses) so the two fields cannot disagree, and the chat
         # modal can render the precise per-code reason from this one query.
         detail = availability_detail(cfg.stt)
-        return cmds, no_ffmpeg, unsupported, bundled, detail.ok, detail.code
+        builtin_rows = _builtin_stt_rows(provider_names, cfg.stt)
+        return cmds, no_ffmpeg, unsupported, bundled, detail.ok, detail.code, builtin_rows
 
     (
         prereqs,
@@ -399,7 +489,9 @@ async def api_stt_config(request: web.Request) -> web.Response:
         bundled_app,
         available,
         availability_code,
+        builtin_rows,
     ) = await asyncio.to_thread(_prereqs_and_probes)
+    provider_rows = await _stt_provider_rows(provider_names, builtin_rows, cfg.stt)
     return web.json_response(
         {
             "enabled": cfg.stt.enabled,
@@ -460,12 +552,16 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # a panel polls during a transfer — probing four files on every config
             # read would put that cost on the wrong request.
             "models": _STT_MODEL_SIZES,
-            "providers": _stt_providers(),
+            # One row per selectable provider: the built-ins in today's order, then
+            # the edition's (``PlatformContext.speech``), then ``off``. Each row is
+            # ``{name, label, builtin, available, reason, action}``, where
+            # ``action`` is a sign-in step a hosted provider asks for, or null.
+            "providers": provider_rows,
             # Which of those providers can stream partial results. Served from the
-            # backend's own `_STREAMING_PROVIDERS` so the Settings UI gates the
+            # backend's own `streaming_providers()` so the Settings UI gates the
             # streaming controls on a CAPABILITY rather than on a hardcoded provider
             # name — the latter silently hid the toggle when `apple` was added.
-            "streaming_providers": list(_STREAMING_PROVIDERS),
+            "streaming_providers": list(streaming_providers()),
             "language_codes": _stt_language_codes(cfg.stt),
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import

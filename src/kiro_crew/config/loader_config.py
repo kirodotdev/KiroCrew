@@ -22,7 +22,11 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
 from kiro_crew.config.loader_agents import resolve_crew_identity
-from kiro_crew.config.loader_builders import _restore_stored_harness_fields, _stored_agent_dict
+from kiro_crew.config.loader_builders import (
+    _restore_stored_harness_fields,
+    _restore_stored_stt_provider,
+    _stored_agent_dict,
+)
 from kiro_crew.config.loader_credentials import (
     _JIRA_TOKEN_RE,
     CREDENTIAL_KEYS,
@@ -810,6 +814,9 @@ class KiroCrewConfig:
         # watcher); a pick reaches disk through the delta writers (``config
         # set``, the dashboard PATCH).
         _restore_stored_harness_fields(d)
+        # A stored edition STT provider this snapshot degraded to ``off`` (it was
+        # loaded before the edition registered it) is written back as stored.
+        _restore_stored_stt_provider(d)
         # Strip overlay-owned values so they don't leak into config.json
         local_path = config_local_path()
         if local_path.is_file():

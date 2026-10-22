@@ -381,52 +381,11 @@ class TestBootRefreshesThePreBootConfig:
         load.assert_not_called()
 
 
-class TestRegisteredSttNeverRunsTheLocalRecogniser:
-    """Nothing dispatches to a registered provider yet, so it must fail closed."""
+def test_the_dashboard_has_no_sentence_for_the_unavailable_code() -> None:
+    """So it renders the backend ``detail`` instead of a canned Off sentence."""
+    from kiro_crew import transcribe
 
-    def _cfg(self):
-        from kiro_crew.config.sections_stt import SttConfig
-
-        return SttConfig(provider="acme")
-
-    def test_availability_is_not_ready(self) -> None:
-        from kiro_crew import transcribe
-
-        _install(_Registry(stt=("acme",)))
-        with unittest.mock.patch.object(transcribe.stt, "availability") as local:
-            detail = transcribe.availability_detail(self._cfg())
-        local.assert_not_called()
-        assert not detail.ok
-        # Not the Off code: the user picked a provider, and the dashboard maps
-        # stt_provider_off to an "Off" badge that would say otherwise.
-        assert detail.code == transcribe.CODE_PROVIDER_UNAVAILABLE
-        assert detail.code != transcribe.CODE_PROVIDER_OFF
-        assert "'acme'" in detail.detail
-
-    def test_the_dashboard_has_no_sentence_for_the_code(self) -> None:
-        """So it renders the backend ``detail`` instead of a canned Off sentence."""
-        from pathlib import Path
-
-        from kiro_crew import transcribe
-
-        mapping = (
-            Path(__file__).resolve().parents[1] / "website/src/lib/sttProviders.ts"
-        ).read_text(encoding="utf-8")
-        assert transcribe.CODE_PROVIDER_UNAVAILABLE not in mapping
-
-    def test_transcription_is_refused(self, tmp_path) -> None:
-        import asyncio
-
-        from kiro_crew import transcribe
-
-        _install(_Registry(stt=("acme",)))
-        clip = tmp_path / "clip.wav"
-        clip.write_bytes(b"RIFF")
-        with unittest.mock.patch.object(transcribe, "_transcribe_local") as local:
-            assert asyncio.run(transcribe.transcribe_audio(str(clip), self._cfg())) is None
-        local.assert_not_called()
-
-    def test_with_nothing_registered_the_name_is_not_refused(self) -> None:
-        from kiro_crew import transcribe
-
-        assert not transcribe._is_registered_provider("acme")
+    mapping = (Path(__file__).resolve().parents[1] / "website/src/lib/sttProviders.ts").read_text(
+        encoding="utf-8"
+    )
+    assert transcribe.CODE_PROVIDER_UNAVAILABLE not in mapping

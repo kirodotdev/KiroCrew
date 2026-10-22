@@ -314,7 +314,7 @@ machine-readable code rather than a bare 503 that only surfaces as `'connection'
 
 1. `stt.enabled`
 2. `stt.streaming`
-3. `stt.provider` is in `stt_stream._STREAMING_PROVIDERS`
+3. `stt.provider` is in `stt_stream.streaming_providers()` (the built-in `_STREAMING_PROVIDERS` plus any edition provider that declared `streaming`)
 
 The third is positive membership in a named tuple, never an inequality or a
 negation against one provider. Adding a name to that tuple grants it the
