@@ -1288,6 +1288,64 @@ class TestConcludeNamesTheValidateRefusalCause:
             assert not re.search(r"\d{12}", why + remedy), refusal
 
 
+class TestConcludeNamesAnUnresolvedScope:
+    """A `generate` job that died before it resolved the review scope leaves an
+    unmeasured run. It stays red; the table only names why, instead of the generic
+    "no leg reported" sentence that points at the author's diff.
+    """
+
+    @staticmethod
+    def _no_report(**over):
+        kwargs = dict(
+            fold="no-report",
+            model="UNKNOWN",
+            marker_present=False,
+            nothing_new=False,
+            gap_script=False,
+            gap_model=False,
+        )
+        kwargs.update(over)
+        return scope.conclude_lane(**kwargs)
+
+    def test_an_unresolved_scope_is_unsettled_and_names_its_cause(self) -> None:
+        conclusion, why = self._no_report(scope_unresolved=True)
+        assert conclusion == scope._UNSETTLED_CONCLUSION
+        assert why == scope._SCOPE_UNRESOLVED_WHY
+        assert "no leg reported" not in why
+
+    def test_a_resolved_scope_with_no_leg_still_reads_the_generic_unsettled_row(self) -> None:
+        conclusion, why = self._no_report(scope_unresolved=False)
+        assert conclusion == scope._UNSETTLED_CONCLUSION
+        assert why == "no leg reported, and this was not the nothing-to-adjudicate short circuit"
+
+    def test_an_unresolved_scope_outranks_the_green_nothing_new_row(self) -> None:
+        conclusion, why = self._no_report(
+            scope_unresolved=True, nothing_new=True, marker_present=True
+        )
+        assert conclusion == scope._UNSETTLED_CONCLUSION
+        assert why == scope._SCOPE_UNRESOLVED_WHY
+
+    def test_naming_an_unresolved_scope_never_softens_any_verdict(self) -> None:
+        for kwargs in _all_inputs():
+            without = scope.conclude_lane(**kwargs)[0]
+            with_ = scope.conclude_lane(**kwargs, scope_unresolved=True)[0]
+            assert _SEVERITY[with_] >= _SEVERITY[without], (kwargs, without, with_)
+
+    def test_the_why_fits_a_check_run_title(self) -> None:
+        prefix = TestConcludeNamesTheValidateRefusalCause._TITLE_PREFIX
+        why = scope._SCOPE_UNRESOLVED_WHY
+        assert "\n" not in why
+        assert len(prefix) + len(why) <= TestConcludeNamesTheValidateRefusalCause._TITLE_CAP
+
+    def test_the_cli_carries_the_flag(self, capsys) -> None:
+        rc = scope.main(["conclude", "--fold", "no-report", "--scope-unresolved", "true"])
+        assert rc == 0
+        out = capsys.readouterr().out.splitlines()
+        assert f"conclusion={scope._UNSETTLED_CONCLUSION}" in out, out
+        assert f"why={scope._SCOPE_UNRESOLVED_WHY}" in out, out
+        assert "settled=no" in out, out
+
+
 class TestConcludeCli:
     def test_cli_prints_github_output_lines_and_exits_zero(self, capsys) -> None:
         rc = scope.main(
