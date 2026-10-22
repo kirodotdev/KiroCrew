@@ -51,6 +51,12 @@ vi.mock('../../api/client', () => ({
     // The card's list and the pushed section read one cron list and filter it per
     // crewmate. Each case sets its own jobs.
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
+    // The Export view's plan and its one lessons draft.
+    memberExportPreview: vi.fn(() => Promise.resolve({
+      name: 'oncall', filename: 'oncall.crewmate', description: '', model: '', dashboard: '', avatar: '',
+      rules: null, goals: null, crons: [], skills: [], mcp_servers: [], mcp_in_file: false, left_out: [], fingerprint: 'f',
+    })),
+    memberExportLessonsDraft: vi.fn(() => Promise.resolve({ text: '' })),
     // The create the draft-guard cases drive; each one controls its own resolution.
     createCron: vi.fn(() => Promise.resolve({ ok: true, id: 'j-new' })),
     updateCron: vi.fn(() => Promise.resolve({ ok: true })),
@@ -536,6 +542,24 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     fireEvent.click(scrim)
     await answer('Cancel')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
+  })
+
+  it('asks before a click beside the card or the identity pill drops typed Export lessons', async () => {
+    await openCrewmate()
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    const card = await screen.findByTestId('crew-profile-panel')
+    fireEvent.click(within(card).getByRole('tab', { name: 'Profile' }))
+    fireEvent.click(await screen.findByTestId('crew-profile-export'))
+    fireEvent.click(within(await screen.findByTestId('crew-export-lessons')).getByRole('switch'))
+    fireEvent.change(await screen.findByTestId('crew-export-lessons-editor'), { target: { value: '# Lessons' } })
+
+    fireEvent.click(screen.getByTestId('crew-profile-modal'))
+    await answer('Cancel')
+    expect(screen.getByDisplayValue('# Lessons')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    await answer('Discard')
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
   })
 
   it('will not close the card while a create is in flight — no prompt, no discard', async () => {

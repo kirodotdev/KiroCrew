@@ -13,7 +13,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
-from kiro_crew.dashboard.handlers import agent_templates
+from kiro_crew.dashboard.handlers import agent_templates, member_export
 from kiro_crew.dashboard.handlers.agent_catalog import api_agent_catalog
 
 
@@ -84,6 +84,11 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/recap", handlers.api_member_recap)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
+    # Export one crewmate as a .crewmate file (rfc-crewmate-share.md §5.3): owner-only.
+    app.router.add_post("/api/members/{slug}/export", member_export.api_member_export)
+    app.router.add_post(
+        "/api/members/{slug}/export/lessons-draft", member_export.api_member_export_lessons_draft
+    )
     # Crewmate teams (a name + an ordered member list; the Crewmates page's
     # roster grouping and team view). Same dashboard-only posture as the
     # members routes; the writes are owner actions.

@@ -25,6 +25,15 @@ vi.mock('../../components/crew/CrewMonitoredAvatar', () => ({
   ),
 }))
 
+vi.mock('./CrewExportView', () => ({
+  default: ({ slug, member, onDirtyChange }: { slug: string; member: string; onDirtyChange?: (d: boolean) => void }) => (
+    <div data-testid="export-view-stub">
+      {slug}/{member}
+      <button type="button" data-testid="export-stub-type" onClick={() => onDirtyChange?.(true)}>type</button>
+    </div>
+  ),
+}))
+
 import { useContext, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CrewProfilePanel, { PROFILE_TABS, ProfilePagePushContext } from './CrewProfilePanel'
@@ -419,6 +428,31 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.getByTestId('crew-profile-page-notes')).toBeInTheDocument()
     expect(screen.getByTestId('host-notes')).toBeInTheDocument()
     expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Notes')
+  })
+
+  it('Export as file sits under Notes and pushes the confirm view for this crewmate', () => {
+    setup()
+    const notes = screen.getByTestId('crew-profile-notes')
+    const exportRow = screen.getByTestId('crew-profile-export')
+    expect(notes.parentElement).toBe(exportRow.parentElement)
+    expect(notes.compareDocumentPosition(exportRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(exportRow).toHaveTextContent('Export as file')
+    fireEvent.click(exportRow)
+    expect(screen.getByTestId('crew-profile-page-export')).toBeInTheDocument()
+    expect(screen.getByTestId('export-view-stub')).toHaveTextContent('oncall/oncall')
+    expect(screen.getByTestId('crew-profile-pushed-title')).toHaveTextContent('Export as file')
+    expect(document.activeElement).toBe(screen.getByTestId('crew-profile-back'))
+  })
+
+  it('hands the Export view\'s typed lessons to the host, whose guard asks on every exit', () => {
+    const onExportDraftChange = vi.fn()
+    const h = setup({ onExportDraftChange })
+    fireEvent.click(screen.getByTestId('crew-profile-export'))
+    fireEvent.click(screen.getByTestId('export-stub-type'))
+    expect(onExportDraftChange).toHaveBeenCalledWith(true)
+    // Back goes through the host's guard, not around it.
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    expect(h.onRequestBack).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -7,7 +7,45 @@
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
+import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
+
+/** The profile card's Export toggles (rfc-crewmate-share.md §5.3). */
+export interface CrewmateExportChoices {
+  rules: boolean
+  goals: boolean
+  crons: boolean
+  /** Skill folders to carry; every one that passes when absent. */
+  skills?: string[]
+  /** The lessons editor's text; null while the toggle is off. */
+  lessons?: string | null
+  /** The fingerprint of the preview the owner confirmed; the server refuses (409) a
+   *  file whose content no longer matches it. */
+  confirm?: string
+}
+
+/** What `POST /api/members/{slug}/export` with `preview: true` answers: every part
+ *  the file holds, in full, and every part it leaves out with the reason. */
+export interface CrewmateExportPreview {
+  name: string
+  filename: string
+  description: string
+  model: string
+  /** A `builtin:` template id, or '' (left_out says when a custom page stays home). */
+  dashboard: string
+  avatar: '' | 'image' | 'ghost'
+  avatar_digest: string
+  rules: string | null
+  goals: { longTerm: string; keyResults: { text: string; target: string }[] } | null
+  crons: { name: string; message: string; schedule: Record<string, unknown>; timezone?: string; script?: string; source?: string }[]
+  skills: { name: string; lessons: boolean; files: Record<string, string> }[]
+  mcp_servers: { server: string; placeholders: string[] }[]
+  /** False until the per-mate config lands: MCP servers are listed, not carried. */
+  mcp_in_file: boolean
+  left_out: { kind: string; name: string; reason: string }[]
+  /** Digest of everything above, echoed back as `confirm` on the download. */
+  fingerprint: string
+}
 
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
  *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
@@ -332,6 +370,19 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // regardless) is what the user sees; only a reload loses it.
     memberFreshStart: (slug: string) =>
       post('/api/members/' + encodeURIComponent(slug) + '/fresh-start').then(j) as Promise<{ slot: string; reset_at: string; outcome: 'cleared' | 'queued'; reset_persisted: boolean }>,
+    // Export one crewmate as a .crewmate file (owner-only). The preview and the
+    // file come from one server-side plan, so the view lists what the file holds.
+    memberExportPreview: (slug: string, member: string, choices?: CrewmateExportChoices) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/export', { member, ...choices, preview: true }).then(j) as Promise<CrewmateExportPreview>,
+    // One tool-less turn that drafts the lessons skill from the crewmate's own
+    // memory. The draft is only answered, never stored on the server.
+    memberExportLessonsDraft: (slug: string, member: string) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/export/lessons-draft', { member }).then(j) as Promise<{ text: string }>,
+    memberExportFile: async (slug: string, member: string, choices: CrewmateExportChoices) => {
+      const r = await post('/api/members/' + encodeURIComponent(slug) + '/export', { member, ...choices })
+      if (!r.ok) throw await toApiError(r)
+      return r.blob()
+    },
     // A member's recent activity pointers (real recorded signal only: session
     // participations and routing decisions). `member` is the exact crew name —
     // slugs are lossy, so the backend filters the shared log by exact name.

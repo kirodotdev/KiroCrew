@@ -481,13 +481,15 @@ interface MembersPageProfileCardProps {
   activeSlug: string
   activeMemberName: string
   onGoalsDraftChange: (dirty: boolean, busy: boolean) => void
+  /** The Export view's lessons text is typed (see MembersPage's exit guards). */
+  onExportDraftChange?: (dirty: boolean) => void
 }
 
 /** The Profile card, as a docked column or a floating card over the thread column. */
 export function MembersPageProfileCard({
   crewEditing, profileCard, rosterView, thread, sidePanel, schedules, profileFlight, navigate, leave,
   setEditingCrew, profile, threadColumnRef, slotsLoaded, active, activeSlug, activeMemberName,
-  onGoalsDraftChange,
+  onGoalsDraftChange, onExportDraftChange,
 }: MembersPageProfileCardProps) {
   const { t } = useTranslation()
   const { profileRegistryQuery } = crewEditing
@@ -707,6 +709,7 @@ export function MembersPageProfileCard({
       settingsBody={<Suspense fallback={null}><CrewProfileSettings member={activeView} slotKey={confirmedSlot || null} waiting={!confirmedSlot} /></Suspense>}
       onClose={requestCloseProfile}
       onRequestBack={requestProfileBack}
+      onExportDraftChange={onExportDraftChange}
       onEdit={() => setEditingCrew(active.name)}
       onOpenFiles={() => openCrewView('files')}
       onFreshStart={activeSlot && !freshStart.isPending ? askFreshStart : undefined}

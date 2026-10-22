@@ -104,6 +104,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # args or url, and REFUSES the guide when it would. Nothing it returns is
         # redacted text.
         "guide_catalog.py",
+        # The .crewmate writer: a part whose text the redactor would change is left
+        # out of the file and named in the confirm view, never written redacted.
+        "crewmate_bundle_export.py",
         # Gate-side the same way: a change card's reason and parameters are refused
         # when the redactor WOULD change them, and nothing it returns is redacted.
         "dashboard/change_cards_records.py",

@@ -169,6 +169,8 @@ export type {
   McpManagedServer,
 } from './client/mcp'
 export type {
+  CrewmateExportChoices,
+  CrewmateExportPreview,
   MemberRosterRow,
   MemberActivityEntry,
   MemberRecap,
