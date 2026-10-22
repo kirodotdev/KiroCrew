@@ -326,6 +326,16 @@ describe('Papyrus compile', () => {
 })
 
 describe('Papyrus status bar and log pane', () => {
+  it('hides clean main-file status but shows its unsaved warning', async () => {
+    openWorkspace()
+    await workspaceReady()
+    expect(screen.queryByText(`Editing ${MAIN}`)).not.toBeInTheDocument()
+
+    makeDirty(`${BODY}\n% unsaved`)
+
+    expect(screen.getByText(`Editing ${MAIN} — unsaved`)).toBeInTheDocument()
+  })
+
   it('toggles the log pane and marks its pressed state', async () => {
     const { user } = openWorkspace()
     await workspaceReady()
@@ -415,12 +425,18 @@ describe('Papyrus file tree mutations', () => {
     const { user } = openWorkspace()
     await workspaceReady()
     await user.click(screen.getByRole('button', { name: CHAPTER }))
-    await screen.findByText(`Editing ${CHAPTER}`)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute(
+        'aria-current', 'true',
+      ))
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
 
     await waitFor(() => expect(api.deleteFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
-    expect(await screen.findByText(`Editing ${MAIN}`)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: `${MAIN} Main` })).toHaveAttribute(
+        'aria-current', 'true',
+      ))
   })
 
   it('does not delete when the confirmation is declined', async () => {

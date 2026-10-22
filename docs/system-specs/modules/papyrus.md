@@ -680,8 +680,10 @@ navigating away from a dirty buffer therefore flushes it first:
   compiler reads the file off disk and would otherwise typeset the previous
   revision.
 - `closeProject` (the toolbar's **Papers** back button) awaits the same save
-  before tearing the workspace down. This is the gesture most likely to surprise:
-  the toolbar advertises "Editing {file} — unsaved" immediately beside the button.
+  before tearing the workspace down. The main-document picker already names a
+  clean main file, so the toolbar omits that duplicate label. A clean non-main file
+  still shows "Editing {file}", and any dirty buffer shows
+  "Editing {file} — unsaved" beside the button.
   If the flush **fails**, the workspace deliberately stays mounted and surfaces the
   error rather than discarding the very edits the flush exists to protect.
 
