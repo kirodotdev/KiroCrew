@@ -22,6 +22,10 @@ authorized against the channel's ORIGIN conversation first (allowed user, origin
 still admits the bot), and every decision is SEL-audited. ``/wrap-up`` also
 arms the wrap-up fallback (:mod:`.wrapup`). Slack may deliver one invocation
 twice; a repeat (same ``trigger_id``) is dropped with no side effect.
+
+``/kirocrew agent [<name>]`` -- the app's manifest command, typed in a code
+channel -- arrives here too and is answered by :mod:`.agent_picker` after the
+same gates; it is never delivered to the session as a prompt.
 """
 
 from __future__ import annotations
@@ -47,6 +51,9 @@ logger = logging.getLogger(__name__)
 SUMMARIZE = "summarize"
 WRAP_UP = "wrap-up"
 CREATE_PR = "create-pr"
+#: ``/kirocrew agent [<name>]``: a sub-command of the app's manifest command,
+#: not a registered channel command (see :mod:`.agent_picker`).
+AGENT = "agent"
 
 _COMMANDS: dict[str, dict[str, str]] = {
     SUMMARIZE: {
@@ -283,13 +290,30 @@ def _prompt(name: str, user: str, text: str, *, worktree: str = "", branch: str 
 async def handle_slash(
     orch: Any, payload: dict[str, Any], respond: Callable[[str], Awaitable[None]]
 ) -> bool:
-    """Handle a code-channel command; False when it is not one (normal routing runs)."""
+    """Handle a code-channel command; False when it is not one (normal routing runs).
+
+    Besides the channel's runtime commands, the app's own ``/kirocrew`` command
+    is answered here for its ``agent`` sub-command (``/kirocrew agent [<name>]``,
+    :mod:`.agent_picker`); any other ``/kirocrew`` text is not ours.
+    """
     command = str(payload.get("command") or "").strip().lower().lstrip("/")
-    if command not in _COMMANDS or not code_channels_on(live_config(orch)):
+    text = str(payload.get("text") or "").strip()
+    if command == str(getattr(orch, "slack_command", "") or "kirocrew").lower():
+        # The same split ``events._handle_slash`` routes sub-commands by.
+        parts = text.split(maxsplit=1)
+        if not parts or parts[0].lower() != AGENT:
+            return False
+        command, text = AGENT, (parts[1].strip() if len(parts) > 1 else "")
+    if (command not in _COMMANDS and command != AGENT) or not code_channels_on(live_config(orch)):
         return False
     channel = str(payload.get("channel_id") or "")
     user = str(payload.get("user_id") or "")
-    text = str(payload.get("text") or "").strip()
+    if command == AGENT and (
+        not channel or await asyncio.to_thread(store().get_binding, channel) is None
+    ):
+        # `/kirocrew agent` anywhere but a code channel is the app's own
+        # agent command: left to it, before any gate or side effect here.
+        return False
     operation = "slack.code_channel.command"
     resources = f"channel={channel} command=/{command}"
     if not _first_delivery(payload):
@@ -311,6 +335,20 @@ async def handle_slash(
     if binding is None:
         surface.audit(user, operation, "denied", resources, "not a bound code channel")
         await respond(NOT_A_CODE_CHANNEL_TEXT)
+        return True
+    if command == AGENT:
+        from kiro_crew.slack.code_channels import agent_picker
+
+        refusal = await agent_picker.authorize(
+            orch, binding, user, team, f"channel={channel} user={user} via=command"
+        )
+        if refusal is not None:
+            surface.audit(user, operation, "denied", resources, "agent change refused")
+            if refusal:
+                await respond(refusal)
+            return True
+        surface.audit(user, operation, "allowed", resources)
+        await agent_picker.handle_command(orch, binding, user, text, respond)
         return True
     from kiro_crew.slack.code_channels.routing import (
         Gate,
