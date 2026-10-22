@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Lock, RotateCw } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
@@ -742,7 +742,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
    *  or writes arriving more often than the wait would keep the old document up for as
    *  long as they last. */
   const stagingSinceRef = useRef<number | null>(null)
-  useEffect(() => {
+  // A LAYOUT effect, so the off-screen frame's listeners are attached in the same commit
+  // that puts the frame in the DOM. A passive effect can run a task later, once React
+  // yields, and a `load` or ready beacon that arrives in that gap is lost, since neither
+  // is sent again: the frame then waits out the timeout, or comes on screen counted as
+  // never loaded.
+  useLayoutEffect(() => {
     if (stageUrl === null) {
       stagingSinceRef.current = null
       return
