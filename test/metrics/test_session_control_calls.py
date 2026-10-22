@@ -60,6 +60,10 @@ EXPECTED_AGENT_KINDS = frozenset(
         "team_lead",
         "heartbeat",
         "dashboard_manager",
+        # A crewmate's conductor and its own worker (kirocrew-mate-conductor /
+        # kirocrew-mate-worker, both in OWNED_KIRO_AGENT_FILES).
+        "mate_conductor",
+        "mate_worker",
         "default",
         "crewmate",
         "other",

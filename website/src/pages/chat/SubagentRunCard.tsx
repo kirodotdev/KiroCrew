@@ -177,18 +177,9 @@ function tally(agents: (SubagentActivity | undefined)[]) {
 const SubagentRunCard = memo(function SubagentRunCard({
   launch,
   slot,
-  onOpenPanel,
 }: {
   launch: SpawnRunLaunch
   slot: string
-  /** How the HOST opens its Subagents view. The chat page leaves it unset and
-   *  the card drives the chat store (`switchSlot` + `openActivityToTab`), which
-   *  is that page's panel. A host whose panel is not the chat store's — the
-   *  Members page, where `chat.activeSlot` is never the member slot and the
-   *  side panel is its own tab model — passes its opener, so the click lands on
-   *  THIS page's panel instead of silently switching the chat page's active
-   *  slot and opening nothing here (#21138). */
-  onOpenPanel?: () => void
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
@@ -266,18 +257,10 @@ const SubagentRunCard = memo(function SubagentRunCard({
     // reads "No subagents running" — the card's own label promising otherwise.
     // Safe inside split view: the auto-enter effect is gated on splitMode being
     // off, so switching does not reseed or leave the grid.
+    if (slot && slot !== activeSlot) dispatch(switchSlot({ key: slot, announceOnMissing: true }))
     // Deep-link to the first agent of THIS wave so the panel lands on the
     // transcript the card refers to, not whatever was last selected.
     const first = launch.ids.find(id => subagents[id])
-    // A host with its own panel: select the wave's agent in the store (its
-    // Subagents view reads the same selection) and let the host reveal it.
-    // Never `switchSlot` here -- the host's active slot is not the chat store's.
-    if (onOpenPanel) {
-      if (first) dispatch(selectSubagent(first))
-      onOpenPanel()
-      return
-    }
-    if (slot && slot !== activeSlot) dispatch(switchSlot({ key: slot, announceOnMissing: true }))
     if (first) dispatch(selectSubagent(first))
     dispatch(openActivityToTab('subagents'))
   }

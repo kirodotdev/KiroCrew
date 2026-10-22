@@ -236,6 +236,10 @@ def test_background_exclusion_is_by_owned_file_not_by_name():
     # Withheld for what it CANNOT do: the panel server and ``fs_read`` and nothing
     # else, so a chat run as it would be an agent that cannot answer anything.
     assert agent_catalog._is_background_only(_owned("kirocrew-dashboard-manager"))
+    # Withheld because it is not a deliberate pick: it is the default template
+    # under its own filename (rfc-mate-owned-agent-config.md, migration step 1),
+    # reached only through a crewmate's own binding.
+    assert agent_catalog._is_background_only(_owned("kirocrew-mate-conductor"))
     assert not agent_catalog._is_background_only(_owned("kirocrew"))
     assert not agent_catalog._is_background_only(_owned("kirocrew-worker"))
 

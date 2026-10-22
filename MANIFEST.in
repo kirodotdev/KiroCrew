@@ -20,6 +20,7 @@ include setup.py
 include src/kiro_crew/py.typed
 include src/kiro_crew/BUILD_VERSION
 include src/kiro_crew/slack-manifest.yaml
+include src/kiro_crew/crewmate_prompts.json
 include src/kiro_crew/model_tokens.json
 
 # --- The built dashboard SPA --------------------------------------------------

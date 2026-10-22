@@ -52,67 +52,34 @@ import time
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
 from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME
 
 logger = logging.getLogger(__name__)
 
 #: What every welcome kickoff opens with: the user has typed nothing.
-_KICKOFF_PREAMBLE = (
-    "[First welcome] The user just opened your chat for the first time and it has "
-    "no messages yet. They have not typed anything: this note comes from Kiro Crew, "
-    "not from them, and they cannot see it, so never quote or mention it. This is "
-    "your first conversation with them, so greet them as someone you are meeting "
-    "for the first time. Use a name for the user only when their preferences or "
-    "your memory state it; a username, path, email or host name is not their name. "
-    "Write in the language of the dashboard's [UI LANGUAGE] when it is shown, else "
-    "English. Call no tools in this reply. "
-)
+_KICKOFF_PREAMBLE = crewmate_prompts.text("welcome.preamble")
 
 #: The one sentence of :data:`_KICKOFF_PREAMBLE` that keeps the note itself out
 #: of the reply; every other line of a kickoff is written as plain principles.
-NOTE_CONFIDENTIALITY = "they cannot see it, so never quote or mention it."
+NOTE_CONFIDENTIALITY = crewmate_prompts.text("welcome.note_confidentiality")
 
-_WELCOME_INTRO = (
-    "Introduce yourself as {name}, briefly and plainly, the way a new teammate "
-    "would: a few short sentences in everyday words, with no filler, no developer "
-    "terms and no description of how you work. "
-)
+_WELCOME_INTRO = crewmate_prompts.text("welcome.intro")
 
 #: The crew sentence for a user with no crewmate yet besides this one.
-_FIRST_OF_CREW = (
-    "Explain that you are the first teammate on their crew, one who remembers what you "
-    "work on together and keeps at it over days. "
-)
+_FIRST_OF_CREW = crewmate_prompts.text("welcome.first_of_crew")
 
 #: The crew sentence for a user who already has other crewmates.
-_ONE_MORE_OF_CREW = (
-    "They already have other mates, so introduce yourself as one more teammate "
-    "on their crew, one who remembers what you work on together and keeps at it "
-    "over days. "
-)
+_ONE_MORE_OF_CREW = crewmate_prompts.text("welcome.one_more_of_crew")
 
-_WELCOME_ASK_NAME = (
-    "Say what you can help with right now: getting Kiro Crew set up, sorting out "
-    "anything that is not working in it, or showing them around. Keep to those "
-    "three; everyday jobs come up later once they know you. Finish by asking what "
-    "they would like to call you (you, not them), in one short question the way a "
-    'person would say it, such as "What would you like to call me?", and let '
-    "that question end the message. "
-)
+_WELCOME_ASK_NAME = crewmate_prompts.text("welcome.ask_name")
 
-_WELCOME_OFFER = _WELCOME_ASK_NAME + (
-    "When they answer with a name for you, call update_self with display_name set "
-    "to that name in the same reply, say plainly in that reply that you go by the "
-    "new name from now on, and use it from then on."
-)
+_WELCOME_OFFER = _WELCOME_ASK_NAME + crewmate_prompts.text("welcome.offer_tools")
 
 #: :data:`_WELCOME_OFFER` for a Mate whose sessions do not load ``kirocrew-mate``
 #: (``member_mate_tools``): the user saves the name on its crewmate page.
-_WELCOME_OFFER_NO_TOOLS = _WELCOME_ASK_NAME + (
-    "When they answer with a name for you, use it from then on, and say in that "
-    "reply that they can save it as your name on your mate page."
-)
+_WELCOME_OFFER_NO_TOOLS = _WELCOME_ASK_NAME + crewmate_prompts.text("welcome.offer_no_tools")
 
 #: Mate's welcome for a user with no other crewmate. ``{name}`` is its label.
 FIRST_WELCOME = _KICKOFF_PREAMBLE + _WELCOME_INTRO + _FIRST_OF_CREW + _WELCOME_OFFER
@@ -134,49 +101,20 @@ FIRST_WELCOME_WITH_CREW_NO_TOOLS = (
 #: answer becomes a ``set_goal`` card, and the goal's follow-up comes from the
 #: check-ins proposed once it is saved (``dashboard/goal_setup.py``,
 #: ``set_check_ins``), so the kickoff offers no schedule of its own.
-_GOAL_HELLO = _KICKOFF_PREAMBLE + (
-    "You are {name}, and the user just created you. Your first message is two "
-    "short sentences, simple and direct: a hello that gives your name, then a "
-    "question asking the user what your goal should be, said with the word goal "
-    "and framed so it is clearly your goal for them, not theirs. Use "
-    "the plainest words you can, everyday speech rather than technical terms. "
-    "Leave out your template, role or agent type and any plan; work starts once "
-    "they answer. "
-)
+_GOAL_HELLO = _KICKOFF_PREAMBLE + crewmate_prompts.text("welcome.goal_hello")
 
-GOAL_WELCOME = _GOAL_HELLO + (
-    "When the user states the goal or agrees to one, propose it with "
-    "set_goal in that reply, in their words: it puts a card in this chat for them "
-    "to press, and the goal is yours once they do. Following up on the goal is "
-    "what your check-ins are for, and you suggest those after the goal is saved, "
-    "so a separate schedule for it adds nothing."
-)
+GOAL_WELCOME = _GOAL_HELLO + crewmate_prompts.text("welcome.goal_tools")
 
 #: :data:`GOAL_WELCOME` for a crewmate whose sessions do not load
 #: ``kirocrew-mate`` (``member_mate_tools``): the user saves the goal on the
 #: crewmate's Goals tab.
-GOAL_WELCOME_NO_TOOLS = _GOAL_HELLO + (
-    "When the user states the goal or agrees to one, say it back in their words "
-    "in that reply and ask them to add it on your Goals tab: the goal is yours "
-    "once they save it there. Following up on the goal is what your check-ins "
-    "are for, which they turn on on that tab once the goal is saved, so a "
-    "separate schedule for it adds nothing."
-)
+GOAL_WELCOME_NO_TOOLS = _GOAL_HELLO + crewmate_prompts.text("welcome.goal_no_tools")
 
 #: Appended to :data:`GOAL_WELCOME` when the create carried a description, so
 #: the crewmate confirms that goal instead of asking blind.
-_GOAL_DRAFT = (
-    " When you were created you were described as: {description!r}. Treat that as "
-    "a first draft of your goal, so your second sentence restates it in your own "
-    "plain words and asks whether that is the goal, in place of asking what your "
-    "goal should be. "
-)
-_GOAL_KNOWN = (
-    _GOAL_DRAFT + "Once they confirm it, or reword it, propose that wording with set_goal."
-)
-_GOAL_KNOWN_NO_TOOLS = _GOAL_DRAFT + (
-    "Once they confirm it, or reword it, ask them to save that wording on your Goals tab."
-)
+_GOAL_DRAFT = crewmate_prompts.text("welcome.goal_draft")
+_GOAL_KNOWN = _GOAL_DRAFT + crewmate_prompts.text("welcome.goal_known_tools")
+_GOAL_KNOWN_NO_TOOLS = _GOAL_DRAFT + crewmate_prompts.text("welcome.goal_known_no_tools")
 
 
 def _recorded_goal(slug: str, member: str) -> str:
@@ -355,7 +293,19 @@ def _dispatch_greeting(state: Any, slot: Any, kickoff: str) -> None:
     dispatch_hidden_turn(state, slot, kickoff, human_seen=True)
 
 
-def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool) -> None:
+def app_is_stopping(state: Any) -> bool:
+    """Whether the gateway is shutting down or restarting, so no new turn should start.
+
+    The same answer the turn runner's own shutdown check gives
+    (``session.process_shutdown_requested``): a signal shutdown, or the final
+    drain an in-app restart starts before it re-execs.
+    """
+    from kiro_crew.session import process_shutdown_requested
+
+    return process_shutdown_requested(getattr(state, "sessions", None))
+
+
+def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool) -> bool:
     """Run *prompt* as one gateway-authored turn in *slot*, with no user row for it.
 
     Shared by the first welcome and the goal check-ins
@@ -364,12 +314,22 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
     may run (a guide, ``update_self``, most cards) refuse inside it; in a
     crewmate's own thread its goal, milestones and check-ins cards are still
     admitted (``handlers.guide.REQ_OWN_GOAL_TURN``).
+
+    Returns False, starting nothing, while the app is stopping
+    (:func:`app_is_stopping`). A restart cancels every running turn, and a
+    worker cut by it ends a turn that would wake its crewmate here; a turn
+    started then writes its in-flight marker and is gone a moment later, so
+    the restored thread showed "interrupted when the app restarted" on a
+    thread whose own work had finished before the restart.
     """
     # Deferred: chat_handlers / chat import this package's handlers at load.
     from kiro_crew.dashboard.chat import _run_chat
     from kiro_crew.dashboard.chat_handlers import _sweep_stale_permissions
     from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 
+    if app_is_stopping(state):
+        logger.info("hidden gateway turn on %s not started: the app is stopping", slot.key)
+        return False
     if human_seen:
         slot._human_seen = True
     slot._has_reader = False  # delivered over the WebSocket, like a ws send
@@ -392,3 +352,4 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
     slot.task = task
     state.push_slots_update()
     logger.info("hidden gateway turn started on %s", slot.key)
+    return True

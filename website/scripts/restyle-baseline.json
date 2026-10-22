@@ -29,7 +29,7 @@
   "website/src/components/appstore/FeaturedSpotlight.tsx": 1,
   "website/src/components/library/LibraryTable.tsx": 1,
   "website/src/components/settingRef/SettingRef.tsx": 2,
-  "website/src/pages/KiroCrewAgentsPageRoster.tsx": 12,
+  "website/src/pages/KiroCrewAgentsPageRoster.tsx": 10,
   "website/src/pages/SchedulePage.tsx": 30,
   "website/src/pages/SystemPage.tsx": 3,
   "website/src/pages/apps/LaunchpadTile.tsx": 2,

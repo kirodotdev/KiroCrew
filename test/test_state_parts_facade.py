@@ -489,6 +489,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lazy_window": ("value", "None"),
     "_lineage_minted": ("value", "False"),
     "_linked_session_busy": ("value", "None"),
+    "_reports_to_creator": ("value", "False"),
     "_lock": ("type", "asyncio.locks.Lock"),
     "_mcp_report": ("value", "None"),
     "_mcp_report_session_id": ("value", "''"),

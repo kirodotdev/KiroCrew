@@ -1312,6 +1312,26 @@ class TestDocsSection:
         ctx = builder.build_session_context(agent="code-reviewer")
         assert "[DOCUMENTATION]" not in ctx
 
+    def test_docs_still_injected_for_the_mate_conductor(self, tmp_path, monkeypatch):
+        """The mate conductor is a Crew-owned spec a crewmate's chat runs on, not
+        a user's custom agent -- ``is_kirocrew_default_agent`` keeps it off the
+        ``is_custom`` path the test above pins, so it gets the docs pointer and
+        workspace identity block exactly like the plain ``kirocrew`` agent does."""
+        from kiro_crew import context as ctx_mod
+
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "getting-started.md").write_text("# Getting Started\n")
+        monkeypatch.setattr(ctx_mod, "_BUNDLED_DOCS_DIR", docs_dir)
+
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        ctx = builder.build_session_context(agent="kirocrew-mate-conductor", workspace="default")
+        assert "[DOCUMENTATION]" in ctx
+        assert "[WORKSPACE IDENTITY]" in ctx
+
 
 class TestCustomAgentSkillLog:
     """The 'injecting memory/lessons/rules, ...' log reports the real skill decision.

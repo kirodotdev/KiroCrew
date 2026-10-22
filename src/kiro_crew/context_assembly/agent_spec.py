@@ -553,8 +553,9 @@ def _resolve_agent_prompt(
     that restores the block reuses the session's own.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import is_kirocrew_default_agent
 
-    is_custom = bool(agent) and agent != "kirocrew"
+    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     agent_prompt: str
     if is_cc and not is_custom:
         # CC gets the same Kiro Crew persona prompt as kiro — including

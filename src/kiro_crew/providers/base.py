@@ -421,6 +421,11 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_kit_supported(self) -> bool:
+        """Whether a crewmate's worker session here runs with its per-session kit."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""

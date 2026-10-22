@@ -19,7 +19,6 @@ from e2e.test_gateway_boot_matrix import _await_assistant_reply, _booted
 from kiro_crew.testing.workflow_memory_scenario import (
     progress_summary,
     source,
-    wait_for_spawn_result,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -187,25 +186,15 @@ def test_private_workflows_execute_over_real_projected_mcp():
         _assert_result(_finished(client, rerun["run_id"]), "A")
         # These calls originate in workflow workers, not the owner HTTP client.
         nested_source = 'META = {"name": "nested"}\nasync def workflow(ctx):\n    return await ctx.agent("[[WF_E2E:NEST:A]]")\n'
-        nested, spawn_id = asyncio.run(_nested_with_owner_approval(client, session, nested_source))
+        # A crewmate's chat runs on its conductor, which starts no sub-agents, and
+        # a workflow it starts runs its steps on that same template: the nested
+        # workflow runs on the crewmate's store, the nested spawn is refused.
+        start = _post_as(client, "/api/workflows/run", {"source": nested_source}, session)
+        nested = json.loads(_finished(client, start["run_id"])["result"])
         nested_id = re.search(r"wf_\d+", json.dumps(nested["nested_workflow"])).group()
         _assert_result(_finished(client, nested_id), "A")
-        result = wait_for_spawn_result(client, handle.home, spawn_id)
-        assert "WF_E2E_A_PRIVATE_LESSON" in json.dumps(result)
-        assert "WF_E2E_A_PRIVATE_LESSON" in json.dumps(result["recall"])
-        assert '"isError": true' not in json.dumps(result)
-        record = json.loads(
-            (handle.home / "subagents" / spawn_id / "state.json").read_text(encoding="utf-8")
-        )
-        config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
-        assert (
-            record["execution_context"]["store"]["store_id"]
-            == config["agents"]["workflow-e2e-a"]["memory_store"]
-        )
-        assert (
-            record["execution_context"]["member_id"]
-            == config["agents"]["workflow-e2e-a"]["member_id"]
-        )
+        refused = json.dumps(nested["nested_spawn"])
+        assert "starts no sub-agents" in refused, nested["nested_spawn"]
         for marker in ("B", "V"):
             control_source = f'META = {{"name": "foreign control"}}\nasync def workflow(ctx):\n    return await ctx.agent("[[WF_E2E:CONTROL:{marker}:{starts["A"]}]]")\n'
             control = _post_as(

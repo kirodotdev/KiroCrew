@@ -235,13 +235,6 @@ export function useMembersPageSidePanel({
     if (!unmountsCard || !schedAtStakeRef.current()) { focus(); return }
     void schedGuardRef.current().then((ok) => { if (ok) focus() })
   }, [tabsCtl, beside, setDockedOpen, profile, schedAtStakeRef, schedGuardRef, setOverlayOpen, setProfile])
-  // The spawn_run launch card's "Open Subagents panel" (the one tool row a
-  // crewmate's chat draws, #21138). On the chat page the card drives the chat
-  // store's panel; here the panel is this page's own tab model, so the card
-  // takes this opener — the same reveal-and-focus path the Workspace tile
-  // uses for Files — and never touches `chat.activeSlot`, which this page
-  // deliberately leaves alone.
-  const openSubagentsView = useCallback(() => openCrewView('subagents'), [openCrewView])
   // Session routing inside the DM transcript. A crewmate's prose names sessions
   // constantly -- "picked this up in `chat-2235-…`", a `/chat?sid=…` link to the
   // worker it dispatched -- and until now every one of those was inert here
@@ -485,7 +478,7 @@ export function useMembersPageSidePanel({
 
   return {
     panelDefaultW, profileCardW, activeMemberKey, tabsCtl, projectDir, hiddenViews, openMemberSideChat,
-    openCrewWorkLog, openCrewView, openSubagentsView, sessionRoster, retryThreadsFlag, threadsFlagFailed, threadsFlagRetrying,
+    openCrewWorkLog, openCrewView, sessionRoster, retryThreadsFlag, threadsFlagFailed, threadsFlagRetrying,
     threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId, schedAtStake,
     setSchedAtStake, schedReleased, schedulesMountedRef, dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,

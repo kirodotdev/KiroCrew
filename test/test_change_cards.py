@@ -429,7 +429,33 @@ def test_undo_restores_the_prior_state_and_says_when_it_cannot():
     assert ops == [{"section": "allowedTools", "id": "@a/b", "action": "inherit"}]
 
 
-def test_only_editable_fields_may_change_on_a_re_preview():
+def test_a_crewmates_capability_undo_removes_instead_of_inheriting():
+    """A crewmate's own file has no parent: an absent or off row is undone by ``remove``."""
+    draft = {
+        "operations": [
+            {"section": "allowedTools", "id": "@a/new", "action": "set", "value": True},
+            {"section": "allowedTools", "id": "@a/off", "action": "set", "value": True},
+        ]
+    }
+    rows = [
+        {"section": "allowedTools", "id": "@a/off", "state": "local", "present": False},
+        {"section": "allowedTools", "id": "@a/on", "state": "local", "present": True},
+    ]
+    draft["operations"].append({"section": "allowedTools", "id": "@a/on", "action": "remove"})
+    p = {"member": "pixel", "draft": draft}
+    before = {"revision": "r0", "mode": "mate", "rows": rows}
+
+    undo, reason = catalog.build_undo(
+        catalog.KIND_CREWMATE_CAPABILITIES, p, before, [{}, {"revision": "r1"}], 1
+    )
+
+    assert reason is None
+    ops = undo[0]["body"]["operations"]
+    assert [(op["action"], op.get("value")) for op in ops] == [
+        ("remove", None),
+        ("remove", None),
+        ("set", True),
+    ]
     catalog.check_editable(
         "setting.change", {"path": "a.b", "value": 1}, {"path": "a.b", "value": 2}
     )

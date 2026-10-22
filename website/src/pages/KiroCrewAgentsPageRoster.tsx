@@ -17,6 +17,8 @@ import { DEFAULT_CREWMATE_PATH } from './overview/defaultCrewmateLink'
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { guidePick } from '../uiLocations/targetRegistry'
+import ErrorNotice from '../components/ErrorNotice'
+import { memoryStoreLabel, useRosterBuiltFrom, type MemoryStores } from './kiroCrewAgentsPageRosterLabels'
 
 /** Roster layout. `cards` is the roomy grid, `list` the compact table. */
 export type CrewView = 'cards' | 'list'
@@ -44,13 +46,16 @@ export function readStoredView(): CrewView {
 export type SharedKind = 'none' | 'memory' | 'files' | 'both'
 
 /** One binding shown on a roster card: icon, what it is, what it points at. */
-function Binding({ icon, label, value, muted, note }: {
+function Binding({ icon, label, value, muted, plain, note, testId }: {
   icon: React.ReactNode
   label: string
   value: string
   muted?: boolean
+  /** A display name or label rather than an identifier: not set in mono. */
+  plain?: boolean
   /** Warning suffix, e.g. that another crew points at this same store. */
   note?: string
+  testId?: string
 }) {
   return (
     <div className="flex items-center gap-2 min-w-0">
@@ -62,7 +67,7 @@ function Binding({ icon, label, value, muted, note }: {
             rather than showing an ellipsis — "Inherited" rendered as
             "Inheritea". Two pixels of gutter is enough for the lean. */}
         <span className="block truncate pr-0.5 text-[12px]">
-          <span className={muted ? 'italic text-muted' : 'font-mono text-text'}>{value}</span>
+          <span className={muted ? 'italic text-muted' : plain ? 'text-text' : 'font-mono text-text'} data-testid={testId}>{value}</span>
           {note && <span className="ml-1.5 text-[11px] text-warn">{note}</span>}
         </span>
       </span>
@@ -123,12 +128,14 @@ export function showsCrewSourceBadge(source?: string): source is string {
 }
 
 /** One crew in the roster. The whole card opens the editor panel. */
-function CrewCard({ agent, isDefault, shared, onOpen }: {
+function CrewCard({ agent, isDefault, shared, memoryStores, onOpen }: {
   agent: KiroCrewAgent
   isDefault: boolean
   shared: SharedKind
+  memoryStores: MemoryStores | undefined
   onOpen: () => void
 }) {
+  const { label: builtFrom, error: builtFromError } = useRosterBuiltFrom(agent)
   const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
   const filesShared = shared === 'files' || shared === 'both'
   const memoryShared = shared === 'memory' || shared === 'both'
@@ -180,9 +187,10 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
         </div>
       </div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border pt-3">
-        <Binding icon={<Boxes className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.built_from')} value={agent.kiro_agent} />
+        <Binding icon={<Boxes className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.built_from')} value={builtFrom} plain testId="crew-built-from" />
+        {builtFromError && <ErrorNotice message={builtFromError} variant="inline" askAgent testId="crew-built-from-error" />}
         <Binding icon={<FolderOpen className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.workspace_2')} value={agent.workspace} note={filesShared ? sharedNote : undefined} />
-        <Binding icon={<Database className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.memory_store')} value={agent.memory_store} note={memoryShared ? sharedNote : undefined} />
+        <Binding icon={<Database className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.memory_store')} value={memoryStoreLabel(agent.name, agent.memory_store, memoryStores)} plain note={memoryShared ? sharedNote : undefined} />
         <Binding
           icon={<Sparkles className="lucide-inline" aria-hidden="true" />}
           label={i18nT('pages.kiroCrewAgentsPage.model')}
@@ -214,12 +222,14 @@ function describeCrew(agent: KiroCrewAgent, isDefault: boolean): { text: string;
 /** One crew as a table row. The row opens the editor; the accessible target is
  *  the real button in the name cell, so table semantics stay intact — a `<tr>`
  *  given `role="button"` stops being announced as a row at all. */
-function CrewRow({ agent, isDefault, shared, onOpen }: {
+function CrewRow({ agent, isDefault, shared, memoryStores, onOpen }: {
   agent: KiroCrewAgent
   isDefault: boolean
   shared: SharedKind
+  memoryStores: MemoryStores | undefined
   onOpen: () => void
 }) {
+  const { label: builtFrom, error: builtFromError } = useRosterBuiltFrom(agent)
   const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
   const filesShared = shared === 'files' || shared === 'both'
   const memoryShared = shared === 'memory' || shared === 'both'
@@ -269,13 +279,15 @@ function CrewRow({ agent, isDefault, shared, onOpen }: {
           </div>
         </div>
       </TableCell>
-      <TableCell className="font-mono text-muted">{agent.kiro_agent}</TableCell>
+      <TableCell className="text-muted" data-testid="crew-built-from">
+        {builtFromError ? <ErrorNotice message={builtFromError} variant="inline" askAgent testId="crew-built-from-error" /> : builtFrom}
+      </TableCell>
       <TableCell className="font-mono text-muted">
         {agent.workspace}
         {filesShared && <Badge variant="warn" className="ml-1.5">{sharedNote}</Badge>}
       </TableCell>
-      <TableCell className="font-mono text-muted">
-        {agent.memory_store}
+      <TableCell className="text-muted">
+        {memoryStoreLabel(agent.name, agent.memory_store, memoryStores)}
         {memoryShared && <Badge variant="warn" className="ml-1.5">{sharedNote}</Badge>}
       </TableCell>
       <TableCell className={`font-mono ${agent.model ? 'text-muted' : 'italic text-muted'}`}>
@@ -358,8 +370,10 @@ export function CrewRosterToolbar({ agents, filter, setFilter, view, pickView, o
 }
 
 /** The crewmate list in either view, or the empty state that stands for it. */
-export function CrewRosterList({ agents, filtered, view, defaultAgent, sharedKind, openEdit, openCreate }: {
+export function CrewRosterList({ agents, filtered, view, defaultAgent, sharedKind, memoryStores, openEdit, openCreate }: {
   agents: KiroCrewAgent[]
+  /** `config.json`'s `memory_stores`, which says whose a store is. */
+  memoryStores: MemoryStores | undefined
   filtered: KiroCrewAgent[]
   view: CrewView
   defaultAgent: string
@@ -419,6 +433,7 @@ export function CrewRosterList({ agents, filtered, view, defaultAgent, sharedKin
                 agent={a}
                 isDefault={a.name === defaultAgent}
                 shared={sharedKind(a)}
+                memoryStores={memoryStores}
                 onOpen={() => openEdit(a)}
               />
             ))}
@@ -433,6 +448,7 @@ export function CrewRosterList({ agents, filtered, view, defaultAgent, sharedKin
             agent={a}
             isDefault={a.name === defaultAgent}
             shared={sharedKind(a)}
+            memoryStores={memoryStores}
             onOpen={() => openEdit(a)}
           />
         ))}

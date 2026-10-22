@@ -64,6 +64,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.kiro_cli import chat_sibling, installed_kiro_cli_version
+from kiro_crew.mate_worker import MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 from kiro_crew.platform.tool_names import kas_verified_releases, kas_vocabulary_drift
 
@@ -183,8 +184,36 @@ def resolve_projected_spec(
     :class:`~kiro_crew.acp.kas_agents.KasAgentSpecAbsent`, so a caller can say
     what is missing rather than quote a failed file open.
     """
+    from kiro_crew.agent_files import is_mate_service_agent
+
+    if is_mate_service_agent(agent):
+        # The mate conductor and worker are generated into the crewmate folder,
+        # not the user level (``agent_files.MATE_SERVICE_AGENT_FILENAMES``), and
+        # read there FIRST: a spec an older build left at the user level is not
+        # the one the gateway governs.
+        service_dir = paths_mod.mate_agents_dir()
+        if not kas_agents_mod.agent_spec_absent(service_dir, agent):
+            return kas_agents_mod.load_agent_spec(service_dir, agent), service_dir
     if not kas_agents_mod.agent_spec_absent(agents_dir, agent):
         return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
+    # Crewmate scope. A name the user level does NOT declare may be a crewmate's
+    # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
+    # §5.3): resolution reads this folder, the session agent picker does not, so
+    # the folder is the privacy boundary. It is a full custom-agent spec Crew
+    # wrote, trusted like a user-level one (not key-restricted like the untrusted
+    # project checkout below) because the governance ceiling re-applies at
+    # projection regardless. Checked BEFORE the project scope so a crewmate id
+    # never resolves to a same-named spec a checkout happens to carry; its prompt
+    # anchors to the crewmate folder.
+    mate_dir = paths_mod.mate_agents_dir()
+    if not kas_agents_mod.agent_spec_absent(mate_dir, agent):
+        from kiro_crew.mate_worker import drop_partial_platform_servers
+
+        mate_spec = kas_agents_mod.load_agent_spec(mate_dir, agent)
+        # A platform server switched on with no transport is never launched from
+        # here: the gateway supplies that server.
+        drop_partial_platform_servers(mate_spec)
+        return mate_spec, mate_dir
     declared, project = project_agent_spec(agent, work_dir)
     if not declared:
         try:
@@ -220,6 +249,26 @@ def resolve_projected_spec(
     if work_dir is None:  # unreachable: ``project_agent_spec`` declares nothing without one
         return spec, agents_dir
     return spec, paths_mod.project_agents_dir(work_dir)
+
+
+def mate_worker_projection(
+    base: dict[str, Any], prompt_dir: Path, session_key: str
+) -> dict[str, Any]:
+    """The worker spec a crewmate's worker session on *session_key* is handed.
+
+    *base* is the source-defined ``kirocrew-mate-worker`` spec. KAS's own part is
+    the prompt, resolved the way KAS resolves every prompt; the kit is the
+    harness-neutral seam :func:`kiro_crew.mate_worker.worker_session_spec`, which
+    reads the crewmate from the session's own execution record. Blocking file
+    I/O; runs inside the projection's worker thread.
+    """
+    from kiro_crew.mate_worker import worker_session_spec
+
+    literal = dict(base)
+    literal["prompt"] = kas_agents_mod.resolve_prompt(
+        base, agent_id=MATE_WORKER_AGENT, agents_dir=prompt_dir
+    )
+    return worker_session_spec(literal, session_key)
 
 
 def _missing_agent_reason(agent: str, session_key: str) -> str:
@@ -498,6 +547,18 @@ class KasHarness(MembershipHarness):
                     raise AcpAgentUnavailable(
                         _missing_agent_reason(agent, session_key), agent=agent
                     ) from exc
+            if agent == MATE_WORKER_AGENT:
+                # A crewmate's worker: its source base plus that crewmate's own
+                # additions, governed as one spec, with its prompt as literal
+                # text that anchors to no directory.
+                from kiro_crew.mate_worker import WorkerKitUnreadable
+
+                try:
+                    spec = mate_worker_projection(spec, prompt_dir, session_key)
+                except WorkerKitUnreadable as exc:
+                    # Refused, never the bare base: what could not be read may
+                    # hold the crewmate's own limits.
+                    raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds

@@ -99,6 +99,11 @@ REPORT_MAX_CHARS = 40_000
 #: Dashboard page's own ceiling, since the viewer opens a report in that page's
 #: sandbox (``dashboard_frame.MAX_PAGE_BYTES``).
 REPORT_HTML_MAX_BYTES = dashboard_frame.MAX_PAGE_BYTES
+
+#: The crewmate's notes (``save_notes``): what its briefing injects, which is
+#: ``members.MEMBER_BRIEFING_MAX_CHARS`` (spelled here because this module
+#: imports no ``members``; a test pins the two equal).
+NOTES_MAX_CHARS = 4000
 #: The record file itself, as read back: a hand-edited file past this is
 #: unreadable rather than loaded whole.
 _RECORD_MAX_BYTES = 64 * 1024

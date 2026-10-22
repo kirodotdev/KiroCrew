@@ -205,8 +205,8 @@ def member_briefing_path(slug: str) -> Path:
     """Absolute path to one member's self-maintained briefing file.
 
     Inside :func:`member_dir` — deliberately agent-writable (see
-    ``BRIEFING_FILE_NAME``). Does NOT create the directory; the member's own
-    file tools do when it first writes its briefing.
+    ``BRIEFING_FILE_NAME``). Does NOT create the directory;
+    ``member_notes.write_member_notes`` (``save_notes``) does on the first save.
     """
     return member_dir(slug) / BRIEFING_FILE_NAME
 

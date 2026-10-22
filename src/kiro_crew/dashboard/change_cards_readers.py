@@ -874,11 +874,11 @@ def _capability_state(app: Any, params: dict[str, Any]) -> dict[str, Any]:
         raise catalog.CardCatalogError(exc.code, f"capabilities unavailable: {exc.code}") from None
     touched = {(op.get("section"), op.get("id")) for op in params["draft"]["operations"]}
     rows = [
-        {k: row.get(k) for k in ("section", "id", "state", "value")}
+        {k: row.get(k) for k in ("section", "id", "state", "value", "present")}
         for row in view.get("rows") or []
         if (row.get("section"), row.get("id")) in touched
     ]
-    return {"revision": view.get("revision"), "rows": rows}
+    return {"revision": view.get("revision"), "mode": view.get("mode"), "rows": rows}
 
 
 async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, app: Any) -> bool:

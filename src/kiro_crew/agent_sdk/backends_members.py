@@ -89,6 +89,18 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
 # it was saved.
 ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
 
+# Backends that can run a crewmate's WORKER with its kit: a spec built per
+# session from the source-defined worker base plus that crewmate's own file
+# (``mate_worker.worker_session_spec``), with the tools the crewmate switches off
+# withheld. KAS takes the whole agent definition per session over the wire
+# (``_meta.kiro.customAgents``) and projects exactly that spec. kiro-cli reads
+# ``--agent`` off disk at spawn and has no per-session channel, so it would run
+# the bare base. The projecting hosts (claude, codex, deepseek, goose, opencode,
+# pi) read their spec off disk by agent name and report ``excludedTools`` as a
+# projection gap, so the crewmate's switched-off tools would come back. A worker
+# allocated on a non-member is refused before spawn (``worker_kit_harness_unsupported``).
+ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS})
+
 # Backends that can mount a DIFFERENT MCP tool set on one session than the
 # on-disk agent template declares — the capability crew-member dispatch rides
 # on. claude-agent-acp takes the whole server list as a per-session

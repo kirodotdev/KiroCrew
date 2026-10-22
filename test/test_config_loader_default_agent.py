@@ -19,6 +19,22 @@ import pytest
 from kiro_crew.config.loader import KiroCrewConfig
 
 
+@pytest.fixture(autouse=True)
+def _no_crewmate_files_from_other_tests(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no crewmate-owned names in the dispatch snapshot.
+
+    A crewmate's own file chats on the conductor
+    (``mate_worker.member_chat_agent``), so a name an earlier test in this worker
+    published (``atlas``, say) would read as a crewmate's file here.
+    """
+    from kiro_crew import mate_worker
+    from kiro_crew.config import loader
+
+    _floor_monkeypatch.setattr(loader, "_MATERIALIZED_MATE_ONLY", frozenset())
+    # A cold snapshot rescans the crewmate folder, which tests in this worker share.
+    _floor_monkeypatch.setattr(mate_worker, "is_mate_owned_agent", lambda name: False)
+
+
 class TestStarDefaultTemplateCarry:
     """A "Default for new sessions" pick from before plain sessions were template
     sessions -- an enrolled alias plus the roster's ``default_agent`` -- is carried
@@ -263,6 +279,7 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
         loader._MATERIALIZED_STEMS = {}
         loader._MATERIALIZED_SEEN.clear()
         loader._MATERIALIZED_LAST_DROPPED.clear()
+        loader._MATERIALIZED_MATE_ONLY = frozenset()
         loader._MATERIALIZED_COMPLETE = False
         loader._MATERIALIZED_AGENTS_READY = False
         loader._MATERIALIZED_AGENTS_GENERATION = 0
@@ -324,6 +341,31 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
         assert event.event_type == "default_agent_reset"
         assert event.resources == "agent:pkg"
         assert event.metadata == {"template": "captain", "reset_to": "default"}
+
+    def test_an_unreadable_crewmate_file_is_not_removal_evidence(self):
+        # The default is a crewmate whose own file sits in the crewmate folder.
+        # That file turning unreadable leaves the user-level scan complete, but
+        # must not read as the crewmate's file being gone.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "ada": {"kiro_agent": "ada"}},
+                "ada",
+                {"kirocrew.json": {"name": "kirocrew"}},
+            )
+            mates = Path(td) / "mates"
+            mates.mkdir()
+            (mates / "ada.json").write_text(json.dumps({"name": "ada"}), encoding="utf-8")
+            p1, p2 = self._patched(config, d)
+            p3 = unittest.mock.patch.object(loader, "mate_agents_dir", lambda: mates)
+            with p1, p2, p3, unittest.mock.patch("kiro_crew.sel.sel"):
+                loader.refresh_materialized_agents(heal_default=True)
+                (mates / "ada.json").write_text("{torn", encoding="utf-8")
+                loader.refresh_materialized_agents(heal_default=True)
+                assert "ada" in loader._MATERIALIZED_AGENTS
+            assert self._on_disk(config)["default_agent"] == "ada"
 
     def test_file_name_binding_counts_as_the_declared_agent(self):
         # A row that recorded the FILE name is healthy while that file declares

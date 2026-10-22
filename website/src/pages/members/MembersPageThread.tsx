@@ -621,7 +621,7 @@ export function MembersPageThreadColumn({
   // cannot stream in under the entrance; it fades back as the face lands.
   const entranceOnStage = !!entrance && entrance.phase === 'stage'
   const {
-    openMemberSideChat, openCrewWorkLog, openSubagentsView, sessionRoster, retryThreadsFlag, threadsFlagFailed,
+    openMemberSideChat, openCrewWorkLog, sessionRoster, retryThreadsFlag, threadsFlagFailed,
     threadsFlagRetrying, threadsOn, threadsQuery, threadHooks, actionError, setActionError, actionInfo,
     openFileGuarded, openSessionGuarded,
   } = sidePanel
@@ -1114,7 +1114,6 @@ export function MembersPageThreadColumn({
                           ? <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
                           : null}
                         onOpenCrewWorkLog={openCrewWorkLog}
-                        onOpenSubagents={openSubagentsView}
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}
                         onFileOpen={openFileGuarded}

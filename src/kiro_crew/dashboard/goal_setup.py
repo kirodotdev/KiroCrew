@@ -4,8 +4,10 @@ Saving a goal on the Goals tab, new or edited (or applying a ``crewmate.goal`` c
 writes through the same route) should not leave the user to work out what
 milestones are or where the check-ins live. So the gateway sends the crewmate
 one hidden turn in its own thread (:func:`mate_welcome.dispatch_hidden_turn`):
-acknowledge the goal in a sentence, research it in a background sub-agent so
-the chat stays free, and propose milestones when the research comes back.
+acknowledge the goal in a sentence, hand the research to a worker session
+(``session_create`` / ``session_send``; a crewmate's chat starts no
+sub-agents) and end the turn, then propose milestones when the worker's
+report wakes it (:mod:`kiro_crew.dashboard.mate_thread_wakes`).
 Applying that milestones card always sends a second hidden turn
 (:func:`schedule_milestones_nudge`), which offers the check-ins when none is on. Each of those is a card the user
 decides; the crewmate's own goal cards are admitted outside a turn the user sent
@@ -34,7 +36,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from kiro_crew import member_goals
+from kiro_crew import crewmate_prompts, member_goals
 from kiro_crew import members as members_mod
 
 logger = logging.getLogger(__name__)
@@ -82,54 +84,30 @@ def kickoff_prompt(
     listing = [
         f"{i}. {member_goals.scrub_text(g['text'])}" for i, g in enumerate(rec["goals"], start=1)
     ]
-    lines = [
-        f"[Goal set] The user just set goal {n} ({goal_id}):",
-        "",
-        member_goals.scrub_text(goal["text"]),
-        "",
-        "All your goals now:",
-        *listing,
-        "",
-        "Do this, in order:",
-        "1. Reply in one or two short sentences, in the user's language: say back what "
-        f"you understand goal {n} to mean, and that you will look into the work before "
-        "you propose milestones. Ask nothing else yet.",
-        "2. Start ONE background sub-agent with spawn_run to research the goal: what "
-        "the work looks like today (the repo, the queue, past releases or whatever you "
-        "can read), what could be measured, what is already in place. Ask it for a few "
-        "candidate milestones, each something you can check and report as a "
-        "number or a plain yes/no, with its target and why. Then end your turn so the "
-        "chat stays free for the user; do not wait for the result.",
-        (
-            "3. When the result comes back, propose the milestones with set_key_results "
-            "(a card, the whole set, each milestone linked with goal_ids to the goals it "
-            "serves) and a one-sentence reason."
-            if has_mate_tools
-            else "3. When the result comes back, write the milestones in this chat (each "
-            "with its target and the goals it serves) with a one-sentence reason, and "
-            "ask the user to add the ones they want on your Goals tab."
-        )
-        + (
-            " You already have milestones: keep the ones that still fit, and add or "
-            "change only what this goal needs."
-            if has_krs
-            else ""
-        )
-        + " When the goal cannot be measured, say so and propose none for it.",
-        (
-            "4. Do not bring up check-ins yet: once the user confirms the milestones you "
-            "will be told, and that is the moment for them."
-            if has_mate_tools
-            else "4. Do not bring up check-ins yet: once the user saves the milestones "
-            "you will be told, and that is the moment for them."
-        ),
-    ]
-    lines.append(
-        "A few goals and a few milestones are easier to track than many: keep the "
-        "set small, and when goals or milestones overlap, suggest merging them; the "
-        "user decides."
+    T = crewmate_prompts.text  # noqa: N806 - a short local alias for the reads below
+    step3 = T(
+        "goal_setup.kickoff_step3_tools" if has_mate_tools else "goal_setup.kickoff_step3_no_tools"
     )
-    lines.append("Ask the user about one thing at a time.")
+    if has_krs:
+        step3 += T("goal_setup.kickoff_has_milestones")
+    lines = [
+        crewmate_prompts.fill(
+            "goal_setup.kickoff_head",
+            n=n,
+            goal_id=goal_id,
+            goal=member_goals.scrub_text(goal["text"]),
+            listing="\n".join(listing),
+        ),
+        crewmate_prompts.fill("goal_setup.kickoff_step2", n=n),
+        step3 + T("goal_setup.kickoff_unmeasured"),
+        T(
+            "goal_setup.kickoff_step4_tools"
+            if has_mate_tools
+            else "goal_setup.kickoff_step4_no_tools"
+        ),
+        T("goal_setup.kickoff_small_set"),
+        T("goal_setup.one_thing"),
+    ]
     if dashboard_line:
         lines.extend(["", dashboard_line])
     return "\n".join(lines)
@@ -218,7 +196,7 @@ def milestones_prompt(
         return None
     sched = rec.get("schedules") or {}
     any_on = any(sched.get(c) for c in member_goals.CADENCES)
-    lines = ["[Milestones confirmed] The user just confirmed your milestones:", ""]
+    lines = [crewmate_prompts.text("goal_setup.milestones_head"), ""]
     for kr in krs:
         text = member_goals.scrub_text(str(kr.get("text") or ""))
         target = member_goals.scrub_text(str(kr.get("target") or ""))
@@ -229,11 +207,7 @@ def milestones_prompt(
         lines.extend(["", *member_goals.goal_lines({"goals": goals})])
     lines.append("")
     if any_on:
-        lines.append(
-            "Reply in one or two short sentences, in the user's language: acknowledge "
-            "them and say what you will work on first toward the goal. The check-ins "
-            "already running will record readings against these milestones."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_running"))
     elif has_mate_tools:
         lines.append(
             "Reply in the user's language: acknowledge them in a sentence, then offer "
@@ -349,35 +323,29 @@ def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = 
         return None
     text = member_goals.scrub_text(str(removed["goal"].get("text") or ""))
     served = set(removed.get("key_result_ids") or [])
-    lines = ["[Goal removed] The user just removed this goal:", "", text, ""]
+    lines = [crewmate_prompts.text("goal_setup.removed_head"), "", text, ""]
     goals = [{**g, "text": member_goals.scrub_text(g["text"])} for g in rec.get("goals") or []]
     if goals:
         lines.extend(["Goals left:", *member_goals.goal_lines({"goals": goals})[1:], ""])
     else:
-        lines.extend(["No goal is left, so every check-in was switched off.", ""])
+        lines.extend([crewmate_prompts.text("goal_setup.removed_none_left"), ""])
     orphans = [
         member_goals.scrub_text(str(kr.get("text") or ""))
         for kr in rec.get("key_results") or []
         if kr.get("id") in served and not kr.get("goal_ids")
     ]
     if orphans:
-        lines.extend(["These milestones served only that goal:", *(f"- {o}" for o in orphans), ""])
-        if has_mate_tools:
-            follow_up = (
-                "Then propose, with set_key_results (a card, the whole set), dropping or "
-                "relinking the milestones above; the user decides."
-            )
-        else:
-            follow_up = (
-                "Then suggest, in this chat, dropping or relinking the milestones "
-                "above on your Goals tab; the user decides."
-            )
+        lines.extend(
+            [crewmate_prompts.text("goal_setup.removed_orphans"), *(f"- {o}" for o in orphans), ""]
+        )
+        follow_up = crewmate_prompts.text(
+            "goal_setup.removed_relink_tools"
+            if has_mate_tools
+            else "goal_setup.removed_relink_no_tools"
+        )
     else:
-        follow_up = "Ask nothing else."
-    lines.append(
-        "Reply in one or two short sentences, in the user's language: acknowledge the "
-        "removal and stop work that only served it. " + follow_up
-    )
+        follow_up = crewmate_prompts.text("goal_setup.removed_nothing_else")
+    lines.append(crewmate_prompts.text("goal_setup.removed_reply") + follow_up)
     return "\n".join(lines)
 
 

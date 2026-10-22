@@ -22,6 +22,8 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import MATE_CONDUCTOR_AGENT_FILENAME as _MATE_CONDUCTOR_AGENT_FILENAME
+from kiro_crew.agent_files import MATE_WORKER_AGENT_FILENAME as _MATE_WORKER_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
@@ -56,6 +58,153 @@ def _install_guest_agent() -> None:
     auto_approve.write_governed_spec(
         guest_path, guest_config, source="_install_guest_agent", kas_policy="none"
     )
+
+
+def _exclude(config: dict, refs: tuple[str, ...]) -> None:
+    """Add *refs* to *config*'s ``excludedTools``, keeping what it already lists."""
+    have = config.get("excludedTools")
+    kept = [t for t in have if isinstance(t, str)] if isinstance(have, list) else []
+    config["excludedTools"] = list(dict.fromkeys([*kept, *refs]))
+
+
+def _write_mate_service_spec(filename: str, config: dict, source: str) -> None:
+    """Write a mate conductor/worker spec into ``~/.kiro/mates/agents/``.
+
+    Not ``~/.kiro/agents/``: kiro-cli lists every spec there, and neither of
+    these is an agent anyone picks (``agent_files.MATE_SERVICE_AGENT_FILENAMES``).
+    An earlier build wrote them to ``~/.kiro/agents/``; the copy it left is
+    removed here (:func:`_remove_user_level_copy`).
+    """
+    from kiro_crew.config import paths as paths_mod
+
+    mates = paths_mod.mate_agents_dir()
+    mates.mkdir(parents=True, exist_ok=True)
+    path = mates / filename
+    # Keep the operator's inherited deny rules, as the other derived agents do.
+    auto_approve.write_governed_spec(path, config, source=source, kas_policy="inherit_narrowing")
+    agent_mod.logger.info("Installed %s: %s", filename, path)
+    _remove_user_level_copy(filename, config)
+
+
+def _remove_user_level_copy(filename: str, config: dict) -> None:
+    """Remove the ``~/.kiro/agents/<filename>`` an earlier build of this branch wrote.
+
+    That build rewrote the file on every start with the ``name`` and
+    ``description`` the installer sets, so a file carrying both is its own and
+    is deleted. Anything else at that name (a symlink, an unreadable file, or a
+    spec whose name or description someone changed) is the user's and is kept,
+    with one warning: a spec there is what kiro-cli lists, and Crew does not
+    read it. Never raises.
+    """
+    import json
+    import os
+
+    path = agent_mod.kiro_agents_dir_path() / filename
+    try:
+        if not os.path.lexists(path):
+            return
+        ours = False
+        if path.is_file() and not path.is_symlink():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = None
+            ours = (
+                isinstance(data, dict)
+                and data.get("name") == config.get("name")
+                and data.get("description") == config.get("description")
+            )
+        if ours:
+            path.unlink()
+            agent_mod.logger.info(
+                "Removed %s left in %s by an earlier build", filename, path.parent
+            )
+        else:
+            agent_mod.logger.warning(
+                "%s is not the spec Kiro Crew generated, so it is kept; Kiro Crew now "
+                "keeps that spec in %s and does not read this file",
+                path,
+                path.parent.parent / "mates" / "agents",
+            )
+    except OSError:
+        agent_mod.logger.warning("could not remove %s", path, exc_info=True)
+
+
+def _install_mate_conductor_agent() -> None:
+    """Generate and install the ``kirocrew-mate-conductor`` agent config.
+
+    The agent a crewmate's own chat runs on, derived from the default template
+    like ``kirocrew-research``. It excludes the sub-agent tools, ``task_run`` and
+    ``workflow_run`` (``mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS``), keeps only
+    the platform servers (``mate_worker.conductor_mcp_servers``) with
+    ``includeMcpJson`` off, and never reads the crewmate's own file.
+    """
+    from kiro_crew.mate_worker import (
+        MATE_CONDUCTOR_EXCLUDED_TOOLS,
+        conductor_mcp_servers,
+    )
+
+    config = agent_mod.build_agent_config()
+    config["name"] = "kirocrew-mate-conductor"
+    config["description"] = "The agent a crewmate's own chat runs on."
+    # The conductor dispatches and the worker does the work: its hand-off is a
+    # worker session, so the sub-agent tools are not in its tool list.
+    # Its MCP servers are the gateway's own, whatever servers the user has:
+    # user servers reach the worker only, through the crewmate's file.
+    platform = conductor_mcp_servers()
+
+    def _kept(ref: str) -> bool:
+        # Built-ins stay; a server ref survives only for a platform server.
+        return isinstance(ref, str) and (
+            not ref.startswith("@") or ref[1:].split("/", 1)[0] in platform
+        )
+
+    servers = config.get("mcpServers")
+    config["mcpServers"] = (
+        {name: entry for name, entry in servers.items() if name in platform}
+        if isinstance(servers, dict)
+        else {}
+    )
+    config["includeMcpJson"] = False
+    for key in ("tools", "allowedTools"):
+        listed = config.get(key)
+        if isinstance(listed, list):
+            config[key] = [t for t in listed if _kept(t)]
+    _exclude(config, MATE_CONDUCTOR_EXCLUDED_TOOLS)
+    _write_mate_service_spec(
+        _MATE_CONDUCTOR_AGENT_FILENAME, config, "_install_mate_conductor_agent"
+    )
+
+
+def _install_mate_worker_agent() -> None:
+    """Generate and install the ``kirocrew-mate-worker`` agent config.
+
+    The agent a crewmate's worker sessions run on: the session its chat opens
+    with ``session_create`` to hand work off. Derived from the default template
+    like the mate conductor above, so its base prompt, tools and ``mcpServers``
+    are the ones a crewmate's hand-off session ran on before it had a worker of
+    its own. This file is the worker's whole SOURCE BASE; a crewmate's own
+    additions (``~/.kiro/mates/agents/<id>.json``) are layered on at projection
+    time by :mod:`kiro_crew.mate_worker`, never written here, so one file serves
+    every crewmate.
+    """
+    from kiro_crew.mate_worker import (
+        MATE_WORKER_AGENT,
+        MATE_WORKER_EXCLUDED_TOOLS,
+        MATE_WORKER_PROMPT,
+    )
+
+    config = agent_mod.build_agent_config()
+    config["name"] = MATE_WORKER_AGENT
+    config["description"] = "The agent a crewmate's worker sessions run on."
+    # The worker's own principles ride after the shared base prompt.
+    principles = MATE_WORKER_PROMPT
+    base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
+    config["prompt"] = f"{base_prompt.rstrip()}\n\n{principles}" if base_prompt else principles
+    # Asking the user for a capability is the conductor's: a worker reports a
+    # missing tool back to the chat that opened it.
+    _exclude(config, MATE_WORKER_EXCLUDED_TOOLS)
+    _write_mate_service_spec(_MATE_WORKER_AGENT_FILENAME, config, "_install_mate_worker_agent")
 
 
 def _install_lite_agent_fallback() -> None:

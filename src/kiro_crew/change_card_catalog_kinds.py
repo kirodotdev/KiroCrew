@@ -84,6 +84,14 @@ OP_UNDO = "undo"
 #: The crewmate template a proposed crewmate is built from: the one the
 #: Crewmates page's New crewmate card builds from (``NewCrewmateDialog.tsx``
 #: ``DEFAULT_CREWMATE_TEMPLATE``).
+#:
+#: Deliberately still "kirocrew", not the mate conductor
+#: (``kirocrew-mate-conductor``, rfc-mate-owned-agent-config.md migration step
+#: 1): this constant is user-visible (the dialog's "Built from" dropdown label
+#: and the API payload it sends), and a label/UI change is its own design
+#: decision, out of scope for step 1's pure sourcing move. The mate conductor
+#: is wired in only where nothing displays its name --
+#: ``first_crewmate._ORDINARY_TEMPLATE``.
 DEFAULT_CREWMATE_TEMPLATE = "kirocrew"
 
 REASON_MAX_CHARS = 500

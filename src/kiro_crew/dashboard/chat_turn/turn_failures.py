@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         TRANSIENT_RETRY_KIND,
         CapabilityError,
         CapabilityStartupError,
+        KiroCrewConfig,
         _member_capable_backend_names,
         _MemoryUnavailable,
         acp_error_is_transient,
@@ -566,6 +567,14 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
             "Capabilities page, then start a new chat."
         )
         _err_meta = _terminal_error_meta(exc)
+    elif isinstance(exc, CapabilityStartupError) and str(exc) == "worker_kit_harness_unsupported":
+        from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+
+        _err_text = "worker_kit_harness_unsupported: " + (
+            worker_kit_backend_refusal(crewmate_worker_backend(KiroCrewConfig.load().agent))
+            or "this worker's backend cannot carry its kit; start a new hand-off"
+        )
+        _err_meta = _terminal_error_meta(exc)
     elif (
         isinstance(exc, CapabilityStartupError) and str(exc) == "capability_tool_limits_unsupported"
     ):
@@ -574,8 +583,8 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
             "capabilities turn off single tools on an MCP server. The backend "
             "its chats run on (agent.member_acp_backend) cannot turn off single "
             "tools, so they would be on. On the member's Capabilities page, turn "
-            "the whole server off or turn those tools back on, or set "
-            "agent.member_acp_backend to kiro, then start a new chat."
+            "the whole server off or turn those tools back on, then start a new "
+            "chat."
         )
         _err_meta = _terminal_error_meta(exc)
     else:

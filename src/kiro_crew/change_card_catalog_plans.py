@@ -1182,12 +1182,15 @@ def _impact_rows(impact: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def capability_inverse(
-    draft: dict[str, Any], rows: list[dict[str, Any]]
+    draft: dict[str, Any], rows: list[dict[str, Any]], *, severed: bool = False
 ) -> list[dict[str, Any]] | None:
     """Operations that restore each row *draft* touches to its state in *rows*.
 
     ``None`` when a row cannot be restored exactly: an MCP server definition the
     mate set locally is shown redacted, so writing it back would not restore it.
+    *severed* is a crewmate's own file (view ``mode="mate"``): with no parent, a
+    row that was absent or off (``present``) is restored with ``remove``, and an
+    on approval or switch with ``set True``.
     """
     by_key = {(r.get("section"), r.get("id")): r for r in rows if isinstance(r, dict)}
     ops: list[dict[str, Any]] = []
@@ -1195,7 +1198,11 @@ def capability_inverse(
         section, rid = op.get("section"), op.get("id")
         row = by_key.get((section, rid)) or {}
         state = row.get("state") or "inherited"
-        if state == "removed":
+        if severed and not row.get("present"):
+            ops.append({"section": section, "id": rid, "action": "remove"})
+        elif severed and section in ("tools", "allowedTools", "autoApprove", "skills"):
+            ops.append({"section": section, "id": rid, "action": "set", "value": True})
+        elif state == "removed":
             ops.append({"section": section, "id": rid, "action": "remove"})
         elif state == "local":
             if section == "mcpServers":

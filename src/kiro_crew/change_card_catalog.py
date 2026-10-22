@@ -337,7 +337,9 @@ def _build_undo(
         # above. The inverse binds to the revision the PUT returned (step 1's
         # evidence), never a fresh read's — a write another tab landed after ours
         # would otherwise become the baseline and Undo would overwrite it.
-        ops = capability_inverse(p["draft"], before.get("rows") or [])
+        ops = capability_inverse(
+            p["draft"], before.get("rows") or [], severed=before.get("mode") == "mate"
+        )
         revision = ev(1).get("revision")
         if ops is None:
             return None, "redacted_server_definition"

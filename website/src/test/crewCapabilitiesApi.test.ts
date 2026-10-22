@@ -13,7 +13,9 @@ const transport = vi.hoisted(() => ({
 }))
 vi.mock('../api/apiTransport', () => ({ apiTransport: transport }))
 
-import { crewCapabilitiesApi, crewCapabilitiesKey, capabilityKey, type CapabilityDraft } from '../api/crewCapabilities'
+import {
+  crewCapabilitiesApi, crewCapabilitiesKey, capabilityKey, crewWorkerKitApi, crewWorkerKitKey, type CapabilityDraft,
+} from '../api/crewCapabilities'
 
 const draft: CapabilityDraft = { revision: 'r1', enroll: false, operations: [], accept_parent: [], accept_members: [] }
 
@@ -41,5 +43,18 @@ describe('crewCapabilitiesApi', () => {
   it('keys the query by member and a row by section and id', () => {
     expect(crewCapabilitiesKey('oncall')).toEqual(['crew-capabilities', 'oncall'])
     expect(capabilityKey({ section: 'autoApprove', id: 'git' })).toBe('["autoApprove","git"]')
+  })
+})
+
+describe('crewWorkerKitApi', () => {
+  it('reads, previews and applies the worker kit, escaping the name', async () => {
+    const body = { template: 'release-bot', keep_additions: true }
+    await expect(crewWorkerKitApi.get('on call')).resolves.toEqual({ ok: true })
+    expect(transport.get).toHaveBeenCalledWith('/api/agents/on%20call/worker-kit')
+    await crewWorkerKitApi.preview('pixel', body)
+    expect(transport.post).toHaveBeenCalledWith('/api/agents/pixel/worker-kit/preview', body)
+    await crewWorkerKitApi.apply('pixel', { ...body, revision: 'r2' })
+    expect(transport.put).toHaveBeenCalledWith('/api/agents/pixel/worker-kit', { ...body, revision: 'r2' })
+    expect(crewWorkerKitKey('pixel')).toEqual(['crew-worker-kit', 'pixel'])
   })
 })

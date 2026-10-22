@@ -187,6 +187,16 @@ def _handle_agent(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         model = _agent_model_or_exit(getattr(args, "model", None) or "", cfg)
+        from kiro_crew.mate_config import user_agent_named
+
+        if args.kiro_agent == args.name or user_agent_named(args.name):
+            # Its own file is resolved under its name; a template of that name
+            # would leave it on that template (the create route refuses too).
+            print(
+                f"Error: a template is already named '{args.name}'; give this crew " "another name",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -242,10 +252,18 @@ def _handle_agent(args: argparse.Namespace) -> None:
         print(f"Workspace: {created.workspace}")
         if created.model:
             print(f"Model: {created.model}")
-        from kiro_crew.member_mate_tools import GRANTED, grant_mate_tools_to_new_member
+        # The same eager copy the create route runs, so a crewmate made here
+        # chats on the conductor and hands its work to its worker.
+        from kiro_crew.mate_config import MateConfigError, adopt_own_file
 
-        if grant_mate_tools_to_new_member(args.name) == GRANTED:
-            print("Added the mate's own tools (kirocrew-mate) to its private copy")
+        try:
+            adopt_own_file(args.name)
+        except MateConfigError as exc:
+            print(
+                f"Warning: {display_name or args.name} keeps running as {args.kiro_agent}: "
+                f"its own file was not written ({exc})",
+                file=sys.stderr,
+            )
 
     elif action == "update":
         if args.name not in cfg.agents:

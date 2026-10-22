@@ -474,6 +474,20 @@ class TestGateWiring:
         assert len(denied) == 1 and "availableAgents" in denied[0].kwargs.get("error", "")
 
     @pytest.mark.asyncio
+    async def test_gate_refuses_every_spawn_from_a_crewmate_conductor(
+        self, triage_fixture: Path
+    ) -> None:
+        """A crewmate's own chat runs on the conductor and hands work to a worker
+        session; the gate refuses its spawns whatever the child and whatever its
+        spec declares, and points at the hand-off it does have."""
+        for child in ("kirocrew", "agent1", ""):
+            manager, info, _sel = await self._spawn("kirocrew-mate-conductor", child)
+            assert info is not None and info.done is True
+            assert info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+            assert "session_create" in info.error
+            assert manager._running_count == 0
+
+    @pytest.mark.asyncio
     async def test_gate_admits_listed_agent(self, triage_fixture: Path) -> None:
         _manager, info, _sel = await self._spawn("orchestrator", "agent1")
         assert info is not None

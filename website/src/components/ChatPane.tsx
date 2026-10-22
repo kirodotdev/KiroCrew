@@ -104,7 +104,6 @@ export default function ChatPane({
   crewmate,
   crewmateGreeting,
   onOpenCrewWorkLog,
-  onOpenSubagents,
   threads,
   onSessionOpen,
   sessions,
@@ -554,7 +553,7 @@ export default function ChatPane({
     // picker inserts it, relative to that project.
     project: () => paneSlot?.project,
   })
-  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, onOpenSubagents, sessions, activeSession, messages, foldBefore, resume })
+  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume })
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
   // layout, shared measurement): `dockH` is what the scroller pays below its

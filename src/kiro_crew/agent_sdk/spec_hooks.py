@@ -383,7 +383,7 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import agent_spec_absent, load_agent_spec
     from kiro_crew.acp.session_mcp import trusted_project_agent_spec
-    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.config.paths import spec_dir_for
 
     if project_dir:
         declared, spec = trusted_project_agent_spec(agent_id, project_dir)
@@ -391,7 +391,7 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
             if spec is None:
                 raise ValueError(f"the project spec for agent {agent_id!r} could not be read")
             return spec
-    agents_dir = kiro_agents_dir()
+    agents_dir = spec_dir_for(agent_id)
     if agent_spec_absent(agents_dir, agent_id):
         return {}
     return load_agent_spec(agents_dir, agent_id)

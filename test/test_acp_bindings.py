@@ -120,6 +120,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "manual_compact_unsupported_backend": ("property", False, "f21e39ec5ffb", "acp"),
     "maybe_refresh_available_models": ("function", True, "9de63ef05543", "acp_model_effort"),
     "mcp_config_hot_reload": ("property", False, "a6632a57e602", "acp"),
+    "mate_worker_kit_supported": ("property", False, "a6632a57e602", "acp"),
     "mcp_session_report": ("function", False, "89ea891969f7", "acp"),
     "member_capabilities_supported": ("property", False, "a6632a57e602", "acp"),
     "member_dispatch_mounted": ("property", False, "16180c63d5e6", "acp"),

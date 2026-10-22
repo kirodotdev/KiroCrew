@@ -1742,7 +1742,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates`, `dashboard_fields`, `dashboard_types`, `dashboard_write`, `dashboard_templates`, `dashboard_preview`, `dashboard_apply`, `dashboard_rollback` |
 | `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel`, `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change`, `get_change_status`, `search_docs`, `find_ui` |
-| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report` |
+| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report`, `save_notes` |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
 so the default `kirocrew` template, every mate built from it, the worker
@@ -1807,7 +1807,10 @@ turn, as every card outcome does. A `set_approval_mode` for the mode the thread
 already runs in (a record pinning none opens in
 `MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE`) is refused `no_change` rather than
 drawn as a card from an empty value.
-The mate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
+Pressing a `request_capabilities` card writes the crewmate's own file in place
+(crew-mode.md, "Conductor and worker"). The worker does not mount it
+(`MATE_WORKER_EXCLUDED_TOOLS`).
+The crewmate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
 `member-rules/`) splits the same way. `set_goal` and `set_key_results` are card
 asks (`crewmate.goal`, `crewmate.key_results`, applied and undone through
 `PUT /api/members/{slug}/goals/long-term|key-results` with an `expected`
@@ -1817,7 +1820,10 @@ are direct reads and writes through `/api/member/self/goals/*`
 (`dashboard/handlers/member_goals.py`). `save_goal_report` files a weekly
 report or monthly review under `Crewmates/<name>/Reports`, as `markdown` or as
 `html` (one self-contained printable page, one of the two), and sends one
-notification linking it. These goal operations are deliberately
+notification linking it. `save_notes` replaces the crewmate's own briefing
+(`members/<slug>/briefing.md`, its `[CURRENT ASSIGNMENT]` section) through
+`/api/member/self/notes` (`member_notes.write_member_notes`, the read side's
+pinned, no-follow open), under the same admission as the goal writes. These goal operations are deliberately
 NOT in `_USER_TURN_OPERATIONS`: the check-in turns of
 `dashboard/goal_reminder.py` are gateway-authored hidden turns in the
 mate's own thread, and recording readings and filing reports is what they

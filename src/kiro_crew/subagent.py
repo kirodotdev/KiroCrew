@@ -268,6 +268,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     _vet_parent_available_agents,
     _vet_spawn_governance,
     agent_matches_allowlist,
+    conductor_spawn_refusal,
     parent_project_dirs,
     parent_spawn_allowlists,
     parent_spawn_policy,

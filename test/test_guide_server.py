@@ -4,7 +4,8 @@
 on every spec derived from it and so on every crewmate and dashboard session,
 with exactly the reviewed :data:`kiro_crew.agent._GUIDE_AUTO_GRANTS` granted
 through the shared ceiling.
-The first crewmate is an ordinary crewmate on that template, created once.
+The first crewmate is created once, bound to the crewmate conductor
+(``kirocrew-mate-conductor``), which carries the same guide set.
 Every test writes under the isolated data home; nothing touches a live
 ``~/.kiro``.
 """
@@ -17,14 +18,18 @@ from typing import Any
 
 import pytest
 
+import kiro_crew.config.paths as paths_mod
 from kiro_crew import agent
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
     ASSISTANT_MEMBER_NAME,
+    MATE_CONDUCTOR_AGENT_FILENAME,
+    MATE_WORKER_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_materialization import first_crewmate, guide_platform
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
 
 GUIDE_SERVER = "kirocrew-guide"
 GUIDE_REF = f"@{GUIDE_SERVER}"
@@ -37,6 +42,7 @@ def agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     directory.mkdir()
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: directory)
     monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", directory)
+    monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: tmp_path / "mates" / "agents")
     monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: SPEC_PERMISSIONS_MIN_VERSION
     )
@@ -138,14 +144,21 @@ def test_every_crewmate_spec_mounts_the_same_guide_set(rebuildable: Path) -> Non
     agent.rebuild_agent_config()
     default = _spec(rebuildable, AGENT_FILENAME)
     worker = _spec(rebuildable, WORKER_AGENT_FILENAME)
-    for spec in (default, worker):
+    mates = rebuildable.parent / "mates" / "agents"
+    conductor = _spec(mates, MATE_CONDUCTOR_AGENT_FILENAME)
+    for spec in (default, worker, conductor):
         assert GUIDE_REF in spec["tools"]
         assert "autoApprove" not in spec["mcpServers"][GUIDE_SERVER]
         assert _guide_grants(spec) == GRANTS
-    # The first crewmate runs the very template a user-created crewmate gets.
+    # The first crewmate's chat runs on the crewmate conductor, which carries the
+    # same guide set; no crewmate spec, not even the mate conductor's or worker's,
+    # lands in the user-level agents dir that kiro-cli lists.
     row = _saved()["agents"][ASSISTANT_MEMBER_NAME]
-    assert row["kiro_agent"] == "kirocrew"
-    assert sorted(p.name for p in rebuildable.glob("*mate*")) == []
+    assert row["kiro_agent"] == MATE_CONDUCTOR_AGENT
+    assert not list(rebuildable.glob("*mate*"))
+    assert sorted(p.name for p in mates.glob("*mate*")) == sorted(
+        [MATE_CONDUCTOR_AGENT_FILENAME, MATE_WORKER_AGENT_FILENAME]
+    )
 
 
 def test_conductors_and_background_agents_do_not_mount_the_guide_set(rebuildable: Path) -> None:
@@ -219,7 +232,7 @@ def test_a_spec_without_the_guide_server_keeps_the_one_time_grant_for_later(
 # ── the first crewmate ──
 
 
-def _assert_private_first_crewmate(saved: dict, template: str = "kirocrew") -> str:
+def _assert_private_first_crewmate(saved: dict, template: str = MATE_CONDUCTOR_AGENT) -> str:
     row = saved["agents"][ASSISTANT_MEMBER_NAME]
     # Its own workspace from the start, like every created crewmate.
     own_workspace = f"member-{ASSISTANT_MEMBER_NAME}"
@@ -248,6 +261,15 @@ def test_creation_never_changes_the_default_member(agents_dir, default_row):
     assert saved["agents"]["default"] == default_row
     assert saved["dashboard"] == {"user_role": "designer"}
     _assert_private_first_crewmate(saved)
+
+
+def test_a_fresh_install_keeps_plain_chats_off_the_conductor(agents_dir):
+    """The first crewmate chats on the conductor; the ``default`` binding a plain
+    chat runs on stays the default template, which may start sub-agents."""
+    _seed({})
+    first_crewmate.create_first_crewmate_once()
+    saved = _saved()
+    assert saved["agents"]["default"]["kiro_agent"] == "kirocrew"
 
 
 def test_it_runs_the_configured_default_template(agents_dir):

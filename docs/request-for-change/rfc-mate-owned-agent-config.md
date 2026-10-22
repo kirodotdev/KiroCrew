@@ -38,6 +38,14 @@ superseded-by: []
   [#21463](https://github.com/kirodotdev/KiroCrew/pull/21463) predates this
   amendment: it names a `kirocrew-mate-conductor` spec but derives it from the
   default template, so its shape is the one §6 step 1 now says not to use.
+- Amended 2026-10-23 in #23010 (product owner's decision, rayrayxu). The
+  conductor keeps the default template's built-ins, `execute_bash`,
+  `fs_write` and `code` included, and loses only sub-agent spawning,
+  `task_run` and `workflow_run`; it still mounts no user MCP server. Doing work
+  inline is the prompt's rule, not the spec's. A stored `kiro` member backend
+  runs as `kas` (the dispatch tools ship only on KAS). The conductor may schedule
+  a scripted cron. This replaces the read-only tool set in §5.0, step 1's
+  exit criteria and §10 question 7 (search "2026-10-23").
 
 ## 1. Summary
 
@@ -212,8 +220,8 @@ Crewmate (container)
 ├─ runtime
 │  ├─ conductor / main agent
 │  │    prompt:  in source code, not JSON; the user cannot edit it
-│  │    tools:   read-only file tool + spawn worker + work ledger
-│  │             + the dashboard/widget servers; NO shell, NO user MCP server
+│  │    tools:   default built-ins minus sub-agent spawn, task_run, workflow_run
+│  │             + worker sessions + work ledger + platform servers; NO user MCP server
 │  │    job:     understand the user, plan, dispatch, report. Never does the work
 │  └─ worker
 │       prompt:  in source code + the file's `prompt`
@@ -229,13 +237,12 @@ acknowledges, queues, dispatches and answers; it is free whenever a user
 message arrives.
 
 Two mechanisms carry that, and they are not the same kind. **The spec
-enforces** what the conductor cannot do at all: it has no tool that writes a
-file (no `fs_write`, no `code`), no shell (`execute_bash` is not mounted), no
-user MCP server, and its one file tool is read-only (§10 question 7 is settled
-read-only here, for this reason). A conductor so equipped cannot run a code
-change, a build or a user-server task inline, whatever its prompt says. **The
-prompt carries** the rest as a best-effort rule: that a long read (`fs_read`,
-`web_fetch`) or a long think is handed to a worker too, so a turn stays short.
+enforces** what the conductor cannot do at all: no sub-agent spawn, no
+`task_run` or `workflow_run`, no user MCP server. *(2026-10-23: it keeps the
+default built-ins, a shell and file writers included; the read-only set first
+written here was replaced.)* **The prompt carries** the rest as a best-effort
+rule: a quick command or a small edit it may do itself; a long one goes to a
+worker, so a turn stays short.
 A rule in a prompt is weighed, not guaranteed, so §2 problem 5 is REDUCED by the
 prompt and REMOVED only for the work the tool set excludes; the design accepts
 that residue rather than pretending the prompt closes it.
@@ -254,7 +261,8 @@ can replace or reorder the charter.
 **The conductor's tools are a minimal set fixed in code.** A read-only file
 tool, the spawn/dispatch verbs, the work ledger (`kirocrew-work`), the
 member's own servers (`kirocrew-mate`, the dashboard/widget set), memory. No
-user-configured MCP server is mounted on it, and no shell is mounted. The exact
+user-configured MCP server is mounted on it. *(2026-10-23: plus the default
+built-ins; see the amendment note.)* The exact
 grant tuple is the step-1 PR's to pin, following the shape the three existing
 conductors already have
 (`agent_materialization/conductor_agents.py::_conductor_spec`). The meeting
@@ -576,9 +584,9 @@ Exit criteria:
 - A mate's chat runs the source-defined conductor: its prompt text and grant
   tuple come from source, and editing `~/.kiro/agents/kirocrew.json` or
   `~/.kiro/crew/prompt.md` changes nothing about it.
-- The conductor mounts no user-configured MCP server and does not mount
-  `execute_bash` at all (a spec that copied `_conductor_spec`'s un-approved
-  shell would fail this criterion).
+- The conductor mounts no user-configured MCP server, and no sub-agent spawn,
+  `task_run` or `workflow_run` tool. *(2026-10-23: it keeps `execute_bash`,
+  `fs_write` and `code`; the earlier "no shell" criterion is retired.)*
 - A mate-conductor-bound member's unnamed `spawn_run` runs `kirocrew-worker`,
   not the member's own template: the member-template inheritance that today
   re-runs `kirocrew` for a `kirocrew`-bound member would otherwise run the
@@ -912,7 +920,8 @@ only if mates are ever redefined as living templates that track a source.
    prevented from reading *another* crewmate's file in `mates/agents/`, that is a
    sandbox-scoping requirement §8 must pin, not assume.
 7. **The conductor's file tools: read-only or read/write?** (2026-10-17, step
-   1.) Settled: read-only (§5.0). The meeting named "basic file read/write";
+   1.) Settled 2026-10-23: read/write, with the default built-ins (§5.0); the
+   earlier read-only answer below is superseded. The meeting named "basic file read/write";
    the three existing conductors carry no file-writing tool, and a conductor
    that writes files can do work inline, which is the case the tool set exists
    to exclude. Recorded here so the question is not reopened in review.

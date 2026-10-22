@@ -73,7 +73,9 @@ def _session_tools() -> tuple[Tool, ...]:
                             "this workspace's memory boundary. A conductor that omits it "
                             "therefore gets a second conductor, which has no fs_write and "
                             "cannot do the work. Name the agent the child needs "
-                            "explicitly \u2014 kirocrew-worker for a leaf work item."
+                            "explicitly \u2014 kirocrew-worker for a leaf work item. "
+                            "In a crewmate's own chat this field is not used: the "
+                            "session is always that crewmate's own worker."
                         ),
                     },
                     "agent_kind": {

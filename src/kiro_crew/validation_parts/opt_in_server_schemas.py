@@ -702,4 +702,8 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("html", str, max_len=_goals.REPORT_HTML_MAX_BYTES),
         ],
     ),
+    "save_notes": ToolSchema(
+        tool_name="save_notes",
+        fields=[FieldSpec("text", str, required=True, max_len=_goals.NOTES_MAX_CHARS)],
+    ),
 }

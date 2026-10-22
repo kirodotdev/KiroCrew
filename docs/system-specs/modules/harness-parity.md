@@ -115,7 +115,23 @@ exact spec consumed by their MCP projection after session creation or load
 (Claude's projection must also be governed). `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
 (Kiro only) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
-`capability_tool_limits_unsupported`. This is separate from session sharing and per-session member dispatch. Both `AcpProvider` and
+`capability_tool_limits_unsupported`. A member DM whose
+`agent.member_acp_backend` is `kiro` runs on KAS (the loader reads it so), so
+no member-DM backend setting honours per-tool limits and that refusal's remedy
+is to change the saved spec. `ACP_BACKENDS_MATE_WORKER_KIT` (KAS only) is
+the H6 opt-in for running a crewmate's WORKER: a spec built per session from the
+worker base plus that crewmate's file, with its switched-off tools withheld
+(`mate_worker.worker_session_spec`, the one harness-neutral seam; KAS's
+projection reads it). A worker takes its crewmate's backend
+(`members.select_provider_backend` routes a key `mate_worker.note_worker_session`
+published, identified positively by its record: a `template` selection on
+`kirocrew-mate-worker` with a member id), and on a backend outside the set it is
+refused -- `session_create` before allocating, and the allocation before spawn
+through `mate_worker_kit_supported`, which both providers answer from the set --
+because kiro-cli would run the bare on-disk base and the projecting hosts drop
+`excludedTools`. Pinned by `test_harness_parity.py::test_the_mate_worker_kit_is_opt_in`
+and `test_mate_worker_dispatch.py::test_every_backend_carries_the_kit_or_refuses_the_worker`.
+This is separate from session sharing and per-session member dispatch. Both `AcpProvider` and
 `AcpSessionProvider` answer `member_capabilities_supported` from this set.
 Support alone does not prove a template is loaded: dedicated runtime ownership,
 liveness, native activation or projection consumption, saved-version checks and

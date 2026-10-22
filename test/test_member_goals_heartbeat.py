@@ -227,7 +227,8 @@ def test_a_wake_is_one_hidden_turn_whose_handoff_follows_the_session_tools(
     assert "Keep docs current" in prompt and "pages reviewed" in prompt
     assert "nothing_to_do" in prompt and "[OPTIONS:" in prompt
     assert ("session_create" in prompt) is has_tools
-    assert ("session_read_message" in prompt) is has_tools
+    # The worker's report wakes the thread, so the wake does not poll it.
+    assert ("[Worker report]" in prompt) is has_tools
     # The next wake is the patrol, whichever hand-off applies: a heartbeat turn
     # cannot arm a monitor loop.
     assert "next heartbeat is the patrol" in prompt and "monitor loop" in prompt

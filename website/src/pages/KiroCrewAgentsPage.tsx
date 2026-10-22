@@ -68,6 +68,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     queryKey: ['kirocrew-agents'],
     queryFn: () => api.kirocrewAgents(),
   })
+  // `config.json`'s `memory_stores` says whose each store is, so the roster can
+  // show a crewmate's own store as private rather than as a bare store id.
+  const { data: kirocrewCfg } = useQuery({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
   // After a registry write, invalidate the PREFIX rather than refetching this
   // page's own query: the Crew Members roster is a projection of the same
   // registry and lives under the same prefix (see api/membersQuery.ts), so a
@@ -352,7 +358,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
         {/* The crewmate list, in either view: what a guide's "choose the
             crewmate" step points at (picking one opens its editor). */}
-        <CrewRosterList agents={agents} filtered={filtered} view={view} defaultAgent={defaultAgent} sharedKind={sharedKind} openEdit={openEdit} openCreate={openCreate} />
+        <CrewRosterList agents={agents} filtered={filtered} view={view} defaultAgent={defaultAgent} sharedKind={sharedKind} memoryStores={kirocrewCfg?.memory_stores} openEdit={openEdit} openCreate={openCreate} />
       </div>
 
       {/* The editor renders nothing until a crewmate is being edited, and holds

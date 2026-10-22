@@ -232,8 +232,9 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "
         "safe_view applies redact_via_context before serialization and masks credential "
-        "map values while preserving their structure. Retained secret values and "
-        "source-content digests remain server-side.",
+        "map values while preserving their structure. A crewmate's in-place editor "
+        "(`mate_capabilities`) returns through the same safe_view. Retained secret "
+        "values and source-content digests remain server-side.",
     ),
     (
         "Crew log entries",

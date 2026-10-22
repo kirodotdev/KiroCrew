@@ -633,6 +633,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
+from kiro_crew.dashboard.mate_thread_wakes import note_turn_end as _note_mate_wakes
 from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
@@ -1108,10 +1109,10 @@ def _member_capable_backend_names() -> str:
     """The ``agent.member_acp_backend`` values that can load a member's saved spec.
 
     Read from :data:`ACP_BACKENDS_MEMBER_CAPABILITIES` so the remedy a refused member
-    chat shows names the set the refusal was judged against. kiro-cli's id is the
-    empty string, so it is spelled ``kiro``, the name the other remedies use.
+    chat shows names the set the refusal was judged against. kiro-cli is left out:
+    a member backend set to ``kiro`` runs on KAS, which the list already names.
     """
-    names = sorted(backend or "kiro" for backend in ACP_BACKENDS_MEMBER_CAPABILITIES)
+    names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
     return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
 
 

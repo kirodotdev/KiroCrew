@@ -113,7 +113,7 @@ GOAL_A = {"id": "g00000001", "text": "Keep the release notes current"}
 GOAL_B = {"id": "g00000002", "text": "Cut the build time in half"}
 
 
-def test_the_kickoff_researches_in_the_background_then_proposes() -> None:
+def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     rec = {
         "goals": [GOAL_A],
         "key_results": [],
@@ -122,7 +122,12 @@ def test_the_kickoff_researches_in_the_background_then_proposes() -> None:
     text = goal_setup.kickoff_prompt(rec, GOAL_A["id"])
     assert text is not None
     assert "Keep the release notes current" in text
-    assert "spawn_run" in text and "end your turn" in text
+    # A crewmate's chat starts no sub-agents: the research goes to a worker session.
+    assert "session_create" in text and "session_send" in text
+    # It dispatches and ends the turn; the worker's report wakes it, so nothing polls.
+    assert "end this turn" in text and "[Worker report]" in text
+    assert "session_read_message" not in text and "call wait" not in text
+    assert "spawn_run" not in text and "sub-agent" not in text
     assert "set_key_results" in text and "goal_ids" in text
     # Guidance toward a small set, not a cap.
     assert "easier to track" in text and "merging" in text

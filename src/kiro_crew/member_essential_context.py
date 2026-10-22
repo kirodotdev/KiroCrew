@@ -688,6 +688,18 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
             spec_path = agent_spec_path(template)
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+    if spec_path is None:
+        # A crewmate's own config lives in the mate store, not the user-level
+        # agents dir the picker reads. Mirror the resolution order the KAS and
+        # loader seams use: user-level first, then the mate scope, before giving
+        # up. The mate file is a full, trusted custom-agent spec, so it is read
+        # the same way as a user-level one.
+        from kiro_crew.config.paths import mate_agents_dir
+
+        try:
+            spec_path = agent_spec_path(template, agents_dir=mate_agents_dir())
+        except ValueError as exc:
+            raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
     return spec_path
 
 

@@ -762,7 +762,7 @@ _DASHBOARD_BOOT = tuple("""
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -818,7 +818,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
-    T:migrate_channel_transcripts T:newest_dump_with_stacks T:open_dump_file
+    T:migrate_channel_transcripts T:migrate_existing_crewmates T:newest_dump_with_stacks T:open_dump_file
     T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
     T:refresh_materialized_agents
     T:register_builtin_apps T:rotate_dumps T:start_deferred_app_backends
@@ -834,7 +834,7 @@ _API_BOOT = tuple("""
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1060,8 +1060,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 302
-_MCP_TABLE_DIGEST = "86bf53e5acac7a05df7e3cc63fd9026298b693be182db59253016c118a638f81"
+_MCP_TABLE_ROWS = 303
+_MCP_TABLE_DIGEST = "254e9403adee06dd151de6755fe0f6dd3d0dc1c638e7bebd520f4f269f866b85"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

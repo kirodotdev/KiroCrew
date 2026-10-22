@@ -64,6 +64,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_SESSION_SHARING,
@@ -673,6 +674,11 @@ class AcpProvider(LLMProvider):
     def member_tool_limits_supported(self) -> bool:
         """Per-tool ``disabledTools`` in a saved member spec is opt-in (H6)."""
         return self._client.backend in ACP_BACKENDS_MEMBER_TOOL_LIMITS
+
+    @property
+    def mate_worker_kit_supported(self) -> bool:
+        """A crewmate worker's per-session kit is carried by opt-in (H6)."""
+        return self._client.backend in ACP_BACKENDS_MATE_WORKER_KIT
 
     @property
     def loaded_capability_template(self) -> str:

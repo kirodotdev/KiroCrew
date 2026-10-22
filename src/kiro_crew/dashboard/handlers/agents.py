@@ -216,6 +216,7 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
     _crew_effort_rejected,
     _crew_memory_store_rejected,
+    _eager_copy_mate_config,
     _mark_first_greeting_owed,
     _refresh_session_defaults,
     api_kirocrew_agent_resolved_model,
@@ -1642,9 +1643,13 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
     redact = request.app.get("state") is None or not is_owner_dashboard_request(request)
+    # A legacy binding with no member id is not a crewmate, so no roster lists it.
+    from kiro_crew.mate_worker import is_legacy_binding
+
     agents = [
         _agent_roster_row(name, "global", agent_cfg, redact=redact)
         for name, agent_cfg in cfg.agents.items()
+        if not is_legacy_binding(name, agent_cfg)
     ]
 
     state: DashboardState | None = request.app.get("state")
@@ -1761,9 +1766,8 @@ async def _revalidate_crew_pin(
     the retained claude_code seam and a known wrong-flavour spelling -- so no probe
     is spent on a value the snapshot does not decide.
 
-    ``for_workers`` names the crew's ``worker_model``: the sessions a crewmate
-    dispatches run on ``agent.acp_backend`` (never a member DM), so that pin is
-    judged against the worker's harness rather than the member's.
+    ``for_workers`` names the crew's ``worker_model``: it is judged against the
+    harness the crewmate's worker runs on (``mate_worker.crewmate_worker_backend``).
     """
     if not model or model == "auto" or model_registry.acp_id_correction(model):
         return None
@@ -1772,8 +1776,9 @@ async def _revalidate_crew_pin(
         return None
     # circular import: see _model_pin_rejected.
     from kiro_crew.dashboard.handlers.core import _revalidate_role_pin_evidence
+    from kiro_crew.mate_worker import crewmate_worker_backend
 
-    backend = cfg.agent.acp_backend if for_workers else _pin_entitlement_backend(cfg)
+    backend = crewmate_worker_backend(cfg.agent) if for_workers else _pin_entitlement_backend(cfg)
     return await _revalidate_role_pin_evidence(model, request, backend=backend)
 
 

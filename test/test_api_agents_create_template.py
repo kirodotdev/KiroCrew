@@ -234,6 +234,33 @@ class TestExplicitTemplateStillWorks:
         assert "workspaces" not in cfg.written["doc"]
 
     @pytest.mark.asyncio
+    async def test_a_template_of_the_crews_own_name_is_refused(self):
+        """Its own file is resolved under its name, so the copy would be skipped."""
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "release-bot"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_user_level_agent_of_the_crews_name_is_refused(self, monkeypatch):
+        """The crewmate would be bound to that agent, which wins over its own copy."""
+        monkeypatch.setattr(
+            "kiro_crew.mate_config.user_agent_named", lambda name: name == "release-bot"
+        )
+        cfg = _fake_config()
+        status, data = await _post(
+            {"name": "release-bot", "kiro_agent": "kirocrew"},
+            cfg,
+            installed=("kirocrew", "release-bot"),
+        )
+        assert (status, data["code"]) == (409, "template_name_in_use")
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
     async def test_listed_template_creates_without_warning(self, caplog):
         cfg = _fake_config()
         with caplog.at_level(logging.WARNING):

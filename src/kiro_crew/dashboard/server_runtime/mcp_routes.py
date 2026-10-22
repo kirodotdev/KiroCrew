@@ -307,6 +307,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/member/self/goals/read", "api_member_self_goals_read"),
         ("POST", "/api/member/self/goals/key-result", "api_member_self_key_result"),
         ("POST", "/api/member/self/goals/report", "api_member_self_goal_report"),
+        ("POST", "/api/member/self/notes", "api_member_self_notes"),
     ):
         app.router.add_route(_method, _path, _deferred("member_goals", _name))
     # Spelled with ``add_put``: the ``crewmate.goal``, ``crewmate.key_results``

@@ -373,6 +373,24 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
             )
 
         cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+    if not agent_sequence_dispatches(cron_agents):
+        # A crewmate's scheduled turn is work, so it runs on that crewmate's
+        # worker (its kit, servers and permissions), never on the conductor its
+        # chat runs on. The key, store, member and mode are the capture's; only
+        # the selection becomes the worker's. Read at every fire, so a job
+        # captured before the crewmate owned its file needs no migration.
+        from kiro_crew.mate_worker import cron_worker_execution
+
+        # The live config the resolver below reads, never a reload: the capture
+        # runs on the loop's behalf and a fire must not reread config.json.
+        _cfg_live = live.snapshot() or getattr(self, "_cfg", None)
+        worker_execution = (
+            await asyncio.to_thread(cron_worker_execution, cron_execution, _cfg_live)
+            if _cfg_live is not None
+            else None
+        )
+        if worker_execution is not None:
+            cron_execution = worker_execution
     cron_memory_store, cron_agent = (
         cron_execution.store.legacy_name,
         cron_execution.template_id,
@@ -627,6 +645,9 @@ def _resolve_cron_agent(
         # through to the by-alias path below instead.
         resolved_alias = alias
         captured_member = None if sequence_step else getattr(cron_execution, "member_id", None)
+        from kiro_crew.mate_worker import MATE_WORKER_AGENT, is_own_worker_execution
+
+        own_worker = not sequence_step and is_own_worker_execution(cron_execution)
         if captured_member:
             try:
                 from kiro_crew.execution_context import member_config_for_id
@@ -658,6 +679,12 @@ def _resolve_cron_agent(
         # execution-context resolution validates the store later.
         bindings = resolve_agent_bindings(cfg, resolved_alias, validate_memory_files=False)
         kiro_agent = bindings.kiro_agent or None
+        if own_worker:
+            # The crewmate's alias resolves to its chat agent, the conductor; a
+            # scheduled turn runs on its worker instead, in the crewmate's
+            # workspace. No crew alias: a worker is a template session whose
+            # identity is its record (member, store), as a hand-off opens it.
+            kiro_agent = MATE_WORKER_AGENT
         # Anchor the workspace dir by the one placement rule. The
         # resolved bindings.workspace_dir is the RAW configured value
         # (e.g. the shipped relative default "workspace"); handing
@@ -685,7 +712,7 @@ def _resolve_cron_agent(
         # prepare_runtime needs it to resolve the member identity (the
         # kiro_agent name alone is not a config.agents key), and it is
         # the alias pinned to the captured member_id above.
-        return kiro_agent, cwd, resolved_alias
+        return kiro_agent, cwd, ("" if own_worker else resolved_alias)
     except Exception:
         logger.debug("cron agent resolve failed for %r", alias, exc_info=True)
         return None, None, None
@@ -737,6 +764,12 @@ async def _acquire_with_model_fallback(
         )
     else:
         await asyncio.to_thread(bind_session_execution, key, bound_execution)
+    # A crewmate's scheduled turn runs on its worker (``cron_worker_execution``),
+    # so its key takes the worker's backend route (``select_provider_backend``:
+    # the crewmate's member backend), as a hand-off's worker does.
+    from kiro_crew.mate_worker import note_worker_session
+
+    note_worker_session(key, bound_execution)
     modes = getattr(self.ctx_builder, "_session_memory_modes", None)
     if isinstance(modes, dict):
         # A separately scheduled run is durable work, not a child

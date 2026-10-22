@@ -69,13 +69,17 @@ def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str] | None:
 
 
 async def _apply_member_approval_to_live_thread(request: web.Request, name: str, mode: str) -> None:
-    """Put crewmate ``name``'s live DM slot on ``mode`` through ``/api/chat/mode``'s path."""
+    """Put crewmate ``name``'s live DM slot and live workers on ``mode`` (``/api/chat/mode``'s path)."""
     from kiro_crew import members as members_mod
     from kiro_crew.dashboard.chat_handlers import apply_approval_mode
+    from kiro_crew.dashboard.crewmate_approval import apply_to_live_sessions
 
     state = request.app.get("state")
     if state is None:
         return
+    # Its workers follow the Profile too; a worker not live now takes the record
+    # at its next turn.
+    await apply_to_live_sessions(state, name, mode)
     slot = next(
         (
             s
@@ -323,15 +327,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
         if "worker_model" in body:
-            # Judged against the WORKER's harness, not the crewmate's: a session
-            # the crewmate dispatches is never a member DM, so it runs on
-            # `agent.acp_backend`, and `create_session` trusts this pin for
-            # exactly that harness (`_inherited_pin_foreign_to_child`).
+            # Judged against the WORKER's harness: a crewmate's worker runs on
+            # its crewmate's backend (`mate_worker.crewmate_worker_backend`), and
+            # `create_session` trusts this pin for exactly that harness
+            # (`_inherited_pin_foreign_to_child`).
+            from kiro_crew.mate_worker import crewmate_worker_backend
+
             model_reason = _model_pin_rejected(
                 pending_worker_model,
                 request,
                 cfg.agent.provider,
-                backend=cfg.agent.acp_backend,
+                backend=crewmate_worker_backend(cfg.agent),
             )
             if model_reason:
                 return web.json_response(

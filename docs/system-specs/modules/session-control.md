@@ -290,6 +290,13 @@ wider blast radius — it names a conversation on a network surface — and its 
 re-runs the outbound recipient check with the principal the channel authorized on
 inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord)).
 
+A send whose caller is the target's own creator (`_created_by` equals the
+caller's slot key) also sets the target's in-memory `_reports_to_creator`. With
+`_lineage_minted` it is the live witness the crewmate worker report reads
+([crew-mode](crew-mode.md), "A worker reports back on its own"): a child
+restored after a restart reports to its crewmate again once that crewmate sends
+it something. It is never persisted and grants no access.
+
 **`steer: true` asks for a third outcome on a busy target.** Instead of waiting
 for the running turn, the message cuts into it (`steer_into_running_turn`, the
 same path the dashboard composer's mid-turn steer uses), so a caller watching a
@@ -597,12 +604,16 @@ child's first turn resolves its effort as any session does
 else `agent.reasoning_effort`, else the model default), which is what the profile
 card's "No level set" names. An inherited pin is also dropped when it cannot
 follow the worker onto its harness (`_inherited_pin_foreign_to_child`): the
-mate's thread runs on `agent.member_acp_backend` and its own `model` was
-validated there, while the non-member child runs on `agent.acp_backend`, so that
-pin is dropped when the two harnesses disagree on model-id namespace; the
-profile's explicit `worker_model` is validated for the worker's harness
-(`PUT /api/agents/{name}` judges it against `agent.acp_backend`) and crosses
-freely. Either pin is dropped when the child's namespace advertises a list it is
+crewmate's thread runs on `agent.member_acp_backend` and its own `model` was
+validated there, while a child that is not the crewmate's own worker runs on
+`agent.acp_backend`, so that pin is dropped when the two harnesses disagree on
+model-id namespace. The crewmate's own worker runs on the crewmate's backend
+(`mate_worker.crewmate_worker_backend`; crew-mode.md, "The worker runs on its
+crewmate's backend"), so its pins are judged there; the profile's explicit
+`worker_model` is validated for that harness (`PUT /api/agents/{name}`) and
+crosses freely. A conductor's hand-off whose worker backend cannot carry the
+worker's kit is refused `worker_kit_harness_unsupported` before anything is
+allocated. Either pin is dropped when the child's namespace advertises a list it is
 not on while another harness claims it; `"auto"` always passes. When the
 mate's own model is dropped, the mate's own effort that rode along for
 it is dropped too; an explicit `worker_reasoning_effort` stays. A caller whose record is a
@@ -769,7 +780,16 @@ Creation copies two different kinds of state, and the split is deliberate.
 **Identity** — the child is created in the caller's workspace (the memory
 boundary; a child left in `default` would be both a boundary crossing and
 unaddressable by its own creator), inherits the caller's agent when none is
-named, takes that workspace's project directory as its cwd, and is attributed to
+named -- except a crewmate's own chat running on the mate conductor, whose
+child is always its WORKER whatever `agent` it passes, opened as the template
+`kirocrew-mate-worker` on the crewmate's own workspace, store and member
+identity (`_hands_off_to_own_worker` over `_conducts_for_a_worker`, read from
+the caller's execution record through `_dispatching_crewmate`; the one
+exception is a name-first `agent` naming another `config.agents` row, which
+keeps its own resolution and so stays refused as a cross-workspace peer; a
+worker it already opened is a template
+selection, so the worker's own unnamed children inherit the worker; see
+crew-mode.md, "Conductor and worker") -- takes that workspace's project directory as its cwd, and is attributed to
 the caller via `created_by` so the per-creator slot ceiling is countable. The
 caller's ACP session id is also frozen onto the child at this mint
 (`_created_by_sid`), from the live caller handle, so the child's `session/opened`
@@ -788,7 +808,11 @@ records (see `crew-log-emitter.md`).
 trusted operator's dispatched worker does not stall on a prompt nobody is
 watching. This is the posture `parent_trusted` already gives a `spawn_run`
 subagent, which reads the parent's stored `"auto"` policy, so the same delegation
-behaves the same whether or not it gets a sidebar tab.
+behaves the same whether or not it gets a sidebar tab. A crewmate's own
+worker (the conductor's hand-off, `_hands_off_to_own_worker`) takes its
+posture from the crewmate's record instead: the Profile Permissions
+`approval_mode`, seeded through `crewmate_approval.seed_for_turn`, whatever the
+thread itself holds at that moment.
 No session-store write happens at creation: the child has no ACP session yet
 (`set_approval_policy` no-ops on a missing session), and `chat_runner` already
 derives the persistable policy from `_trust` on every session create/resume, so
@@ -812,7 +836,9 @@ Nothing about trust is persisted at birth. The birth metadata carries
 `tab_id`, `origin`, `created_at`, `workspace`, `agent`, `project`, `title`,
 `memory_mode`, and `folder_id` / `created_by` / `model` / `reasoning_effort` when
 set — no trust field — so a restart returns the child to interactive along with
-its creator.
+its creator. A crewmate's conductor chat and its workers are the exception: they
+are seeded again from the crewmate's record at the start of their next turn
+(see crew-mode.md, "Conductor and worker").
 
 The create's SEL record carries `agent`, `folder_id`, `model` and
 `reasoning_effort` (each empty when none was pinned), `inherited` (which of the
@@ -1263,9 +1289,12 @@ itself opened. Member sessions also bypass the provider warm pool
 default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
-claude seam, KAS, codex, opencode, goose, deepseek and pi); kiro-cli v2 reads its template from disk and
-exposes no per-session channel, so a member session on it runs as plain chat —
-the tools are simply not mounted, never mounted-and-refused. Codex qualifies
+claude seam, KAS, codex, opencode, goose, deepseek and pi). A stored `kiro`
+there reads as KAS at config load (`_read_backend_choice`), because crewmates
+run on KAS as their Kiro backend. kiro-cli v2 reads its template from disk and
+exposes no per-session channel, so a member session that still lands on it (the
+selection gate's floor) runs as plain chat — the tools are simply not mounted,
+never mounted-and-refused. Codex qualifies
 because `providers/mirrors/codex.py` already gives it a per-session array and
 its routing is `SESSION_CONFIG`, a member of `ENFORCED_ROUTINGS`, so
 `_apply_session_permission_routing` refuses the session outright when

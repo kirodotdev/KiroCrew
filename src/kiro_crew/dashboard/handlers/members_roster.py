@@ -269,10 +269,11 @@ async def api_members(request: web.Request) -> web.Response:
     # ``agent_panel`` is below: ``handlers.agents`` reaches back into this
     # package at import time, so a module-level import would close the cycle.
     from kiro_crew.dashboard.handlers.agents import _roster_avatar, _roster_mask
+    from kiro_crew.mate_worker import is_legacy_binding
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
-        if not _member_name_is_addressable(name):
+        if not _member_name_is_addressable(name) or is_legacy_binding(name, agent_cfg):
             continue
         try:
             slug = members_mod.member_slug(name, cfg)

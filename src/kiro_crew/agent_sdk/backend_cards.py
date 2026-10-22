@@ -360,6 +360,13 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_MATE_WORKER_KIT": (
+        "whether a crewmate's worker may run here with its kit. A worker always runs "
+        "on its crewmate's backend, so the choice it depends on is the member "
+        "backend, and a non-member refuses the hand-off with an error that names "
+        "the backends that can carry it. Nothing runs without its kit, so a card "
+        "line would describe a refusal the user meets with its own remedy"
+    ),
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": (
         "which backend's process answers session starts and mode switches one at a "
         "time. It decides only what a timed-out start's error says about the "

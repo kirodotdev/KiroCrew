@@ -138,6 +138,7 @@ def agent_skill_globs(
     project_dir: str | Path | None = None,
     strict: bool = False,
     inherit_defaults: bool = False,
+    session_key: str = "",
 ) -> list[str]:
     """Return fnmatch globs for the skills mapped to *agent*, or ``[]``.
 
@@ -150,9 +151,28 @@ def agent_skill_globs(
     spec resolves with no ``skill://`` entry then gets
     :func:`inherited_skill_globs` rather than ``[]``.
     Resolved from the :func:`parsed_agent_specs` snapshot when no project is supplied.
+    The crewmate conductor and worker resolve from the crewmate folder; *session_key*
+    names the worker's crewmate (``mate_worker.mate_service_scope_spec``).
     """
     if not agent:
         return []
+    from kiro_crew.mate_worker import mate_service_scope_spec
+
+    mate = mate_service_scope_spec(agent, session_key) if agents_dir is None else None
+    if mate is not None:
+        data, path = mate
+        if data is None:
+            if strict:
+                raise SkillScopeResolutionError(f"Cannot read skill scope for agent {agent!r}")
+            return []
+        globs = [
+            g
+            for uri in skill_resource_uris(data)
+            if (g := expand_skill_uri(uri, path, project_dir=project_dir))
+        ]
+        if not globs and inherit_defaults and can_inherit_skills(data):
+            return inherited_skill_globs(project_dir)
+        return globs
     if project_dir:
         rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
         winner = next((row for row in rows if row.name == agent), None)
@@ -248,7 +268,11 @@ def session_skill_globs(
         pinned
         if pinned is not None
         else agent_skill_globs(
-            template, project_dir=project_dir, strict=True, inherit_defaults=inherit
+            template,
+            project_dir=project_dir,
+            strict=True,
+            inherit_defaults=inherit,
+            session_key=session_key,
         )
     )
     return None if template == "kirocrew" and not mapped else mapped

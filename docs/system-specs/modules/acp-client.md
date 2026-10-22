@@ -2692,7 +2692,8 @@ reference is withheld, because the KAS environment also holds credentials such a
 the CLI's `KIRO_API_KEY`.
 
 The provider factory selects `agent.member_acp_backend` for member-DM session
-keys and the configured default backend otherwise. Ordinary backend governance,
+keys and the configured default backend otherwise; a stored `kiro` in the member
+field has already been read as KAS by the config loader. Ordinary backend governance,
 selectability, member-capability checks and host sandbox rules remain independent
 requirements; memory version adds no direct-MCP refusal.
 

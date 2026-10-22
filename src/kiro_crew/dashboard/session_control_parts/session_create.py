@@ -317,6 +317,21 @@ async def create_session(
     # what keeps a credential-shaped string out of storage and out of the sidebar.
     # An inherited caller agent is already internal, but running both through the
     # same call keeps the guard on the field rather than on one of its sources.
+    # A crewmate's own chat runs on the conductor, and what it hands off runs on
+    # its WORKER, whatever agent the model names: the gateway knows the caller
+    # from its attested execution record, so the choice is not the prompt's to
+    # make. The child is the worker template on the crewmate's own workspace and
+    # store (the template arm below), stated as a template so a crew member that
+    # happens to carry the name cannot shadow it. Naming another crewmate is the
+    # one exception (see `_hands_off_to_own_worker`); it keeps its own
+    # resolution, which refuses a peer bound elsewhere.
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    own_worker = agent_kind in ("", "template") and await asyncio.to_thread(
+        _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
+    )
+    if own_worker:
+        agent, agent_kind = MATE_WORKER_AGENT, "template"
     agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
     # The selection namespace, validated HERE and not left to the HTTP route or
     # the MCP schema: `create_session` is also reached in-process, and a kind
@@ -530,10 +545,21 @@ async def create_session(
     # removes. The child then starts on the default, and the SEL record says
     # so. An explicit pin is the caller's own and stays a refusal.
     inherited_model_dropped = ""
-    model_reason = _model_pin_refusal(model_name, cfg) if model_name else None
+    # The harness the child runs on: a crewmate's own worker runs on its
+    # crewmate's backend (``members.select_provider_backend``), every other child
+    # on the configured default. A worker on a backend that cannot carry its kit
+    # is refused here, before anything is allocated.
+    from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+
+    child_backend = crewmate_worker_backend(cfg.agent) if own_worker else cfg.agent.acp_backend
+    if own_worker:
+        backend_reason = worker_kit_backend_refusal(child_backend)
+        if backend_reason is not None:
+            raise SessionControlError(backend_reason, code="worker_kit_harness_unsupported")
+    model_reason = _model_pin_refusal(model_name, child_backend) if model_name else None
     if model_reason is None and "model" in inherited_fields:
         model_reason = _inherited_pin_foreign_to_child(
-            model_name, cfg, validated_for_worker=model_from_worker_pin
+            model_name, cfg, child_backend, validated_for_worker=model_from_worker_pin
         )
     if model_reason is not None:
         if "model" not in inherited_fields:
@@ -1056,10 +1082,19 @@ async def create_session(
         # Not persisted at birth, matching every other slot: trust is in-memory by
         # construction, so a restart returns the child to interactive along with
         # its creator.
-        inherited_trust = bool(getattr(live_caller, "_trust", False))
-        inherited_trust_reads = bool(getattr(live_caller, "_trust_reads", False))
-        slot._trust = inherited_trust
-        slot._trust_reads = inherited_trust_reads
+        #
+        # A crewmate's own worker is the exception: it takes the crewmate's
+        # Profile Permissions from the crew record (`crewmate_approval`), the
+        # same mode it is given again at every restore, so the worker runs the
+        # same way whether it was just opened or brought back after a restart.
+        from kiro_crew.dashboard.crewmate_approval import seed_for_turn
+
+        slot._trust = slot._trust_reads = False
+        if not (own_worker and seed_for_turn(state, slot, cfg, child_execution)):
+            slot._trust = bool(getattr(live_caller, "_trust", False))
+            slot._trust_reads = bool(getattr(live_caller, "_trust_reads", False))
+        inherited_trust = bool(slot._trust)
+        inherited_trust_reads = bool(slot._trust_reads)
         # The agent's memory silo, from the bindings already resolved above. Held
         # on the slot so every later save can name it: `memory_store` is
         # slot-owned metadata, so a save that could not read it would drop the
@@ -1148,6 +1183,12 @@ async def create_session(
             # not from any record the child or its caller can write, so this is one
             # of the few publications entitled to vouch.
             bind_session_execution(session_key, child_execution, vouch=True)
+            if own_worker:
+                # Before its first turn allocates: the worker runs on the
+                # crewmate's backend (``members.select_provider_backend``).
+                from kiro_crew.mate_worker import note_worker_session
+
+                note_worker_session(session_key, child_execution)
             log.update_metadata(session_key, metadata)
             birth_persisted = True
 
@@ -1346,12 +1387,12 @@ async def create_session(
     }
 
 
-def _model_pin_refusal(model_name: str, cfg: KiroCrewConfig) -> str | None:
+def _model_pin_refusal(model_name: str, backend: str) -> str | None:
     """Why ``model_name`` may not be pinned on a new session, or ``None`` to allow it.
 
     The same guard the dashboard's model picker runs (``_model_rejected_reason``),
-    against the backend from the config snapshot the create already loaded, so an
-    id the picker would refuse is refused here too. Length and charset are bounded
+    against *backend*, the harness the child runs on, so an id the picker would
+    refuse is refused here too. Length and charset are bounded
     HERE, not left to the MCP schema: ``SESSION_CREATE_SCHEMA`` runs only in
     ``mcp_dashboard``, and the HTTP route forwards the body's model string as-is,
     so without this bound an internal-secret caller could persist, broadcast and
@@ -1367,21 +1408,21 @@ def _model_pin_refusal(model_name: str, cfg: KiroCrewConfig) -> str | None:
     # module is imported by the dashboard package before chat_handlers loads.
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
-    # A created child is never a member DM, so it runs on ``agent.acp_backend``.
-    return _model_rejected_reason(model_name, cfg.agent.acp_backend or "")
+    return _model_rejected_reason(model_name, backend or "")
 
 
 def _inherited_pin_foreign_to_child(
-    model_name: str, cfg: KiroCrewConfig, *, validated_for_worker: bool
+    model_name: str, cfg: KiroCrewConfig, child_backend: str, *, validated_for_worker: bool
 ) -> str | None:
     """Why a crewmate's model pin cannot follow its worker onto the child's harness, or ``None``.
 
     A crewmate's own thread runs on ``agent.member_acp_backend`` and its own
     ``model`` was validated against THAT harness's catalog
     (``_pin_entitlement_backend``). A child that inherits is never a crewmate
-    itself, so it runs on ``agent.acp_backend`` -- the backend
-    ``select_provider_backend`` picks for a non-member key -- and an id one
-    harness serves is refused on the wire by the other. Two reads, both keyed on
+    itself: it runs on *child_backend* -- the crewmate's own backend for its
+    worker, ``agent.acp_backend`` for any other child, as
+    ``select_provider_backend`` picks them -- and an id one harness serves is
+    refused on the wire by the other. Two reads, both keyed on
     the child's backend: the two harnesses disagree on model-id namespace (a
     claude or codex member pin cannot ride a kiro worker, and vice versa), or the
     child's namespace has advertised a list the pin is not on while another
@@ -1390,20 +1431,20 @@ def _inherited_pin_foreign_to_child(
 
     ``validated_for_worker`` names the profile's explicit ``worker_model``,
     which ``PUT /api/agents/{name}`` validates against the WORKER's harness
-    (``agent.acp_backend``), so the namespace read does not apply to it -- the
+    (``mate_worker.crewmate_worker_backend``), so the namespace read does not apply to it -- the
     person pinned it for exactly this harness -- and only the advertised-list
     read remains. Only consulted for an INHERITED pin: an explicit model on the
     call is the caller's own choice and keeps today's guard alone.
     """
     if model_name == DEFAULT_MODEL:
         return None
-    child_namespace = capabilities_for(cfg.agent.acp_backend).model_id_namespace
+    child_namespace = capabilities_for(child_backend).model_id_namespace
     member_namespace = capabilities_for(cfg.agent.member_acp_backend).model_id_namespace
     if not validated_for_worker and child_namespace != member_namespace:
         return (
             "the crewmate's model pin was chosen for its own harness "
             f"({cfg.agent.member_acp_backend or 'default'}), and the worker runs on "
-            f"{cfg.agent.acp_backend or 'the default backend'}"
+            f"{child_backend or 'the default backend'}"
         )
     if not model_scope.pin_applies(model_name, child_namespace):
         return "the crewmate's model pin is not served by the harness the worker runs on"
@@ -1442,12 +1483,64 @@ def _dispatching_crewmate(
         # An id-less member's template worker keeps the member's selection
         # (the record cannot say "this member, under that template"), so the
         # template is the only thing that tells the worker from the crewmate:
-        # a record running under another template is such a worker.
-        if record is None or caller_execution.template_id != member_template_id(record):
+        # a record running under another template is such a worker. Read through
+        # the chat rule, so a record naming the crewmate's own file is the
+        # conductor it chats on.
+        from kiro_crew.mate_worker import member_chat_template
+
+        if record is None or member_chat_template(
+            caller_execution.template_id
+        ) != member_template_id(record):
             return None
         return record
     agent_name = getattr(caller_slot, "agent", "") or ""
     return cfg.agents.get(agent_name) if agent_name else None
+
+
+def _conducts_for_a_worker(caller_slot: Any, caller_execution: ExecutionContext | None) -> bool:
+    """Whether the caller is a crewmate's own chat running on the mate conductor.
+
+    That chat hands its work to the crewmate's worker (``kiro_crew.mate_worker``).
+    Read from the caller's protected execution record through
+    :func:`_dispatching_crewmate`, so a worker the crewmate already opened (a
+    template selection) is not a conductor and its own children keep today's
+    inheritance. Blocking config read; callers run it off the loop. Any failure
+    answers False, which keeps the plain inheritance.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    try:
+        cfg = KiroCrewConfig.load()
+        crewmate = _dispatching_crewmate(cfg, caller_slot, caller_execution)
+        return crewmate is not None and member_template_id(crewmate) == MATE_CONDUCTOR_AGENT
+    except Exception:  # noqa: BLE001 - "not a conductor" is the conservative answer
+        return False
+
+
+def _hands_off_to_own_worker(
+    caller_slot: Any, caller_execution: ExecutionContext | None, requested: str, agent_kind: str
+) -> bool:
+    """Whether this ``session_create`` opens the calling crewmate's own worker.
+
+    True for every request from a crewmate's conductor chat except one that
+    selects ANOTHER crewmate by name (a name-first request naming a
+    ``config.agents`` row that is not the caller's own): that keeps its own
+    resolution, so a peer bound elsewhere stays refused. Everything else -- no
+    agent, the worker, the stock worker, the crewmate's own name, any template,
+    a name nothing resolves -- is the crewmate's worker. False for every caller
+    that is not a conductor. Blocking config read; callers run it off the loop.
+    """
+    if not _conducts_for_a_worker(caller_slot, caller_execution):
+        return False
+    if agent_kind == "template" or not requested:
+        return True
+    try:
+        cfg = KiroCrewConfig.load()
+        own = _dispatching_crewmate(cfg, caller_slot, caller_execution)
+    except Exception:  # noqa: BLE001 - unreadable config: keep the named resolution
+        return False
+    named = cfg.agents.get(requested)
+    return named is None or named is own
 
 
 def _caller_member_workspace(

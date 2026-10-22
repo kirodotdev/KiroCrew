@@ -367,6 +367,10 @@ async def send_to_target(
     from kiro_crew.dashboard import session_deliver
 
     caller_key = caller_slot_key(state, caller_session_key)
+    if caller_key and getattr(slot, "_created_by", "") == caller_key:
+        # The live witness that this child's creator still drives it, so its
+        # turn ends may report back (``dashboard.mate_thread_wakes``).
+        slot._reports_to_creator = True
     # Sanitized on the same grounds as the steer path (``chat_delivery`` sanitizes
     # before ``slot.append``): this body comes from ANOTHER session and is persisted
     # into — and broadcast from — the target's transcript, so raw content must never

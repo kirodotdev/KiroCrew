@@ -21,7 +21,7 @@
  * again.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, cleanup } from '@testing-library/react'
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 
@@ -97,9 +97,10 @@ describe('NewCrewmateDialog opened from KiroCrewAgentsPage', () => {
     // The Crewmates page's own roster leaf, seeded so this test can see whether
     // that door is still served too: the fix adds a reader, it does not swap one.
     queryClient.setQueryData(MEMBERS_ROSTER_QUERY_KEY, [])
-    // The config the editor and the Crewmates page read, seeded for the same
-    // reason: this page no longer reads it itself until a crewmate is edited.
-    queryClient.setQueryData(['kirocrewConfig'], { memory_stores: {} })
+    // This page reads the config itself (the roster's memory labels), so an
+    // invalidation of it shows as a re-read rather than as a stale entry.
+    await waitFor(() => expect(mockApi.kirocrewConfig).toHaveBeenCalled())
+    const configReads = mockApi.kirocrewConfig.mock.calls.length
     expect(mockApi.kirocrewAgents).toHaveBeenCalledTimes(1)
 
     // No answer at all (a dropped connection), and the reconcile read then finds
@@ -119,7 +120,7 @@ describe('NewCrewmateDialog opened from KiroCrewAgentsPage', () => {
     // invalidated too: the reconcile must refresh the identical pair the success
     // path does, or a committed-but-lost create stays absent from the editor's
     // memory section until a manual reload.
-    expect(queryClient.getQueryState(['kirocrewConfig'])?.isInvalidated).toBe(true)
+    await waitFor(() => expect(mockApi.kirocrewConfig.mock.calls.length).toBeGreaterThan(configReads))
   })
 
   it('refreshes this page\'s roster when a dropped create cannot be reconciled at all', async () => {

@@ -67,6 +67,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
@@ -289,6 +290,26 @@ def test_member_capabilities_are_opt_in() -> None:
     assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset({ACP_BACKEND_KIRO})
 
 
+def test_the_mate_worker_kit_is_opt_in() -> None:
+    """H6: a crewmate's worker runs with its kit only on a backend that opted in.
+
+    Both providers answer by membership, and the allocation refuses a worker on
+    any other backend before spawn, so no harness inherits "runs the worker" from
+    a set it was never added to and none runs the worker on its bare base.
+    """
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.session_allocation_parts import get_or_create
+
+    for provider in (providers_acp.AcpProvider, AcpSessionProvider):
+        source = inspect.getsource(provider.mate_worker_kit_supported.fget)
+        assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
+    assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset({ACP_BACKEND_KAS})
+    allocation = inspect.getsource(get_or_create)
+    assert "is_crewmate_worker_session(key)" in allocation
+    assert "provider.mate_worker_kit_supported is not True" in allocation
+    assert 'CapabilityStartupError("worker_kit_harness_unsupported")' in allocation
+
+
 def test_steer_is_opt_in() -> None:
     """H6: the ``_session/steer`` extension is claimed by membership."""
     source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
@@ -426,6 +447,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("selectable_backends()", selectable_backends()),
         ("ACP_BACKENDS_MEMBER_CAPABILITIES", ACP_BACKENDS_MEMBER_CAPABILITIES),
         ("ACP_BACKENDS_MEMBER_TOOL_LIMITS", ACP_BACKENDS_MEMBER_TOOL_LIMITS),
+        ("ACP_BACKENDS_MATE_WORKER_KIT", ACP_BACKENDS_MATE_WORKER_KIT),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
         ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", ACP_BACKENDS_STEER_CONCURRENT_PROMPT),

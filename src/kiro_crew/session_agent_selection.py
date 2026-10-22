@@ -123,6 +123,12 @@ def resolve_session_agent_bindings(
     from the stamp alone.
     """
     execution = read_session_execution(session_key)
+    # A crewmate's worker runs on its crewmate's backend: publishing the key here,
+    # on the read every turn and resume prefetch makes before allocating, is what
+    # the backend selection then reads (``members.select_provider_backend``).
+    from kiro_crew.mate_worker import note_worker_session
+
+    note_worker_session(session_key, execution)
     # No name and no record is the default TEMPLATE, not the default crewmate
     # alias: the resolver answers an empty name with that session.
     selected = agent_name or ""

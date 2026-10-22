@@ -1393,6 +1393,40 @@ def project_agents_dir(project_dir: str | Path) -> Path:
     return Path(project_dir) / ".kiro" / "agents"
 
 
+#: A replacement resolver for :func:`mate_agents_dir`, ``None`` = live. The same
+#: shape as :data:`_agents_dir_override`, read inside the body for the same reason;
+#: the test floor installs one so no test reaches the operator's real crewmate
+#: folder, which holds the generated mate conductor and worker specs too.
+_mate_agents_dir_override: Callable[[], Path] | None = None
+
+
+def mate_agents_dir() -> Path:
+    """The Crew-owned crewmate custom-agent folder (``<kiro home>/mates/agents``).
+
+    ``rfc-mate-owned-agent-config``: a crewmate's own file, in the
+    :func:`kiro_agents_dir` format, and the mate conductor and worker specs live
+    here, a sibling of that folder that resolution reads and the agent picker
+    does not. Outside the data home and its sandbox keystone on purpose: only
+    unsandboxed gateway handlers write it, sessions get it as a projected KAS
+    payload, and the ceiling re-applies at projection. Honours ``KIRO_HOME`` and
+    :data:`_mate_agents_dir_override`.
+    """
+    if _mate_agents_dir_override is not None:
+        return _mate_agents_dir_override()
+    return kiro_home() / "mates" / "agents"
+
+
+def spec_dir_for(name: object, agents_dir: Path | None = None) -> Path:
+    """The folder a by-name read of *name*'s spec uses: this folder for the mate
+    conductor and worker, which Crew writes here, else *agents_dir* (default: the
+    user level). The one resolver every by-name spec reader shares."""
+    from kiro_crew.agent_files import is_mate_service_agent
+
+    if is_mate_service_agent(name):
+        return mate_agents_dir()
+    return agents_dir if agents_dir is not None else kiro_agents_dir()
+
+
 def project_kiro_dir(project_dir: str | Path) -> Path:
     """The ``<project>/.kiro`` directory itself, which also holds agent specs.
 

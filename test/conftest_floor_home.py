@@ -876,6 +876,24 @@ def _isolate_agent_spec_home(_agent_spec_seam_modules, _isolation_dirs, _floor_m
             monkeypatch.setattr(mod, attr, root, raising=False)
     if paths is not None:
         monkeypatch.setattr(paths, "_agents_dir_override", _pinned_agents_dir)
+        # The crewmate folder (``<kiro home>/mates/agents``) is the same lazy shape
+        # and now holds the generated mate conductor and worker specs, so it is
+        # pinned beside the agents dir. A test that places it itself -- by
+        # patching ``kiro_home``, setting ``KIRO_HOME`` or redirecting the home --
+        # is followed, exactly as above.
+        mates_root = _isolation_dirs("kiro-mates") / "agents"
+        real_kiro_home = paths.kiro_home
+
+        def _pinned_mates_dir() -> pathlib.Path:
+            if (
+                paths.kiro_home is not real_kiro_home
+                or os.environ.get("KIRO_HOME")
+                or pathlib.Path.home() != _REAL_USER_HOME
+            ):
+                return paths.kiro_home() / "mates" / "agents"
+            return mates_root
+
+        monkeypatch.setattr(paths, "_mate_agents_dir_override", _pinned_mates_dir, raising=False)
     return paths.ambient_agents_dir if paths is not None else None
 
 

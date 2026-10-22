@@ -117,10 +117,6 @@ export interface TranscriptRendererOptions {
   onFolderOpen?: (path: string) => void
   /** "Show in side panel" on a sub-agent completion card. Same #3300 blocker. */
   onOpenSubagentPanel?: (parsed: ParsedSubagentCompletion) => void
-  /** How this host opens its Subagents view, for the `spawn_run` launch card.
-   *  Unset on the chat page (the card drives the chat store itself); the
-   *  Members page passes its own panel's opener. */
-  onOpenSubagents?: () => void
   /** Expanded-state map for tool rows, held ABOVE the row: a virtualised or
    *  remounted transcript unmounts the row and would otherwise forget it. */
   toolDisclosure?: Record<string, boolean>
@@ -424,7 +420,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => {
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
-        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} onOpenPanel={o.onOpenSubagents} />, true)
+        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} />, true)
       },
     },
     {

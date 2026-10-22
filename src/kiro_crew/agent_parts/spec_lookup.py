@@ -129,7 +129,10 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     """
     if not is_registered_agent_name(name):
         return None
-    agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
+    if agents_dir is None:
+        from kiro_crew.config.paths import spec_dir_for
+
+        agents_dir = spec_dir_for(name, kiro_agents_dir_path())
     if not agents_dir.is_dir():
         return None
 

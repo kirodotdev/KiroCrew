@@ -670,13 +670,15 @@ async def _get_or_create_impl(
         pool_decision = "bypass_resume"
     elif is_stateless:
         pool_decision = "bypass_stateless"
-    elif self._is_member_key(key):
+    elif self._is_member_key(key) or _is_crewmate_worker_key(key):
         # A pooled child was spawned with no session key, so it runs the
         # factory's DEFAULT backend and none of the member construction
         # route (per-session dispatch-tool mount, member backend). A warm
         # hit would silently hand a member DM a session that cannot mount
         # its tools; cold-starting through the factory is what makes the
-        # member route real. String check — as cheap as the arms above.
+        # member route real. String check — as cheap as the arms above. A
+        # crewmate's own worker takes the member backend too, so it bypasses
+        # for the same reason (an in-memory set lookup).
         pool_decision = "bypass_member"
     elif app_launch_agent:
         # A pooled child was spawned as the pool's agent, never as this copy.
@@ -950,6 +952,18 @@ async def _get_or_create_impl(
                     if provider.process_instance:
                         raise CapabilityStartupError("capability_runtime_not_fresh")
                     await asyncio.to_thread(verify_saved, preparation, provider.cwd)
+                # A crewmate's worker runs with its kit, or not at all: a backend
+                # that cannot carry the per-session spec would run the bare on-disk
+                # base with the crewmate's switched-off tools back (H6 opt-in).
+                from kiro_crew.members import is_crewmate_worker_session
+
+                if (
+                    is_crewmate_worker_session(key)
+                    and provider.mate_worker_kit_supported is not True
+                ):
+                    from kiro_crew.session_capabilities import CapabilityStartupError
+
+                    raise CapabilityStartupError("worker_kit_harness_unsupported")
                 # The key may have been fenced while this call waited for the
                 # semaphore or the reads above: refuse before a process is
                 # spawned that the registration door would only refuse later.
@@ -1259,3 +1273,10 @@ async def _get_or_create_impl(
         )
 
     return result
+
+
+def _is_crewmate_worker_key(key: str) -> bool:
+    """Whether *key* is a crewmate's own worker session (``members.is_crewmate_worker_session``)."""
+    from kiro_crew.members import is_crewmate_worker_session
+
+    return is_crewmate_worker_session(key)
