@@ -188,6 +188,41 @@ async def test_the_reaper_alerts_a_reaped_run_on_the_terms_it_counts_it(
 
 
 @pytest.mark.asyncio
+async def test_a_reload_during_the_run_does_not_count_or_alert_a_recorded_failure_again(
+    tmp_path,
+) -> None:
+    """The run recorded its own failure (and its handler alerted it), then hung past the
+    reaper deadline while the store was reloaded. ``failure_recorded`` is runtime-only, so
+    the registry's reloaded copy reads ``False``; the reaper must read the run's own object
+    (``_RunClaim.job``), or one failed run is alerted twice and counted twice toward
+    auto-pause."""
+    svc = CronService(base_dir=None, on_job=AsyncMock())
+    svc._history = CronHistoryStore(base_dir=tmp_path)
+    svc._sessions = _mock_sessions()
+    alert = AsyncMock()
+    svc.set_timeout_alert(alert)
+    ran = _make_job("reap1")
+    ran.failure_recorded = True
+    reloaded = _make_job("reap1")
+    svc._jobs = [reloaded]
+    claim = svc._claims["reap1"] = _RunClaim(
+        trigger="scheduled",
+        claimed_at=time.time() - _JOB_TIMEOUT_SECS - 10,
+        task=_live_task(),
+        started_monotonic=time.monotonic() - _JOB_TIMEOUT_SECS - 10,
+        job=ran,
+    )
+
+    with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+        await svc._force_reap("reap1", _JOB_TIMEOUT_SECS + 10, claim=claim)
+    await _settle(svc)
+
+    assert reloaded.last_error.startswith("Reaped after ")
+    assert reloaded.consecutive_failures == 0
+    alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_the_gateway_wires_its_failure_alert_into_the_service() -> None:
     gw = _make_gw()
     svc = MagicMock()

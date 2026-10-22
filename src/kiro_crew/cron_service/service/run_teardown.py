@@ -294,11 +294,13 @@ async def _force_reap(
             if park_one_shot:
                 job.enabled = False
             # A reaped run that started counts toward auto-pause, like the
-            # wait_for timeout arm; one that never started does not. The same
-            # test decides whether the user is told (below).
+            # wait_for timeout arm; one that never started, or whose failure
+            # was already counted (and alerted), does not. The same test
+            # decides whether the user is told (below). Both markers are
+            # runtime-only, so they are read off ``ran``, never ``job``.
             counted = (
                 taken.started_monotonic is not None
-                and not job.failure_recorded
+                and not ran.failure_recorded
                 and not ran.run_never_started
             )
             try:
