@@ -513,6 +513,24 @@ describe('InstanceTabBar', () => {
     expect(within(notice).getByText('registry unavailable').className).toMatch(/\btb-crew-notice-msg\b/)
   })
 
+  it('surfaces a crew-list read failure in the navigation rail, where it is the only switcher', async () => {
+    // Regression for the GPT blocker: the 58px navigation rail is the ONLY
+    // switcher on desktop (App renders the inline variant for mobile only), so
+    // suppressing the notice here left a failed /api/instances read looking like
+    // an empty crew list with no error and no hand-off. errors-use-error-notice
+    // forbids hiding the text behind a hover tooltip, an sr-only span OR an
+    // icon-only glyph you must open — so the rail shows the WHOLE message as
+    // always-on VISIBLE text (no hover/focus/click) with the keyboard-reachable
+    // agent hand-off.
+    const failure = 'registry unavailable: the crews service did not answer in time'
+    vi.mocked(api.listInstances).mockRejectedValue(new Error(failure))
+    renderWithProviders(<InstanceTabBar variant="navigation" />)
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    // Message is on screen immediately — no interaction to reveal it.
+    expect(within(notice).getByText(failure)).toBeVisible()
+    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+  })
+
   it('carries the full list-failure text as the message tooltip, since the flow bar can squeeze it to a few letters', async () => {
     // The clamp and the spare-room sizing together can leave only an ellipsis
     // (or nothing) of the message visible; the title keeps the whole sentence,
@@ -608,5 +626,95 @@ describe('clippedChipIds', () => {
 
   it('handles an empty row', () => {
     expect(clippedChipIds([], 300).size).toBe(0)
+  })
+})
+
+describe('InstanceTabBar — navigation (rail) variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    setCrewPins([])
+    setStableOrder(false)
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
+  })
+
+  it('renders the current-crew identity trigger even with NO remote crews (entry point to add the first)', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
+    renderWithProviders(<InstanceTabBar variant="navigation" />)
+    // The strip/inline variants render nothing with no remote crews; the rail
+    // identity must still be present so the first remote can be added.
+    expect(await screen.findByTestId('navigation-crew-switcher')).toBeInTheDocument()
+  })
+
+  it('shows the identity mark on the trigger and names a crew', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    const trigger = await screen.findByTestId('navigation-crew-switcher')
+    expect(within(trigger).getByTestId('crew-identity-mark')).toBeInTheDocument()
+    // The accessible name folds the active crew's name and the switch action.
+    expect(trigger).toHaveAccessibleName(/Switch crew/i)
+  })
+
+  it('hides the crew name (sr-only) when collapsed, keeping only the identity mark', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstanceTabBar variant="navigation" collapsed />, { store })
+    const trigger = await screen.findByTestId('navigation-crew-switcher')
+    // The identity mark is always present; whichever crew the trigger names,
+    // its text is rendered sr-only when the rail is collapsed.
+    expect(within(trigger).getByTestId('crew-identity-mark')).toBeInTheDocument()
+    const srName = trigger.querySelector('.sr-only')
+    expect(srName).not.toBeNull()
+  })
+
+  it('opens the destination menu from the identity trigger', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    await u.click(await screen.findByTestId('navigation-crew-switcher'))
+    expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: /Cloud One/i })).toBeInTheDocument()
+  })
+
+  it('closes the switcher menu on Escape instead of re-pinning it open', async () => {
+    // Regression for a GPT blocker: a close request (Escape) on a hover-opened
+    // menu fell into the !pinned branch of onOpenChange and RE-PINNED the menu
+    // open. The genuine-dismiss paths (onEscapeKeyDown / onInteractOutside) now
+    // route through dismissMenu, which actually closes it.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    await u.click(await screen.findByTestId('navigation-crew-switcher'))
+    expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+    await u.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('menuitemradio', { name: /Local/i })).toBeNull())
+  })
+
+  it('closes a hover-opened menu on a close request that is not the trigger', async () => {
+    // Regression for a GPT blocker: every onOpenChange(false) used to pin a
+    // hover-opened menu, so a close request from anywhere but the trigger (a
+    // Crew switch hiding the pane, picking a row) left the menu on screen. Only
+    // a press on the trigger itself may turn hover-open into pinned-open.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    await u.hover(await screen.findByTestId('navigation-crew-switcher'))
+    const local = await screen.findByRole('menuitemradio', { name: /Local/i })
+    await u.click(local)
+    await waitFor(() => expect(screen.queryByRole('menuitemradio', { name: /Cloud One/i })).toBeNull())
   })
 })

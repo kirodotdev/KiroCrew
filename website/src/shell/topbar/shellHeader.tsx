@@ -263,7 +263,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               <MobileNavGlyph avatar={avatar} />
             </button>
           )}
-          <InstanceTabBar variant="inline" />
+          {/* Mobile only: the inline top-bar switcher. On a wide layout the
+              crew identity IS the rail header (variant="navigation"), so a
+              second inline switcher here duplicated the same crew mark. The
+              rail header owns the identity on desktop; the top bar keeps the
+              inline switcher only on a narrow (non-single) layout, which has no
+              persistent rail header. */}
+          {isMobile && <InstanceTabBar variant="inline" />}
           </div>
         </div>
         )}

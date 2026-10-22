@@ -12,7 +12,7 @@ import { i18nT } from '../../i18n/t'
 import { forwardUiLocation } from '../../uiLocations/uiLocation'
 import type { UiLocationId } from '../../uiLocations/descriptors'
 import type { AppRunState } from '../../appRunState'
-import { useNavTip } from './navTip'
+import { useNavTip } from '../../hooks/useNavTip'
 
 function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
   if (count <= 0) return null

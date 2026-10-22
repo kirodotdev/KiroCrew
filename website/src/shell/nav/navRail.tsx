@@ -13,7 +13,9 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { isAppNavId } from '../../appNotificationBadges'
 import { NAV_ITEMS } from './navItems'
 import { isChatRoute } from './routeActive'
-import { RailBrandToggle, RailCommunityLinks } from './railChrome'
+import { RailCommunityLinks } from './railChrome'
+import InstanceTabBar from '../../components/InstanceTabBar'
+import { PinnedCrewRail } from '../../components/PinnedCrewRail'
 import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge } from './navRow'
@@ -27,13 +29,13 @@ import { hiddenChromeProps } from '../focus/focusChrome'
 export function ShellNavRail({ shell }: { shell: AppShell }) {
   const {
     updateAvailable, terminalEnabled, terminalPoppedOut, bottomTerminalOpen, mobileConnectOpen,
-    setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate, branding, botName, avatar,
+    setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate,
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
     appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry, devMode, devPageSeen,
-    setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
+    setReportProblemOpen, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
 
@@ -114,10 +116,18 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
-          <RailBrandToggle effectiveCollapsed={effectiveCollapsed} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />
-          {/* Hairline under the expanded header (collapsed rail has none —
-              the big logo alone separates well). */}
-          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
+          {/* The crew identity switcher IS the rail header — one identity that
+              names the crew and switches crews. The wide rail is permanently the
+              collapsed icon rail (hover hints are the only label), so there is no
+              expand/collapse toggle; the first nav item below is Sessions. */}
+          <div className="flex flex-col items-center">
+            <InstanceTabBar variant="navigation" collapsed={effectiveCollapsed} />
+          </div>
+          {/* Pinned crews as single-click switch tiles, in the rail under the crew
+              identity switcher. Vertical strip, fenced above and below by a
+              hairline so it reads as its own band between the app icon and the
+              primary nav rows. Renders nothing until a crew is pinned. */}
+          <PinnedCrewRail orientation="vertical" />
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section: the old single "Explore" header link split into two
               nav rows — Discover (the storefront, /apps) and Library
@@ -236,8 +246,10 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                     <SortableAppNavRow key={n.id} id={n.id}>{renderNavRow(n)}</SortableAppNavRow>
                   ))}
                 </SortableContext>
-                {/* Pulled-in active overflow row(s): static, non-draggable. */}
-                {pulledInRows.map(n => <div key={n.id} role="presentation">{renderNavRow(n)}</div>)}
+                {/* Pulled-in active overflow row(s): static, non-draggable.
+                    w-full so the inner NavItem centres in the compact rail (same
+                    reason as SortableAppNavRow's wrapper). */}
+                {pulledInRows.map(n => <div key={n.id} role="presentation" className="w-full min-w-0">{renderNavRow(n)}</div>)}
                 <DragOverlay>{activeApp ? renderNavRow(activeApp) : null}</DragOverlay>
               </DndContext>
               {/* Show the toggle whenever the list is collapsible, NOT only when
@@ -266,7 +278,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
           const devPath = '/developer'
           return (
-            <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
+            <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-1 pb-2">
               {devMode && (() => {
                 const dotClass = effectiveCollapsed
                   ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10 animate-pulse'
@@ -408,7 +420,8 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
         ) : (
           <nav
             ref={railPeekSurface}
-            className="focus-chrome-rail bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden"
+            data-compact={effectiveCollapsed ? 'true' : 'false'}
+            className="focus-chrome-rail dashboard-navigation flex flex-col mx-2 mt-0 mb-2 z-50 overflow-hidden"
             // Focus mode: same overlay treatment as the header. The rail's own
             // `mx-2` means translateX(-100%) would leave its 8px left margin
             // showing as a sliver, hence the extra 12px of travel. Width has to

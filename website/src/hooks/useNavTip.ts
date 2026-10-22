@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { useTouchReplay } from '../../hooks/useTouchReplay'
+import { useTouchReplay } from './useTouchReplay'
 
 /** Shared hover-label state for collapsed (icon-only) nav rows. The label is
  *  rendered through a portal anchored to the row's screen position rather than

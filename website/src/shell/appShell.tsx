@@ -349,12 +349,22 @@ export function useAppShell() {
       }
       const prior = navAutoCollapsed.current
       navAutoCollapsed.current = null
-      if (prior !== null) setNavCollapsed(prior)
+      // Wide (desktop) mode must never widen the rail on its own, so a
+      // preview-expand teardown restores the collapsed icon rail rather than a
+      // prior expanded state (which surfaced as the rail widening when the user
+      // clicked around and a Web Preview tore down). Narrow mode may restore the
+      // prior state as before.
+      if (prior !== null) setNavCollapsed(isMobileRef.current ? prior : true)
     }
     window.addEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
     return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
+  // Mirror isMobile into a ref so the preview-expand effect (mounted with []
+  // deps, before isMobile is declared) can read the current viewport mode
+  // without re-subscribing.
+  const isMobileRef = useRef(isMobile)
+  isMobileRef.current = isMobile
   const [sidePanelDock] = useSidePanelDock()
   // Side panel docked to the bottom (desktop only) swaps the shell from a
   // 3-column grid with a full-height right rail to a 2-column grid with an
@@ -368,7 +378,7 @@ export function useAppShell() {
   const {
     focusMode, toggleFocusMode, focusActive, topPeek, railPeek, topPeekTrigger, topPeekSurface,
     railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
-  } = useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topReservePx })
+  } = useFocusChrome({ isMobile, navCollapsed: isMobile ? navCollapsed : true, activeInstanceId, topReservePx })
   // Whether the shell's one-shot entrance animation has already played.
   //
   // The local pane is HIDDEN, not unmounted, while a remote instance tab is
@@ -671,7 +681,7 @@ export function useAppShell() {
   const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
-    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
+    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject, isMobile,
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry } = useKiroUsageReadout()
@@ -781,12 +791,9 @@ export function useAppShell() {
 
   const toggleNav = () => {
     if (isMobile) { if (mobileNavPhaseRef.current === 'open') closeMobileNavDrawer(); else openMobileNav() }
-    else {
-      // The user has taken ownership of the rail: leaving preview expand mode
-      // must not overwrite this with the pre-expand state.
-      navAutoCollapsed.current = null
-      setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
-    }
+    // Desktop: no-op. The rail is fixed-collapsed on desktop (the expandable
+    // rail is a mobile-only affordance), so the sidebar keyboard shortcut and
+    // any other toggleNav caller cannot widen it.
   }
   // Close mobile nav on route change
   useEffect(() => { if (isMobile) closeMobileNavDrawer() }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -802,9 +809,11 @@ export function useAppShell() {
   // Reset mobile nav state when leaving mobile viewport
   // Leaving mobile: drop the panel with no slide (no drawer exists on desktop).
   useEffect(() => { if (!isMobile) { setMobileNavPhase('closed'); takeOverDrawer(mobileNavX) } }, [isMobile, mobileNavX])
-  // Focus mode honours the collapse preference too: the overlay rail is as wide
-  // as the docked rail would be, and the collapse control toggles it the same way.
-  const effectiveCollapsed = navCollapsed && !isMobile
+  // The expandable rail is a MOBILE affordance only. On desktop the rail is
+  // always the collapsed icon rail (hover hints as its labels); it never widens,
+  // so a nav selection cannot also widen it. Mobile keeps its drawer rail, which
+  // navCollapsed/the drawer phase drive separately.
+  const effectiveCollapsed = !isMobile
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value

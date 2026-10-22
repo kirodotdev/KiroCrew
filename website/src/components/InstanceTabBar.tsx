@@ -25,16 +25,20 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Loader2, ChevronDown, Pin, Check } from 'lucide-react'
+import { Home, Loader2, ChevronDown, Pin, Plus, Check } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { api, type InstanceView } from '../api/client'
 import { isInstancesDisabledError } from '../utils/instancesDisabled'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
+import { isElectron } from '../lib/electron'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import { useGuardedLeave } from './NavigationLeaveGuard'
 import ErrorNotice from './ErrorNotice'
+import CrewIdentityMark from './CrewIdentityMark'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
 import {
@@ -49,6 +53,7 @@ import {
 
 import { i18nT } from '../i18n/t'
 import { postToHost } from '../lib/hostRelay'
+import { platformShortcut } from '../utils/platform'
 import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
  * Crews that get a switcher entry: sticky connect intent (`was_connected`,
@@ -187,7 +192,7 @@ const BADGE_MAX = 99
 
 // The radio group needs a non-empty value for the Local destination, whose id is
 // null; no crew id can collide with it (ids match ^[a-z0-9][a-z0-9-]{0,62}$).
-const LOCAL_VALUE = '__local__'
+export const LOCAL_VALUE = '__local__'
 
 // Persisted preference: when set, the switcher renders every crew as an
 // always-visible chip row instead of collapsing behind the dropdown. Power
@@ -379,7 +384,7 @@ function stateLabel(state?: string): string {
 }
 
 /** Map a live tunnel state to its status-dot color. */
-function stateDotCls(state?: string): string {
+export function stateDotCls(state?: string): string {
   return state === 'connected'
     ? 'bg-[var(--ok)]'
     : state === 'error'
@@ -479,6 +484,7 @@ function SwitcherRow({
   pinned,
   noRoom,
   onTogglePin,
+  shortcutIndex,
 }: {
   entry: SwitcherEntry
   onSelect: () => void
@@ -487,6 +493,9 @@ function SwitcherRow({
   /** Pinned, but the header cut its chip off — see `useClippedChipIds`. */
   noRoom: boolean
   onTogglePin: () => void
+  /** 1-based position for the ⌘/Ctrl+digit hint; omitted past the 9th row,
+   *  since `useInstanceShortcuts` only binds digits 1-9. */
+  shortcutIndex?: number
 }) {
   const isLocal = entry.id === null
   const id = entry.id ?? LOCAL_VALUE
@@ -534,24 +543,40 @@ function SwitcherRow({
             {'\u2514'}
           </span>
         ) : null}
-        {isLocal ? (
-          <Home className="lucide-inline shrink-0" />
-        ) : entry.connecting ? (
-          <Loader2 className="lucide-inline shrink-0 animate-spin" />
-        ) : (
-          <span
-            className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
-            aria-hidden
-          />
-        )}
+        {/* Slack-style leading mark: the crew's own identity icon (the colored
+            ghost, or the Kiro Crew mark for Local) at a compact size, so each row
+            is recognisable by its artwork the way the rail tiles are. The tunnel
+            state still rides the dot + state word to the right of the name. */}
+        <span className="shrink-0 flex items-center justify-center" aria-hidden>
+          {entry.connecting
+            ? <Loader2 className="lucide-inline shrink-0 animate-spin" />
+            : <CrewIdentityMark id={entry.id} size={22} />}
+        </span>
         <span className="flex flex-col min-w-0 flex-1">
-          <span className="truncate">{entry.name}</span>
+          <span className="flex items-center gap-1.5 min-w-0">
+            {!isLocal && !entry.connecting ? (
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
+                aria-hidden
+              />
+            ) : null}
+            <span className="truncate">{entry.name}</span>
+          </span>
           {/* A crew whose ssh alias IS its name would otherwise render the same
               word twice, which reads as a bug rather than as extra detail. */}
           {entry.detail && entry.detail !== entry.name ? (
             <span className="truncate text-[12px] text-muted">{entry.detail}</span>
           ) : null}
         </span>
+        {/* The ⌘/Ctrl+digit chord is Electron-only — a plain browser reserves it
+            for tab switching (see useInstanceShortcuts) — so the hint only shows
+            in the desktop app, where it is truthful. */}
+        {isElectron && typeof shortcutIndex === 'number' && shortcutIndex <= 9 ? (
+          <kbd
+            aria-hidden
+            className="shrink-0 ml-1 text-[11px] text-muted font-sans tabular-nums tracking-wide"
+          >{platformShortcut(`Cmd+${shortcutIndex}`)}</kbd>
+        ) : null}
         {entry.unread > 0 ? (
           <UnreadBadge
             count={entry.unread}
@@ -616,7 +641,8 @@ function SwitcherRow({
 
 // Outer container classes per variant. Inline is h-full so its 24px trigger sits
 // vertically centered in the 42px header.
-function barCls(variant: 'strip' | 'inline'): string {
+function barCls(variant: 'strip' | 'inline' | 'navigation'): string {
+  if (variant === 'navigation') return 'crew-navigation-bar flex flex-col min-w-0 w-full'
   return variant === 'inline'
     ? 'instance-tab-bar-inline flex items-center h-full gap-1 min-w-0'
     : 'topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]'
@@ -637,6 +663,8 @@ function SwitcherMenu({
   stableOrder,
   onToggleStableOrder,
   showStableOrderToggle,
+  navigation = false,
+  collapsed = false,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -647,8 +675,117 @@ function SwitcherMenu({
   stableOrder: boolean
   onToggleStableOrder: () => void
   showStableOrderToggle: boolean
+  /** Rail (nav) mode: the trigger shows the current crew's identity mark + name
+   *  and always opens the menu (so the first remote crew can be added), instead
+   *  of the compact 6x6 chevron. */
+  navigation?: boolean
+  /** Collapsed rail: show the identity mark only, name hidden to screen readers. */
+  collapsed?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  // Slack-style open: a CLICK pins the dropdown (sticky toggle), a HOVER opens it
+  // transiently. Open when either is true, so a click riding in on the opening
+  // hover PINS rather than toggling it shut.
+  const [menuPinned, setMenuPinned] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const open = menuPinned || hovered
+  const pinnedRef = useRef(false)
+  pinnedRef.current = menuPinned
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  // When a click DISMISSES the menu, the pointer is still over the trigger and a
+  // naive hover would instantly re-open it — the "can't toggle off" bug. Suppress
+  // hover-open until the pointer has actually left the trigger once.
+  const suppressHoverRef = useRef(false)
+  // Hover close is driven by the REAL pointer position, not mouseenter/leave on
+  // the trigger and the (portaled, animating, overlapping) content: those fire
+  // alternating enter/leave as the zoom-in animation scales the panel under a
+  // still pointer, which looped the open animation. While hover-open we watch
+  // document pointer moves and close once the pointer is OUTSIDE both rects.
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null }
+  }, [])
+  const hoverOpen = useCallback(() => {
+    if (suppressHoverRef.current) return
+    cancelClose()
+    setHovered(true)
+  }, [cancelClose])
+  useEffect(() => {
+    if (!hovered) return
+    const MARGIN = 8
+    const inside = (r: DOMRect | undefined, x: number, y: number) =>
+      !!r && x >= r.left - MARGIN && x <= r.right + MARGIN && y >= r.top - MARGIN && y <= r.bottom + MARGIN
+    const onMove = (e: PointerEvent) => {
+      if (pinnedRef.current) return // a click pinned it open; pointer never closes it
+      const t = triggerRef.current?.getBoundingClientRect()
+      const c = contentRef.current?.getBoundingClientRect()
+      if (inside(t, e.clientX, e.clientY) || inside(c, e.clientX, e.clientY)) { cancelClose() }
+      else if (!closeTimer.current) {
+        closeTimer.current = setTimeout(() => { closeTimer.current = null; setHovered(false) }, 90)
+      }
+    }
+    const onLeaveWindow = () => { if (!pinnedRef.current) setHovered(false) }
+    document.addEventListener('pointermove', onMove, true)
+    document.addEventListener('mouseleave', onLeaveWindow)
+    return () => {
+      document.removeEventListener('pointermove', onMove, true)
+      document.removeEventListener('mouseleave', onLeaveWindow)
+      cancelClose()
+    }
+  }, [hovered, cancelClose])
+  const navigate = useNavigate()
+  // Leaving to Settings while a prompt draft is unsaved must consult the leave
+  // guard, exactly as SettingsLink does — the "Add remote crew" item below
+  // navigates, so route it through the guard rather than discarding the draft.
+  const guardedLeave = useGuardedLeave()
+  // A real dismiss request: fully close, whether the menu was pinned or only
+  // hover-open, and suppress the resting pointer from immediately re-opening it.
+  const dismissMenu = useCallback(() => {
+    cancelClose()
+    setMenuPinned(false)
+    setHovered(false)
+    suppressHoverRef.current = true // pointer may still be on the trigger; don't re-open until it leaves
+  }, [cancelClose])
+  // Set while the TRIGGER itself is being activated (primary pointer press, or
+  // Enter/Space/ArrowDown), and cleared after that event. Radix toggles the menu
+  // synchronously inside the trigger's own handler, which runs after this one.
+  const triggerActivationRef = useRef(false)
+  const markTriggerActivation = useCallback(() => {
+    triggerActivationRef.current = true
+    setTimeout(() => { triggerActivationRef.current = false }, 0)
+  }, [])
+  // Radix drives this on trigger click/keyboard, Escape, outside-click, item
+  // select, and the shared close paths (a Crew switch hiding this pane, a file
+  // drag). Opening pins. A close that comes from activating the trigger while
+  // the menu is only hover-open pins instead, so that click does not flicker it
+  // shut. Every other close request really closes, hover-open or pinned: a close
+  // that pinned a hover-opened menu kept it on screen behind a Crew switch.
+  const onOpenChange = useCallback((next: boolean) => {
+    cancelClose()
+    // Not consumed here: one press can deliver more than one close request
+    // before the pin commits, and each must read as the trigger's.
+    const fromTrigger = triggerActivationRef.current
+    if (next || (fromTrigger && !pinnedRef.current)) { setMenuPinned(true); return }
+    dismissMenu()
+  }, [cancelClose, dismissMenu])
+  useEffect(() => () => cancelClose(), [cancelClose])
+  // Radix can restore :focus-visible after a pointer selection. In nav mode keep
+  // that focus but paint a focus cue only after real keyboard input.
+  const [keyboardInput, setKeyboardInput] = useState(false)
+  useEffect(() => {
+    if (!navigation) return
+    const onPointer = () => setKeyboardInput(false)
+    const onKey = (event: KeyboardEvent) => {
+      if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) setKeyboardInput(true)
+    }
+    document.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [navigation])
+  const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
   // Unread the user cannot see: everything that is neither the active pane nor a
   // chip currently on screen. A pinned crew whose chip got cut off counts, since
   // its badge went with it.
@@ -662,15 +799,38 @@ function SwitcherMenu({
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
       : i18nT('components.instanceTabBar.switch_crew')
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title={label}
-          aria-label={label}
-          className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted transition-colors hover:bg-bg-hover hover:text-text focus-ring"
+          ref={triggerRef}
+          onMouseEnter={navigation ? hoverOpen : undefined}
+          onMouseLeave={navigation ? () => { suppressHoverRef.current = false } : undefined}
+          onPointerDown={e => { if (e.button === 0 && !e.ctrlKey) markTriggerActivation() }}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') markTriggerActivation() }}
+          title={navigation && active ? `${active.title} — ${label}` : label}
+          aria-label={navigation && active ? `${active.name} — ${label}` : label}
+          // The navigation trigger's visible name and its title/aria-label are
+          // the crew's own display name + title — user data, not catalog copy —
+          // so mark the subtree opaque to the i18n render scan (the `label`
+          // suffix is already t()-sourced). Non-nav mode shows only `label`, so
+          // it stays scanned.
+          data-i18n-opaque={navigation && active ? '' : undefined}
+          data-testid={navigation ? 'navigation-crew-switcher' : undefined}
+          data-keyboard-focus={navigation && keyboardInput ? 'true' : undefined}
+          className={navigation
+            ? `relative flex items-center h-12 gap-2.5 min-w-0 border-0 bg-transparent text-text outline-none cursor-pointer data-[keyboard-focus=true]:focus-visible:bg-bg-hover ${collapsed ? 'justify-center w-full px-0' : 'justify-start w-full px-[11px]'}`
+            : 'relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted transition-colors hover:bg-bg-hover hover:text-text focus-ring'}
         >
-          <ChevronDown className="lucide-inline shrink-0" />
+          {navigation && active ? (
+            <>
+              <CrewIdentityMark id={active.id} />
+              <span className={collapsed ? 'sr-only' : 'truncate min-w-0 text-[13px] font-semibold'}>{active.name}</span>
+              {!collapsed && <ChevronDown size={12} className="shrink-0 text-muted ml-auto" />}
+            </>
+          ) : (
+            <ChevronDown className="lucide-inline shrink-0" />
+          )}
           {elsewhere > 0 ? (
             // Absolutely positioned so appearing cannot change the trigger's
             // width: the chip row is sized from the space this button leaves, so a
@@ -686,8 +846,13 @@ function SwitcherMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
+        ref={contentRef}
         aria-label={i18nT('components.instanceTabBar.instances')}
         className="min-w-[240px] max-w-[340px]"
+        onEscapeKeyDown={dismissMenu}
+        // A press on the trigger is the trigger's own toggle (onOpenChange decides
+        // pin vs close), not an outside dismissal of the menu it opened.
+        onInteractOutside={e => { if (!triggerRef.current?.contains(e.target as Node)) dismissMenu() }}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
           {entries.map((entry, i) => (
@@ -701,6 +866,7 @@ function SwitcherMenu({
                 pinned={pinned.has(entry.id ?? LOCAL_VALUE)}
                 noRoom={clippedPinned.has(entry.id ?? LOCAL_VALUE)}
                 onTogglePin={() => onTogglePin(entry.id ?? LOCAL_VALUE)}
+                shortcutIndex={i + 1}
               />
             </Fragment>
           ))}
@@ -737,6 +903,22 @@ function SwitcherMenu({
             </DropdownMenuItem>
           </>
         ) : null}
+        {/* Add a crew: a destination, not a crew to switch to, so it sits below
+            the list behind a separator with a +-tile leading mark that matches
+            the row rhythm. It opens the Remote crews settings panel (the real
+            connect/register flow); nothing provisions automatically. */}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          data-testid="crew-add-remote"
+          title={i18nT('components.instanceTabBar.add_remote_crew')}
+          aria-label={i18nT('components.instanceTabBar.add_remote_crew')}
+          onSelect={() => guardedLeave(() => navigate('/settings/instances'), '/settings/instances')}
+        >
+          <span className="shrink-0 flex items-center justify-center w-[22px] h-[22px] rounded-lg border border-dashed border-border text-muted" aria-hidden>
+            <Plus size={14} className="lucide-inline" />
+          </span>
+          <span className="flex-1 min-w-0 truncate">{i18nT('components.instanceTabBar.add_remote_crew')}</span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -1055,6 +1237,8 @@ function Switcher({
   stableOrder: stableOrderProp,
   onToggleStableOrder: onToggleStableOrderProp,
   embedded = false,
+  navigation = false,
+  collapsed = false,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -1083,6 +1267,11 @@ function Switcher({
    *  offers the same preference as the local bar. The flag only feeds the older-
    *  host safety net in the resolution above; it no longer hides the toggle. */
   embedded?: boolean
+  /** Rail (nav) mode: single identity-mark trigger that always opens the menu;
+   *  no always-visible chip row. */
+  navigation?: boolean
+  /** Collapsed rail: identity mark only. */
+  collapsed?: boolean
 }) {
   const [storePinned, storeTogglePin] = useCrewPins()
   const pinned = pinnedProp ?? storePinned
@@ -1122,6 +1311,28 @@ function Switcher({
   )
   const activeIsChip = chips.some(e => (e.id ?? null) === activeId)
   const showLeadingActive = !stableOrder || !activeIsChip
+  // Rail (nav) mode: a single full-width identity trigger that always opens the
+  // menu. No always-visible chip row — the rail is vertical and narrow, and the
+  // trigger IS the current-crew display.
+  if (navigation) {
+    return (
+      <div className="min-w-0 mb-3 w-full">
+        <SwitcherMenu
+          entries={entries}
+          activeId={activeId}
+          onSelect={onSelect}
+          pinned={pinned}
+          onTogglePin={togglePin}
+          clippedPinned={clippedPinned}
+          stableOrder={stableOrder}
+          onToggleStableOrder={toggleStableOrder}
+          showStableOrderToggle={!relayUnsupported}
+          navigation
+          collapsed={collapsed}
+        />
+      </div>
+    )
+  }
   return (
     // `tb-crew-grow` is a top-bar layout hook, on every wrapper between the
     // identity group and the pinned row: the desktop top bar (index.css,
@@ -1164,7 +1375,7 @@ function Switcher({
  * requests back up so the parent flips `activeId`. This is what collapses the
  * remote pane's two stacked bars into one consolidated header.
  */
-function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
+function EmbeddedInstanceTabBar({ variant, collapsed = false }: { variant: 'strip' | 'inline' | 'navigation'; collapsed?: boolean }) {
   const host = useAppSelector(s => s.instances.host)
   const onSelect = useCallback((id: string | null) => {
     postToHost({ type: 'mc-switch-instance', v: 1, id })
@@ -1237,6 +1448,8 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         onTogglePin={onTogglePin}
         stableOrder={hostStableOrder}
         onToggleStableOrder={onToggleStableOrder}
+        navigation={variant === 'navigation'}
+        collapsed={collapsed}
         embedded
       />
     </div>
@@ -1246,7 +1459,8 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
 export default function InstanceTabBar({
   variant = 'strip',
   style,
-}: { variant?: 'strip' | 'inline'; style?: CSSProperties } = {}) {
+  collapsed = false,
+}: { variant?: 'strip' | 'inline' | 'navigation'; style?: CSSProperties; collapsed?: boolean } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
   const unread = useAppSelector(s => s.instances.unread)
@@ -1333,7 +1547,7 @@ export default function InstanceTabBar({
   // Embedded panes render the parent-relayed switcher. Hooks above
   // still run unconditionally (rules-of-hooks); the instances poll is disabled
   // when embedded, so this is cheap.
-  if (embedded) return <EmbeddedInstanceTabBar variant={variant} />
+  if (embedded) return <EmbeddedInstanceTabBar variant={variant} collapsed={collapsed} />
 
   // Single-crew experience is unchanged: no bar until a remote crew is
   // connected or remembered — unless the list itself could not be read, in
@@ -1342,7 +1556,10 @@ export default function InstanceTabBar({
   const listFailure = !disabled && instancesQuery.error
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
-  if (disabled || (tabInstances.length === 0 && !listFailure)) return null
+  // The rail (navigation) identity ALWAYS renders: it is the current-crew
+  // display and the entry point for adding the first remote crew, so it must be
+  // present even with no remote crews and no list failure.
+  if (variant !== 'navigation' && (disabled || (tabInstances.length === 0 && !listFailure))) return null
 
   // Right-aligned tunnel-status cluster: the ACTIVE remote pane's connection
   // state + countdown to the next token auto-refresh. On the Local tab there is
@@ -1388,8 +1605,8 @@ export default function InstanceTabBar({
       role="group"
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
-      <div className={`tb-crew-grow flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} />
+      <div className={`tb-crew-grow flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''} ${variant === 'navigation' ? 'flex-col items-stretch' : ''}`}>
+        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} navigation={variant === 'navigation'} collapsed={collapsed} />
         {/* Only a 403 (feature gated) used to be interpreted; every other
             listInstances failure was dropped and the bar simply showed no
             crews. askAgent on: the bar holds no draft. */}
@@ -1401,7 +1618,16 @@ export default function InstanceTabBar({
             only part of it that can shrink, so the warning icon and the unwrapped
             hand-off stay whole while the clamped line can go down to a few
             letters; the tooltip carries the whole message. */}
-        {listFailure && (
+        {/* On desktop the rail is the ONLY switcher, so a failed crew-list read
+            must be SURFACED here or it looks like an empty list. `errors-use-error-notice`
+            forbids hiding the failure behind a hover tooltip, an sr-only span, OR
+            an icon-only glyph — so RailListError shows the message as always-on,
+            visible wrapping text with the keyboard-reachable Ask-the-agent hand-off,
+            no interaction needed. The 58px rail wraps it down several short lines. */}
+        {listFailure && variant === 'navigation' && (
+          <RailListError message={listFailure} />
+        )}
+        {listFailure && variant !== 'navigation' && (
           <ErrorNotice
             variant="inline"
             className="tb-crew-notice ml-2 min-w-0 max-w-[320px]"
@@ -1425,5 +1651,28 @@ export default function InstanceTabBar({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Crew-list read-failure surface for the 58px navigation rail. The failure is
+ * shown IMMEDIATELY as visible, wrapping text the moment the list read fails —
+ * no hover, focus, or click to reveal it. `errors-use-error-notice` forbids
+ * hiding a failure behind a hover tooltip, sr-only text, OR an icon-only glyph
+ * (`website/AUTOSDE.yaml:699-702`), so the message and the keyboard-reachable
+ * Ask-the-agent hand-off are always on screen. The rail is only 58px wide, so
+ * the block variant wraps its message down several short lines rather than
+ * clipping — a readable failure surface outranks the rail's narrowness.
+ */
+export function RailListError({ message }: { message: string }) {
+  return (
+    <ErrorNotice
+      variant="block"
+      className="mt-1 px-1.5 py-1 text-[11px]"
+      actionPlacement="below"
+      message={message}
+      askAgent
+      testId="instance-tab-bar-list-error"
+    />
   )
 }

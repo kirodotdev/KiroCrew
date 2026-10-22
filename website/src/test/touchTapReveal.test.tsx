@@ -13,7 +13,7 @@ import { useRef } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { useHoverIntent, HOVER_OPEN_MS } from '../hooks/useHoverIntent'
-import { useNavTip } from '../shell/nav/navTip'
+import { useNavTip } from '../hooks/useNavTip'
 import MarkdownOutlineRail from '../components/MarkdownToc'
 
 /** One finger tap, in the order a browser sends it: the touch pointer's own

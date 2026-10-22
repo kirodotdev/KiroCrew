@@ -59,7 +59,8 @@ test.describe('Active slot persistence across surface switches', () => {
     // pass. Settings is a always-present builtin, and leaving /chat and returning
     // still exercises the behaviour under test: the sidebar must restore the
     // selected slot instead of falling back to the first row.
-    await nav.getByText('Settings').click()
+    // The desktop rail is the fixed icon rail: find the row by its accessible name.
+    await nav.getByRole('button', { name: 'Settings', exact: true }).click()
     await page.waitForURL('**/settings**')
     // The address moves the moment the row is clicked; the chat page leaves the
     // screen only when that route transition commits (react-router wraps it in
@@ -69,7 +70,7 @@ test.describe('Active slot persistence across surface switches', () => {
     await expect(page.locator('.session-row')).toHaveCount(0, { timeout: 10000 })
 
     // Switch back to Sessions (the chat surface)
-    await nav.getByText('Sessions').click()
+    await nav.getByRole('button', { name: 'Sessions', exact: true }).click()
     await page.waitForURL('**/chat**')
     await expect(page.locator('.session-row').first()).toBeVisible({ timeout: 10000 })
 

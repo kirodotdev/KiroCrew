@@ -51,6 +51,16 @@ interface Props {
   expandFrom?: { x: number; y: number; w: number; h: number } | null
   /** Panel pixel height, for the vertical squash ratio. */
   contentH?: number
+  /** Dock the panel FLUSH into a surrounding surface instead of floating as a
+   *  rounded card. Two coupled effects, since they are one design intent (the
+   *  chrome-docked desktop sessions sidebar): the resting (full-open) clip
+   *  window squares off (radius 0 instead of the floating 12px), and the
+   *  wrapper's `pb-2` bottom breathing-room is dropped so the panel reaches the
+   *  container's bottom edge with no empty strip. The morph convergence clips
+   *  (`button`/`from`) keep their own radii, so only the settled shape changes.
+   *  Defaults false — every floating caller (the flyout, the mobile overlay)
+   *  keeps the rounded resting corner and the bottom pad. */
+  flush?: boolean
   className?: string
   children: React.ReactNode
 }
@@ -60,8 +70,10 @@ interface Props {
 const EASE = [0.32, 0.72, 0, 1] as const
 const DUR = 0.24
 
-export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, slideStyle, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
+export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, slideStyle, morph, morphTarget, expandFrom, contentH, flush = false, className, children }: Props) {
   const reduce = useReducedMotion()
+  // Flush-docked panels square their resting corner; floating ones keep 12px.
+  const restRadius = flush ? 0 : 12
   // Gesture end settles from the live presentation value via a critically
   // damped spring (no overshoot, no visible jump) — never a fixed ease tween.
   // Reduced motion: drop the spring for a short opacity-only settle.
@@ -94,7 +106,7 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
             // by the caller's uncovered-strip math, so a vertical inset merged
             // in here can never override the horizontal slide.
             style={{ ...slideStyle, width, x: slideX }}
-            className={`shrink-0 pb-2 overflow-hidden ${className || ''}`}
+            className={`shrink-0 ${flush ? '' : 'pb-2'} overflow-hidden ${className || ''}`}
           >
             {children}
           </motion.div>
@@ -111,7 +123,7 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
     `inset(${px(y)} ${px(width - x - w)} ${px(panelH - y - h)} ${px(x)} round ${px(r)})`
   const clips = morphable
     ? {
-        full: 'inset(0px 0px 0px 0px round 12px)',
+        full: `inset(0px 0px 0px 0px round ${px(restRadius)})`,
         button: insetFor(morphTarget.x, morphTarget.y, morphTarget.size, morphTarget.size, 6),
         // Radius matches the flyout's `rounded-xl`, so the corner curvature is
         // continuous across the handoff instead of stepping 12 -> 6 -> 12.
@@ -133,7 +145,7 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
                 ? { width: { duration: DUR, ease: EASE } }
                 : settle
           }
-          className={`shrink-0 pb-2 ${clips ? 'relative z-[60] overflow-visible' : 'overflow-hidden'} ${className || ''}`}
+          className={`shrink-0 ${flush ? '' : 'pb-2'} ${clips ? 'relative z-[60] overflow-visible' : 'overflow-hidden'} ${className || ''}`}
         >
           {clips ? (
             /* Fixed pixel width so the width collapse never reflows the

@@ -277,21 +277,18 @@ describe('App nav rail — rows declare and display their chord', () => {
     expect(screen.getByRole('button', { name: 'Artifacts' })).not.toHaveAttribute('aria-keyshortcuts')
   })
 
-  it('shows the display chord as decoration, located by row identity rather than by the value asserted', async () => {
+  it('does not render the visible chord badge on the fixed-collapsed desktop rail (it has no label line to host it)', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    await waitFor(() => expect(screen.getByTestId('nav-shortcut-chat')).toBeInTheDocument())
-    for (const { navId, display } of RAIL_ROWS) {
-      const badge = screen.getByTestId(`nav-shortcut-${navId}`)
-      expect(badge, `${navId} badge`).toHaveTextContent(display)
-      // Decoration, so it must not reach assistive tech — the row's
-      // aria-keyshortcuts is the single declaration.
-      expect(badge).toHaveAttribute('aria-hidden', 'true')
-      // Keycap DATA: the render-time i18n gate's own opaque marker, so the chord is
-      // never charged to the surrounding prose as an untranslated Latin run.
-      expect(badge).toHaveAttribute('data-i18n-opaque')
+    await waitFor(() => expect(screen.getByRole('button', { name: RAIL_ROWS[0].name })).toBeInTheDocument())
+    // The desktop rail is permanently collapsed (one framed chrome), so there is
+    // no expanded label line beside the glyph for a chord badge to ride. The
+    // visible decoration is therefore absent — but the chord stays DECLARED on
+    // the row via aria-keyshortcuts (asserted above) and reachable via the row's
+    // hover tooltip, so no accessibility guarantee is lost with the badge gone.
+    for (const { navId } of RAIL_ROWS) {
+      expect(screen.queryByTestId(`nav-shortcut-${navId}`), `${navId} badge absent on collapsed rail`).toBeNull()
     }
-    // COMPLEMENT: no chordless row grew a badge, so the hint is per-bound-route
-    // and not sprayed across the rail.
+    // COMPLEMENT: chordless rows never carried a badge either.
     expect(screen.queryByTestId('nav-shortcut-settings')).toBeNull()
     expect(screen.queryByTestId('nav-shortcut-artifacts')).toBeNull()
     expect(screen.queryByTestId('nav-shortcut-capabilities')).toBeNull()
@@ -299,25 +296,13 @@ describe('App nav rail — rows declare and display their chord', () => {
 
   it('keeps the chord out of the row accessible name', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    await waitFor(() => expect(screen.getByTestId('nav-shortcut-chat')).toBeInTheDocument())
-    // The badge is rendered (asserted above), so fetching each row by its EXACT
-    // name is the assertion: were the badge announced, the name would be
-    // "Sessions Alt + C" and these queries would fail.
+    await waitFor(() => expect(screen.getByRole('button', { name: RAIL_ROWS[0].name })).toBeInTheDocument())
+    // The chord is declared on aria-keyshortcuts, never baked into the name:
+    // fetching each row by its EXACT label is the assertion — were the chord in
+    // the name, it would read "Sessions Alt + C" and these queries would fail.
     for (const { name } of RAIL_ROWS) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument()
     }
-  })
-
-  it('reveals the badge on hover AND on keyboard focus, never on hover alone', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    await waitFor(() => expect(screen.getByTestId('nav-shortcut-chat')).toBeInTheDocument())
-    const cls = screen.getByTestId('nav-shortcut-chat').className
-    // The row already owns the `group/nav` seam and is tabIndex=0, so both
-    // variants resolve against the same ancestor. A hover-only hint would be
-    // unreachable without a pointer, which is the defect class #4120 was fixed
-    // for — so the focus-visible variant is the load-bearing half here.
-    expect(cls).toContain('group-hover/nav:opacity-100')
-    expect(cls).toContain('group-focus-visible/nav:opacity-100')
   })
 
   it('drops every hint when shortcuts are switched off', async () => {

@@ -46,7 +46,7 @@ const RAIL_BORDER_PX = 1
 /** Rail hover tilt: `group-hover:rotate-[-8deg]` on the glyph (RailHeaderGlyph). */
 const HOVER_ROTATE_DEG = -8
 /** Collapsed rail TRACK width, from useRailWidth (RAIL_W_COLLAPSED). */
-const RAIL_TRACK_COLLAPSED = 74
+const RAIL_TRACK_COLLAPSED = 60
 /** The rail card's horizontal margin: `mx-2` = 8px on EACH side. */
 const RAIL_MX_EACH_PX = 2 * STEP_PX
 

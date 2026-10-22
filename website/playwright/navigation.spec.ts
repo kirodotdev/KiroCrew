@@ -75,13 +75,15 @@ test.describe('Navigation E2E Tests', () => {
   })
 
   test('sidebar navigation persists across pages', async ({ page }) => {
-    // Navigation should be visible on Overview page - use sidebar locator
+    // Navigation should be visible on Overview page - use sidebar locator. The
+    // desktop rail is the fixed icon rail, so a row is found by its accessible
+    // name (the collapsed row's aria-label), not by visible label text.
     await page.goto('/overview', { waitUntil: 'domcontentloaded' })
-    await expect(page.locator('nav[aria-label="Main navigation"]').getByText('Sessions')).toBeVisible()
+    await expect(page.locator('nav[aria-label="Main navigation"]').getByRole('button', { name: 'Sessions', exact: true })).toBeVisible()
 
     // Navigation should be visible on the Developer page (was /system, now
     // /developer?tab=system — kept consistent with system.spec.ts).
     await page.goto('/developer?tab=system', { waitUntil: 'domcontentloaded' })
-    await expect(page.locator('nav[aria-label="Main navigation"]').getByText('Schedule')).toBeVisible()
+    await expect(page.locator('nav[aria-label="Main navigation"]').getByRole('button', { name: 'Schedule', exact: true })).toBeVisible()
   })
 })
