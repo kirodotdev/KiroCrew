@@ -739,8 +739,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 it read better to the author and worse to review: on the view
                 every reader now lands on, this sentence is the only cost cue
                 the surface carries, and dropping its colour weakened that cue
-                in the same change that made the surface the default. */}
-            <p role="note" className="mb-2 rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn-fg">
+                in the same change that made the surface the default. The hue is
+                `text-warn-text`, the warn ink meant for a `bg-warn-subtle` wash:
+                `--warn-fg` is black in the dark themes and reads near-invisible
+                over the 12% tint, the same trap the info box below already
+                dodges with `text-info-text`. */}
+            <p role="note" className="mb-2 rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn-text">
               {i18nT('components.sessionAutomationPopover.legacy_notice')}
             </p>
           </>
