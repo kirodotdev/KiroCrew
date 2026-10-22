@@ -73,10 +73,12 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     DB_UNSAFE_SOURCE,
     EXPORT_MANIFEST_VERSION,
     MANIFEST_VERSION,
+    MAX_ARCHIVE_GIB_CEILING,
     SKIP_DB_UNPINNED_SOURCE,
     DatabaseCopyFailed,
     ManifestUnreadable,
     _ArchiveTooLarge,
+    _bound_gib,
     _bundle_carries_named_stores,
     _chain_is_link_free,
     _copy_database_consistently,
@@ -90,6 +92,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _print_manifest,
     _refuse_if_changed_since,
     _refuse_oversized_archive,
+    _refuse_oversized_tree,
     _refuse_unsound_required_capture,
     _rejection_recording_filter,
     _report_skip,
@@ -98,6 +101,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _staging_ignore,
     _staging_is_pinned,
     _terminal_safe,
+    archive_byte_bound,
 )
 from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
@@ -544,6 +548,25 @@ def _report_redacted_bundle(snap: Path) -> None:
 #: still exits 0, because existing callers treat any non-zero exit as a failed backup.
 EXIT_INCOMPLETE = 3
 
+_MAX_ARCHIVE_GIB_HELP = (
+    "Set the bound on a bundle's uncompressed content in GiB (default 4, at most "
+    f"{MAX_ARCHIVE_GIB_CEILING}) for this run only. A bundle written past the default "
+    "restores with a --max-archive-gib at least as large on restore."
+)
+
+
+def _archive_bound_from_args(args: argparse.Namespace) -> int | None:
+    """The byte bound this run enforces, or ``None`` after printing why the flag is refused.
+
+    One validator for both commands, so `snapshot` can never write a bound `restore`
+    would not accept. An absent flag is the default bound, never an error.
+    """
+    gib = getattr(args, "max_archive_gib", None)
+    if gib is not None and not 1 <= gib <= MAX_ARCHIVE_GIB_CEILING:
+        print(f"❌ --max-archive-gib must be between 1 and {MAX_ARCHIVE_GIB_CEILING}, got: {gib}")
+        return None
+    return archive_byte_bound(gib)
+
 
 def snapshot_main(
     argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None
@@ -578,12 +601,22 @@ def snapshot_main(
             ),
         )
         p.add_argument("--to", default=None, help=argparse.SUPPRESS)
+        p.add_argument(
+            "--max-archive-gib",
+            type=int,
+            default=None,
+            dest="max_archive_gib",
+            help=_MAX_ARCHIVE_GIB_HELP,
+        )
         parsed = p.parse_args(argv)
     args = parsed
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
 
     if args.keep <= 0:
         print(f"❌ --keep value must be a positive integer, got: {args.keep}")
+        return 1
+    archive_bound = _archive_bound_from_args(args)
+    if archive_bound is None:
         return 1
 
     # `--to s3://…` never worked, and the off-host destination it was replaced by is now
@@ -717,7 +750,26 @@ def snapshot_main(
             root_name=root_name,
             allow_unpinned=allow_unpinned,
             skipped_out=omissions,
+            max_archive_bytes=archive_bound,
         )
+    except _ArchiveTooLarge as e:
+        # Refused while staging, before any tarball existed: nothing is published under
+        # the name retention and restore look for, and nothing is pruned.
+        _audit("snapshot_rejected", f"reason=archive_too_large detail={e}")
+        print(f"❌ {e}.")
+        if e.kind == "entries":
+            # The entry-count bound is fixed, so the override would refuse the same way.
+            print(
+                "   No bundle was written and nothing was pruned. Leave a component out "
+                "with --components."
+            )
+        else:
+            print(
+                "   No bundle was written and nothing was pruned. Leave a component out with "
+                "--components, or pass --max-archive-gib N here and at least N to "
+                "`kirocrew restore`."
+            )
+        return 1
     except pinned_fs.PinnedPathRefusal as exc:
         # A refusal is a decision this command made on purpose. A traceback would
         # read like a crash and bury the sentence saying what to do about it.
@@ -759,10 +811,12 @@ def snapshot_main(
     # The bound belongs at CREATION, not only on the paths that move a bundle around. A
     # bundle past it cannot be restored by this tool, so reporting success would promise a
     # backup that does not exist -- and the prune below would then delete older bundles that
-    # DO restore in favour of one that never will. Checked before both.
+    # DO restore in favour of one that never will. Checked before both. The staged tree was
+    # already held to the same bound, so this read-back is the backstop for an archive
+    # whose headers disagree with what was staged.
     try:
         with tarfile.open(outfile) as probe:
-            _refuse_oversized_archive(probe)
+            _refuse_oversized_archive(probe, max_bytes=archive_bound)
     except _ArchiveTooLarge as e:
         print(f"❌ {e}.")
         print(
@@ -876,6 +930,13 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 "rather than run with a destination an ancestor swap could redirect."
             ),
         )
+        p.add_argument(
+            "--max-archive-gib",
+            type=int,
+            default=None,
+            dest="max_archive_gib",
+            help=_MAX_ARCHIVE_GIB_HELP,
+        )
         parsed = p.parse_args(argv)
     args = parsed
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
@@ -887,6 +948,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     if not args.snapshot:
         print("❌ snapshot file is required (unless --list-components is given)")
         return 1
+
+    archive_bound = _archive_bound_from_args(args)
+    if archive_bound is None:
+        return 1
+    raised_bound = getattr(args, "max_archive_gib", None) is not None
 
     force = getattr(args, "force", False)
     if not force and _is_gateway_running():
@@ -971,7 +1037,19 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 # wrong, and on Python < 3.11.4 the fallback below calls `getmembers()`,
                 # which materialises every entry — so an archive declaring millions of
                 # them exhausts memory before a single file is written.
-                _refuse_oversized_archive(tar)
+                declared_bytes = _refuse_oversized_archive(tar, max_bytes=archive_bound)
+                if raised_bound:
+                    # Past the default bound the operator vouched for the size, not for
+                    # the disk. Holding a raised bound to the free space of the extraction
+                    # directory keeps the override from turning a hostile or simply wrong
+                    # archive into a full disk; the default bound needs no such check.
+                    free = shutil.disk_usage(work).free
+                    if declared_bytes > free:
+                        raise _ArchiveTooLarge(
+                            f"This archive declares {declared_bytes / (1024 ** 3):.2f} GiB of "
+                            "uncompressed content, more than the "
+                            f"{free / (1024 ** 3):.2f} GiB free where it would be extracted"
+                        )
                 rejected_entries: list[str] = []
                 _filter = _rejection_recording_filter(rejected_entries)
                 try:

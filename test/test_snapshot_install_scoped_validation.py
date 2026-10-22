@@ -189,7 +189,7 @@ class TestTheArchiveBoundCoversALocalBundle:
         import re as _re
 
         src = inspect.getsource(snap.restore_main)
-        bound = src.index("_refuse_oversized_archive(tar)")
+        bound = src.index("_refuse_oversized_archive(tar")
         extract = _re.search(r"\.extractall\(\s*work", src)
         assert extract, "the local extraction site moved; retarget this locator"
         assert bound < extract.start()

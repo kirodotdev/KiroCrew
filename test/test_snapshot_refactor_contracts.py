@@ -278,6 +278,16 @@ def test_the_snapshot_command_line_is_unchanged() -> None:
             "_StoreTrueAction",
         ),
         (("--to",), "to", None, None, None, None, argparse.SUPPRESS, "_StoreAction"),
+        (
+            ("--max-archive-gib",),
+            "max_archive_gib",
+            None,
+            None,
+            None,
+            None,
+            snap._MAX_ARCHIVE_GIB_HELP,
+            "_StoreAction",
+        ),
     ]
 
 
@@ -310,6 +320,16 @@ def test_the_restore_command_line_is_unchanged() -> None:
             "descriptor. Without this the restore is refused there rather than run with a "
             "destination an ancestor swap could redirect.",
             "_StoreTrueAction",
+        ),
+        (
+            ("--max-archive-gib",),
+            "max_archive_gib",
+            None,
+            None,
+            None,
+            None,
+            snap._MAX_ARCHIVE_GIB_HELP,
+            "_StoreAction",
         ),
     ]
 

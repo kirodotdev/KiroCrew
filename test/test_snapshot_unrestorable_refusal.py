@@ -75,7 +75,7 @@ class TestANewArchiveIsBoundedBeforeSuccessAndPrune:
         import inspect
 
         src = inspect.getsource(snap.snapshot_main)
-        bound = src.index("_refuse_oversized_archive(probe)")
+        bound = src.index("_refuse_oversized_archive(probe")
         assert bound < src.index("Snapshot created:")
         assert bound < src.index("Pruned:")
 

@@ -29,6 +29,23 @@ gateway on that port is not this instance.
 
 Both commands refuse to run on a platform that cannot open a directory relative to a file descriptor, because every component would then be re-opened by name and an ancestor swapped mid-walk could redirect the copy into a credential store. `--allow-unpinned-staging` accepts that by-name traversal instead; a snapshot taken that way records the weaker staging mode in its `MANIFEST.json`.
 
+### Installs larger than 4 GiB
+
+`kirocrew restore` refuses an archive that declares more than 4 GiB of uncompressed
+content, because a small compressed file can declare far more than it holds. `kirocrew
+snapshot` applies the same limit before it writes anything. Past the limit it exits 1,
+writes no bundle, prunes nothing, and names the largest entry. You then have two
+choices:
+
+```bash
+kirocrew snapshot --components memory,config,crons    # leave the large component out
+kirocrew snapshot --max-archive-gib 12                # or raise the limit for this run
+kirocrew restore snapshot.tar.gz --max-archive-gib 12 # ...and at least that N to restore
+```
+
+`--max-archive-gib` accepts 1 to 1024. With it, restore also refuses an archive that
+declares more than the free space where it extracts.
+
 ## What a snapshot contains
 
 | Component | Files |

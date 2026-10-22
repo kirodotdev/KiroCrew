@@ -1047,7 +1047,16 @@ class ManifestUnreadable(Exception):
 
 
 class _ArchiveTooLarge(Exception):
-    """An archive declares more content than a memory bundle can justify."""
+    """An archive declares more content than a memory bundle can justify.
+
+    *kind* names the bound that refused it: ``"bytes"`` for the uncompressed-content
+    bound, which ``--max-archive-gib`` raises, or ``"entries"`` for the member-count
+    bound, which no flag moves. A caller reads it to offer only a remedy that can work.
+    """
+
+    def __init__(self, *args: object, kind: str = "bytes") -> None:
+        super().__init__(*args)
+        self.kind = kind
 
 
 # Generous next to a real memory bundle (megabytes, a few thousand members) and still
@@ -1059,8 +1068,82 @@ _MAX_ARCHIVE_MEMBERS = 200_000
 
 _MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
 
+#: Highest value ``--max-archive-gib`` accepts. The override is for an install that is
+#: honestly larger than the default bound, not a way to switch the bound off: a ceiling
+#: keeps a typo (``40000``) from turning the decompression guard into no guard.
+MAX_ARCHIVE_GIB_CEILING = 1024
 
-def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
+
+def archive_byte_bound(max_archive_gib: int | None) -> int:
+    """The declared-content bound in bytes: the operator's ``--max-archive-gib`` or the default.
+
+    Read through the facade when no override is given, so a test that lowers
+    ``snapshot._MAX_ARCHIVE_BYTES`` lowers the bound every reader and the writer enforce.
+    The caller validates the override against :data:`MAX_ARCHIVE_GIB_CEILING` first.
+    """
+    if max_archive_gib is None:
+        return int(_facade()._MAX_ARCHIVE_BYTES)
+    return int(max_archive_gib) * (1024**3)
+
+
+def _bound_gib(max_bytes: int) -> str:
+    """The bound as the operator would type it, never rounding a sub-GiB test bound to 0."""
+    gib = max_bytes / (1024**3)
+    return f"{gib:.0f}" if gib >= 1 else f"{gib:.3g}"
+
+
+def _refuse_oversized_tree(stage: Path, *, max_bytes: int | None = None) -> None:
+    """Refuse a staged bundle the archive bound would refuse, BEFORE it is archived.
+
+    The writer's half of :func:`_refuse_oversized_archive`. It counts the same two
+    quantities the reader counts from the member headers -- the entries (the root
+    directory, every directory, every file) and the bytes of regular files -- so a bundle
+    this lets through is one restore accepts at the same bound. Running it on the staged
+    tree, not the finished tarball, is what keeps a refusal from costing a full
+    compression pass and from ever publishing an archive this tool cannot restore.
+
+    Links are counted as entries and never followed. The staging pass does not carry
+    them, so a count that includes one only refuses earlier, never later, than restore.
+    The message names the largest top-level entry, because that is the operator's
+    cheapest way back under the bound with ``--components``.
+    """
+    facade = _facade()
+    max_count = facade._MAX_ARCHIVE_MEMBERS
+    if max_bytes is None:
+        max_bytes = facade._MAX_ARCHIVE_BYTES
+    total = 0
+    count = 1  # the bundle's root directory is a member of its own
+    by_top: dict[str, int] = {}
+    for dirpath, dirnames, filenames in os.walk(stage):
+        count += len(dirnames) + len(filenames)
+        if count > max_count:
+            raise _ArchiveTooLarge(
+                f"This snapshot declares more than {max_count:,} entries, which "
+                "`kirocrew restore` refuses",
+                kind="entries",
+            )
+        rel_dir = Path(dirpath).relative_to(stage)
+        for fn in filenames:
+            try:
+                st = os.lstat(os.path.join(dirpath, fn))
+            except FileNotFoundError:
+                continue
+            if not _stat.S_ISREG(st.st_mode):
+                continue
+            total += st.st_size
+            top = rel_dir.parts[0] + "/" if rel_dir.parts else fn
+            by_top[top] = by_top.get(top, 0) + st.st_size
+    if total > max_bytes:
+        largest, largest_bytes = max(by_top.items(), key=lambda kv: kv[1])
+        raise _ArchiveTooLarge(
+            f"This snapshot declares more than {_bound_gib(max_bytes)} GiB of uncompressed "
+            f"content ({total / (1024**3):.2f} GiB; largest entry {_safe_name(largest)} at "
+            f"{largest_bytes / (1024**3):.2f} GiB), which `kirocrew restore` refuses at that "
+            "bound"
+        )
+
+
+def _refuse_oversized_archive(probe: tarfile.TarFile, *, max_bytes: int | None = None) -> int:
     """Refuse an archive that would not fit, before anything is extracted.
 
     A compressed archive can declare orders of magnitude more content than it occupies,
@@ -1076,8 +1159,16 @@ def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
     materialising the whole index is itself the denial of service an archive with
     millions of members performs. Bailing on the member that crosses the bound means the
     work is bounded by the bound, not by what the archive claims.
+
+    *max_bytes* is the operator's explicit ``--max-archive-gib`` override in bytes, and
+    defaults to ``_MAX_ARCHIVE_BYTES``. Only the byte bound moves: the member-count bound
+    is the one that stops an index-exhaustion archive, and no install needs more than it.
+    Returns the declared regular-file total, so a caller that raised the bound can also
+    hold it to the space the extraction has.
     """
     facade = _facade()
+    if max_bytes is None:
+        max_bytes = facade._MAX_ARCHIVE_BYTES
     total = 0
     count = 0
     while (member := probe.next()) is not None:
@@ -1085,18 +1176,22 @@ def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
         if count > facade._MAX_ARCHIVE_MEMBERS:
             raise _ArchiveTooLarge(
                 f"This archive declares more than {facade._MAX_ARCHIVE_MEMBERS:,} "
-                "entries, which no memory bundle produces"
+                "entries, which no memory bundle produces",
+                kind="entries",
             )
         # Only regular files carry payload; a directory or link header declares a size
         # that extraction never writes, so counting those would refuse honest archives.
         if member.isfile():
             total += max(member.size, 0)
-            if total > facade._MAX_ARCHIVE_BYTES:
+            if total > max_bytes:
                 raise _ArchiveTooLarge(
                     "This archive declares more than "
-                    f"{facade._MAX_ARCHIVE_BYTES // (1024 ** 3)} GiB of uncompressed content, "
-                    "which no memory bundle produces"
+                    f"{_bound_gib(max_bytes)} GiB of uncompressed content, "
+                    "which no memory bundle produces. If you made it with "
+                    "`kirocrew snapshot --max-archive-gib N`, pass "
+                    "--max-archive-gib N (or larger) here"
                 )
+    return total
 
 
 def _manifest_components(snap: Path) -> list[str] | None:

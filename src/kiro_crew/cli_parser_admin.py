@@ -77,6 +77,18 @@ def register_snapshot_parser(sub: _Commands) -> None:
         ),
     )
 
+    snap_parser.add_argument(
+        "--max-archive-gib",
+        type=int,
+        default=None,
+        dest="max_archive_gib",
+        help=(
+            "Set the bound on a bundle's uncompressed content in GiB (default 4, at most "
+            "1024) for this run only. A bundle written past the default restores with a "
+            "--max-archive-gib at least as large on restore."
+        ),
+    )
+
     # Retired, and defined only so it fails with a pointer instead of a bare argparse
     # error. Dropping it entirely would still fail loudly ("unrecognized arguments"), but
     # an operator whose muscle memory or old cron line still says `--to s3://bucket/prefix`
@@ -110,6 +122,17 @@ def register_restore_parser(sub: _Commands) -> None:
             "Restore by path name on a platform that cannot open a directory relative "
             "to a descriptor (Windows). Without this the restore is refused there "
             "rather than run with a destination an ancestor swap could redirect."
+        ),
+    )
+    rest_parser.add_argument(
+        "--max-archive-gib",
+        type=int,
+        default=None,
+        dest="max_archive_gib",
+        help=(
+            "Set the bound on a bundle's uncompressed content in GiB (default 4, at most "
+            "1024) for this run only. A bundle written past the default restores with a "
+            "--max-archive-gib at least as large on restore."
         ),
     )
 

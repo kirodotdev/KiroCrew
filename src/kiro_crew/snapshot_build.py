@@ -29,6 +29,7 @@ from kiro_crew.snapshot_archive import (
     MANIFEST_VERSION,
     _copy_database_consistently,
     _data_filter,
+    _refuse_oversized_tree,
     _staging_ignore,
 )
 from kiro_crew.snapshot_components import (
@@ -160,6 +161,7 @@ def _build_snapshot(
     root_name: str | None = None,
     allow_unpinned: bool = False,
     skipped_out: list[dict[str, str]] | None = None,
+    max_archive_bytes: int | None = None,
 ) -> Path:
     """Stage the data home into a temporary tree and publish it as one tarball.
 
@@ -189,6 +191,11 @@ def _build_snapshot(
     Collapsing them renamed the tarball too, and ``--list``, pruning and ``--keep`` all
     glob ``kirocrew-snapshot-*.tar.gz`` -- so every partial bundle became invisible to
     rotation and accumulated without bound. Defaults to *name* for a complete bundle.
+
+    *max_archive_bytes* is the declared-content bound ``kirocrew restore`` applies, and
+    defaults to the same ``_MAX_ARCHIVE_BYTES`` it reads. The staged tree is held to it
+    before the tarball is created, so a bundle restore would refuse is never published:
+    :class:`kiro_crew.snapshot_archive._ArchiveTooLarge` is raised with nothing written.
     """
     facade = _facade()
     arcname = root_name or name
@@ -468,6 +475,12 @@ def _build_snapshot(
                 "cannot pin a directory by descriptor, so an ancestor swapped during "
                 "staging could have redirected a copy. Recorded in MANIFEST.json."
             )
+
+        # Held to the restore bound BEFORE the tarball exists. A bundle past it cannot be
+        # restored by this tool, and checking only the finished archive both paid for a
+        # full compression pass and left the unrestorable file at the very name `--keep`
+        # and restore look for.
+        _refuse_oversized_tree(stage, max_bytes=max_archive_bytes)
 
         # Tarball — write to temp file and rename atomically to avoid corrupt partials
         out.mkdir(parents=True, exist_ok=True)
