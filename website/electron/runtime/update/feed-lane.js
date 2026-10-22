@@ -43,6 +43,10 @@ function createFeedLane({
   linux,
   macDistArch,
   nativeAutoUpdater,
+  // On Windows, session-end fires on BaseWindow (not App). When provided, the
+  // lane registers sessionEndPendingNotice there instead of on app. Optional so
+  // tests can stub it and so non-Windows paths are unaffected.
+  getMainWindow = () => null,
   feedBase,
   uiDriven,
   log,
@@ -422,6 +426,7 @@ function createFeedLane({
       return;
     }
     app.removeListener("before-quit", deferredInstallOnQuit);
+    getMainWindow()?.removeListener("session-end", sessionEndPendingNotice);
     log.info("[update] gateway down — quitAndInstall");
     quitAndInstall();
     forceExitFailsafe("manual install");
@@ -518,6 +523,47 @@ function createFeedLane({
     })();
   }
 
+  // Windows session-end notification. Windows shutdown/restart/logout never emits
+  // before-quit, so deferredInstallOnQuit is unreachable on those paths.
+  //
+  // WHY a persistent toast notification rather than calling quitAndInstall:
+  // the NSIS installer (electron-builder's Windows update path) extracts the
+  // app directly into $INSTDIR with no backup or atomic rollback (nsisunz::Unzip
+  // writes files one-by-one into the installation directory). Windows gives each
+  // process a default shutdown window of a few seconds; a ~350 MB bundle copy
+  // takes far longer. If Windows kills the installer mid-copy, $INSTDIR ends up
+  // with a mix of old and new files — the existing app may not launch. A
+  // Windows toast notification, by contrast, is safe: it is handled by a system
+  // service, persists in Action Center across the session boundary, and the user
+  // sees it at next login as a reminder to quit from the tray to install.
+  function sessionEndPendingNotice() {
+    if (!updateReady) return;
+    // Mirror deferredInstallOnQuit's opt-out check: an automatically staged
+    // update should not advertise "quit to install" when the user has since
+    // turned off auto-download — deferredInstallOnQuit won't install it either,
+    // so the toast would send the user on a futile trip to the tray.
+    if (stagedWasAutomatic) {
+      let stillAuto = false;
+      try {
+        stillAuto = !!getAutoDownloadPreference();
+      } catch {
+        // Fail toward NOT notifying — same direction as deferredInstallOnQuit.
+        return;
+      }
+      if (!stillAuto) return;
+    }
+    try {
+      new Notification({
+        title: "Kiro Crew update ready",
+        // session-end fires on shutdown, restart AND logout; use copy that
+        // covers all three. Prepend the product name so the version is
+        // readable in Action Center with no app context.
+        body: `Quit Kiro Crew from the tray to install${stagedVersion ? ` version ${stagedVersion}` : ' the update'}. It couldn\'t install while Windows was closing.`,
+      }).show();
+    } catch { /* notifications optional */ }
+    log.info("[update] session-end — notified user of pending update (install on next quit)");
+  }
+
   async function promptInstall(versionName, notes) {
     const handoffDetail = osPlatform === "win32"
       ? "Installing can take several minutes. Kiro Crew will close, show Windows installation progress, and reopen automatically."
@@ -537,6 +583,7 @@ function createFeedLane({
       await applyUpdateAndRestart();
     } else {
       app.once("before-quit", deferredInstallOnQuit);
+      if (osPlatform === "win32") getMainWindow()?.once("session-end", sessionEndPendingNotice);
       try {
         new Notification({
           title: "Update deferred",
@@ -607,6 +654,7 @@ function createFeedLane({
     stagedNotes = "";
     quitHandled = false;
     app.removeListener("before-quit", deferredInstallOnQuit);
+    getMainWindow()?.removeListener("session-end", sessionEndPendingNotice);
     log.info("[update] up to date");
     emit("not-available");
   });
@@ -663,6 +711,7 @@ function createFeedLane({
         stagedNotes = "";
         quitHandled = false;
         app.removeListener("before-quit", deferredInstallOnQuit);
+        getMainWindow()?.removeListener("session-end", sessionEndPendingNotice);
       }
       foundVersion = null;
       emit("not-available");
@@ -685,6 +734,7 @@ function createFeedLane({
       stagedVersion = null;
       stagedNotes = "";
       app.removeListener("before-quit", deferredInstallOnQuit);
+      getMainWindow()?.removeListener("session-end", sessionEndPendingNotice);
     }
     let autoDownload = false;
     try {
@@ -735,6 +785,7 @@ function createFeedLane({
       // In-app UI owns the prompt. Still install on a natural quit if the user
       // dismisses the modal with "Later" (mirrors the native dialog's deferral).
       app.once("before-quit", deferredInstallOnQuit);
+      if (osPlatform === "win32") getMainWindow()?.once("session-end", sessionEndPendingNotice);
     } else {
       promptInstall(stagedVersion, stagedNotes);
     }
