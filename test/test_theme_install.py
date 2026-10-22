@@ -1023,6 +1023,16 @@ class TestValidateThemeDirL1:
         assert summary is None
         assert err is not None and "level 1" in err.lower()
 
+    @pytest.mark.parametrize("ext", ["svg", "png", "webp", "gif"])
+    def test_welcome_image_accepted_and_described(self, tmp_path: Path, ext: str) -> None:
+        image = b"<svg xmlns='http://www.w3.org/2000/svg'/>" if ext == "svg" else _PNG_1PX
+        d = _make_tiered(tmp_path, level=1, extra={f"branding/welcome.{ext}": image})
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["branding"] == {"welcome": f"branding/welcome.{ext}"}
+
 
 class TestValidateThemeDirL2:
     def test_valid_l2(self, tmp_path: Path) -> None:
@@ -1119,6 +1129,7 @@ class TestPureContentHelpers:
             ("styles/overrides.css", "overrides", 1),
             ("styles/fonts/x.woff2", "font", 1),
             ("branding/logo.svg", "logo", 1),
+            ("branding/welcome.webp", "welcome", 1),
             ("overlays/scanner.html", "overlay", 2),
             ("topbar/dark.html", "topbar", 2),
             ("audio/beep.mp3", "audio", 2),
@@ -1129,7 +1140,9 @@ class TestPureContentHelpers:
     def test_classify_known(self, rel: str, category: str, min_level: int) -> None:
         assert _classify_theme_file(rel) == (category, min_level)
 
-    @pytest.mark.parametrize("rel", ["evil.txt", "styles/x.js", "branding/logo.gif", "random/x"])
+    @pytest.mark.parametrize(
+        "rel", ["evil.txt", "styles/x.js", "branding/logo.gif", "branding/welcome.jpg", "random/x"]
+    )
     def test_classify_unknown(self, rel: str) -> None:
         assert _classify_theme_file(rel) == (None, 0)
 

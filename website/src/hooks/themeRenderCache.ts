@@ -64,6 +64,7 @@ const isAssets = (x: unknown) =>
         logo: optional(isStr),
         favicon: optional(isStr),
         wordmark: optional(isStr),
+        welcome: optional(isStr),
       }),
     ),
     fonts: optional((f) => Array.isArray(f) && f.every(isFontFace)),

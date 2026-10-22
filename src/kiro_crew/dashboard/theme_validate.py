@@ -341,6 +341,8 @@ _THEME_FILE_CAPS = {
     "logo": 100 * 1024,
     "favicon": 50 * 1024,
     "wordmark": 100 * 1024,
+    # Loader-art headroom: the welcome image may be an animated WebP/GIF.
+    "welcome": 256 * 1024,
     "preview": 512 * 1024,
     "overlay": 200 * 1024,
     "topbar": 100 * 1024,
@@ -542,6 +544,8 @@ def _classify_theme_file(rel: str) -> tuple[str | None, int]:
             return "favicon", 1
         if stem == "wordmark" and ext in ("svg", "png"):
             return "wordmark", 1
+        if stem == "welcome" and ext in ("svg", "png", "webp", "gif"):
+            return "welcome", 1
         if stem == "preview" and ext in ("png", "webp"):
             return "preview", 1
     if top == "overlays" and len(parts) == 2 and ext == "html":
@@ -1480,7 +1484,7 @@ def _theme_asset_descriptor(
     if level < 1:
         return desc
 
-    # Branding — bot name (plain text) + logo/favicon/wordmark by file presence.
+    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome by file presence.
     branding = manifest.get("branding")
     branding = branding if isinstance(branding, dict) else {}
     bres: dict[str, str] = {}
@@ -1493,6 +1497,7 @@ def _theme_asset_descriptor(
         ("logo", ("svg", "png")),
         ("favicon", ("ico", "png", "svg")),
         ("wordmark", ("svg", "png")),
+        ("welcome", ("svg", "png", "webp", "gif")),
     ):
         for ext in exts:
             rel = f"branding/{role}.{ext}"

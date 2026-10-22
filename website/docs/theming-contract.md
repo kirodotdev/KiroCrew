@@ -216,7 +216,7 @@ cannot shrink.
 | Tier | Surface |
 |---|---|
 | **L0 Color** | the 56 CSS vars (dark + light) |
-| **L1 Brand** | logo, favicon, wordmark, botName, fonts, scoped `overrides.css` |
+| **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
 Out of contract: app structure/routing, functional-control behavior, security
@@ -249,10 +249,14 @@ packaged asset names:
 ```text
 branding/logo.svg       # left command-palette mark
 branding/favicon.svg    # browser-tab icon
+branding/welcome.svg    # brand mark on a new chat's welcome screen
 branding/wordmark.svg   # reserved brand artwork for supporting surfaces
 ```
 
-`logo` accepts `.svg` or `.png`; `favicon` accepts `.ico`, `.png`, or `.svg`.
+`logo` accepts `.svg` or `.png`; `favicon` accepts `.ico`, `.png`, or `.svg`;
+`welcome` accepts `.svg`, `.png`, `.webp`, or `.gif` (256 KB), and an animated
+WebP/GIF/SVG plays in place. The welcome screen shows `welcome`, else `logo`,
+else the stock ghost, in the 48px hero slot.
 The backend serves only validated files from the installed pack, and the label is
 trimmed to 48 printable characters. When an asset or label is absent, the shell
 falls back independently to its configured Kiro Crew branding. Compiled edition

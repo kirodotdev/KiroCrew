@@ -72,6 +72,8 @@ export interface ThemeBranding {
   logo?: string
   favicon?: string
   wordmark?: string
+  /** Welcome-screen hero mark (`branding/welcome.*`), shown in place of the logo there. */
+  welcome?: string
 }
 
 /** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
@@ -326,6 +328,7 @@ function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<Overri
 interface ResolvedThemeBranding {
   logo: string | null
   favicon: string | null
+  welcome: string | null
 }
 
 /** Apply/revert an installed theme's branding and return shell-safe asset URLs. */
@@ -335,7 +338,7 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   root.style.removeProperty('--theme-logo')
   const b = theme?.assets?.branding
   const slug = theme ? safeSlug(theme.slug) : ''
-  if (!b || !slug) return { logo: null, favicon: null }
+  if (!b || !slug) return { logo: null, favicon: null, welcome: null }
 
   const fav = b.favicon ? safeAssetPath(b.favicon) : ''
   const favicon = fav ? `${assetBase(slug)}/${fav}` : null
@@ -352,7 +355,9 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   if (logoPath) {
     root.style.setProperty('--theme-logo', assetUrlValue(slug, logoPath))
   }
-  return { logo, favicon }
+  const welcomePath = b.welcome ? safeAssetPath(b.welcome) : ''
+  const welcome = welcomePath ? `${assetBase(slug)}/${welcomePath}` : null
+  return { logo, favicon, welcome }
 }
 
 /**
@@ -544,6 +549,8 @@ export interface ThemeContextValue {
   brandLogo: string | null
   /** Active installed theme's browser favicon URL, or null for built-ins / L0. */
   brandFavicon: string | null
+  /** Active installed theme's welcome-screen image URL, or null when it ships none. */
+  brandWelcome: string | null
   customThemes: ThemeEntry[]
   customThemeDataMap: Map<string, CustomThemeData>
   themeVersion: number
@@ -843,6 +850,7 @@ function useThemeState(): ThemeContextValue {
   const [brandName, setBrandName] = useState<string | null>(null)
   const [brandLogo, setBrandLogo] = useState<string | null>(null)
   const [brandFavicon, setBrandFavicon] = useState<string | null>(null)
+  const [brandWelcome, setBrandWelcome] = useState<string | null>(null)
   // Lightweight "Applying…" indicator: true only while an INSTALLED theme's
   // async assets settle after a switch (built-ins/editor-customs are instant).
   const [themeSwitching, setThemeSwitching] = useState(false)
@@ -1305,12 +1313,14 @@ function useThemeState(): ThemeContextValue {
       setBrandName(active?.assets?.branding?.botName ?? null)
       setBrandLogo(appliedBranding.logo)
       setBrandFavicon(appliedBranding.favicon)
+      setBrandWelcome(appliedBranding.welcome)
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.
       setBrandName(null)
       setBrandLogo(null)
       setBrandFavicon(null)
+      setBrandWelcome(null)
     }
     applyThemeOverrides(active)
       .then((report) => {
@@ -1487,6 +1497,7 @@ function useThemeState(): ThemeContextValue {
     brandName,
     brandLogo,
     brandFavicon,
+    brandWelcome,
     customThemes,
     customThemeDataMap,
     themeVersion,

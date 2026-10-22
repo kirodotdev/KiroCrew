@@ -178,7 +178,8 @@ not against the count of 6.
 
 Beyond `theme.json`, `variables.json`, `readme.md`, `styles/` and `LICENSE.txt`,
 the classifier also recognizes `branding/logo.{svg,png}`,
-`branding/favicon.{ico,png,svg}`, `branding/wordmark.{svg,png}` and
+`branding/favicon.{ico,png,svg}`, `branding/wordmark.{svg,png}`,
+`branding/welcome.{svg,png,webp,gif}` and
 `branding/preview.{png,webp}` and `loader/*.{png,webp,gif,svg}` (max 8) at
 level 1, and `persona.md`, `overlays/*.html`,
 `topbar/{dark,light}.html`, `audio/manifest.json` and `audio/*.{mp3,ogg,wav}` at
